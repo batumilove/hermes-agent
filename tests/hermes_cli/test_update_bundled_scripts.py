@@ -27,7 +27,12 @@ def test_update_syncs_bundled_helper_scripts(capsys):
         return_value={"copied": [], "updated": [], "user_modified": [], "cleaned": []},
     ), patch(
         "tools.bundled_scripts_sync.sync_bundled_scripts",
-        return_value={"linked": ["telegram-healthcheck-stateful"], "updated": [], "missing": []},
+        return_value={
+            "linked": ["/tmp/.hermes/bin/telegram-healthcheck.sh"],
+            "updated": [],
+            "missing": [],
+            "cleaned": [],
+        },
     ) as mock_sync_scripts, patch(
         "hermes_cli.main._update_node_dependencies"
     ), patch(
@@ -44,4 +49,4 @@ def test_update_syncs_bundled_helper_scripts(capsys):
     mock_sync_scripts.assert_called_once_with(quiet=True)
     out = capsys.readouterr().out
     assert "Syncing bundled helper scripts" in out
-    assert "telegram-healthcheck-stateful" in out
+    assert "telegram-healthcheck.sh" in out
