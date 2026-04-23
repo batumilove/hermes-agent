@@ -50,9 +50,6 @@ cli-config.yaml
 # Local mcporter/MCP config (may contain bearer tokens)
 config/mcporter.json
 
-# Local mcporter/MCP config (may contain bearer tokens)
-config/mcporter.json
-
 # Skills Hub state (lives in ~/.hermes/skills/.hub/ at runtime, but just in case)
 skills/.hub/
 ignored/
