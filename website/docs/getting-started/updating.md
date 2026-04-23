@@ -14,7 +14,7 @@ Update to the latest version with a single command:
 hermes update
 ```
 
-This pulls the latest code, updates dependencies, and prompts you to configure any new options that were added since your last update.
+This updates the codebase, refreshes dependencies and bundled assets, and prompts you to configure any new options that were added since your last update.
 
 :::tip
 `hermes update` automatically detects new configuration options and prompts you to add them. If you skipped that prompt, you can manually run `hermes config check` to see missing options, then `hermes config migrate` to interactively add them.
@@ -24,10 +24,13 @@ This pulls the latest code, updates dependencies, and prompts you to configure a
 
 When you run `hermes update`, the following steps occur:
 
-1. **Git pull** — pulls the latest code from the `main` branch and updates submodules
-2. **Dependency install** — runs `uv pip install -e ".[all]"` to pick up new or changed dependencies
-3. **Config migration** — detects new config options added since your version and prompts you to set them
-4. **Gateway auto-restart** — if the gateway service is running (systemd on Linux, launchd on macOS), it is **automatically restarted** after the update completes so the new code takes effect immediately
+1. **Fetch + update code** — fetches `origin`, switches to `main` if needed, then fast-forwards from `origin/main` when possible
+2. **Local-change protection** — if the working tree is dirty, local changes are auto-stashed before the update and then optionally restored afterward
+3. **Divergence recovery** — if a fast-forward pull is not possible, Hermes can reset to match `origin/main` and then continue
+4. **Dependency install** — updates Python dependencies, then refreshes Node.js dependencies where applicable
+5. **Bundled asset sync** — syncs bundled skills and helper scripts, including other profiles where relevant
+6. **Config migration** — detects new config options added since your version and prompts you to set them
+7. **Gateway auto-restart** — if gateway services are running (systemd on Linux, launchd on macOS), they are restarted after the update completes so the new code takes effect immediately
 
 Expected output looks like:
 
@@ -54,6 +57,7 @@ Already up to date.  (or: Updating abc1234..def5678)
 3. `hermes --version` — confirm the version bumped as expected
 4. If you use the gateway: `hermes gateway status`
 5. If `doctor` reports npm audit issues: run `npm audit fix` in the flagged directory
+6. If local changes were restored from stash, inspect the result carefully for conflicts or unintended reapplication
 
 :::warning Dirty working tree after update
 If `git status --short` shows unexpected changes after `hermes update`, stop and inspect them before continuing. This usually means local modifications were reapplied on top of the updated code, or a dependency step refreshed lockfiles.
@@ -73,6 +77,17 @@ tail -f ~/.hermes/logs/update.log
 - `Ctrl-C` (SIGINT) and system shutdown (SIGTERM) are still honored — those are deliberate cancellations, not accidents.
 
 You no longer need to wrap `hermes update` in `screen` or `tmux` to survive a terminal drop.
+
+### What about local changes and forks?
+
+A few behaviors are worth knowing before you run `hermes update` on a customized install:
+
+- If you have uncommitted local changes, Hermes will usually auto-stash them before updating and then offer to restore them afterward.
+- Restoring those changes can reapply customizations on top of the new codebase, so `git status` and a quick smoke test are worth doing after the update.
+- If your local branch has diverged from `origin/main`, Hermes may reset to match the remote after preserving your working-tree changes in stash.
+- Forked installs may also trigger upstream-sync logic, depending on how your remotes are configured.
+
+If you maintain significant local modifications or a fork workflow, verify your remotes and branch state before updating.
 
 ### Checking your current version
 
