@@ -43,8 +43,9 @@ hermes_agent.egg-info/
 wandb/
 testlogs
 
-# CLI config (may contain sensitive SSH paths)
+# CLI/local config (may contain sensitive paths or tokens)
 cli-config.yaml
+/config/
 
 # Skills Hub state (lives in ~/.hermes/skills/.hub/ at runtime, but just in case)
 skills/.hub/

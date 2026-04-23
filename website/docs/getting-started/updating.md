@@ -85,9 +85,10 @@ A few behaviors are worth knowing before you run `hermes update` on a customized
 - If you have uncommitted local changes, Hermes will usually auto-stash them before updating and then offer to restore them afterward.
 - Restoring those changes can reapply customizations on top of the new codebase, so `git status` and a quick smoke test are worth doing after the update.
 - If your local branch has diverged from `origin/main`, Hermes may reset to match the remote after preserving your working-tree changes in stash.
+- That reset can also drop local commits that existed only on your current `main`, even if your working tree was clean after committing. If those commits matter, make sure they are pushed elsewhere or be ready to reapply them after the update.
 - Forked installs may also trigger upstream-sync logic, depending on how your remotes are configured.
 
-If you maintain significant local modifications or a fork workflow, verify your remotes and branch state before updating.
+If you maintain significant local modifications or a fork workflow, verify your remotes and branch state before updating, and check whether any local-only commits on `main` need to be preserved separately.
 
 ### Checking your current version
 
