@@ -14,12 +14,18 @@ Make it a **Tool** when it requires end-to-end integration with API keys, custom
 
 ## Overview
 
-Adding a tool touches **2 files**:
+The minimal built-in tool path usually touches **2 files**:
 
 1. **`tools/your_tool.py`** — handler, schema, check function, `registry.register()` call
 2. **`toolsets.py`** — add tool name to `_HERMES_CORE_TOOLS` (or a specific toolset)
 
 Any `tools/*.py` file with a top-level `registry.register()` call is auto-discovered at startup — no manual import list required.
+
+Depending on the tool, you may also need:
+
+- **`hermes_cli/config.py`** — if the tool should appear in setup/config flows for API keys or other optional env vars
+- **tests** — if you're changing runtime behavior or adding non-trivial logic
+- **`toolset_distributions.py`** — only for RL/batch/distribution workflows that sample named toolset bundles; not required for normal tool registration
 
 ## Step 1: Create the Tool File
 
@@ -194,5 +200,6 @@ OPTIONAL_ENV_VARS = {
 - [ ] Added to appropriate toolset in `toolsets.py`
 - [ ] Handler returns JSON strings, errors returned as `{"error": "..."}`
 - [ ] Optional: API key added to `OPTIONAL_ENV_VARS` in `hermes_cli/config.py`
-- [ ] Optional: Added to `toolset_distributions.py` for batch processing
+- [ ] Optional: Added to `toolset_distributions.py` only if this tool must participate in RL/batch toolset distributions
+- [ ] Optional: Added or updated tests for non-trivial runtime behavior
 - [ ] Tested with `hermes chat -q "Use the weather tool for London"`
