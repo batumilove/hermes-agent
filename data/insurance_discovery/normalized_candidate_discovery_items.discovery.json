@@ -1,0 +1,3432 @@
+{
+  "dataset": "international_expat_health_insurance_discovery",
+  "run_scope": "discovery_only",
+  "section": "normalized_candidate_discovery_items",
+  "generated_by": "gpt-5.4",
+  "generated_from": [
+    "data/insurance_discovery/raw_candidate_capture.discovery.json",
+    "data/insurance_discovery/shared_candidate_staging.discovery.json",
+    "data/insurance_discovery/candidate_source_ledger.discovery.json"
+  ],
+  "family_context": {
+    "citizenship": "German",
+    "residence": "Georgia",
+    "adults": [
+      42,
+      37
+    ],
+    "children": 2,
+    "preferred_cover_geography": "Georgia and Germany, ideally worldwide excluding the US"
+  },
+  "normalization_contract": {
+    "record_granularity": "one normalized insurer/plan discovery item per stable candidate_id",
+    "duplicate_resolution_key": "candidate_id",
+    "traceability_requirement": "Every normalized record keeps all raw mention_ids and all supporting source references needed to reopen the upstream evidence trail.",
+    "discovery_only_note": "This artifact normalizes discovery candidates and preserves evidence provenance; it does not rank or recommend plans."
+  },
+  "resolution_summary": {
+    "raw_candidate_mentions": 34,
+    "unique_normalized_candidates": 27,
+    "duplicate_candidate_groups": 7,
+    "deduplicated_mentions_removed": 7,
+    "mention_count_distribution": {
+      "1": 20,
+      "2": 7
+    },
+    "duplicate_resolution_rule": "Mentions sharing the same candidate_id were collapsed into one normalized discovery item while preserving every mention and every upstream dataset/source reference in traceability arrays."
+  },
+  "records": [
+    {
+      "candidate_id": "acs_expat",
+      "normalized_insurer_name": "ACS",
+      "normalized_plan_name": "ACS Expat",
+      "candidate_type": "supplemental",
+      "relevance_status": "likely_relevant",
+      "pricing_availability_status": "unavailable_during_discovery",
+      "official_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat/",
+      "quote_or_application_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat-quote-request/",
+      "broker_url": null,
+      "policy_wording_or_pdf_url": "https://www.acs-ami.com/files/pdf/ACS-Expat-ALC-IB-en.pdf",
+      "primary_evidence_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat/",
+      "duplicate_resolution": {
+        "was_deduplicated_from_multiple_mentions": false,
+        "raw_mention_count": 1,
+        "raw_mention_ids": [
+          "acs_expat:mention:1"
+        ],
+        "duplicate_resolution_basis": "candidate_id",
+        "duplicate_resolution_note": "Only one raw mention existed for this normalized candidate in the current discovery capture.",
+        "upstream_dataset_mentions": [
+          {
+            "dataset_path": null,
+            "dataset_section": "supplemental_public_sources"
+          }
+        ]
+      },
+      "mention_traceability": [
+        {
+          "mention_id": "acs_expat:mention:1",
+          "dataset_path": null,
+          "dataset_section": "supplemental_public_sources",
+          "record_bucket": "master_index_additions",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat/",
+          "source_title": "ACS Expat - Customisable Expatriate Health Insurance Solution",
+          "quote_or_application_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat-quote-request/",
+          "evidence_excerpt": "ACS Expat is presented as modular lifetime international health insurance for expatriates of all nationalities, available individually, as a couple, or as a family, with home-country visit coverage and geography-zone based cover."
+        }
+      ],
+      "source_traceability": [
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": null,
+          "dataset_section": "supplemental_public_sources",
+          "record_bucket": "master_index_additions",
+          "source_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat/",
+          "source_title": "ACS Expat - Customisable Expatriate Health Insurance Solution",
+          "quote_or_application_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat-quote-request/",
+          "source_kind": null,
+          "evidence_excerpt": "ACS Expat is presented as modular lifetime international health insurance for expatriates of all nationalities, available individually, as a couple, or as a family, with home-country visit coverage and geography-zone based cover."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "acs_expat:source:1",
+          "dataset_path": null,
+          "dataset_section": "supplemental_public_sources",
+          "record_bucket": "master_index_additions",
+          "source_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat/",
+          "source_title": "ACS Expat - Customisable Expatriate Health Insurance Solution",
+          "quote_or_application_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat-quote-request/",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "ACS Expat is presented as modular lifetime international health insurance for expatriates of all nationalities, available individually, as a couple, or as a family, with home-country visit coverage and geography-zone based cover.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "official_plan_positioning",
+            "quote_or_application_path_reference",
+            "geography_relevance_evidence"
+          ],
+          "source_directness_classification": "medium"
+        },
+        {
+          "trace_origin": "derived_candidate_source_ledger_reference",
+          "source_id": "acs_expat:source:quote_path",
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "dataset_section": "candidate_source_ledger",
+          "record_bucket": "records",
+          "source_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat-quote-request/",
+          "source_title": "ACS quote or application path",
+          "quote_or_application_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat-quote-request/",
+          "source_kind": "official quote page",
+          "evidence_excerpt": "Verified public quote or application path relevant to the candidate evidence entry.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "quote_or_application_path_reference",
+            "pricing_or_quote_path_evidence",
+            "access_path_evidence"
+          ],
+          "source_directness_classification": "high"
+        },
+        {
+          "trace_origin": "derived_candidate_source_ledger_reference",
+          "source_id": "acs_expat:source:plan_document",
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "dataset_section": "candidate_source_ledger",
+          "record_bucket": "records",
+          "source_url": "https://www.acs-ami.com/files/pdf/ACS-Expat-ALC-IB-en.pdf",
+          "source_title": "ACS plan document or brochure",
+          "quote_or_application_url": null,
+          "source_kind": "policy wording or brochure PDF",
+          "evidence_excerpt": "Public plan document captured and applicable to this candidate evidence entry.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "plan_document_reference",
+            "benefit_detail_evidence",
+            "geography_relevance_evidence"
+          ],
+          "source_directness_classification": "high"
+        }
+      ],
+      "linked_artifacts": {
+        "shared_candidate_staging_ref": {
+          "dataset_path": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+          "section": "shared_candidate_staging",
+          "candidate_id": "acs_expat"
+        },
+        "raw_candidate_capture_ref": {
+          "dataset_path": "data/insurance_discovery/raw_candidate_capture.discovery.json",
+          "section": "raw_candidate_capture",
+          "candidate_id": "acs_expat",
+          "mention_ids": [
+            "acs_expat:mention:1"
+          ]
+        },
+        "candidate_source_ledger_ref": {
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "section": "candidate_source_ledger",
+          "candidate_id": "acs_expat"
+        }
+      }
+    },
+    {
+      "candidate_id": "aetna_international",
+      "normalized_insurer_name": "Aetna International",
+      "normalized_plan_name": "Aetna International global healthcare entrypoint",
+      "candidate_type": "primary",
+      "relevance_status": "possibly_relevant",
+      "pricing_availability_status": "unavailable_during_discovery",
+      "official_url": "https://www.aetnainternational.com/",
+      "quote_or_application_url": "https://www.aetna.com/employers-organizations/aetna-international-insurance.html",
+      "broker_url": null,
+      "policy_wording_or_pdf_url": null,
+      "primary_evidence_url": "https://www.aetnainternational.com/",
+      "duplicate_resolution": {
+        "was_deduplicated_from_multiple_mentions": false,
+        "raw_mention_count": 1,
+        "raw_mention_ids": [
+          "aetna_international:mention:1"
+        ],
+        "duplicate_resolution_basis": "candidate_id",
+        "duplicate_resolution_note": "Only one raw mention existed for this normalized candidate in the current discovery capture.",
+        "upstream_dataset_mentions": [
+          {
+            "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+            "dataset_section": "global_providers"
+          }
+        ]
+      },
+      "mention_traceability": [
+        {
+          "mention_id": "aetna_international:mention:1",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.aetnainternational.com/",
+          "source_title": "Home | Aetna",
+          "quote_or_application_url": "https://www.aetna.com/employers-organizations/aetna-international-insurance.html",
+          "evidence_excerpt": "Aetna International says it serves globally mobile members with access to quality care and support wherever they are, with provider network access in 200+ countries and territories."
+        }
+      ],
+      "source_traceability": [
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.aetnainternational.com/",
+          "source_title": "Home | Aetna",
+          "quote_or_application_url": "https://www.aetna.com/employers-organizations/aetna-international-insurance.html",
+          "source_kind": null,
+          "evidence_excerpt": "Aetna International says it serves globally mobile members with access to quality care and support wherever they are, with provider network access in 200+ countries and territories."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "aetna_international:source:1",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.aetnainternational.com/",
+          "source_title": "Home | Aetna",
+          "quote_or_application_url": "https://www.aetna.com/employers-organizations/aetna-international-insurance.html",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "Aetna International says it serves globally mobile members with access to quality care and support wherever they are, with provider network access in 200+ countries and territories.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "candidate_identification",
+            "official_plan_positioning",
+            "quote_or_application_path_reference"
+          ],
+          "source_directness_classification": "medium"
+        },
+        {
+          "trace_origin": "derived_candidate_source_ledger_reference",
+          "source_id": "aetna_international:source:quote_path",
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "dataset_section": "candidate_source_ledger",
+          "record_bucket": "records",
+          "source_url": "https://www.aetna.com/employers-organizations/aetna-international-insurance.html",
+          "source_title": "Aetna International quote or application path",
+          "quote_or_application_url": "https://www.aetna.com/employers-organizations/aetna-international-insurance.html",
+          "source_kind": "official quote page",
+          "evidence_excerpt": "Verified public quote or application path relevant to the candidate evidence entry.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "quote_or_application_path_reference",
+            "pricing_or_quote_path_evidence",
+            "access_path_evidence"
+          ],
+          "source_directness_classification": "high"
+        }
+      ],
+      "linked_artifacts": {
+        "shared_candidate_staging_ref": {
+          "dataset_path": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+          "section": "shared_candidate_staging",
+          "candidate_id": "aetna_international"
+        },
+        "raw_candidate_capture_ref": {
+          "dataset_path": "data/insurance_discovery/raw_candidate_capture.discovery.json",
+          "section": "raw_candidate_capture",
+          "candidate_id": "aetna_international",
+          "mention_ids": [
+            "aetna_international:mention:1"
+          ]
+        },
+        "candidate_source_ledger_ref": {
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "section": "candidate_source_ledger",
+          "candidate_id": "aetna_international"
+        }
+      }
+    },
+    {
+      "candidate_id": "alc_health",
+      "normalized_insurer_name": "ALC Health",
+      "normalized_plan_name": "Global Prima Medical Insurance / Flying Colours legacy entrypoints",
+      "candidate_type": "supplemental",
+      "relevance_status": "excluded",
+      "pricing_availability_status": "quote_flow_gated",
+      "official_url": "https://www.alchealth.com/",
+      "quote_or_application_url": null,
+      "broker_url": null,
+      "policy_wording_or_pdf_url": null,
+      "primary_evidence_url": "https://www.alchealth.com/",
+      "duplicate_resolution": {
+        "was_deduplicated_from_multiple_mentions": false,
+        "raw_mention_count": 1,
+        "raw_mention_ids": [
+          "alc_health:mention:1"
+        ],
+        "duplicate_resolution_basis": "candidate_id",
+        "duplicate_resolution_note": "Only one raw mention existed for this normalized candidate in the current discovery capture.",
+        "upstream_dataset_mentions": [
+          {
+            "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+            "dataset_section": "european_providers"
+          }
+        ]
+      },
+      "mention_traceability": [
+        {
+          "mention_id": "alc_health:mention:1",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "supplemental_candidates",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.alchealth.com/",
+          "source_title": "Global Health and International Medical Insurance For Expatriates",
+          "quote_or_application_url": null,
+          "evidence_excerpt": "ALC Health's homepage advertises global health and international medical insurance for expatriates, local nationals, and international travellers worldwide, includes an Individuals & Families path, and notes that new business quotes and sales moved to IMG's updated international website."
+        }
+      ],
+      "source_traceability": [
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "supplemental_candidates",
+          "source_url": "https://www.alchealth.com/",
+          "source_title": "Global Health and International Medical Insurance For Expatriates",
+          "quote_or_application_url": null,
+          "source_kind": null,
+          "evidence_excerpt": "ALC Health's homepage advertises global health and international medical insurance for expatriates, local nationals, and international travellers worldwide, includes an Individuals & Families path, and notes that new business quotes and sales moved to IMG's updated international website."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "alc_health:source:1",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "supplemental_candidates",
+          "source_url": "https://www.alchealth.com/",
+          "source_title": "Global Health and International Medical Insurance For Expatriates",
+          "quote_or_application_url": null,
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "ALC Health's homepage advertises global health and international medical insurance for expatriates, local nationals, and international travellers worldwide, includes an Individuals & Families path, and notes that new business quotes and sales moved to IMG's updated international website.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "candidate_identification",
+            "official_plan_positioning",
+            "geography_relevance_evidence",
+            "pricing_or_quote_path_evidence"
+          ],
+          "source_directness_classification": "medium"
+        }
+      ],
+      "linked_artifacts": {
+        "shared_candidate_staging_ref": {
+          "dataset_path": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+          "section": "shared_candidate_staging",
+          "candidate_id": "alc_health"
+        },
+        "raw_candidate_capture_ref": {
+          "dataset_path": "data/insurance_discovery/raw_candidate_capture.discovery.json",
+          "section": "raw_candidate_capture",
+          "candidate_id": "alc_health",
+          "mention_ids": [
+            "alc_health:mention:1"
+          ]
+        },
+        "candidate_source_ledger_ref": {
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "section": "candidate_source_ledger",
+          "candidate_id": "alc_health"
+        }
+      }
+    },
+    {
+      "candidate_id": "allianz_care",
+      "normalized_insurer_name": "Allianz Care",
+      "normalized_plan_name": "Care International Health Insurance Plans",
+      "candidate_type": "primary",
+      "relevance_status": "likely_relevant",
+      "pricing_availability_status": "partially_visible",
+      "official_url": "https://www.allianzcare.com/en/personal-international-health-insurance.html",
+      "quote_or_application_url": "https://my.allianzcare.com/myquote/5",
+      "broker_url": null,
+      "policy_wording_or_pdf_url": null,
+      "primary_evidence_url": "https://www.allianzcare.com/en/personal-international-health-insurance.html",
+      "duplicate_resolution": {
+        "was_deduplicated_from_multiple_mentions": true,
+        "raw_mention_count": 2,
+        "raw_mention_ids": [
+          "allianz_care:mention:1",
+          "allianz_care:mention:2"
+        ],
+        "duplicate_resolution_basis": "candidate_id",
+        "duplicate_resolution_note": "Multiple raw mentions were retained as traceability rows because they describe the same normalized insurer/plan candidate in different upstream discovery datasets.",
+        "upstream_dataset_mentions": [
+          {
+            "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+            "dataset_section": "global_providers"
+          },
+          {
+            "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+            "dataset_section": "european_providers"
+          }
+        ]
+      },
+      "mention_traceability": [
+        {
+          "mention_id": "allianz_care:mention:1",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.allianzcare.com/en/personal-international-health-insurance.html",
+          "source_title": "International Health Insurance for Individuals | Allianz",
+          "quote_or_application_url": "https://my.allianzcare.com/myquote/5",
+          "evidence_excerpt": "Allianz states its Care international health insurance plans are designed for people who spend long periods overseas and offers dedicated paths for professionals, families, students, and nomads."
+        },
+        {
+          "mention_id": "allianz_care:mention:2",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.allianzcare.com/en/personal-international-health-insurance.html",
+          "source_title": "International Health Insurance for Individuals | Allianz",
+          "quote_or_application_url": "https://my.allianzcare.com/myquote/5",
+          "evidence_excerpt": "Allianz says its Care plans are designed for people who spend long periods overseas and are aimed at individuals, families, students, nomads, professionals, and expats living, working, or studying abroad."
+        }
+      ],
+      "source_traceability": [
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.allianzcare.com/en/personal-international-health-insurance.html",
+          "source_title": "International Health Insurance for Individuals | Allianz",
+          "quote_or_application_url": "https://my.allianzcare.com/myquote/5",
+          "source_kind": null,
+          "evidence_excerpt": "Allianz states its Care international health insurance plans are designed for people who spend long periods overseas and offers dedicated paths for professionals, families, students, and nomads."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.allianzcare.com/en/personal-international-health-insurance.html",
+          "source_title": "International Health Insurance for Individuals | Allianz",
+          "quote_or_application_url": "https://my.allianzcare.com/myquote/5",
+          "source_kind": null,
+          "evidence_excerpt": "Allianz says its Care plans are designed for people who spend long periods overseas and are aimed at individuals, families, students, nomads, professionals, and expats living, working, or studying abroad."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "allianz_care:source:1",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.allianzcare.com/en/personal-international-health-insurance.html",
+          "source_title": "International Health Insurance for Individuals | Allianz",
+          "quote_or_application_url": "https://my.allianzcare.com/myquote/5",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "Allianz states its Care international health insurance plans are designed for people who spend long periods overseas and offers dedicated paths for professionals, families, students, and nomads.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "candidate_identification",
+            "official_plan_positioning",
+            "quote_or_application_path_reference"
+          ],
+          "source_directness_classification": "medium"
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "allianz_care:source:2",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.allianzcare.com/en/personal-international-health-insurance.html",
+          "source_title": "International Health Insurance for Individuals | Allianz",
+          "quote_or_application_url": "https://my.allianzcare.com/myquote/5",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "Allianz says its Care plans are designed for people who spend long periods overseas and are aimed at individuals, families, students, nomads, professionals, and expats living, working, or studying abroad.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "candidate_identification",
+            "official_plan_positioning",
+            "quote_or_application_path_reference"
+          ],
+          "source_directness_classification": "medium"
+        },
+        {
+          "trace_origin": "derived_candidate_source_ledger_reference",
+          "source_id": "allianz_care:source:quote_path",
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "dataset_section": "candidate_source_ledger",
+          "record_bucket": "records",
+          "source_url": "https://my.allianzcare.com/myquote/5",
+          "source_title": "Allianz Care quote or application path",
+          "quote_or_application_url": "https://my.allianzcare.com/myquote/5",
+          "source_kind": "official quote page",
+          "evidence_excerpt": "Verified public quote or application path relevant to the candidate evidence entry.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "quote_or_application_path_reference",
+            "pricing_or_quote_path_evidence",
+            "access_path_evidence"
+          ],
+          "source_directness_classification": "high"
+        }
+      ],
+      "linked_artifacts": {
+        "shared_candidate_staging_ref": {
+          "dataset_path": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+          "section": "shared_candidate_staging",
+          "candidate_id": "allianz_care"
+        },
+        "raw_candidate_capture_ref": {
+          "dataset_path": "data/insurance_discovery/raw_candidate_capture.discovery.json",
+          "section": "raw_candidate_capture",
+          "candidate_id": "allianz_care",
+          "mention_ids": [
+            "allianz_care:mention:1",
+            "allianz_care:mention:2"
+          ]
+        },
+        "candidate_source_ledger_ref": {
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "section": "candidate_source_ledger",
+          "candidate_id": "allianz_care"
+        }
+      }
+    },
+    {
+      "candidate_id": "april_international",
+      "normalized_insurer_name": "APRIL International",
+      "normalized_plan_name": "Long-term Expat International Health Insurance",
+      "candidate_type": "primary",
+      "relevance_status": "likely_relevant",
+      "pricing_availability_status": "quote_flow_gated",
+      "official_url": "https://www.april-international.com/en/long-term-international-health-insurance",
+      "quote_or_application_url": "https://www.april-international.com/en",
+      "broker_url": null,
+      "policy_wording_or_pdf_url": null,
+      "primary_evidence_url": "https://www.april-international.com/en/long-term-international-health-insurance",
+      "duplicate_resolution": {
+        "was_deduplicated_from_multiple_mentions": true,
+        "raw_mention_count": 2,
+        "raw_mention_ids": [
+          "april_international:mention:1",
+          "april_international:mention:2"
+        ],
+        "duplicate_resolution_basis": "candidate_id",
+        "duplicate_resolution_note": "Multiple raw mentions were retained as traceability rows because they describe the same normalized insurer/plan candidate in different upstream discovery datasets.",
+        "upstream_dataset_mentions": [
+          {
+            "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+            "dataset_section": "global_providers"
+          },
+          {
+            "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+            "dataset_section": "european_providers"
+          }
+        ]
+      },
+      "mention_traceability": [
+        {
+          "mention_id": "april_international:mention:1",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.april-international.com/en/long-term-international-health-insurance",
+          "source_title": "Long-term expat international health insurance | APRIL International",
+          "quote_or_application_url": "https://www.april-international.com/en",
+          "evidence_excerpt": "APRIL positions this as long-term international health insurance for expatriates and globally mobile individuals staying abroad longer than 12 months, with worldwide cover depending on area of cover. The country selector excerpt includes Germany."
+        },
+        {
+          "mention_id": "april_international:mention:2",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.april-international.com/en/long-term-international-health-insurance",
+          "source_title": "Long-term expat international health insurance | APRIL International",
+          "quote_or_application_url": "https://www.april-international.com/en",
+          "evidence_excerpt": "APRIL positions the product for expatriates and globally mobile people staying abroad longer than 12 months, says policies are annually renewable, and states that worldwide cover depends on the selected geographic area."
+        }
+      ],
+      "source_traceability": [
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.april-international.com/en/long-term-international-health-insurance",
+          "source_title": "Long-term expat international health insurance | APRIL International",
+          "quote_or_application_url": "https://www.april-international.com/en",
+          "source_kind": null,
+          "evidence_excerpt": "APRIL positions this as long-term international health insurance for expatriates and globally mobile individuals staying abroad longer than 12 months, with worldwide cover depending on area of cover. The country selector excerpt includes Germany."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.april-international.com/en/long-term-international-health-insurance",
+          "source_title": "Long-term expat international health insurance | APRIL International",
+          "quote_or_application_url": "https://www.april-international.com/en",
+          "source_kind": null,
+          "evidence_excerpt": "APRIL positions the product for expatriates and globally mobile people staying abroad longer than 12 months, says policies are annually renewable, and states that worldwide cover depends on the selected geographic area."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "april_international:source:1",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.april-international.com/en/long-term-international-health-insurance",
+          "source_title": "Long-term expat international health insurance | APRIL International",
+          "quote_or_application_url": "https://www.april-international.com/en",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "APRIL positions this as long-term international health insurance for expatriates and globally mobile individuals staying abroad longer than 12 months, with worldwide cover depending on area of cover. The country selector excerpt includes Germany.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "candidate_identification",
+            "official_plan_positioning",
+            "quote_or_application_path_reference",
+            "geography_relevance_evidence"
+          ],
+          "source_directness_classification": "medium"
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "april_international:source:2",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.april-international.com/en/long-term-international-health-insurance",
+          "source_title": "Long-term expat international health insurance | APRIL International",
+          "quote_or_application_url": "https://www.april-international.com/en",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "APRIL positions the product for expatriates and globally mobile people staying abroad longer than 12 months, says policies are annually renewable, and states that worldwide cover depends on the selected geographic area.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "candidate_identification",
+            "official_plan_positioning",
+            "quote_or_application_path_reference",
+            "geography_relevance_evidence"
+          ],
+          "source_directness_classification": "medium"
+        },
+        {
+          "trace_origin": "derived_candidate_source_ledger_reference",
+          "source_id": "april_international:source:quote_path",
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "dataset_section": "candidate_source_ledger",
+          "record_bucket": "records",
+          "source_url": "https://www.april-international.com/en",
+          "source_title": "APRIL International quote or application path",
+          "quote_or_application_url": "https://www.april-international.com/en",
+          "source_kind": "official quote page",
+          "evidence_excerpt": "Verified public quote or application path relevant to the candidate evidence entry.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "quote_or_application_path_reference",
+            "pricing_or_quote_path_evidence",
+            "access_path_evidence"
+          ],
+          "source_directness_classification": "high"
+        }
+      ],
+      "linked_artifacts": {
+        "shared_candidate_staging_ref": {
+          "dataset_path": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+          "section": "shared_candidate_staging",
+          "candidate_id": "april_international"
+        },
+        "raw_candidate_capture_ref": {
+          "dataset_path": "data/insurance_discovery/raw_candidate_capture.discovery.json",
+          "section": "raw_candidate_capture",
+          "candidate_id": "april_international",
+          "mention_ids": [
+            "april_international:mention:1",
+            "april_international:mention:2"
+          ]
+        },
+        "candidate_source_ledger_ref": {
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "section": "candidate_source_ledger",
+          "candidate_id": "april_international"
+        }
+      }
+    },
+    {
+      "candidate_id": "axa_global_healthcare",
+      "normalized_insurer_name": "AXA Global Healthcare",
+      "normalized_plan_name": "International Health Insurance Plans",
+      "candidate_type": "primary",
+      "relevance_status": "likely_relevant",
+      "pricing_availability_status": "partially_visible",
+      "official_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/",
+      "quote_or_application_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/get-a-quote/?camp=online-default",
+      "broker_url": null,
+      "policy_wording_or_pdf_url": null,
+      "primary_evidence_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/",
+      "duplicate_resolution": {
+        "was_deduplicated_from_multiple_mentions": true,
+        "raw_mention_count": 2,
+        "raw_mention_ids": [
+          "axa_global_healthcare:mention:1",
+          "axa_global_healthcare:mention:2"
+        ],
+        "duplicate_resolution_basis": "candidate_id",
+        "duplicate_resolution_note": "Multiple raw mentions were retained as traceability rows because they describe the same normalized insurer/plan candidate in different upstream discovery datasets.",
+        "upstream_dataset_mentions": [
+          {
+            "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+            "dataset_section": "global_providers"
+          },
+          {
+            "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+            "dataset_section": "european_providers"
+          }
+        ]
+      },
+      "mention_traceability": [
+        {
+          "mention_id": "axa_global_healthcare:mention:1",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/",
+          "source_title": "International Health Insurance Plans: AXA Global Healthcare",
+          "quote_or_application_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/get-a-quote/?camp=online-default",
+          "evidence_excerpt": "AXA describes its product as international private health insurance for people living abroad or travelling overseas frequently, with treatment anywhere within the selected region of cover."
+        },
+        {
+          "mention_id": "axa_global_healthcare:mention:2",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/",
+          "source_title": "International Health Insurance Plans: AXA Global Healthcare",
+          "quote_or_application_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/get-a-quote/?camp=online-default",
+          "evidence_excerpt": "AXA describes international health insurance for people living abroad or travelling overseas frequently, with five cover levels and an explicit step allowing customers to choose whether to include the USA."
+        }
+      ],
+      "source_traceability": [
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/",
+          "source_title": "International Health Insurance Plans: AXA Global Healthcare",
+          "quote_or_application_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/get-a-quote/?camp=online-default",
+          "source_kind": null,
+          "evidence_excerpt": "AXA describes its product as international private health insurance for people living abroad or travelling overseas frequently, with treatment anywhere within the selected region of cover."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/",
+          "source_title": "International Health Insurance Plans: AXA Global Healthcare",
+          "quote_or_application_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/get-a-quote/?camp=online-default",
+          "source_kind": null,
+          "evidence_excerpt": "AXA describes international health insurance for people living abroad or travelling overseas frequently, with five cover levels and an explicit step allowing customers to choose whether to include the USA."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "axa_global_healthcare:source:1",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/",
+          "source_title": "International Health Insurance Plans: AXA Global Healthcare",
+          "quote_or_application_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/get-a-quote/?camp=online-default",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "AXA describes its product as international private health insurance for people living abroad or travelling overseas frequently, with treatment anywhere within the selected region of cover.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "candidate_identification",
+            "official_plan_positioning",
+            "quote_or_application_path_reference"
+          ],
+          "source_directness_classification": "medium"
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "axa_global_healthcare:source:2",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/",
+          "source_title": "International Health Insurance Plans: AXA Global Healthcare",
+          "quote_or_application_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/get-a-quote/?camp=online-default",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "AXA describes international health insurance for people living abroad or travelling overseas frequently, with five cover levels and an explicit step allowing customers to choose whether to include the USA.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "candidate_identification",
+            "official_plan_positioning",
+            "quote_or_application_path_reference"
+          ],
+          "source_directness_classification": "medium"
+        },
+        {
+          "trace_origin": "derived_candidate_source_ledger_reference",
+          "source_id": "axa_global_healthcare:source:quote_path",
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "dataset_section": "candidate_source_ledger",
+          "record_bucket": "records",
+          "source_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/get-a-quote/?camp=online-default",
+          "source_title": "AXA Global Healthcare quote or application path",
+          "quote_or_application_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/get-a-quote/?camp=online-default",
+          "source_kind": "official quote page",
+          "evidence_excerpt": "Verified public quote or application path relevant to the candidate evidence entry.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "quote_or_application_path_reference",
+            "pricing_or_quote_path_evidence",
+            "access_path_evidence"
+          ],
+          "source_directness_classification": "high"
+        }
+      ],
+      "linked_artifacts": {
+        "shared_candidate_staging_ref": {
+          "dataset_path": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+          "section": "shared_candidate_staging",
+          "candidate_id": "axa_global_healthcare"
+        },
+        "raw_candidate_capture_ref": {
+          "dataset_path": "data/insurance_discovery/raw_candidate_capture.discovery.json",
+          "section": "raw_candidate_capture",
+          "candidate_id": "axa_global_healthcare",
+          "mention_ids": [
+            "axa_global_healthcare:mention:1",
+            "axa_global_healthcare:mention:2"
+          ]
+        },
+        "candidate_source_ledger_ref": {
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "section": "candidate_source_ledger",
+          "candidate_id": "axa_global_healthcare"
+        }
+      }
+    },
+    {
+      "candidate_id": "bupa_global",
+      "normalized_insurer_name": "Bupa Global",
+      "normalized_plan_name": "Private Health Insurance & Medical Insurance for Individuals and Families",
+      "candidate_type": "primary",
+      "relevance_status": "likely_relevant",
+      "pricing_availability_status": "quote_flow_gated",
+      "official_url": "https://www.bupaglobal.com/en/private-health-insurance",
+      "quote_or_application_url": "https://www.bupaglobal.com/en/private-health-insurance",
+      "broker_url": null,
+      "policy_wording_or_pdf_url": null,
+      "primary_evidence_url": "https://www.bupaglobal.com/en/private-health-insurance",
+      "duplicate_resolution": {
+        "was_deduplicated_from_multiple_mentions": true,
+        "raw_mention_count": 2,
+        "raw_mention_ids": [
+          "bupa_global:mention:1",
+          "bupa_global:mention:2"
+        ],
+        "duplicate_resolution_basis": "candidate_id",
+        "duplicate_resolution_note": "Multiple raw mentions were retained as traceability rows because they describe the same normalized insurer/plan candidate in different upstream discovery datasets.",
+        "upstream_dataset_mentions": [
+          {
+            "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+            "dataset_section": "global_providers"
+          },
+          {
+            "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+            "dataset_section": "european_providers"
+          }
+        ]
+      },
+      "mention_traceability": [
+        {
+          "mention_id": "bupa_global:mention:1",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.bupaglobal.com/en/private-health-insurance",
+          "source_title": "Private Health Insurance & Medical Insurance | Bupa Global",
+          "quote_or_application_url": "https://www.bupaglobal.com/en/private-health-insurance",
+          "evidence_excerpt": "Bupa Global's official plan selector for individuals and families includes both Georgia and Germany in the residence-country dropdown, indicating public-facing availability exploration for those markets."
+        },
+        {
+          "mention_id": "bupa_global:mention:2",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.bupaglobal.com/en/private-health-insurance",
+          "source_title": "Private Health Insurance & Medical Insurance | Bupa Global",
+          "quote_or_application_url": "https://www.bupaglobal.com/en/private-health-insurance",
+          "evidence_excerpt": "Bupa Global's official individuals-and-families selector asks where the customer will be living and publicly lists both Georgia and Germany in the residence-country dropdown."
+        }
+      ],
+      "source_traceability": [
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.bupaglobal.com/en/private-health-insurance",
+          "source_title": "Private Health Insurance & Medical Insurance | Bupa Global",
+          "quote_or_application_url": "https://www.bupaglobal.com/en/private-health-insurance",
+          "source_kind": null,
+          "evidence_excerpt": "Bupa Global's official plan selector for individuals and families includes both Georgia and Germany in the residence-country dropdown, indicating public-facing availability exploration for those markets."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.bupaglobal.com/en/private-health-insurance",
+          "source_title": "Private Health Insurance & Medical Insurance | Bupa Global",
+          "quote_or_application_url": "https://www.bupaglobal.com/en/private-health-insurance",
+          "source_kind": null,
+          "evidence_excerpt": "Bupa Global's official individuals-and-families selector asks where the customer will be living and publicly lists both Georgia and Germany in the residence-country dropdown."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "bupa_global:source:1",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.bupaglobal.com/en/private-health-insurance",
+          "source_title": "Private Health Insurance & Medical Insurance | Bupa Global",
+          "quote_or_application_url": "https://www.bupaglobal.com/en/private-health-insurance",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "Bupa Global's official plan selector for individuals and families includes both Georgia and Germany in the residence-country dropdown, indicating public-facing availability exploration for those markets.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "candidate_identification",
+            "official_plan_positioning",
+            "quote_or_application_path_reference",
+            "geography_relevance_evidence",
+            "pricing_or_quote_path_evidence",
+            "access_path_evidence"
+          ],
+          "source_directness_classification": "medium"
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "bupa_global:source:2",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.bupaglobal.com/en/private-health-insurance",
+          "source_title": "Private Health Insurance & Medical Insurance | Bupa Global",
+          "quote_or_application_url": "https://www.bupaglobal.com/en/private-health-insurance",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "Bupa Global's official individuals-and-families selector asks where the customer will be living and publicly lists both Georgia and Germany in the residence-country dropdown.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "candidate_identification",
+            "official_plan_positioning",
+            "quote_or_application_path_reference",
+            "geography_relevance_evidence",
+            "pricing_or_quote_path_evidence",
+            "access_path_evidence"
+          ],
+          "source_directness_classification": "medium"
+        }
+      ],
+      "linked_artifacts": {
+        "shared_candidate_staging_ref": {
+          "dataset_path": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+          "section": "shared_candidate_staging",
+          "candidate_id": "bupa_global"
+        },
+        "raw_candidate_capture_ref": {
+          "dataset_path": "data/insurance_discovery/raw_candidate_capture.discovery.json",
+          "section": "raw_candidate_capture",
+          "candidate_id": "bupa_global",
+          "mention_ids": [
+            "bupa_global:mention:1",
+            "bupa_global:mention:2"
+          ]
+        },
+        "candidate_source_ledger_ref": {
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "section": "candidate_source_ledger",
+          "candidate_id": "bupa_global"
+        }
+      }
+    },
+    {
+      "candidate_id": "cigna_global",
+      "normalized_insurer_name": "Cigna Global",
+      "normalized_plan_name": "International Health Insurance / Global Medical Cover",
+      "candidate_type": "primary",
+      "relevance_status": "likely_relevant",
+      "pricing_availability_status": "quote_flow_gated",
+      "official_url": "https://www.cignaglobal.com/",
+      "quote_or_application_url": "https://www.cignaglobal.com/quote/pages/quote/CountrySelector.html",
+      "broker_url": null,
+      "policy_wording_or_pdf_url": null,
+      "primary_evidence_url": "https://www.cignaglobal.com/",
+      "duplicate_resolution": {
+        "was_deduplicated_from_multiple_mentions": false,
+        "raw_mention_count": 1,
+        "raw_mention_ids": [
+          "cigna_global:mention:1"
+        ],
+        "duplicate_resolution_basis": "candidate_id",
+        "duplicate_resolution_note": "Only one raw mention existed for this normalized candidate in the current discovery capture.",
+        "upstream_dataset_mentions": [
+          {
+            "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+            "dataset_section": "global_providers"
+          }
+        ]
+      },
+      "mention_traceability": [
+        {
+          "mention_id": "cigna_global:mention:1",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.cignaglobal.com/",
+          "source_title": "International Health Insurance & Global Medical Cover | Cigna",
+          "quote_or_application_url": "https://www.cignaglobal.com/quote/pages/quote/CountrySelector.html",
+          "evidence_excerpt": "Cigna says its international health insurance serves individuals and families, offers access to medical support in over 200 markets and territories, and provides flexible plans with global medical care essentials."
+        }
+      ],
+      "source_traceability": [
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.cignaglobal.com/",
+          "source_title": "International Health Insurance & Global Medical Cover | Cigna",
+          "quote_or_application_url": "https://www.cignaglobal.com/quote/pages/quote/CountrySelector.html",
+          "source_kind": null,
+          "evidence_excerpt": "Cigna says its international health insurance serves individuals and families, offers access to medical support in over 200 markets and territories, and provides flexible plans with global medical care essentials."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "cigna_global:source:1",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.cignaglobal.com/",
+          "source_title": "International Health Insurance & Global Medical Cover | Cigna",
+          "quote_or_application_url": "https://www.cignaglobal.com/quote/pages/quote/CountrySelector.html",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "Cigna says its international health insurance serves individuals and families, offers access to medical support in over 200 markets and territories, and provides flexible plans with global medical care essentials.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "candidate_identification",
+            "official_plan_positioning",
+            "quote_or_application_path_reference"
+          ],
+          "source_directness_classification": "medium"
+        },
+        {
+          "trace_origin": "derived_candidate_source_ledger_reference",
+          "source_id": "cigna_global:source:quote_path",
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "dataset_section": "candidate_source_ledger",
+          "record_bucket": "records",
+          "source_url": "https://www.cignaglobal.com/quote/pages/quote/CountrySelector.html",
+          "source_title": "Cigna Global quote or application path",
+          "quote_or_application_url": "https://www.cignaglobal.com/quote/pages/quote/CountrySelector.html",
+          "source_kind": "official quote page",
+          "evidence_excerpt": "Verified public quote or application path relevant to the candidate evidence entry.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "quote_or_application_path_reference",
+            "pricing_or_quote_path_evidence",
+            "access_path_evidence"
+          ],
+          "source_directness_classification": "high"
+        }
+      ],
+      "linked_artifacts": {
+        "shared_candidate_staging_ref": {
+          "dataset_path": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+          "section": "shared_candidate_staging",
+          "candidate_id": "cigna_global"
+        },
+        "raw_candidate_capture_ref": {
+          "dataset_path": "data/insurance_discovery/raw_candidate_capture.discovery.json",
+          "section": "raw_candidate_capture",
+          "candidate_id": "cigna_global",
+          "mention_ids": [
+            "cigna_global:mention:1"
+          ]
+        },
+        "candidate_source_ledger_ref": {
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "section": "candidate_source_ledger",
+          "candidate_id": "cigna_global"
+        }
+      }
+    },
+    {
+      "candidate_id": "expatriate_group_global_health",
+      "normalized_insurer_name": "Expatriate Group",
+      "normalized_plan_name": "International Health Insurance / Select / Primary+ / Primary+ Lite / Primary",
+      "candidate_type": "supplemental",
+      "relevance_status": "likely_relevant",
+      "pricing_availability_status": "partially_visible",
+      "official_url": "https://www.expatriatehealthcare.com/international-health-insurance/",
+      "quote_or_application_url": "https://quote.expatriatehealthcare.com/healthcare/",
+      "broker_url": null,
+      "policy_wording_or_pdf_url": "https://www.expatriatehealthcare.com/wp-content/uploads/2016/09/Expatriate-Group-Brochure-International-Insurance-Specialists.pdf",
+      "primary_evidence_url": "https://www.expatriatehealthcare.com/international-health-insurance/",
+      "duplicate_resolution": {
+        "was_deduplicated_from_multiple_mentions": false,
+        "raw_mention_count": 1,
+        "raw_mention_ids": [
+          "expatriate_group_global_health:mention:1"
+        ],
+        "duplicate_resolution_basis": "candidate_id",
+        "duplicate_resolution_note": "Only one raw mention existed for this normalized candidate in the current discovery capture.",
+        "upstream_dataset_mentions": [
+          {
+            "dataset_path": null,
+            "dataset_section": "supplemental_public_sources"
+          }
+        ]
+      },
+      "mention_traceability": [
+        {
+          "mention_id": "expatriate_group_global_health:mention:1",
+          "dataset_path": null,
+          "dataset_section": "supplemental_public_sources",
+          "record_bucket": "master_index_additions",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.expatriatehealthcare.com/international-health-insurance/",
+          "source_title": "International Health Insurance | Global Private Medical Cover",
+          "quote_or_application_url": "https://quote.expatriatehealthcare.com/healthcare/",
+          "evidence_excerpt": "Expatriate Group markets international private medical insurance for expat families and individuals, provides four plan levels, and publicly shows area-of-cover options including Europe/Middle East/Africa/Asia/Oceania, worldwide excluding the USA, and worldwide."
+        }
+      ],
+      "source_traceability": [
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": null,
+          "dataset_section": "supplemental_public_sources",
+          "record_bucket": "master_index_additions",
+          "source_url": "https://www.expatriatehealthcare.com/international-health-insurance/",
+          "source_title": "International Health Insurance | Global Private Medical Cover",
+          "quote_or_application_url": "https://quote.expatriatehealthcare.com/healthcare/",
+          "source_kind": null,
+          "evidence_excerpt": "Expatriate Group markets international private medical insurance for expat families and individuals, provides four plan levels, and publicly shows area-of-cover options including Europe/Middle East/Africa/Asia/Oceania, worldwide excluding the USA, and worldwide."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "expatriate_group_global_health:source:1",
+          "dataset_path": null,
+          "dataset_section": "supplemental_public_sources",
+          "record_bucket": "master_index_additions",
+          "source_url": "https://www.expatriatehealthcare.com/international-health-insurance/",
+          "source_title": "International Health Insurance | Global Private Medical Cover",
+          "quote_or_application_url": "https://quote.expatriatehealthcare.com/healthcare/",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "Expatriate Group markets international private medical insurance for expat families and individuals, provides four plan levels, and publicly shows area-of-cover options including Europe/Middle East/Africa/Asia/Oceania, worldwide excluding the USA, and worldwide.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "official_plan_positioning",
+            "quote_or_application_path_reference",
+            "geography_relevance_evidence"
+          ],
+          "source_directness_classification": "medium"
+        },
+        {
+          "trace_origin": "derived_candidate_source_ledger_reference",
+          "source_id": "expatriate_group_global_health:source:quote_path",
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "dataset_section": "candidate_source_ledger",
+          "record_bucket": "records",
+          "source_url": "https://quote.expatriatehealthcare.com/healthcare/",
+          "source_title": "Expatriate Group quote or application path",
+          "quote_or_application_url": "https://quote.expatriatehealthcare.com/healthcare/",
+          "source_kind": "official quote page",
+          "evidence_excerpt": "Verified public quote or application path relevant to the candidate evidence entry.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "quote_or_application_path_reference",
+            "pricing_or_quote_path_evidence",
+            "access_path_evidence"
+          ],
+          "source_directness_classification": "high"
+        },
+        {
+          "trace_origin": "derived_candidate_source_ledger_reference",
+          "source_id": "expatriate_group_global_health:source:plan_document",
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "dataset_section": "candidate_source_ledger",
+          "record_bucket": "records",
+          "source_url": "https://www.expatriatehealthcare.com/wp-content/uploads/2016/09/Expatriate-Group-Brochure-International-Insurance-Specialists.pdf",
+          "source_title": "Expatriate Group plan document or brochure",
+          "quote_or_application_url": null,
+          "source_kind": "policy wording or brochure PDF",
+          "evidence_excerpt": "Public plan document captured and applicable to this candidate evidence entry.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "plan_document_reference",
+            "benefit_detail_evidence",
+            "geography_relevance_evidence"
+          ],
+          "source_directness_classification": "high"
+        }
+      ],
+      "linked_artifacts": {
+        "shared_candidate_staging_ref": {
+          "dataset_path": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+          "section": "shared_candidate_staging",
+          "candidate_id": "expatriate_group_global_health"
+        },
+        "raw_candidate_capture_ref": {
+          "dataset_path": "data/insurance_discovery/raw_candidate_capture.discovery.json",
+          "section": "raw_candidate_capture",
+          "candidate_id": "expatriate_group_global_health",
+          "mention_ids": [
+            "expatriate_group_global_health:mention:1"
+          ]
+        },
+        "candidate_source_ledger_ref": {
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "section": "candidate_source_ledger",
+          "candidate_id": "expatriate_group_global_health"
+        }
+      }
+    },
+    {
+      "candidate_id": "foyer_global_health",
+      "normalized_insurer_name": "Foyer Global Health",
+      "normalized_plan_name": "Expat Health Insurance / International Health Insurance comparison",
+      "candidate_type": "primary",
+      "relevance_status": "likely_relevant",
+      "pricing_availability_status": "unavailable_during_discovery",
+      "official_url": "https://www.foyerglobalhealth.com/",
+      "quote_or_application_url": "https://www.foyerglobalhealth.com/plans-services/our-plans/international-health-insurance-comparison/",
+      "broker_url": null,
+      "policy_wording_or_pdf_url": "https://www.foyerglobalhealth.com/wp-content/uploads/2024/02/Brochure-commerciale-EN_V2-General.pdf",
+      "primary_evidence_url": "https://www.foyerglobalhealth.com/",
+      "duplicate_resolution": {
+        "was_deduplicated_from_multiple_mentions": true,
+        "raw_mention_count": 2,
+        "raw_mention_ids": [
+          "foyer_global_health:mention:1",
+          "foyer_global_health:mention:2"
+        ],
+        "duplicate_resolution_basis": "candidate_id",
+        "duplicate_resolution_note": "Multiple raw mentions were retained as traceability rows because they describe the same normalized insurer/plan candidate in different upstream discovery datasets.",
+        "upstream_dataset_mentions": [
+          {
+            "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+            "dataset_section": "global_providers"
+          },
+          {
+            "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+            "dataset_section": "european_providers"
+          }
+        ]
+      },
+      "mention_traceability": [
+        {
+          "mention_id": "foyer_global_health:mention:1",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_kind": "official insurer page via search result",
+          "source_url": "https://www.foyerglobalhealth.com/",
+          "source_title": "Foyer Global Health: Expat Health Insurance",
+          "quote_or_application_url": "https://www.foyerglobalhealth.com/plans-services/our-plans/international-health-insurance-comparison/",
+          "evidence_excerpt": "The official search result describes Foyer Global Health as an international health insurance and service provider for digital nomads, expats, and globally mobile people; a public plan comparison page is also available."
+        },
+        {
+          "mention_id": "foyer_global_health:mention:2",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.foyerglobalhealth.com/",
+          "source_title": "Expat Health Insurance | Foyer Global Health",
+          "quote_or_application_url": "https://www.foyerglobalhealth.com/quick-quote-and-online-application/",
+          "evidence_excerpt": "Foyer Global Health says it provides international health insurance for expats, digital nomads, globally mobile people, and families moving abroad, and describes its health coverage as worldwide and flexible."
+        }
+      ],
+      "source_traceability": [
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.foyerglobalhealth.com/",
+          "source_title": "Foyer Global Health: Expat Health Insurance",
+          "quote_or_application_url": "https://www.foyerglobalhealth.com/plans-services/our-plans/international-health-insurance-comparison/",
+          "source_kind": null,
+          "evidence_excerpt": "The official search result describes Foyer Global Health as an international health insurance and service provider for digital nomads, expats, and globally mobile people; a public plan comparison page is also available."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.foyerglobalhealth.com/",
+          "source_title": "Expat Health Insurance | Foyer Global Health",
+          "quote_or_application_url": "https://www.foyerglobalhealth.com/quick-quote-and-online-application/",
+          "source_kind": null,
+          "evidence_excerpt": "Foyer Global Health says it provides international health insurance for expats, digital nomads, globally mobile people, and families moving abroad, and describes its health coverage as worldwide and flexible."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "foyer_global_health:source:1",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.foyerglobalhealth.com/",
+          "source_title": "Foyer Global Health: Expat Health Insurance",
+          "quote_or_application_url": "https://www.foyerglobalhealth.com/plans-services/our-plans/international-health-insurance-comparison/",
+          "source_kind": "official insurer page via search result",
+          "evidence_excerpt": "The official search result describes Foyer Global Health as an international health insurance and service provider for digital nomads, expats, and globally mobile people; a public plan comparison page is also available.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "candidate_identification",
+            "official_plan_positioning",
+            "quote_or_application_path_reference"
+          ],
+          "source_directness_classification": "medium"
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "foyer_global_health:source:2",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.foyerglobalhealth.com/",
+          "source_title": "Expat Health Insurance | Foyer Global Health",
+          "quote_or_application_url": "https://www.foyerglobalhealth.com/quick-quote-and-online-application/",
+          "source_kind": "official insurer page via search result",
+          "evidence_excerpt": "Foyer Global Health says it provides international health insurance for expats, digital nomads, globally mobile people, and families moving abroad, and describes its health coverage as worldwide and flexible.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "candidate_identification",
+            "official_plan_positioning",
+            "geography_relevance_evidence"
+          ],
+          "source_directness_classification": "medium"
+        },
+        {
+          "trace_origin": "derived_candidate_source_ledger_reference",
+          "source_id": "foyer_global_health:source:quote_path",
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "dataset_section": "candidate_source_ledger",
+          "record_bucket": "records",
+          "source_url": "https://www.foyerglobalhealth.com/plans-services/our-plans/international-health-insurance-comparison/",
+          "source_title": "Foyer Global Health quote or application path",
+          "quote_or_application_url": "https://www.foyerglobalhealth.com/plans-services/our-plans/international-health-insurance-comparison/",
+          "source_kind": "official quote page",
+          "evidence_excerpt": "Verified public quote or application path relevant to the candidate evidence entry.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "quote_or_application_path_reference",
+            "pricing_or_quote_path_evidence",
+            "access_path_evidence"
+          ],
+          "source_directness_classification": "high"
+        },
+        {
+          "trace_origin": "derived_candidate_source_ledger_reference",
+          "source_id": "foyer_global_health:source:plan_document",
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "dataset_section": "candidate_source_ledger",
+          "record_bucket": "records",
+          "source_url": "https://www.foyerglobalhealth.com/wp-content/uploads/2024/02/Brochure-commerciale-EN_V2-General.pdf",
+          "source_title": "Foyer Global Health plan document or brochure",
+          "quote_or_application_url": null,
+          "source_kind": "policy wording or brochure PDF",
+          "evidence_excerpt": "Public plan document captured and applicable to this candidate evidence entry.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "plan_document_reference",
+            "benefit_detail_evidence",
+            "geography_relevance_evidence"
+          ],
+          "source_directness_classification": "high"
+        }
+      ],
+      "linked_artifacts": {
+        "shared_candidate_staging_ref": {
+          "dataset_path": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+          "section": "shared_candidate_staging",
+          "candidate_id": "foyer_global_health"
+        },
+        "raw_candidate_capture_ref": {
+          "dataset_path": "data/insurance_discovery/raw_candidate_capture.discovery.json",
+          "section": "raw_candidate_capture",
+          "candidate_id": "foyer_global_health",
+          "mention_ids": [
+            "foyer_global_health:mention:1",
+            "foyer_global_health:mention:2"
+          ]
+        },
+        "candidate_source_ledger_ref": {
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "section": "candidate_source_ledger",
+          "candidate_id": "foyer_global_health"
+        }
+      }
+    },
+    {
+      "candidate_id": "genki_native",
+      "normalized_insurer_name": "Genki",
+      "normalized_plan_name": "Native / international health insurance",
+      "candidate_type": "supplemental",
+      "relevance_status": "possibly_relevant",
+      "pricing_availability_status": "quote_flow_gated",
+      "official_url": "https://genki.world/",
+      "quote_or_application_url": "https://consultation.genki.world/v2",
+      "broker_url": null,
+      "policy_wording_or_pdf_url": null,
+      "primary_evidence_url": "https://genki.world/",
+      "duplicate_resolution": {
+        "was_deduplicated_from_multiple_mentions": false,
+        "raw_mention_count": 1,
+        "raw_mention_ids": [
+          "genki_native:mention:1"
+        ],
+        "duplicate_resolution_basis": "candidate_id",
+        "duplicate_resolution_note": "Only one raw mention existed for this normalized candidate in the current discovery capture.",
+        "upstream_dataset_mentions": [
+          {
+            "dataset_path": null,
+            "dataset_section": "supplemental_public_sources"
+          }
+        ]
+      },
+      "mention_traceability": [
+        {
+          "mention_id": "genki_native:mention:1",
+          "dataset_path": null,
+          "dataset_section": "supplemental_public_sources",
+          "record_bucket": "master_index_additions",
+          "source_kind": "official insurer page",
+          "source_url": "https://genki.world/",
+          "source_title": "Genki • Health Insurance for Digital Nomads",
+          "quote_or_application_url": "https://consultation.genki.world/v2",
+          "evidence_excerpt": "Genki says it offers two health-insurance options for digital nomads, including an international health insurance option, covers treatment at every licensed healthcare provider worldwide, and lets users get an instant price online."
+        }
+      ],
+      "source_traceability": [
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": null,
+          "dataset_section": "supplemental_public_sources",
+          "record_bucket": "master_index_additions",
+          "source_url": "https://genki.world/",
+          "source_title": "Genki • Health Insurance for Digital Nomads",
+          "quote_or_application_url": "https://consultation.genki.world/v2",
+          "source_kind": null,
+          "evidence_excerpt": "Genki says it offers two health-insurance options for digital nomads, including an international health insurance option, covers treatment at every licensed healthcare provider worldwide, and lets users get an instant price online."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "genki_native:source:1",
+          "dataset_path": null,
+          "dataset_section": "supplemental_public_sources",
+          "record_bucket": "master_index_additions",
+          "source_url": "https://genki.world/",
+          "source_title": "Genki • Health Insurance for Digital Nomads",
+          "quote_or_application_url": "https://consultation.genki.world/v2",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "Genki says it offers two health-insurance options for digital nomads, including an international health insurance option, covers treatment at every licensed healthcare provider worldwide, and lets users get an instant price online.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "official_plan_positioning",
+            "quote_or_application_path_reference",
+            "geography_relevance_evidence",
+            "pricing_or_quote_path_evidence"
+          ],
+          "source_directness_classification": "medium"
+        },
+        {
+          "trace_origin": "derived_candidate_source_ledger_reference",
+          "source_id": "genki_native:source:quote_path",
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "dataset_section": "candidate_source_ledger",
+          "record_bucket": "records",
+          "source_url": "https://consultation.genki.world/v2",
+          "source_title": "Genki quote or application path",
+          "quote_or_application_url": "https://consultation.genki.world/v2",
+          "source_kind": "official quote page",
+          "evidence_excerpt": "Verified public quote or application path relevant to the candidate evidence entry.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "quote_or_application_path_reference",
+            "pricing_or_quote_path_evidence",
+            "access_path_evidence"
+          ],
+          "source_directness_classification": "high"
+        }
+      ],
+      "linked_artifacts": {
+        "shared_candidate_staging_ref": {
+          "dataset_path": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+          "section": "shared_candidate_staging",
+          "candidate_id": "genki_native"
+        },
+        "raw_candidate_capture_ref": {
+          "dataset_path": "data/insurance_discovery/raw_candidate_capture.discovery.json",
+          "section": "raw_candidate_capture",
+          "candidate_id": "genki_native",
+          "mention_ids": [
+            "genki_native:mention:1"
+          ]
+        },
+        "candidate_source_ledger_ref": {
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "section": "candidate_source_ledger",
+          "candidate_id": "genki_native"
+        }
+      }
+    },
+    {
+      "candidate_id": "geoblue_xplorer_bcbs_global_solutions",
+      "normalized_insurer_name": "Blue Cross Blue Shield Global Solutions (formerly GeoBlue Xplorer)",
+      "normalized_plan_name": "Worldwide Premier / Outside U.S. / Outside U.S. Select",
+      "candidate_type": "supplemental",
+      "relevance_status": "excluded",
+      "pricing_availability_status": "partially_visible",
+      "official_url": "https://bcbsglobalsolutions.com/individuals-and-families/international-medical-insurance/living-abroad/worldwide-and-outside-us/",
+      "quote_or_application_url": null,
+      "broker_url": "https://www.internationalinsurance.com/geoblue/xplorer/",
+      "policy_wording_or_pdf_url": "https://c8s387h5.media.zestyio.com/4ELI-Medical-Coverage-for-Living-Abroad-Worldwide-Premier.HJBCYKZQhel.pdf?download=true",
+      "primary_evidence_url": "https://www.internationalinsurance.com/geoblue/xplorer/",
+      "duplicate_resolution": {
+        "was_deduplicated_from_multiple_mentions": false,
+        "raw_mention_count": 1,
+        "raw_mention_ids": [
+          "geoblue_xplorer_bcbs_global_solutions:mention:1"
+        ],
+        "duplicate_resolution_basis": "candidate_id",
+        "duplicate_resolution_note": "Only one raw mention existed for this normalized candidate in the current discovery capture.",
+        "upstream_dataset_mentions": [
+          {
+            "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+            "dataset_section": "european_providers"
+          }
+        ]
+      },
+      "mention_traceability": [
+        {
+          "mention_id": "geoblue_xplorer_bcbs_global_solutions:mention:1",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "supplemental_candidates",
+          "source_kind": "broker plan page",
+          "source_url": "https://www.internationalinsurance.com/geoblue/xplorer/",
+          "source_title": "GeoBlue Health Insurance Plan - GeoBlue Xplorer",
+          "quote_or_application_url": null,
+          "evidence_excerpt": "The broker page says the rebranded BCBS Global Solutions plans serve expatriates, global citizens, and families residing overseas, and that the Outside U.S. plan does not include U.S. coverage."
+        }
+      ],
+      "source_traceability": [
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "supplemental_candidates",
+          "source_url": "https://www.internationalinsurance.com/geoblue/xplorer/",
+          "source_title": "GeoBlue Health Insurance Plan - GeoBlue Xplorer",
+          "quote_or_application_url": null,
+          "source_kind": null,
+          "evidence_excerpt": "The broker page says the rebranded BCBS Global Solutions plans serve expatriates, global citizens, and families residing overseas, and that the Outside U.S. plan does not include U.S. coverage."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "geoblue_xplorer_bcbs_global_solutions:source:1",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "supplemental_candidates",
+          "source_url": "https://www.internationalinsurance.com/geoblue/xplorer/",
+          "source_title": "GeoBlue Health Insurance Plan - GeoBlue Xplorer",
+          "quote_or_application_url": null,
+          "source_kind": "broker page",
+          "evidence_excerpt": "The broker page says the rebranded BCBS Global Solutions plans serve expatriates, global citizens, and families residing overseas, and that the Outside U.S. plan does not include U.S. coverage.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "candidate_identification",
+            "official_plan_positioning",
+            "broker_substitute_evidence",
+            "geography_relevance_evidence",
+            "access_path_evidence"
+          ],
+          "source_directness_classification": "low"
+        },
+        {
+          "trace_origin": "derived_candidate_source_ledger_reference",
+          "source_id": "geoblue_xplorer_bcbs_global_solutions:source:plan_document",
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "dataset_section": "candidate_source_ledger",
+          "record_bucket": "records",
+          "source_url": "https://c8s387h5.media.zestyio.com/4ELI-Medical-Coverage-for-Living-Abroad-Worldwide-Premier.HJBCYKZQhel.pdf?download=true",
+          "source_title": "Blue Cross Blue Shield Global Solutions (formerly GeoBlue Xplorer) plan document or brochure",
+          "quote_or_application_url": null,
+          "source_kind": "policy wording or brochure PDF",
+          "evidence_excerpt": "Public plan document captured and applicable to this candidate evidence entry.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "plan_document_reference",
+            "benefit_detail_evidence",
+            "geography_relevance_evidence"
+          ],
+          "source_directness_classification": "high"
+        }
+      ],
+      "linked_artifacts": {
+        "shared_candidate_staging_ref": {
+          "dataset_path": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+          "section": "shared_candidate_staging",
+          "candidate_id": "geoblue_xplorer_bcbs_global_solutions"
+        },
+        "raw_candidate_capture_ref": {
+          "dataset_path": "data/insurance_discovery/raw_candidate_capture.discovery.json",
+          "section": "raw_candidate_capture",
+          "candidate_id": "geoblue_xplorer_bcbs_global_solutions",
+          "mention_ids": [
+            "geoblue_xplorer_bcbs_global_solutions:mention:1"
+          ]
+        },
+        "candidate_source_ledger_ref": {
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "section": "candidate_source_ledger",
+          "candidate_id": "geoblue_xplorer_bcbs_global_solutions"
+        }
+      }
+    },
+    {
+      "candidate_id": "globality_health",
+      "normalized_insurer_name": "Globality Health",
+      "normalized_plan_name": "YouGenio individual international health insurance plans",
+      "candidate_type": "primary",
+      "relevance_status": "possibly_relevant",
+      "pricing_availability_status": "quote_flow_gated",
+      "official_url": "https://www.globality-health.com/",
+      "quote_or_application_url": "https://application.globality-health.com/?locale=en",
+      "broker_url": null,
+      "policy_wording_or_pdf_url": null,
+      "primary_evidence_url": "https://www.globality-health.com/",
+      "duplicate_resolution": {
+        "was_deduplicated_from_multiple_mentions": false,
+        "raw_mention_count": 1,
+        "raw_mention_ids": [
+          "globality_health:mention:1"
+        ],
+        "duplicate_resolution_basis": "candidate_id",
+        "duplicate_resolution_note": "Only one raw mention existed for this normalized candidate in the current discovery capture.",
+        "upstream_dataset_mentions": [
+          {
+            "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+            "dataset_section": "european_providers"
+          }
+        ]
+      },
+      "mention_traceability": [
+        {
+          "mention_id": "globality_health:mention:1",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.globality-health.com/",
+          "source_title": "International Health Insurance for Expats - Globality Health",
+          "quote_or_application_url": "https://application.globality-health.com/?locale=en",
+          "evidence_excerpt": "Globality Health describes itself as an international health insurer for expatriates and says its YouGenio individual plans offer comprehensive coverage with various plan levels tailored to personal needs."
+        }
+      ],
+      "source_traceability": [
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.globality-health.com/",
+          "source_title": "International Health Insurance for Expats - Globality Health",
+          "quote_or_application_url": "https://application.globality-health.com/?locale=en",
+          "source_kind": null,
+          "evidence_excerpt": "Globality Health describes itself as an international health insurer for expatriates and says its YouGenio individual plans offer comprehensive coverage with various plan levels tailored to personal needs."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "globality_health:source:1",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.globality-health.com/",
+          "source_title": "International Health Insurance for Expats - Globality Health",
+          "quote_or_application_url": "https://application.globality-health.com/?locale=en",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "Globality Health describes itself as an international health insurer for expatriates and says its YouGenio individual plans offer comprehensive coverage with various plan levels tailored to personal needs.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "candidate_identification",
+            "official_plan_positioning",
+            "quote_or_application_path_reference"
+          ],
+          "source_directness_classification": "medium"
+        },
+        {
+          "trace_origin": "derived_candidate_source_ledger_reference",
+          "source_id": "globality_health:source:quote_path",
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "dataset_section": "candidate_source_ledger",
+          "record_bucket": "records",
+          "source_url": "https://application.globality-health.com/?locale=en",
+          "source_title": "Globality Health quote or application path",
+          "quote_or_application_url": "https://application.globality-health.com/?locale=en",
+          "source_kind": "official quote page",
+          "evidence_excerpt": "Verified public quote or application path relevant to the candidate evidence entry.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "quote_or_application_path_reference",
+            "pricing_or_quote_path_evidence",
+            "access_path_evidence"
+          ],
+          "source_directness_classification": "high"
+        }
+      ],
+      "linked_artifacts": {
+        "shared_candidate_staging_ref": {
+          "dataset_path": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+          "section": "shared_candidate_staging",
+          "candidate_id": "globality_health"
+        },
+        "raw_candidate_capture_ref": {
+          "dataset_path": "data/insurance_discovery/raw_candidate_capture.discovery.json",
+          "section": "raw_candidate_capture",
+          "candidate_id": "globality_health",
+          "mention_ids": [
+            "globality_health:mention:1"
+          ]
+        },
+        "candidate_source_ledger_ref": {
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "section": "candidate_source_ledger",
+          "candidate_id": "globality_health"
+        }
+      }
+    },
+    {
+      "candidate_id": "hci_group_health_protect",
+      "normalized_insurer_name": "HCI Group",
+      "normalized_plan_name": "Health Protect / Protector Plans / Nimbl Health",
+      "candidate_type": "supplemental",
+      "relevance_status": "possibly_relevant",
+      "pricing_availability_status": "quote_flow_gated",
+      "official_url": "https://hcigroupglobal.com/health-protect/",
+      "quote_or_application_url": "https://hcigroup.outgrow.us/P21-2026",
+      "broker_url": null,
+      "policy_wording_or_pdf_url": "https://hcigroupglobal.com/wp-content/uploads/2024/06/Inpatient.pdf",
+      "primary_evidence_url": "https://hcigroupglobal.com/health-protect/",
+      "duplicate_resolution": {
+        "was_deduplicated_from_multiple_mentions": false,
+        "raw_mention_count": 1,
+        "raw_mention_ids": [
+          "hci_group_health_protect:mention:1"
+        ],
+        "duplicate_resolution_basis": "candidate_id",
+        "duplicate_resolution_note": "Only one raw mention existed for this normalized candidate in the current discovery capture.",
+        "upstream_dataset_mentions": [
+          {
+            "dataset_path": null,
+            "dataset_section": "supplemental_public_sources"
+          }
+        ]
+      },
+      "mention_traceability": [
+        {
+          "mention_id": "hci_group_health_protect:mention:1",
+          "dataset_path": null,
+          "dataset_section": "supplemental_public_sources",
+          "record_bucket": "master_index_additions",
+          "source_kind": "official insurer page",
+          "source_url": "https://hcigroupglobal.com/health-protect/",
+          "source_title": "International Healthcare | Healthcare International | HCI Global",
+          "quote_or_application_url": "https://hcigroup.outgrow.us/P21-2026",
+          "evidence_excerpt": "HCI Group says its Health Protect policies offer international private medical insurance for expatriates, digital nomads, international students, and others living abroad, with five Protector Plan levels from $500,000 to $2,500,000 and optional maternity/newborn benefits."
+        }
+      ],
+      "source_traceability": [
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": null,
+          "dataset_section": "supplemental_public_sources",
+          "record_bucket": "master_index_additions",
+          "source_url": "https://hcigroupglobal.com/health-protect/",
+          "source_title": "International Healthcare | Healthcare International | HCI Global",
+          "quote_or_application_url": "https://hcigroup.outgrow.us/P21-2026",
+          "source_kind": null,
+          "evidence_excerpt": "HCI Group says its Health Protect policies offer international private medical insurance for expatriates, digital nomads, international students, and others living abroad, with five Protector Plan levels from $500,000 to $2,500,000 and optional maternity/newborn benefits."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "hci_group_health_protect:source:1",
+          "dataset_path": null,
+          "dataset_section": "supplemental_public_sources",
+          "record_bucket": "master_index_additions",
+          "source_url": "https://hcigroupglobal.com/health-protect/",
+          "source_title": "International Healthcare | Healthcare International | HCI Global",
+          "quote_or_application_url": "https://hcigroup.outgrow.us/P21-2026",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "HCI Group says its Health Protect policies offer international private medical insurance for expatriates, digital nomads, international students, and others living abroad, with five Protector Plan levels from $500,000 to $2,500,000 and optional maternity/newborn benefits.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "official_plan_positioning",
+            "quote_or_application_path_reference"
+          ],
+          "source_directness_classification": "medium"
+        },
+        {
+          "trace_origin": "derived_candidate_source_ledger_reference",
+          "source_id": "hci_group_health_protect:source:quote_path",
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "dataset_section": "candidate_source_ledger",
+          "record_bucket": "records",
+          "source_url": "https://hcigroup.outgrow.us/P21-2026",
+          "source_title": "HCI Group quote or application path",
+          "quote_or_application_url": "https://hcigroup.outgrow.us/P21-2026",
+          "source_kind": "official quote page",
+          "evidence_excerpt": "Verified public quote or application path relevant to the candidate evidence entry.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "quote_or_application_path_reference",
+            "pricing_or_quote_path_evidence",
+            "access_path_evidence"
+          ],
+          "source_directness_classification": "high"
+        },
+        {
+          "trace_origin": "derived_candidate_source_ledger_reference",
+          "source_id": "hci_group_health_protect:source:plan_document",
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "dataset_section": "candidate_source_ledger",
+          "record_bucket": "records",
+          "source_url": "https://hcigroupglobal.com/wp-content/uploads/2024/06/Inpatient.pdf",
+          "source_title": "HCI Group plan document or brochure",
+          "quote_or_application_url": null,
+          "source_kind": "policy wording or brochure PDF",
+          "evidence_excerpt": "Public plan document captured and applicable to this candidate evidence entry.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "plan_document_reference",
+            "benefit_detail_evidence",
+            "geography_relevance_evidence"
+          ],
+          "source_directness_classification": "high"
+        }
+      ],
+      "linked_artifacts": {
+        "shared_candidate_staging_ref": {
+          "dataset_path": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+          "section": "shared_candidate_staging",
+          "candidate_id": "hci_group_health_protect"
+        },
+        "raw_candidate_capture_ref": {
+          "dataset_path": "data/insurance_discovery/raw_candidate_capture.discovery.json",
+          "section": "raw_candidate_capture",
+          "candidate_id": "hci_group_health_protect",
+          "mention_ids": [
+            "hci_group_health_protect:mention:1"
+          ]
+        },
+        "candidate_source_ledger_ref": {
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "section": "candidate_source_ledger",
+          "candidate_id": "hci_group_health_protect"
+        }
+      }
+    },
+    {
+      "candidate_id": "henner",
+      "normalized_insurer_name": "Henner",
+      "normalized_plan_name": "Individuals & Families international health solutions",
+      "candidate_type": "primary",
+      "relevance_status": "possibly_relevant",
+      "pricing_availability_status": "unavailable_during_discovery",
+      "official_url": "https://www.henner.com/en/customers/individuals-families/",
+      "quote_or_application_url": "https://www.henner.com/en/customers/individuals-families/",
+      "broker_url": null,
+      "policy_wording_or_pdf_url": null,
+      "primary_evidence_url": "https://www.henner.com/en/customers/individuals-families/",
+      "duplicate_resolution": {
+        "was_deduplicated_from_multiple_mentions": false,
+        "raw_mention_count": 1,
+        "raw_mention_ids": [
+          "henner:mention:1"
+        ],
+        "duplicate_resolution_basis": "candidate_id",
+        "duplicate_resolution_note": "Only one raw mention existed for this normalized candidate in the current discovery capture.",
+        "upstream_dataset_mentions": [
+          {
+            "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+            "dataset_section": "european_providers"
+          }
+        ]
+      },
+      "mention_traceability": [
+        {
+          "mention_id": "henner:mention:1",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.henner.com/en/customers/individuals-families/",
+          "source_title": "Individuals & Families - Henner",
+          "quote_or_application_url": "https://www.henner.com/en/customers/individuals-families/",
+          "evidence_excerpt": "Henner says it has developed unique expertise in personal insurance for people living abroad, offers international health insurance tailored to all lifestyles, and works with healthcare professionals in 240 countries."
+        }
+      ],
+      "source_traceability": [
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.henner.com/en/customers/individuals-families/",
+          "source_title": "Individuals & Families - Henner",
+          "quote_or_application_url": "https://www.henner.com/en/customers/individuals-families/",
+          "source_kind": null,
+          "evidence_excerpt": "Henner says it has developed unique expertise in personal insurance for people living abroad, offers international health insurance tailored to all lifestyles, and works with healthcare professionals in 240 countries."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "henner:source:1",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.henner.com/en/customers/individuals-families/",
+          "source_title": "Individuals & Families - Henner",
+          "quote_or_application_url": "https://www.henner.com/en/customers/individuals-families/",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "Henner says it has developed unique expertise in personal insurance for people living abroad, offers international health insurance tailored to all lifestyles, and works with healthcare professionals in 240 countries.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "candidate_identification",
+            "official_plan_positioning",
+            "quote_or_application_path_reference",
+            "pricing_or_quote_path_evidence",
+            "access_path_evidence"
+          ],
+          "source_directness_classification": "medium"
+        }
+      ],
+      "linked_artifacts": {
+        "shared_candidate_staging_ref": {
+          "dataset_path": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+          "section": "shared_candidate_staging",
+          "candidate_id": "henner"
+        },
+        "raw_candidate_capture_ref": {
+          "dataset_path": "data/insurance_discovery/raw_candidate_capture.discovery.json",
+          "section": "raw_candidate_capture",
+          "candidate_id": "henner",
+          "mention_ids": [
+            "henner:mention:1"
+          ]
+        },
+        "candidate_source_ledger_ref": {
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "section": "candidate_source_ledger",
+          "candidate_id": "henner"
+        }
+      }
+    },
+    {
+      "candidate_id": "img_global",
+      "normalized_insurer_name": "IMG (International Medical Group)",
+      "normalized_plan_name": "Global Medical international health insurance",
+      "candidate_type": "primary",
+      "relevance_status": "possibly_relevant",
+      "pricing_availability_status": "partially_visible",
+      "official_url": "https://www.imglobal.com/",
+      "quote_or_application_url": "https://www.imglobal.com/international-health-insurance",
+      "broker_url": null,
+      "policy_wording_or_pdf_url": "https://www.imglobal.com/docs/library/forms-library/gmi-brochure.pdf",
+      "primary_evidence_url": "https://www.imglobal.com/",
+      "duplicate_resolution": {
+        "was_deduplicated_from_multiple_mentions": false,
+        "raw_mention_count": 1,
+        "raw_mention_ids": [
+          "img_global:mention:1"
+        ],
+        "duplicate_resolution_basis": "candidate_id",
+        "duplicate_resolution_note": "Only one raw mention existed for this normalized candidate in the current discovery capture.",
+        "upstream_dataset_mentions": [
+          {
+            "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+            "dataset_section": "global_providers"
+          }
+        ]
+      },
+      "mention_traceability": [
+        {
+          "mention_id": "img_global:mention:1",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.imglobal.com/",
+          "source_title": "International Health & Travel Medical Insurance - IMG",
+          "quote_or_application_url": "https://www.imglobal.com/international-health-insurance",
+          "evidence_excerpt": "IMG states that its international health insurance offers annually renewable private medical coverage for expats and global citizens living or working internationally, with Global Medical Silver, Gold, and Platinum plans."
+        }
+      ],
+      "source_traceability": [
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.imglobal.com/",
+          "source_title": "International Health & Travel Medical Insurance - IMG",
+          "quote_or_application_url": "https://www.imglobal.com/international-health-insurance",
+          "source_kind": null,
+          "evidence_excerpt": "IMG states that its international health insurance offers annually renewable private medical coverage for expats and global citizens living or working internationally, with Global Medical Silver, Gold, and Platinum plans."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "img_global:source:1",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.imglobal.com/",
+          "source_title": "International Health & Travel Medical Insurance - IMG",
+          "quote_or_application_url": "https://www.imglobal.com/international-health-insurance",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "IMG states that its international health insurance offers annually renewable private medical coverage for expats and global citizens living or working internationally, with Global Medical Silver, Gold, and Platinum plans.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "candidate_identification",
+            "official_plan_positioning",
+            "quote_or_application_path_reference"
+          ],
+          "source_directness_classification": "medium"
+        },
+        {
+          "trace_origin": "derived_candidate_source_ledger_reference",
+          "source_id": "img_global:source:quote_path",
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "dataset_section": "candidate_source_ledger",
+          "record_bucket": "records",
+          "source_url": "https://www.imglobal.com/international-health-insurance",
+          "source_title": "IMG (International Medical Group) quote or application path",
+          "quote_or_application_url": "https://www.imglobal.com/international-health-insurance",
+          "source_kind": "official quote page",
+          "evidence_excerpt": "Verified public quote or application path relevant to the candidate evidence entry.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "quote_or_application_path_reference",
+            "pricing_or_quote_path_evidence",
+            "access_path_evidence"
+          ],
+          "source_directness_classification": "high"
+        },
+        {
+          "trace_origin": "derived_candidate_source_ledger_reference",
+          "source_id": "img_global:source:plan_document",
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "dataset_section": "candidate_source_ledger",
+          "record_bucket": "records",
+          "source_url": "https://www.imglobal.com/docs/library/forms-library/gmi-brochure.pdf",
+          "source_title": "IMG (International Medical Group) plan document or brochure",
+          "quote_or_application_url": null,
+          "source_kind": "policy wording or brochure PDF",
+          "evidence_excerpt": "Public plan document captured and applicable to this candidate evidence entry.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "plan_document_reference",
+            "benefit_detail_evidence",
+            "geography_relevance_evidence"
+          ],
+          "source_directness_classification": "high"
+        }
+      ],
+      "linked_artifacts": {
+        "shared_candidate_staging_ref": {
+          "dataset_path": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+          "section": "shared_candidate_staging",
+          "candidate_id": "img_global"
+        },
+        "raw_candidate_capture_ref": {
+          "dataset_path": "data/insurance_discovery/raw_candidate_capture.discovery.json",
+          "section": "raw_candidate_capture",
+          "candidate_id": "img_global",
+          "mention_ids": [
+            "img_global:mention:1"
+          ]
+        },
+        "candidate_source_ledger_ref": {
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "section": "candidate_source_ledger",
+          "candidate_id": "img_global"
+        }
+      }
+    },
+    {
+      "candidate_id": "integra_global",
+      "normalized_insurer_name": "Integra Global",
+      "normalized_plan_name": "yourLife / PremierLife / yourFamily / PremierFamily",
+      "candidate_type": "supplemental",
+      "relevance_status": "possibly_relevant",
+      "pricing_availability_status": "quote_flow_gated",
+      "official_url": "https://hcigroupglobal.com/integra-global/",
+      "quote_or_application_url": null,
+      "broker_url": "https://www.internationalinsurance.com/integra-global/",
+      "policy_wording_or_pdf_url": "https://www.internationalinsurance.com/pdf-brochures/integra-global-brochure.pdf",
+      "primary_evidence_url": "https://www.internationalinsurance.com/integra-global/",
+      "duplicate_resolution": {
+        "was_deduplicated_from_multiple_mentions": false,
+        "raw_mention_count": 1,
+        "raw_mention_ids": [
+          "integra_global:mention:1"
+        ],
+        "duplicate_resolution_basis": "candidate_id",
+        "duplicate_resolution_note": "Only one raw mention existed for this normalized candidate in the current discovery capture.",
+        "upstream_dataset_mentions": [
+          {
+            "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+            "dataset_section": "european_providers"
+          }
+        ]
+      },
+      "mention_traceability": [
+        {
+          "mention_id": "integra_global:mention:1",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "supplemental_candidates",
+          "source_kind": "broker plan page",
+          "source_url": "https://www.internationalinsurance.com/integra-global/",
+          "source_title": "Integra Health Insurance | Integra Expat Medical Plan",
+          "quote_or_application_url": null,
+          "evidence_excerpt": "The broker page describes Integra Global as international health insurance for expatriates, globally mobile individuals, and families, and explicitly lists two coverage areas: worldwide and worldwide excluding the U.S., Canada, and their territories."
+        }
+      ],
+      "source_traceability": [
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "supplemental_candidates",
+          "source_url": "https://www.internationalinsurance.com/integra-global/",
+          "source_title": "Integra Health Insurance | Integra Expat Medical Plan",
+          "quote_or_application_url": null,
+          "source_kind": null,
+          "evidence_excerpt": "The broker page describes Integra Global as international health insurance for expatriates, globally mobile individuals, and families, and explicitly lists two coverage areas: worldwide and worldwide excluding the U.S., Canada, and their territories."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "integra_global:source:1",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "supplemental_candidates",
+          "source_url": "https://www.internationalinsurance.com/integra-global/",
+          "source_title": "Integra Health Insurance | Integra Expat Medical Plan",
+          "quote_or_application_url": null,
+          "source_kind": "broker page",
+          "evidence_excerpt": "The broker page describes Integra Global as international health insurance for expatriates, globally mobile individuals, and families, and explicitly lists two coverage areas: worldwide and worldwide excluding the U.S., Canada, and their territories.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "candidate_identification",
+            "official_plan_positioning",
+            "broker_substitute_evidence",
+            "geography_relevance_evidence",
+            "access_path_evidence"
+          ],
+          "source_directness_classification": "low"
+        },
+        {
+          "trace_origin": "derived_candidate_source_ledger_reference",
+          "source_id": "integra_global:source:plan_document",
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "dataset_section": "candidate_source_ledger",
+          "record_bucket": "records",
+          "source_url": "https://www.internationalinsurance.com/pdf-brochures/integra-global-brochure.pdf",
+          "source_title": "Integra Global plan document or brochure",
+          "quote_or_application_url": null,
+          "source_kind": "policy wording or brochure PDF",
+          "evidence_excerpt": "Public plan document captured and applicable to this candidate evidence entry.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "plan_document_reference",
+            "benefit_detail_evidence",
+            "geography_relevance_evidence"
+          ],
+          "source_directness_classification": "low"
+        }
+      ],
+      "linked_artifacts": {
+        "shared_candidate_staging_ref": {
+          "dataset_path": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+          "section": "shared_candidate_staging",
+          "candidate_id": "integra_global"
+        },
+        "raw_candidate_capture_ref": {
+          "dataset_path": "data/insurance_discovery/raw_candidate_capture.discovery.json",
+          "section": "raw_candidate_capture",
+          "candidate_id": "integra_global",
+          "mention_ids": [
+            "integra_global:mention:1"
+          ]
+        },
+        "candidate_source_ledger_ref": {
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "section": "candidate_source_ledger",
+          "candidate_id": "integra_global"
+        }
+      }
+    },
+    {
+      "candidate_id": "medihelp_international",
+      "normalized_insurer_name": "MediHelp International",
+      "normalized_plan_name": "My Global Health individual plans: Blue / Azure / Cobalt / Admiral / Royal",
+      "candidate_type": "supplemental",
+      "relevance_status": "possibly_relevant",
+      "pricing_availability_status": "quote_flow_gated",
+      "official_url": "https://www.medihelp-assistance.com/en/medihelp-plans/individual-plans",
+      "quote_or_application_url": null,
+      "broker_url": null,
+      "policy_wording_or_pdf_url": null,
+      "primary_evidence_url": "https://www.medihelp-assistance.com/en/medihelp-plans/individual-plans",
+      "duplicate_resolution": {
+        "was_deduplicated_from_multiple_mentions": false,
+        "raw_mention_count": 1,
+        "raw_mention_ids": [
+          "medihelp_international:mention:1"
+        ],
+        "duplicate_resolution_basis": "candidate_id",
+        "duplicate_resolution_note": "Only one raw mention existed for this normalized candidate in the current discovery capture.",
+        "upstream_dataset_mentions": [
+          {
+            "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+            "dataset_section": "european_providers"
+          }
+        ]
+      },
+      "mention_traceability": [
+        {
+          "mention_id": "medihelp_international:mention:1",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "supplemental_candidates",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.medihelp-assistance.com/en/medihelp-plans/individual-plans",
+          "source_title": "Individual plans | MediHelp International",
+          "quote_or_application_url": null,
+          "evidence_excerpt": "MediHelp's official individual-plans page says My Global Health offers international coverage and top medical services worldwide, allows freedom to choose the doctor and clinic, and lists five individual plan tiers."
+        }
+      ],
+      "source_traceability": [
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "supplemental_candidates",
+          "source_url": "https://www.medihelp-assistance.com/en/medihelp-plans/individual-plans",
+          "source_title": "Individual plans | MediHelp International",
+          "quote_or_application_url": null,
+          "source_kind": null,
+          "evidence_excerpt": "MediHelp's official individual-plans page says My Global Health offers international coverage and top medical services worldwide, allows freedom to choose the doctor and clinic, and lists five individual plan tiers."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "medihelp_international:source:1",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "supplemental_candidates",
+          "source_url": "https://www.medihelp-assistance.com/en/medihelp-plans/individual-plans",
+          "source_title": "Individual plans | MediHelp International",
+          "quote_or_application_url": null,
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "MediHelp's official individual-plans page says My Global Health offers international coverage and top medical services worldwide, allows freedom to choose the doctor and clinic, and lists five individual plan tiers.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "candidate_identification",
+            "official_plan_positioning",
+            "geography_relevance_evidence"
+          ],
+          "source_directness_classification": "medium"
+        }
+      ],
+      "linked_artifacts": {
+        "shared_candidate_staging_ref": {
+          "dataset_path": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+          "section": "shared_candidate_staging",
+          "candidate_id": "medihelp_international"
+        },
+        "raw_candidate_capture_ref": {
+          "dataset_path": "data/insurance_discovery/raw_candidate_capture.discovery.json",
+          "section": "raw_candidate_capture",
+          "candidate_id": "medihelp_international",
+          "mention_ids": [
+            "medihelp_international:mention:1"
+          ]
+        },
+        "candidate_source_ledger_ref": {
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "section": "candidate_source_ledger",
+          "candidate_id": "medihelp_international"
+        }
+      }
+    },
+    {
+      "candidate_id": "morgan_price",
+      "normalized_insurer_name": "Morgan Price International Healthcare",
+      "normalized_plan_name": "Evolution Health / Flexible Choices individual international healthcare plans",
+      "candidate_type": "primary",
+      "relevance_status": "likely_relevant",
+      "pricing_availability_status": "quote_flow_gated",
+      "official_url": "https://www.morgan-price.com/individual/",
+      "quote_or_application_url": "https://morgan-price.com/quick-quote/",
+      "broker_url": null,
+      "policy_wording_or_pdf_url": "https://morgan-price.com/media/4ibjjwku/evolutionhealth_ant_policywording_04-26_v2-final.pdf",
+      "primary_evidence_url": "https://www.morgan-price.com/individual/",
+      "duplicate_resolution": {
+        "was_deduplicated_from_multiple_mentions": false,
+        "raw_mention_count": 1,
+        "raw_mention_ids": [
+          "morgan_price:mention:1"
+        ],
+        "duplicate_resolution_basis": "candidate_id",
+        "duplicate_resolution_note": "Only one raw mention existed for this normalized candidate in the current discovery capture.",
+        "upstream_dataset_mentions": [
+          {
+            "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+            "dataset_section": "european_providers"
+          }
+        ]
+      },
+      "mention_traceability": [
+        {
+          "mention_id": "morgan_price:mention:1",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.morgan-price.com/individual/",
+          "source_title": "International Healthcare Insurance Plans for Expats | Morgan Price International Healthcare",
+          "quote_or_application_url": "https://morgan-price.com/quick-quote/",
+          "evidence_excerpt": "Morgan Price says Evolution Health is an expatriate health insurance product for expatriates and eligible dependants, includes home-country cover excluding USA, and publishes policy wording and tables of benefits on the public page."
+        }
+      ],
+      "source_traceability": [
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.morgan-price.com/individual/",
+          "source_title": "International Healthcare Insurance Plans for Expats | Morgan Price International Healthcare",
+          "quote_or_application_url": "https://morgan-price.com/quick-quote/",
+          "source_kind": null,
+          "evidence_excerpt": "Morgan Price says Evolution Health is an expatriate health insurance product for expatriates and eligible dependants, includes home-country cover excluding USA, and publishes policy wording and tables of benefits on the public page."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "morgan_price:source:1",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.morgan-price.com/individual/",
+          "source_title": "International Healthcare Insurance Plans for Expats | Morgan Price International Healthcare",
+          "quote_or_application_url": "https://morgan-price.com/quick-quote/",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "Morgan Price says Evolution Health is an expatriate health insurance product for expatriates and eligible dependants, includes home-country cover excluding USA, and publishes policy wording and tables of benefits on the public page.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "candidate_identification",
+            "official_plan_positioning",
+            "quote_or_application_path_reference",
+            "pricing_or_quote_path_evidence"
+          ],
+          "source_directness_classification": "medium"
+        },
+        {
+          "trace_origin": "derived_candidate_source_ledger_reference",
+          "source_id": "morgan_price:source:quote_path",
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "dataset_section": "candidate_source_ledger",
+          "record_bucket": "records",
+          "source_url": "https://morgan-price.com/quick-quote/",
+          "source_title": "Morgan Price International Healthcare quote or application path",
+          "quote_or_application_url": "https://morgan-price.com/quick-quote/",
+          "source_kind": "official quote page",
+          "evidence_excerpt": "Verified public quote or application path relevant to the candidate evidence entry.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "quote_or_application_path_reference",
+            "pricing_or_quote_path_evidence",
+            "access_path_evidence"
+          ],
+          "source_directness_classification": "high"
+        },
+        {
+          "trace_origin": "derived_candidate_source_ledger_reference",
+          "source_id": "morgan_price:source:plan_document",
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "dataset_section": "candidate_source_ledger",
+          "record_bucket": "records",
+          "source_url": "https://morgan-price.com/media/4ibjjwku/evolutionhealth_ant_policywording_04-26_v2-final.pdf",
+          "source_title": "Morgan Price International Healthcare plan document or brochure",
+          "quote_or_application_url": null,
+          "source_kind": "policy wording or brochure PDF",
+          "evidence_excerpt": "Public plan document captured and applicable to this candidate evidence entry.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "plan_document_reference",
+            "benefit_detail_evidence",
+            "geography_relevance_evidence"
+          ],
+          "source_directness_classification": "high"
+        }
+      ],
+      "linked_artifacts": {
+        "shared_candidate_staging_ref": {
+          "dataset_path": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+          "section": "shared_candidate_staging",
+          "candidate_id": "morgan_price"
+        },
+        "raw_candidate_capture_ref": {
+          "dataset_path": "data/insurance_discovery/raw_candidate_capture.discovery.json",
+          "section": "raw_candidate_capture",
+          "candidate_id": "morgan_price",
+          "mention_ids": [
+            "morgan_price:mention:1"
+          ]
+        },
+        "candidate_source_ledger_ref": {
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "section": "candidate_source_ledger",
+          "candidate_id": "morgan_price"
+        }
+      }
+    },
+    {
+      "candidate_id": "msh_international",
+      "normalized_insurer_name": "MSH International",
+      "normalized_plan_name": "First'Expat+ / International Health Insurance for Individuals",
+      "candidate_type": "primary",
+      "relevance_status": "likely_relevant",
+      "pricing_availability_status": "quote_flow_gated",
+      "official_url": "https://www.msh-intl.com/en/individuals/",
+      "quote_or_application_url": "https://www.msh-intl.com/en/comparisons-offers-msh",
+      "broker_url": null,
+      "policy_wording_or_pdf_url": null,
+      "primary_evidence_url": "https://www.msh-intl.com/en/individuals/",
+      "duplicate_resolution": {
+        "was_deduplicated_from_multiple_mentions": true,
+        "raw_mention_count": 2,
+        "raw_mention_ids": [
+          "msh_international:mention:1",
+          "msh_international:mention:2"
+        ],
+        "duplicate_resolution_basis": "candidate_id",
+        "duplicate_resolution_note": "Multiple raw mentions were retained as traceability rows because they describe the same normalized insurer/plan candidate in different upstream discovery datasets.",
+        "upstream_dataset_mentions": [
+          {
+            "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+            "dataset_section": "global_providers"
+          },
+          {
+            "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+            "dataset_section": "european_providers"
+          }
+        ]
+      },
+      "mention_traceability": [
+        {
+          "mention_id": "msh_international:mention:1",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.msh-intl.com/en/individuals/",
+          "source_title": "International Health Insurance for Individuals - MSH",
+          "quote_or_application_url": "https://www.msh-intl.com/en/comparisons-offers-msh",
+          "evidence_excerpt": "MSH presents First'Expat+ as a comprehensive, flexible international health insurance plan for individuals and frames itself as a healthcare partner for mobility needs with 24/7 support."
+        },
+        {
+          "mention_id": "msh_international:mention:2",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.msh-intl.com/en/individuals/",
+          "source_title": "International Health Insurance for Individuals - MSH",
+          "quote_or_application_url": "https://www.msh-intl.com/en/comparisons-offers-msh",
+          "evidence_excerpt": "MSH presents First'Expat+ as a comprehensive, flexible international health insurance plan with 100% coverage and frames itself as a healthcare partner for mobility needs."
+        }
+      ],
+      "source_traceability": [
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.msh-intl.com/en/individuals/",
+          "source_title": "International Health Insurance for Individuals - MSH",
+          "quote_or_application_url": "https://www.msh-intl.com/en/comparisons-offers-msh",
+          "source_kind": null,
+          "evidence_excerpt": "MSH presents First'Expat+ as a comprehensive, flexible international health insurance plan for individuals and frames itself as a healthcare partner for mobility needs with 24/7 support."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.msh-intl.com/en/individuals/",
+          "source_title": "International Health Insurance for Individuals - MSH",
+          "quote_or_application_url": "https://www.msh-intl.com/en/comparisons-offers-msh",
+          "source_kind": null,
+          "evidence_excerpt": "MSH presents First'Expat+ as a comprehensive, flexible international health insurance plan with 100% coverage and frames itself as a healthcare partner for mobility needs."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "msh_international:source:1",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.msh-intl.com/en/individuals/",
+          "source_title": "International Health Insurance for Individuals - MSH",
+          "quote_or_application_url": "https://www.msh-intl.com/en/comparisons-offers-msh",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "MSH presents First'Expat+ as a comprehensive, flexible international health insurance plan for individuals and frames itself as a healthcare partner for mobility needs with 24/7 support.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "candidate_identification",
+            "official_plan_positioning",
+            "quote_or_application_path_reference"
+          ],
+          "source_directness_classification": "medium"
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "msh_international:source:2",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.msh-intl.com/en/individuals/",
+          "source_title": "International Health Insurance for Individuals - MSH",
+          "quote_or_application_url": "https://www.msh-intl.com/en/comparisons-offers-msh",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "MSH presents First'Expat+ as a comprehensive, flexible international health insurance plan with 100% coverage and frames itself as a healthcare partner for mobility needs.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "candidate_identification",
+            "official_plan_positioning",
+            "quote_or_application_path_reference"
+          ],
+          "source_directness_classification": "medium"
+        },
+        {
+          "trace_origin": "derived_candidate_source_ledger_reference",
+          "source_id": "msh_international:source:quote_path",
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "dataset_section": "candidate_source_ledger",
+          "record_bucket": "records",
+          "source_url": "https://www.msh-intl.com/en/comparisons-offers-msh",
+          "source_title": "MSH International quote or application path",
+          "quote_or_application_url": "https://www.msh-intl.com/en/comparisons-offers-msh",
+          "source_kind": "official quote page",
+          "evidence_excerpt": "Verified public quote or application path relevant to the candidate evidence entry.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "quote_or_application_path_reference",
+            "pricing_or_quote_path_evidence",
+            "access_path_evidence"
+          ],
+          "source_directness_classification": "high"
+        }
+      ],
+      "linked_artifacts": {
+        "shared_candidate_staging_ref": {
+          "dataset_path": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+          "section": "shared_candidate_staging",
+          "candidate_id": "msh_international"
+        },
+        "raw_candidate_capture_ref": {
+          "dataset_path": "data/insurance_discovery/raw_candidate_capture.discovery.json",
+          "section": "raw_candidate_capture",
+          "candidate_id": "msh_international",
+          "mention_ids": [
+            "msh_international:mention:1",
+            "msh_international:mention:2"
+          ]
+        },
+        "candidate_source_ledger_ref": {
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "section": "candidate_source_ledger",
+          "candidate_id": "msh_international"
+        }
+      }
+    },
+    {
+      "candidate_id": "now_health_international",
+      "normalized_insurer_name": "Now Health International",
+      "normalized_plan_name": "SimpleCare / WorldCare International Health Insurance Plans",
+      "candidate_type": "primary",
+      "relevance_status": "likely_relevant",
+      "pricing_availability_status": "partially_visible",
+      "official_url": "https://www.now-health.com/en/insurance-plans/",
+      "quote_or_application_url": "https://www.now-health.com/en/insurance-plans/",
+      "broker_url": null,
+      "policy_wording_or_pdf_url": null,
+      "primary_evidence_url": "https://www.now-health.com/en/insurance-plans/",
+      "duplicate_resolution": {
+        "was_deduplicated_from_multiple_mentions": false,
+        "raw_mention_count": 1,
+        "raw_mention_ids": [
+          "now_health_international:mention:1"
+        ],
+        "duplicate_resolution_basis": "candidate_id",
+        "duplicate_resolution_note": "Only one raw mention existed for this normalized candidate in the current discovery capture.",
+        "upstream_dataset_mentions": [
+          {
+            "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+            "dataset_section": "global_providers"
+          }
+        ]
+      },
+      "mention_traceability": [
+        {
+          "mention_id": "now_health_international:mention:1",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.now-health.com/en/insurance-plans/",
+          "source_title": "Compare International Health Insurance Plans from Now Health",
+          "quote_or_application_url": "https://www.now-health.com/en/insurance-plans/",
+          "evidence_excerpt": "Now Health compares seven international plan options across SimpleCare and WorldCare product lines and includes evacuation/repatriation and optional USA treatment mechanics in the public comparison table."
+        }
+      ],
+      "source_traceability": [
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.now-health.com/en/insurance-plans/",
+          "source_title": "Compare International Health Insurance Plans from Now Health",
+          "quote_or_application_url": "https://www.now-health.com/en/insurance-plans/",
+          "source_kind": null,
+          "evidence_excerpt": "Now Health compares seven international plan options across SimpleCare and WorldCare product lines and includes evacuation/repatriation and optional USA treatment mechanics in the public comparison table."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "now_health_international:source:1",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.now-health.com/en/insurance-plans/",
+          "source_title": "Compare International Health Insurance Plans from Now Health",
+          "quote_or_application_url": "https://www.now-health.com/en/insurance-plans/",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "Now Health compares seven international plan options across SimpleCare and WorldCare product lines and includes evacuation/repatriation and optional USA treatment mechanics in the public comparison table.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "candidate_identification",
+            "official_plan_positioning",
+            "quote_or_application_path_reference",
+            "pricing_or_quote_path_evidence",
+            "access_path_evidence"
+          ],
+          "source_directness_classification": "medium"
+        }
+      ],
+      "linked_artifacts": {
+        "shared_candidate_staging_ref": {
+          "dataset_path": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+          "section": "shared_candidate_staging",
+          "candidate_id": "now_health_international"
+        },
+        "raw_candidate_capture_ref": {
+          "dataset_path": "data/insurance_discovery/raw_candidate_capture.discovery.json",
+          "section": "raw_candidate_capture",
+          "candidate_id": "now_health_international",
+          "mention_ids": [
+            "now_health_international:mention:1"
+          ]
+        },
+        "candidate_source_ledger_ref": {
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "section": "candidate_source_ledger",
+          "candidate_id": "now_health_international"
+        }
+      }
+    },
+    {
+      "candidate_id": "passportcard_global",
+      "normalized_insurer_name": "PassportCard",
+      "normalized_plan_name": "Expat Basic / Expat Comprehensive / Executive",
+      "candidate_type": "supplemental",
+      "relevance_status": "possibly_relevant",
+      "pricing_availability_status": "public_pricing_available",
+      "official_url": "https://www.passportcard.de/en/international-health-insurance/",
+      "quote_or_application_url": null,
+      "broker_url": null,
+      "policy_wording_or_pdf_url": "https://www.passportcard.de/wp-content/uploads/2023/02/TOB_Individuals_ENG-MGAWP.pdf",
+      "primary_evidence_url": "https://www.passportcard.de/en/international-health-insurance/",
+      "duplicate_resolution": {
+        "was_deduplicated_from_multiple_mentions": false,
+        "raw_mention_count": 1,
+        "raw_mention_ids": [
+          "passportcard_global:mention:1"
+        ],
+        "duplicate_resolution_basis": "candidate_id",
+        "duplicate_resolution_note": "Only one raw mention existed for this normalized candidate in the current discovery capture.",
+        "upstream_dataset_mentions": [
+          {
+            "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+            "dataset_section": "european_providers"
+          }
+        ]
+      },
+      "mention_traceability": [
+        {
+          "mention_id": "passportcard_global:mention:1",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "supplemental_candidates",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.passportcard.de/en/international-health-insurance/",
+          "source_title": "International health insurance for expats & nomads | PassportCard",
+          "quote_or_application_url": null,
+          "evidence_excerpt": "PassportCard says it offers international private health insurance for expats, students, and digital nomads, advertises worldwide medical coverage for long-term stays abroad, and shows three plan tiers with example EUR pricing."
+        }
+      ],
+      "source_traceability": [
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "supplemental_candidates",
+          "source_url": "https://www.passportcard.de/en/international-health-insurance/",
+          "source_title": "International health insurance for expats & nomads | PassportCard",
+          "quote_or_application_url": null,
+          "source_kind": null,
+          "evidence_excerpt": "PassportCard says it offers international private health insurance for expats, students, and digital nomads, advertises worldwide medical coverage for long-term stays abroad, and shows three plan tiers with example EUR pricing."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "passportcard_global:source:1",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "supplemental_candidates",
+          "source_url": "https://www.passportcard.de/en/international-health-insurance/",
+          "source_title": "International health insurance for expats & nomads | PassportCard",
+          "quote_or_application_url": null,
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "PassportCard says it offers international private health insurance for expats, students, and digital nomads, advertises worldwide medical coverage for long-term stays abroad, and shows three plan tiers with example EUR pricing.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "candidate_identification",
+            "official_plan_positioning",
+            "geography_relevance_evidence",
+            "pricing_or_quote_path_evidence"
+          ],
+          "source_directness_classification": "medium"
+        },
+        {
+          "trace_origin": "derived_candidate_source_ledger_reference",
+          "source_id": "passportcard_global:source:plan_document",
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "dataset_section": "candidate_source_ledger",
+          "record_bucket": "records",
+          "source_url": "https://www.passportcard.de/wp-content/uploads/2023/02/TOB_Individuals_ENG-MGAWP.pdf",
+          "source_title": "PassportCard plan document or brochure",
+          "quote_or_application_url": null,
+          "source_kind": "policy wording or brochure PDF",
+          "evidence_excerpt": "Public plan document captured and applicable to this candidate evidence entry.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "plan_document_reference",
+            "benefit_detail_evidence",
+            "geography_relevance_evidence"
+          ],
+          "source_directness_classification": "high"
+        }
+      ],
+      "linked_artifacts": {
+        "shared_candidate_staging_ref": {
+          "dataset_path": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+          "section": "shared_candidate_staging",
+          "candidate_id": "passportcard_global"
+        },
+        "raw_candidate_capture_ref": {
+          "dataset_path": "data/insurance_discovery/raw_candidate_capture.discovery.json",
+          "section": "raw_candidate_capture",
+          "candidate_id": "passportcard_global",
+          "mention_ids": [
+            "passportcard_global:mention:1"
+          ]
+        },
+        "candidate_source_ledger_ref": {
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "section": "candidate_source_ledger",
+          "candidate_id": "passportcard_global"
+        }
+      }
+    },
+    {
+      "candidate_id": "safetywing_nomad_complete",
+      "normalized_insurer_name": "SafetyWing",
+      "normalized_plan_name": "Nomad Insurance Complete",
+      "candidate_type": "supplemental",
+      "relevance_status": "likely_relevant",
+      "pricing_availability_status": "public_pricing_available",
+      "official_url": "https://explore.safetywing.com/nomad-insurance-complete",
+      "quote_or_application_url": "https://safetywing.com/signup?product=nomad-health",
+      "broker_url": null,
+      "policy_wording_or_pdf_url": "https://safetywing.com/nomad-insurance/complete/standard_nomad_insurance_complete_vumi+carrier_2024-12.pdf?referenceID=24734754&utm_source=24734754&utm_medium=Ambassador",
+      "primary_evidence_url": "https://explore.safetywing.com/nomad-insurance-complete",
+      "duplicate_resolution": {
+        "was_deduplicated_from_multiple_mentions": false,
+        "raw_mention_count": 1,
+        "raw_mention_ids": [
+          "safetywing_nomad_complete:mention:1"
+        ],
+        "duplicate_resolution_basis": "candidate_id",
+        "duplicate_resolution_note": "Only one raw mention existed for this normalized candidate in the current discovery capture.",
+        "upstream_dataset_mentions": [
+          {
+            "dataset_path": null,
+            "dataset_section": "supplemental_public_sources"
+          }
+        ]
+      },
+      "mention_traceability": [
+        {
+          "mention_id": "safetywing_nomad_complete:mention:1",
+          "dataset_path": null,
+          "dataset_section": "supplemental_public_sources",
+          "record_bucket": "master_index_additions",
+          "source_kind": "official insurer page",
+          "source_url": "https://explore.safetywing.com/nomad-insurance-complete",
+          "source_title": "SafetyWing | Complete Health And Travel Insurance For Nomads",
+          "quote_or_application_url": "https://safetywing.com/signup?product=nomad-health",
+          "evidence_excerpt": "SafetyWing describes Nomad Insurance Complete as full health and travel insurance for digital nomads, expats, remote workers, and families living abroad, with global coverage and an add-on for Hong Kong, Singapore, and the US."
+        }
+      ],
+      "source_traceability": [
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": null,
+          "dataset_section": "supplemental_public_sources",
+          "record_bucket": "master_index_additions",
+          "source_url": "https://explore.safetywing.com/nomad-insurance-complete",
+          "source_title": "SafetyWing | Complete Health And Travel Insurance For Nomads",
+          "quote_or_application_url": "https://safetywing.com/signup?product=nomad-health",
+          "source_kind": null,
+          "evidence_excerpt": "SafetyWing describes Nomad Insurance Complete as full health and travel insurance for digital nomads, expats, remote workers, and families living abroad, with global coverage and an add-on for Hong Kong, Singapore, and the US."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "safetywing_nomad_complete:source:1",
+          "dataset_path": null,
+          "dataset_section": "supplemental_public_sources",
+          "record_bucket": "master_index_additions",
+          "source_url": "https://explore.safetywing.com/nomad-insurance-complete",
+          "source_title": "SafetyWing | Complete Health And Travel Insurance For Nomads",
+          "quote_or_application_url": "https://safetywing.com/signup?product=nomad-health",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "SafetyWing describes Nomad Insurance Complete as full health and travel insurance for digital nomads, expats, remote workers, and families living abroad, with global coverage and an add-on for Hong Kong, Singapore, and the US.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "official_plan_positioning",
+            "quote_or_application_path_reference"
+          ],
+          "source_directness_classification": "medium"
+        },
+        {
+          "trace_origin": "derived_candidate_source_ledger_reference",
+          "source_id": "safetywing_nomad_complete:source:quote_path",
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "dataset_section": "candidate_source_ledger",
+          "record_bucket": "records",
+          "source_url": "https://safetywing.com/signup?product=nomad-health",
+          "source_title": "SafetyWing quote or application path",
+          "quote_or_application_url": "https://safetywing.com/signup?product=nomad-health",
+          "source_kind": "official quote page",
+          "evidence_excerpt": "Verified public quote or application path relevant to the candidate evidence entry.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "quote_or_application_path_reference",
+            "pricing_or_quote_path_evidence",
+            "access_path_evidence"
+          ],
+          "source_directness_classification": "high"
+        },
+        {
+          "trace_origin": "derived_candidate_source_ledger_reference",
+          "source_id": "safetywing_nomad_complete:source:plan_document",
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "dataset_section": "candidate_source_ledger",
+          "record_bucket": "records",
+          "source_url": "https://safetywing.com/nomad-insurance/complete/standard_nomad_insurance_complete_vumi+carrier_2024-12.pdf?referenceID=24734754&utm_source=24734754&utm_medium=Ambassador",
+          "source_title": "SafetyWing plan document or brochure",
+          "quote_or_application_url": null,
+          "source_kind": "policy wording or brochure PDF",
+          "evidence_excerpt": "Public plan document captured and applicable to this candidate evidence entry.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "plan_document_reference",
+            "benefit_detail_evidence",
+            "geography_relevance_evidence"
+          ],
+          "source_directness_classification": "high"
+        }
+      ],
+      "linked_artifacts": {
+        "shared_candidate_staging_ref": {
+          "dataset_path": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+          "section": "shared_candidate_staging",
+          "candidate_id": "safetywing_nomad_complete"
+        },
+        "raw_candidate_capture_ref": {
+          "dataset_path": "data/insurance_discovery/raw_candidate_capture.discovery.json",
+          "section": "raw_candidate_capture",
+          "candidate_id": "safetywing_nomad_complete",
+          "mention_ids": [
+            "safetywing_nomad_complete:mention:1"
+          ]
+        },
+        "candidate_source_ledger_ref": {
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "section": "candidate_source_ledger",
+          "candidate_id": "safetywing_nomad_complete"
+        }
+      }
+    },
+    {
+      "candidate_id": "securus_global_health_cover",
+      "normalized_insurer_name": "Securus International",
+      "normalized_plan_name": "Global Health Cover",
+      "candidate_type": "supplemental",
+      "relevance_status": "possibly_relevant",
+      "pricing_availability_status": "unavailable_during_discovery",
+      "official_url": "https://www.securus.co.uk/benefits/global-health-cover",
+      "quote_or_application_url": null,
+      "broker_url": null,
+      "policy_wording_or_pdf_url": "https://www.securus.co.uk/storage/JZJIi-Securus%20Individual%20&%20Group%20Benefit%20Table%202026%20(USD).pdf",
+      "primary_evidence_url": "https://www.securus.co.uk/benefits/global-health-cover",
+      "duplicate_resolution": {
+        "was_deduplicated_from_multiple_mentions": false,
+        "raw_mention_count": 1,
+        "raw_mention_ids": [
+          "securus_global_health_cover:mention:1"
+        ],
+        "duplicate_resolution_basis": "candidate_id",
+        "duplicate_resolution_note": "Only one raw mention existed for this normalized candidate in the current discovery capture.",
+        "upstream_dataset_mentions": [
+          {
+            "dataset_path": null,
+            "dataset_section": "supplemental_public_sources"
+          }
+        ]
+      },
+      "mention_traceability": [
+        {
+          "mention_id": "securus_global_health_cover:mention:1",
+          "dataset_path": null,
+          "dataset_section": "supplemental_public_sources",
+          "record_bucket": "master_index_additions",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.securus.co.uk/benefits/global-health-cover",
+          "source_title": "Securus - Global Health Cover",
+          "quote_or_application_url": null,
+          "evidence_excerpt": "Securus says international health insurance is a necessity in a connected world, that its packages let clients choose who, how, and where they are treated, and that they provide access to hospitals and doctors around the world with public brochure links."
+        }
+      ],
+      "source_traceability": [
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": null,
+          "dataset_section": "supplemental_public_sources",
+          "record_bucket": "master_index_additions",
+          "source_url": "https://www.securus.co.uk/benefits/global-health-cover",
+          "source_title": "Securus - Global Health Cover",
+          "quote_or_application_url": null,
+          "source_kind": null,
+          "evidence_excerpt": "Securus says international health insurance is a necessity in a connected world, that its packages let clients choose who, how, and where they are treated, and that they provide access to hospitals and doctors around the world with public brochure links."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "securus_global_health_cover:source:1",
+          "dataset_path": null,
+          "dataset_section": "supplemental_public_sources",
+          "record_bucket": "master_index_additions",
+          "source_url": "https://www.securus.co.uk/benefits/global-health-cover",
+          "source_title": "Securus - Global Health Cover",
+          "quote_or_application_url": null,
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "Securus says international health insurance is a necessity in a connected world, that its packages let clients choose who, how, and where they are treated, and that they provide access to hospitals and doctors around the world with public brochure links.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "official_plan_positioning"
+          ],
+          "source_directness_classification": "medium"
+        },
+        {
+          "trace_origin": "derived_candidate_source_ledger_reference",
+          "source_id": "securus_global_health_cover:source:plan_document",
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "dataset_section": "candidate_source_ledger",
+          "record_bucket": "records",
+          "source_url": "https://www.securus.co.uk/storage/JZJIi-Securus%20Individual%20&%20Group%20Benefit%20Table%202026%20(USD).pdf",
+          "source_title": "Securus International plan document or brochure",
+          "quote_or_application_url": null,
+          "source_kind": "policy wording or brochure PDF",
+          "evidence_excerpt": "Public plan document captured and applicable to this candidate evidence entry.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "plan_document_reference",
+            "benefit_detail_evidence",
+            "geography_relevance_evidence"
+          ],
+          "source_directness_classification": "high"
+        }
+      ],
+      "linked_artifacts": {
+        "shared_candidate_staging_ref": {
+          "dataset_path": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+          "section": "shared_candidate_staging",
+          "candidate_id": "securus_global_health_cover"
+        },
+        "raw_candidate_capture_ref": {
+          "dataset_path": "data/insurance_discovery/raw_candidate_capture.discovery.json",
+          "section": "raw_candidate_capture",
+          "candidate_id": "securus_global_health_cover",
+          "mention_ids": [
+            "securus_global_health_cover:mention:1"
+          ]
+        },
+        "candidate_source_ledger_ref": {
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "section": "candidate_source_ledger",
+          "candidate_id": "securus_global_health_cover"
+        }
+      }
+    },
+    {
+      "candidate_id": "vumi",
+      "normalized_insurer_name": "VUMI",
+      "normalized_plan_name": "Absolute VIP / Universal VIP / Special VIP / Access VIP product family",
+      "candidate_type": "supplemental",
+      "relevance_status": "possibly_relevant",
+      "pricing_availability_status": "partially_visible",
+      "official_url": "https://www.vumigroup.com/",
+      "quote_or_application_url": null,
+      "broker_url": null,
+      "policy_wording_or_pdf_url": null,
+      "primary_evidence_url": "https://www.vumigroup.com/",
+      "duplicate_resolution": {
+        "was_deduplicated_from_multiple_mentions": false,
+        "raw_mention_count": 1,
+        "raw_mention_ids": [
+          "vumi:mention:1"
+        ],
+        "duplicate_resolution_basis": "candidate_id",
+        "duplicate_resolution_note": "Only one raw mention existed for this normalized candidate in the current discovery capture.",
+        "upstream_dataset_mentions": [
+          {
+            "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+            "dataset_section": "european_providers"
+          }
+        ]
+      },
+      "mention_traceability": [
+        {
+          "mention_id": "vumi:mention:1",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "supplemental_candidates",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.vumigroup.com/",
+          "source_title": "Home - VUMI",
+          "quote_or_application_url": null,
+          "evidence_excerpt": "VUMI's homepage markets international health insurance with worldwide coverage, says its solutions protect you and your family anywhere anytime, and lists multiple long-term medical plan families plus a Europe region selector."
+        }
+      ],
+      "source_traceability": [
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "supplemental_candidates",
+          "source_url": "https://www.vumigroup.com/",
+          "source_title": "Home - VUMI",
+          "quote_or_application_url": null,
+          "source_kind": null,
+          "evidence_excerpt": "VUMI's homepage markets international health insurance with worldwide coverage, says its solutions protect you and your family anywhere anytime, and lists multiple long-term medical plan families plus a Europe region selector."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "vumi:source:1",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "supplemental_candidates",
+          "source_url": "https://www.vumigroup.com/",
+          "source_title": "Home - VUMI",
+          "quote_or_application_url": null,
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "VUMI's homepage markets international health insurance with worldwide coverage, says its solutions protect you and your family anywhere anytime, and lists multiple long-term medical plan families plus a Europe region selector.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "candidate_identification",
+            "official_plan_positioning",
+            "geography_relevance_evidence"
+          ],
+          "source_directness_classification": "medium"
+        }
+      ],
+      "linked_artifacts": {
+        "shared_candidate_staging_ref": {
+          "dataset_path": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+          "section": "shared_candidate_staging",
+          "candidate_id": "vumi"
+        },
+        "raw_candidate_capture_ref": {
+          "dataset_path": "data/insurance_discovery/raw_candidate_capture.discovery.json",
+          "section": "raw_candidate_capture",
+          "candidate_id": "vumi",
+          "mention_ids": [
+            "vumi:mention:1"
+          ]
+        },
+        "candidate_source_ledger_ref": {
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "section": "candidate_source_ledger",
+          "candidate_id": "vumi"
+        }
+      }
+    },
+    {
+      "candidate_id": "wellaway_expat",
+      "normalized_insurer_name": "WellAway",
+      "normalized_plan_name": "EXPAT / Gold / Diamond / Expat Plus",
+      "candidate_type": "supplemental",
+      "relevance_status": "excluded",
+      "pricing_availability_status": "quote_flow_gated",
+      "official_url": "https://www.wellaway.com/en/our-plans/expat/",
+      "quote_or_application_url": "https://portal.wellaway.com/Quote/EXPAT/Step1",
+      "broker_url": null,
+      "policy_wording_or_pdf_url": "https://www.wellaway.com/media/filer_public/31/5d/315d7f0b-9976-4fd2-8b43-ad597fd59b4a/expat-plans-brochure_1292026.pdf",
+      "primary_evidence_url": "https://www.wellaway.com/en/our-plans/expat/",
+      "duplicate_resolution": {
+        "was_deduplicated_from_multiple_mentions": false,
+        "raw_mention_count": 1,
+        "raw_mention_ids": [
+          "wellaway_expat:mention:1"
+        ],
+        "duplicate_resolution_basis": "candidate_id",
+        "duplicate_resolution_note": "Only one raw mention existed for this normalized candidate in the current discovery capture.",
+        "upstream_dataset_mentions": [
+          {
+            "dataset_path": null,
+            "dataset_section": "supplemental_public_sources"
+          }
+        ]
+      },
+      "mention_traceability": [
+        {
+          "mention_id": "wellaway_expat:mention:1",
+          "dataset_path": null,
+          "dataset_section": "supplemental_public_sources",
+          "record_bucket": "master_index_additions",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.wellaway.com/en/our-plans/expat/",
+          "source_title": "Expat health insurance plans for living abroad | WellAway",
+          "quote_or_application_url": "https://portal.wellaway.com/Quote/EXPAT/Step1",
+          "evidence_excerpt": "WellAway presents EXPAT as a top-tier expat health insurance plan for individuals, families, and groups living abroad, with Gold, Diamond, and Expat Plus coverage levels and annual limits up to $3,000,000."
+        }
+      ],
+      "source_traceability": [
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": null,
+          "dataset_section": "supplemental_public_sources",
+          "record_bucket": "master_index_additions",
+          "source_url": "https://www.wellaway.com/en/our-plans/expat/",
+          "source_title": "Expat health insurance plans for living abroad | WellAway",
+          "quote_or_application_url": "https://portal.wellaway.com/Quote/EXPAT/Step1",
+          "source_kind": null,
+          "evidence_excerpt": "WellAway presents EXPAT as a top-tier expat health insurance plan for individuals, families, and groups living abroad, with Gold, Diamond, and Expat Plus coverage levels and annual limits up to $3,000,000."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "wellaway_expat:source:1",
+          "dataset_path": null,
+          "dataset_section": "supplemental_public_sources",
+          "record_bucket": "master_index_additions",
+          "source_url": "https://www.wellaway.com/en/our-plans/expat/",
+          "source_title": "Expat health insurance plans for living abroad | WellAway",
+          "quote_or_application_url": "https://portal.wellaway.com/Quote/EXPAT/Step1",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "WellAway presents EXPAT as a top-tier expat health insurance plan for individuals, families, and groups living abroad, with Gold, Diamond, and Expat Plus coverage levels and annual limits up to $3,000,000.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "official_plan_positioning",
+            "quote_or_application_path_reference"
+          ],
+          "source_directness_classification": "medium"
+        },
+        {
+          "trace_origin": "derived_candidate_source_ledger_reference",
+          "source_id": "wellaway_expat:source:quote_path",
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "dataset_section": "candidate_source_ledger",
+          "record_bucket": "records",
+          "source_url": "https://portal.wellaway.com/Quote/EXPAT/Step1",
+          "source_title": "WellAway quote or application path",
+          "quote_or_application_url": "https://portal.wellaway.com/Quote/EXPAT/Step1",
+          "source_kind": "official quote page",
+          "evidence_excerpt": "Verified public quote or application path relevant to the candidate evidence entry.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "quote_or_application_path_reference",
+            "pricing_or_quote_path_evidence",
+            "access_path_evidence"
+          ],
+          "source_directness_classification": "high"
+        },
+        {
+          "trace_origin": "derived_candidate_source_ledger_reference",
+          "source_id": "wellaway_expat:source:plan_document",
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "dataset_section": "candidate_source_ledger",
+          "record_bucket": "records",
+          "source_url": "https://www.wellaway.com/media/filer_public/31/5d/315d7f0b-9976-4fd2-8b43-ad597fd59b4a/expat-plans-brochure_1292026.pdf",
+          "source_title": "WellAway plan document or brochure",
+          "quote_or_application_url": null,
+          "source_kind": "policy wording or brochure PDF",
+          "evidence_excerpt": "Public plan document captured and applicable to this candidate evidence entry.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "plan_document_reference",
+            "benefit_detail_evidence",
+            "geography_relevance_evidence"
+          ],
+          "source_directness_classification": "high"
+        }
+      ],
+      "linked_artifacts": {
+        "shared_candidate_staging_ref": {
+          "dataset_path": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+          "section": "shared_candidate_staging",
+          "candidate_id": "wellaway_expat"
+        },
+        "raw_candidate_capture_ref": {
+          "dataset_path": "data/insurance_discovery/raw_candidate_capture.discovery.json",
+          "section": "raw_candidate_capture",
+          "candidate_id": "wellaway_expat",
+          "mention_ids": [
+            "wellaway_expat:mention:1"
+          ]
+        },
+        "candidate_source_ledger_ref": {
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "section": "candidate_source_ledger",
+          "candidate_id": "wellaway_expat"
+        }
+      }
+    },
+    {
+      "candidate_id": "william_russell",
+      "normalized_insurer_name": "William Russell",
+      "normalized_plan_name": "International Health Insurance",
+      "candidate_type": "primary",
+      "relevance_status": "likely_relevant",
+      "pricing_availability_status": "quote_flow_gated",
+      "official_url": "https://www.william-russell.com/international-health-insurance/",
+      "quote_or_application_url": "https://www.william-russell.com/international-health-insurance/",
+      "broker_url": null,
+      "policy_wording_or_pdf_url": null,
+      "primary_evidence_url": "https://www.william-russell.com/international-health-insurance/",
+      "duplicate_resolution": {
+        "was_deduplicated_from_multiple_mentions": true,
+        "raw_mention_count": 2,
+        "raw_mention_ids": [
+          "william_russell:mention:1",
+          "william_russell:mention:2"
+        ],
+        "duplicate_resolution_basis": "candidate_id",
+        "duplicate_resolution_note": "Multiple raw mentions were retained as traceability rows because they describe the same normalized insurer/plan candidate in different upstream discovery datasets.",
+        "upstream_dataset_mentions": [
+          {
+            "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+            "dataset_section": "global_providers"
+          },
+          {
+            "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+            "dataset_section": "european_providers"
+          }
+        ]
+      },
+      "mention_traceability": [
+        {
+          "mention_id": "william_russell:mention:1",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.william-russell.com/international-health-insurance/",
+          "source_title": "International Health Insurance | William Russell",
+          "quote_or_application_url": "https://www.william-russell.com/international-health-insurance/",
+          "evidence_excerpt": "William Russell describes its product as international health insurance for expats and people living, working, or studying abroad, with members able to choose doctors or hospitals within their coverage zone."
+        },
+        {
+          "mention_id": "william_russell:mention:2",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.william-russell.com/international-health-insurance/",
+          "source_title": "International Health Insurance | William Russell",
+          "quote_or_application_url": "https://apps.william-russell.com/quote/individual/",
+          "evidence_excerpt": "William Russell markets international health insurance for expats, digital nomads, families, and students living, working, or studying abroad, with freedom to choose any doctor or hospital within the coverage zone."
+        }
+      ],
+      "source_traceability": [
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.william-russell.com/international-health-insurance/",
+          "source_title": "International Health Insurance | William Russell",
+          "quote_or_application_url": "https://www.william-russell.com/international-health-insurance/",
+          "source_kind": null,
+          "evidence_excerpt": "William Russell describes its product as international health insurance for expats and people living, working, or studying abroad, with members able to choose doctors or hospitals within their coverage zone."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.william-russell.com/international-health-insurance/",
+          "source_title": "International Health Insurance | William Russell",
+          "quote_or_application_url": "https://apps.william-russell.com/quote/individual/",
+          "source_kind": null,
+          "evidence_excerpt": "William Russell markets international health insurance for expats, digital nomads, families, and students living, working, or studying abroad, with freedom to choose any doctor or hospital within the coverage zone."
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "william_russell:source:1",
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.william-russell.com/international-health-insurance/",
+          "source_title": "International Health Insurance | William Russell",
+          "quote_or_application_url": "https://www.william-russell.com/international-health-insurance/",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "William Russell describes its product as international health insurance for expats and people living, working, or studying abroad, with members able to choose doctors or hospitals within their coverage zone.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "candidate_identification",
+            "official_plan_positioning",
+            "quote_or_application_path_reference",
+            "geography_relevance_evidence",
+            "pricing_or_quote_path_evidence",
+            "access_path_evidence"
+          ],
+          "source_directness_classification": "medium"
+        },
+        {
+          "trace_origin": "shared_candidate_staging.source_refs",
+          "source_id": "william_russell:source:2",
+          "dataset_path": "data/insurance_discovery/european_providers.discovery.json",
+          "dataset_section": "european_providers",
+          "record_bucket": "records",
+          "source_url": "https://www.william-russell.com/international-health-insurance/",
+          "source_title": "International Health Insurance | William Russell",
+          "quote_or_application_url": "https://apps.william-russell.com/quote/individual/",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "William Russell markets international health insurance for expats, digital nomads, families, and students living, working, or studying abroad, with freedom to choose any doctor or hospital within the coverage zone.",
+          "applicability_roles": [
+            "candidate_discovery_entry",
+            "candidate_identification",
+            "official_plan_positioning",
+            "geography_relevance_evidence",
+            "pricing_or_quote_path_evidence",
+            "access_path_evidence"
+          ],
+          "source_directness_classification": "medium"
+        }
+      ],
+      "linked_artifacts": {
+        "shared_candidate_staging_ref": {
+          "dataset_path": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+          "section": "shared_candidate_staging",
+          "candidate_id": "william_russell"
+        },
+        "raw_candidate_capture_ref": {
+          "dataset_path": "data/insurance_discovery/raw_candidate_capture.discovery.json",
+          "section": "raw_candidate_capture",
+          "candidate_id": "william_russell",
+          "mention_ids": [
+            "william_russell:mention:1",
+            "william_russell:mention:2"
+          ]
+        },
+        "candidate_source_ledger_ref": {
+          "dataset_path": "data/insurance_discovery/candidate_source_ledger.discovery.json",
+          "section": "candidate_source_ledger",
+          "candidate_id": "william_russell"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,147 @@
+{
+  "dataset": "international_expat_health_insurance_discovery",
+  "run_scope": "completion_evidence_hardening",
+  "section": "completion_evidence_hardening_ledger_data_model",
+  "generated_by": "gpt-5.4",
+  "family_context": {
+    "citizenship": "German",
+    "residence": "Georgia",
+    "adults": [42, 37],
+    "children": 2,
+    "preferred_cover_geography": "Georgia and Germany, ideally worldwide excluding the US"
+  },
+  "generated_from": [
+    "data/insurance_discovery/normalized_candidate_discovery_items.discovery.json",
+    "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+    "data/insurance_discovery/germany_coverage_evidence_ledger.discovery.json",
+    "data/insurance_discovery/global_coverage_evidence_ledger.discovery.json",
+    "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+    "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+    "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+    "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+    "data/insurance_discovery/eligibility_ambiguity_evidence_ledger.discovery.json"
+  ],
+  "purpose": "Defines the machine-readable completion ledger contract for the evidence-hardening pass across the strongest shortlisted candidates, without replacing the existing discovery ledgers or turning the output into a ranking.",
+  "scope_notes": [
+    "This is an additive completion-pass model layered on top of the existing discovery dataset.",
+    "Record granularity is one candidate-level completion record per shortlisted insurer/plan candidate.",
+    "The ledger must preserve public-access limits explicitly. Gated quote results, account walls, broker-only next steps, or missing policy PDFs are valid outcomes when source-backed.",
+    "This artifact is not a recommendation matrix, purchase guide, value score, or final dashboard."
+  ],
+  "priority_candidates": [
+    {"candidate_id": "cigna_global", "insurer_name": "Cigna Global"},
+    {"candidate_id": "bupa_global", "insurer_name": "Bupa Global"},
+    {"candidate_id": "april_international", "insurer_name": "APRIL International"},
+    {"candidate_id": "allianz_care", "insurer_name": "Allianz Care"},
+    {"candidate_id": "axa_global_healthcare", "insurer_name": "AXA Global Healthcare"},
+    {"candidate_id": "william_russell", "insurer_name": "William Russell"},
+    {"candidate_id": "now_health_international", "insurer_name": "Now Health International"},
+    {"candidate_id": "foyer_global_health", "insurer_name": "Foyer Global Health"},
+    {"candidate_id": "safetywing", "insurer_name": "SafetyWing"},
+    {"candidate_id": "expatriate_group", "insurer_name": "Expatriate Group"},
+    {"candidate_id": "img_global_medical", "insurer_name": "IMG Global Medical"},
+    {"candidate_id": "genki", "insurer_name": "Genki"},
+    {"candidate_id": "wellaway", "insurer_name": "WellAway"},
+    {"candidate_id": "passportcard", "insurer_name": "PassportCard"}
+  ],
+  "record_granularity": "one candidate_completion_record per shortlisted candidate_id",
+  "required_top_level_fields": [
+    "dataset",
+    "run_scope",
+    "section",
+    "ledger_name",
+    "record_type",
+    "candidate_id",
+    "candidate_type",
+    "priority_candidate",
+    "insurer_name",
+    "plan_name",
+    "family_context",
+    "completion_status",
+    "georgia_residence_eligibility",
+    "germany_or_home_country_treatment",
+    "worldwide_ex_us_area_of_cover",
+    "family_quote_flow",
+    "policy_document_access",
+    "pricing_visibility",
+    "medical_underwriting_preexisting_conditions",
+    "source_urls",
+    "confidence",
+    "friction",
+    "unresolved_next_actions",
+    "uncertainty_notes"
+  ],
+  "field_groups": [
+    {
+      "group": "record_identity_and_scope",
+      "description": "Fields that pin each completion-pass record to the family context, shortlisted-candidate universe, and additive completion workflow.",
+      "fields": [
+        {"field": "candidate_id", "required": true, "type": "enum", "note": "Restricted to the priority shortlist for this pass."},
+        {"field": "priority_candidate", "required": true, "type": "boolean", "allowed_values": [true], "note": "Always true in this pass so downstream consumers can safely filter."},
+        {"field": "completion_status", "required": true, "type": "enum", "allowed_values": ["not_started", "in_progress", "partially_hardened", "substantially_hardened", "blocked_by_public_access_limits", "complete_for_public_evidence_scope"]},
+        {"field": "completion_status_reason", "required": false, "type": "string", "note": "Concise explanation of what remains unresolved or why the record is considered complete within public-evidence limits."},
+        {"field": "existing_discovery_refs", "required": false, "type": "array[datasetRef]", "note": "Links back to the discovery ledgers this completion record hardens rather than replacing them."}
+      ]
+    },
+    {
+      "group": "coverage_and_eligibility_dimensions",
+      "description": "Three parallel dimension objects standardize evidence for Georgia residence eligibility, Germany/home-country treatment, and worldwide-excluding-U.S. area-of-cover.",
+      "dimension_contract": {
+        "required_subfields": ["status", "evidence_status", "summary", "evidence_strength", "source_refs"],
+        "status_values": ["confirmed", "partially_confirmed", "inferred", "contradicted", "gated", "unknown", "not_applicable_from_reviewed_public_sources"],
+        "evidence_status_values": ["explicit_public_evidence", "partial_public_evidence", "indirect_public_evidence", "challenge_or_login_gated", "contact_or_broker_gated", "not_found_in_reviewed_public_sources"],
+        "treatment_scope_values": ["residence_eligibility", "home_country_cover", "home_country_visits_only", "area_of_cover_selection", "unknown"],
+        "public_quote_flow_outcome_values": ["country_or_option_visible", "country_or_option_accepted_to_next_step", "challenge_blocked_before_outcome", "contact_required_before_outcome", "not_tested_in_this_pass"],
+        "public_policy_document_outcome_values": ["explicit_wording_found", "related_but_incomplete_wording_found", "document_found_but_not_decisive", "document_not_found"]
+      },
+      "dimensions": [
+        {"field": "georgia_residence_eligibility", "required": true, "focus": "Can a Georgia resident family enter or be supported by the public official flow or explicit public eligibility wording?"},
+        {"field": "germany_or_home_country_treatment", "required": true, "focus": "How Germany is treated as the family's home country or treatment destination, including explicit home-country cover wording where visible."},
+        {"field": "worldwide_ex_us_area_of_cover", "required": true, "focus": "Whether a worldwide-excluding-U.S. or materially equivalent non-U.S. global area-of-cover option is publicly evidenced."}
+      ]
+    },
+    {
+      "group": "family_quote_flow",
+      "description": "Captures how far the public quote/application journey was verified for this exact family scenario without submitting personal contact information or creating accounts.",
+      "fields": [
+        {"field": "family_quote_flow.status", "required": true, "type": "enum", "allowed_values": ["not_started", "entry_only_verified", "advanced_without_quote_result", "family_specific_quote_result_visible", "gated_before_family_specific_result", "blocked_or_failed"]},
+        {"field": "family_quote_flow.entrypoint_type", "required": true, "type": "enum", "allowed_values": ["official_quote_flow", "official_application_flow", "official_selector_only", "broker_handoff", "contact_form", "no_public_quote_path_verified"]},
+        {"field": "family_quote_flow.family_specific_inputs_observed", "required": true, "type": "array[enum]", "allowed_values": ["country_of_residence", "nationality", "adults_count", "children_count", "ages", "coverage_area", "deductible", "start_date", "contact_email", "phone_number", "unknown_or_not_captured"]},
+        {"field": "family_quote_flow.quote_result_visibility", "required": true, "type": "enum", "allowed_values": ["no_quote_result_visible", "partial_plan_options_visible", "price_or_plan_result_visible", "contact_capture_before_result", "login_or_account_before_result", "challenge_or_js_block_before_result"]},
+        {"field": "family_quote_flow.next_required_step", "required": false, "type": "enum", "allowed_values": ["continue_public_quote_flow", "supply_household_or_age_data", "supply_contact_details", "solve_challenge_or_use_clean_browser_session", "open_policy_document_or_benefit_table", "use_broker_or_sales_contact", "not_applicable"]}
+      ]
+    },
+    {
+      "group": "policy_documents_pricing_and_underwriting",
+      "description": "Normalizes the strongest remaining completion-pass evidence categories outside geography: public policy documents, pricing visibility, and underwriting/pre-existing-condition wording.",
+      "fields": [
+        {"field": "policy_document_access.status", "required": true, "type": "enum", "allowed_values": ["public_document_found", "public_document_found_but_partial", "document_link_visible_but_access_failed", "no_public_document_found", "gated_document_access"]},
+        {"field": "policy_document_access.document_type_status", "required": true, "type": "array[enum]", "allowed_values": ["policy_wording", "table_of_benefits", "brochure", "benefit_schedule", "handbook", "ipid_or_product_sheet", "none_verified"]},
+        {"field": "pricing_visibility.status", "required": true, "type": "enum", "allowed_values": ["public_numeric_price_visible", "partial_pricing_signal_visible", "quote_flow_gated", "contact_required_before_pricing", "broker_required_before_pricing", "not_visible_in_reviewed_public_sources"]},
+        {"field": "pricing_visibility.numeric_price_visible", "required": true, "type": "boolean"},
+        {"field": "pricing_visibility.price_visibility_scope", "required": false, "type": "enum", "allowed_values": ["family_specific", "generic_from_price", "discount_or_promo_only", "plan_options_without_price", "none"]},
+        {"field": "medical_underwriting_preexisting_conditions.status", "required": true, "type": "enum", "allowed_values": ["explicit_terms_found", "underwriting_route_found_but_preexisting_terms_partial", "search_snippet_only", "gated_or_document_dependent", "not_found_in_reviewed_public_sources"]},
+        {"field": "medical_underwriting_preexisting_conditions.visibility", "required": true, "type": "enum", "allowed_values": ["official_public_page", "official_public_pdf", "official_search_visible_snippet", "quote_flow_only", "not_visible"]},
+        {"field": "medical_underwriting_preexisting_conditions.underwriting_model", "required": false, "type": "enum", "allowed_values": ["full_medical_underwriting", "moratorium", "switch_or_multiple_routes_visible", "unclear"]}
+      ]
+    },
+    {
+      "group": "traceability_confidence_and_blockers",
+      "description": "Keeps the completion pass auditable and explicit about confidence, source directness, and unresolved work instead of pretending to know more than the public evidence supports.",
+      "fields": [
+        {"field": "source_urls", "required": true, "type": "array[sourceUrlRecord]", "note": "Flat URL inventory summarizing what was reviewed, blocked, or linked for the candidate in this pass."},
+        {"field": "confidence.overall", "required": true, "type": "enum", "allowed_values": ["high", "medium", "low"]},
+        {"field": "confidence.dimension_scores", "required": false, "type": "object", "note": "Optional per-dimension confidence split so downstream reviewers can tell which sub-claims are weaker."},
+        {"field": "friction.level", "required": true, "type": "enum", "allowed_values": ["low", "medium", "high"]},
+        {"field": "friction.primary_barriers", "required": true, "type": "array[enum]", "allowed_values": ["challenge_or_bot_protection", "login_wall", "contact_capture_before_result", "broker_handoff", "account_creation_required", "country_or_residence_gating", "document_not_public", "pricing_not_public", "policy_wording_not_public", "js_or_rendering_failure", "none_material"]},
+        {"field": "unresolved_next_actions", "required": true, "type": "array[nextAction]", "note": "Must preserve the next public-safe step instead of silently failing when evidence is gated."},
+        {"field": "uncertainty_notes", "required": true, "type": "array[string]", "note": "Explicit uncertainty remains mandatory even when evidence is strong in other dimensions."}
+      ]
+    }
+  ],
+  "serialization_notes": [
+    "Recommended canonical file path for wrapped JSON dataset: data/insurance_discovery/completion_evidence_hardening_ledger.discovery.json",
+    "If emitted as JSONL, use one candidate completion record per line and repeat the top-level routing fields on every line.",
+    "This pass should reference prior discovery artifacts through dataset refs instead of flattening all previous evidence into one giant blob."
+  ]
+}

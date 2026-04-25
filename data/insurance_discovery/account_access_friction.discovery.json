@@ -1,0 +1,986 @@
+{
+  "dataset": "international_expat_health_insurance_discovery",
+  "run_scope": "discovery_only",
+  "section": "account_access_friction",
+  "generated_from": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+  "linked_contact_model_dataset": "data/insurance_discovery/access_path_contact_models.discovery.json",
+  "family_context": {
+    "citizenship": "German",
+    "residence": "Georgia",
+    "adults": [
+      42,
+      37
+    ],
+    "children": 2,
+    "preferred_cover_geography": "Georgia and Germany, ideally worldwide excluding the US"
+  },
+  "method_notes": [
+    "This artifact documents public account-access friction observed at the first reachable plan-detail, quote, or application entry point for each staged candidate.",
+    "The purpose is discovery-only: record whether public plan details are accessible, whether quote entry appears public, and whether signup, account creation, login walls, contact capture, or other gating is visible before meaningful quote/detail access.",
+    "A visible anti-bot challenge or technical wall is recorded as observed friction even when it may not be a customer identity requirement, because it still blocks access to quote contents in a reproducible public scrape.",
+    "Uncertainty is preserved whenever the run did not traverse far enough to determine downstream verification or binding-purchase requirements."
+  ],
+  "summary": {
+    "verified_total_unique_candidates": 27,
+    "friction_classification_counts": {
+      "public_quote_form_accessible_without_account_at_entry": 1,
+      "bot_or_challenge_validation_wall_before_quote_contents": 1,
+      "public_country_selector_accessible_without_account": 1,
+      "public_quote_router_accessible_without_account": 1,
+      "public_plan_finder_accessible_without_account": 1,
+      "public_quote_link_and_marketing_details_without_account": 1,
+      "public_profile_selection_with_existing_member_login_option": 1,
+      "public_plan_comparison_without_public_quote_gate_verified": 1,
+      "public_plan_details_with_buy_now_and_price_links": 1,
+      "member_login_and_b2b_paths_visible_no_public_retail_quote_verified": 1,
+      "public_plan_comparison_with_quote_and_apply_links": 1,
+      "public_information_page_without_public_quote_path_verified": 1,
+      "public_quote_application_flow_with_waiver_consent": 1,
+      "public_quick_quote_with_email_capture_and_manual_fallback": 1,
+      "public_plan_details_and_sample_prices_without_quote_path_verified": 1,
+      "public_plan_navigation_with_separate_member_and_agent_portals": 1,
+      "broker_led_quote_handoff": 1,
+      "public_plan_page_with_quote_link_and_buy_online_login": 1,
+      "legacy_site_with_member_login_and_new_business_redirect": 1,
+      "broker_led_plan_page": 1,
+      "mandatory_account_creation_or_login_before_quote": 1,
+      "public_consultation_flow_without_account_at_entry": 1,
+      "contact_details_required_for_personalized_quote": 1,
+      "technical_or_availability_barrier_on_quote_tool": 1,
+      "public_quote_requires_email_before_proceeding": 1,
+      "quote_step_requires_email_phone_and_privacy_consent": 1,
+      "public_brochure_and_marketing_access_without_quote_path_verified": 1
+    },
+    "friction_level_counts": {
+      "low": 11,
+      "high": 9,
+      "moderate": 7
+    },
+    "forced_signup_before_quote_or_plan_details_count": 1,
+    "mandatory_account_creation_before_quote_or_plan_details_count": 1,
+    "login_wall_before_quote_or_plan_details_count": 5,
+    "email_required_before_quote_output_observed_count": 5,
+    "phone_required_before_quote_output_observed_count": 1,
+    "quote_stage_unknown_due_to_no_public_quote_path_or_incomplete_capture_count": 5
+  },
+  "records": [
+    {
+      "index": 1,
+      "candidate_id": "cigna_global",
+      "insurer_name": "Cigna Global",
+      "plan_name": "International Health Insurance / Global Medical Cover",
+      "candidate_type": "primary",
+      "primary_source_url": "https://www.cignaglobal.com/",
+      "quote_or_application_url": "https://www.cignaglobal.com/quote/pages/quote/CountrySelector.html",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "account_access_friction_classification": "public_quote_form_accessible_without_account_at_entry",
+      "account_access_friction_level": "low",
+      "forced_signup_before_quote_or_plan_details": false,
+      "mandatory_account_creation_before_quote_or_plan_details": false,
+      "login_wall_before_quote_or_plan_details": false,
+      "email_required_before_quote_output_observed": false,
+      "phone_required_before_quote_output_observed": false,
+      "verification_requirement_observed": "not_observed",
+      "public_plan_details_accessible_without_account_observed": true,
+      "public_quote_entry_without_account_observed": true,
+      "evidence_ledger_entries": [
+        "Quote page says “Get a quote in just 2 minutes” and immediately asks “Where will you be living for the duration of the policy?” on a public country selector page.",
+        "The page separately offers “Continue previous quote,” implying quote retrieval may exist later, but the initial quote entry itself is public."
+      ],
+      "uncertainty_notes": [
+        "This run did not progress far enough to determine whether later quote retrieval, save-and-return, or purchase steps require account verification."
+      ],
+      "evidence_linkage": {
+        "ledger_dataset_path": "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+        "access_friction_evidence_id": "cigna_global:access",
+        "intake_friction_evidence_id": "cigna_global:intake",
+        "linked_quote_intake_record_index": 1,
+        "linked_shared_candidate_id": "cigna_global"
+      }
+    },
+    {
+      "index": 2,
+      "candidate_id": "allianz_care",
+      "insurer_name": "Allianz Care",
+      "plan_name": "Care International Health Insurance Plans",
+      "candidate_type": "primary",
+      "primary_source_url": "https://www.allianzcare.com/en/personal-international-health-insurance.html",
+      "quote_or_application_url": "https://my.allianzcare.com/myquote/5",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "account_access_friction_classification": "bot_or_challenge_validation_wall_before_quote_contents",
+      "account_access_friction_level": "high",
+      "forced_signup_before_quote_or_plan_details": false,
+      "mandatory_account_creation_before_quote_or_plan_details": false,
+      "login_wall_before_quote_or_plan_details": true,
+      "email_required_before_quote_output_observed": false,
+      "phone_required_before_quote_output_observed": false,
+      "verification_requirement_observed": "challenge_validation_observed",
+      "public_plan_details_accessible_without_account_observed": true,
+      "public_quote_entry_without_account_observed": false,
+      "evidence_ledger_entries": [
+        "The captured quote URL returned a page titled “Challenge Validation” instead of quote fields.",
+        "The extracted content only exposed challenge/iframe fragments rather than quote details, so the quote path is effectively gated at entry in this run."
+      ],
+      "uncertainty_notes": [
+        "The public challenge may be anti-bot rather than a customer login requirement; account-creation or email/phone verification requirements beyond the challenge remain unverified."
+      ],
+      "evidence_linkage": {
+        "ledger_dataset_path": "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+        "access_friction_evidence_id": "allianz_care:access",
+        "intake_friction_evidence_id": "allianz_care:intake",
+        "linked_quote_intake_record_index": 2,
+        "linked_shared_candidate_id": "allianz_care"
+      }
+    },
+    {
+      "index": 3,
+      "candidate_id": "bupa_global",
+      "insurer_name": "Bupa Global",
+      "plan_name": "Private Health Insurance & Medical Insurance for Individuals and Families",
+      "candidate_type": "primary",
+      "primary_source_url": "https://www.bupaglobal.com/en/private-health-insurance",
+      "quote_or_application_url": "https://www.bupaglobal.com/en/private-health-insurance",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "account_access_friction_classification": "public_country_selector_accessible_without_account",
+      "account_access_friction_level": "low",
+      "forced_signup_before_quote_or_plan_details": false,
+      "mandatory_account_creation_before_quote_or_plan_details": false,
+      "login_wall_before_quote_or_plan_details": false,
+      "email_required_before_quote_output_observed": false,
+      "phone_required_before_quote_output_observed": false,
+      "verification_requirement_observed": "not_observed",
+      "public_plan_details_accessible_without_account_observed": true,
+      "public_quote_entry_without_account_observed": true,
+      "evidence_ledger_entries": [
+        "The official page publicly exposes a country selector with Georgia and Germany visible and a “See plans” action.",
+        "No signup, login, email capture, or phone verification requirement was visible before reaching the country-selection step."
+      ],
+      "uncertainty_notes": [
+        "This run did not verify whether later premium output or application steps introduce account or contact-verification requirements."
+      ],
+      "evidence_linkage": {
+        "ledger_dataset_path": "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+        "access_friction_evidence_id": "bupa_global:access",
+        "intake_friction_evidence_id": "bupa_global:intake",
+        "linked_quote_intake_record_index": 3,
+        "linked_shared_candidate_id": "bupa_global"
+      }
+    },
+    {
+      "index": 4,
+      "candidate_id": "axa_global_healthcare",
+      "insurer_name": "AXA Global Healthcare",
+      "plan_name": "International Health Insurance Plans",
+      "candidate_type": "primary",
+      "primary_source_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/",
+      "quote_or_application_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/get-a-quote/?camp=online-default",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "account_access_friction_classification": "public_quote_router_accessible_without_account",
+      "account_access_friction_level": "low",
+      "forced_signup_before_quote_or_plan_details": false,
+      "mandatory_account_creation_before_quote_or_plan_details": false,
+      "login_wall_before_quote_or_plan_details": false,
+      "email_required_before_quote_output_observed": false,
+      "phone_required_before_quote_output_observed": false,
+      "verification_requirement_observed": "not_observed",
+      "public_plan_details_accessible_without_account_observed": true,
+      "public_quote_entry_without_account_observed": true,
+      "evidence_ledger_entries": [
+        "AXA’s public quote page asks “What length of cover are you looking for?” and offers online quote links plus callback and phone options.",
+        "The first visible decision flow is public and did not require an account before the user could reach quote-routing choices."
+      ],
+      "uncertainty_notes": [
+        "The downstream quote.axaglobalhealthcare.com flow was not fully traversed here, so later verification requirements remain unverified."
+      ],
+      "evidence_linkage": {
+        "ledger_dataset_path": "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+        "access_friction_evidence_id": "axa_global_healthcare:access",
+        "intake_friction_evidence_id": "axa_global_healthcare:intake",
+        "linked_quote_intake_record_index": 4,
+        "linked_shared_candidate_id": "axa_global_healthcare"
+      }
+    },
+    {
+      "index": 5,
+      "candidate_id": "april_international",
+      "insurer_name": "APRIL International",
+      "plan_name": "Long-term Expat International Health Insurance",
+      "candidate_type": "primary",
+      "primary_source_url": "https://www.april-international.com/en/long-term-international-health-insurance",
+      "quote_or_application_url": "https://www.april-international.com/en",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "account_access_friction_classification": "public_plan_finder_accessible_without_account",
+      "account_access_friction_level": "low",
+      "forced_signup_before_quote_or_plan_details": false,
+      "mandatory_account_creation_before_quote_or_plan_details": false,
+      "login_wall_before_quote_or_plan_details": false,
+      "email_required_before_quote_output_observed": false,
+      "phone_required_before_quote_output_observed": false,
+      "verification_requirement_observed": "not_observed",
+      "public_plan_details_accessible_without_account_observed": true,
+      "public_quote_entry_without_account_observed": true,
+      "evidence_ledger_entries": [
+        "APRIL states “International health insurance for everyone, 100% online” and presents a public “Find a plan / Get a quote” selector on the landing page.",
+        "The page is navigable without signup and lets users choose cover type, country, and language before any observed account gate."
+      ],
+      "uncertainty_notes": [
+        "The run did not confirm whether APRIL later requires email verification or account creation before showing final prices or binding coverage."
+      ],
+      "evidence_linkage": {
+        "ledger_dataset_path": "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+        "access_friction_evidence_id": "april_international:access",
+        "intake_friction_evidence_id": "april_international:intake",
+        "linked_quote_intake_record_index": 5,
+        "linked_shared_candidate_id": "april_international"
+      }
+    },
+    {
+      "index": 6,
+      "candidate_id": "william_russell",
+      "insurer_name": "William Russell",
+      "plan_name": "International Health Insurance",
+      "candidate_type": "primary",
+      "primary_source_url": "https://www.william-russell.com/international-health-insurance/",
+      "quote_or_application_url": "https://www.william-russell.com/international-health-insurance/",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "account_access_friction_classification": "public_quote_link_and_marketing_details_without_account",
+      "account_access_friction_level": "low",
+      "forced_signup_before_quote_or_plan_details": false,
+      "mandatory_account_creation_before_quote_or_plan_details": false,
+      "login_wall_before_quote_or_plan_details": false,
+      "email_required_before_quote_output_observed": false,
+      "phone_required_before_quote_output_observed": false,
+      "verification_requirement_observed": "not_observed",
+      "public_plan_details_accessible_without_account_observed": true,
+      "public_quote_entry_without_account_observed": true,
+      "evidence_ledger_entries": [
+        "William Russell says users can “Use the online quote tool” and that prices are shown within minutes.",
+        "The public plan page exposes the quote link and pricing examples without requiring login or registration to read plan details."
+      ],
+      "uncertainty_notes": [
+        "The dedicated quote app was referenced but not deeply traversed here, so later account, email, or phone verification remains unverified."
+      ],
+      "evidence_linkage": {
+        "ledger_dataset_path": "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+        "access_friction_evidence_id": "william_russell:access",
+        "intake_friction_evidence_id": "william_russell:intake",
+        "linked_quote_intake_record_index": 6,
+        "linked_shared_candidate_id": "william_russell"
+      }
+    },
+    {
+      "index": 7,
+      "candidate_id": "msh_international",
+      "insurer_name": "MSH International",
+      "plan_name": "First'Expat+ / International Health Insurance for Individuals",
+      "candidate_type": "primary",
+      "primary_source_url": "https://www.msh-intl.com/en/individuals/",
+      "quote_or_application_url": "https://www.msh-intl.com/en/comparisons-offers-msh",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "account_access_friction_classification": "public_profile_selection_with_existing_member_login_option",
+      "account_access_friction_level": "moderate",
+      "forced_signup_before_quote_or_plan_details": false,
+      "mandatory_account_creation_before_quote_or_plan_details": false,
+      "login_wall_before_quote_or_plan_details": false,
+      "email_required_before_quote_output_observed": false,
+      "phone_required_before_quote_output_observed": false,
+      "verification_requirement_observed": "not_observed",
+      "public_plan_details_accessible_without_account_observed": true,
+      "public_quote_entry_without_account_observed": true,
+      "evidence_ledger_entries": [
+        "MSH’s page is publicly accessible and starts with “Tell us about yourself. You are” plus profile choices such as individual, company, broker, and NGO.",
+        "The page also exposes “Already insured with MSH, I log in,” showing that member login exists, but it is not required for the initial profile-selection step."
+      ],
+      "uncertainty_notes": [
+        "This run did not advance through the individual flow, so any later contact capture, account creation, or verification requirements remain unverified."
+      ],
+      "evidence_linkage": {
+        "ledger_dataset_path": "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+        "access_friction_evidence_id": "msh_international:access",
+        "intake_friction_evidence_id": "msh_international:intake",
+        "linked_quote_intake_record_index": 7,
+        "linked_shared_candidate_id": "msh_international"
+      }
+    },
+    {
+      "index": 8,
+      "candidate_id": "now_health_international",
+      "insurer_name": "Now Health International",
+      "plan_name": "SimpleCare / WorldCare International Health Insurance Plans",
+      "candidate_type": "primary",
+      "primary_source_url": "https://www.now-health.com/en/insurance-plans/",
+      "quote_or_application_url": "https://www.now-health.com/en/insurance-plans/",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "account_access_friction_classification": "public_plan_comparison_without_public_quote_gate_verified",
+      "account_access_friction_level": "low",
+      "forced_signup_before_quote_or_plan_details": false,
+      "mandatory_account_creation_before_quote_or_plan_details": false,
+      "login_wall_before_quote_or_plan_details": false,
+      "email_required_before_quote_output_observed": false,
+      "phone_required_before_quote_output_observed": false,
+      "verification_requirement_observed": "not_observed",
+      "public_plan_details_accessible_without_account_observed": true,
+      "public_quote_entry_without_account_observed": null,
+      "evidence_ledger_entries": [
+        "Now Health’s plan-comparison page is publicly readable and shows product families, benefit tables, and document-library references.",
+        "No quote, signup, login wall, or verification requirement was observed before accessing the plan comparison itself."
+      ],
+      "uncertainty_notes": [
+        "A distinct public quote-entry path was not verified in this run, so quote-stage friction remains unknown."
+      ],
+      "evidence_linkage": {
+        "ledger_dataset_path": "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+        "access_friction_evidence_id": "now_health_international:access",
+        "intake_friction_evidence_id": "now_health_international:intake",
+        "linked_quote_intake_record_index": 8,
+        "linked_shared_candidate_id": "now_health_international"
+      }
+    },
+    {
+      "index": 9,
+      "candidate_id": "img_global",
+      "insurer_name": "IMG (International Medical Group)",
+      "plan_name": "Global Medical international health insurance",
+      "candidate_type": "primary",
+      "primary_source_url": "https://www.imglobal.com/",
+      "quote_or_application_url": "https://www.imglobal.com/international-health-insurance",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "account_access_friction_classification": "public_plan_details_with_buy_now_and_price_links",
+      "account_access_friction_level": "low",
+      "forced_signup_before_quote_or_plan_details": false,
+      "mandatory_account_creation_before_quote_or_plan_details": false,
+      "login_wall_before_quote_or_plan_details": false,
+      "email_required_before_quote_output_observed": false,
+      "phone_required_before_quote_output_observed": false,
+      "verification_requirement_observed": "not_observed",
+      "public_plan_details_accessible_without_account_observed": true,
+      "public_quote_entry_without_account_observed": true,
+      "evidence_ledger_entries": [
+        "IMG publicly shows plan cards with “Buy Now” and “See Price” links for Global Medical plans.",
+        "The marketing page exposes those actions and product details without requiring an account at the landing-page stage."
+      ],
+      "uncertainty_notes": [
+        "This run did not open the downstream purchase/price pages, so later signup or identity verification requirements remain unverified."
+      ],
+      "evidence_linkage": {
+        "ledger_dataset_path": "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+        "access_friction_evidence_id": "img_global:access",
+        "intake_friction_evidence_id": "img_global:intake",
+        "linked_quote_intake_record_index": 9,
+        "linked_shared_candidate_id": "img_global"
+      }
+    },
+    {
+      "index": 10,
+      "candidate_id": "aetna_international",
+      "insurer_name": "Aetna International",
+      "plan_name": "Aetna International global healthcare entrypoint",
+      "candidate_type": "primary",
+      "primary_source_url": "https://www.aetnainternational.com/",
+      "quote_or_application_url": "https://www.aetna.com/employers-organizations/aetna-international-insurance.html",
+      "contact_model": "official_marketing_page_to_external_or_specialized_quote_flow",
+      "account_access_friction_classification": "member_login_and_b2b_paths_visible_no_public_retail_quote_verified",
+      "account_access_friction_level": "high",
+      "forced_signup_before_quote_or_plan_details": false,
+      "mandatory_account_creation_before_quote_or_plan_details": false,
+      "login_wall_before_quote_or_plan_details": true,
+      "email_required_before_quote_output_observed": false,
+      "phone_required_before_quote_output_observed": false,
+      "verification_requirement_observed": "not_observed",
+      "public_plan_details_accessible_without_account_observed": true,
+      "public_quote_entry_without_account_observed": false,
+      "evidence_ledger_entries": [
+        "The Aetna page is structured around members, brokers, and employers rather than a public individual-family quote form.",
+        "For members, the visible action is “Log in to your member website,” and no public direct retail individual quote path was verified on the captured page."
+      ],
+      "uncertainty_notes": [
+        "Because this page appears employer/member oriented, it is unclear whether a separate retail individual/family quote flow exists elsewhere or what verification it would require."
+      ],
+      "evidence_linkage": {
+        "ledger_dataset_path": "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+        "access_friction_evidence_id": "aetna_international:access",
+        "intake_friction_evidence_id": "aetna_international:intake",
+        "linked_quote_intake_record_index": 10,
+        "linked_shared_candidate_id": "aetna_international"
+      }
+    },
+    {
+      "index": 11,
+      "candidate_id": "foyer_global_health",
+      "insurer_name": "Foyer Global Health",
+      "plan_name": "Expat Health Insurance / International Health Insurance comparison",
+      "candidate_type": "primary",
+      "primary_source_url": "https://www.foyerglobalhealth.com/",
+      "quote_or_application_url": "https://www.foyerglobalhealth.com/plans-services/our-plans/international-health-insurance-comparison/",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "account_access_friction_classification": "public_plan_comparison_with_quote_and_apply_links",
+      "account_access_friction_level": "low",
+      "forced_signup_before_quote_or_plan_details": false,
+      "mandatory_account_creation_before_quote_or_plan_details": false,
+      "login_wall_before_quote_or_plan_details": false,
+      "email_required_before_quote_output_observed": false,
+      "phone_required_before_quote_output_observed": false,
+      "verification_requirement_observed": "not_observed",
+      "public_plan_details_accessible_without_account_observed": true,
+      "public_quote_entry_without_account_observed": true,
+      "evidence_ledger_entries": [
+        "Foyer publicly exposes “Receive a quote,” “Get a quick quote,” and “Apply now” from the plan-comparison page.",
+        "Plan details, brochure download, and quote-entry CTAs were all visible before any observed login or account gate."
+      ],
+      "uncertainty_notes": [
+        "The quick-quote/application flow itself was not fully traversed here, so later account or verification requirements remain unverified."
+      ],
+      "evidence_linkage": {
+        "ledger_dataset_path": "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+        "access_friction_evidence_id": "foyer_global_health:access",
+        "intake_friction_evidence_id": "foyer_global_health:intake",
+        "linked_quote_intake_record_index": 11,
+        "linked_shared_candidate_id": "foyer_global_health"
+      }
+    },
+    {
+      "index": 12,
+      "candidate_id": "henner",
+      "insurer_name": "Henner",
+      "plan_name": "Individuals & Families international health solutions",
+      "candidate_type": "primary",
+      "primary_source_url": "https://www.henner.com/en/customers/individuals-families/",
+      "quote_or_application_url": "https://www.henner.com/en/customers/individuals-families/",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "account_access_friction_classification": "public_information_page_without_public_quote_path_verified",
+      "account_access_friction_level": "moderate",
+      "forced_signup_before_quote_or_plan_details": false,
+      "mandatory_account_creation_before_quote_or_plan_details": false,
+      "login_wall_before_quote_or_plan_details": false,
+      "email_required_before_quote_output_observed": false,
+      "phone_required_before_quote_output_observed": false,
+      "verification_requirement_observed": "unknown",
+      "public_plan_details_accessible_without_account_observed": true,
+      "public_quote_entry_without_account_observed": null,
+      "evidence_ledger_entries": [
+        "Henner’s individuals-and-families page is publicly readable and explains the offering without requiring login.",
+        "This run did not capture a distinct quote/application path, so friction at the quote stage could not be observed."
+      ],
+      "uncertainty_notes": [
+        "Because no quote flow was verified, signup, account creation, email capture, or phone verification requirements are unknown."
+      ],
+      "evidence_linkage": {
+        "ledger_dataset_path": "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+        "access_friction_evidence_id": "henner:access",
+        "intake_friction_evidence_id": "henner:intake",
+        "linked_quote_intake_record_index": 12,
+        "linked_shared_candidate_id": "henner"
+      }
+    },
+    {
+      "index": 13,
+      "candidate_id": "globality_health",
+      "insurer_name": "Globality Health",
+      "plan_name": "YouGenio individual international health insurance plans",
+      "candidate_type": "primary",
+      "primary_source_url": "https://www.globality-health.com/",
+      "quote_or_application_url": "https://application.globality-health.com/?locale=en",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "account_access_friction_classification": "public_quote_application_flow_with_waiver_consent",
+      "account_access_friction_level": "moderate",
+      "forced_signup_before_quote_or_plan_details": false,
+      "mandatory_account_creation_before_quote_or_plan_details": false,
+      "login_wall_before_quote_or_plan_details": false,
+      "email_required_before_quote_output_observed": false,
+      "phone_required_before_quote_output_observed": false,
+      "verification_requirement_observed": "consent_checkbox_observed",
+      "public_plan_details_accessible_without_account_observed": false,
+      "public_quote_entry_without_account_observed": true,
+      "evidence_ledger_entries": [
+        "The application starts publicly with “Get a quotation in seconds. Get your health insurance in minutes.” and shows steps from Quote through Confirmation.",
+        "To proceed without consultation, the applicant must tick a waiver: “You need to consent before you can proceed.”"
+      ],
+      "uncertainty_notes": [
+        "The observed consent requirement is not an account gate, but later identity verification, email confirmation, or portal creation requirements were not verified."
+      ],
+      "evidence_linkage": {
+        "ledger_dataset_path": "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+        "access_friction_evidence_id": "globality_health:access",
+        "intake_friction_evidence_id": "globality_health:intake",
+        "linked_quote_intake_record_index": 13,
+        "linked_shared_candidate_id": "globality_health"
+      }
+    },
+    {
+      "index": 14,
+      "candidate_id": "morgan_price",
+      "insurer_name": "Morgan Price International Healthcare",
+      "plan_name": "Evolution Health / Flexible Choices individual international healthcare plans",
+      "candidate_type": "primary",
+      "primary_source_url": "https://www.morgan-price.com/individual/",
+      "quote_or_application_url": "https://morgan-price.com/quick-quote/",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "account_access_friction_classification": "public_quick_quote_with_email_capture_and_manual_fallback",
+      "account_access_friction_level": "moderate",
+      "forced_signup_before_quote_or_plan_details": false,
+      "mandatory_account_creation_before_quote_or_plan_details": false,
+      "login_wall_before_quote_or_plan_details": false,
+      "email_required_before_quote_output_observed": true,
+      "phone_required_before_quote_output_observed": false,
+      "verification_requirement_observed": "email_capture_observed",
+      "public_plan_details_accessible_without_account_observed": false,
+      "public_quote_entry_without_account_observed": true,
+      "evidence_ledger_entries": [
+        "Morgan Price says it is “quick and easy to get an instant quote” via the quick-quote form.",
+        "The form asks for residence, currency, age, nationality, and dependents; when online quoting cannot proceed it says “Please contact us by email for a quotation,” and the fallback form asks for Email, Name, Age, and Country of Residence with optional phone callback."
+      ],
+      "uncertainty_notes": [
+        "The page clearly captures email for manual follow-up in some cases, but this run did not confirm whether email is mandatory for all quote outputs or only fallback scenarios."
+      ],
+      "evidence_linkage": {
+        "ledger_dataset_path": "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+        "access_friction_evidence_id": "morgan_price:access",
+        "intake_friction_evidence_id": "morgan_price:intake",
+        "linked_quote_intake_record_index": 14,
+        "linked_shared_candidate_id": "morgan_price"
+      }
+    },
+    {
+      "index": 15,
+      "candidate_id": "passportcard_global",
+      "insurer_name": "PassportCard",
+      "plan_name": "Expat Basic / Expat Comprehensive / Executive",
+      "candidate_type": "supplemental",
+      "primary_source_url": "https://www.passportcard.de/en/international-health-insurance/",
+      "quote_or_application_url": null,
+      "contact_model": "official_information_page_without_public_quote_path_verified",
+      "account_access_friction_classification": "public_plan_details_and_sample_prices_without_quote_path_verified",
+      "account_access_friction_level": "low",
+      "forced_signup_before_quote_or_plan_details": false,
+      "mandatory_account_creation_before_quote_or_plan_details": false,
+      "login_wall_before_quote_or_plan_details": false,
+      "email_required_before_quote_output_observed": false,
+      "phone_required_before_quote_output_observed": false,
+      "verification_requirement_observed": "not_observed",
+      "public_plan_details_accessible_without_account_observed": true,
+      "public_quote_entry_without_account_observed": null,
+      "evidence_ledger_entries": [
+        "PassportCard’s official page publicly shows plan tiers, benefit highlights, and example monthly EUR prices.",
+        "No forced signup, account creation, or login wall was observed before viewing plan details and the benefits PDF link."
+      ],
+      "uncertainty_notes": [
+        "A direct quote/application path was not verified in this run, so quote-stage contact or verification friction remains unknown."
+      ],
+      "evidence_linkage": {
+        "ledger_dataset_path": "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+        "access_friction_evidence_id": "passportcard_global:access",
+        "intake_friction_evidence_id": "passportcard_global:intake",
+        "linked_quote_intake_record_index": 15,
+        "linked_shared_candidate_id": "passportcard_global"
+      }
+    },
+    {
+      "index": 16,
+      "candidate_id": "vumi",
+      "insurer_name": "VUMI",
+      "plan_name": "Absolute VIP / Universal VIP / Special VIP / Access VIP product family",
+      "candidate_type": "supplemental",
+      "primary_source_url": "https://www.vumigroup.com/",
+      "quote_or_application_url": null,
+      "contact_model": "official_information_page_without_public_quote_path_verified",
+      "account_access_friction_classification": "public_plan_navigation_with_separate_member_and_agent_portals",
+      "account_access_friction_level": "moderate",
+      "forced_signup_before_quote_or_plan_details": false,
+      "mandatory_account_creation_before_quote_or_plan_details": false,
+      "login_wall_before_quote_or_plan_details": false,
+      "email_required_before_quote_output_observed": false,
+      "phone_required_before_quote_output_observed": false,
+      "verification_requirement_observed": "not_observed",
+      "public_plan_details_accessible_without_account_observed": true,
+      "public_quote_entry_without_account_observed": null,
+      "evidence_ledger_entries": [
+        "VUMI’s homepage publicly lists health plans and regional selection paths without requiring login to read plan positioning.",
+        "The same page separately advertises MyVUMI as a “secured platform” for insureds and an agent portal, indicating account-gated servicing exists, but not at the public discovery stage."
+      ],
+      "uncertainty_notes": [
+        "A direct public quote path for individuals/families was not verified here, so pre-quote account or verification friction remains unknown."
+      ],
+      "evidence_linkage": {
+        "ledger_dataset_path": "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+        "access_friction_evidence_id": "vumi:access",
+        "intake_friction_evidence_id": "vumi:intake",
+        "linked_quote_intake_record_index": 16,
+        "linked_shared_candidate_id": "vumi"
+      }
+    },
+    {
+      "index": 17,
+      "candidate_id": "integra_global",
+      "insurer_name": "Integra Global",
+      "plan_name": "yourLife / PremierLife / yourFamily / PremierFamily",
+      "candidate_type": "supplemental",
+      "primary_source_url": "https://www.internationalinsurance.com/integra-global/",
+      "quote_or_application_url": null,
+      "contact_model": "broker_or_intermediary_led",
+      "account_access_friction_classification": "broker_led_quote_handoff",
+      "account_access_friction_level": "high",
+      "forced_signup_before_quote_or_plan_details": false,
+      "mandatory_account_creation_before_quote_or_plan_details": false,
+      "login_wall_before_quote_or_plan_details": false,
+      "email_required_before_quote_output_observed": null,
+      "phone_required_before_quote_output_observed": null,
+      "verification_requirement_observed": "broker_handoff",
+      "public_plan_details_accessible_without_account_observed": true,
+      "public_quote_entry_without_account_observed": false,
+      "evidence_ledger_entries": [
+        "The staged public evidence is a broker page, not an official insurer quote flow.",
+        "The visible quote action is broker-led (“Get a Quote” on InternationalInsurance.com), so direct insurer self-serve quote access was not verified."
+      ],
+      "uncertainty_notes": [
+        "The broker’s own quote form friction and any eventual insurer-side account requirements were not fully traced in this run."
+      ],
+      "evidence_linkage": {
+        "ledger_dataset_path": "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+        "access_friction_evidence_id": "integra_global:access",
+        "intake_friction_evidence_id": "integra_global:intake",
+        "linked_quote_intake_record_index": 17,
+        "linked_shared_candidate_id": "integra_global"
+      }
+    },
+    {
+      "index": 18,
+      "candidate_id": "medihelp_international",
+      "insurer_name": "MediHelp International",
+      "plan_name": "My Global Health individual plans: Blue / Azure / Cobalt / Admiral / Royal",
+      "candidate_type": "supplemental",
+      "primary_source_url": "https://www.medihelp-assistance.com/en/medihelp-plans/individual-plans",
+      "quote_or_application_url": null,
+      "contact_model": "official_information_page_without_public_quote_path_verified",
+      "account_access_friction_classification": "public_plan_page_with_quote_link_and_buy_online_login",
+      "account_access_friction_level": "moderate",
+      "forced_signup_before_quote_or_plan_details": false,
+      "mandatory_account_creation_before_quote_or_plan_details": false,
+      "login_wall_before_quote_or_plan_details": true,
+      "email_required_before_quote_output_observed": false,
+      "phone_required_before_quote_output_observed": false,
+      "verification_requirement_observed": "login_link_observed",
+      "public_plan_details_accessible_without_account_observed": true,
+      "public_quote_entry_without_account_observed": true,
+      "evidence_ledger_entries": [
+        "MediHelp’s individual-plans page is publicly accessible and shows both “Get a quote” and “BUY ONLINE.”",
+        "The BUY ONLINE action points to a “#/login” path, indicating a login-gated online-buy route exists, even though public plan details and a quote entry link are visible without login."
+      ],
+      "uncertainty_notes": [
+        "This run did not inspect the separate Get a quote form, so any email/phone verification there remains unverified."
+      ],
+      "evidence_linkage": {
+        "ledger_dataset_path": "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+        "access_friction_evidence_id": "medihelp_international:access",
+        "intake_friction_evidence_id": "medihelp_international:intake",
+        "linked_quote_intake_record_index": 18,
+        "linked_shared_candidate_id": "medihelp_international"
+      }
+    },
+    {
+      "index": 19,
+      "candidate_id": "alc_health",
+      "insurer_name": "ALC Health",
+      "plan_name": "Global Prima Medical Insurance / Flying Colours legacy entrypoints",
+      "candidate_type": "supplemental",
+      "primary_source_url": "https://www.alchealth.com/",
+      "quote_or_application_url": null,
+      "contact_model": "legacy_brand_redirect_to_other_insurer",
+      "account_access_friction_classification": "legacy_site_with_member_login_and_new_business_redirect",
+      "account_access_friction_level": "high",
+      "forced_signup_before_quote_or_plan_details": false,
+      "mandatory_account_creation_before_quote_or_plan_details": false,
+      "login_wall_before_quote_or_plan_details": true,
+      "email_required_before_quote_output_observed": false,
+      "phone_required_before_quote_output_observed": false,
+      "verification_requirement_observed": "redirect_observed",
+      "public_plan_details_accessible_without_account_observed": true,
+      "public_quote_entry_without_account_observed": false,
+      "evidence_ledger_entries": [
+        "ALC’s site remains publicly viewable and includes a MyALC claims/member account link.",
+        "A notice states: “As of 1 August 2025, new business quotes and sales ... are now handled on our updated website: www.imglobal.com/intl,” so new-business discovery is redirected away from the legacy brand."
+      ],
+      "uncertainty_notes": [
+        "This run did not inspect the new IMG-branded destination from the redirect notice for any additional friction."
+      ],
+      "evidence_linkage": {
+        "ledger_dataset_path": "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+        "access_friction_evidence_id": "alc_health:access",
+        "intake_friction_evidence_id": "alc_health:intake",
+        "linked_quote_intake_record_index": 19,
+        "linked_shared_candidate_id": "alc_health"
+      }
+    },
+    {
+      "index": 20,
+      "candidate_id": "geoblue_xplorer_bcbs_global_solutions",
+      "insurer_name": "Blue Cross Blue Shield Global Solutions (formerly GeoBlue Xplorer)",
+      "plan_name": "Worldwide Premier / Outside U.S. / Outside U.S. Select",
+      "candidate_type": "supplemental",
+      "primary_source_url": "https://www.internationalinsurance.com/geoblue/xplorer/",
+      "quote_or_application_url": null,
+      "contact_model": "broker_or_intermediary_led",
+      "account_access_friction_classification": "broker_led_plan_page",
+      "account_access_friction_level": "high",
+      "forced_signup_before_quote_or_plan_details": false,
+      "mandatory_account_creation_before_quote_or_plan_details": false,
+      "login_wall_before_quote_or_plan_details": false,
+      "email_required_before_quote_output_observed": null,
+      "phone_required_before_quote_output_observed": null,
+      "verification_requirement_observed": "broker_handoff",
+      "public_plan_details_accessible_without_account_observed": true,
+      "public_quote_entry_without_account_observed": false,
+      "evidence_ledger_entries": [
+        "The captured discovery evidence is a broker page summarizing BCBS Global Solutions / former GeoBlue Xplorer.",
+        "Direct insurer self-serve quote access was not verified from the staged evidence, so discovery currently depends on a broker/intermediary path."
+      ],
+      "uncertainty_notes": [
+        "Broker form friction and any subsequent insurer verification requirements were not traced in this run."
+      ],
+      "evidence_linkage": {
+        "ledger_dataset_path": "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+        "access_friction_evidence_id": "geoblue_xplorer_bcbs_global_solutions:access",
+        "intake_friction_evidence_id": "geoblue_xplorer_bcbs_global_solutions:intake",
+        "linked_quote_intake_record_index": 20,
+        "linked_shared_candidate_id": "geoblue_xplorer_bcbs_global_solutions"
+      }
+    },
+    {
+      "index": 21,
+      "candidate_id": "safetywing_nomad_complete",
+      "insurer_name": "SafetyWing",
+      "plan_name": "Nomad Insurance Complete",
+      "candidate_type": "supplemental",
+      "primary_source_url": "https://explore.safetywing.com/nomad-insurance-complete",
+      "quote_or_application_url": "https://safetywing.com/signup?product=nomad-health",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "account_access_friction_classification": "mandatory_account_creation_or_login_before_quote",
+      "account_access_friction_level": "high",
+      "forced_signup_before_quote_or_plan_details": true,
+      "mandatory_account_creation_before_quote_or_plan_details": true,
+      "login_wall_before_quote_or_plan_details": true,
+      "email_required_before_quote_output_observed": true,
+      "phone_required_before_quote_output_observed": false,
+      "verification_requirement_observed": "account_credentials_required",
+      "public_plan_details_accessible_without_account_observed": true,
+      "public_quote_entry_without_account_observed": false,
+      "evidence_ledger_entries": [
+        "The captured entry page is a signup screen headed “Your global coverage starts here.”",
+        "Before progressing, the user must either “Sign in with Google” or enter Email and Password to “Continue with email,” and the page also asks “Already have an account? Log in.”"
+      ],
+      "uncertainty_notes": [
+        "The run did not determine whether any anonymous quote-only path exists elsewhere outside this signup URL."
+      ],
+      "evidence_linkage": {
+        "ledger_dataset_path": "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+        "access_friction_evidence_id": "safetywing_nomad_complete:access",
+        "intake_friction_evidence_id": "safetywing_nomad_complete:intake",
+        "linked_quote_intake_record_index": 21,
+        "linked_shared_candidate_id": "safetywing_nomad_complete"
+      }
+    },
+    {
+      "index": 22,
+      "candidate_id": "genki_native",
+      "insurer_name": "Genki",
+      "plan_name": "Native / international health insurance",
+      "candidate_type": "supplemental",
+      "primary_source_url": "https://genki.world/",
+      "quote_or_application_url": "https://consultation.genki.world/v2",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "account_access_friction_classification": "public_consultation_flow_without_account_at_entry",
+      "account_access_friction_level": "low",
+      "forced_signup_before_quote_or_plan_details": false,
+      "mandatory_account_creation_before_quote_or_plan_details": false,
+      "login_wall_before_quote_or_plan_details": false,
+      "email_required_before_quote_output_observed": false,
+      "phone_required_before_quote_output_observed": false,
+      "verification_requirement_observed": "not_observed",
+      "public_plan_details_accessible_without_account_observed": true,
+      "public_quote_entry_without_account_observed": true,
+      "evidence_ledger_entries": [
+        "Genki’s consultation starts publicly with “Answer a few quick questions” and says users can “See the price and sign up in minutes.”",
+        "The first visible flow collects travel and destination answers without showing a login or account-creation gate at entry."
+      ],
+      "uncertainty_notes": [
+        "The wording implies signup later in the process, but this run did not verify whether account creation is required before the final price display or only at purchase."
+      ],
+      "evidence_linkage": {
+        "ledger_dataset_path": "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+        "access_friction_evidence_id": "genki_native:access",
+        "intake_friction_evidence_id": "genki_native:intake",
+        "linked_quote_intake_record_index": 22,
+        "linked_shared_candidate_id": "genki_native"
+      }
+    },
+    {
+      "index": 23,
+      "candidate_id": "acs_expat",
+      "insurer_name": "ACS",
+      "plan_name": "ACS Expat",
+      "candidate_type": "supplemental",
+      "primary_source_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat/",
+      "quote_or_application_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat-quote-request/",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "account_access_friction_classification": "contact_details_required_for_personalized_quote",
+      "account_access_friction_level": "high",
+      "forced_signup_before_quote_or_plan_details": false,
+      "mandatory_account_creation_before_quote_or_plan_details": false,
+      "login_wall_before_quote_or_plan_details": false,
+      "email_required_before_quote_output_observed": true,
+      "phone_required_before_quote_output_observed": false,
+      "verification_requirement_observed": "advisor_followup_quote_request",
+      "public_plan_details_accessible_without_account_observed": true,
+      "public_quote_entry_without_account_observed": true,
+      "evidence_ledger_entries": [
+        "ACS invites users to “Request your free, no-obligation expat health insurance quote” through a multi-step request flow.",
+        "The final step says “Please provide your contact details below. One of our advisors will get back to you promptly with a personalised proposal,” and the form requests name, date of birth, nationality, and contact details."
+      ],
+      "uncertainty_notes": [
+        "The extract did not definitively show which contact fields are mandatory beyond the visible personal-data fields, but the quote path clearly shifts to advisor follow-up rather than instant anonymous pricing."
+      ],
+      "evidence_linkage": {
+        "ledger_dataset_path": "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+        "access_friction_evidence_id": "acs_expat:access",
+        "intake_friction_evidence_id": "acs_expat:intake",
+        "linked_quote_intake_record_index": 23,
+        "linked_shared_candidate_id": "acs_expat"
+      }
+    },
+    {
+      "index": 24,
+      "candidate_id": "hci_group_health_protect",
+      "insurer_name": "HCI Group",
+      "plan_name": "Health Protect / Protector Plans / Nimbl Health",
+      "candidate_type": "supplemental",
+      "primary_source_url": "https://hcigroupglobal.com/health-protect/",
+      "quote_or_application_url": "https://hcigroup.outgrow.us/P21-2026",
+      "contact_model": "official_marketing_page_to_external_or_specialized_quote_flow",
+      "account_access_friction_classification": "technical_or_availability_barrier_on_quote_tool",
+      "account_access_friction_level": "high",
+      "forced_signup_before_quote_or_plan_details": false,
+      "mandatory_account_creation_before_quote_or_plan_details": false,
+      "login_wall_before_quote_or_plan_details": false,
+      "email_required_before_quote_output_observed": false,
+      "phone_required_before_quote_output_observed": false,
+      "verification_requirement_observed": "tool_unavailable_or_unstable",
+      "public_plan_details_accessible_without_account_observed": false,
+      "public_quote_entry_without_account_observed": false,
+      "evidence_ledger_entries": [
+        "The captured Outgrow quote URL did not expose quote questions; it returned an “Internet is unstable. Please check your connection” message.",
+        "Because the public tool did not render usable quote content in this run, discovery could not verify whether later signup or verification would be required."
+      ],
+      "uncertainty_notes": [
+        "The observed failure may be transient or tool-specific rather than a customer-facing hard gate."
+      ],
+      "evidence_linkage": {
+        "ledger_dataset_path": "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+        "access_friction_evidence_id": "hci_group_health_protect:access",
+        "intake_friction_evidence_id": "hci_group_health_protect:intake",
+        "linked_quote_intake_record_index": 24,
+        "linked_shared_candidate_id": "hci_group_health_protect"
+      }
+    },
+    {
+      "index": 25,
+      "candidate_id": "expatriate_group_global_health",
+      "insurer_name": "Expatriate Group",
+      "plan_name": "International Health Insurance / Select / Primary+ / Primary+ Lite / Primary",
+      "candidate_type": "supplemental",
+      "primary_source_url": "https://www.expatriatehealthcare.com/international-health-insurance/",
+      "quote_or_application_url": "https://quote.expatriatehealthcare.com/healthcare/",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "account_access_friction_classification": "public_quote_requires_email_before_proceeding",
+      "account_access_friction_level": "moderate",
+      "forced_signup_before_quote_or_plan_details": false,
+      "mandatory_account_creation_before_quote_or_plan_details": false,
+      "login_wall_before_quote_or_plan_details": false,
+      "email_required_before_quote_output_observed": true,
+      "phone_required_before_quote_output_observed": false,
+      "verification_requirement_observed": "email_capture_observed",
+      "public_plan_details_accessible_without_account_observed": true,
+      "public_quote_entry_without_account_observed": true,
+      "evidence_ledger_entries": [
+        "The quick-quote form collects people to insure, area of cover, and dates of birth, then says “Please enter your email address below to receive a copy of your quotation.”",
+        "Email is part of stage 1 before pressing “PROCEED,” so contact capture occurs before the quote flow advances."
+      ],
+      "uncertainty_notes": [
+        "This run did not verify whether the system displays pricing before or only after email submission, but email capture is clearly embedded in the initial quote stage."
+      ],
+      "evidence_linkage": {
+        "ledger_dataset_path": "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+        "access_friction_evidence_id": "expatriate_group_global_health:access",
+        "intake_friction_evidence_id": "expatriate_group_global_health:intake",
+        "linked_quote_intake_record_index": 25,
+        "linked_shared_candidate_id": "expatriate_group_global_health"
+      }
+    },
+    {
+      "index": 26,
+      "candidate_id": "wellaway_expat",
+      "insurer_name": "WellAway",
+      "plan_name": "EXPAT / Gold / Diamond / Expat Plus",
+      "candidate_type": "supplemental",
+      "primary_source_url": "https://www.wellaway.com/en/our-plans/expat/",
+      "quote_or_application_url": "https://portal.wellaway.com/Quote/EXPAT/Step1",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "account_access_friction_classification": "quote_step_requires_email_phone_and_privacy_consent",
+      "account_access_friction_level": "high",
+      "forced_signup_before_quote_or_plan_details": false,
+      "mandatory_account_creation_before_quote_or_plan_details": false,
+      "login_wall_before_quote_or_plan_details": false,
+      "email_required_before_quote_output_observed": true,
+      "phone_required_before_quote_output_observed": true,
+      "verification_requirement_observed": "contact_fields_and_privacy_consent_observed",
+      "public_plan_details_accessible_without_account_observed": false,
+      "public_quote_entry_without_account_observed": true,
+      "evidence_ledger_entries": [
+        "WellAway Step 1 requires Applicant’s Email, Origin Phone, Destination Phone, nationality, DOB, and other basics before moving on.",
+        "The page also states “We keep your information safe! Do you consent with your personal data being processed as described in the Privacy Policy? Click Yes to continue.”"
+      ],
+      "uncertainty_notes": [
+        "The flow was only inspected at Step 1, so any later account creation or email/phone verification mechanism remains unverified."
+      ],
+      "evidence_linkage": {
+        "ledger_dataset_path": "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+        "access_friction_evidence_id": "wellaway_expat:access",
+        "intake_friction_evidence_id": "wellaway_expat:intake",
+        "linked_quote_intake_record_index": 26,
+        "linked_shared_candidate_id": "wellaway_expat"
+      }
+    },
+    {
+      "index": 27,
+      "candidate_id": "securus_global_health_cover",
+      "insurer_name": "Securus International",
+      "plan_name": "Global Health Cover",
+      "candidate_type": "supplemental",
+      "primary_source_url": "https://www.securus.co.uk/benefits/global-health-cover",
+      "quote_or_application_url": null,
+      "contact_model": "official_information_page_without_public_quote_path_verified",
+      "account_access_friction_classification": "public_brochure_and_marketing_access_without_quote_path_verified",
+      "account_access_friction_level": "low",
+      "forced_signup_before_quote_or_plan_details": false,
+      "mandatory_account_creation_before_quote_or_plan_details": false,
+      "login_wall_before_quote_or_plan_details": false,
+      "email_required_before_quote_output_observed": false,
+      "phone_required_before_quote_output_observed": false,
+      "verification_requirement_observed": "not_observed",
+      "public_plan_details_accessible_without_account_observed": true,
+      "public_quote_entry_without_account_observed": null,
+      "evidence_ledger_entries": [
+        "Securus’s page publicly exposes marketing copy and brochure PDFs without requiring login.",
+        "No forced signup, account gate, or contact-verification requirement was observed before accessing the public benefit materials."
+      ],
+      "uncertainty_notes": [
+        "A direct public quote or application path was not verified, so quote-stage friction remains unknown."
+      ],
+      "evidence_linkage": {
+        "ledger_dataset_path": "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+        "access_friction_evidence_id": "securus_global_health_cover:access",
+        "intake_friction_evidence_id": "securus_global_health_cover:intake",
+        "linked_quote_intake_record_index": 27,
+        "linked_shared_candidate_id": "securus_global_health_cover"
+      }
+    }
+  ]
+}

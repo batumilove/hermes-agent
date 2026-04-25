@@ -1,0 +1,2362 @@
+{
+  "dataset": "international_expat_health_insurance_discovery",
+  "run_scope": "discovery_only",
+  "section": "plan_document_access_evidence_ledger",
+  "generated_by": "gpt-5.4",
+  "generated_from": [
+    "data/insurance_discovery/candidate_source_ledger.discovery.json",
+    "data/insurance_discovery/shared_candidate_staging.discovery.json"
+  ],
+  "family_context": {
+    "citizenship": "German",
+    "residence": "Georgia",
+    "adults": [
+      42,
+      37
+    ],
+    "children": 2,
+    "preferred_cover_geography": "Georgia and Germany, ideally worldwide excluding the US"
+  },
+  "method_notes": [
+    "This AC 50101 artifact records whether a current public brochure, policy wording PDF, table of benefits, plan description, or similar downloadable plan document was directly accessible during this run.",
+    "Direct accessibility was only marked true when a live fetch returned a public PDF URL or a reviewed public page exposed a clearly plan-relevant downloadable PDF link.",
+    "Generic legal/compliance PDFs such as privacy, cookie, complaints, or modern-slavery statements were intentionally excluded from plan-document verification.",
+    "Null/false means not found in reviewed public sources during this run, not necessarily unavailable from gated quote flows, alternate locales, or broker portals."
+  ],
+  "summary": {
+    "total_candidates": 27,
+    "direct_public_plan_document_accessible_count": 12,
+    "no_downloadable_plan_document_found_count": 15,
+    "official_or_captured_pdf_verified_live_count": 6,
+    "public_page_linked_pdf_verified_live_count": 6
+  },
+  "records": [
+    {
+      "index": 1,
+      "candidate_id": "cigna_global",
+      "insurer_name": "Cigna Global",
+      "plan_name": "International Health Insurance / Global Medical Cover",
+      "official_url": "https://www.cignaglobal.com/",
+      "quote_or_application_url": "https://www.cignaglobal.com/quote/pages/quote/CountrySelector.html",
+      "broker_url": null,
+      "document_status": "no_downloadable_plan_document_found_in_reviewed_public_sources",
+      "direct_public_plan_document_accessible": false,
+      "downloadable_plan_document_found": false,
+      "no_downloadable_plan_document_found": true,
+      "document_source_url": null,
+      "document_source_type": null,
+      "document_access_path": "not_found_in_reviewed_public_sources",
+      "verification_detail": "https://www.cignaglobal.com/ -> HTTP 200; https://www.cignaglobal.com/quote/pages/quote/CountrySelector.html -> HTTP 200",
+      "supporting_page_url": "https://www.cignaglobal.com/",
+      "supporting_page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+      "evidence_citations": [
+        {
+          "citation_role": "supporting_page",
+          "source_url": "https://www.cignaglobal.com/",
+          "source_type": "reviewed public page",
+          "page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+          "excerpt": "https://www.cignaglobal.com/ -> HTTP 200; https://www.cignaglobal.com/quote/pages/quote/CountrySelector.html -> HTTP 200",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "cigna_global"
+            ],
+            "primary_candidate_id": "cigna_global"
+          }
+        }
+      ],
+      "scan_observations": [
+        {
+          "url": "https://www.cignaglobal.com/",
+          "status_code": 200,
+          "final_url": "https://www.cignaglobal.com/",
+          "content_type": "text/html",
+          "pdf_links_sample": [
+            {
+              "href": "https://www.cignaglobal.com/static/cigna-rebranding/pdf/cignaglobal-uvsl/Modern-Slavery-Statement-2024.pdf",
+              "text": "Modern Slavery Act 2024 [PDF]"
+            }
+          ],
+          "pdf_link_count": 1,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "cigna_global"
+            ],
+            "primary_candidate_id": "cigna_global"
+          }
+        },
+        {
+          "url": "https://www.cignaglobal.com/quote/pages/quote/CountrySelector.html",
+          "status_code": 200,
+          "final_url": "https://www.cignaglobal.com/quote/pages/quote/CountrySelector.html",
+          "content_type": "text/html;charset=UTF-8",
+          "pdf_links_sample": [],
+          "pdf_link_count": 0,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "cigna_global"
+            ],
+            "primary_candidate_id": "cigna_global"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "No clearly plan-specific downloadable brochure/PDF was found in the reviewed public sources during this run; a gated quote flow, alternate locale, or deeper broker/application path may still expose one later."
+      ]
+    },
+    {
+      "index": 2,
+      "candidate_id": "allianz_care",
+      "insurer_name": "Allianz Care",
+      "plan_name": "Care International Health Insurance Plans",
+      "official_url": "https://www.allianzcare.com/en/personal-international-health-insurance.html",
+      "quote_or_application_url": "https://my.allianzcare.com/myquote/5",
+      "broker_url": null,
+      "document_status": "no_downloadable_plan_document_found_in_reviewed_public_sources",
+      "direct_public_plan_document_accessible": false,
+      "downloadable_plan_document_found": false,
+      "no_downloadable_plan_document_found": true,
+      "document_source_url": null,
+      "document_source_type": null,
+      "document_access_path": "not_found_in_reviewed_public_sources",
+      "verification_detail": "https://www.allianzcare.com/en/personal-international-health-insurance.html -> HTTP 403; https://my.allianzcare.com/myquote/5 -> HTTP 200",
+      "supporting_page_url": "https://www.allianzcare.com/en/personal-international-health-insurance.html",
+      "supporting_page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+      "evidence_citations": [
+        {
+          "citation_role": "supporting_page",
+          "source_url": "https://www.allianzcare.com/en/personal-international-health-insurance.html",
+          "source_type": "reviewed public page",
+          "page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+          "excerpt": "https://www.allianzcare.com/en/personal-international-health-insurance.html -> HTTP 403; https://my.allianzcare.com/myquote/5 -> HTTP 200",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "allianz_care"
+            ],
+            "primary_candidate_id": "allianz_care"
+          }
+        }
+      ],
+      "scan_observations": [
+        {
+          "url": "https://www.allianzcare.com/en/personal-international-health-insurance.html",
+          "status_code": 403,
+          "final_url": "https://www.allianzcare.com/en/personal-international-health-insurance.html",
+          "content_type": "text/html; charset=UTF-8",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "allianz_care"
+            ],
+            "primary_candidate_id": "allianz_care"
+          }
+        },
+        {
+          "url": "https://my.allianzcare.com/myquote/5",
+          "status_code": 200,
+          "final_url": "https://my.allianzcare.com/myquote/5",
+          "content_type": "text/html",
+          "pdf_links_sample": [],
+          "pdf_link_count": 0,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "allianz_care"
+            ],
+            "primary_candidate_id": "allianz_care"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "No clearly plan-specific downloadable brochure/PDF was found in the reviewed public sources during this run; a gated quote flow, alternate locale, or deeper broker/application path may still expose one later.",
+        "At least one reviewed public page returned HTTP 403 in this environment, so missing-document status may reflect access controls rather than true absence."
+      ]
+    },
+    {
+      "index": 3,
+      "candidate_id": "bupa_global",
+      "insurer_name": "Bupa Global",
+      "plan_name": "Private Health Insurance & Medical Insurance for Individuals and Families",
+      "official_url": "https://www.bupaglobal.com/en/private-health-insurance",
+      "quote_or_application_url": "https://www.bupaglobal.com/en/private-health-insurance",
+      "broker_url": null,
+      "document_status": "no_downloadable_plan_document_found_in_reviewed_public_sources",
+      "direct_public_plan_document_accessible": false,
+      "downloadable_plan_document_found": false,
+      "no_downloadable_plan_document_found": true,
+      "document_source_url": null,
+      "document_source_type": null,
+      "document_access_path": "not_found_in_reviewed_public_sources",
+      "verification_detail": "https://www.bupaglobal.com/en/private-health-insurance -> HTTP 200",
+      "supporting_page_url": "https://www.bupaglobal.com/en/private-health-insurance",
+      "supporting_page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+      "evidence_citations": [
+        {
+          "citation_role": "supporting_page",
+          "source_url": "https://www.bupaglobal.com/en/private-health-insurance",
+          "source_type": "reviewed public page",
+          "page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+          "excerpt": "https://www.bupaglobal.com/en/private-health-insurance -> HTTP 200",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "bupa_global"
+            ],
+            "primary_candidate_id": "bupa_global"
+          }
+        }
+      ],
+      "scan_observations": [
+        {
+          "url": "https://www.bupaglobal.com/en/private-health-insurance",
+          "status_code": 200,
+          "final_url": "https://www.bupaglobal.com/en/private-health-insurance",
+          "content_type": "text/html; charset=utf-8",
+          "pdf_links_sample": [],
+          "pdf_link_count": 0,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "bupa_global"
+            ],
+            "primary_candidate_id": "bupa_global"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "No clearly plan-specific downloadable brochure/PDF was found in the reviewed public sources during this run; a gated quote flow, alternate locale, or deeper broker/application path may still expose one later."
+      ]
+    },
+    {
+      "index": 4,
+      "candidate_id": "axa_global_healthcare",
+      "insurer_name": "AXA Global Healthcare",
+      "plan_name": "International Health Insurance Plans",
+      "official_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/",
+      "quote_or_application_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/get-a-quote/?camp=online-default",
+      "broker_url": null,
+      "document_status": "no_downloadable_plan_document_found_in_reviewed_public_sources",
+      "direct_public_plan_document_accessible": false,
+      "downloadable_plan_document_found": false,
+      "no_downloadable_plan_document_found": true,
+      "document_source_url": null,
+      "document_source_type": null,
+      "document_access_path": "not_found_in_reviewed_public_sources",
+      "verification_detail": "https://www.axaglobalhealthcare.com/en/international-health-insurance/ -> HTTP 200; https://www.axaglobalhealthcare.com/en/international-health-insurance/get-a-quote/?camp=online-default -> HTTP 200",
+      "supporting_page_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/",
+      "supporting_page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+      "evidence_citations": [
+        {
+          "citation_role": "supporting_page",
+          "source_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/",
+          "source_type": "reviewed public page",
+          "page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+          "excerpt": "https://www.axaglobalhealthcare.com/en/international-health-insurance/ -> HTTP 200; https://www.axaglobalhealthcare.com/en/international-health-insurance/get-a-quote/?camp=online-default -> HTTP 200",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "axa_global_healthcare"
+            ],
+            "primary_candidate_id": "axa_global_healthcare"
+          }
+        }
+      ],
+      "scan_observations": [
+        {
+          "url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/",
+          "status_code": 200,
+          "final_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/",
+          "content_type": "text/html; charset=utf-8",
+          "pdf_links_sample": [],
+          "pdf_link_count": 0,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "axa_global_healthcare"
+            ],
+            "primary_candidate_id": "axa_global_healthcare"
+          }
+        },
+        {
+          "url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/get-a-quote/?camp=online-default",
+          "status_code": 200,
+          "final_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/get-a-quote/?camp=online-default",
+          "content_type": "text/html; charset=utf-8",
+          "pdf_links_sample": [],
+          "pdf_link_count": 0,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "axa_global_healthcare"
+            ],
+            "primary_candidate_id": "axa_global_healthcare"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "No clearly plan-specific downloadable brochure/PDF was found in the reviewed public sources during this run; a gated quote flow, alternate locale, or deeper broker/application path may still expose one later."
+      ]
+    },
+    {
+      "index": 5,
+      "candidate_id": "april_international",
+      "insurer_name": "APRIL International",
+      "plan_name": "Long-term Expat International Health Insurance",
+      "official_url": "https://www.april-international.com/en/long-term-international-health-insurance",
+      "quote_or_application_url": "https://www.april-international.com/en",
+      "broker_url": null,
+      "document_status": "no_downloadable_plan_document_found_in_reviewed_public_sources",
+      "direct_public_plan_document_accessible": false,
+      "downloadable_plan_document_found": false,
+      "no_downloadable_plan_document_found": true,
+      "document_source_url": null,
+      "document_source_type": null,
+      "document_access_path": "not_found_in_reviewed_public_sources",
+      "verification_detail": "https://www.april-international.com/en/long-term-international-health-insurance -> HTTP 200; https://www.april-international.com/en -> HTTP 200",
+      "supporting_page_url": "https://www.april-international.com/en/long-term-international-health-insurance",
+      "supporting_page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+      "evidence_citations": [
+        {
+          "citation_role": "supporting_page",
+          "source_url": "https://www.april-international.com/en/long-term-international-health-insurance",
+          "source_type": "reviewed public page",
+          "page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+          "excerpt": "https://www.april-international.com/en/long-term-international-health-insurance -> HTTP 200; https://www.april-international.com/en -> HTTP 200",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "april_international"
+            ],
+            "primary_candidate_id": "april_international"
+          }
+        }
+      ],
+      "scan_observations": [
+        {
+          "url": "https://www.april-international.com/en/long-term-international-health-insurance",
+          "status_code": 200,
+          "final_url": "https://www.april-international.com/en/long-term-international-health-insurance",
+          "content_type": "text/html;charset=utf-8",
+          "pdf_links_sample": [
+            {
+              "href": "https://assets.april.fr/april-international/Footer/pdf-footer-terms+and+conditions-en.pdf",
+              "text": "Terms &amp; Conditions"
+            },
+            {
+              "href": "https://assets.april.fr/april-international/Footer/pdf-footer-cookies+policy-en.pdf",
+              "text": "Cookie policy"
+            }
+          ],
+          "pdf_link_count": 2,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "april_international"
+            ],
+            "primary_candidate_id": "april_international"
+          }
+        },
+        {
+          "url": "https://www.april-international.com/en",
+          "status_code": 200,
+          "final_url": "https://www.april-international.com/en",
+          "content_type": "text/html;charset=utf-8",
+          "pdf_links_sample": [
+            {
+              "href": "https://assets.april.fr/april-international/Footer/pdf-footer-terms+and+conditions-en.pdf",
+              "text": "Terms &amp; Conditions"
+            },
+            {
+              "href": "https://assets.april.fr/april-international/Footer/pdf-footer-cookies+policy-en.pdf",
+              "text": "Cookie policy"
+            }
+          ],
+          "pdf_link_count": 2,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "april_international"
+            ],
+            "primary_candidate_id": "april_international"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "No clearly plan-specific downloadable brochure/PDF was found in the reviewed public sources during this run; a gated quote flow, alternate locale, or deeper broker/application path may still expose one later."
+      ]
+    },
+    {
+      "index": 6,
+      "candidate_id": "william_russell",
+      "insurer_name": "William Russell",
+      "plan_name": "International Health Insurance",
+      "official_url": "https://www.william-russell.com/international-health-insurance/",
+      "quote_or_application_url": "https://www.william-russell.com/international-health-insurance/",
+      "broker_url": null,
+      "document_status": "no_downloadable_plan_document_found_in_reviewed_public_sources",
+      "direct_public_plan_document_accessible": false,
+      "downloadable_plan_document_found": false,
+      "no_downloadable_plan_document_found": true,
+      "document_source_url": null,
+      "document_source_type": null,
+      "document_access_path": "not_found_in_reviewed_public_sources",
+      "verification_detail": "https://www.william-russell.com/international-health-insurance/ -> HTTP 200",
+      "supporting_page_url": "https://www.william-russell.com/international-health-insurance/",
+      "supporting_page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+      "evidence_citations": [
+        {
+          "citation_role": "supporting_page",
+          "source_url": "https://www.william-russell.com/international-health-insurance/",
+          "source_type": "reviewed public page",
+          "page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+          "excerpt": "https://www.william-russell.com/international-health-insurance/ -> HTTP 200",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "william_russell"
+            ],
+            "primary_candidate_id": "william_russell"
+          }
+        }
+      ],
+      "scan_observations": [
+        {
+          "url": "https://www.william-russell.com/international-health-insurance/",
+          "status_code": 200,
+          "final_url": "https://www.william-russell.com/international-health-insurance/",
+          "content_type": "text/html; charset=UTF-8",
+          "pdf_links_sample": [
+            {
+              "href": "https://www.william-russell.com/wp-content/uploads/WRE-Complaints-Procedure.pdf",
+              "text": "Our complaints policy"
+            }
+          ],
+          "pdf_link_count": 1,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "william_russell"
+            ],
+            "primary_candidate_id": "william_russell"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "No clearly plan-specific downloadable brochure/PDF was found in the reviewed public sources during this run; a gated quote flow, alternate locale, or deeper broker/application path may still expose one later."
+      ]
+    },
+    {
+      "index": 7,
+      "candidate_id": "msh_international",
+      "insurer_name": "MSH International",
+      "plan_name": "First'Expat+ / International Health Insurance for Individuals",
+      "official_url": "https://www.msh-intl.com/en/individuals/",
+      "quote_or_application_url": "https://www.msh-intl.com/en/comparisons-offers-msh",
+      "broker_url": null,
+      "document_status": "no_downloadable_plan_document_found_in_reviewed_public_sources",
+      "direct_public_plan_document_accessible": false,
+      "downloadable_plan_document_found": false,
+      "no_downloadable_plan_document_found": true,
+      "document_source_url": null,
+      "document_source_type": null,
+      "document_access_path": "not_found_in_reviewed_public_sources",
+      "verification_detail": "https://www.msh-intl.com/en/individuals/ -> HTTP 200; https://www.msh-intl.com/en/comparisons-offers-msh -> HTTP 200",
+      "supporting_page_url": "https://www.msh-intl.com/en/individuals/",
+      "supporting_page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+      "evidence_citations": [
+        {
+          "citation_role": "supporting_page",
+          "source_url": "https://www.msh-intl.com/en/individuals/",
+          "source_type": "reviewed public page",
+          "page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+          "excerpt": "https://www.msh-intl.com/en/individuals/ -> HTTP 200; https://www.msh-intl.com/en/comparisons-offers-msh -> HTTP 200",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "msh_international"
+            ],
+            "primary_candidate_id": "msh_international"
+          }
+        }
+      ],
+      "scan_observations": [
+        {
+          "url": "https://www.msh-intl.com/en/individuals/",
+          "status_code": 200,
+          "final_url": "https://www.msh-intl.com/en/individuals/",
+          "content_type": "text/html; charset=UTF-8",
+          "pdf_links_sample": [],
+          "pdf_link_count": 0,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "msh_international"
+            ],
+            "primary_candidate_id": "msh_international"
+          }
+        },
+        {
+          "url": "https://www.msh-intl.com/en/comparisons-offers-msh",
+          "status_code": 200,
+          "final_url": "https://www.msh-intl.com/en/comparisons-offers-msh/",
+          "content_type": "text/html; charset=UTF-8",
+          "pdf_links_sample": [],
+          "pdf_link_count": 0,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "msh_international"
+            ],
+            "primary_candidate_id": "msh_international"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "No clearly plan-specific downloadable brochure/PDF was found in the reviewed public sources during this run; a gated quote flow, alternate locale, or deeper broker/application path may still expose one later."
+      ]
+    },
+    {
+      "index": 8,
+      "candidate_id": "now_health_international",
+      "insurer_name": "Now Health International",
+      "plan_name": "SimpleCare / WorldCare International Health Insurance Plans",
+      "official_url": "https://www.now-health.com/en/insurance-plans/",
+      "quote_or_application_url": "https://www.now-health.com/en/insurance-plans/",
+      "broker_url": null,
+      "document_status": "no_downloadable_plan_document_found_in_reviewed_public_sources",
+      "direct_public_plan_document_accessible": false,
+      "downloadable_plan_document_found": false,
+      "no_downloadable_plan_document_found": true,
+      "document_source_url": null,
+      "document_source_type": null,
+      "document_access_path": "not_found_in_reviewed_public_sources",
+      "verification_detail": "https://www.now-health.com/en/insurance-plans/ -> HTTP 200",
+      "supporting_page_url": "https://www.now-health.com/en/insurance-plans/",
+      "supporting_page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+      "evidence_citations": [
+        {
+          "citation_role": "supporting_page",
+          "source_url": "https://www.now-health.com/en/insurance-plans/",
+          "source_type": "reviewed public page",
+          "page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+          "excerpt": "https://www.now-health.com/en/insurance-plans/ -> HTTP 200",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "now_health_international"
+            ],
+            "primary_candidate_id": "now_health_international"
+          }
+        }
+      ],
+      "scan_observations": [
+        {
+          "url": "https://www.now-health.com/en/insurance-plans/",
+          "status_code": 200,
+          "final_url": "https://www.now-health.com/en/insurance-plans/",
+          "content_type": "text/html; charset=utf-8",
+          "pdf_links_sample": [],
+          "pdf_link_count": 0,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "now_health_international"
+            ],
+            "primary_candidate_id": "now_health_international"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "No clearly plan-specific downloadable brochure/PDF was found in the reviewed public sources during this run; a gated quote flow, alternate locale, or deeper broker/application path may still expose one later."
+      ]
+    },
+    {
+      "index": 9,
+      "candidate_id": "img_global",
+      "insurer_name": "IMG (International Medical Group)",
+      "plan_name": "Global Medical international health insurance",
+      "official_url": "https://www.imglobal.com/",
+      "quote_or_application_url": "https://www.imglobal.com/international-health-insurance",
+      "broker_url": null,
+      "document_status": "direct_public_plan_document_verified",
+      "direct_public_plan_document_accessible": true,
+      "downloadable_plan_document_found": true,
+      "no_downloadable_plan_document_found": false,
+      "document_source_url": "https://www.imglobal.com/docs/library/forms-library/gmi-brochure.pdf",
+      "document_source_type": "public page linked pdf",
+      "document_access_path": "public page direct download link",
+      "verification_detail": "Public page exposed a plan-relevant downloadable PDF labeled 'https://www.imglobal.com/docs/library/forms-library/gmi-brochure.pdf'.",
+      "supporting_page_url": "https://www.imglobal.com/international-health-insurance",
+      "supporting_page_reference": "public page with visible brochure/benefits/policy download link",
+      "evidence_citations": [
+        {
+          "citation_role": "plan_document",
+          "source_url": "https://www.imglobal.com/docs/library/forms-library/gmi-brochure.pdf",
+          "source_type": "public page linked pdf",
+          "page_reference": "direct downloadable plan document url verified in this run",
+          "excerpt": "Public page exposed a plan-relevant downloadable PDF labeled 'https://www.imglobal.com/docs/library/forms-library/gmi-brochure.pdf'.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "img_global"
+            ],
+            "primary_candidate_id": "img_global"
+          }
+        },
+        {
+          "citation_role": "supporting_page",
+          "source_url": "https://www.imglobal.com/international-health-insurance",
+          "source_type": "reviewed public page",
+          "page_reference": "public page with visible brochure/benefits/policy download link",
+          "excerpt": "Public page exposed a plan-relevant downloadable PDF labeled 'https://www.imglobal.com/docs/library/forms-library/gmi-brochure.pdf'.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "img_global"
+            ],
+            "primary_candidate_id": "img_global"
+          }
+        }
+      ],
+      "scan_observations": [
+        {
+          "url": "https://www.imglobal.com/",
+          "status_code": 200,
+          "final_url": "https://www.imglobal.com/",
+          "content_type": "text/html; charset=utf-8",
+          "pdf_links_sample": [],
+          "pdf_link_count": 0,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "img_global"
+            ],
+            "primary_candidate_id": "img_global"
+          }
+        },
+        {
+          "url": "https://www.imglobal.com/international-health-insurance",
+          "status_code": 200,
+          "final_url": "https://www.imglobal.com/international-health-insurance",
+          "content_type": "text/html; charset=utf-8",
+          "pdf_links_sample": [
+            {
+              "href": "https://www.imglobal.com/docs/library/forms-library/gmi-brochure.pdf",
+              "text": ""
+            },
+            {
+              "href": "https://www.imglobal.com/docs/library/forms-library/gmi-brochure.pdf",
+              "text": ""
+            },
+            {
+              "href": "https://www.imglobal.com/docs/library/forms-library/gmi-brochure.pdf",
+              "text": ""
+            }
+          ],
+          "pdf_link_count": 3,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "img_global"
+            ],
+            "primary_candidate_id": "img_global"
+          }
+        }
+      ],
+      "uncertainty_notes": []
+    },
+    {
+      "index": 10,
+      "candidate_id": "aetna_international",
+      "insurer_name": "Aetna International",
+      "plan_name": "Aetna International global healthcare entrypoint",
+      "official_url": "https://www.aetnainternational.com/",
+      "quote_or_application_url": "https://www.aetna.com/employers-organizations/aetna-international-insurance.html",
+      "broker_url": null,
+      "document_status": "no_downloadable_plan_document_found_in_reviewed_public_sources",
+      "direct_public_plan_document_accessible": false,
+      "downloadable_plan_document_found": false,
+      "no_downloadable_plan_document_found": true,
+      "document_source_url": null,
+      "document_source_type": null,
+      "document_access_path": "not_found_in_reviewed_public_sources",
+      "verification_detail": "https://www.aetnainternational.com/ -> HTTP 200; https://www.aetna.com/employers-organizations/aetna-international-insurance.html -> HTTP 200",
+      "supporting_page_url": "https://www.aetnainternational.com/",
+      "supporting_page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+      "evidence_citations": [
+        {
+          "citation_role": "supporting_page",
+          "source_url": "https://www.aetnainternational.com/",
+          "source_type": "reviewed public page",
+          "page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+          "excerpt": "https://www.aetnainternational.com/ -> HTTP 200; https://www.aetna.com/employers-organizations/aetna-international-insurance.html -> HTTP 200",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "aetna_international"
+            ],
+            "primary_candidate_id": "aetna_international"
+          }
+        }
+      ],
+      "scan_observations": [
+        {
+          "url": "https://www.aetnainternational.com/",
+          "status_code": 200,
+          "final_url": "https://www.aetnainternational.com/",
+          "content_type": "text/html;charset=utf-8",
+          "pdf_links_sample": [],
+          "pdf_link_count": 0,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "aetna_international"
+            ],
+            "primary_candidate_id": "aetna_international"
+          }
+        },
+        {
+          "url": "https://www.aetna.com/employers-organizations/aetna-international-insurance.html",
+          "status_code": 200,
+          "final_url": "https://www.aetna.com/employers-organizations/aetna-international-insurance.html",
+          "content_type": "text/html;charset=utf-8",
+          "pdf_links_sample": [],
+          "pdf_link_count": 0,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "aetna_international"
+            ],
+            "primary_candidate_id": "aetna_international"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "No clearly plan-specific downloadable brochure/PDF was found in the reviewed public sources during this run; a gated quote flow, alternate locale, or deeper broker/application path may still expose one later."
+      ]
+    },
+    {
+      "index": 11,
+      "candidate_id": "foyer_global_health",
+      "insurer_name": "Foyer Global Health",
+      "plan_name": "Expat Health Insurance / International Health Insurance comparison",
+      "official_url": "https://www.foyerglobalhealth.com/",
+      "quote_or_application_url": "https://www.foyerglobalhealth.com/plans-services/our-plans/international-health-insurance-comparison/",
+      "broker_url": null,
+      "document_status": "direct_public_plan_document_verified",
+      "direct_public_plan_document_accessible": true,
+      "downloadable_plan_document_found": true,
+      "no_downloadable_plan_document_found": false,
+      "document_source_url": "https://www.foyerglobalhealth.com/wp-content/uploads/2024/02/Brochure-commerciale-EN_V2-General.pdf",
+      "document_source_type": "public page linked pdf",
+      "document_access_path": "public page direct download link",
+      "verification_detail": "Public page exposed a plan-relevant downloadable PDF labeled 'Download brochure'.",
+      "supporting_page_url": "https://www.foyerglobalhealth.com/plans-services/our-plans/international-health-insurance-comparison/",
+      "supporting_page_reference": "public page with visible brochure/benefits/policy download link",
+      "evidence_citations": [
+        {
+          "citation_role": "plan_document",
+          "source_url": "https://www.foyerglobalhealth.com/wp-content/uploads/2024/02/Brochure-commerciale-EN_V2-General.pdf",
+          "source_type": "public page linked pdf",
+          "page_reference": "direct downloadable plan document url verified in this run",
+          "excerpt": "Public page exposed a plan-relevant downloadable PDF labeled 'Download brochure'.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "foyer_global_health"
+            ],
+            "primary_candidate_id": "foyer_global_health"
+          }
+        },
+        {
+          "citation_role": "supporting_page",
+          "source_url": "https://www.foyerglobalhealth.com/plans-services/our-plans/international-health-insurance-comparison/",
+          "source_type": "reviewed public page",
+          "page_reference": "public page with visible brochure/benefits/policy download link",
+          "excerpt": "Public page exposed a plan-relevant downloadable PDF labeled 'Download brochure'.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "foyer_global_health"
+            ],
+            "primary_candidate_id": "foyer_global_health"
+          }
+        }
+      ],
+      "scan_observations": [
+        {
+          "url": "https://www.foyerglobalhealth.com/",
+          "status_code": 200,
+          "final_url": "https://www.foyerglobalhealth.com/",
+          "content_type": "text/html; charset=UTF-8",
+          "pdf_links_sample": [],
+          "pdf_link_count": 0,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "foyer_global_health"
+            ],
+            "primary_candidate_id": "foyer_global_health"
+          }
+        },
+        {
+          "url": "https://www.foyerglobalhealth.com/plans-services/our-plans/international-health-insurance-comparison/",
+          "status_code": 200,
+          "final_url": "https://www.foyerglobalhealth.com/plans-services/our-plans/international-health-insurance-comparison/",
+          "content_type": "text/html; charset=UTF-8",
+          "pdf_links_sample": [
+            {
+              "href": "https://www.foyerglobalhealth.com/plans-services/our-plans/international-health-insurance-comparison/#table-benefits",
+              "text": "Check the table of benefits"
+            },
+            {
+              "href": "https://www.foyerglobalhealth.com/wp-content/uploads/2024/02/Brochure-commerciale-EN_V2-General.pdf",
+              "text": "Download brochure"
+            }
+          ],
+          "pdf_link_count": 2,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "foyer_global_health"
+            ],
+            "primary_candidate_id": "foyer_global_health"
+          }
+        }
+      ],
+      "uncertainty_notes": []
+    },
+    {
+      "index": 12,
+      "candidate_id": "henner",
+      "insurer_name": "Henner",
+      "plan_name": "Individuals & Families international health solutions",
+      "official_url": "https://www.henner.com/en/customers/individuals-families/",
+      "quote_or_application_url": "https://www.henner.com/en/customers/individuals-families/",
+      "broker_url": null,
+      "document_status": "no_downloadable_plan_document_found_in_reviewed_public_sources",
+      "direct_public_plan_document_accessible": false,
+      "downloadable_plan_document_found": false,
+      "no_downloadable_plan_document_found": true,
+      "document_source_url": null,
+      "document_source_type": null,
+      "document_access_path": "not_found_in_reviewed_public_sources",
+      "verification_detail": "https://www.henner.com/en/customers/individuals-families/ -> HTTP 200",
+      "supporting_page_url": "https://www.henner.com/en/customers/individuals-families/",
+      "supporting_page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+      "evidence_citations": [
+        {
+          "citation_role": "supporting_page",
+          "source_url": "https://www.henner.com/en/customers/individuals-families/",
+          "source_type": "reviewed public page",
+          "page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+          "excerpt": "https://www.henner.com/en/customers/individuals-families/ -> HTTP 200",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "henner"
+            ],
+            "primary_candidate_id": "henner"
+          }
+        }
+      ],
+      "scan_observations": [
+        {
+          "url": "https://www.henner.com/en/customers/individuals-families/",
+          "status_code": 200,
+          "final_url": "https://www.henner.com/en/customers/individuals-families/",
+          "content_type": "text/html; charset=UTF-8",
+          "pdf_links_sample": [],
+          "pdf_link_count": 0,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "henner"
+            ],
+            "primary_candidate_id": "henner"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "No clearly plan-specific downloadable brochure/PDF was found in the reviewed public sources during this run; a gated quote flow, alternate locale, or deeper broker/application path may still expose one later."
+      ]
+    },
+    {
+      "index": 13,
+      "candidate_id": "globality_health",
+      "insurer_name": "Globality Health",
+      "plan_name": "YouGenio individual international health insurance plans",
+      "official_url": "https://www.globality-health.com/",
+      "quote_or_application_url": "https://application.globality-health.com/?locale=en",
+      "broker_url": null,
+      "document_status": "no_downloadable_plan_document_found_in_reviewed_public_sources",
+      "direct_public_plan_document_accessible": false,
+      "downloadable_plan_document_found": false,
+      "no_downloadable_plan_document_found": true,
+      "document_source_url": null,
+      "document_source_type": null,
+      "document_access_path": "not_found_in_reviewed_public_sources",
+      "verification_detail": "https://www.globality-health.com/ -> HTTP 200; https://application.globality-health.com/?locale=en -> HTTP 200",
+      "supporting_page_url": "https://www.globality-health.com/",
+      "supporting_page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+      "evidence_citations": [
+        {
+          "citation_role": "supporting_page",
+          "source_url": "https://www.globality-health.com/",
+          "source_type": "reviewed public page",
+          "page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+          "excerpt": "https://www.globality-health.com/ -> HTTP 200; https://application.globality-health.com/?locale=en -> HTTP 200",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "globality_health"
+            ],
+            "primary_candidate_id": "globality_health"
+          }
+        }
+      ],
+      "scan_observations": [
+        {
+          "url": "https://www.globality-health.com/",
+          "status_code": 200,
+          "final_url": "https://www.globality-health.com/",
+          "content_type": "text/html; charset=UTF-8",
+          "pdf_links_sample": [],
+          "pdf_link_count": 0,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "globality_health"
+            ],
+            "primary_candidate_id": "globality_health"
+          }
+        },
+        {
+          "url": "https://application.globality-health.com/?locale=en",
+          "status_code": 200,
+          "final_url": "https://application.globality-health.com/?locale=en",
+          "content_type": "text/html;charset=UTF-8",
+          "pdf_links_sample": [
+            {
+              "href": "https://application.globality-health.com/{{productInfo.document.brochure.url.current}}",
+              "text": "{{ 'anglr_portlet_quote_download_brochure' | translate }}"
+            }
+          ],
+          "pdf_link_count": 1,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "globality_health"
+            ],
+            "primary_candidate_id": "globality_health"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "No clearly plan-specific downloadable brochure/PDF was found in the reviewed public sources during this run; a gated quote flow, alternate locale, or deeper broker/application path may still expose one later."
+      ]
+    },
+    {
+      "index": 14,
+      "candidate_id": "morgan_price",
+      "insurer_name": "Morgan Price International Healthcare",
+      "plan_name": "Evolution Health / Flexible Choices individual international healthcare plans",
+      "official_url": "https://www.morgan-price.com/individual/",
+      "quote_or_application_url": "https://morgan-price.com/quick-quote/",
+      "broker_url": null,
+      "document_status": "direct_public_plan_document_verified",
+      "direct_public_plan_document_accessible": true,
+      "downloadable_plan_document_found": true,
+      "no_downloadable_plan_document_found": false,
+      "document_source_url": "https://morgan-price.com/media/4ibjjwku/evolutionhealth_ant_policywording_04-26_v2-final.pdf",
+      "document_source_type": "public pdf link",
+      "document_access_path": "captured public pdf url",
+      "verification_detail": "Live fetch returned 200 application/pdf.",
+      "supporting_page_url": "https://www.morgan-price.com/individual/",
+      "supporting_page_reference": "public page used in this run to verify or retain the downloadable plan document",
+      "evidence_citations": [
+        {
+          "citation_role": "plan_document",
+          "source_url": "https://morgan-price.com/media/4ibjjwku/evolutionhealth_ant_policywording_04-26_v2-final.pdf",
+          "source_type": "public pdf link",
+          "page_reference": "direct downloadable plan document url verified in this run",
+          "excerpt": "Live fetch returned 200 application/pdf.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "morgan_price"
+            ],
+            "primary_candidate_id": "morgan_price"
+          }
+        },
+        {
+          "citation_role": "supporting_page",
+          "source_url": "https://www.morgan-price.com/individual/",
+          "source_type": "reviewed public page",
+          "page_reference": "public page used in this run to verify or retain the downloadable plan document",
+          "excerpt": "Live fetch returned 200 application/pdf.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "morgan_price"
+            ],
+            "primary_candidate_id": "morgan_price"
+          }
+        }
+      ],
+      "scan_observations": [
+        {
+          "url": "https://www.morgan-price.com/individual/",
+          "status_code": 200,
+          "final_url": "https://morgan-price.com/individual/",
+          "content_type": "text/html; charset=utf-8",
+          "pdf_links_sample": [
+            {
+              "href": "https://morgan-price.com/media/d2bf1xry/evolutionhealth_ant_tob_04-26_final.pdf",
+              "text": "Table of Benefits"
+            },
+            {
+              "href": "https://morgan-price.com/media/wf3fthl4/evolutionhealth_eicml_rates_01-21.pdf",
+              "text": "Rates"
+            },
+            {
+              "href": "https://morgan-price.com/media/d2bf1xry/evolutionhealth_ant_tob_04-26_final.pdf",
+              "text": "Table of Benefits Direct Customers"
+            },
+            {
+              "href": "https://morgan-price.com/media/wf3fthl4/evolutionhealth_eicml_rates_01-21.pdf",
+              "text": "Rates"
+            },
+            {
+              "href": "https://morgan-price.com/media/4ibjjwku/evolutionhealth_ant_policywording_04-26_v2-final.pdf",
+              "text": "&nbsp; Policy Wording"
+            },
+            {
+              "href": "https://morgan-price.com/media/uo1cr1uy/mp-key-facts-2018-gdpr.pdf",
+              "text": "Key Facts"
+            },
+            {
+              "href": "https://morgan-price.com/media/hlrjqs55/evolutionhealth_ant_claimsform_04-26_v1.pdf",
+              "text": "Claim Form"
+            },
+            {
+              "href": "https://morgan-price.com/media/1r2j0ulb/evolutionhealth_ant_fmuapp_04-26_v1.pdf",
+              "text": "FMU Application Form"
+            }
+          ],
+          "pdf_link_count": 87,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "morgan_price"
+            ],
+            "primary_candidate_id": "morgan_price"
+          }
+        },
+        {
+          "url": "https://morgan-price.com/quick-quote/",
+          "status_code": 200,
+          "final_url": "https://morgan-price.com/quick-quote/",
+          "content_type": "text/html; charset=utf-8",
+          "pdf_links_sample": [],
+          "pdf_link_count": 0,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "morgan_price"
+            ],
+            "primary_candidate_id": "morgan_price"
+          }
+        }
+      ],
+      "uncertainty_notes": []
+    },
+    {
+      "index": 15,
+      "candidate_id": "passportcard_global",
+      "insurer_name": "PassportCard",
+      "plan_name": "Expat Basic / Expat Comprehensive / Executive",
+      "official_url": "https://www.passportcard.de/en/international-health-insurance/",
+      "quote_or_application_url": null,
+      "broker_url": null,
+      "document_status": "direct_public_plan_document_verified",
+      "direct_public_plan_document_accessible": true,
+      "downloadable_plan_document_found": true,
+      "no_downloadable_plan_document_found": false,
+      "document_source_url": "https://www.passportcard.de/wp-content/uploads/2023/02/TOB_Individuals_ENG-MGAWP.pdf",
+      "document_source_type": "public page linked pdf",
+      "document_access_path": "public page direct download link",
+      "verification_detail": "Public page exposed a plan-relevant downloadable PDF labeled 'View PassportCard benefits (PDF) .cls-1 { fill: #e10514; stroke-width: 0px; }'.",
+      "supporting_page_url": "https://www.passportcard.de/en/international-health-insurance/",
+      "supporting_page_reference": "public page with visible brochure/benefits/policy download link",
+      "evidence_citations": [
+        {
+          "citation_role": "plan_document",
+          "source_url": "https://www.passportcard.de/wp-content/uploads/2023/02/TOB_Individuals_ENG-MGAWP.pdf",
+          "source_type": "public page linked pdf",
+          "page_reference": "direct downloadable plan document url verified in this run",
+          "excerpt": "Public page exposed a plan-relevant downloadable PDF labeled 'View PassportCard benefits (PDF) .cls-1 { fill: #e10514; stroke-width: 0px; }'.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "passportcard_global"
+            ],
+            "primary_candidate_id": "passportcard_global"
+          }
+        },
+        {
+          "citation_role": "supporting_page",
+          "source_url": "https://www.passportcard.de/en/international-health-insurance/",
+          "source_type": "reviewed public page",
+          "page_reference": "public page with visible brochure/benefits/policy download link",
+          "excerpt": "Public page exposed a plan-relevant downloadable PDF labeled 'View PassportCard benefits (PDF) .cls-1 { fill: #e10514; stroke-width: 0px; }'.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "passportcard_global"
+            ],
+            "primary_candidate_id": "passportcard_global"
+          }
+        }
+      ],
+      "scan_observations": [
+        {
+          "url": "https://www.passportcard.de/en/international-health-insurance/",
+          "status_code": 200,
+          "final_url": "https://www.passportcard.de/en/international-health-insurance/",
+          "content_type": "text/html; charset=UTF-8",
+          "pdf_links_sample": [
+            {
+              "href": "https://www.passportcard.de/wp-content/uploads/2023/02/TOB_Individuals_ENG-MGAWP.pdf",
+              "text": "View PassportCard benefits (PDF) .cls-1 { fill: #e10514; stroke-width: 0px; }"
+            },
+            {
+              "href": "https://www.passportcard.de/wp-content/uploads/2021/11/PPC_Service-Charter_EN_150824.pdf",
+              "text": "Service-Charter (PDF)"
+            }
+          ],
+          "pdf_link_count": 2,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "passportcard_global"
+            ],
+            "primary_candidate_id": "passportcard_global"
+          }
+        }
+      ],
+      "uncertainty_notes": []
+    },
+    {
+      "index": 16,
+      "candidate_id": "vumi",
+      "insurer_name": "VUMI",
+      "plan_name": "Absolute VIP / Universal VIP / Special VIP / Access VIP product family",
+      "official_url": "https://www.vumigroup.com/",
+      "quote_or_application_url": null,
+      "broker_url": null,
+      "document_status": "no_downloadable_plan_document_found_in_reviewed_public_sources",
+      "direct_public_plan_document_accessible": false,
+      "downloadable_plan_document_found": false,
+      "no_downloadable_plan_document_found": true,
+      "document_source_url": null,
+      "document_source_type": null,
+      "document_access_path": "not_found_in_reviewed_public_sources",
+      "verification_detail": "https://www.vumigroup.com/ -> HTTP 200",
+      "supporting_page_url": "https://www.vumigroup.com/",
+      "supporting_page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+      "evidence_citations": [
+        {
+          "citation_role": "supporting_page",
+          "source_url": "https://www.vumigroup.com/",
+          "source_type": "reviewed public page",
+          "page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+          "excerpt": "https://www.vumigroup.com/ -> HTTP 200",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "vumi"
+            ],
+            "primary_candidate_id": "vumi"
+          }
+        }
+      ],
+      "scan_observations": [
+        {
+          "url": "https://www.vumigroup.com/",
+          "status_code": 200,
+          "final_url": "https://www.vumigroup.com/",
+          "content_type": "text/html; charset=UTF-8",
+          "pdf_links_sample": [],
+          "pdf_link_count": 0,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "vumi"
+            ],
+            "primary_candidate_id": "vumi"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "No clearly plan-specific downloadable brochure/PDF was found in the reviewed public sources during this run; a gated quote flow, alternate locale, or deeper broker/application path may still expose one later."
+      ]
+    },
+    {
+      "index": 17,
+      "candidate_id": "integra_global",
+      "insurer_name": "Integra Global",
+      "plan_name": "yourLife / PremierLife / yourFamily / PremierFamily",
+      "official_url": "https://hcigroupglobal.com/integra-global/",
+      "quote_or_application_url": null,
+      "broker_url": "https://www.internationalinsurance.com/integra-global/",
+      "document_status": "direct_public_plan_document_verified",
+      "direct_public_plan_document_accessible": true,
+      "downloadable_plan_document_found": true,
+      "no_downloadable_plan_document_found": false,
+      "document_source_url": "https://www.internationalinsurance.com/pdf-brochures/integra-global-brochure.pdf",
+      "document_source_type": "public page linked pdf",
+      "document_access_path": "public page direct download link",
+      "verification_detail": "Public page exposed a plan-relevant downloadable PDF labeled 'Download Brochure'.",
+      "supporting_page_url": "https://www.internationalinsurance.com/integra-global/",
+      "supporting_page_reference": "public page with visible brochure/benefits/policy download link",
+      "evidence_citations": [
+        {
+          "citation_role": "plan_document",
+          "source_url": "https://www.internationalinsurance.com/pdf-brochures/integra-global-brochure.pdf",
+          "source_type": "public page linked pdf",
+          "page_reference": "direct downloadable plan document url verified in this run",
+          "excerpt": "Public page exposed a plan-relevant downloadable PDF labeled 'Download Brochure'.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "integra_global"
+            ],
+            "primary_candidate_id": "integra_global"
+          }
+        },
+        {
+          "citation_role": "supporting_page",
+          "source_url": "https://www.internationalinsurance.com/integra-global/",
+          "source_type": "reviewed public page",
+          "page_reference": "public page with visible brochure/benefits/policy download link",
+          "excerpt": "Public page exposed a plan-relevant downloadable PDF labeled 'Download Brochure'.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "integra_global"
+            ],
+            "primary_candidate_id": "integra_global"
+          }
+        }
+      ],
+      "scan_observations": [
+        {
+          "url": "https://hcigroupglobal.com/integra-global/",
+          "status_code": 200,
+          "final_url": "https://hcigroupglobal.com/integra-global/",
+          "content_type": "text/html; charset=UTF-8",
+          "pdf_links_sample": [
+            {
+              "href": "https://hcigroupglobal.com/wp-content/uploads/2024/01/Guide-to-Claim_June23.pdf",
+              "text": "Making a claim"
+            },
+            {
+              "href": "https://hcigroupglobal.com/wp-content/uploads/2025/07/HCIG0167-Claim-Form-March24.pdf",
+              "text": "Claim form"
+            }
+          ],
+          "pdf_link_count": 2,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "integra_global"
+            ],
+            "primary_candidate_id": "integra_global"
+          }
+        },
+        {
+          "url": "https://www.internationalinsurance.com/integra-global/",
+          "status_code": 200,
+          "final_url": "https://www.internationalinsurance.com/integra-global/",
+          "content_type": "text/html; charset=UTF-8",
+          "pdf_links_sample": [
+            {
+              "href": "https://www.internationalinsurance.com/pdf-brochures/integra-global-brochure.pdf",
+              "text": "Download Brochure"
+            }
+          ],
+          "pdf_link_count": 1,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "integra_global"
+            ],
+            "primary_candidate_id": "integra_global"
+          }
+        }
+      ],
+      "uncertainty_notes": []
+    },
+    {
+      "index": 18,
+      "candidate_id": "medihelp_international",
+      "insurer_name": "MediHelp International",
+      "plan_name": "My Global Health individual plans: Blue / Azure / Cobalt / Admiral / Royal",
+      "official_url": "https://www.medihelp-assistance.com/en/medihelp-plans/individual-plans",
+      "quote_or_application_url": null,
+      "broker_url": null,
+      "document_status": "no_downloadable_plan_document_found_in_reviewed_public_sources",
+      "direct_public_plan_document_accessible": false,
+      "downloadable_plan_document_found": false,
+      "no_downloadable_plan_document_found": true,
+      "document_source_url": null,
+      "document_source_type": null,
+      "document_access_path": "not_found_in_reviewed_public_sources",
+      "verification_detail": "https://www.medihelp-assistance.com/en/medihelp-plans/individual-plans -> HTTP 200",
+      "supporting_page_url": "https://www.medihelp-assistance.com/en/medihelp-plans/individual-plans",
+      "supporting_page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+      "evidence_citations": [
+        {
+          "citation_role": "supporting_page",
+          "source_url": "https://www.medihelp-assistance.com/en/medihelp-plans/individual-plans",
+          "source_type": "reviewed public page",
+          "page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+          "excerpt": "https://www.medihelp-assistance.com/en/medihelp-plans/individual-plans -> HTTP 200",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "medihelp_international"
+            ],
+            "primary_candidate_id": "medihelp_international"
+          }
+        }
+      ],
+      "scan_observations": [
+        {
+          "url": "https://www.medihelp-assistance.com/en/medihelp-plans/individual-plans",
+          "status_code": 200,
+          "final_url": "https://www.medihelp-assistance.com/en/medihelp-plans/individual-plans",
+          "content_type": "text/html; charset=UTF-8",
+          "pdf_links_sample": [
+            {
+              "href": "https://www.medihelp-assistance.com/uploads/1617604261-petition settlement procedure.pdf",
+              "text": "Complaints and petitions"
+            },
+            {
+              "href": "https://www.medihelp-assistance.com/en/terms-and-conditions",
+              "text": "Terms and Conditions"
+            }
+          ],
+          "pdf_link_count": 2,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "medihelp_international"
+            ],
+            "primary_candidate_id": "medihelp_international"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "No clearly plan-specific downloadable brochure/PDF was found in the reviewed public sources during this run; a gated quote flow, alternate locale, or deeper broker/application path may still expose one later."
+      ]
+    },
+    {
+      "index": 19,
+      "candidate_id": "alc_health",
+      "insurer_name": "ALC Health",
+      "plan_name": "Global Prima Medical Insurance / Flying Colours legacy entrypoints",
+      "official_url": "https://www.alchealth.com/",
+      "quote_or_application_url": null,
+      "broker_url": null,
+      "document_status": "no_downloadable_plan_document_found_in_reviewed_public_sources",
+      "direct_public_plan_document_accessible": false,
+      "downloadable_plan_document_found": false,
+      "no_downloadable_plan_document_found": true,
+      "document_source_url": null,
+      "document_source_type": null,
+      "document_access_path": "not_found_in_reviewed_public_sources",
+      "verification_detail": "https://www.alchealth.com/ -> HTTP 200",
+      "supporting_page_url": "https://www.alchealth.com/",
+      "supporting_page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+      "evidence_citations": [
+        {
+          "citation_role": "supporting_page",
+          "source_url": "https://www.alchealth.com/",
+          "source_type": "reviewed public page",
+          "page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+          "excerpt": "https://www.alchealth.com/ -> HTTP 200",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "alc_health"
+            ],
+            "primary_candidate_id": "alc_health"
+          }
+        }
+      ],
+      "scan_observations": [
+        {
+          "url": "https://www.alchealth.com/",
+          "status_code": 200,
+          "final_url": "https://www.alchealth.com/",
+          "content_type": "text/html; charset=UTF-8",
+          "pdf_links_sample": [],
+          "pdf_link_count": 0,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "alc_health"
+            ],
+            "primary_candidate_id": "alc_health"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "No clearly plan-specific downloadable brochure/PDF was found in the reviewed public sources during this run; a gated quote flow, alternate locale, or deeper broker/application path may still expose one later."
+      ]
+    },
+    {
+      "index": 20,
+      "candidate_id": "geoblue_xplorer_bcbs_global_solutions",
+      "insurer_name": "Blue Cross Blue Shield Global Solutions (formerly GeoBlue Xplorer)",
+      "plan_name": "Worldwide Premier / Outside U.S. / Outside U.S. Select",
+      "official_url": "https://bcbsglobalsolutions.com/individuals-and-families/international-medical-insurance/living-abroad/worldwide-and-outside-us/",
+      "quote_or_application_url": null,
+      "broker_url": "https://www.internationalinsurance.com/geoblue/xplorer/",
+      "document_status": "direct_public_plan_document_verified",
+      "direct_public_plan_document_accessible": true,
+      "downloadable_plan_document_found": true,
+      "no_downloadable_plan_document_found": false,
+      "document_source_url": "https://c8s387h5.media.zestyio.com/4ELI-Medical-Coverage-for-Living-Abroad-Worldwide-Premier.HJBCYKZQhel.pdf?download=true",
+      "document_source_type": "public page linked pdf",
+      "document_access_path": "public page direct download link",
+      "verification_detail": "Public page exposed a plan-relevant downloadable PDF labeled 'Download plan description'.",
+      "supporting_page_url": "https://bcbsglobalsolutions.com/individuals-and-families/international-medical-insurance/living-abroad/worldwide-and-outside-us/",
+      "supporting_page_reference": "public page with visible brochure/benefits/policy download link",
+      "evidence_citations": [
+        {
+          "citation_role": "plan_document",
+          "source_url": "https://c8s387h5.media.zestyio.com/4ELI-Medical-Coverage-for-Living-Abroad-Worldwide-Premier.HJBCYKZQhel.pdf?download=true",
+          "source_type": "public page linked pdf",
+          "page_reference": "direct downloadable plan document url verified in this run",
+          "excerpt": "Public page exposed a plan-relevant downloadable PDF labeled 'Download plan description'.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "geoblue_xplorer_bcbs_global_solutions"
+            ],
+            "primary_candidate_id": "geoblue_xplorer_bcbs_global_solutions"
+          }
+        },
+        {
+          "citation_role": "supporting_page",
+          "source_url": "https://bcbsglobalsolutions.com/individuals-and-families/international-medical-insurance/living-abroad/worldwide-and-outside-us/",
+          "source_type": "reviewed public page",
+          "page_reference": "public page with visible brochure/benefits/policy download link",
+          "excerpt": "Public page exposed a plan-relevant downloadable PDF labeled 'Download plan description'.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "geoblue_xplorer_bcbs_global_solutions"
+            ],
+            "primary_candidate_id": "geoblue_xplorer_bcbs_global_solutions"
+          }
+        }
+      ],
+      "scan_observations": [
+        {
+          "url": "https://bcbsglobalsolutions.com/individuals-and-families/international-medical-insurance/living-abroad/worldwide-and-outside-us/",
+          "status_code": 200,
+          "final_url": "https://bcbsglobalsolutions.com/individuals-and-families/international-medical-insurance/living-abroad/worldwide-and-outside-us/",
+          "content_type": "text/html; charset=UTF-8",
+          "pdf_links_sample": [
+            {
+              "href": "https://c8s387h5.media.zestyio.com/4ELI-Medical-Coverage-for-Living-Abroad-Worldwide-Premier.HJBCYKZQhel.pdf?download=true",
+              "text": "Download plan description"
+            },
+            {
+              "href": "https://c8s387h5.media.zestyio.com/4ELI-Medical-Coverage-for-Living-Abroad-Outside-U.S..H1ZAKt-Xnll.pdf?download=true",
+              "text": "Download plan description"
+            }
+          ],
+          "pdf_link_count": 2,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "geoblue_xplorer_bcbs_global_solutions"
+            ],
+            "primary_candidate_id": "geoblue_xplorer_bcbs_global_solutions"
+          }
+        },
+        {
+          "url": "https://www.internationalinsurance.com/geoblue/xplorer/",
+          "status_code": 200,
+          "final_url": "https://www.internationalinsurance.com/geoblue/xplorer/",
+          "content_type": "text/html; charset=UTF-8",
+          "pdf_links_sample": [
+            {
+              "href": "https://www.internationalinsurance.com/pdf-brochures/geoblue_xplorer-brochure-application.pdf",
+              "text": "Download Brochure"
+            },
+            {
+              "href": "https://www.internationalinsurance.com/pdf-brochures/geoblue-xplorer-select.pdf",
+              "text": "Download Brochure"
+            },
+            {
+              "href": "https://www.internationalinsurance.com/pdf-brochures/international-citizens-insurance-group-travel-health-life.pdf",
+              "text": "Our Group Brochure"
+            }
+          ],
+          "pdf_link_count": 3,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "geoblue_xplorer_bcbs_global_solutions"
+            ],
+            "primary_candidate_id": "geoblue_xplorer_bcbs_global_solutions"
+          }
+        }
+      ],
+      "uncertainty_notes": []
+    },
+    {
+      "index": 21,
+      "candidate_id": "safetywing_nomad_complete",
+      "insurer_name": "SafetyWing",
+      "plan_name": "Nomad Insurance Complete",
+      "official_url": "https://explore.safetywing.com/nomad-insurance-complete",
+      "quote_or_application_url": "https://safetywing.com/signup?product=nomad-health",
+      "broker_url": null,
+      "document_status": "direct_public_plan_document_verified",
+      "direct_public_plan_document_accessible": true,
+      "downloadable_plan_document_found": true,
+      "no_downloadable_plan_document_found": false,
+      "document_source_url": "https://safetywing.com/nomad-insurance/complete/standard_nomad_insurance_complete_vumi+carrier_2024-12.pdf?referenceID=24734754&utm_source=24734754&utm_medium=Ambassador",
+      "document_source_type": "public pdf link",
+      "document_access_path": "captured public pdf url",
+      "verification_detail": "Live fetch returned 200 application/pdf.",
+      "supporting_page_url": "https://explore.safetywing.com/nomad-insurance-complete",
+      "supporting_page_reference": "public page used in this run to verify or retain the downloadable plan document",
+      "evidence_citations": [
+        {
+          "citation_role": "plan_document",
+          "source_url": "https://safetywing.com/nomad-insurance/complete/standard_nomad_insurance_complete_vumi+carrier_2024-12.pdf?referenceID=24734754&utm_source=24734754&utm_medium=Ambassador",
+          "source_type": "public pdf link",
+          "page_reference": "direct downloadable plan document url verified in this run",
+          "excerpt": "Live fetch returned 200 application/pdf.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "safetywing_nomad_complete"
+            ],
+            "primary_candidate_id": "safetywing_nomad_complete"
+          }
+        },
+        {
+          "citation_role": "supporting_page",
+          "source_url": "https://explore.safetywing.com/nomad-insurance-complete",
+          "source_type": "reviewed public page",
+          "page_reference": "public page used in this run to verify or retain the downloadable plan document",
+          "excerpt": "Live fetch returned 200 application/pdf.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "safetywing_nomad_complete"
+            ],
+            "primary_candidate_id": "safetywing_nomad_complete"
+          }
+        }
+      ],
+      "scan_observations": [
+        {
+          "url": "https://explore.safetywing.com/nomad-insurance-complete",
+          "status_code": 200,
+          "final_url": "https://explore.safetywing.com/nomad-insurance-complete",
+          "content_type": "text/html; charset=UTF-8",
+          "pdf_links_sample": [
+            {
+              "href": "https://safetywing.com/nomad-insurance/complete/NI-Complete-Policy-2025-07-09-dental+electronics.pdf",
+              "text": "Read full policy"
+            }
+          ],
+          "pdf_link_count": 1,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "safetywing_nomad_complete"
+            ],
+            "primary_candidate_id": "safetywing_nomad_complete"
+          }
+        },
+        {
+          "url": "https://safetywing.com/signup?product=nomad-health",
+          "status_code": 200,
+          "final_url": "https://safetywing.com/signup?product=nomad-health",
+          "content_type": "text/html; charset=utf-8",
+          "pdf_links_sample": [
+            {
+              "href": "https://safetywing.com/terms-and-conditions",
+              "text": "Terms and conditions"
+            }
+          ],
+          "pdf_link_count": 1,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "safetywing_nomad_complete"
+            ],
+            "primary_candidate_id": "safetywing_nomad_complete"
+          }
+        }
+      ],
+      "uncertainty_notes": []
+    },
+    {
+      "index": 22,
+      "candidate_id": "genki_native",
+      "insurer_name": "Genki",
+      "plan_name": "Native / international health insurance",
+      "official_url": "https://genki.world/",
+      "quote_or_application_url": "https://consultation.genki.world/v2",
+      "broker_url": null,
+      "document_status": "no_downloadable_plan_document_found_in_reviewed_public_sources",
+      "direct_public_plan_document_accessible": false,
+      "downloadable_plan_document_found": false,
+      "no_downloadable_plan_document_found": true,
+      "document_source_url": null,
+      "document_source_type": null,
+      "document_access_path": "not_found_in_reviewed_public_sources",
+      "verification_detail": "https://genki.world/ -> HTTP 200; https://consultation.genki.world/v2 -> HTTP 200",
+      "supporting_page_url": "https://genki.world/",
+      "supporting_page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+      "evidence_citations": [
+        {
+          "citation_role": "supporting_page",
+          "source_url": "https://genki.world/",
+          "source_type": "reviewed public page",
+          "page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+          "excerpt": "https://genki.world/ -> HTTP 200; https://consultation.genki.world/v2 -> HTTP 200",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "genki_native"
+            ],
+            "primary_candidate_id": "genki_native"
+          }
+        }
+      ],
+      "scan_observations": [
+        {
+          "url": "https://genki.world/",
+          "status_code": 200,
+          "final_url": "https://genki.world/",
+          "content_type": "text/html; charset=utf-8",
+          "pdf_links_sample": [],
+          "pdf_link_count": 0,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "genki_native"
+            ],
+            "primary_candidate_id": "genki_native"
+          }
+        },
+        {
+          "url": "https://consultation.genki.world/v2",
+          "status_code": 200,
+          "final_url": "https://consultation.genki.world/v2",
+          "content_type": "text/html",
+          "pdf_links_sample": [],
+          "pdf_link_count": 0,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "genki_native"
+            ],
+            "primary_candidate_id": "genki_native"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "No clearly plan-specific downloadable brochure/PDF was found in the reviewed public sources during this run; a gated quote flow, alternate locale, or deeper broker/application path may still expose one later."
+      ]
+    },
+    {
+      "index": 23,
+      "candidate_id": "acs_expat",
+      "insurer_name": "ACS",
+      "plan_name": "ACS Expat",
+      "official_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat/",
+      "quote_or_application_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat-quote-request/",
+      "broker_url": null,
+      "document_status": "direct_public_plan_document_verified",
+      "direct_public_plan_document_accessible": true,
+      "downloadable_plan_document_found": true,
+      "no_downloadable_plan_document_found": false,
+      "document_source_url": "https://www.acs-ami.com/files/pdf/ACS-Expat-ALC-IB-en.pdf",
+      "document_source_type": "public pdf link",
+      "document_access_path": "captured public pdf url",
+      "verification_detail": "Live fetch returned 200 application/pdf.",
+      "supporting_page_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat/",
+      "supporting_page_reference": "public page used in this run to verify or retain the downloadable plan document",
+      "evidence_citations": [
+        {
+          "citation_role": "plan_document",
+          "source_url": "https://www.acs-ami.com/files/pdf/ACS-Expat-ALC-IB-en.pdf",
+          "source_type": "public pdf link",
+          "page_reference": "direct downloadable plan document url verified in this run",
+          "excerpt": "Live fetch returned 200 application/pdf.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "acs_expat"
+            ],
+            "primary_candidate_id": "acs_expat"
+          }
+        },
+        {
+          "citation_role": "supporting_page",
+          "source_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat/",
+          "source_type": "reviewed public page",
+          "page_reference": "public page used in this run to verify or retain the downloadable plan document",
+          "excerpt": "Live fetch returned 200 application/pdf.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "acs_expat"
+            ],
+            "primary_candidate_id": "acs_expat"
+          }
+        }
+      ],
+      "scan_observations": [
+        {
+          "url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat/",
+          "status_code": 200,
+          "final_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat/",
+          "content_type": "text/html; charset=UTF-8",
+          "pdf_links_sample": [
+            {
+              "href": "https://www.acs-ami.com/files/pdf/ACS-Expat-EUR-IB-en.pdf",
+              "text": "ACS Expat 1st € information booklet"
+            },
+            {
+              "href": "https://www.acs-ami.com/files/pdf/ACS-Expat-USD-IB-en.pdf",
+              "text": "ACS Expat 1st USD information booklet"
+            },
+            {
+              "href": "https://www.acs-ami.com/files/pdf/ACS-Expat-Brochure-en.pdf",
+              "text": "ACS Expat brochure"
+            },
+            {
+              "href": "https://www.acs-ami.com/files/pdf/ACS-Expat-TOB-en.pdf",
+              "text": "Download the table of benefits in PDF format"
+            }
+          ],
+          "pdf_link_count": 4,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "acs_expat"
+            ],
+            "primary_candidate_id": "acs_expat"
+          }
+        },
+        {
+          "url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat-quote-request/",
+          "status_code": 200,
+          "final_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat-quote-request/",
+          "content_type": "text/html; charset=UTF-8",
+          "pdf_links_sample": [],
+          "pdf_link_count": 0,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "acs_expat"
+            ],
+            "primary_candidate_id": "acs_expat"
+          }
+        }
+      ],
+      "uncertainty_notes": []
+    },
+    {
+      "index": 24,
+      "candidate_id": "hci_group_health_protect",
+      "insurer_name": "HCI Group",
+      "plan_name": "Health Protect / Protector Plans / Nimbl Health",
+      "official_url": "https://hcigroupglobal.com/health-protect/",
+      "quote_or_application_url": "https://hcigroup.outgrow.us/P21-2026",
+      "broker_url": null,
+      "document_status": "direct_public_plan_document_verified",
+      "direct_public_plan_document_accessible": true,
+      "downloadable_plan_document_found": true,
+      "no_downloadable_plan_document_found": false,
+      "document_source_url": "https://hcigroupglobal.com/wp-content/uploads/2024/06/Inpatient.pdf",
+      "document_source_type": "public page linked pdf",
+      "document_access_path": "public page direct download link",
+      "verification_detail": "Public page exposed a plan-relevant downloadable PDF labeled 'Plan benefits'.",
+      "supporting_page_url": "https://hcigroupglobal.com/health-protect/",
+      "supporting_page_reference": "public page with visible brochure/benefits/policy download link",
+      "evidence_citations": [
+        {
+          "citation_role": "plan_document",
+          "source_url": "https://hcigroupglobal.com/wp-content/uploads/2024/06/Inpatient.pdf",
+          "source_type": "public page linked pdf",
+          "page_reference": "direct downloadable plan document url verified in this run",
+          "excerpt": "Public page exposed a plan-relevant downloadable PDF labeled 'Plan benefits'.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "hci_group_health_protect"
+            ],
+            "primary_candidate_id": "hci_group_health_protect"
+          }
+        },
+        {
+          "citation_role": "supporting_page",
+          "source_url": "https://hcigroupglobal.com/health-protect/",
+          "source_type": "reviewed public page",
+          "page_reference": "public page with visible brochure/benefits/policy download link",
+          "excerpt": "Public page exposed a plan-relevant downloadable PDF labeled 'Plan benefits'.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "hci_group_health_protect"
+            ],
+            "primary_candidate_id": "hci_group_health_protect"
+          }
+        }
+      ],
+      "scan_observations": [
+        {
+          "url": "https://hcigroupglobal.com/health-protect/",
+          "status_code": 200,
+          "final_url": "https://hcigroupglobal.com/health-protect/",
+          "content_type": "text/html; charset=UTF-8",
+          "pdf_links_sample": [
+            {
+              "href": "https://hcigroupglobal.com/wp-content/uploads/2024/06/Inpatient.pdf",
+              "text": "Plan benefits"
+            },
+            {
+              "href": "https://hcigroupglobal.com/wp-content/uploads/2024/06/Standard.pdf",
+              "text": "Plan benefits"
+            },
+            {
+              "href": "https://hcigroupglobal.com/wp-content/uploads/2024/06/Plus.pdf",
+              "text": "Plan benefits"
+            },
+            {
+              "href": "https://hcigroupglobal.com/wp-content/uploads/2024/06/Premium.pdf",
+              "text": "Plan benefits"
+            },
+            {
+              "href": "https://hcigroupglobal.com/wp-content/uploads/2024/06/Executive.pdf",
+              "text": "Plan benefits"
+            },
+            {
+              "href": "https://hcigroupglobal.com/wp-content/uploads/2024/01/Guide-to-Claim_June23.pdf",
+              "text": "Making a claim"
+            },
+            {
+              "href": "https://hcigroupglobal.com/wp-content/uploads/2025/07/HCIG0167-Claim-Form-March24.pdf",
+              "text": "Claim form"
+            }
+          ],
+          "pdf_link_count": 7,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "hci_group_health_protect"
+            ],
+            "primary_candidate_id": "hci_group_health_protect"
+          }
+        },
+        {
+          "url": "https://hcigroup.outgrow.us/P21-2026",
+          "status_code": 200,
+          "final_url": "https://hcigroup.outgrow.us/P21-2026",
+          "content_type": "text/html; charset=UTF-8",
+          "pdf_links_sample": [],
+          "pdf_link_count": 0,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "hci_group_health_protect"
+            ],
+            "primary_candidate_id": "hci_group_health_protect"
+          }
+        }
+      ],
+      "uncertainty_notes": []
+    },
+    {
+      "index": 25,
+      "candidate_id": "expatriate_group_global_health",
+      "insurer_name": "Expatriate Group",
+      "plan_name": "International Health Insurance / Select / Primary+ / Primary+ Lite / Primary",
+      "official_url": "https://www.expatriatehealthcare.com/international-health-insurance/",
+      "quote_or_application_url": "https://quote.expatriatehealthcare.com/healthcare/",
+      "broker_url": null,
+      "document_status": "direct_public_plan_document_verified",
+      "direct_public_plan_document_accessible": true,
+      "downloadable_plan_document_found": true,
+      "no_downloadable_plan_document_found": false,
+      "document_source_url": "https://www.expatriatehealthcare.com/wp-content/uploads/2016/09/Expatriate-Group-Brochure-International-Insurance-Specialists.pdf",
+      "document_source_type": "public pdf link",
+      "document_access_path": "captured public pdf url",
+      "verification_detail": "Live fetch returned 200 application/pdf.",
+      "supporting_page_url": "https://quote.expatriatehealthcare.com/healthcare/",
+      "supporting_page_reference": "public page used in this run to verify or retain the downloadable plan document",
+      "evidence_citations": [
+        {
+          "citation_role": "plan_document",
+          "source_url": "https://www.expatriatehealthcare.com/wp-content/uploads/2016/09/Expatriate-Group-Brochure-International-Insurance-Specialists.pdf",
+          "source_type": "public pdf link",
+          "page_reference": "direct downloadable plan document url verified in this run",
+          "excerpt": "Live fetch returned 200 application/pdf.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "expatriate_group_global_health"
+            ],
+            "primary_candidate_id": "expatriate_group_global_health"
+          }
+        },
+        {
+          "citation_role": "supporting_page",
+          "source_url": "https://quote.expatriatehealthcare.com/healthcare/",
+          "source_type": "reviewed public page",
+          "page_reference": "public page used in this run to verify or retain the downloadable plan document",
+          "excerpt": "Live fetch returned 200 application/pdf.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "expatriate_group_global_health"
+            ],
+            "primary_candidate_id": "expatriate_group_global_health"
+          }
+        }
+      ],
+      "scan_observations": [
+        {
+          "url": "https://www.expatriatehealthcare.com/international-health-insurance/",
+          "status_code": 200,
+          "final_url": "https://www.expatriatehealthcare.com/international-health-insurance/",
+          "content_type": "text/html; charset=UTF-8",
+          "pdf_links_sample": [],
+          "pdf_link_count": 0,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "expatriate_group_global_health"
+            ],
+            "primary_candidate_id": "expatriate_group_global_health"
+          }
+        },
+        {
+          "url": "https://quote.expatriatehealthcare.com/healthcare/",
+          "status_code": 200,
+          "final_url": "https://quote.expatriatehealthcare.com/healthcare/",
+          "content_type": "text/html; Charset=UTF-8",
+          "pdf_links_sample": [
+            {
+              "href": "https://www.expatriatehealthcare.com/wp-content/uploads/2024/01/iPMI-Policy-Wording-20231201.pdf",
+              "text": "International Healthcare Policy Wording"
+            },
+            {
+              "href": "https://www.expatriatehealthcare.com/wp-content/uploads/2019/05/expat-toba-0519.pdf",
+              "text": "Terms of Business"
+            },
+            {
+              "href": "https://www.expatriatehealthcare.com/wp-content/uploads/2021/06/IPID-combined-20210701.pdf",
+              "text": "Insurance Product Information"
+            },
+            {
+              "href": "https://www.expatriatehealthcare.com/wp-content/uploads/2021/06/PAI-Policy-Wording-supplementary-0721.pdf",
+              "text": "Income Protection (PAI) Policy Wording"
+            }
+          ],
+          "pdf_link_count": 4,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "expatriate_group_global_health"
+            ],
+            "primary_candidate_id": "expatriate_group_global_health"
+          }
+        }
+      ],
+      "uncertainty_notes": []
+    },
+    {
+      "index": 26,
+      "candidate_id": "wellaway_expat",
+      "insurer_name": "WellAway",
+      "plan_name": "EXPAT / Gold / Diamond / Expat Plus",
+      "official_url": "https://www.wellaway.com/en/our-plans/expat/",
+      "quote_or_application_url": "https://portal.wellaway.com/Quote/EXPAT/Step1",
+      "broker_url": null,
+      "document_status": "direct_public_plan_document_verified",
+      "direct_public_plan_document_accessible": true,
+      "downloadable_plan_document_found": true,
+      "no_downloadable_plan_document_found": false,
+      "document_source_url": "https://www.wellaway.com/media/filer_public/31/5d/315d7f0b-9976-4fd2-8b43-ad597fd59b4a/expat-plans-brochure_1292026.pdf",
+      "document_source_type": "public pdf link",
+      "document_access_path": "captured public pdf url",
+      "verification_detail": "Live fetch returned 200 application/pdf.",
+      "supporting_page_url": "https://www.wellaway.com/en/our-plans/expat/",
+      "supporting_page_reference": "public page used in this run to verify or retain the downloadable plan document",
+      "evidence_citations": [
+        {
+          "citation_role": "plan_document",
+          "source_url": "https://www.wellaway.com/media/filer_public/31/5d/315d7f0b-9976-4fd2-8b43-ad597fd59b4a/expat-plans-brochure_1292026.pdf",
+          "source_type": "public pdf link",
+          "page_reference": "direct downloadable plan document url verified in this run",
+          "excerpt": "Live fetch returned 200 application/pdf.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "wellaway_expat"
+            ],
+            "primary_candidate_id": "wellaway_expat"
+          }
+        },
+        {
+          "citation_role": "supporting_page",
+          "source_url": "https://www.wellaway.com/en/our-plans/expat/",
+          "source_type": "reviewed public page",
+          "page_reference": "public page used in this run to verify or retain the downloadable plan document",
+          "excerpt": "Live fetch returned 200 application/pdf.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "wellaway_expat"
+            ],
+            "primary_candidate_id": "wellaway_expat"
+          }
+        }
+      ],
+      "scan_observations": [
+        {
+          "url": "https://www.wellaway.com/en/our-plans/expat/",
+          "status_code": 200,
+          "final_url": "https://www.wellaway.com/en/our-plans/expat/",
+          "content_type": "text/html; charset=utf-8",
+          "pdf_links_sample": [
+            {
+              "href": "https://www.wellaway.com/media/filer_public/31/5d/315d7f0b-9976-4fd2-8b43-ad597fd59b4a/expat-plans-brochure_1292026.pdf",
+              "text": "Brochure"
+            },
+            {
+              "href": "https://www.wellaway.com/media/filer_public/90/2c/902ce772-9d7b-4916-8d1e-8e2d1904afe7/expat-plan-comparison-2026.pdf",
+              "text": "Plan Comparison"
+            },
+            {
+              "href": "https://www.wellaway.com/media/filer_public/31/5d/315d7f0b-9976-4fd2-8b43-ad597fd59b4a/expat-plans-brochure_1292026.pdf",
+              "text": "Brochure"
+            },
+            {
+              "href": "https://www.wellaway.com/media/filer_public/90/2c/902ce772-9d7b-4916-8d1e-8e2d1904afe7/expat-plan-comparison-2026.pdf",
+              "text": "Plan Comparison"
+            }
+          ],
+          "pdf_link_count": 4,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "wellaway_expat"
+            ],
+            "primary_candidate_id": "wellaway_expat"
+          }
+        },
+        {
+          "url": "https://portal.wellaway.com/Quote/EXPAT/Step1",
+          "status_code": 200,
+          "final_url": "https://portal.wellaway.com/Quote/EXPAT/Step1",
+          "content_type": "text/html; charset=utf-8",
+          "pdf_links_sample": [],
+          "pdf_link_count": 0,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "wellaway_expat"
+            ],
+            "primary_candidate_id": "wellaway_expat"
+          }
+        }
+      ],
+      "uncertainty_notes": []
+    },
+    {
+      "index": 27,
+      "candidate_id": "securus_global_health_cover",
+      "insurer_name": "Securus International",
+      "plan_name": "Global Health Cover",
+      "official_url": "https://www.securus.co.uk/benefits/global-health-cover",
+      "quote_or_application_url": null,
+      "broker_url": null,
+      "document_status": "direct_public_plan_document_verified",
+      "direct_public_plan_document_accessible": true,
+      "downloadable_plan_document_found": true,
+      "no_downloadable_plan_document_found": false,
+      "document_source_url": "https://www.securus.co.uk/storage/JZJIi-Securus%20Individual%20&%20Group%20Benefit%20Table%202026%20(USD).pdf",
+      "document_source_type": "public pdf link",
+      "document_access_path": "captured public pdf url",
+      "verification_detail": "Live fetch returned 200 application/pdf.",
+      "supporting_page_url": "https://www.securus.co.uk/benefits/global-health-cover",
+      "supporting_page_reference": "public page used in this run to verify or retain the downloadable plan document",
+      "evidence_citations": [
+        {
+          "citation_role": "plan_document",
+          "source_url": "https://www.securus.co.uk/storage/JZJIi-Securus%20Individual%20&%20Group%20Benefit%20Table%202026%20(USD).pdf",
+          "source_type": "public pdf link",
+          "page_reference": "direct downloadable plan document url verified in this run",
+          "excerpt": "Live fetch returned 200 application/pdf.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "securus_global_health_cover"
+            ],
+            "primary_candidate_id": "securus_global_health_cover"
+          }
+        },
+        {
+          "citation_role": "supporting_page",
+          "source_url": "https://www.securus.co.uk/benefits/global-health-cover",
+          "source_type": "reviewed public page",
+          "page_reference": "public page used in this run to verify or retain the downloadable plan document",
+          "excerpt": "Live fetch returned 200 application/pdf.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "securus_global_health_cover"
+            ],
+            "primary_candidate_id": "securus_global_health_cover"
+          }
+        }
+      ],
+      "scan_observations": [
+        {
+          "url": "https://www.securus.co.uk/benefits/global-health-cover",
+          "status_code": 200,
+          "final_url": "https://www.securus.co.uk/benefits/global-health-cover",
+          "content_type": "text/html; charset=UTF-8",
+          "pdf_links_sample": [
+            {
+              "href": "https://www.securus.co.uk/storage/JZJIi-Securus Individual &amp; Group Benefit Table 2026 (USD).pdf",
+              "text": "Full Benefit Plans 2026"
+            },
+            {
+              "href": "https://www.securus.co.uk/storage/cJ4AU-Securus Supercare Benefit Table 2025.pdf",
+              "text": "Top Up Plan 2025"
+            },
+            {
+              "href": "https://www.securus.co.uk/storage/PcmFl-Securus DHA - Extensivecare Benefit Table TMNF 2026.pdf",
+              "text": "DHA Extensivecare Benefit Plan 2026"
+            },
+            {
+              "href": "https://www.securus.co.uk/storage/84wk6-Securus DHA - Ultracare Benefit Table TMNF 2026.pdf",
+              "text": "DHA Ultracare Benefit Plan 2026"
+            },
+            {
+              "href": "https://www.securus.co.uk/storage/M5GE1-1. Securus Expacare Africa Corporate Plan Information Sheet 2023.pdf",
+              "text": "🆕 Africa Corporate Plan Information Sheet 2024"
+            },
+            {
+              "href": "https://www.securus.co.uk/storage/8LWpl-Africa-Corporate-Plan-Fact-File-2025.pdf",
+              "text": "🆕 Africa Corporate Plan Fact Sheet 2025"
+            },
+            {
+              "href": "https://www.securus.co.uk/terms",
+              "text": "Terms and Conditions"
+            }
+          ],
+          "pdf_link_count": 7,
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+            "candidate_record_section": "plan_document_access_evidence_ledger",
+            "candidate_ids": [
+              "securus_global_health_cover"
+            ],
+            "primary_candidate_id": "securus_global_health_cover"
+          }
+        }
+      ],
+      "uncertainty_notes": []
+    }
+  ]
+}

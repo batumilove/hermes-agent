@@ -1,0 +1,386 @@
+{
+  "dataset": "international_expat_health_insurance_discovery",
+  "run_scope": "completion_evidence_hardening",
+  "section": "priority_completion_final_verification",
+  "artifact_name": "priority_completion_final_verification",
+  "generated_by": "gpt-5.4",
+  "generated_from": [
+    "data/insurance_discovery/completion_evidence_hardening_ledger.discovery.json",
+    "data/insurance_discovery/priority_candidate_completion_audit.discovery.json",
+    "data/insurance_discovery/priority_candidate_gaps_next_actions.discovery.json",
+    "docs/insurance_discovery_priority_candidate_gaps_next_actions.md",
+    "docs/insurance_discovery_priority_completion_report.md"
+  ],
+  "constraints": [
+    "Packaged only from existing local artifacts under data/insurance_discovery/ and docs/.",
+    "No live web research, quote submission, account creation, personal-data submission, or discovery-dataset regeneration performed while generating this artifact.",
+    "No final recommendation ranking, value score, dashboard, or purchase advice is created in this verification step.",
+    "Priority candidate scope remains exactly the 14 candidates already present in completion_evidence_hardening_ledger.discovery.json.",
+    "Uncertainty and gates are preserved from the existing ledger and audit rather than resolved here."
+  ],
+  "priority_candidate_verification": {
+    "priority_candidate_count_from_ledger": 14,
+    "unique_priority_candidate_ids_in_priority_list": 14,
+    "ledger_record_count": 14,
+    "all_14_candidates_present_exactly_once_in_records": true,
+    "candidate_ids_in_ledger_order": [
+      "cigna_global",
+      "bupa_global",
+      "april_international",
+      "allianz_care",
+      "axa_global_healthcare",
+      "william_russell",
+      "now_health_international",
+      "foyer_global_health",
+      "safetywing",
+      "expatriate_group",
+      "img_global_medical",
+      "genki",
+      "wellaway",
+      "passportcard"
+    ],
+    "per_candidate_checks": [
+      {
+        "record_index": 1,
+        "candidate_id": "cigna_global",
+        "insurer_name": "Cigna Global",
+        "ledger_record_count_for_candidate_id": 1,
+        "has_at_least_one_source_url_or_gated_source_url": true,
+        "sample_source_refs": [
+          {
+            "field": "source_url",
+            "url": "https://www.cignaglobal.com/quote/pages/quote/CountrySelector.html"
+          },
+          {
+            "field": "source_url",
+            "url": "https://www.cignaglobal.com/"
+          },
+          {
+            "field": "source_url",
+            "url": "https://www.cignaglobal.com/quote/pages/quote/CountrySelector.html"
+          }
+        ]
+      },
+      {
+        "record_index": 2,
+        "candidate_id": "bupa_global",
+        "insurer_name": "Bupa Global",
+        "ledger_record_count_for_candidate_id": 1,
+        "has_at_least_one_source_url_or_gated_source_url": true,
+        "sample_source_refs": [
+          {
+            "field": "source_url",
+            "url": "https://www.bupaglobal.com/en/private-health-insurance"
+          },
+          {
+            "field": "source_url",
+            "url": "https://www.bupaglobal.com/en/private-health-insurance"
+          },
+          {
+            "field": "source_url",
+            "url": "https://www.bupaglobal.com/en/private-health-insurance"
+          }
+        ]
+      },
+      {
+        "record_index": 3,
+        "candidate_id": "april_international",
+        "insurer_name": "APRIL International",
+        "ledger_record_count_for_candidate_id": 1,
+        "has_at_least_one_source_url_or_gated_source_url": true,
+        "sample_source_refs": [
+          {
+            "field": "source_url",
+            "url": "https://www.april-international.com/en/long-term-international-health-insurance"
+          },
+          {
+            "field": "source_url",
+            "url": "https://www.april-international.com/en"
+          },
+          {
+            "field": "source_url",
+            "url": "https://www.april-international.com/en"
+          }
+        ]
+      },
+      {
+        "record_index": 4,
+        "candidate_id": "allianz_care",
+        "insurer_name": "Allianz Care",
+        "ledger_record_count_for_candidate_id": 1,
+        "has_at_least_one_source_url_or_gated_source_url": true,
+        "sample_source_refs": [
+          {
+            "field": "source_url",
+            "url": "https://www.allianzcare.com/en/personal-international-health-insurance.html"
+          },
+          {
+            "field": "source_url",
+            "url": "https://my.allianzcare.com/myquote/5"
+          },
+          {
+            "field": "source_url",
+            "url": "https://my.allianzcare.com/myquote/5"
+          }
+        ]
+      },
+      {
+        "record_index": 5,
+        "candidate_id": "axa_global_healthcare",
+        "insurer_name": "AXA Global Healthcare",
+        "ledger_record_count_for_candidate_id": 1,
+        "has_at_least_one_source_url_or_gated_source_url": true,
+        "sample_source_refs": [
+          {
+            "field": "source_url",
+            "url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/"
+          },
+          {
+            "field": "source_url",
+            "url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/get-a-quote/?camp=online-default"
+          },
+          {
+            "field": "source_url",
+            "url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/get-a-quote/?camp=online-default"
+          }
+        ]
+      },
+      {
+        "record_index": 6,
+        "candidate_id": "william_russell",
+        "insurer_name": "William Russell",
+        "ledger_record_count_for_candidate_id": 1,
+        "has_at_least_one_source_url_or_gated_source_url": true,
+        "sample_source_refs": [
+          {
+            "field": "source_url",
+            "url": "https://www.william-russell.com/international-health-insurance/"
+          },
+          {
+            "field": "source_url",
+            "url": "https://www.william-russell.com/international-health-insurance/"
+          },
+          {
+            "field": "source_url",
+            "url": "https://www.william-russell.com/international-health-insurance/"
+          }
+        ]
+      },
+      {
+        "record_index": 7,
+        "candidate_id": "now_health_international",
+        "insurer_name": "Now Health International",
+        "ledger_record_count_for_candidate_id": 1,
+        "has_at_least_one_source_url_or_gated_source_url": true,
+        "sample_source_refs": [
+          {
+            "field": "source_url",
+            "url": "https://www.now-health.com/en/insurance-plans/"
+          },
+          {
+            "field": "source_url",
+            "url": "https://www.now-health.com/en/insurance-plans/"
+          },
+          {
+            "field": "source_url",
+            "url": "https://www.now-health.com/en/insurance-plans/"
+          }
+        ]
+      },
+      {
+        "record_index": 8,
+        "candidate_id": "foyer_global_health",
+        "insurer_name": "Foyer Global Health",
+        "ledger_record_count_for_candidate_id": 1,
+        "has_at_least_one_source_url_or_gated_source_url": true,
+        "sample_source_refs": [
+          {
+            "field": "source_url",
+            "url": "https://www.foyerglobalhealth.com/"
+          },
+          {
+            "field": "source_url",
+            "url": "https://www.foyerglobalhealth.com/plans-services/our-plans/international-health-insurance-comparison/"
+          },
+          {
+            "field": "source_url",
+            "url": "https://www.foyerglobalhealth.com/"
+          }
+        ]
+      },
+      {
+        "record_index": 9,
+        "candidate_id": "safetywing",
+        "insurer_name": "SafetyWing",
+        "ledger_record_count_for_candidate_id": 1,
+        "has_at_least_one_source_url_or_gated_source_url": true,
+        "sample_source_refs": [
+          {
+            "field": "source_url",
+            "url": "https://explore.safetywing.com/nomad-insurance-complete"
+          },
+          {
+            "field": "source_url",
+            "url": "https://safetywing.com/signup?product=nomad-health"
+          },
+          {
+            "field": "source_url",
+            "url": "https://safetywing.com/nomad-insurance/complete/standard_nomad_insurance_complete_vumi+carrier_2024-12.pdf?referenceID=24734754&utm_source=24734754&utm_medium=Ambassador"
+          }
+        ]
+      },
+      {
+        "record_index": 10,
+        "candidate_id": "expatriate_group",
+        "insurer_name": "Expatriate Group",
+        "ledger_record_count_for_candidate_id": 1,
+        "has_at_least_one_source_url_or_gated_source_url": true,
+        "sample_source_refs": [
+          {
+            "field": "source_url",
+            "url": "https://quote.expatriatehealthcare.com/healthcare/"
+          },
+          {
+            "field": "source_url",
+            "url": "https://www.expatriatehealthcare.com/international-health-insurance/"
+          },
+          {
+            "field": "source_url",
+            "url": "https://www.expatriatehealthcare.com/wp-content/uploads/2016/09/Expatriate-Group-Brochure-International-Insurance-Specialists.pdf"
+          }
+        ]
+      },
+      {
+        "record_index": 11,
+        "candidate_id": "img_global_medical",
+        "insurer_name": "IMG (International Medical Group)",
+        "ledger_record_count_for_candidate_id": 1,
+        "has_at_least_one_source_url_or_gated_source_url": true,
+        "sample_source_refs": [
+          {
+            "field": "source_url",
+            "url": "https://www.imglobal.com/international-health-insurance"
+          },
+          {
+            "field": "source_url",
+            "url": "https://www.imglobal.com/"
+          },
+          {
+            "field": "source_url",
+            "url": "https://www.imglobal.com/international-health-insurance"
+          }
+        ]
+      },
+      {
+        "record_index": 12,
+        "candidate_id": "genki",
+        "insurer_name": "Genki",
+        "ledger_record_count_for_candidate_id": 1,
+        "has_at_least_one_source_url_or_gated_source_url": true,
+        "sample_source_refs": [
+          {
+            "field": "source_url",
+            "url": "https://consultation.genki.world/v2"
+          },
+          {
+            "field": "source_url",
+            "url": "https://genki.world/"
+          },
+          {
+            "field": "source_url",
+            "url": "https://consultation.genki.world/v2"
+          }
+        ]
+      },
+      {
+        "record_index": 13,
+        "candidate_id": "wellaway",
+        "insurer_name": "WellAway",
+        "ledger_record_count_for_candidate_id": 1,
+        "has_at_least_one_source_url_or_gated_source_url": true,
+        "sample_source_refs": [
+          {
+            "field": "source_url",
+            "url": "https://portal.wellaway.com/Quote/EXPAT/Step1"
+          },
+          {
+            "field": "source_url",
+            "url": "https://www.wellaway.com/en/our-plans/expat/"
+          },
+          {
+            "field": "source_url",
+            "url": "https://www.wellaway.com/media/filer_public/31/5d/315d7f0b-9976-4fd2-8b43-ad597fd59b4a/expat-plans-brochure_1292026.pdf"
+          }
+        ]
+      },
+      {
+        "record_index": 14,
+        "candidate_id": "passportcard",
+        "insurer_name": "PassportCard",
+        "ledger_record_count_for_candidate_id": 1,
+        "has_at_least_one_source_url_or_gated_source_url": true,
+        "sample_source_refs": [
+          {
+            "field": "source_url",
+            "url": "https://www.passportcard.de/en/international-health-insurance/"
+          },
+          {
+            "field": "source_url",
+            "url": "https://www.passportcard.de/en/international-health-insurance/"
+          },
+          {
+            "field": "source_url",
+            "url": "https://www.passportcard.de/en/international-health-insurance/"
+          }
+        ]
+      }
+    ]
+  },
+  "source_url_coverage_verification": {
+    "all_candidates_have_at_least_one_source_url_or_gated_source_url": true,
+    "candidates_missing_source_url_or_gated_source_url": []
+  },
+  "audit_verification": {
+    "audit_artifact_path": "data/insurance_discovery/priority_candidate_completion_audit.discovery.json",
+    "audit_passed": true,
+    "priority_candidate_count": 14,
+    "priority_candidates_with_exactly_one_complete_record": 14,
+    "priority_candidates_with_issues": 0,
+    "duplicate_priority_candidate_ids_in_staging": [],
+    "duplicate_priority_candidate_ids_in_candidate_source_ledger": [],
+    "missing_priority_candidate_ids_in_staging": [],
+    "missing_priority_candidate_ids_in_candidate_source_ledger": []
+  },
+  "required_packaging_artifacts_verification": {
+    "all_required_packaging_artifacts_exist": true,
+    "artifacts": [
+      {
+        "path": "data/insurance_discovery/priority_candidate_gaps_next_actions.discovery.json",
+        "exists": true
+      },
+      {
+        "path": "docs/insurance_discovery_priority_candidate_gaps_next_actions.md",
+        "exists": true
+      },
+      {
+        "path": "docs/insurance_discovery_priority_completion_report.md",
+        "exists": true
+      }
+    ]
+  },
+  "no_ranking_or_dashboard_artifact_created_by_this_run": {
+    "verified_paths_scanned": [
+      "data/insurance_discovery",
+      "docs"
+    ],
+    "search_results": {
+      "data_ranking_matches": [],
+      "data_dashboard_matches": [],
+      "docs_ranking_matches": [],
+      "docs_dashboard_matches": []
+    },
+    "ranking_or_dashboard_artifact_found": false,
+    "verification_basis": "No files matching *ranking* or *dashboard* were found under data/insurance_discovery/ or docs during this verification step."
+  },
+  "final_verification_passed": true
+}

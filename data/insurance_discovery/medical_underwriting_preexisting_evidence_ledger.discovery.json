@@ -1,0 +1,1263 @@
+{
+  "dataset": "international_expat_health_insurance_discovery",
+  "run_scope": "discovery_only",
+  "section": "medical_underwriting_preexisting_evidence_ledger",
+  "generated_by": "gpt-5.4",
+  "family_context": {
+    "citizenship": "German",
+    "residence": "Georgia",
+    "adults": [
+      42,
+      37
+    ],
+    "children": 2,
+    "preferred_cover_geography": "Georgia and Germany, ideally worldwide excluding the US"
+  },
+  "assessment_notes": [
+    "This ledger records whether public pre-existing-condition / medical-underwriting terms were found for each candidate insurer-plan during the discovery run.",
+    "not_found_in_reviewed_public_sources means the reviewed public sources captured in this repo did not surface explicit wording; it does not mean the insurer has no such policy terms.",
+    "Discovery evidence may come from official insurer pages, official FAQs/help centers, public PDFs, or search-visible snippets pointing to official insurer resources when fuller text remained gated or difficult to extract directly."
+  ],
+  "records": [
+    {
+      "candidate_id": "cigna_global",
+      "insurer_name": "Cigna Global",
+      "plan_name": "International Health Insurance / Global Medical Cover",
+      "pre_existing_conditions_status": "terms_found_in_public_sources",
+      "medical_underwriting_visibility": "explicit_public_terms_found",
+      "supporting_citations": [
+        {
+          "source_url": "https://www.cignaglobal.com/pdf/Underwriting.pdf",
+          "source_title": "UNDERWRITING - Cigna Global",
+          "source_kind": "official underwriting guide PDF",
+          "evidence_excerpt": "Cigna says full medical underwriting is the most common option, pre-existing conditions may be excluded up front, and applicants complete an 18-question medical questionnaire before the underwriting team decides whether cover is approved, excluded, or declined.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "cigna_global"
+            ],
+            "primary_candidate_id": "cigna_global"
+          }
+        },
+        {
+          "source_url": "https://www.cignaglobal.com/individuals-families/members/resources/frequently-asked-questions",
+          "source_title": "Insurance Card FAQs | Cigna Global",
+          "source_kind": "official FAQ page",
+          "evidence_excerpt": "Cigna’s FAQ states that if you sought advice or experienced symptoms before the start date of the plan, the condition may be treated as pre-existing and members should check their certificate and policy rules.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "cigna_global"
+            ],
+            "primary_candidate_id": "cigna_global"
+          }
+        }
+      ],
+      "evidence_summary": "Cigna publicly documents multiple underwriting routes and says pre-existing conditions may be excluded up front under full medical underwriting, with underwriting decisions made after a medical questionnaire review.",
+      "rationale": "This is direct official underwriting evidence from a Cigna PDF plus an official FAQ, not just generic marketing language.",
+      "uncertainty_notes": [
+        "The public sources confirm underwriting mechanics, but they do not reveal what exclusions, premium loadings, or acceptance outcome this specific family would receive."
+      ],
+      "source_ledger_ref": {
+        "dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+        "record_index": 1
+      },
+      "confidence_rating": "high",
+      "confidence_rationale": "Product-specific official PDF with explicit underwriting process and pre-existing-condition treatment."
+    },
+    {
+      "candidate_id": "allianz_care",
+      "insurer_name": "Allianz Care",
+      "plan_name": "Care International Health Insurance Plans",
+      "pre_existing_conditions_status": "terms_found_in_public_sources",
+      "medical_underwriting_visibility": "explicit_public_terms_found",
+      "supporting_citations": [
+        {
+          "source_url": "https://www.allianzcare.com/en/about-us/blog/international-health-insurance-with-pre-existing-conditions.html",
+          "source_title": "International health insurance with pre-existing conditions | Allianz Care",
+          "source_kind": "official insurer article",
+          "evidence_excerpt": "Allianz says its individual expat products are subject to full medical underwriting of any pre-existing conditions, and that it underwrites all pre-existing conditions for individuals and small underwritten groups.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "allianz_care"
+            ],
+            "primary_candidate_id": "allianz_care"
+          }
+        },
+        {
+          "source_url": "https://www.allianzcare.com/en/personal-international-health-insurance/products-and-services/specialised-international-plans.html",
+          "source_title": "Specialised International Health Insurance Plans - Allianz Care",
+          "source_kind": "official insurer page / search-visible snippet",
+          "evidence_excerpt": "Search-visible Allianz text says fully medically underwritten policies generally cover pre-existing conditions unless policy documents say otherwise, while moratorium policies have a 24-month waiting period before some pre-existing conditions may become eligible.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "allianz_care"
+            ],
+            "primary_candidate_id": "allianz_care"
+          }
+        }
+      ],
+      "evidence_summary": "Allianz publicly states that individual expat plans use full medical underwriting for pre-existing conditions and also explains moratorium-style waiting-period treatment in public insurer materials.",
+      "rationale": "The evidence is insurer-authored and explicitly distinguishes underwriting approaches instead of implying them.",
+      "uncertainty_notes": [
+        "The sources do not settle which underwriting route, special conditions, or rates this Georgia-resident family would actually be offered."
+      ],
+      "source_ledger_ref": {
+        "dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+        "record_index": 2
+      },
+      "confidence_rating": "high",
+      "confidence_rationale": "Clear official wording on both full medical underwriting and moratorium treatment."
+    },
+    {
+      "candidate_id": "bupa_global",
+      "insurer_name": "Bupa Global",
+      "plan_name": "Private Health Insurance & Medical Insurance for Individuals and Families",
+      "pre_existing_conditions_status": "terms_found_in_public_sources",
+      "medical_underwriting_visibility": "explicit_public_terms_found",
+      "supporting_citations": [
+        {
+          "source_url": "https://www.bupaglobal.com/en/for-you/expat",
+          "source_title": "Premium international private health insurance - Bupa Global",
+          "source_kind": "official insurer page / search-visible snippet",
+          "evidence_excerpt": "Bupa’s official expat page says pre-existing conditions could be covered, subject to underwriting.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "bupa_global"
+            ],
+            "primary_candidate_id": "bupa_global"
+          }
+        },
+        {
+          "source_url": "https://www.bupaglobal.com/en/most-comprehensive",
+          "source_title": "Our most extensive healthcare plans | Bupa Global",
+          "source_kind": "official insurer page / search-visible snippet",
+          "evidence_excerpt": "Bupa’s official page says pre-existing conditions could be covered subject to meeting assessment criteria from its medical team.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "bupa_global"
+            ],
+            "primary_candidate_id": "bupa_global"
+          }
+        },
+        {
+          "source_url": "https://www.bupaglobal.com/-/media/BupaGlobal/PDFs/2026/Products/BGHP/BINS/BINS-Bupa-Global-Health-Plans-Sales-Brochure-EN-MAR26-0062286.pdf",
+          "source_title": "Bupa Global Health Plans Sales Brochure",
+          "source_kind": "official sales brochure PDF",
+          "evidence_excerpt": "The brochure repeatedly notes that plans carry waiting periods, limitations and exclusions and that full details sit in plan documents, which supports that underwriting and condition treatment are plan-governed rather than automatically open-ended.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "bupa_global"
+            ],
+            "primary_candidate_id": "bupa_global"
+          }
+        }
+      ],
+      "evidence_summary": "Bupa Global publicly says pre-existing conditions could be covered subject to underwriting and medical-team assessment, with plan limitations and exclusions controlled by brochure and policy wording.",
+      "rationale": "The strongest public wording currently available is official Bupa snippet-level text and brochure context rather than a fully extracted underwriting rule page.",
+      "uncertainty_notes": [
+        "The reviewed public sources do not yet show the exact underwriting questionnaire, exclusions, or rating outcomes for this family profile."
+      ],
+      "source_ledger_ref": {
+        "dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+        "record_index": 3
+      },
+      "confidence_rating": "medium",
+      "confidence_rationale": "Official sources are clear that underwriting applies, but the most explicit pre-existing wording surfaced as search-visible official snippets rather than fully extracted policy text."
+    },
+    {
+      "candidate_id": "axa_global_healthcare",
+      "insurer_name": "AXA Global Healthcare",
+      "plan_name": "International Health Insurance Plans",
+      "pre_existing_conditions_status": "terms_found_in_public_sources",
+      "medical_underwriting_visibility": "explicit_public_terms_found",
+      "supporting_citations": [
+        {
+          "source_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/",
+          "source_title": "International Health Insurance Plans: AXA Global Healthcare",
+          "source_kind": "official insurer page / search-visible snippet",
+          "evidence_excerpt": "AXA says its plans are designed to cover medical conditions that start after joining and that the plans do not cover pre-existing conditions.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "axa_global_healthcare"
+            ],
+            "primary_candidate_id": "axa_global_healthcare"
+          }
+        },
+        {
+          "source_url": "https://www.axaglobalhealthcare.com/globalassets/intermediary/sales-tool-kit/individualfamily/xl/handbook/apr-21/comprehensive-global-health-plan-handbook-bwi-april-2021.pdf?utm",
+          "source_title": "Your handbook - AXA Global Healthcare",
+          "source_kind": "official handbook PDF / search-visible snippet",
+          "evidence_excerpt": "AXA handbook text says cover for pre-existing conditions depends on the underwriting terms the member joined on.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "axa_global_healthcare"
+            ],
+            "primary_candidate_id": "axa_global_healthcare"
+          }
+        }
+      ],
+      "evidence_summary": "AXA publicly states that standard plan design excludes pre-existing conditions, while handbook material says cover depends on the underwriting terms applied at entry.",
+      "rationale": "Both the public plan page and AXA handbook materials directly address pre-existing-condition treatment.",
+      "uncertainty_notes": [
+        "The public materials do not fully resolve whether any switch/continuation route or other exception would apply for this family."
+      ],
+      "source_ledger_ref": {
+        "dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+        "record_index": 4
+      },
+      "confidence_rating": "high",
+      "confidence_rationale": "Consistent insurer-authored wording across public page and handbook material."
+    },
+    {
+      "candidate_id": "april_international",
+      "insurer_name": "APRIL International",
+      "plan_name": "Long-term Expat International Health Insurance",
+      "pre_existing_conditions_status": "terms_found_in_public_sources",
+      "medical_underwriting_visibility": "explicit_public_terms_found",
+      "supporting_citations": [
+        {
+          "source_url": "https://www.april-international.com/en/long-term-international-health-insurance/guide/guide-to-medical-underwriting",
+          "source_title": "Guide to Medical Underwriting | APRIL International",
+          "source_kind": "official insurer guide",
+          "evidence_excerpt": "APRIL says medical underwriting decides whether to accept an application, what exclusions or conditions apply, and what the plan costs.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "april_international"
+            ],
+            "primary_candidate_id": "april_international"
+          }
+        },
+        {
+          "source_url": "https://www.april-international.com/en/long-term-international-health-insurance/guide/guide-to-medical-underwriting",
+          "source_title": "Guide to Medical Underwriting | APRIL International",
+          "source_kind": "official insurer guide",
+          "evidence_excerpt": "APRIL explains full medical underwriting, moratorium underwriting that excludes pre-existing conditions for a set period, CPME transfer treatment, and medical-history-disregarded options that may cover some pre-existing conditions.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "april_international"
+            ],
+            "primary_candidate_id": "april_international"
+          }
+        }
+      ],
+      "evidence_summary": "APRIL’s official international-health guide explicitly explains underwriting models, including full medical underwriting, moratorium exclusions for pre-existing conditions, and transfer options.",
+      "rationale": "This replaces the earlier not-found placeholder with an actual APRIL-authored underwriting explainer relevant to international health insurance.",
+      "uncertainty_notes": [
+        "The guide is educational and cross-product; it does not by itself prove which underwriting route the specific long-term expat product would offer this family."
+      ],
+      "source_ledger_ref": {
+        "dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+        "record_index": 5
+      },
+      "confidence_rating": "medium",
+      "confidence_rationale": "Strong official guide, but it reads as general APRIL underwriting guidance rather than a single-plan policy wording."
+    },
+    {
+      "candidate_id": "william_russell",
+      "insurer_name": "William Russell",
+      "plan_name": "International Health Insurance",
+      "pre_existing_conditions_status": "terms_found_in_public_sources",
+      "medical_underwriting_visibility": "explicit_public_terms_found",
+      "supporting_citations": [
+        {
+          "source_url": "https://www.william-russell.com/international-health-insurance/how-it-works/pre-existing-medical-conditions/",
+          "source_title": "Pre-Existing Medical Conditions & Health Insurance | William Russell",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "William Russell says policies will not cover investigations, treatment, or medication relating to pre-existing or related conditions unless they are disclosed in the application and William Russell agrees to cover them.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "william_russell"
+            ],
+            "primary_candidate_id": "william_russell"
+          }
+        },
+        {
+          "source_url": "https://www.william-russell.com/international-health-insurance/how-it-works/pre-existing-medical-conditions/",
+          "source_title": "Pre-Existing Medical Conditions & Health Insurance | William Russell",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "The same page explains full medical underwriting, moratorium underwriting with a two-year symptom/treatment-free period, and switch underwriting / CPME treatment when moving from another insurer.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "william_russell"
+            ],
+            "primary_candidate_id": "william_russell"
+          }
+        }
+      ],
+      "evidence_summary": "William Russell publicly sets out a detailed pre-existing-condition definition and explains that cover normally requires disclosure plus explicit insurer agreement, with FMU, moratorium, and switch routes described on its official page.",
+      "rationale": "This is one of the clearest plan-relevant public sources in the shortlist.",
+      "uncertainty_notes": [
+        "The page is explicit on framework, but the actual family-specific exclusions or premium loading still depend on the application result."
+      ],
+      "source_ledger_ref": {
+        "dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+        "record_index": 6
+      },
+      "confidence_rating": "high",
+      "confidence_rationale": "Detailed insurer-authored page focused specifically on pre-existing medical conditions."
+    },
+    {
+      "candidate_id": "msh_international",
+      "insurer_name": "MSH International",
+      "plan_name": "First'Expat+ / International Health Insurance for Individuals",
+      "pre_existing_conditions_status": "not_found_in_reviewed_public_sources",
+      "medical_underwriting_visibility": "not_captured_in_reviewed_sources",
+      "supporting_citations": [
+        {
+          "source_url": "https://www.msh-intl.com/en/individuals/",
+          "source_title": "International Health Insurance for Individuals - MSH",
+          "source_kind": "reviewed public source",
+          "evidence_excerpt": "No explicit pre-existing-condition or medical-underwriting wording was captured from this reviewed source during the discovery run.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "msh_international"
+            ],
+            "primary_candidate_id": "msh_international"
+          }
+        },
+        {
+          "source_url": "https://www.msh-intl.com/en/individuals/",
+          "source_title": "International Health Insurance for Individuals - MSH",
+          "source_kind": "reviewed public source",
+          "evidence_excerpt": "No explicit pre-existing-condition or medical-underwriting wording was captured from this reviewed source during the discovery run.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "msh_international"
+            ],
+            "primary_candidate_id": "msh_international"
+          }
+        }
+      ],
+      "evidence_summary": "No explicit pre-existing-condition term was found in the reviewed public discovery sources for this candidate.",
+      "rationale": "This is an explicit discovery-stage not-found note, not an inference that the insurer lacks underwriting terms. It only means the reviewed public sources in this run did not surface them.",
+      "uncertainty_notes": [
+        "Pre-existing-condition rules may still exist in brochures, policy wordings, quote flows, application forms, or broker/PDF materials that were not captured in the reviewed public sources for this run."
+      ],
+      "source_ledger_ref": {
+        "dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+        "record_index": 7
+      }
+    },
+    {
+      "candidate_id": "now_health_international",
+      "insurer_name": "Now Health International",
+      "plan_name": "SimpleCare / WorldCare International Health Insurance Plans",
+      "pre_existing_conditions_status": "terms_found_in_public_sources",
+      "medical_underwriting_visibility": "explicit_public_terms_found",
+      "supporting_citations": [
+        {
+          "source_url": "https://www.now-health.com/en/limitations-exclusions/",
+          "source_title": "Limitations & Exclusions - Now Health",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "Now Health’s exclusions page states that listed limitations apply in addition to any personal exclusions detailed in the certificate of insurance, indicating individualized underwriting outcomes can sit on top of standard exclusions.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "now_health_international"
+            ],
+            "primary_candidate_id": "now_health_international"
+          }
+        },
+        {
+          "source_url": "https://www.now-health.com/en/expat-health-insurance/",
+          "source_title": "International Private Medical Insurance (iPMI) for Expats - Now Health",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "Now Health says some expat packages cover pre-existing conditions subject to underwriting and specifically describes WorldCare Essential as covering pre-existing conditions subject to underwriting.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "now_health_international"
+            ],
+            "primary_candidate_id": "now_health_international"
+          }
+        },
+        {
+          "source_url": "https://www.now-health.com/en/",
+          "source_title": "Now Health: International Health Insurance in 200 Territories Worldwide",
+          "source_kind": "official home page / search-visible snippet",
+          "evidence_excerpt": "Search-visible official text says the plans do not generally cover pre-existing medical conditions, though some conditions may be covered subject to underwriting.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "now_health_international"
+            ],
+            "primary_candidate_id": "now_health_international"
+          }
+        }
+      ],
+      "evidence_summary": "Now Health publicly says its plans do not generally cover pre-existing conditions but also states that some expat packages can cover them subject to underwriting, with personal exclusions reflected in the certificate of insurance.",
+      "rationale": "The official evidence is explicit that underwriting changes the outcome rather than there being a single yes/no rule.",
+      "uncertainty_notes": [
+        "The public pages do not fully map which plan combinations or regions would offer cover for existing conditions to this exact family."
+      ],
+      "source_ledger_ref": {
+        "dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+        "record_index": 8
+      },
+      "confidence_rating": "high",
+      "confidence_rationale": "Multiple insurer-authored pages directly describe underwriting-dependent pre-existing-condition treatment."
+    },
+    {
+      "candidate_id": "img_global_medical",
+      "insurer_name": "IMG Global Medical",
+      "plan_name": "IMG Global Medical",
+      "pre_existing_conditions_status": "terms_found_in_public_sources",
+      "medical_underwriting_visibility": "explicit_public_terms_found",
+      "supporting_citations": [
+        {
+          "source_url": "https://www.imglobal.com/intl/underwriting",
+          "source_title": "Underwriting - IMG",
+          "source_kind": "official underwriting page",
+          "evidence_excerpt": "IMG explains full medical underwriting, moratorium underwriting, Bronze-plan permanent exclusion treatment, and continuation of personal medical exclusions when switching from another insurer.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "img_global_medical"
+            ],
+            "primary_candidate_id": "img_global_medical"
+          }
+        },
+        {
+          "source_url": "https://www.imglobal.com/intl/underwriting",
+          "source_title": "Underwriting - IMG",
+          "source_kind": "official underwriting page",
+          "evidence_excerpt": "IMG states the moratorium route does not cover treatment for pre-existing medical conditions from the five years before joining unless the insured later completes a continuous two-year symptom-, advice-, and treatment-free period.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "img_global_medical"
+            ],
+            "primary_candidate_id": "img_global_medical"
+          }
+        }
+      ],
+      "evidence_summary": "IMG publicly documents several underwriting models and explicitly explains when pre-existing conditions are excluded, when moratorium waiting periods apply, and how prior exclusions can transfer forward.",
+      "rationale": "The official IMG underwriting page is directly on point and materially stronger than the old placeholder.",
+      "uncertainty_notes": [
+        "The reviewed source is clear on underwriting options, but it does not show which option the Georgia-resident family quote flow would actually present."
+      ],
+      "source_ledger_ref": {
+        "dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+        "record_index": 9
+      },
+      "confidence_rating": "high",
+      "confidence_rationale": "Direct official underwriting page with explicit pre-existing-condition rules."
+    },
+    {
+      "candidate_id": "aetna_international",
+      "insurer_name": "Aetna International",
+      "plan_name": "Aetna International global healthcare entrypoint",
+      "pre_existing_conditions_status": "not_found_in_reviewed_public_sources",
+      "medical_underwriting_visibility": "not_captured_in_reviewed_sources",
+      "supporting_citations": [
+        {
+          "source_url": "https://www.aetnainternational.com/",
+          "source_title": "Home | Aetna",
+          "source_kind": "reviewed public source",
+          "evidence_excerpt": "No explicit pre-existing-condition or medical-underwriting wording was captured from this reviewed source during the discovery run.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "aetna_international"
+            ],
+            "primary_candidate_id": "aetna_international"
+          }
+        }
+      ],
+      "evidence_summary": "No explicit pre-existing-condition term was found in the reviewed public discovery sources for this candidate.",
+      "rationale": "This is an explicit discovery-stage not-found note, not an inference that the insurer lacks underwriting terms. It only means the reviewed public sources in this run did not surface them.",
+      "uncertainty_notes": [
+        "Pre-existing-condition rules may still exist in brochures, policy wordings, quote flows, application forms, or broker/PDF materials that were not captured in the reviewed public sources for this run."
+      ],
+      "source_ledger_ref": {
+        "dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+        "record_index": 10
+      }
+    },
+    {
+      "candidate_id": "foyer_global_health",
+      "insurer_name": "Foyer Global Health",
+      "plan_name": "Expat Health Insurance / International Health Insurance comparison",
+      "pre_existing_conditions_status": "terms_found_in_public_sources",
+      "medical_underwriting_visibility": "explicit_public_terms_found",
+      "supporting_citations": [
+        {
+          "source_url": "https://www.foyerglobalhealth.com/general-and-special-conditions-of-our-products/",
+          "source_title": "General and Special Conditions | Foyer Global Health",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "Foyer publicly links the General Terms and product-specific Special Conditions PDFs for its plans.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "foyer_global_health"
+            ],
+            "primary_candidate_id": "foyer_global_health"
+          }
+        },
+        {
+          "source_url": "https://www.foyerglobalhealth.com/wp-content/uploads/2024/10/FGHSCV2EN_SPECIAL_20240416.pdf",
+          "source_title": "Special Conditions SPECIAL - Foyer Global Health",
+          "source_kind": "official special conditions PDF",
+          "evidence_excerpt": "Foyer says applicants may choose full medical underwriting / risk assessment for pre-existing conditions or, if eligible, a moratorium option.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "foyer_global_health"
+            ],
+            "primary_candidate_id": "foyer_global_health"
+          }
+        },
+        {
+          "source_url": "https://www.foyerglobalhealth.com/wp-content/uploads/2024/10/FGHSCV2EN_SPECIAL_20240416.pdf",
+          "source_title": "Special Conditions SPECIAL - Foyer Global Health",
+          "source_kind": "official special conditions PDF",
+          "evidence_excerpt": "The PDF says pre-existing conditions can be included after truthful application disclosure and medical questionnaire review, but the insurer may amend terms, add premiums, refuse cover, or apply a moratorium based on the assessment.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "foyer_global_health"
+            ],
+            "primary_candidate_id": "foyer_global_health"
+          }
+        }
+      ],
+      "evidence_summary": "Foyer’s public Special Conditions PDF explicitly covers both full medical underwriting and moratorium handling for pre-existing conditions, including the possibility of added premiums, special conditions, or refusal.",
+      "rationale": "This is formal policy-language evidence from an official product document, not generic website copy.",
+      "uncertainty_notes": [
+        "The Special Conditions confirm options and insurer powers, but not which option would be offered to this family or whether Georgia residence changes the underwriting path."
+      ],
+      "source_ledger_ref": {
+        "dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+        "record_index": 11
+      },
+      "confidence_rating": "high",
+      "confidence_rationale": "Official policy document with specific clauses for pre-existing conditions and moratorium treatment."
+    },
+    {
+      "candidate_id": "henner",
+      "insurer_name": "Henner",
+      "plan_name": "Individuals & Families international health solutions",
+      "pre_existing_conditions_status": "not_found_in_reviewed_public_sources",
+      "medical_underwriting_visibility": "not_captured_in_reviewed_sources",
+      "supporting_citations": [
+        {
+          "source_url": "https://www.henner.com/en/customers/individuals-families/",
+          "source_title": "Individuals & Families - Henner",
+          "source_kind": "reviewed public source",
+          "evidence_excerpt": "No explicit pre-existing-condition or medical-underwriting wording was captured from this reviewed source during the discovery run.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "henner"
+            ],
+            "primary_candidate_id": "henner"
+          }
+        }
+      ],
+      "evidence_summary": "No explicit pre-existing-condition term was found in the reviewed public discovery sources for this candidate.",
+      "rationale": "This is an explicit discovery-stage not-found note, not an inference that the insurer lacks underwriting terms. It only means the reviewed public sources in this run did not surface them.",
+      "uncertainty_notes": [
+        "Pre-existing-condition rules may still exist in brochures, policy wordings, quote flows, application forms, or broker/PDF materials that were not captured in the reviewed public sources for this run."
+      ],
+      "source_ledger_ref": {
+        "dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+        "record_index": 12
+      }
+    },
+    {
+      "candidate_id": "globality_health",
+      "insurer_name": "Globality Health",
+      "plan_name": "YouGenio individual international health insurance plans",
+      "pre_existing_conditions_status": "not_found_in_reviewed_public_sources",
+      "medical_underwriting_visibility": "not_captured_in_reviewed_sources",
+      "supporting_citations": [
+        {
+          "source_url": "https://www.globality-health.com/",
+          "source_title": "International Health Insurance for Expats - Globality Health",
+          "source_kind": "reviewed public source",
+          "evidence_excerpt": "No explicit pre-existing-condition or medical-underwriting wording was captured from this reviewed source during the discovery run.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "globality_health"
+            ],
+            "primary_candidate_id": "globality_health"
+          }
+        }
+      ],
+      "evidence_summary": "No explicit pre-existing-condition term was found in the reviewed public discovery sources for this candidate.",
+      "rationale": "This is an explicit discovery-stage not-found note, not an inference that the insurer lacks underwriting terms. It only means the reviewed public sources in this run did not surface them.",
+      "uncertainty_notes": [
+        "Pre-existing-condition rules may still exist in brochures, policy wordings, quote flows, application forms, or broker/PDF materials that were not captured in the reviewed public sources for this run."
+      ],
+      "source_ledger_ref": {
+        "dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+        "record_index": 13
+      }
+    },
+    {
+      "candidate_id": "morgan_price",
+      "insurer_name": "Morgan Price International Healthcare",
+      "plan_name": "Evolution Health / Flexible Choices individual international healthcare plans",
+      "pre_existing_conditions_status": "not_found_in_reviewed_public_sources",
+      "medical_underwriting_visibility": "not_captured_in_reviewed_sources",
+      "supporting_citations": [
+        {
+          "source_url": "https://www.morgan-price.com/individual/",
+          "source_title": "International Healthcare Insurance Plans for Expats | Morgan Price International Healthcare",
+          "source_kind": "reviewed public source",
+          "evidence_excerpt": "No explicit pre-existing-condition or medical-underwriting wording was captured from this reviewed source during the discovery run.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "morgan_price"
+            ],
+            "primary_candidate_id": "morgan_price"
+          }
+        }
+      ],
+      "evidence_summary": "No explicit pre-existing-condition term was found in the reviewed public discovery sources for this candidate.",
+      "rationale": "This is an explicit discovery-stage not-found note, not an inference that the insurer lacks underwriting terms. It only means the reviewed public sources in this run did not surface them.",
+      "uncertainty_notes": [
+        "Pre-existing-condition rules may still exist in brochures, policy wordings, quote flows, application forms, or broker/PDF materials that were not captured in the reviewed public sources for this run."
+      ],
+      "source_ledger_ref": {
+        "dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+        "record_index": 14
+      }
+    },
+    {
+      "candidate_id": "passportcard",
+      "insurer_name": "PassportCard",
+      "plan_name": "Expat Basic / Expat Comprehensive / Executive",
+      "pre_existing_conditions_status": "terms_found_in_public_sources",
+      "medical_underwriting_visibility": "explicit_public_terms_found",
+      "supporting_citations": [
+        {
+          "source_url": "https://www.passportcard.de/en/faq-2/",
+          "source_title": "FAQ - Frequently Asked Questions - PassportCard",
+          "source_kind": "official FAQ page",
+          "evidence_excerpt": "PassportCard says applicants with pre-existing conditions can apply and will go through a quick medical assessment process before joining coverage, with clear coverage guidance and possible medical risk loading or limitations.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "passportcard"
+            ],
+            "primary_candidate_id": "passportcard"
+          }
+        },
+        {
+          "source_url": "https://application-form.passportcard.com/",
+          "source_title": "PassportCard international health insurance application form",
+          "source_kind": "official application form",
+          "evidence_excerpt": "PassportCard’s public application form includes a medical questionnaire, a duty of full disclosure, and warnings that the insurer can rescind cover or amend terms if material medical facts are not fully disclosed.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "passportcard"
+            ],
+            "primary_candidate_id": "passportcard"
+          }
+        }
+      ],
+      "evidence_summary": "PassportCard publicly says people with pre-existing conditions can apply, subject to medical assessment, and its public application form confirms a formal medical questionnaire and disclosure-based underwriting process.",
+      "rationale": "The FAQ and live application form together provide direct official evidence of pre-existing-condition assessability and underwriting controls.",
+      "uncertainty_notes": [
+        "The public materials do not show the exact underwriting thresholds or how dependents under 18 would be assessed beyond the questionnaire."
+      ],
+      "source_ledger_ref": {
+        "dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+        "record_index": 15
+      },
+      "confidence_rating": "high",
+      "confidence_rationale": "Official FAQ plus live application form both describe the underwriting path."
+    },
+    {
+      "candidate_id": "vumi",
+      "insurer_name": "VUMI",
+      "plan_name": "Absolute VIP / Universal VIP / Special VIP / Access VIP product family",
+      "pre_existing_conditions_status": "not_found_in_reviewed_public_sources",
+      "medical_underwriting_visibility": "not_captured_in_reviewed_sources",
+      "supporting_citations": [
+        {
+          "source_url": "https://www.vumigroup.com/",
+          "source_title": "Home - VUMI",
+          "source_kind": "reviewed public source",
+          "evidence_excerpt": "No explicit pre-existing-condition or medical-underwriting wording was captured from this reviewed source during the discovery run.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "vumi"
+            ],
+            "primary_candidate_id": "vumi"
+          }
+        }
+      ],
+      "evidence_summary": "No explicit pre-existing-condition term was found in the reviewed public discovery sources for this candidate.",
+      "rationale": "This is an explicit discovery-stage not-found note, not an inference that the insurer lacks underwriting terms. It only means the reviewed public sources in this run did not surface them.",
+      "uncertainty_notes": [
+        "Pre-existing-condition rules may still exist in brochures, policy wordings, quote flows, application forms, or broker/PDF materials that were not captured in the reviewed public sources for this run."
+      ],
+      "source_ledger_ref": {
+        "dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+        "record_index": 16
+      }
+    },
+    {
+      "candidate_id": "integra_global",
+      "insurer_name": "Integra Global",
+      "plan_name": "yourLife / PremierLife / yourFamily / PremierFamily",
+      "pre_existing_conditions_status": "not_found_in_reviewed_public_sources",
+      "medical_underwriting_visibility": "not_captured_in_reviewed_sources",
+      "supporting_citations": [
+        {
+          "source_url": "https://www.internationalinsurance.com/integra-global/",
+          "source_title": "Integra Health Insurance | Integra Expat Medical Plan",
+          "source_kind": "reviewed public source",
+          "evidence_excerpt": "No explicit pre-existing-condition or medical-underwriting wording was captured from this reviewed source during the discovery run.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "integra_global"
+            ],
+            "primary_candidate_id": "integra_global"
+          }
+        }
+      ],
+      "evidence_summary": "No explicit pre-existing-condition term was found in the reviewed public discovery sources for this candidate.",
+      "rationale": "This is an explicit discovery-stage not-found note, not an inference that the insurer lacks underwriting terms. It only means the reviewed public sources in this run did not surface them.",
+      "uncertainty_notes": [
+        "Pre-existing-condition rules may still exist in brochures, policy wordings, quote flows, application forms, or broker/PDF materials that were not captured in the reviewed public sources for this run."
+      ],
+      "source_ledger_ref": {
+        "dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+        "record_index": 17
+      }
+    },
+    {
+      "candidate_id": "medihelp_international",
+      "insurer_name": "MediHelp International",
+      "plan_name": "My Global Health individual plans: Blue / Azure / Cobalt / Admiral / Royal",
+      "pre_existing_conditions_status": "not_found_in_reviewed_public_sources",
+      "medical_underwriting_visibility": "not_captured_in_reviewed_sources",
+      "supporting_citations": [
+        {
+          "source_url": "https://www.medihelp-assistance.com/en/medihelp-plans/individual-plans",
+          "source_title": "Individual plans | MediHelp International",
+          "source_kind": "reviewed public source",
+          "evidence_excerpt": "No explicit pre-existing-condition or medical-underwriting wording was captured from this reviewed source during the discovery run.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "medihelp_international"
+            ],
+            "primary_candidate_id": "medihelp_international"
+          }
+        }
+      ],
+      "evidence_summary": "No explicit pre-existing-condition term was found in the reviewed public discovery sources for this candidate.",
+      "rationale": "This is an explicit discovery-stage not-found note, not an inference that the insurer lacks underwriting terms. It only means the reviewed public sources in this run did not surface them.",
+      "uncertainty_notes": [
+        "Pre-existing-condition rules may still exist in brochures, policy wordings, quote flows, application forms, or broker/PDF materials that were not captured in the reviewed public sources for this run."
+      ],
+      "source_ledger_ref": {
+        "dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+        "record_index": 18
+      }
+    },
+    {
+      "candidate_id": "alc_health",
+      "insurer_name": "ALC Health",
+      "plan_name": "Global Prima Medical Insurance / Flying Colours legacy entrypoints",
+      "pre_existing_conditions_status": "not_found_in_reviewed_public_sources",
+      "medical_underwriting_visibility": "not_captured_in_reviewed_sources",
+      "supporting_citations": [
+        {
+          "source_url": "https://www.alchealth.com/",
+          "source_title": "Global Health and International Medical Insurance For Expatriates",
+          "source_kind": "reviewed public source",
+          "evidence_excerpt": "No explicit pre-existing-condition or medical-underwriting wording was captured from this reviewed source during the discovery run.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "alc_health"
+            ],
+            "primary_candidate_id": "alc_health"
+          }
+        }
+      ],
+      "evidence_summary": "No explicit pre-existing-condition term was found in the reviewed public discovery sources for this candidate.",
+      "rationale": "This is an explicit discovery-stage not-found note, not an inference that the insurer lacks underwriting terms. It only means the reviewed public sources in this run did not surface them.",
+      "uncertainty_notes": [
+        "Pre-existing-condition rules may still exist in brochures, policy wordings, quote flows, application forms, or broker/PDF materials that were not captured in the reviewed public sources for this run."
+      ],
+      "source_ledger_ref": {
+        "dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+        "record_index": 19
+      }
+    },
+    {
+      "candidate_id": "geoblue_xplorer_bcbs_global_solutions",
+      "insurer_name": "Blue Cross Blue Shield Global Solutions (formerly GeoBlue Xplorer)",
+      "plan_name": "Worldwide Premier / Outside U.S. / Outside U.S. Select",
+      "pre_existing_conditions_status": "not_found_in_reviewed_public_sources",
+      "medical_underwriting_visibility": "not_captured_in_reviewed_sources",
+      "supporting_citations": [
+        {
+          "source_url": "https://www.internationalinsurance.com/geoblue/xplorer/",
+          "source_title": "GeoBlue Health Insurance Plan - GeoBlue Xplorer",
+          "source_kind": "reviewed public source",
+          "evidence_excerpt": "No explicit pre-existing-condition or medical-underwriting wording was captured from this reviewed source during the discovery run.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "geoblue_xplorer_bcbs_global_solutions"
+            ],
+            "primary_candidate_id": "geoblue_xplorer_bcbs_global_solutions"
+          }
+        }
+      ],
+      "evidence_summary": "No explicit pre-existing-condition term was found in the reviewed public discovery sources for this candidate.",
+      "rationale": "This is an explicit discovery-stage not-found note, not an inference that the insurer lacks underwriting terms. It only means the reviewed public sources in this run did not surface them.",
+      "uncertainty_notes": [
+        "Pre-existing-condition rules may still exist in brochures, policy wordings, quote flows, application forms, or broker/PDF materials that were not captured in the reviewed public sources for this run."
+      ],
+      "source_ledger_ref": {
+        "dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+        "record_index": 20
+      }
+    },
+    {
+      "candidate_id": "safetywing",
+      "insurer_name": "SafetyWing",
+      "plan_name": "Remote Health / Nomad Health",
+      "pre_existing_conditions_status": "terms_found_in_public_sources",
+      "medical_underwriting_visibility": "explicit_public_terms_found",
+      "supporting_citations": [
+        {
+          "source_url": "https://safetywing.com/remote-health/faq",
+          "source_title": "SafetyWing - Insurance for remote workers",
+          "source_kind": "official FAQ page",
+          "evidence_excerpt": "SafetyWing says Remote Health does not exclude pre-existing conditions as long as they are not listed as a general exclusion.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "safetywing"
+            ],
+            "primary_candidate_id": "safetywing"
+          }
+        },
+        {
+          "source_url": "https://safetywing.com/remote-health/faq",
+          "source_title": "SafetyWing - Insurance for remote workers",
+          "source_kind": "official FAQ page",
+          "evidence_excerpt": "The same FAQ says that for self-paid Affinity Plan and Nomad Health applications, pre-existing conditions are not covered, additional health information may be required, and coverage may be denied based on applicant responses.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "safetywing"
+            ],
+            "primary_candidate_id": "safetywing"
+          }
+        },
+        {
+          "source_url": "https://safetywing.com/nomad-insurance",
+          "source_title": "Insurance for Nomads, by Nomads - SafetyWing",
+          "source_kind": "official insurer page / search-visible snippet",
+          "evidence_excerpt": "SafetyWing publicly states that the Essential plan does not cover pre-existing conditions.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "safetywing"
+            ],
+            "primary_candidate_id": "safetywing"
+          }
+        }
+      ],
+      "evidence_summary": "SafetyWing’s public materials show materially different treatment by product: Remote Health FAQ text is inclusive unless a general exclusion applies, while self-paid Nomad Health / Affinity and Nomad Insurance materials say pre-existing conditions are not covered and applications can require extra medical review.",
+      "rationale": "The right discovery outcome here is not a flat yes/no; it is product-split underwriting evidence from SafetyWing’s own public FAQ.",
+      "uncertainty_notes": [
+        "The public evidence leaves some ambiguity around which exact SafetyWing product best matches the shortlist candidate and the family quote flow, so family-specific applicability still needs quote-path confirmation."
+      ],
+      "source_ledger_ref": {
+        "dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+        "record_index": 21
+      },
+      "confidence_rating": "medium",
+      "confidence_rationale": "Official evidence is explicit but split across different SafetyWing products, so candidate-level interpretation is less clean."
+    },
+    {
+      "candidate_id": "genki",
+      "insurer_name": "Genki",
+      "plan_name": "Genki Native",
+      "pre_existing_conditions_status": "terms_found_in_public_sources",
+      "medical_underwriting_visibility": "explicit_public_terms_found",
+      "supporting_citations": [
+        {
+          "source_url": "https://help.genki.world/en/articles/9470745-pre-existing-conditions-with-genki-native",
+          "source_title": "Pre-existing conditions with Genki Native | Genki Help Center",
+          "source_kind": "official help center article",
+          "evidence_excerpt": "Genki says Genki Native can cover pre-existing conditions, but each application is individually assessed based on the medical questionnaire during sign-up.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "genki"
+            ],
+            "primary_candidate_id": "genki"
+          }
+        },
+        {
+          "source_url": "https://help.genki.world/en/articles/9470745-pre-existing-conditions-with-genki-native",
+          "source_title": "Pre-existing conditions with Genki Native | Genki Help Center",
+          "source_kind": "official help center article",
+          "evidence_excerpt": "Genki lists possible outcomes after review: full acceptance, rejection, exclusions for certain pre-existing conditions, or a higher premium.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "genki"
+            ],
+            "primary_candidate_id": "genki"
+          }
+        },
+        {
+          "source_url": "https://help.genki.world/en/articles/10770079-pre-existing-conditions-with-genki-traveler",
+          "source_title": "Pre-existing conditions with Genki Traveler | Genki Help Center",
+          "source_kind": "official help center article",
+          "evidence_excerpt": "Genki separately states that Genki Traveler does not cover pre-existing conditions, reinforcing that treatment depends on the specific Genki product.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "genki"
+            ],
+            "primary_candidate_id": "genki"
+          }
+        }
+      ],
+      "evidence_summary": "Genki Native publicly allows for cover of pre-existing conditions after questionnaire-based underwriting, with clear official disclosure that outcomes can include acceptance, rejection, exclusions, or a higher premium.",
+      "rationale": "Genki publishes unusually direct underwriting guidance in its own help center.",
+      "uncertainty_notes": [
+        "The help-center article is strong on process but does not provide family-specific acceptance criteria for German citizens resident in Georgia."
+      ],
+      "source_ledger_ref": {
+        "dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+        "record_index": 22
+      },
+      "confidence_rating": "high",
+      "confidence_rationale": "Direct official help article focused specifically on pre-existing conditions with enumerated underwriting outcomes."
+    },
+    {
+      "candidate_id": "acs_expat",
+      "insurer_name": "ACS",
+      "plan_name": "ACS Expat",
+      "pre_existing_conditions_status": "not_found_in_reviewed_public_sources",
+      "medical_underwriting_visibility": "not_captured_in_reviewed_sources",
+      "supporting_citations": [
+        {
+          "source_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat/",
+          "source_title": "ACS Expat - Customisable Expatriate Health Insurance Solution",
+          "source_kind": "reviewed public source",
+          "evidence_excerpt": "No explicit pre-existing-condition or medical-underwriting wording was captured from this reviewed source during the discovery run.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "acs_expat"
+            ],
+            "primary_candidate_id": "acs_expat"
+          }
+        }
+      ],
+      "evidence_summary": "No explicit pre-existing-condition term was found in the reviewed public discovery sources for this candidate.",
+      "rationale": "This is an explicit discovery-stage not-found note, not an inference that the insurer lacks underwriting terms. It only means the reviewed public sources in this run did not surface them.",
+      "uncertainty_notes": [
+        "Pre-existing-condition rules may still exist in brochures, policy wordings, quote flows, application forms, or broker/PDF materials that were not captured in the reviewed public sources for this run."
+      ],
+      "source_ledger_ref": {
+        "dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+        "record_index": 23
+      }
+    },
+    {
+      "candidate_id": "hci_group_health_protect",
+      "insurer_name": "HCI Group",
+      "plan_name": "Health Protect / Protector Plans / Nimbl Health",
+      "pre_existing_conditions_status": "not_found_in_reviewed_public_sources",
+      "medical_underwriting_visibility": "not_captured_in_reviewed_sources",
+      "supporting_citations": [
+        {
+          "source_url": "https://hcigroupglobal.com/health-protect/",
+          "source_title": "International Healthcare | Healthcare International | HCI Global",
+          "source_kind": "reviewed public source",
+          "evidence_excerpt": "No explicit pre-existing-condition or medical-underwriting wording was captured from this reviewed source during the discovery run.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "hci_group_health_protect"
+            ],
+            "primary_candidate_id": "hci_group_health_protect"
+          }
+        }
+      ],
+      "evidence_summary": "No explicit pre-existing-condition term was found in the reviewed public discovery sources for this candidate.",
+      "rationale": "This is an explicit discovery-stage not-found note, not an inference that the insurer lacks underwriting terms. It only means the reviewed public sources in this run did not surface them.",
+      "uncertainty_notes": [
+        "Pre-existing-condition rules may still exist in brochures, policy wordings, quote flows, application forms, or broker/PDF materials that were not captured in the reviewed public sources for this run."
+      ],
+      "source_ledger_ref": {
+        "dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+        "record_index": 24
+      }
+    },
+    {
+      "candidate_id": "expatriate_group",
+      "insurer_name": "Expatriate Group",
+      "plan_name": "International Health Insurance / Select / Primary+ / Primary+ Lite / Primary",
+      "pre_existing_conditions_status": "terms_found_in_public_sources",
+      "medical_underwriting_visibility": "explicit_public_terms_found",
+      "supporting_citations": [
+        {
+          "source_url": "https://www.expatriatehealthcare.com/faqs/does-expatriate-groups-international-health-insurance-cover-pre-existing-conditions-for-expatriates/",
+          "source_title": "Does international health insurance cover pre-existing conditions for expatriates?",
+          "source_kind": "official FAQ page",
+          "evidence_excerpt": "Expatriate Group says it does not cover pre-existing conditions under its international health insurance plans.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "expatriate_group"
+            ],
+            "primary_candidate_id": "expatriate_group"
+          }
+        },
+        {
+          "source_url": "https://www.expatriatehealthcare.com/faqs/does-expatriate-groups-international-health-insurance-cover-pre-existing-conditions-for-expatriates/",
+          "source_title": "Does international health insurance cover pre-existing conditions for expatriates?",
+          "source_kind": "official FAQ page",
+          "evidence_excerpt": "The FAQ defines a pre-existing medical condition as any condition for which, in the two years before policy purchase, medical advice, treatment, medication, or symptoms existed, even if not formally diagnosed.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "expatriate_group"
+            ],
+            "primary_candidate_id": "expatriate_group"
+          }
+        }
+      ],
+      "evidence_summary": "Expatriate Group publicly states that its international health insurance plans do not cover pre-existing conditions and gives a two-year lookback-style definition on its official FAQ page.",
+      "rationale": "This is direct insurer FAQ text, not inferred from broker commentary.",
+      "uncertainty_notes": [
+        "The FAQ is clear on exclusion, but it does not clarify whether any alternative underwriting path exists for bespoke or broker-assisted applications."
+      ],
+      "source_ledger_ref": {
+        "dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+        "record_index": 25
+      },
+      "confidence_rating": "high",
+      "confidence_rationale": "Official FAQ directly answers the pre-existing-condition question."
+    },
+    {
+      "candidate_id": "wellaway",
+      "insurer_name": "WellAway",
+      "plan_name": "ORBE / EXPAT international plans",
+      "pre_existing_conditions_status": "terms_found_in_public_sources",
+      "medical_underwriting_visibility": "explicit_public_terms_found",
+      "supporting_citations": [
+        {
+          "source_url": "https://www.wellaway.com/media/filer_public/14/04/140473ab-86f3-4545-bc2d-632343c9314f/orbe_platinum_brochure.pdf",
+          "source_title": "ORBE Platinum Brochure - WellAway",
+          "source_kind": "official brochure PDF",
+          "evidence_excerpt": "WellAway says coverage for pre-existing conditions may be available upon medical underwriting and application approval by WellAway.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "wellaway"
+            ],
+            "primary_candidate_id": "wellaway"
+          }
+        },
+        {
+          "source_url": "https://www.wellaway.com/en/our-plans/",
+          "source_title": "Our Plans | WellAway",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "WellAway positions its international plans for expatriates and global citizens, but directs plan-specific details into brochures and policy materials.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "wellaway"
+            ],
+            "primary_candidate_id": "wellaway"
+          }
+        }
+      ],
+      "evidence_summary": "WellAway’s public ORBE brochure explicitly says pre-existing-condition cover may be available, but only after medical underwriting and application approval.",
+      "rationale": "This is product-level official brochure evidence and is materially better than the prior no-terms placeholder.",
+      "uncertainty_notes": [
+        "The reviewed evidence is strongest for the ORBE product family; the exact underwriting rules for every WellAway expat-branded plan were not all extracted in this pass."
+      ],
+      "source_ledger_ref": {
+        "dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+        "record_index": 26
+      },
+      "confidence_rating": "medium",
+      "confidence_rationale": "Official brochure is explicit, but the strongest text is tied to one WellAway product family rather than every shortlisted WellAway path."
+    },
+    {
+      "candidate_id": "securus_global_health_cover",
+      "insurer_name": "Securus International",
+      "plan_name": "Global Health Cover",
+      "pre_existing_conditions_status": "not_found_in_reviewed_public_sources",
+      "medical_underwriting_visibility": "not_captured_in_reviewed_sources",
+      "supporting_citations": [
+        {
+          "source_url": "https://www.securus.co.uk/benefits/global-health-cover",
+          "source_title": "Securus - Global Health Cover",
+          "source_kind": "reviewed public source",
+          "evidence_excerpt": "No explicit pre-existing-condition or medical-underwriting wording was captured from this reviewed source during the discovery run.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+            "candidate_record_section": "medical_underwriting_preexisting_evidence_ledger",
+            "candidate_ids": [
+              "securus_global_health_cover"
+            ],
+            "primary_candidate_id": "securus_global_health_cover"
+          }
+        }
+      ],
+      "evidence_summary": "No explicit pre-existing-condition term was found in the reviewed public discovery sources for this candidate.",
+      "rationale": "This is an explicit discovery-stage not-found note, not an inference that the insurer lacks underwriting terms. It only means the reviewed public sources in this run did not surface them.",
+      "uncertainty_notes": [
+        "Pre-existing-condition rules may still exist in brochures, policy wordings, quote flows, application forms, or broker/PDF materials that were not captured in the reviewed public sources for this run."
+      ],
+      "source_ledger_ref": {
+        "dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+        "record_index": 27
+      }
+    }
+  ],
+  "summary": {
+    "total_candidates": 27,
+    "terms_found_in_public_sources": 14,
+    "not_found_in_reviewed_public_sources": 13,
+    "candidate_ids_with_found_terms": [
+      "cigna_global",
+      "allianz_care",
+      "bupa_global",
+      "axa_global_healthcare",
+      "april_international",
+      "william_russell",
+      "now_health_international",
+      "img_global_medical",
+      "foyer_global_health",
+      "passportcard",
+      "safetywing",
+      "genki",
+      "expatriate_group",
+      "wellaway"
+    ]
+  }
+}

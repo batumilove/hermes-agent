@@ -1,0 +1,2155 @@
+{
+  "dataset": "international_expat_health_insurance_discovery",
+  "run_scope": "discovery_only",
+  "section": "pricing_evidence_ledger",
+  "generated_by": "gpt-5.4",
+  "family_context": {
+    "citizenship": "German",
+    "residence": "Georgia",
+    "adults": [
+      42,
+      37
+    ],
+    "children": 2,
+    "preferred_cover_geography": "Georgia and Germany, ideally worldwide excluding the US"
+  },
+  "pricing_status_legend": {
+    "public_pricing_available": "A public page reviewed in this run displayed a numeric premium, from-price, or calculator output without requiring broker contact, login, or a completed quote form beyond basic page access.",
+    "quote_flow_pricing_only": "The public source exposes a quote or application flow and may show premiums after user inputs, but no generic numeric public price was visible in the reviewed source extract for this run.",
+    "no_public_pricing_found": "The reviewed public source(s) in this run did not expose numeric pricing; pricing appears quote-gated, broker-gated, blocked, or absent."
+  },
+  "records": [
+    {
+      "candidate_id": "cigna_global",
+      "insurer_name": "Cigna Global",
+      "plan_name": "International Health Insurance / Global Medical Cover",
+      "public_pricing_status": "no_public_pricing_found",
+      "pricing_summary": "No numeric premium was visible on the reviewed official landing page; the page pushes users into a quote flow.",
+      "pricing_evidence": [
+        {
+          "source_url": "https://www.cignaglobal.com/",
+          "source_type": "official insurer page",
+          "evidence_excerpt": "Get a quote, it takes only 2 minutes!",
+          "pricing_visibility": "quote CTA only",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "cigna_global"
+            ],
+            "primary_candidate_id": "cigna_global"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "A completed quote flow may reveal pricing for this family profile, but no public number was displayed in the reviewed landing-page extract."
+      ],
+      "pricing_availability_status": "quote_flow_gated",
+      "pricing_availability_reason": "Reviewed public evidence pointed to quote-generated pricing, but the numeric premium was not visible during discovery.",
+      "pricing_transparency_friction": {
+        "primary_friction": "incomplete_quote_output",
+        "secondary_frictions": [
+          "eligibility_gated_results"
+        ],
+        "friction_summary": "Pricing is pushed into a quote flow and no usable numeric premium was visible from the reviewed public entrypoint.",
+        "has_directly_usable_public_price": false,
+        "friction_case_evidence_entries": [
+          {
+            "evidence_id": "cigna_global:pricing_friction:1",
+            "friction_type": "incomplete_quote_output",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.cignaglobal.com/",
+            "source_provider": "Cigna Global",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Get a quote, it takes only 2 minutes!",
+            "pricing_visibility_observed": "quote CTA only",
+            "note": "Obtainable during discovery: Public evidence showed quote CTA only. Not obtainable during discovery: The reviewed public source did not yield an actual numeric premium even though pricing-related UI, quote CTAs, or placeholders were visible. A completed quote flow may reveal pricing for this family profile, but no public number was displayed in the reviewed landing-page extract.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "cigna_global"
+              ],
+              "primary_candidate_id": "cigna_global"
+            }
+          },
+          {
+            "evidence_id": "cigna_global:pricing_friction:2",
+            "friction_type": "eligibility_gated_results",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.cignaglobal.com/",
+            "source_provider": "Cigna Global",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Get a quote, it takes only 2 minutes!",
+            "pricing_visibility_observed": "quote CTA only",
+            "note": "Obtainable during discovery: Public evidence showed quote CTA only. Not obtainable during discovery: No usable numeric premium was obtainable without passing upstream eligibility or household-profile steps first. A completed quote flow may reveal pricing for this family profile, but no public number was displayed in the reviewed landing-page extract.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "cigna_global"
+              ],
+              "primary_candidate_id": "cigna_global"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "candidate_id": "allianz_care",
+      "insurer_name": "Allianz Care",
+      "plan_name": "Care International Health Insurance Plans",
+      "public_pricing_status": "no_public_pricing_found",
+      "pricing_summary": "No numeric premium was visible on the reviewed public page. A 10% promotion was public, but the base premium remained quote-gated.",
+      "pricing_evidence": [
+        {
+          "source_url": "https://www.allianzcare.com/en/personal-international-health-insurance.html",
+          "source_type": "official insurer page",
+          "evidence_excerpt": "10% off your international health insurance for life... Quote link: https://my.allianzcare.com/myquote/5",
+          "pricing_visibility": "discount shown, base premium not shown",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "allianz_care"
+            ],
+            "primary_candidate_id": "allianz_care"
+          }
+        },
+        {
+          "source_url": "https://my.allianzcare.com/myquote/5",
+          "source_type": "official quote page",
+          "evidence_excerpt": "Challenge Validation",
+          "pricing_visibility": "blocked/challenge",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "allianz_care"
+            ],
+            "primary_candidate_id": "allianz_care"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Public pricing may exist deeper in the quote flow, but this run only verified a promo and a challenge-gated quote entrypoint."
+      ],
+      "pricing_availability_status": "partially_visible",
+      "pricing_availability_reason": "Reviewed public evidence exposed pricing-related signals, but not a usable numeric premium.",
+      "pricing_transparency_friction": {
+        "primary_friction": "blocked_public_pricing",
+        "secondary_frictions": [
+          "incomplete_quote_output"
+        ],
+        "friction_summary": "A public promotion is visible, but the quote path itself was challenge-gated before any usable premium appeared.",
+        "has_directly_usable_public_price": false,
+        "friction_case_evidence_entries": [
+          {
+            "evidence_id": "allianz_care:pricing_friction:1",
+            "friction_type": "blocked_public_pricing",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.allianzcare.com/en/personal-international-health-insurance.html",
+            "source_provider": "Allianz Care",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "10% off your international health insurance for life... Quote link: https://my.allianzcare.com/myquote/5",
+            "pricing_visibility_observed": "discount shown, base premium not shown",
+            "note": "Obtainable during discovery: Public evidence showed discount shown, base premium not shown. Not obtainable during discovery: No usable numeric premium could be retrieved because the reviewed public path was blocked before quote contents or price results became visible. Public pricing may exist deeper in the quote flow, but this run only verified a promo and a challenge-gated quote entrypoint.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "allianz_care"
+              ],
+              "primary_candidate_id": "allianz_care"
+            }
+          },
+          {
+            "evidence_id": "allianz_care:pricing_friction:2",
+            "friction_type": "incomplete_quote_output",
+            "retrieval_method": "public_quote_page_review",
+            "source_url": "https://my.allianzcare.com/myquote/5",
+            "source_provider": "Allianz Care",
+            "source_type": "official quote page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Challenge Validation",
+            "pricing_visibility_observed": "blocked/challenge",
+            "note": "Obtainable during discovery: Public evidence showed blocked/challenge. Not obtainable during discovery: The reviewed public source did not yield an actual numeric premium even though pricing-related UI, quote CTAs, or placeholders were visible. Public pricing may exist deeper in the quote flow, but this run only verified a promo and a challenge-gated quote entrypoint.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "allianz_care"
+              ],
+              "primary_candidate_id": "allianz_care"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "candidate_id": "bupa_global",
+      "insurer_name": "Bupa Global",
+      "plan_name": "Private Health Insurance & Medical Insurance for Individuals and Families",
+      "public_pricing_status": "no_public_pricing_found",
+      "pricing_summary": "The reviewed official page exposed country selection but no numeric premium.",
+      "pricing_evidence": [
+        {
+          "source_url": "https://www.bupaglobal.com/en/private-health-insurance",
+          "source_type": "official insurer page",
+          "evidence_excerpt": "See Bupa Global health plans available in your region... Tell us where you'll be living when you want your plan to start.",
+          "pricing_visibility": "selector UI only",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "bupa_global"
+            ],
+            "primary_candidate_id": "bupa_global"
+          }
+        }
+      ],
+      "uncertainty_notes": [],
+      "pricing_availability_status": "quote_flow_gated",
+      "pricing_availability_reason": "Reviewed public evidence pointed to quote-generated pricing, but the numeric premium was not visible during discovery.",
+      "pricing_transparency_friction": {
+        "primary_friction": "eligibility_gated_results",
+        "secondary_frictions": [
+          "incomplete_quote_output"
+        ],
+        "friction_summary": "The public flow starts with residence-country selection and did not expose a usable premium in the reviewed extract.",
+        "has_directly_usable_public_price": false,
+        "friction_case_evidence_entries": [
+          {
+            "evidence_id": "bupa_global:pricing_friction:1",
+            "friction_type": "eligibility_gated_results",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.bupaglobal.com/en/private-health-insurance",
+            "source_provider": "Bupa Global",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "See Bupa Global health plans available in your region... Tell us where you'll be living when you want your plan to start.",
+            "pricing_visibility_observed": "selector UI only",
+            "note": "Obtainable during discovery: Public evidence showed selector UI only. Not obtainable during discovery: No usable numeric premium was obtainable without passing upstream eligibility or household-profile steps first.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "bupa_global"
+              ],
+              "primary_candidate_id": "bupa_global"
+            }
+          },
+          {
+            "evidence_id": "bupa_global:pricing_friction:2",
+            "friction_type": "incomplete_quote_output",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.bupaglobal.com/en/private-health-insurance",
+            "source_provider": "Bupa Global",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "See Bupa Global health plans available in your region... Tell us where you'll be living when you want your plan to start.",
+            "pricing_visibility_observed": "selector UI only",
+            "note": "Obtainable during discovery: Public evidence showed selector UI only. Not obtainable during discovery: The reviewed public source did not yield an actual numeric premium even though pricing-related UI, quote CTAs, or placeholders were visible.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "bupa_global"
+              ],
+              "primary_candidate_id": "bupa_global"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "candidate_id": "axa_global_healthcare",
+      "insurer_name": "AXA Global Healthcare",
+      "plan_name": "International Health Insurance Plans",
+      "public_pricing_status": "no_public_pricing_found",
+      "pricing_summary": "The reviewed official page explains how premiums vary and how annual payment saves 5%, but it does not publish a numeric premium.",
+      "pricing_evidence": [
+        {
+          "source_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/",
+          "source_type": "official insurer page",
+          "evidence_excerpt": "Paying annually will save you 5% on your total cost.",
+          "pricing_visibility": "pricing mechanic only",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "axa_global_healthcare"
+            ],
+            "primary_candidate_id": "axa_global_healthcare"
+          }
+        }
+      ],
+      "uncertainty_notes": [],
+      "pricing_availability_status": "partially_visible",
+      "pricing_availability_reason": "Reviewed public evidence exposed pricing-related signals, but not a usable numeric premium.",
+      "pricing_transparency_friction": {
+        "primary_friction": "eligibility_gated_results",
+        "secondary_frictions": [
+          "incomplete_quote_output"
+        ],
+        "friction_summary": "Pricing depends on passing cover-length and product-type screening, while the reviewed public page only exposed premium mechanics and discounts.",
+        "has_directly_usable_public_price": false,
+        "friction_case_evidence_entries": [
+          {
+            "evidence_id": "axa_global_healthcare:pricing_friction:1",
+            "friction_type": "eligibility_gated_results",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/",
+            "source_provider": "AXA Global Healthcare",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Paying annually will save you 5% on your total cost.",
+            "pricing_visibility_observed": "pricing mechanic only",
+            "note": "Obtainable during discovery: Public evidence showed pricing mechanic only. Not obtainable during discovery: No usable numeric premium was obtainable without passing upstream eligibility or household-profile steps first.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "axa_global_healthcare"
+              ],
+              "primary_candidate_id": "axa_global_healthcare"
+            }
+          },
+          {
+            "evidence_id": "axa_global_healthcare:pricing_friction:2",
+            "friction_type": "incomplete_quote_output",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/",
+            "source_provider": "AXA Global Healthcare",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Paying annually will save you 5% on your total cost.",
+            "pricing_visibility_observed": "pricing mechanic only",
+            "note": "Obtainable during discovery: Public evidence showed pricing mechanic only. Not obtainable during discovery: The reviewed public source did not yield an actual numeric premium even though pricing-related UI, quote CTAs, or placeholders were visible.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "axa_global_healthcare"
+              ],
+              "primary_candidate_id": "axa_global_healthcare"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "candidate_id": "april_international",
+      "insurer_name": "APRIL International",
+      "plan_name": "Long-term Expat International Health Insurance",
+      "public_pricing_status": "no_public_pricing_found",
+      "pricing_summary": "The reviewed APRIL page offers a plan finder and quote path but no numeric public premium.",
+      "pricing_evidence": [
+        {
+          "source_url": "https://www.april-international.com/en/long-term-international-health-insurance",
+          "source_type": "official insurer page",
+          "evidence_excerpt": "Find a plan / Get a quote",
+          "pricing_visibility": "quote CTA only",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "april_international"
+            ],
+            "primary_candidate_id": "april_international"
+          }
+        }
+      ],
+      "uncertainty_notes": [],
+      "pricing_availability_status": "quote_flow_gated",
+      "pricing_availability_reason": "Reviewed public evidence pointed to quote-generated pricing, but the numeric premium was not visible during discovery.",
+      "pricing_transparency_friction": {
+        "primary_friction": "eligibility_gated_results",
+        "secondary_frictions": [
+          "incomplete_quote_output"
+        ],
+        "friction_summary": "APRIL exposes a plan-finder path with country and cover-type selection, but no usable premium was visible during discovery.",
+        "has_directly_usable_public_price": false,
+        "friction_case_evidence_entries": [
+          {
+            "evidence_id": "april_international:pricing_friction:1",
+            "friction_type": "eligibility_gated_results",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.april-international.com/en/long-term-international-health-insurance",
+            "source_provider": "APRIL International",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Find a plan / Get a quote",
+            "pricing_visibility_observed": "quote CTA only",
+            "note": "Obtainable during discovery: Public evidence showed quote CTA only. Not obtainable during discovery: No usable numeric premium was obtainable without passing upstream eligibility or household-profile steps first.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "april_international"
+              ],
+              "primary_candidate_id": "april_international"
+            }
+          },
+          {
+            "evidence_id": "april_international:pricing_friction:2",
+            "friction_type": "incomplete_quote_output",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.april-international.com/en/long-term-international-health-insurance",
+            "source_provider": "APRIL International",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Find a plan / Get a quote",
+            "pricing_visibility_observed": "quote CTA only",
+            "note": "Obtainable during discovery: Public evidence showed quote CTA only. Not obtainable during discovery: The reviewed public source did not yield an actual numeric premium even though pricing-related UI, quote CTAs, or placeholders were visible.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "april_international"
+              ],
+              "primary_candidate_id": "april_international"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "candidate_id": "william_russell",
+      "insurer_name": "William Russell",
+      "plan_name": "International Health Insurance",
+      "public_pricing_status": "quote_flow_pricing_only",
+      "pricing_summary": "The reviewed official page explicitly says prices are shown within minutes in the online quote, but no generic numeric price was visible in the reviewed extract.",
+      "pricing_evidence": [
+        {
+          "source_url": "https://www.william-russell.com/international-health-insurance/",
+          "source_type": "official insurer page",
+          "evidence_excerpt": "Use the online quote tool... Prices are shown within minutes.",
+          "pricing_visibility": "quote-generated pricing referenced, no public number shown",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "william_russell"
+            ],
+            "primary_candidate_id": "william_russell"
+          }
+        }
+      ],
+      "uncertainty_notes": [],
+      "pricing_availability_status": "quote_flow_gated",
+      "pricing_availability_reason": "Reviewed public evidence pointed to quote-generated pricing, but the numeric premium was not visible during discovery.",
+      "pricing_transparency_friction": {
+        "primary_friction": "incomplete_quote_output",
+        "secondary_frictions": [],
+        "friction_summary": "The site says prices are shown in the online quote, but the reviewed public evidence did not include an actual numeric result.",
+        "has_directly_usable_public_price": false,
+        "friction_case_evidence_entries": [
+          {
+            "evidence_id": "william_russell:pricing_friction:1",
+            "friction_type": "incomplete_quote_output",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.william-russell.com/international-health-insurance/",
+            "source_provider": "William Russell",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Use the online quote tool... Prices are shown within minutes.",
+            "pricing_visibility_observed": "quote-generated pricing referenced, no public number shown",
+            "note": "Obtainable during discovery: Public evidence showed quote-generated pricing referenced, no public number shown. Not obtainable during discovery: The reviewed public source did not yield an actual numeric premium even though pricing-related UI, quote CTAs, or placeholders were visible.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "william_russell"
+              ],
+              "primary_candidate_id": "william_russell"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "candidate_id": "msh_international",
+      "insurer_name": "MSH International",
+      "plan_name": "First'Expat+ / International Health Insurance for Individuals",
+      "public_pricing_status": "no_public_pricing_found",
+      "pricing_summary": "The reviewed MSH page says getting a quote takes two minutes, but no public numeric premium was shown.",
+      "pricing_evidence": [
+        {
+          "source_url": "https://www.msh-intl.com/en/individuals/",
+          "source_type": "official insurer page",
+          "evidence_excerpt": "Rome wasn't built in a day, but getting a quote takes just two minutes!",
+          "pricing_visibility": "quote CTA only",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "msh_international"
+            ],
+            "primary_candidate_id": "msh_international"
+          }
+        }
+      ],
+      "uncertainty_notes": [],
+      "pricing_availability_status": "quote_flow_gated",
+      "pricing_availability_reason": "Reviewed public evidence pointed to quote-generated pricing, but the numeric premium was not visible during discovery.",
+      "pricing_transparency_friction": {
+        "primary_friction": "eligibility_gated_results",
+        "secondary_frictions": [
+          "incomplete_quote_output"
+        ],
+        "friction_summary": "The public quote path starts with profile and region selection, but no usable premium was captured in the reviewed extract.",
+        "has_directly_usable_public_price": false,
+        "friction_case_evidence_entries": [
+          {
+            "evidence_id": "msh_international:pricing_friction:1",
+            "friction_type": "eligibility_gated_results",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.msh-intl.com/en/individuals/",
+            "source_provider": "MSH International",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Rome wasn't built in a day, but getting a quote takes just two minutes!",
+            "pricing_visibility_observed": "quote CTA only",
+            "note": "Obtainable during discovery: Public evidence showed quote CTA only. Not obtainable during discovery: No usable numeric premium was obtainable without passing upstream eligibility or household-profile steps first.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "msh_international"
+              ],
+              "primary_candidate_id": "msh_international"
+            }
+          },
+          {
+            "evidence_id": "msh_international:pricing_friction:2",
+            "friction_type": "incomplete_quote_output",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.msh-intl.com/en/individuals/",
+            "source_provider": "MSH International",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Rome wasn't built in a day, but getting a quote takes just two minutes!",
+            "pricing_visibility_observed": "quote CTA only",
+            "note": "Obtainable during discovery: Public evidence showed quote CTA only. Not obtainable during discovery: The reviewed public source did not yield an actual numeric premium even though pricing-related UI, quote CTAs, or placeholders were visible.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "msh_international"
+              ],
+              "primary_candidate_id": "msh_international"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "candidate_id": "now_health_international",
+      "insurer_name": "Now Health International",
+      "plan_name": "SimpleCare / WorldCare International Health Insurance Plans",
+      "public_pricing_status": "no_public_pricing_found",
+      "pricing_summary": "The public comparison page exposes plan structures and benefit limits, but no premium numbers were visible in the reviewed extract.",
+      "pricing_evidence": [
+        {
+          "source_url": "https://www.now-health.com/en/insurance-plans/",
+          "source_type": "official insurer page",
+          "evidence_excerpt": "Opt for an out-patient treatment per visit excess in return for a reduced premium.",
+          "pricing_visibility": "premium mechanics only",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "now_health_international"
+            ],
+            "primary_candidate_id": "now_health_international"
+          }
+        }
+      ],
+      "uncertainty_notes": [],
+      "pricing_availability_status": "partially_visible",
+      "pricing_availability_reason": "Reviewed public evidence exposed pricing-related signals, but not a usable numeric premium.",
+      "pricing_transparency_friction": {
+        "primary_friction": "incomplete_quote_output",
+        "secondary_frictions": [],
+        "friction_summary": "Public plan-comparison materials show premium mechanics and benefit structure, but not a usable numeric premium.",
+        "has_directly_usable_public_price": false,
+        "friction_case_evidence_entries": [
+          {
+            "evidence_id": "now_health_international:pricing_friction:1",
+            "friction_type": "incomplete_quote_output",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.now-health.com/en/insurance-plans/",
+            "source_provider": "Now Health International",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Opt for an out-patient treatment per visit excess in return for a reduced premium.",
+            "pricing_visibility_observed": "premium mechanics only",
+            "note": "Obtainable during discovery: Public evidence showed premium mechanics only. Not obtainable during discovery: The reviewed public source did not yield an actual numeric premium even though pricing-related UI, quote CTAs, or placeholders were visible.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "now_health_international"
+              ],
+              "primary_candidate_id": "now_health_international"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "candidate_id": "img_global",
+      "insurer_name": "IMG (International Medical Group)",
+      "plan_name": "Global Medical international health insurance",
+      "public_pricing_status": "quote_flow_pricing_only",
+      "pricing_summary": "The reviewed IMG page exposes per-plan 'See Price' links but no visible public premium in the extracted page itself.",
+      "pricing_evidence": [
+        {
+          "source_url": "https://www.imglobal.com/international-health-insurance",
+          "source_type": "official insurer page",
+          "evidence_excerpt": "Global Medical Gold ... See Price ... Global Medical Platinum ... See Price.",
+          "pricing_visibility": "price entrypoint visible, number not shown",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "img_global"
+            ],
+            "primary_candidate_id": "img_global"
+          }
+        }
+      ],
+      "uncertainty_notes": [],
+      "pricing_availability_status": "partially_visible",
+      "pricing_availability_reason": "Reviewed public evidence exposed pricing-related signals, but not a usable numeric premium.",
+      "pricing_transparency_friction": {
+        "primary_friction": "incomplete_quote_output",
+        "secondary_frictions": [],
+        "friction_summary": "Per-plan price entrypoints were visible, but the reviewed public extract did not expose the actual numeric premiums.",
+        "has_directly_usable_public_price": false,
+        "friction_case_evidence_entries": [
+          {
+            "evidence_id": "img_global:pricing_friction:1",
+            "friction_type": "incomplete_quote_output",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.imglobal.com/international-health-insurance",
+            "source_provider": "IMG (International Medical Group)",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Global Medical Gold ... See Price ... Global Medical Platinum ... See Price.",
+            "pricing_visibility_observed": "price entrypoint visible, number not shown",
+            "note": "Obtainable during discovery: Public evidence showed price entrypoint visible, number not shown. Not obtainable during discovery: The reviewed public source did not yield an actual numeric premium even though pricing-related UI, quote CTAs, or placeholders were visible.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "img_global"
+              ],
+              "primary_candidate_id": "img_global"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "candidate_id": "aetna_international",
+      "insurer_name": "Aetna International",
+      "plan_name": "Aetna International global healthcare entrypoint",
+      "public_pricing_status": "no_public_pricing_found",
+      "pricing_summary": "No numeric premium or quote calculator was visible on the reviewed landing page.",
+      "pricing_evidence": [
+        {
+          "source_url": "https://www.aetnainternational.com/",
+          "source_type": "official insurer page",
+          "evidence_excerpt": "Choose the audience that best fits you: Providers, Employers, Brokers, Governments | IGOs | NGOs.",
+          "pricing_visibility": "no consumer pricing shown",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "aetna_international"
+            ],
+            "primary_candidate_id": "aetna_international"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Retail individual/family pricing may not be publicly exposed from this landing page."
+      ],
+      "pricing_availability_status": "unavailable_during_discovery",
+      "pricing_availability_reason": "Reviewed public evidence did not expose usable pricing during discovery.",
+      "pricing_transparency_friction": {
+        "primary_friction": "brochure_or_marketing_only_no_price",
+        "secondary_frictions": [
+          "failed_or_abandoned_quote_retrieval"
+        ],
+        "friction_summary": "The reviewed Aetna path was audience-routing marketing without a verified individual-family pricing path or usable public premium.",
+        "has_directly_usable_public_price": false,
+        "friction_case_evidence_entries": [
+          {
+            "evidence_id": "aetna_international:pricing_friction:1",
+            "friction_type": "brochure_or_marketing_only_no_price",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.aetnainternational.com/",
+            "source_provider": "Aetna International",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Choose the audience that best fits you: Providers, Employers, Brokers, Governments | IGOs | NGOs.",
+            "pricing_visibility_observed": "no consumer pricing shown",
+            "note": "Obtainable during discovery: Public evidence showed no consumer pricing shown. Not obtainable during discovery: No usable numeric premium or working public quote result was obtainable from the reviewed brochure/marketing materials. Retail individual/family pricing may not be publicly exposed from this landing page.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "aetna_international"
+              ],
+              "primary_candidate_id": "aetna_international"
+            }
+          },
+          {
+            "evidence_id": "aetna_international:pricing_friction:2",
+            "friction_type": "failed_or_abandoned_quote_retrieval",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.aetnainternational.com/",
+            "source_provider": "Aetna International",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Choose the audience that best fits you: Providers, Employers, Brokers, Governments | IGOs | NGOs.",
+            "pricing_visibility_observed": "no consumer pricing shown",
+            "note": "Obtainable during discovery: Public evidence showed no consumer pricing shown. Not obtainable during discovery: No usable numeric premium was obtainable because the observed retrieval path failed technically, redirected away, or could not be completed within discovery. Retail individual/family pricing may not be publicly exposed from this landing page.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "aetna_international"
+              ],
+              "primary_candidate_id": "aetna_international"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "candidate_id": "foyer_global_health",
+      "insurer_name": "Foyer Global Health",
+      "plan_name": "Expat Health Insurance / International Health Insurance comparison",
+      "public_pricing_status": "no_public_pricing_found",
+      "pricing_summary": "The reviewed quote/application entrypoint was blocked by reCAPTCHA, so no public numeric pricing was verified.",
+      "pricing_evidence": [
+        {
+          "source_url": "https://www.foyerglobalhealth.com/quick-quote-and-online-application/",
+          "source_type": "official quote/application page",
+          "evidence_excerpt": "reCAPTCHA requires verification.",
+          "pricing_visibility": "blocked/challenge",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "foyer_global_health"
+            ],
+            "primary_candidate_id": "foyer_global_health"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Pricing may exist beyond the blocked quote flow, but it was not publicly verifiable in this run."
+      ],
+      "pricing_availability_status": "unavailable_during_discovery",
+      "pricing_availability_reason": "Reviewed public evidence did not expose usable pricing during discovery.",
+      "pricing_transparency_friction": {
+        "primary_friction": "blocked_public_pricing",
+        "secondary_frictions": [
+          "failed_or_abandoned_quote_retrieval"
+        ],
+        "friction_summary": "The public quick-quote/application path was blocked by reCAPTCHA before pricing could be observed.",
+        "has_directly_usable_public_price": false,
+        "friction_case_evidence_entries": [
+          {
+            "evidence_id": "foyer_global_health:pricing_friction:1",
+            "friction_type": "blocked_public_pricing",
+            "retrieval_method": "public_quote_or_application_page_review",
+            "source_url": "https://www.foyerglobalhealth.com/quick-quote-and-online-application/",
+            "source_provider": "Foyer Global Health",
+            "source_type": "official quote/application page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "reCAPTCHA requires verification.",
+            "pricing_visibility_observed": "blocked/challenge",
+            "note": "Obtainable during discovery: Public evidence showed blocked/challenge. Not obtainable during discovery: No usable numeric premium could be retrieved because the reviewed public path was blocked before quote contents or price results became visible. Pricing may exist beyond the blocked quote flow, but it was not publicly verifiable in this run.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "foyer_global_health"
+              ],
+              "primary_candidate_id": "foyer_global_health"
+            }
+          },
+          {
+            "evidence_id": "foyer_global_health:pricing_friction:2",
+            "friction_type": "failed_or_abandoned_quote_retrieval",
+            "retrieval_method": "public_quote_or_application_page_review",
+            "source_url": "https://www.foyerglobalhealth.com/quick-quote-and-online-application/",
+            "source_provider": "Foyer Global Health",
+            "source_type": "official quote/application page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "reCAPTCHA requires verification.",
+            "pricing_visibility_observed": "blocked/challenge",
+            "note": "Obtainable during discovery: Public evidence showed blocked/challenge. Not obtainable during discovery: No usable numeric premium was obtainable because the observed retrieval path failed technically, redirected away, or could not be completed within discovery. Pricing may exist beyond the blocked quote flow, but it was not publicly verifiable in this run.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "foyer_global_health"
+              ],
+              "primary_candidate_id": "foyer_global_health"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "candidate_id": "henner",
+      "insurer_name": "Henner",
+      "plan_name": "Individuals & Families international health solutions",
+      "public_pricing_status": "no_public_pricing_found",
+      "pricing_summary": "The reviewed Henner page had no numeric premium or public quote result.",
+      "pricing_evidence": [
+        {
+          "source_url": "https://www.henner.com/en/customers/individuals-families/",
+          "source_type": "official insurer page",
+          "evidence_excerpt": "Solutions that are tailored to all lifestyles... we have developed solutions to cover your health costs.",
+          "pricing_visibility": "marketing only",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "henner"
+            ],
+            "primary_candidate_id": "henner"
+          }
+        }
+      ],
+      "uncertainty_notes": [],
+      "pricing_availability_status": "unavailable_during_discovery",
+      "pricing_availability_reason": "Reviewed public evidence did not expose usable pricing during discovery.",
+      "pricing_transparency_friction": {
+        "primary_friction": "brochure_or_marketing_only_no_price",
+        "secondary_frictions": [],
+        "friction_summary": "The reviewed public materials were informational only and did not expose usable public pricing.",
+        "has_directly_usable_public_price": false,
+        "friction_case_evidence_entries": [
+          {
+            "evidence_id": "henner:pricing_friction:1",
+            "friction_type": "brochure_or_marketing_only_no_price",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.henner.com/en/customers/individuals-families/",
+            "source_provider": "Henner",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Solutions that are tailored to all lifestyles... we have developed solutions to cover your health costs.",
+            "pricing_visibility_observed": "marketing only",
+            "note": "Obtainable during discovery: Public evidence showed marketing only. Not obtainable during discovery: No usable numeric premium or working public quote result was obtainable from the reviewed brochure/marketing materials.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "henner"
+              ],
+              "primary_candidate_id": "henner"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "candidate_id": "globality_health",
+      "insurer_name": "Globality Health",
+      "plan_name": "YouGenio individual international health insurance plans",
+      "public_pricing_status": "quote_flow_pricing_only",
+      "pricing_summary": "The reviewed sources advertise quotes in seconds, but no generic numeric price was visible in the extracted content.",
+      "pricing_evidence": [
+        {
+          "source_url": "https://www.globality-health.com/",
+          "source_type": "official insurer page",
+          "evidence_excerpt": "Enjoy exclusive online presales now... Receive a quote.",
+          "pricing_visibility": "quote CTA only",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "globality_health"
+            ],
+            "primary_candidate_id": "globality_health"
+          }
+        },
+        {
+          "source_url": "https://application.globality-health.com/?locale=en",
+          "source_type": "official quote/application page",
+          "evidence_excerpt": "Get a quotation in seconds. Get your health insurance in minutes.",
+          "pricing_visibility": "quote flow present, no numeric price in reviewed extract",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "globality_health"
+            ],
+            "primary_candidate_id": "globality_health"
+          }
+        }
+      ],
+      "uncertainty_notes": [],
+      "pricing_availability_status": "quote_flow_gated",
+      "pricing_availability_reason": "Reviewed public evidence pointed to quote-generated pricing, but the numeric premium was not visible during discovery.",
+      "pricing_transparency_friction": {
+        "primary_friction": "eligibility_gated_results",
+        "secondary_frictions": [
+          "incomplete_quote_output"
+        ],
+        "friction_summary": "Quote results appear to depend on nationality, future residency, location, and household steps before any usable premium is visible.",
+        "has_directly_usable_public_price": false,
+        "friction_case_evidence_entries": [
+          {
+            "evidence_id": "globality_health:pricing_friction:1",
+            "friction_type": "eligibility_gated_results",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.globality-health.com/",
+            "source_provider": "Globality Health",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Enjoy exclusive online presales now... Receive a quote.",
+            "pricing_visibility_observed": "quote CTA only",
+            "note": "Obtainable during discovery: Public evidence showed quote CTA only. Not obtainable during discovery: No usable numeric premium was obtainable without passing upstream eligibility or household-profile steps first.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "globality_health"
+              ],
+              "primary_candidate_id": "globality_health"
+            }
+          },
+          {
+            "evidence_id": "globality_health:pricing_friction:2",
+            "friction_type": "incomplete_quote_output",
+            "retrieval_method": "public_quote_or_application_page_review",
+            "source_url": "https://application.globality-health.com/?locale=en",
+            "source_provider": "Globality Health",
+            "source_type": "official quote/application page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Get a quotation in seconds. Get your health insurance in minutes.",
+            "pricing_visibility_observed": "quote flow present, no numeric price in reviewed extract",
+            "note": "Obtainable during discovery: Public evidence showed quote flow present, no numeric price in reviewed extract. Not obtainable during discovery: The reviewed public source did not yield an actual numeric premium even though pricing-related UI, quote CTAs, or placeholders were visible.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "globality_health"
+              ],
+              "primary_candidate_id": "globality_health"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "candidate_id": "morgan_price",
+      "insurer_name": "Morgan Price International Healthcare",
+      "plan_name": "Evolution Health / Flexible Choices individual international healthcare plans",
+      "public_pricing_status": "no_public_pricing_found",
+      "pricing_summary": "The reviewed Morgan Price page exposes plan levels and documentation but no numeric premium.",
+      "pricing_evidence": [
+        {
+          "source_url": "https://www.morgan-price.com/individual/",
+          "source_type": "official insurer page",
+          "evidence_excerpt": "Primary actions: Quick Quote | Buy Online.",
+          "pricing_visibility": "quote/buy entrypoints only",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "morgan_price"
+            ],
+            "primary_candidate_id": "morgan_price"
+          }
+        }
+      ],
+      "uncertainty_notes": [],
+      "pricing_availability_status": "quote_flow_gated",
+      "pricing_availability_reason": "Reviewed public evidence pointed to quote-generated pricing, but the numeric premium was not visible during discovery.",
+      "pricing_transparency_friction": {
+        "primary_friction": "eligibility_gated_results",
+        "secondary_frictions": [
+          "contact_or_account_gated_pricing",
+          "failed_or_abandoned_quote_retrieval"
+        ],
+        "friction_summary": "The quick-quote path asks for household and eligibility data and can fall back to manual contact capture instead of immediate public pricing.",
+        "has_directly_usable_public_price": false,
+        "friction_case_evidence_entries": [
+          {
+            "evidence_id": "morgan_price:pricing_friction:1",
+            "friction_type": "eligibility_gated_results",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.morgan-price.com/individual/",
+            "source_provider": "Morgan Price International Healthcare",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Primary actions: Quick Quote | Buy Online.",
+            "pricing_visibility_observed": "quote/buy entrypoints only",
+            "note": "Obtainable during discovery: Public evidence showed quote/buy entrypoints only. Not obtainable during discovery: No usable numeric premium was obtainable without passing upstream eligibility or household-profile steps first.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "morgan_price"
+              ],
+              "primary_candidate_id": "morgan_price"
+            }
+          },
+          {
+            "evidence_id": "morgan_price:pricing_friction:2",
+            "friction_type": "contact_or_account_gated_pricing",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.morgan-price.com/individual/",
+            "source_provider": "Morgan Price International Healthcare",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Primary actions: Quick Quote | Buy Online.",
+            "pricing_visibility_observed": "quote/buy entrypoints only",
+            "note": "Obtainable during discovery: Public evidence showed quote/buy entrypoints only. Not obtainable during discovery: No usable numeric premium was obtainable without submitting contact details, creating an account, or entering deeper gated quote steps.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "morgan_price"
+              ],
+              "primary_candidate_id": "morgan_price"
+            }
+          },
+          {
+            "evidence_id": "morgan_price:pricing_friction:3",
+            "friction_type": "failed_or_abandoned_quote_retrieval",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.morgan-price.com/individual/",
+            "source_provider": "Morgan Price International Healthcare",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Primary actions: Quick Quote | Buy Online.",
+            "pricing_visibility_observed": "quote/buy entrypoints only",
+            "note": "Obtainable during discovery: Public evidence showed quote/buy entrypoints only. Not obtainable during discovery: No usable numeric premium was obtainable because the observed retrieval path failed technically, redirected away, or could not be completed within discovery.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "morgan_price"
+              ],
+              "primary_candidate_id": "morgan_price"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "candidate_id": "passportcard_global",
+      "insurer_name": "PassportCard",
+      "plan_name": "Expat Basic / Expat Comprehensive / Executive",
+      "public_pricing_status": "public_pricing_available",
+      "pricing_summary": "Public example pricing is visible on the official page.",
+      "pricing_evidence": [
+        {
+          "source_url": "https://www.passportcard.de/en/international-health-insurance/",
+          "source_type": "official insurer page",
+          "evidence_excerpt": "Expat Basic from 70 EUR / month; Expat Comprehensive from 123 EUR / month; Executive from 205 EUR / month. Price examples refer to country zone 4/5, age 19 to 24, and the optional maximum deductible per person.",
+          "pricing_visibility": "public from-prices",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "passportcard_global"
+            ],
+            "primary_candidate_id": "passportcard_global"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "These are illustrative example prices, not quotes for the target family of four."
+      ],
+      "pricing_availability_status": "public_pricing_available",
+      "pricing_availability_reason": "Reviewed public evidence included a numeric premium or from-price.",
+      "pricing_transparency_friction": {
+        "primary_friction": "public_numeric_pricing_visible",
+        "secondary_frictions": [],
+        "friction_summary": "Illustrative monthly example pricing was visible on the public insurer page.",
+        "has_directly_usable_public_price": true,
+        "friction_case_evidence_entries": [
+          {
+            "evidence_id": "passportcard_global:pricing_friction:1",
+            "friction_type": "public_numeric_pricing_visible",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.passportcard.de/en/international-health-insurance/",
+            "source_provider": "PassportCard",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Expat Basic from 70 EUR / month; Expat Comprehensive from 123 EUR / month; Executive from 205 EUR / month. Price examples refer to country zone 4/5, age 19 to 24, and the optional maximum deductible per person.",
+            "pricing_visibility_observed": "public from-prices",
+            "note": "Obtainable during discovery: A directly usable public numeric premium or calculator result was visible during discovery. Not obtainable during discovery: Personalized family-of-four pricing for the exact German-in-Georgia profile was not verified beyond the public example/calculator output. These are illustrative example prices, not quotes for the target family of four.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "passportcard_global"
+              ],
+              "primary_candidate_id": "passportcard_global"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "candidate_id": "vumi",
+      "insurer_name": "VUMI",
+      "plan_name": "Absolute VIP / Universal VIP / Special VIP / Access VIP product family",
+      "public_pricing_status": "no_public_pricing_found",
+      "pricing_summary": "The reviewed VUMI page exposes plan benefit maxima and a separate rates-comparison link, but no numeric premium was visible in the reviewed extract.",
+      "pricing_evidence": [
+        {
+          "source_url": "https://www.vumigroup.com/",
+          "source_type": "official insurer page",
+          "evidence_excerpt": "Comparisons: Rates Comparison | Plans Comparison.",
+          "pricing_visibility": "pricing-related link referenced, no number shown",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "vumi"
+            ],
+            "primary_candidate_id": "vumi"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "A separate rates page may contain pricing, but it was not verified in this run."
+      ],
+      "pricing_availability_status": "partially_visible",
+      "pricing_availability_reason": "Reviewed public evidence exposed pricing-related signals, but not a usable numeric premium.",
+      "pricing_transparency_friction": {
+        "primary_friction": "incomplete_quote_output",
+        "secondary_frictions": [],
+        "friction_summary": "The public site exposed rate-comparison navigation and plan maxima, but no usable premium was captured.",
+        "has_directly_usable_public_price": false,
+        "friction_case_evidence_entries": [
+          {
+            "evidence_id": "vumi:pricing_friction:1",
+            "friction_type": "incomplete_quote_output",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.vumigroup.com/",
+            "source_provider": "VUMI",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Comparisons: Rates Comparison | Plans Comparison.",
+            "pricing_visibility_observed": "pricing-related link referenced, no number shown",
+            "note": "Obtainable during discovery: Public evidence showed pricing-related link referenced, no number shown. Not obtainable during discovery: The reviewed public source did not yield an actual numeric premium even though pricing-related UI, quote CTAs, or placeholders were visible. A separate rates page may contain pricing, but it was not verified in this run.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "vumi"
+              ],
+              "primary_candidate_id": "vumi"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "candidate_id": "integra_global",
+      "insurer_name": "Integra Global",
+      "plan_name": "yourLife / PremierLife / yourFamily / PremierFamily",
+      "public_pricing_status": "no_public_pricing_found",
+      "pricing_summary": "The reviewed broker page exposed coverage and a quote CTA but no numeric premium.",
+      "pricing_evidence": [
+        {
+          "source_url": "https://www.internationalinsurance.com/integra-global/",
+          "source_type": "broker plan page",
+          "evidence_excerpt": "Primary CTAs: Get a Quote · Download Brochure.",
+          "pricing_visibility": "quote CTA only",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "integra_global"
+            ],
+            "primary_candidate_id": "integra_global"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Official insurer pricing was not verified in this run; current evidence is broker-sourced."
+      ],
+      "pricing_availability_status": "quote_flow_gated",
+      "pricing_availability_reason": "Reviewed public evidence pointed to quote-generated pricing, but the numeric premium was not visible during discovery.",
+      "pricing_transparency_friction": {
+        "primary_friction": "broker_or_intermediary_only_public_path",
+        "secondary_frictions": [
+          "incomplete_quote_output"
+        ],
+        "friction_summary": "Discovery only verified a broker-led path with quote CTAs rather than a direct insurer pricing path or usable public premium.",
+        "has_directly_usable_public_price": false,
+        "friction_case_evidence_entries": [
+          {
+            "evidence_id": "integra_global:pricing_friction:1",
+            "friction_type": "broker_or_intermediary_only_public_path",
+            "retrieval_method": "reviewed_public_source_extraction",
+            "source_url": "https://www.internationalinsurance.com/integra-global/",
+            "source_provider": "Pacific Prime (broker-led public path)",
+            "source_type": "broker plan page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Primary CTAs: Get a Quote · Download Brochure.",
+            "pricing_visibility_observed": "quote CTA only",
+            "note": "Obtainable during discovery: Public evidence showed quote CTA only. Not obtainable during discovery: A verified insurer-controlled public price was not obtainable from the reviewed broker-led or intermediary-led public path. Official insurer pricing was not verified in this run; current evidence is broker-sourced.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "integra_global"
+              ],
+              "primary_candidate_id": "integra_global"
+            }
+          },
+          {
+            "evidence_id": "integra_global:pricing_friction:2",
+            "friction_type": "incomplete_quote_output",
+            "retrieval_method": "reviewed_public_source_extraction",
+            "source_url": "https://www.internationalinsurance.com/integra-global/",
+            "source_provider": "Pacific Prime (broker-led public path)",
+            "source_type": "broker plan page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Primary CTAs: Get a Quote · Download Brochure.",
+            "pricing_visibility_observed": "quote CTA only",
+            "note": "Obtainable during discovery: Public evidence showed quote CTA only. Not obtainable during discovery: The reviewed public source did not yield an actual numeric premium even though pricing-related UI, quote CTAs, or placeholders were visible. Official insurer pricing was not verified in this run; current evidence is broker-sourced.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "integra_global"
+              ],
+              "primary_candidate_id": "integra_global"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "candidate_id": "medihelp_international",
+      "insurer_name": "MediHelp International",
+      "plan_name": "My Global Health individual plans: Blue / Azure / Cobalt / Admiral / Royal",
+      "public_pricing_status": "no_public_pricing_found",
+      "pricing_summary": "The reviewed official page exposes quote and buy-online entrypoints but no public numeric premium.",
+      "pricing_evidence": [
+        {
+          "source_url": "https://www.medihelp-assistance.com/en/medihelp-plans/individual-plans",
+          "source_type": "official insurer page",
+          "evidence_excerpt": "Get a quote | BUY ONLINE",
+          "pricing_visibility": "quote/buy CTA only",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "medihelp_international"
+            ],
+            "primary_candidate_id": "medihelp_international"
+          }
+        }
+      ],
+      "uncertainty_notes": [],
+      "pricing_availability_status": "quote_flow_gated",
+      "pricing_availability_reason": "Reviewed public evidence pointed to quote-generated pricing, but the numeric premium was not visible during discovery.",
+      "pricing_transparency_friction": {
+        "primary_friction": "blocked_public_pricing",
+        "secondary_frictions": [
+          "incomplete_quote_output"
+        ],
+        "friction_summary": "Public quote and buy-online entrypoints were visible, but downstream pricing remained inaccessible in the reviewed run because the deeper path was not captured and access friction was documented separately.",
+        "has_directly_usable_public_price": false,
+        "friction_case_evidence_entries": [
+          {
+            "evidence_id": "medihelp_international:pricing_friction:1",
+            "friction_type": "blocked_public_pricing",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.medihelp-assistance.com/en/medihelp-plans/individual-plans",
+            "source_provider": "MediHelp International",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Get a quote | BUY ONLINE",
+            "pricing_visibility_observed": "quote/buy CTA only",
+            "note": "Obtainable during discovery: Public evidence showed quote/buy CTA only. Not obtainable during discovery: No usable numeric premium could be retrieved because the reviewed public path was blocked before quote contents or price results became visible.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "medihelp_international"
+              ],
+              "primary_candidate_id": "medihelp_international"
+            }
+          },
+          {
+            "evidence_id": "medihelp_international:pricing_friction:2",
+            "friction_type": "incomplete_quote_output",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.medihelp-assistance.com/en/medihelp-plans/individual-plans",
+            "source_provider": "MediHelp International",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Get a quote | BUY ONLINE",
+            "pricing_visibility_observed": "quote/buy CTA only",
+            "note": "Obtainable during discovery: Public evidence showed quote/buy CTA only. Not obtainable during discovery: The reviewed public source did not yield an actual numeric premium even though pricing-related UI, quote CTAs, or placeholders were visible.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "medihelp_international"
+              ],
+              "primary_candidate_id": "medihelp_international"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "candidate_id": "alc_health",
+      "insurer_name": "ALC Health",
+      "plan_name": "Global Prima Medical Insurance / Flying Colours legacy entrypoints",
+      "public_pricing_status": "no_public_pricing_found",
+      "pricing_summary": "The reviewed ALC page advertises a quote in under 60 seconds but no numeric premium; new business is routed to IMG.",
+      "pricing_evidence": [
+        {
+          "source_url": "https://www.alchealth.com/",
+          "source_type": "official insurer page",
+          "evidence_excerpt": "GET A QUOTE fast free personal quotation in under 60 seconds... new business quotes and sales ... are now handled on our updated website: www.imglobal.com/intl",
+          "pricing_visibility": "quote CTA only",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "alc_health"
+            ],
+            "primary_candidate_id": "alc_health"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Legacy-brand routing makes current standalone pricing visibility especially uncertain."
+      ],
+      "pricing_availability_status": "quote_flow_gated",
+      "pricing_availability_reason": "Reviewed public evidence pointed to quote-generated pricing, but the numeric premium was not visible during discovery.",
+      "pricing_transparency_friction": {
+        "primary_friction": "failed_or_abandoned_quote_retrieval",
+        "secondary_frictions": [
+          "incomplete_quote_output"
+        ],
+        "friction_summary": "Legacy ALC quote messaging redirects new business to IMG, leaving standalone current pricing retrieval unresolved in this run.",
+        "has_directly_usable_public_price": false,
+        "friction_case_evidence_entries": [
+          {
+            "evidence_id": "alc_health:pricing_friction:1",
+            "friction_type": "failed_or_abandoned_quote_retrieval",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.alchealth.com/",
+            "source_provider": "ALC Health",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "GET A QUOTE fast free personal quotation in under 60 seconds... new business quotes and sales ... are now handled on our updated website: www.imglobal.com/intl",
+            "pricing_visibility_observed": "quote CTA only",
+            "note": "Obtainable during discovery: Public evidence showed quote CTA only. Not obtainable during discovery: No usable numeric premium was obtainable because the observed retrieval path failed technically, redirected away, or could not be completed within discovery. Legacy-brand routing makes current standalone pricing visibility especially uncertain.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "alc_health"
+              ],
+              "primary_candidate_id": "alc_health"
+            }
+          },
+          {
+            "evidence_id": "alc_health:pricing_friction:2",
+            "friction_type": "incomplete_quote_output",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.alchealth.com/",
+            "source_provider": "ALC Health",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "GET A QUOTE fast free personal quotation in under 60 seconds... new business quotes and sales ... are now handled on our updated website: www.imglobal.com/intl",
+            "pricing_visibility_observed": "quote CTA only",
+            "note": "Obtainable during discovery: Public evidence showed quote CTA only. Not obtainable during discovery: The reviewed public source did not yield an actual numeric premium even though pricing-related UI, quote CTAs, or placeholders were visible. Legacy-brand routing makes current standalone pricing visibility especially uncertain.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "alc_health"
+              ],
+              "primary_candidate_id": "alc_health"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "candidate_id": "geoblue_xplorer_bcbs_global_solutions",
+      "insurer_name": "Blue Cross Blue Shield Global Solutions (formerly GeoBlue Xplorer)",
+      "plan_name": "Worldwide Premier / Outside U.S. / Outside U.S. Select",
+      "public_pricing_status": "no_public_pricing_found",
+      "pricing_summary": "The reviewed broker page explains how the Outside U.S. option can lower premium costs, but no numeric premium was publicly shown.",
+      "pricing_evidence": [
+        {
+          "source_url": "https://www.internationalinsurance.com/geoblue/xplorer/",
+          "source_type": "broker plan page",
+          "evidence_excerpt": "Outside U.S. ... Best suited for expats who want to lower premium costs.",
+          "pricing_visibility": "relative pricing claim only",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "geoblue_xplorer_bcbs_global_solutions"
+            ],
+            "primary_candidate_id": "geoblue_xplorer_bcbs_global_solutions"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Current evidence is broker-sourced rather than official insurer pricing."
+      ],
+      "pricing_availability_status": "partially_visible",
+      "pricing_availability_reason": "Reviewed public evidence exposed pricing-related signals, but not a usable numeric premium.",
+      "pricing_transparency_friction": {
+        "primary_friction": "broker_or_intermediary_only_public_path",
+        "secondary_frictions": [
+          "incomplete_quote_output"
+        ],
+        "friction_summary": "The reviewed evidence was broker-led and only exposed relative premium positioning, not a verified insurer-controlled public price.",
+        "has_directly_usable_public_price": false,
+        "friction_case_evidence_entries": [
+          {
+            "evidence_id": "geoblue_xplorer_bcbs_global_solutions:pricing_friction:1",
+            "friction_type": "broker_or_intermediary_only_public_path",
+            "retrieval_method": "reviewed_public_source_extraction",
+            "source_url": "https://www.internationalinsurance.com/geoblue/xplorer/",
+            "source_provider": "International Citizens Insurance (broker-led public path)",
+            "source_type": "broker plan page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Outside U.S. ... Best suited for expats who want to lower premium costs.",
+            "pricing_visibility_observed": "relative pricing claim only",
+            "note": "Obtainable during discovery: Public evidence showed relative pricing claim only. Not obtainable during discovery: A verified insurer-controlled public price was not obtainable from the reviewed broker-led or intermediary-led public path. Current evidence is broker-sourced rather than official insurer pricing.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "geoblue_xplorer_bcbs_global_solutions"
+              ],
+              "primary_candidate_id": "geoblue_xplorer_bcbs_global_solutions"
+            }
+          },
+          {
+            "evidence_id": "geoblue_xplorer_bcbs_global_solutions:pricing_friction:2",
+            "friction_type": "incomplete_quote_output",
+            "retrieval_method": "reviewed_public_source_extraction",
+            "source_url": "https://www.internationalinsurance.com/geoblue/xplorer/",
+            "source_provider": "International Citizens Insurance (broker-led public path)",
+            "source_type": "broker plan page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Outside U.S. ... Best suited for expats who want to lower premium costs.",
+            "pricing_visibility_observed": "relative pricing claim only",
+            "note": "Obtainable during discovery: Public evidence showed relative pricing claim only. Not obtainable during discovery: The reviewed public source did not yield an actual numeric premium even though pricing-related UI, quote CTAs, or placeholders were visible. Current evidence is broker-sourced rather than official insurer pricing.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "geoblue_xplorer_bcbs_global_solutions"
+              ],
+              "primary_candidate_id": "geoblue_xplorer_bcbs_global_solutions"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "candidate_id": "safetywing_nomad_complete",
+      "insurer_name": "SafetyWing",
+      "plan_name": "Nomad Insurance Complete",
+      "public_pricing_status": "public_pricing_available",
+      "pricing_summary": "The reviewed official page exposes a public calculator result and a visible base monthly premium for ages 18-39.",
+      "pricing_evidence": [
+        {
+          "source_url": "https://safetywing.com/nomad-insurance?selectedPlan=NOMAD_INSURANCE_COMPLETE",
+          "source_type": "official insurer page",
+          "evidence_excerpt": "Nomad Insurance Complete ... 177.50/month for ages 18–39, in USD ... annual save 10%.",
+          "pricing_visibility": "public calculator price",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "safetywing_nomad_complete"
+            ],
+            "primary_candidate_id": "safetywing_nomad_complete"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Visible price is age-banded and base-plan specific, not a quote for the target family."
+      ],
+      "pricing_availability_status": "public_pricing_available",
+      "pricing_availability_reason": "Reviewed public evidence included a numeric premium or from-price.",
+      "pricing_transparency_friction": {
+        "primary_friction": "public_numeric_pricing_visible",
+        "secondary_frictions": [],
+        "friction_summary": "A public calculator displayed a numeric monthly premium without requiring a completed personalized quote.",
+        "has_directly_usable_public_price": true,
+        "friction_case_evidence_entries": [
+          {
+            "evidence_id": "safetywing_nomad_complete:pricing_friction:1",
+            "friction_type": "public_numeric_pricing_visible",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://safetywing.com/nomad-insurance?selectedPlan=NOMAD_INSURANCE_COMPLETE",
+            "source_provider": "SafetyWing",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Nomad Insurance Complete ... 177.50/month for ages 18–39, in USD ... annual save 10%.",
+            "pricing_visibility_observed": "public calculator price",
+            "note": "Obtainable during discovery: A directly usable public numeric premium or calculator result was visible during discovery. Not obtainable during discovery: Personalized family-of-four pricing for the exact German-in-Georgia profile was not verified beyond the public example/calculator output. Visible price is age-banded and base-plan specific, not a quote for the target family.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "safetywing_nomad_complete"
+              ],
+              "primary_candidate_id": "safetywing_nomad_complete"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "candidate_id": "genki_native",
+      "insurer_name": "Genki",
+      "plan_name": "Native / international health insurance",
+      "public_pricing_status": "quote_flow_pricing_only",
+      "pricing_summary": "The reviewed official source says users can get an instant price online, but no public numeric premium was shown in the reviewed extract.",
+      "pricing_evidence": [
+        {
+          "source_url": "https://genki.world/",
+          "source_type": "official insurer page",
+          "evidence_excerpt": "Get an instant price and sign up online, even if you're already abroad.",
+          "pricing_visibility": "quote-generated pricing referenced, no number shown",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "genki_native"
+            ],
+            "primary_candidate_id": "genki_native"
+          }
+        },
+        {
+          "source_url": "https://genki.world/products/native",
+          "source_type": "official product page",
+          "evidence_excerpt": "Long-term international health insurance for digital nomads, expats, and families living abroad.",
+          "pricing_visibility": "product detail page without reviewed numeric premium",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "genki_native"
+            ],
+            "primary_candidate_id": "genki_native"
+          }
+        }
+      ],
+      "uncertainty_notes": [],
+      "pricing_availability_status": "quote_flow_gated",
+      "pricing_availability_reason": "Reviewed public evidence pointed to quote-generated pricing, but the numeric premium was not visible during discovery.",
+      "pricing_transparency_friction": {
+        "primary_friction": "eligibility_gated_results",
+        "secondary_frictions": [
+          "incomplete_quote_output"
+        ],
+        "friction_summary": "Instant pricing is advertised, but the recommendation flow first screens for trip duration, destination, and home-country healthcare access.",
+        "has_directly_usable_public_price": false,
+        "friction_case_evidence_entries": [
+          {
+            "evidence_id": "genki_native:pricing_friction:1",
+            "friction_type": "eligibility_gated_results",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://genki.world/",
+            "source_provider": "Genki",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Get an instant price and sign up online, even if you're already abroad.",
+            "pricing_visibility_observed": "quote-generated pricing referenced, no number shown",
+            "note": "Obtainable during discovery: Public evidence showed quote-generated pricing referenced, no number shown. Not obtainable during discovery: No usable numeric premium was obtainable without passing upstream eligibility or household-profile steps first.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "genki_native"
+              ],
+              "primary_candidate_id": "genki_native"
+            }
+          },
+          {
+            "evidence_id": "genki_native:pricing_friction:2",
+            "friction_type": "incomplete_quote_output",
+            "retrieval_method": "reviewed_public_source_extraction",
+            "source_url": "https://genki.world/products/native",
+            "source_provider": "Genki",
+            "source_type": "official product page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Long-term international health insurance for digital nomads, expats, and families living abroad.",
+            "pricing_visibility_observed": "product detail page without reviewed numeric premium",
+            "note": "Obtainable during discovery: Public evidence showed product detail page without reviewed numeric premium. Not obtainable during discovery: The reviewed public source did not yield an actual numeric premium even though pricing-related UI, quote CTAs, or placeholders were visible.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "genki_native"
+              ],
+              "primary_candidate_id": "genki_native"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "candidate_id": "acs_expat",
+      "insurer_name": "ACS",
+      "plan_name": "ACS Expat",
+      "public_pricing_status": "no_public_pricing_found",
+      "pricing_summary": "The reviewed ACS page states pricing is adapted to country of residence and lists deductible/payment options, but no numeric premium was publicly shown.",
+      "pricing_evidence": [
+        {
+          "source_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat/",
+          "source_type": "official insurer page",
+          "evidence_excerpt": "Pricing adapted to healthcare costs in the country of residence... Available deductible options: No deductible, 500, 1,000, 5,000, 10,000... Payment options monthly, quarterly, semi-annually, annually.",
+          "pricing_visibility": "pricing mechanics only",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "acs_expat"
+            ],
+            "primary_candidate_id": "acs_expat"
+          }
+        }
+      ],
+      "uncertainty_notes": [],
+      "pricing_availability_status": "unavailable_during_discovery",
+      "pricing_availability_reason": "Reviewed public evidence did not expose usable pricing during discovery.",
+      "pricing_transparency_friction": {
+        "primary_friction": "contact_or_account_gated_pricing",
+        "secondary_frictions": [
+          "eligibility_gated_results"
+        ],
+        "friction_summary": "Pricing is tailored to country of residence and the reviewed quote path collects family composition and contact details before advisor follow-up.",
+        "has_directly_usable_public_price": false,
+        "friction_case_evidence_entries": [
+          {
+            "evidence_id": "acs_expat:pricing_friction:1",
+            "friction_type": "contact_or_account_gated_pricing",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat/",
+            "source_provider": "ACS",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Pricing adapted to healthcare costs in the country of residence... Available deductible options: No deductible, 500, 1,000, 5,000, 10,000... Payment options monthly, quarterly, semi-annually, annually.",
+            "pricing_visibility_observed": "pricing mechanics only",
+            "note": "Obtainable during discovery: Public evidence showed pricing mechanics only. Not obtainable during discovery: No usable numeric premium was obtainable without submitting contact details, creating an account, or entering deeper gated quote steps.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "acs_expat"
+              ],
+              "primary_candidate_id": "acs_expat"
+            }
+          },
+          {
+            "evidence_id": "acs_expat:pricing_friction:2",
+            "friction_type": "eligibility_gated_results",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat/",
+            "source_provider": "ACS",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Pricing adapted to healthcare costs in the country of residence... Available deductible options: No deductible, 500, 1,000, 5,000, 10,000... Payment options monthly, quarterly, semi-annually, annually.",
+            "pricing_visibility_observed": "pricing mechanics only",
+            "note": "Obtainable during discovery: Public evidence showed pricing mechanics only. Not obtainable during discovery: No usable numeric premium was obtainable without passing upstream eligibility or household-profile steps first.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "acs_expat"
+              ],
+              "primary_candidate_id": "acs_expat"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "candidate_id": "hci_group_health_protect",
+      "insurer_name": "HCI Group",
+      "plan_name": "Health Protect / Protector Plans / Nimbl Health",
+      "public_pricing_status": "no_public_pricing_found",
+      "pricing_summary": "The reviewed HCI page exposes plan limits and quote links but no numeric premium.",
+      "pricing_evidence": [
+        {
+          "source_url": "https://www.hcigroupglobal.com/health-protect/",
+          "source_type": "official insurer page",
+          "evidence_excerpt": "Protector Plans ... Quote now ... five levels of cover.",
+          "pricing_visibility": "quote CTA only",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "hci_group_health_protect"
+            ],
+            "primary_candidate_id": "hci_group_health_protect"
+          }
+        }
+      ],
+      "uncertainty_notes": [],
+      "pricing_availability_status": "quote_flow_gated",
+      "pricing_availability_reason": "Reviewed public evidence pointed to quote-generated pricing, but the numeric premium was not visible during discovery.",
+      "pricing_transparency_friction": {
+        "primary_friction": "failed_or_abandoned_quote_retrieval",
+        "secondary_frictions": [],
+        "friction_summary": "The external quote tool showed a technical barrier instead of usable quote questions or pricing.",
+        "has_directly_usable_public_price": false,
+        "friction_case_evidence_entries": [
+          {
+            "evidence_id": "hci_group_health_protect:pricing_friction:1",
+            "friction_type": "failed_or_abandoned_quote_retrieval",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.hcigroupglobal.com/health-protect/",
+            "source_provider": "HCI Group",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Protector Plans ... Quote now ... five levels of cover.",
+            "pricing_visibility_observed": "quote CTA only",
+            "note": "Obtainable during discovery: Public evidence showed quote CTA only. Not obtainable during discovery: No usable numeric premium was obtainable because the observed retrieval path failed technically, redirected away, or could not be completed within discovery.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "hci_group_health_protect"
+              ],
+              "primary_candidate_id": "hci_group_health_protect"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "candidate_id": "expatriate_group_global_health",
+      "insurer_name": "Expatriate Group",
+      "plan_name": "International Health Insurance / Select / Primary+ / Primary+ Lite / Primary",
+      "public_pricing_status": "quote_flow_pricing_only",
+      "pricing_summary": "The reviewed official quote flow includes a 'Selected Package Premium' field, but no numeric premium was visible without running the quote inputs.",
+      "pricing_evidence": [
+        {
+          "source_url": "https://www.expatriatehealthcare.com/international-health-insurance/",
+          "source_type": "official insurer page",
+          "evidence_excerpt": "Get a Quote.",
+          "pricing_visibility": "quote CTA only",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "expatriate_group_global_health"
+            ],
+            "primary_candidate_id": "expatriate_group_global_health"
+          }
+        },
+        {
+          "source_url": "https://quote.expatriatehealthcare.com/healthcare/",
+          "source_type": "official quote page",
+          "evidence_excerpt": "Your Selection ... Selected Package Premium ... excludes applicable Tax/Duty.",
+          "pricing_visibility": "quote-result field present, no number shown in reviewed extract",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "expatriate_group_global_health"
+            ],
+            "primary_candidate_id": "expatriate_group_global_health"
+          }
+        }
+      ],
+      "uncertainty_notes": [],
+      "pricing_availability_status": "partially_visible",
+      "pricing_availability_reason": "Reviewed public evidence exposed pricing-related signals, but not a usable numeric premium.",
+      "pricing_transparency_friction": {
+        "primary_friction": "contact_or_account_gated_pricing",
+        "secondary_frictions": [
+          "eligibility_gated_results",
+          "incomplete_quote_output"
+        ],
+        "friction_summary": "The quote flow includes a premium placeholder but requires household data and email before a usable result was observed.",
+        "has_directly_usable_public_price": false,
+        "friction_case_evidence_entries": [
+          {
+            "evidence_id": "expatriate_group_global_health:pricing_friction:1",
+            "friction_type": "contact_or_account_gated_pricing",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.expatriatehealthcare.com/international-health-insurance/",
+            "source_provider": "Expatriate Group",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Get a Quote.",
+            "pricing_visibility_observed": "quote CTA only",
+            "note": "Obtainable during discovery: Public evidence showed quote CTA only. Not obtainable during discovery: No usable numeric premium was obtainable without submitting contact details, creating an account, or entering deeper gated quote steps.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "expatriate_group_global_health"
+              ],
+              "primary_candidate_id": "expatriate_group_global_health"
+            }
+          },
+          {
+            "evidence_id": "expatriate_group_global_health:pricing_friction:2",
+            "friction_type": "eligibility_gated_results",
+            "retrieval_method": "public_quote_page_review",
+            "source_url": "https://quote.expatriatehealthcare.com/healthcare/",
+            "source_provider": "Expatriate Group",
+            "source_type": "official quote page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Your Selection ... Selected Package Premium ... excludes applicable Tax/Duty.",
+            "pricing_visibility_observed": "quote-result field present, no number shown in reviewed extract",
+            "note": "Obtainable during discovery: Public evidence showed quote-result field present, no number shown in reviewed extract. Not obtainable during discovery: No usable numeric premium was obtainable without passing upstream eligibility or household-profile steps first.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "expatriate_group_global_health"
+              ],
+              "primary_candidate_id": "expatriate_group_global_health"
+            }
+          },
+          {
+            "evidence_id": "expatriate_group_global_health:pricing_friction:3",
+            "friction_type": "incomplete_quote_output",
+            "retrieval_method": "public_quote_page_review",
+            "source_url": "https://quote.expatriatehealthcare.com/healthcare/",
+            "source_provider": "Expatriate Group",
+            "source_type": "official quote page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Your Selection ... Selected Package Premium ... excludes applicable Tax/Duty.",
+            "pricing_visibility_observed": "quote-result field present, no number shown in reviewed extract",
+            "note": "Obtainable during discovery: Public evidence showed quote-result field present, no number shown in reviewed extract. Not obtainable during discovery: The reviewed public source did not yield an actual numeric premium even though pricing-related UI, quote CTAs, or placeholders were visible.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "expatriate_group_global_health"
+              ],
+              "primary_candidate_id": "expatriate_group_global_health"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "candidate_id": "wellaway_expat",
+      "insurer_name": "WellAway",
+      "plan_name": "EXPAT / Gold / Diamond / Expat Plus",
+      "public_pricing_status": "no_public_pricing_found",
+      "pricing_summary": "The reviewed official product page discusses keeping premiums low and the quote portal exists, but no numeric public premium was visible in the reviewed extracts.",
+      "pricing_evidence": [
+        {
+          "source_url": "https://www.wellaway.com/en/our-plans/expat/",
+          "source_type": "official insurer page",
+          "evidence_excerpt": "EXPAT ... provides comprehensive coverage while keeping premiums low. Get A Quote.",
+          "pricing_visibility": "marketing + quote CTA only",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "wellaway_expat"
+            ],
+            "primary_candidate_id": "wellaway_expat"
+          }
+        },
+        {
+          "source_url": "https://portal.wellaway.com/Quote/EXPAT/Step1",
+          "source_type": "official quote page",
+          "evidence_excerpt": "Policyholder Information ... Step 1: Basics ... Next.",
+          "pricing_visibility": "quote form only",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "wellaway_expat"
+            ],
+            "primary_candidate_id": "wellaway_expat"
+          }
+        }
+      ],
+      "uncertainty_notes": [],
+      "pricing_availability_status": "quote_flow_gated",
+      "pricing_availability_reason": "Reviewed public evidence pointed to quote-generated pricing, but the numeric premium was not visible during discovery.",
+      "pricing_transparency_friction": {
+        "primary_friction": "contact_or_account_gated_pricing",
+        "secondary_frictions": [
+          "eligibility_gated_results"
+        ],
+        "friction_summary": "The public quote path collects identity, family, and contact fields at the basics step before any plan pricing is shown.",
+        "has_directly_usable_public_price": false,
+        "friction_case_evidence_entries": [
+          {
+            "evidence_id": "wellaway_expat:pricing_friction:1",
+            "friction_type": "contact_or_account_gated_pricing",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.wellaway.com/en/our-plans/expat/",
+            "source_provider": "WellAway",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "EXPAT ... provides comprehensive coverage while keeping premiums low. Get A Quote.",
+            "pricing_visibility_observed": "marketing + quote CTA only",
+            "note": "Obtainable during discovery: Public evidence showed marketing + quote CTA only. Not obtainable during discovery: No usable numeric premium was obtainable without submitting contact details, creating an account, or entering deeper gated quote steps.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "wellaway_expat"
+              ],
+              "primary_candidate_id": "wellaway_expat"
+            }
+          },
+          {
+            "evidence_id": "wellaway_expat:pricing_friction:2",
+            "friction_type": "eligibility_gated_results",
+            "retrieval_method": "public_quote_page_review",
+            "source_url": "https://portal.wellaway.com/Quote/EXPAT/Step1",
+            "source_provider": "WellAway",
+            "source_type": "official quote page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Policyholder Information ... Step 1: Basics ... Next.",
+            "pricing_visibility_observed": "quote form only",
+            "note": "Obtainable during discovery: Public evidence showed quote form only. Not obtainable during discovery: No usable numeric premium was obtainable without passing upstream eligibility or household-profile steps first.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "wellaway_expat"
+              ],
+              "primary_candidate_id": "wellaway_expat"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "candidate_id": "securus_global_health_cover",
+      "insurer_name": "Securus International",
+      "plan_name": "Global Health Cover",
+      "public_pricing_status": "no_public_pricing_found",
+      "pricing_summary": "The reviewed official page and brochure links exposed plan materials but no numeric premium.",
+      "pricing_evidence": [
+        {
+          "source_url": "https://www.securus.co.uk/benefits/global-health-cover",
+          "source_type": "official insurer page",
+          "evidence_excerpt": "Our Brochures ... Full Benefit Plans 2026 ... Global Health Cover.",
+          "pricing_visibility": "brochure links only",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+            "candidate_record_section": "pricing_evidence_ledger",
+            "candidate_ids": [
+              "securus_global_health_cover"
+            ],
+            "primary_candidate_id": "securus_global_health_cover"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Brochures may contain further pricing context, but no public premium was verified in this run."
+      ],
+      "pricing_availability_status": "unavailable_during_discovery",
+      "pricing_availability_reason": "Reviewed public evidence did not expose usable pricing during discovery.",
+      "pricing_transparency_friction": {
+        "primary_friction": "brochure_or_marketing_only_no_price",
+        "secondary_frictions": [],
+        "friction_summary": "Reviewed public evidence exposed brochures and marketing materials but no usable numeric premium or quote result.",
+        "has_directly_usable_public_price": false,
+        "friction_case_evidence_entries": [
+          {
+            "evidence_id": "securus_global_health_cover:pricing_friction:1",
+            "friction_type": "brochure_or_marketing_only_no_price",
+            "retrieval_method": "public_official_page_review",
+            "source_url": "https://www.securus.co.uk/benefits/global-health-cover",
+            "source_provider": "Securus International",
+            "source_type": "official insurer page",
+            "access_date": "2026-04-25",
+            "evidence_excerpt": "Our Brochures ... Full Benefit Plans 2026 ... Global Health Cover.",
+            "pricing_visibility_observed": "brochure links only",
+            "note": "Obtainable during discovery: Public evidence showed brochure links only. Not obtainable during discovery: No usable numeric premium or working public quote result was obtainable from the reviewed brochure/marketing materials. Brochures may contain further pricing context, but no public premium was verified in this run.",
+            "candidate_linkage": {
+              "linkage_basis": "parent_record_candidate_id",
+              "candidate_record_dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "candidate_record_section": "pricing_evidence_ledger",
+              "candidate_ids": [
+                "securus_global_health_cover"
+              ],
+              "primary_candidate_id": "securus_global_health_cover"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "summary": {
+    "verified_total_candidates": 27,
+    "public_pricing_available_count": 2,
+    "quote_flow_pricing_only_count": 5,
+    "no_public_pricing_found_count": 20,
+    "notable_public_pricing_candidates": [
+      "passportcard_global",
+      "safetywing_nomad_complete"
+    ],
+    "method_notes": [
+      "This ledger records only what was publicly visible in reviewed sources during this discovery run.",
+      "Absence of public pricing here means no numeric public premium was found in the reviewed source extracts; it does not prove the insurer never shows prices deeper in an interactive quote flow.",
+      "Quote-form presence without a visible reviewed number was separated into quote_flow_pricing_only so later runs can prioritize deeper quote testing if needed."
+    ],
+    "pricing_availability_status_counts": {
+      "partially_visible": 7,
+      "public_pricing_available": 2,
+      "quote_flow_gated": 13,
+      "unavailable_during_discovery": 5
+    },
+    "pricing_availability_method_notes": [
+      "The pricing_availability_status field normalizes discovery-time visibility into four buckets: public_pricing_available, quote_flow_gated, partially_visible, and unavailable_during_discovery.",
+      "partially_visible means the source exposed pricing-adjacent evidence such as discounts, premium mechanics, or price-result placeholders without a usable numeric premium.",
+      "quote_flow_gated means the reviewed source suggested pricing should appear after interactive quote inputs, but this run did not capture the numeric result."
+    ],
+    "pricing_transparency_primary_friction_counts": {
+      "blocked_public_pricing": 3,
+      "brochure_or_marketing_only_no_price": 3,
+      "broker_or_intermediary_only_public_path": 2,
+      "contact_or_account_gated_pricing": 3,
+      "eligibility_gated_results": 7,
+      "failed_or_abandoned_quote_retrieval": 2,
+      "incomplete_quote_output": 5,
+      "public_numeric_pricing_visible": 2
+    },
+    "records_without_directly_usable_public_price_count": 25,
+    "pricing_transparency_method_notes": [
+      "pricing_transparency_friction records the specific obstacle observed for each candidate during public pricing discovery, rather than pretending every no-price case failed in the same way.",
+      "Candidates with no directly usable public price are explicitly separated into blocked public pricing, incomplete quote output, eligibility-gated results, failed or abandoned quote retrieval, contact/account-gated pricing, broker-led public paths, and brochure-or-marketing-only public evidence.",
+      "A candidate can carry secondary frictions when multiple barriers were visible in reviewed evidence, but primary_friction captures the best single explanation for why usable public pricing was not obtained in this run.",
+      "pricing_friction_event_count counts the structured pricing-friction evidence entries added per primary and secondary friction, each with retrieval metadata, reviewed source URL/provider, access date, and an explicit obtainable/not-obtainable note."
+    ],
+    "pricing_friction_event_count": 47,
+    "records_with_pricing_friction_evidence_entries_count": 27
+  },
+  "pricing_availability_status_legend": {
+    "public_pricing_available": "A reviewed public source displayed a numeric premium, from-price, or calculator output during discovery without requiring a completed quote, broker contact, or login.",
+    "quote_flow_gated": "Public evidence indicates pricing is available through a quote or application flow, but no numeric premium was visible in the reviewed discovery extract.",
+    "partially_visible": "Public evidence exposed some pricing signal such as discounts, premium mechanics, rate-related UI, or price-result placeholders, but not a usable numeric premium for discovery.",
+    "unavailable_during_discovery": "No usable pricing was visible in reviewed public evidence during discovery because pricing was absent, blocked, challenge-gated, brochure-only, or otherwise not observable."
+  },
+  "pricing_transparency_friction_legend": {
+    "public_numeric_pricing_visible": "A usable numeric premium or from-price was visible in reviewed public evidence during discovery.",
+    "blocked_public_pricing": "A public pricing or quote path existed but was blocked by a challenge wall, login wall, reCAPTCHA, or similar access barrier before usable pricing was visible.",
+    "incomplete_quote_output": "The reviewed public source showed pricing-related UI, placeholders, price-result fields, or quote CTAs, but the run did not obtain a usable numeric premium from that path.",
+    "eligibility_gated_results": "Pricing appears to depend on passing upfront eligibility or household-profile steps such as residency, duration, nationality, age, or dependent composition before any result is visible.",
+    "failed_or_abandoned_quote_retrieval": "A quote path appeared to exist, but retrieval did not reach usable pricing because the observed path failed technically, redirected away, depended on an unverified successor flow, or was otherwise abandoned during discovery.",
+    "contact_or_account_gated_pricing": "Pricing appears to require account creation, login, or contact submission before any usable quote result is shown.",
+    "broker_or_intermediary_only_public_path": "The reviewed public path was broker-led or intermediary-led rather than a verified insurer-controlled pricing path, so direct public pricing transparency remained unresolved.",
+    "brochure_or_marketing_only_no_price": "Reviewed public materials were brochure-led or marketing-led and did not expose a public pricing path with usable numeric premiums."
+  },
+  "method_notes": [
+    "pricing_friction_evidence_entries stores one source-backed ledger entry for each observed pricing-friction event, including retrieval_method, source_url, source_provider, access_date, and a short note describing what pricing was and was not obtainable during discovery.",
+    "Pricing-friction entries are discovery-time observations only; they do not infer hidden downstream quote results, non-public broker pricing, or underwriting outcomes that were not visible in reviewed public sources."
+  ]
+}

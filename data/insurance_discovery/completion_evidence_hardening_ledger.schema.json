@@ -1,0 +1,1086 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "data/insurance_discovery/completion_evidence_hardening_ledger.schema.json",
+  "title": "International Expat Health Insurance Completion Evidence-Hardening Ledger Record",
+  "description": "Canonical JSON Schema for one candidate-level completion-pass record used to deepen the existing discovery dataset for a German citizen family of four residing in Georgia. The schema is additive: it references prior discovery ledgers while standardizing evidence-hardening outcomes for Georgia residence eligibility, Germany/home-country treatment, worldwide-excluding-U.S. area-of-cover, family quote-flow progress, policy document access, pricing visibility, and underwriting/pre-existing-condition evidence.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "dataset",
+    "run_scope",
+    "section",
+    "ledger_name",
+    "record_type",
+    "candidate_id",
+    "candidate_type",
+    "priority_candidate",
+    "insurer_name",
+    "plan_name",
+    "family_context",
+    "completion_status",
+    "georgia_residence_eligibility",
+    "germany_or_home_country_treatment",
+    "worldwide_ex_us_area_of_cover",
+    "family_quote_flow",
+    "policy_document_access",
+    "pricing_visibility",
+    "medical_underwriting_preexisting_conditions",
+    "source_urls",
+    "confidence",
+    "friction",
+    "unresolved_next_actions",
+    "uncertainty_notes"
+  ],
+  "properties": {
+    "dataset": {
+      "const": "international_expat_health_insurance_discovery"
+    },
+    "run_scope": {
+      "const": "completion_evidence_hardening"
+    },
+    "section": {
+      "const": "completion_evidence_hardening_ledger"
+    },
+    "ledger_name": {
+      "const": "completion_evidence_hardening_ledger"
+    },
+    "record_type": {
+      "const": "candidate_completion_record"
+    },
+    "record_index": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "candidate_id": {
+      "type": "string",
+      "enum": [
+        "cigna_global",
+        "bupa_global",
+        "april_international",
+        "allianz_care",
+        "axa_global_healthcare",
+        "william_russell",
+        "now_health_international",
+        "foyer_global_health",
+        "safetywing",
+        "expatriate_group",
+        "img_global_medical",
+        "genki",
+        "wellaway",
+        "passportcard"
+      ]
+    },
+    "candidate_type": {
+      "type": "string",
+      "enum": [
+        "primary",
+        "supplemental"
+      ]
+    },
+    "priority_candidate": {
+      "const": true
+    },
+    "insurer_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "plan_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "family_context": {
+      "$ref": "#/$defs/familyContext"
+    },
+    "completion_status": {
+      "type": "string",
+      "enum": [
+        "not_started",
+        "in_progress",
+        "partially_hardened",
+        "substantially_hardened",
+        "blocked_by_public_access_limits",
+        "complete_for_public_evidence_scope"
+      ]
+    },
+    "completion_status_reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "existing_discovery_refs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/datasetRef"
+      }
+    },
+    "georgia_residence_eligibility": {
+      "$ref": "#/$defs/coverageOrEligibilityDimension"
+    },
+    "germany_or_home_country_treatment": {
+      "$ref": "#/$defs/coverageOrEligibilityDimension"
+    },
+    "worldwide_ex_us_area_of_cover": {
+      "$ref": "#/$defs/coverageOrEligibilityDimension"
+    },
+    "family_quote_flow": {
+      "$ref": "#/$defs/familyQuoteFlow"
+    },
+    "policy_document_access": {
+      "$ref": "#/$defs/policyDocumentAccess"
+    },
+    "pricing_visibility": {
+      "$ref": "#/$defs/pricingVisibility"
+    },
+    "medical_underwriting_preexisting_conditions": {
+      "$ref": "#/$defs/underwritingEvidence"
+    },
+    "source_urls": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/sourceUrlRecord"
+      }
+    },
+    "confidence": {
+      "$ref": "#/$defs/confidenceAssessment"
+    },
+    "friction": {
+      "$ref": "#/$defs/frictionAssessment"
+    },
+    "unresolved_next_actions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/nextAction"
+      }
+    },
+    "uncertainty_notes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "$defs": {
+    "familyContext": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "citizenship",
+        "residence",
+        "adults",
+        "children",
+        "preferred_cover_geography"
+      ],
+      "properties": {
+        "citizenship": {
+          "const": "German"
+        },
+        "residence": {
+          "const": "Georgia"
+        },
+        "adults": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "const": 42
+            },
+            {
+              "const": 37
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "children": {
+          "const": 2
+        },
+        "preferred_cover_geography": {
+          "const": "Georgia and Germany, ideally worldwide excluding the US"
+        }
+      }
+    },
+    "datasetRef": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "dataset_path",
+        "section"
+      ],
+      "properties": {
+        "dataset_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "section": {
+          "type": "string",
+          "minLength": 1
+        },
+        "candidate_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "record_index": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "evidence_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        }
+      }
+    },
+    "coverageOrEligibilityDimension": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "status",
+        "evidence_status",
+        "summary",
+        "evidence_strength",
+        "source_refs"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "confirmed",
+            "partially_confirmed",
+            "inferred",
+            "contradicted",
+            "gated",
+            "unknown",
+            "not_applicable_from_reviewed_public_sources"
+          ]
+        },
+        "evidence_status": {
+          "type": "string",
+          "enum": [
+            "explicit_public_evidence",
+            "partial_public_evidence",
+            "indirect_public_evidence",
+            "challenge_or_login_gated",
+            "contact_or_broker_gated",
+            "not_found_in_reviewed_public_sources"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_strength": {
+          "type": "string",
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ]
+        },
+        "treatment_scope": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "residence_eligibility",
+            "home_country_cover",
+            "home_country_visits_only",
+            "area_of_cover_selection",
+            "unknown",
+            null
+          ]
+        },
+        "source_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/evidenceRef"
+          }
+        },
+        "public_quote_flow_outcome": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "country_or_option_visible",
+            "country_or_option_accepted_to_next_step",
+            "challenge_blocked_before_outcome",
+            "contact_required_before_outcome",
+            "not_tested_in_this_pass",
+            null
+          ]
+        },
+        "public_policy_document_outcome": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "explicit_wording_found",
+            "related_but_incomplete_wording_found",
+            "document_found_but_not_decisive",
+            "document_not_found",
+            null
+          ]
+        },
+        "unresolved_questions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "familyQuoteFlow": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "status",
+        "entrypoint_type",
+        "family_specific_inputs_observed",
+        "quote_result_visibility",
+        "summary",
+        "source_refs"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "not_started",
+            "entry_only_verified",
+            "advanced_without_quote_result",
+            "family_specific_quote_result_visible",
+            "gated_before_family_specific_result",
+            "blocked_or_failed"
+          ]
+        },
+        "entrypoint_type": {
+          "type": "string",
+          "enum": [
+            "official_quote_flow",
+            "official_application_flow",
+            "official_selector_only",
+            "broker_handoff",
+            "contact_form",
+            "no_public_quote_path_verified"
+          ]
+        },
+        "family_specific_inputs_observed": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "country_of_residence",
+              "nationality",
+              "adults_count",
+              "children_count",
+              "ages",
+              "coverage_area",
+              "deductible",
+              "start_date",
+              "contact_email",
+              "phone_number",
+              "unknown_or_not_captured"
+            ]
+          }
+        },
+        "quote_result_visibility": {
+          "type": "string",
+          "enum": [
+            "no_quote_result_visible",
+            "partial_plan_options_visible",
+            "price_or_plan_result_visible",
+            "contact_capture_before_result",
+            "login_or_account_before_result",
+            "challenge_or_js_block_before_result"
+          ]
+        },
+        "quote_result_summary": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/evidenceRef"
+          }
+        },
+        "next_required_step": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "continue_public_quote_flow",
+            "supply_household_or_age_data",
+            "supply_contact_details",
+            "solve_challenge_or_use_clean_browser_session",
+            "open_policy_document_or_benefit_table",
+            "use_broker_or_sales_contact",
+            "not_applicable",
+            null
+          ]
+        }
+      }
+    },
+    "policyDocumentAccess": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "status",
+        "document_type_status",
+        "summary",
+        "source_refs"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "public_document_found",
+            "public_document_found_but_partial",
+            "document_link_visible_but_access_failed",
+            "no_public_document_found",
+            "gated_document_access"
+          ]
+        },
+        "document_type_status": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "policy_wording",
+              "table_of_benefits",
+              "brochure",
+              "benefit_schedule",
+              "handbook",
+              "ipid_or_product_sheet",
+              "none_verified"
+            ]
+          }
+        },
+        "document_url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uri"
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/evidenceRef"
+          }
+        }
+      }
+    },
+    "pricingVisibility": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "status",
+        "numeric_price_visible",
+        "summary",
+        "source_refs"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "public_numeric_price_visible",
+            "partial_pricing_signal_visible",
+            "quote_flow_gated",
+            "contact_required_before_pricing",
+            "broker_required_before_pricing",
+            "not_visible_in_reviewed_public_sources"
+          ]
+        },
+        "numeric_price_visible": {
+          "type": "boolean"
+        },
+        "price_visibility_scope": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "family_specific",
+            "generic_from_price",
+            "discount_or_promo_only",
+            "plan_options_without_price",
+            "none",
+            null
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/evidenceRef"
+          }
+        }
+      }
+    },
+    "underwritingEvidence": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "status",
+        "visibility",
+        "summary",
+        "source_refs"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "explicit_terms_found",
+            "underwriting_route_found_but_preexisting_terms_partial",
+            "search_snippet_only",
+            "gated_or_document_dependent",
+            "not_found_in_reviewed_public_sources"
+          ]
+        },
+        "visibility": {
+          "type": "string",
+          "enum": [
+            "official_public_page",
+            "official_public_pdf",
+            "official_search_visible_snippet",
+            "quote_flow_only",
+            "not_visible"
+          ]
+        },
+        "underwriting_model": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "full_medical_underwriting",
+            "moratorium",
+            "switch_or_multiple_routes_visible",
+            "unclear",
+            null
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/evidenceRef"
+          }
+        }
+      }
+    },
+    "sourceUrlRecord": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "url",
+        "source_type",
+        "access_status"
+      ],
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "source_type": {
+          "type": "string",
+          "enum": [
+            "official_insurer_page",
+            "official_quote_page",
+            "official_policy_document",
+            "official_faq_or_help_page",
+            "official_country_or_destination_page",
+            "broker_or_intermediary_page",
+            "search_visible_official_result"
+          ]
+        },
+        "access_status": {
+          "type": "string",
+          "enum": [
+            "reviewed_publicly",
+            "challenge_blocked",
+            "login_required",
+            "contact_required",
+            "linked_but_not_opened_in_this_pass",
+            "not_working_in_this_environment"
+          ]
+        },
+        "notes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "confidenceAssessment": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "overall",
+        "rationale"
+      ],
+      "properties": {
+        "overall": {
+          "type": "string",
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ]
+        },
+        "dimension_scores": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "georgia_residence_eligibility": {
+              "type": "string",
+              "enum": ["high", "medium", "low"]
+            },
+            "germany_or_home_country_treatment": {
+              "type": "string",
+              "enum": ["high", "medium", "low"]
+            },
+            "worldwide_ex_us_area_of_cover": {
+              "type": "string",
+              "enum": ["high", "medium", "low"]
+            },
+            "family_quote_flow": {
+              "type": "string",
+              "enum": ["high", "medium", "low"]
+            },
+            "policy_document_access": {
+              "type": "string",
+              "enum": ["high", "medium", "low"]
+            },
+            "pricing_visibility": {
+              "type": "string",
+              "enum": ["high", "medium", "low"]
+            },
+            "medical_underwriting_preexisting_conditions": {
+              "type": "string",
+              "enum": ["high", "medium", "low"]
+            }
+          }
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "frictionAssessment": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "level",
+        "primary_barriers",
+        "summary"
+      ],
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "primary_barriers": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": [
+              "challenge_or_bot_protection",
+              "login_wall",
+              "contact_capture_before_result",
+              "broker_handoff",
+              "account_creation_required",
+              "country_or_residence_gating",
+              "document_not_public",
+              "pricing_not_public",
+              "policy_wording_not_public",
+              "js_or_rendering_failure",
+              "none_material"
+            ]
+          }
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "nextAction": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "action_type",
+        "priority",
+        "description"
+      ],
+      "properties": {
+        "action_type": {
+          "type": "string",
+          "enum": [
+            "continue_public_quote_flow",
+            "find_public_policy_document",
+            "capture_official_country_selector_evidence",
+            "capture_home_country_wording",
+            "capture_worldwide_ex_us_wording",
+            "capture_family_quote_result",
+            "record_gate_and_stop",
+            "cross_check_existing_ledger_links"
+          ]
+        },
+        "priority": {
+          "type": "string",
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ]
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "blocking_dependency": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "evidenceRef": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "source_url",
+        "source_type",
+        "evidence_excerpt"
+      ],
+      "properties": {
+        "dataset_ref": {
+          "$ref": "#/$defs/datasetRef"
+        },
+        "source_url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uri"
+        },
+        "source_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_title": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "page_reference": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "evidence_excerpt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "quote_flow_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "dataset": "international_expat_health_insurance_discovery",
+      "run_scope": "completion_evidence_hardening",
+      "section": "completion_evidence_hardening_ledger",
+      "ledger_name": "completion_evidence_hardening_ledger",
+      "record_type": "candidate_completion_record",
+      "record_index": 1,
+      "candidate_id": "cigna_global",
+      "candidate_type": "primary",
+      "priority_candidate": true,
+      "insurer_name": "Cigna Global",
+      "plan_name": "International Health Insurance / Global Medical Cover",
+      "family_context": {
+        "citizenship": "German",
+        "residence": "Georgia",
+        "adults": [42, 37],
+        "children": 2,
+        "preferred_cover_geography": "Georgia and Germany, ideally worldwide excluding the US"
+      },
+      "completion_status": "partially_hardened",
+      "completion_status_reason": "Georgia and Germany selector evidence is public, but ex-U.S. area-of-cover, family quote result, and plan documents still need deeper public confirmation.",
+      "georgia_residence_eligibility": {
+        "status": "confirmed",
+        "evidence_status": "explicit_public_evidence",
+        "summary": "Official quote selector publicly lists Georgia as a selectable living country.",
+        "evidence_strength": "high",
+        "treatment_scope": "residence_eligibility",
+        "source_refs": [
+          {
+            "dataset_ref": {
+              "dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+              "section": "georgia_coverage_evidence_ledger",
+              "candidate_id": "cigna_global",
+              "record_index": 1
+            },
+            "source_url": "https://www.cignaglobal.com/quote/pages/quote/CountrySelector.html",
+            "source_type": "official quote page",
+            "source_title": "Cigna Global quote country selector",
+            "page_reference": "public_quote_country_selector",
+            "evidence_excerpt": "The HTML country list includes Georgia and Germany as selectable options.",
+            "quote_flow_step": "country_selector"
+          }
+        ],
+        "public_quote_flow_outcome": "country_or_option_visible",
+        "public_policy_document_outcome": "document_not_found",
+        "unresolved_questions": [
+          "Selector presence does not prove final underwriting acceptance for a German family residing in Georgia."
+        ]
+      },
+      "germany_or_home_country_treatment": {
+        "status": "confirmed",
+        "evidence_status": "explicit_public_evidence",
+        "summary": "Germany is directly visible in official selector evidence, but Germany-specific home-country-treatment wording remains to be hardened further if available.",
+        "evidence_strength": "high",
+        "treatment_scope": "home_country_cover",
+        "source_refs": [
+          {
+            "dataset_ref": {
+              "dataset_path": "data/insurance_discovery/germany_coverage_evidence_ledger.discovery.json",
+              "section": "germany_coverage_evidence_ledger",
+              "candidate_id": "cigna_global",
+              "record_index": 1
+            },
+            "source_url": "https://www.cignaglobal.com/quote/pages/quote/CountrySelector.html",
+            "source_type": "official quote page",
+            "source_title": "Cigna Global quote country selector",
+            "page_reference": "public_quote_country_selector",
+            "evidence_excerpt": "The HTML country list includes Georgia and Germany as selectable options.",
+            "quote_flow_step": "country_selector"
+          }
+        ]
+      },
+      "worldwide_ex_us_area_of_cover": {
+        "status": "unknown",
+        "evidence_status": "indirect_public_evidence",
+        "summary": "Global positioning is public, but the reviewed sources did not yet prove a worldwide-excluding-U.S. area-of-cover option for the exact candidate configuration.",
+        "evidence_strength": "medium",
+        "treatment_scope": "area_of_cover_selection",
+        "source_refs": [
+          {
+            "dataset_ref": {
+              "dataset_path": "data/insurance_discovery/global_coverage_evidence_ledger.discovery.json",
+              "section": "global_coverage_evidence_ledger",
+              "candidate_id": "cigna_global",
+              "record_index": 1
+            },
+            "source_url": "https://www.cignaglobal.com/",
+            "source_type": "official insurer page",
+            "source_title": "International Health Insurance & Global Medical Cover | Cigna",
+            "page_reference": "global_positioning_copy",
+            "evidence_excerpt": "Cigna says its international health insurance serves individuals and families and offers access to medical support in over 200 markets and territories."
+          }
+        ],
+        "public_quote_flow_outcome": "not_tested_in_this_pass",
+        "public_policy_document_outcome": "document_not_found",
+        "unresolved_questions": [
+          "Need explicit wording or quote-step output that distinguishes worldwide including U.S. from worldwide excluding U.S."
+        ]
+      },
+      "family_quote_flow": {
+        "status": "entry_only_verified",
+        "entrypoint_type": "official_quote_flow",
+        "family_specific_inputs_observed": ["country_of_residence"],
+        "quote_result_visibility": "no_quote_result_visible",
+        "quote_result_summary": null,
+        "summary": "The public quote flow entry was verified, but no family-specific quote result or plan/pricing result was captured yet.",
+        "source_refs": [
+          {
+            "dataset_ref": {
+              "dataset_path": "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+              "section": "access_and_intake_evidence_ledger",
+              "candidate_id": "cigna_global",
+              "record_index": 1,
+              "evidence_id": "cigna_global:intake"
+            },
+            "source_url": "https://www.cignaglobal.com/quote/pages/quote/CountrySelector.html",
+            "source_type": "official quote page",
+            "source_title": "Cigna Global quote country selector",
+            "page_reference": "public_quote_country_selector",
+            "evidence_excerpt": "Where will you be living for the duration of the policy?*",
+            "quote_flow_step": "country_selector"
+          }
+        ],
+        "next_required_step": "continue_public_quote_flow"
+      },
+      "policy_document_access": {
+        "status": "no_public_document_found",
+        "document_type_status": ["none_verified"],
+        "document_url": null,
+        "summary": "No clearly plan-specific public policy wording or brochure was verified during discovery for this candidate.",
+        "source_refs": [
+          {
+            "dataset_ref": {
+              "dataset_path": "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json",
+              "section": "plan_document_access_evidence_ledger",
+              "candidate_id": "cigna_global",
+              "record_index": 1
+            },
+            "source_url": "https://www.cignaglobal.com/",
+            "source_type": "reviewed public page",
+            "source_title": "International Health Insurance & Global Medical Cover | Cigna",
+            "page_reference": "reviewed public landing/quote/broker page checked for plan-document access",
+            "evidence_excerpt": "No clearly plan-specific downloadable brochure/PDF was found in the reviewed public sources during this run."
+          }
+        ]
+      },
+      "pricing_visibility": {
+        "status": "quote_flow_gated",
+        "numeric_price_visible": false,
+        "price_visibility_scope": "none",
+        "summary": "No numeric premium was publicly visible; pricing remained inside the quote process.",
+        "source_refs": [
+          {
+            "dataset_ref": {
+              "dataset_path": "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+              "section": "pricing_evidence_ledger",
+              "candidate_id": "cigna_global"
+            },
+            "source_url": "https://www.cignaglobal.com/",
+            "source_type": "official insurer page",
+            "source_title": "International Health Insurance & Global Medical Cover | Cigna",
+            "page_reference": "landing_quote_cta",
+            "evidence_excerpt": "Get a quote, it takes only 2 minutes!"
+          }
+        ]
+      },
+      "medical_underwriting_preexisting_conditions": {
+        "status": "explicit_terms_found",
+        "visibility": "official_search_visible_snippet",
+        "underwriting_model": "unclear",
+        "summary": "Public official material defines pre-existing conditions, but family-specific outcome remains unverified.",
+        "source_refs": [
+          {
+            "dataset_ref": {
+              "dataset_path": "data/insurance_discovery/medical_underwriting_preexisting_evidence_ledger.discovery.json",
+              "section": "medical_underwriting_preexisting_evidence_ledger",
+              "candidate_id": "cigna_global",
+              "record_index": 1
+            },
+            "source_url": "https://www.cignaglobal.com/expat-health-insurance",
+            "source_type": "official insurer page / search result snippet",
+            "source_title": "Expat Health Insurance & International Medical Cover | Cigna Global",
+            "page_reference": "search_visible_official_snippet",
+            "evidence_excerpt": "Pre-existing conditions include any disease, illness, injury or symptoms present before the start of the cover."
+          }
+        ]
+      },
+      "source_urls": [
+        {
+          "url": "https://www.cignaglobal.com/",
+          "source_type": "official_insurer_page",
+          "access_status": "reviewed_publicly",
+          "notes": "Core official positioning page already present in discovery artifacts."
+        },
+        {
+          "url": "https://www.cignaglobal.com/quote/pages/quote/CountrySelector.html",
+          "source_type": "official_quote_page",
+          "access_status": "reviewed_publicly",
+          "notes": "Public country selector verified in prior discovery ledgers."
+        }
+      ],
+      "confidence": {
+        "overall": "medium",
+        "dimension_scores": {
+          "georgia_residence_eligibility": "high",
+          "germany_or_home_country_treatment": "high",
+          "worldwide_ex_us_area_of_cover": "medium",
+          "family_quote_flow": "medium",
+          "policy_document_access": "medium",
+          "pricing_visibility": "medium",
+          "medical_underwriting_preexisting_conditions": "medium"
+        },
+        "rationale": "Confidence is strongest where insurer-controlled selectors were captured directly and weaker where pricing, area-of-cover, or policy wording still depends on deeper public flow progress or absent documents."
+      },
+      "friction": {
+        "level": "medium",
+        "primary_barriers": ["pricing_not_public", "policy_wording_not_public", "country_or_residence_gating"],
+        "summary": "The public path is usable, but family-specific outputs still sit behind later quote steps and missing policy-document evidence."
+      },
+      "unresolved_next_actions": [
+        {
+          "action_type": "continue_public_quote_flow",
+          "priority": "high",
+          "description": "Advance beyond the public country selector without submitting personal contact details and record whether area-of-cover and family inputs become visible.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "capture_worldwide_ex_us_wording",
+          "priority": "high",
+          "description": "Find explicit official wording or quote-step text that confirms or rejects a worldwide excluding U.S. option.",
+          "blocking_dependency": "Official quote or brochure step must expose area-of-cover options publicly."
+        }
+      ],
+      "uncertainty_notes": [
+        "Selector visibility is not the same as final acceptance or issueability.",
+        "No final recommendation should be inferred from this completion-pass record alone."
+      ]
+    }
+  ]
+}

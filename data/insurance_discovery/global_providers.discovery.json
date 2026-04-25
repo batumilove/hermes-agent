@@ -1,0 +1,213 @@
+{
+  "dataset": "international_expat_health_insurance_discovery",
+  "run_scope": "discovery_only",
+  "generated_by": "gpt-5.4",
+  "family_context": {
+    "citizenship": "German",
+    "residence": "Georgia",
+    "adults": [42, 37],
+    "children": 2,
+    "preferred_cover_geography": "Georgia and Germany, ideally worldwide excluding the US"
+  },
+  "section": "global_providers",
+  "records": [
+    {
+      "provider_id": "cigna_global",
+      "provider_name": "Cigna Global",
+      "plan_or_entrypoint": "International Health Insurance / Global Medical Cover",
+      "source_kind": "official insurer page",
+      "official_source_url": "https://www.cignaglobal.com/",
+      "official_source_title": "International Health Insurance & Global Medical Cover | Cigna",
+      "evidence_excerpt": "Cigna says its international health insurance serves individuals and families, offers access to medical support in over 200 markets and territories, and provides flexible plans with global medical care essentials.",
+      "quote_or_application_url": "https://www.cignaglobal.com/quote/pages/quote/CountrySelector.html",
+      "relevance_for_family": "Strong expat/family fit; explicitly positioned for families and globally mobile residents.",
+      "germany_evidence": "Not explicitly verified from the extracted landing page, but Germany is within the insurer's stated 200+ markets and territories footprint.",
+      "georgia_evidence": "Not explicitly verified from the extracted landing page; candidate remains relevant because of stated coverage across 200+ markets and territories.",
+      "worldwide_ex_us_evidence": "Global area-of-cover options likely exist, but worldwide excluding US configuration was not directly verified from the public landing page in this run.",
+      "uncertainty_notes": [
+        "Need quote-flow or policy guide review to verify whether Georgia residence is accepted for this family profile.",
+        "Need plan documents to confirm worldwide excluding US pricing and underwriting for German citizens resident in Georgia."
+      ]
+    },
+    {
+      "provider_id": "allianz_care",
+      "provider_name": "Allianz Care",
+      "plan_or_entrypoint": "Care International Health Insurance Plans",
+      "source_kind": "official insurer page",
+      "official_source_url": "https://www.allianzcare.com/en/personal-international-health-insurance.html",
+      "official_source_title": "International Health Insurance for Individuals | Allianz",
+      "evidence_excerpt": "Allianz states its Care international health insurance plans are designed for people who spend long periods overseas and offers dedicated paths for professionals, families, students, and nomads.",
+      "quote_or_application_url": "https://my.allianzcare.com/myquote/5",
+      "relevance_for_family": "Strong fit for an expatriate family needing long-term international cover.",
+      "germany_evidence": "Germany not explicitly named in the extracted summary, but the product is framed as long-term international cover for people living abroad.",
+      "georgia_evidence": "Georgia not explicitly named in the extracted summary; residence eligibility still requires quote-flow confirmation.",
+      "worldwide_ex_us_evidence": "Likely available through area-of-cover selections, but the extracted page did not directly confirm a worldwide excluding US option.",
+      "uncertainty_notes": [
+        "Need brochure or table of benefits to verify coverage geography options relevant to Georgia and Germany.",
+        "Need quote-flow output to confirm eligibility for residents of Georgia."
+      ]
+    },
+    {
+      "provider_id": "bupa_global",
+      "provider_name": "Bupa Global",
+      "plan_or_entrypoint": "Private Health Insurance & Medical Insurance for Individuals and Families",
+      "source_kind": "official insurer page",
+      "official_source_url": "https://www.bupaglobal.com/en/private-health-insurance",
+      "official_source_title": "Private Health Insurance & Medical Insurance | Bupa Global",
+      "evidence_excerpt": "Bupa Global's official plan selector for individuals and families includes both Georgia and Germany in the residence-country dropdown, indicating public-facing availability exploration for those markets.",
+      "quote_or_application_url": "https://www.bupaglobal.com/en/private-health-insurance",
+      "relevance_for_family": "Very strong candidate because the public selector explicitly lists both Georgia and Germany.",
+      "germany_evidence": "Germany appears in the country selector on the official individuals/families plan page.",
+      "georgia_evidence": "Georgia appears in the country selector on the official individuals/families plan page.",
+      "worldwide_ex_us_evidence": "Area-of-cover configuration was not captured from the extracted page; likely quote-flow dependent.",
+      "uncertainty_notes": [
+        "Need actual quote or brochure for Georgia-resident family to confirm available plans and area-of-cover options.",
+        "Need pricing and underwriting evidence; public page is mostly selector UI."
+      ]
+    },
+    {
+      "provider_id": "axa_global_healthcare",
+      "provider_name": "AXA Global Healthcare",
+      "plan_or_entrypoint": "International Health Insurance Plans",
+      "source_kind": "official insurer page",
+      "official_source_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/",
+      "official_source_title": "International Health Insurance Plans: AXA Global Healthcare",
+      "evidence_excerpt": "AXA describes its product as international private health insurance for people living abroad or travelling overseas frequently, with treatment anywhere within the selected region of cover.",
+      "quote_or_application_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/get-a-quote/?camp=online-default",
+      "relevance_for_family": "Strong expat-family candidate; explicitly supports people living abroad and has selectable regions of cover.",
+      "germany_evidence": "Germany was not explicitly named in the extracted page text; region-of-cover mechanics suggest possible inclusion but need verification.",
+      "georgia_evidence": "Georgia was not explicitly named in the extracted page text; quote flow or policy wording review is still needed.",
+      "worldwide_ex_us_evidence": "Selected region-of-cover approach suggests a possible worldwide excluding US configuration, but this was not directly confirmed in the extracted text.",
+      "uncertainty_notes": [
+        "Need quote-flow or brochure to verify exact geography bands including Georgia and Germany.",
+        "Need family pricing and underwriting specifics."
+      ]
+    },
+    {
+      "provider_id": "april_international",
+      "provider_name": "APRIL International",
+      "plan_or_entrypoint": "Long-term Expat International Health Insurance",
+      "source_kind": "official insurer page",
+      "official_source_url": "https://www.april-international.com/en/long-term-international-health-insurance",
+      "official_source_title": "Long-term expat international health insurance | APRIL International",
+      "evidence_excerpt": "APRIL positions this as long-term international health insurance for expatriates and globally mobile individuals staying abroad longer than 12 months, with worldwide cover depending on area of cover. The country selector excerpt includes Germany.",
+      "quote_or_application_url": "https://www.april-international.com/en",
+      "relevance_for_family": "Strong fit for long-term expat family discovery.",
+      "germany_evidence": "Germany appears in the extracted country-of-coverage selector examples.",
+      "georgia_evidence": "Georgia was not visible in the extracted examples; likely present in the full selector but not verified from extracted text.",
+      "worldwide_ex_us_evidence": "APRIL explicitly states worldwide cover depending on selected geographic area, but a specific worldwide excluding US option was not captured verbatim.",
+      "uncertainty_notes": [
+        "Need full quote-flow or benefits guide to verify Georgia selection and geography bands.",
+        "Need pricing and family underwriting details."
+      ]
+    },
+    {
+      "provider_id": "william_russell",
+      "provider_name": "William Russell",
+      "plan_or_entrypoint": "International Health Insurance",
+      "source_kind": "official insurer page",
+      "official_source_url": "https://www.william-russell.com/international-health-insurance/",
+      "official_source_title": "International Health Insurance | William Russell",
+      "evidence_excerpt": "William Russell describes its product as international health insurance for expats and people living, working, or studying abroad, with members able to choose doctors or hospitals within their coverage zone.",
+      "quote_or_application_url": "https://www.william-russell.com/international-health-insurance/",
+      "relevance_for_family": "Strong expat-oriented candidate with family-compatible international private cover.",
+      "germany_evidence": "Germany not explicitly verified from the extracted page.",
+      "georgia_evidence": "Georgia not explicitly verified from the extracted page.",
+      "worldwide_ex_us_evidence": "Coverage-zone structure suggests configurable geography, but a worldwide excluding US option was not directly verified in this run.",
+      "uncertainty_notes": [
+        "Need quote results or policy wording to confirm Georgia residence acceptance.",
+        "Need confirmation of Germany/Georgia geography band and family rates."
+      ]
+    },
+    {
+      "provider_id": "msh_international",
+      "provider_name": "MSH International",
+      "plan_or_entrypoint": "First'Expat+ / International Health Insurance for Individuals",
+      "source_kind": "official insurer page",
+      "official_source_url": "https://www.msh-intl.com/en/individuals/",
+      "official_source_title": "International Health Insurance for Individuals - MSH",
+      "evidence_excerpt": "MSH presents First'Expat+ as a comprehensive, flexible international health insurance plan for individuals and frames itself as a healthcare partner for mobility needs with 24/7 support.",
+      "quote_or_application_url": "https://www.msh-intl.com/en/comparisons-offers-msh",
+      "relevance_for_family": "Relevant international-expat candidate; MSH explicitly targets mobile individuals and expats.",
+      "germany_evidence": "Germany not explicitly verified from the extracted page.",
+      "georgia_evidence": "Georgia not explicitly verified from the extracted page.",
+      "worldwide_ex_us_evidence": "Global mobility orientation suggests possible geography options, but a worldwide excluding US option was not directly confirmed.",
+      "uncertainty_notes": [
+        "Need plan comparison output or PDF wording to confirm eligible residence/country combinations.",
+        "Need family suitability and pricing evidence."
+      ]
+    },
+    {
+      "provider_id": "now_health_international",
+      "provider_name": "Now Health International",
+      "plan_or_entrypoint": "SimpleCare / WorldCare International Health Insurance Plans",
+      "source_kind": "official insurer page",
+      "official_source_url": "https://www.now-health.com/en/insurance-plans/",
+      "official_source_title": "Compare International Health Insurance Plans from Now Health",
+      "evidence_excerpt": "Now Health compares seven international plan options across SimpleCare and WorldCare product lines and includes evacuation/repatriation and optional USA treatment mechanics in the public comparison table.",
+      "quote_or_application_url": "https://www.now-health.com/en/insurance-plans/",
+      "relevance_for_family": "Relevant for expat-family discovery because of clearly public IPMI plan families and explicit geography-sensitive benefits.",
+      "germany_evidence": "Germany not explicitly verified from the extracted page.",
+      "georgia_evidence": "Georgia not explicitly verified from the extracted page.",
+      "worldwide_ex_us_evidence": "The public table separately mentions USA elective treatment, which implies geography distinctions, but a precise worldwide excluding US option was not directly verified.",
+      "uncertainty_notes": [
+        "Need member handbook or quote flow to verify geography bands and Georgian residency eligibility.",
+        "Need family pricing and underwriting specifics."
+      ]
+    },
+    {
+      "provider_id": "img_global",
+      "provider_name": "IMG (International Medical Group)",
+      "plan_or_entrypoint": "Global Medical international health insurance",
+      "source_kind": "official insurer page",
+      "official_source_url": "https://www.imglobal.com/",
+      "official_source_title": "International Health & Travel Medical Insurance - IMG",
+      "evidence_excerpt": "IMG states that its international health insurance offers annually renewable private medical coverage for expats and global citizens living or working internationally, with Global Medical Silver, Gold, and Platinum plans.",
+      "quote_or_application_url": "https://www.imglobal.com/international-health-insurance",
+      "relevance_for_family": "Relevant global-health candidate with public international medical plan entry points.",
+      "germany_evidence": "Germany not explicitly verified from the extracted homepage.",
+      "georgia_evidence": "Georgia not explicitly verified from the extracted homepage.",
+      "worldwide_ex_us_evidence": "Likely plan-area options exist, but the homepage extract did not directly confirm worldwide excluding US configuration.",
+      "uncertainty_notes": [
+        "Need Global Medical plan docs or quote flow to verify country eligibility and area-of-cover choices.",
+        "Need suitability check because some IMG products are travel-medical rather than full expat medical."
+      ]
+    },
+    {
+      "provider_id": "aetna_international",
+      "provider_name": "Aetna International",
+      "plan_or_entrypoint": "Aetna International global healthcare entrypoint",
+      "source_kind": "official insurer page",
+      "official_source_url": "https://www.aetnainternational.com/",
+      "official_source_title": "Home | Aetna",
+      "evidence_excerpt": "Aetna International says it serves globally mobile members with access to quality care and support wherever they are, with provider network access in 200+ countries and territories.",
+      "quote_or_application_url": "https://www.aetna.com/employers-organizations/aetna-international-insurance.html",
+      "relevance_for_family": "Relevant major global provider, though the public landing page is less individual-plan specific than some competitors.",
+      "germany_evidence": "Germany not explicitly verified from the extracted landing page.",
+      "georgia_evidence": "Georgia not explicitly verified from the extracted landing page.",
+      "worldwide_ex_us_evidence": "The extracted page states 100% coverage for eligible medical care outside the U.S. for members, but plan design and resident eligibility for this family profile are still unclear.",
+      "uncertainty_notes": [
+        "Need an individual/family-specific public plan page or broker evidence to confirm retail availability for this profile.",
+        "Need pricing and underwriting evidence; Aetna may skew employer/group depending on market."
+      ]
+    },
+    {
+      "provider_id": "foyer_global_health",
+      "provider_name": "Foyer Global Health",
+      "plan_or_entrypoint": "Expat Health Insurance / International Health Insurance comparison",
+      "source_kind": "official insurer page via search result",
+      "official_source_url": "https://www.foyerglobalhealth.com/",
+      "official_source_title": "Foyer Global Health: Expat Health Insurance",
+      "evidence_excerpt": "The official search result describes Foyer Global Health as an international health insurance and service provider for digital nomads, expats, and globally mobile people; a public plan comparison page is also available.",
+      "quote_or_application_url": "https://www.foyerglobalhealth.com/plans-services/our-plans/international-health-insurance-comparison/",
+      "relevance_for_family": "Reasonable backup candidate for expat-family discovery.",
+      "germany_evidence": "Not verified in this run.",
+      "georgia_evidence": "Not verified in this run.",
+      "worldwide_ex_us_evidence": "Search result language indicates worldwide/flexible expat positioning but did not verify a specific worldwide excluding US option.",
+      "uncertainty_notes": [
+        "Need direct page extraction or brochure review for stronger evidence.",
+        "Added as an eleventh backup provider to keep the shortlist above the required minimum of 10."
+      ]
+    }
+  ]
+}

@@ -1,0 +1,1963 @@
+{
+  "dataset": "international_expat_health_insurance_discovery",
+  "run_scope": "completion_evidence_hardening",
+  "section": "priority_candidate_gaps_next_actions",
+  "artifact_name": "priority_candidate_gaps_next_actions",
+  "generated_by": "gpt-5.4",
+  "generated_from": [
+    "data/insurance_discovery/completion_evidence_hardening_ledger.discovery.json",
+    "data/insurance_discovery/priority_candidate_completion_audit.discovery.json"
+  ],
+  "constraints": [
+    "Packaged only from existing local artifacts under data/insurance_discovery/ and docs/.",
+    "No live web research, quote submission, account creation, or personal-data submission performed while generating this artifact.",
+    "Priority candidate set is restricted to the 14 candidates already present in completion_evidence_hardening_ledger.discovery.json.",
+    "Gates and uncertainty are preserved from the source ledger rather than resolved here."
+  ],
+  "priority_candidate_count": 14,
+  "records": [
+    {
+      "record_index": 1,
+      "candidate_id": "cigna_global",
+      "insurer_name": "Cigna Global",
+      "plan_name": "International Health Insurance / Global Medical Cover",
+      "priority_candidate": true,
+      "completion_status": "partially_hardened",
+      "audit_snapshot": {
+        "pricing_availability_status": "quote_flow_gated",
+        "family_pricing_status": "unavailable",
+        "georgia_coverage_state": "confirmed",
+        "germany_coverage_state": "confirmed",
+        "worldwide_ex_us_coverage_state": "worldwide_positioned_but_ex_us_not_verified"
+      },
+      "missing_evidence": [
+        {
+          "dimension": "georgia_residence_eligibility",
+          "dimension_label": "Georgia residence eligibility",
+          "current_status": "partially_confirmed",
+          "evidence_status": "explicit_public_evidence",
+          "public_quote_flow_outcome": "country_or_option_visible",
+          "public_policy_document_outcome": "document_not_found",
+          "missing_or_unresolved_evidence": [
+            "Does the insurer actually issue this plan to a family whose legal residence is Georgia, rather than merely listing Georgia in a selector, regional description, or broker flow?",
+            "Even though both Georgia and Germany appear in public discovery evidence, does the issued family policy still permit Georgia residence together with Germany treatment/home-country use under the desired geography option?",
+            "Does German citizenship trigger any eligibility, underwriting, signing-country, or home-country restrictions that were not visible in the reviewed public sources?"
+          ]
+        },
+        {
+          "dimension": "germany_or_home_country_treatment",
+          "dimension_label": "Germany or home-country treatment",
+          "current_status": "confirmed",
+          "evidence_status": "explicit_public_evidence",
+          "public_quote_flow_outcome": "country_or_option_visible",
+          "public_policy_document_outcome": "document_found_but_not_decisive",
+          "missing_or_unresolved_evidence": [
+            "Even though Germany appears in public selector or intake evidence, need official wording showing whether Germany treatment or home-country use remains available after issue for a Georgia-resident family policy.",
+            "Need confirmation that German citizenship does not trigger extra signing-country, eligibility, or home-country restrictions that were not visible in reviewed public sources."
+          ]
+        },
+        {
+          "dimension": "worldwide_ex_us_area_of_cover",
+          "dimension_label": "Worldwide excluding U.S. area of cover",
+          "current_status": "unknown",
+          "evidence_status": "not_found_in_reviewed_public_sources",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "document_not_found",
+          "missing_or_unresolved_evidence": [
+            "Need explicit official wording or quote-path evidence for a worldwide-excluding-U.S. or materially equivalent area-of-cover option."
+          ]
+        },
+        {
+          "dimension": "family_quote_flow",
+          "dimension_label": "Family quote flow",
+          "current_status": "entry_only_verified",
+          "entrypoint_type": "official_quote_flow",
+          "quote_result_visibility": "partial_plan_options_visible",
+          "missing_or_unresolved_evidence": [
+            "Family-of-four scenario can proceed into Cigna’s public quote journey at least through the residence-country selector, but the reviewed evidence stopped before family-composition inputs or any family-specific quote result appeared.",
+            "The public Cigna quote journey accepted the family scenario only to the residence-country selector stage; Georgia can be entered, but no family-size, ages, or price output was verified in this pass.",
+            "Next required step: continue_public_quote_flow"
+          ]
+        },
+        {
+          "dimension": "policy_document_access",
+          "dimension_label": "Policy document access",
+          "current_status": "no_public_document_found",
+          "document_type_status": [
+            "none_verified"
+          ],
+          "missing_or_unresolved_evidence": [
+            "The reviewed public insurer/quote journey for Cigna Global did not surface a clearly plan-specific downloadable brochure, policy wording PDF, or table of benefits in the public sources checked during the discovery run. Outcome remains 'no_downloadable_plan_document_found_in_reviewed_public_sources', so later gated or alternate-locale paths may still expose documents."
+          ]
+        },
+        {
+          "dimension": "pricing_visibility",
+          "dimension_label": "Pricing visibility",
+          "current_status": "not_visible_in_reviewed_public_sources",
+          "numeric_price_visible": false,
+          "price_visibility_scope": "none",
+          "missing_or_unresolved_evidence": [
+            "Starter placeholder slot only; evidence hardening for this candidate has not yet been populated in this completion-pass ledger."
+          ]
+        },
+        {
+          "dimension": "medical_underwriting_preexisting_conditions",
+          "dimension_label": "Medical underwriting / pre-existing conditions",
+          "current_status": "not_found_in_reviewed_public_sources",
+          "visibility": "not_visible",
+          "underwriting_model": "unclear",
+          "missing_or_unresolved_evidence": [
+            "Starter placeholder slot only; evidence hardening for this candidate has not yet been populated in this completion-pass ledger."
+          ]
+        }
+      ],
+      "unresolved_next_actions": [
+        {
+          "action_type": "continue_public_quote_flow",
+          "priority": "high",
+          "description": "Continue the official Cigna quote beyond the country selector to capture whether a Georgia-resident German family of four can reach plan output and whether Germany remains selectable or covered under the offered geography band.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "find_public_policy_document",
+          "priority": "high",
+          "description": "Search Cigna’s public quote results, brochure links, and plan pages for an official table of benefits or policy wording that states how Germany treatment or home-country care works after issue for Georgia-resident members.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "capture_worldwide_ex_us_wording",
+          "priority": "medium",
+          "description": "If Cigna only reveals worldwide-excluding-U.S. options, premiums, or underwriting questions after additional steps, record the exact field or gate encountered instead of inferring plan availability or price.",
+          "blocking_dependency": null
+        }
+      ],
+      "required_follow_up_mode": {
+        "primary_mode": "public_web_review_or_public_quote_flow_continuation",
+        "requires_personal_data": false,
+        "requires_broker_contact": false,
+        "requires_account_creation": false,
+        "public_web_review_only": true,
+        "gate_reasons": [
+          "family_quote_flow.quote_result_visibility=partial_plan_options_visible",
+          "family_quote_flow.next_required_step=continue_public_quote_flow",
+          "friction.primary_barrier=country_or_residence_gating",
+          "friction.primary_barrier=policy_wording_not_public"
+        ],
+        "interpretation_note": "Boolean follow-up flags are conservative extractions from explicit family_quote_flow gates in the existing local ledger and audit only. false means not explicitly required in the reviewed artifacts, not that later steps could never require it."
+      },
+      "uncertainty_notes": [
+        "Selector presence does not by itself prove final underwriting acceptance or pricing for a German family resident in Georgia.",
+        "Need quote-flow or policy guide review to verify whether Georgia residence is accepted for this family profile.",
+        "Need plan documents to confirm worldwide excluding US pricing and underwriting for German citizens resident in Georgia.",
+        "This run did not progress far enough to determine whether later quote retrieval, save-and-return, or purchase steps require account verification.",
+        "Discovery-only ledger entry: this record captures publicly visible ambiguity signals, not final eligibility or underwriting acceptance.",
+        "Germany visibility is source-backed, but that does not by itself prove final issuance or the exact scope of Germany home-country treatment after enrollment."
+      ]
+    },
+    {
+      "record_index": 2,
+      "candidate_id": "bupa_global",
+      "insurer_name": "Bupa Global",
+      "plan_name": "Private Health Insurance & Medical Insurance for Individuals and Families",
+      "priority_candidate": true,
+      "completion_status": "partially_hardened",
+      "audit_snapshot": {
+        "pricing_availability_status": "quote_flow_gated",
+        "family_pricing_status": "unavailable",
+        "georgia_coverage_state": "confirmed",
+        "germany_coverage_state": "confirmed",
+        "worldwide_ex_us_coverage_state": "not_verified_from_reviewed_sources"
+      },
+      "missing_evidence": [
+        {
+          "dimension": "georgia_residence_eligibility",
+          "dimension_label": "Georgia residence eligibility",
+          "current_status": "partially_confirmed",
+          "evidence_status": "explicit_public_evidence",
+          "public_quote_flow_outcome": "country_or_option_visible",
+          "public_policy_document_outcome": "document_not_found",
+          "missing_or_unresolved_evidence": [
+            "Does the insurer actually issue this plan to a family whose legal residence is Georgia, rather than merely listing Georgia in a selector, regional description, or broker flow?",
+            "Even though both Georgia and Germany appear in public discovery evidence, does the issued family policy still permit Georgia residence together with Germany treatment/home-country use under the desired geography option?",
+            "Does German citizenship trigger any eligibility, underwriting, signing-country, or home-country restrictions that were not visible in the reviewed public sources?"
+          ]
+        },
+        {
+          "dimension": "germany_or_home_country_treatment",
+          "dimension_label": "Germany or home-country treatment",
+          "current_status": "confirmed",
+          "evidence_status": "explicit_public_evidence",
+          "public_quote_flow_outcome": "country_or_option_visible",
+          "public_policy_document_outcome": "document_found_but_not_decisive",
+          "missing_or_unresolved_evidence": [
+            "Even though Germany appears in public selector or intake evidence, need official wording showing whether Germany treatment or home-country use remains available after issue for a Georgia-resident family policy.",
+            "Need confirmation that German citizenship does not trigger extra signing-country, eligibility, or home-country restrictions that were not visible in reviewed public sources."
+          ]
+        },
+        {
+          "dimension": "worldwide_ex_us_area_of_cover",
+          "dimension_label": "Worldwide excluding U.S. area of cover",
+          "current_status": "unknown",
+          "evidence_status": "not_found_in_reviewed_public_sources",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "document_not_found",
+          "missing_or_unresolved_evidence": [
+            "Need explicit official wording or quote-path evidence for a worldwide-excluding-U.S. or materially equivalent area-of-cover option."
+          ]
+        },
+        {
+          "dimension": "family_quote_flow",
+          "dimension_label": "Family quote flow",
+          "current_status": "entry_only_verified",
+          "entrypoint_type": "official_selector_only",
+          "quote_result_visibility": "partial_plan_options_visible",
+          "missing_or_unresolved_evidence": [
+            "Family-of-four scenario can proceed through Bupa’s public country-selector entrypoint, but the evidence only verifies the residence-selection step rather than a family-specific quote output.",
+            "Bupa’s public selector visibly supports Georgia residence entry and a See plans action, but no family-size, ages, or quote result for the four-person household was captured.",
+            "Next required step: continue_public_quote_flow"
+          ]
+        },
+        {
+          "dimension": "policy_document_access",
+          "dimension_label": "Policy document access",
+          "current_status": "no_public_document_found",
+          "document_type_status": [
+            "none_verified"
+          ],
+          "missing_or_unresolved_evidence": [
+            "The reviewed public insurer/quote journey for Bupa Global did not surface a clearly plan-specific downloadable brochure, policy wording PDF, or table of benefits in the public sources checked during the discovery run. Outcome remains 'no_downloadable_plan_document_found_in_reviewed_public_sources', so later gated or alternate-locale paths may still expose documents."
+          ]
+        },
+        {
+          "dimension": "pricing_visibility",
+          "dimension_label": "Pricing visibility",
+          "current_status": "not_visible_in_reviewed_public_sources",
+          "numeric_price_visible": false,
+          "price_visibility_scope": "none",
+          "missing_or_unresolved_evidence": [
+            "Starter placeholder slot only; evidence hardening for this candidate has not yet been populated in this completion-pass ledger."
+          ]
+        },
+        {
+          "dimension": "medical_underwriting_preexisting_conditions",
+          "dimension_label": "Medical underwriting / pre-existing conditions",
+          "current_status": "not_found_in_reviewed_public_sources",
+          "visibility": "not_visible",
+          "underwriting_model": "unclear",
+          "missing_or_unresolved_evidence": [
+            "Starter placeholder slot only; evidence hardening for this candidate has not yet been populated in this completion-pass ledger."
+          ]
+        }
+      ],
+      "unresolved_next_actions": [
+        {
+          "action_type": "capture_family_quote_result",
+          "priority": "high",
+          "description": "Use Bupa’s public country selector and continue past “See plans” far enough to verify whether the Georgia-resident family can reach a family-specific plan display or quote result.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "find_public_policy_document",
+          "priority": "high",
+          "description": "Check Bupa’s public plan pages and any downstream result pages for a brochure, membership guide, or benefits schedule that explains Germany treatment or home-country use for a Georgia-resident policy.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "capture_worldwide_ex_us_wording",
+          "priority": "medium",
+          "description": "If worldwide-excluding-U.S. geography or premium visibility only appears after deeper quote steps, preserve the exact blocker or missing step rather than assuming those options exist for this family.",
+          "blocking_dependency": null
+        }
+      ],
+      "required_follow_up_mode": {
+        "primary_mode": "public_web_review_or_public_quote_flow_continuation",
+        "requires_personal_data": false,
+        "requires_broker_contact": false,
+        "requires_account_creation": false,
+        "public_web_review_only": true,
+        "gate_reasons": [
+          "family_quote_flow.quote_result_visibility=partial_plan_options_visible",
+          "family_quote_flow.next_required_step=continue_public_quote_flow",
+          "friction.primary_barrier=country_or_residence_gating",
+          "friction.primary_barrier=policy_wording_not_public"
+        ],
+        "interpretation_note": "Boolean follow-up flags are conservative extractions from explicit family_quote_flow gates in the existing local ledger and audit only. false means not explicitly required in the reviewed artifacts, not that later steps could never require it."
+      },
+      "uncertainty_notes": [
+        "Need full quote output or policy wording to verify available plans and final acceptance for Georgian residents.",
+        "Need actual quote or brochure for Georgia-resident family to confirm available plans and area-of-cover options.",
+        "Need pricing and underwriting evidence; public page is mostly selector UI.",
+        "Need actual quote output or brochure to verify plan availability for a Georgia-resident German family.",
+        "Need explicit area-of-cover evidence for worldwide excluding the US.",
+        "This run did not verify whether later premium output or application steps introduce account or contact-verification requirements.",
+        "Germany visibility is source-backed, but that does not by itself prove final issuance or the exact scope of Germany home-country treatment after enrollment."
+      ]
+    },
+    {
+      "record_index": 3,
+      "candidate_id": "april_international",
+      "insurer_name": "APRIL International",
+      "plan_name": "Long-term Expat International Health Insurance",
+      "priority_candidate": true,
+      "completion_status": "partially_hardened",
+      "audit_snapshot": {
+        "pricing_availability_status": "quote_flow_gated",
+        "family_pricing_status": "unavailable",
+        "georgia_coverage_state": "confirmed",
+        "germany_coverage_state": "confirmed",
+        "worldwide_ex_us_coverage_state": "worldwide_positioned_but_ex_us_not_verified"
+      },
+      "missing_evidence": [
+        {
+          "dimension": "georgia_residence_eligibility",
+          "dimension_label": "Georgia residence eligibility",
+          "current_status": "partially_confirmed",
+          "evidence_status": "explicit_public_evidence",
+          "public_quote_flow_outcome": "country_or_option_visible",
+          "public_policy_document_outcome": "document_not_found",
+          "missing_or_unresolved_evidence": [
+            "Does the insurer actually issue this plan to a family whose legal residence is Georgia, rather than merely listing Georgia in a selector, regional description, or broker flow?",
+            "Even though both Georgia and Germany appear in public discovery evidence, does the issued family policy still permit Georgia residence together with Germany treatment/home-country use under the desired geography option?",
+            "Does German citizenship trigger any eligibility, underwriting, signing-country, or home-country restrictions that were not visible in the reviewed public sources?"
+          ]
+        },
+        {
+          "dimension": "germany_or_home_country_treatment",
+          "dimension_label": "Germany or home-country treatment",
+          "current_status": "confirmed",
+          "evidence_status": "explicit_public_evidence",
+          "public_quote_flow_outcome": "country_or_option_visible",
+          "public_policy_document_outcome": "document_found_but_not_decisive",
+          "missing_or_unresolved_evidence": [
+            "Even though Germany appears in public selector or intake evidence, need official wording showing whether Germany treatment or home-country use remains available after issue for a Georgia-resident family policy.",
+            "Need confirmation that German citizenship does not trigger extra signing-country, eligibility, or home-country restrictions that were not visible in reviewed public sources."
+          ]
+        },
+        {
+          "dimension": "worldwide_ex_us_area_of_cover",
+          "dimension_label": "Worldwide excluding U.S. area of cover",
+          "current_status": "unknown",
+          "evidence_status": "not_found_in_reviewed_public_sources",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "document_not_found",
+          "missing_or_unresolved_evidence": [
+            "Need explicit official wording or quote-path evidence for a worldwide-excluding-U.S. or materially equivalent area-of-cover option."
+          ]
+        },
+        {
+          "dimension": "family_quote_flow",
+          "dimension_label": "Family quote flow",
+          "current_status": "entry_only_verified",
+          "entrypoint_type": "official_quote_flow",
+          "quote_result_visibility": "partial_plan_options_visible",
+          "missing_or_unresolved_evidence": [
+            "Family-of-four scenario can enter APRIL’s public online plan-finder flow, but this pass only verified the selector stage and not a family-specific result.",
+            "APRIL’s public plan finder allows quote entry via cover type, country, and language selection, but no family-composition questions or four-person quote outcome were reached.",
+            "Next required step: continue_public_quote_flow"
+          ]
+        },
+        {
+          "dimension": "policy_document_access",
+          "dimension_label": "Policy document access",
+          "current_status": "no_public_document_found",
+          "document_type_status": [
+            "none_verified"
+          ],
+          "missing_or_unresolved_evidence": [
+            "The reviewed public insurer/quote journey for APRIL International did not surface a clearly plan-specific downloadable brochure, policy wording PDF, or table of benefits in the public sources checked during the discovery run. Outcome remains 'no_downloadable_plan_document_found_in_reviewed_public_sources', so later gated or alternate-locale paths may still expose documents."
+          ]
+        },
+        {
+          "dimension": "pricing_visibility",
+          "dimension_label": "Pricing visibility",
+          "current_status": "not_visible_in_reviewed_public_sources",
+          "numeric_price_visible": false,
+          "price_visibility_scope": "none",
+          "missing_or_unresolved_evidence": [
+            "Starter placeholder slot only; evidence hardening for this candidate has not yet been populated in this completion-pass ledger."
+          ]
+        },
+        {
+          "dimension": "medical_underwriting_preexisting_conditions",
+          "dimension_label": "Medical underwriting / pre-existing conditions",
+          "current_status": "not_found_in_reviewed_public_sources",
+          "visibility": "not_visible",
+          "underwriting_model": "unclear",
+          "missing_or_unresolved_evidence": [
+            "Starter placeholder slot only; evidence hardening for this candidate has not yet been populated in this completion-pass ledger."
+          ]
+        }
+      ],
+      "unresolved_next_actions": [
+        {
+          "action_type": "capture_family_quote_result",
+          "priority": "high",
+          "description": "Progress APRIL’s public plan finder beyond the cover type / country / language step to see whether Georgia residence plus a two-adult, two-child household reaches a quote, recommendation, or exclusion message.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "find_public_policy_document",
+          "priority": "high",
+          "description": "Look for APRIL-controlled brochures, tables of benefits, or policy wording linked from the plan finder or downstream plan pages to confirm Germany treatment and geography handling.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "find_public_policy_document",
+          "priority": "medium",
+          "description": "If APRIL requires advisor handoff, account access, or contact capture before plan or pricing output, record that public gate explicitly and stop there.",
+          "blocking_dependency": null
+        }
+      ],
+      "required_follow_up_mode": {
+        "primary_mode": "public_web_review_or_public_quote_flow_continuation",
+        "requires_personal_data": false,
+        "requires_broker_contact": false,
+        "requires_account_creation": false,
+        "public_web_review_only": true,
+        "gate_reasons": [
+          "family_quote_flow.quote_result_visibility=partial_plan_options_visible",
+          "family_quote_flow.next_required_step=continue_public_quote_flow",
+          "friction.primary_barrier=country_or_residence_gating",
+          "friction.primary_barrier=policy_wording_not_public"
+        ],
+        "interpretation_note": "Boolean follow-up flags are conservative extractions from explicit family_quote_flow gates in the existing local ledger and audit only. false means not explicitly required in the reviewed artifacts, not that later steps could never require it."
+      },
+      "uncertainty_notes": [
+        "Need quote output or benefits guide to confirm which APRIL area-of-cover choice applies to Georgia-resident German citizens.",
+        "Need full quote-flow or benefits guide to verify Georgia selection and geography bands.",
+        "Need pricing and family underwriting details.",
+        "Need quote-flow or benefits guide to verify Georgia selection and geography bands.",
+        "Need pricing and underwriting details for the specific family profile.",
+        "The run did not confirm whether APRIL later requires email verification or account creation before showing final prices or binding coverage.",
+        "Germany visibility is source-backed, but that does not by itself prove final issuance or the exact scope of Germany home-country treatment after enrollment."
+      ]
+    },
+    {
+      "record_index": 4,
+      "candidate_id": "allianz_care",
+      "insurer_name": "Allianz Care",
+      "plan_name": "Care International Health Insurance Plans",
+      "priority_candidate": true,
+      "completion_status": "partially_hardened",
+      "audit_snapshot": {
+        "pricing_availability_status": "partially_visible",
+        "family_pricing_status": "partially_shown",
+        "georgia_coverage_state": "unknown",
+        "germany_coverage_state": "unknown",
+        "worldwide_ex_us_coverage_state": "worldwide_positioned_but_ex_us_not_verified"
+      },
+      "missing_evidence": [
+        {
+          "dimension": "georgia_residence_eligibility",
+          "dimension_label": "Georgia residence eligibility",
+          "current_status": "gated",
+          "evidence_status": "challenge_or_login_gated",
+          "public_quote_flow_outcome": "challenge_blocked_before_outcome",
+          "public_policy_document_outcome": "document_not_found",
+          "missing_or_unresolved_evidence": [
+            "Does the insurer actually issue this plan to a family whose legal residence is Georgia, rather than merely listing Georgia in a selector, regional description, or broker flow?",
+            "If the family resides in Georgia, does the chosen area of cover still allow treatment or home-country-style access in Germany under the same family policy?",
+            "Does German citizenship trigger any eligibility, underwriting, signing-country, or home-country restrictions that were not visible in the reviewed public sources?"
+          ]
+        },
+        {
+          "dimension": "germany_or_home_country_treatment",
+          "dimension_label": "Germany or home-country treatment",
+          "current_status": "unknown",
+          "evidence_status": "partial_public_evidence",
+          "public_quote_flow_outcome": "challenge_blocked_before_outcome",
+          "public_policy_document_outcome": "related_but_incomplete_wording_found",
+          "missing_or_unresolved_evidence": [
+            "Need official wording or quote-path evidence that names Germany or explains home-country treatment behavior for this family context.",
+            "Need confirmation that German citizenship does not trigger extra signing-country, eligibility, or home-country restrictions that were not visible in reviewed public sources."
+          ]
+        },
+        {
+          "dimension": "worldwide_ex_us_area_of_cover",
+          "dimension_label": "Worldwide excluding U.S. area of cover",
+          "current_status": "unknown",
+          "evidence_status": "not_found_in_reviewed_public_sources",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "document_not_found",
+          "missing_or_unresolved_evidence": [
+            "Need explicit official wording or quote-path evidence for a worldwide-excluding-U.S. or materially equivalent area-of-cover option."
+          ]
+        },
+        {
+          "dimension": "family_quote_flow",
+          "dimension_label": "Family quote flow",
+          "current_status": "blocked_or_failed",
+          "entrypoint_type": "official_quote_flow",
+          "quote_result_visibility": "challenge_or_js_block_before_result",
+          "missing_or_unresolved_evidence": [
+            "Family-of-four scenario was blocked before quote entry: the reviewed Allianz Care quote journey hit a challenge screen before any household inputs or quote result could be verified.",
+            "Allianz’s quote URL returned a Challenge Validation wall before any family-specific intake fields or quote outcome became visible.",
+            "Next required step: solve_challenge_or_use_clean_browser_session"
+          ]
+        },
+        {
+          "dimension": "policy_document_access",
+          "dimension_label": "Policy document access",
+          "current_status": "no_public_document_found",
+          "document_type_status": [
+            "none_verified"
+          ],
+          "missing_or_unresolved_evidence": [
+            "The reviewed public insurer/quote journey for Allianz Care did not surface a clearly plan-specific downloadable brochure, policy wording PDF, or table of benefits in the public sources checked during the discovery run. Outcome remains 'no_downloadable_plan_document_found_in_reviewed_public_sources', so later gated or alternate-locale paths may still expose documents."
+          ]
+        },
+        {
+          "dimension": "pricing_visibility",
+          "dimension_label": "Pricing visibility",
+          "current_status": "not_visible_in_reviewed_public_sources",
+          "numeric_price_visible": false,
+          "price_visibility_scope": "none",
+          "missing_or_unresolved_evidence": [
+            "Starter placeholder slot only; evidence hardening for this candidate has not yet been populated in this completion-pass ledger."
+          ]
+        },
+        {
+          "dimension": "medical_underwriting_preexisting_conditions",
+          "dimension_label": "Medical underwriting / pre-existing conditions",
+          "current_status": "not_found_in_reviewed_public_sources",
+          "visibility": "not_visible",
+          "underwriting_model": "unclear",
+          "missing_or_unresolved_evidence": [
+            "Starter placeholder slot only; evidence hardening for this candidate has not yet been populated in this completion-pass ledger."
+          ]
+        }
+      ],
+      "unresolved_next_actions": [
+        {
+          "action_type": "continue_public_quote_flow",
+          "priority": "high",
+          "description": "Retry Allianz Care’s public quote entry in a clean session only to confirm whether the challenge wall is persistent and to document the exact point where quote access stops for the Georgia-resident family scenario.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "find_public_policy_document",
+          "priority": "high",
+          "description": "Search Allianz Care’s official product pages and document library for plan guides, tables of benefits, or policy wording that address Germany treatment and area-of-cover choices without requiring the blocked quote flow.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "record_gate_and_stop",
+          "priority": "medium",
+          "description": "If the challenge validation continues to block quote details, preserve it as the unresolved dependency for pricing, eligibility clarification, and area-of-cover confirmation instead of inferring a result.",
+          "blocking_dependency": null
+        }
+      ],
+      "required_follow_up_mode": {
+        "primary_mode": "public_web_review_retry_after_challenge_or_js_block",
+        "requires_personal_data": false,
+        "requires_broker_contact": false,
+        "requires_account_creation": false,
+        "public_web_review_only": true,
+        "gate_reasons": [
+          "family_quote_flow.quote_result_visibility=challenge_or_js_block_before_result",
+          "family_quote_flow.next_required_step=solve_challenge_or_use_clean_browser_session",
+          "friction.primary_barrier=challenge_or_bot_protection",
+          "friction.primary_barrier=country_or_residence_gating",
+          "friction.primary_barrier=policy_wording_not_public"
+        ],
+        "interpretation_note": "Boolean follow-up flags are conservative extractions from explicit family_quote_flow gates in the existing local ledger and audit only. false means not explicitly required in the reviewed artifacts, not that later steps could never require it."
+      },
+      "uncertainty_notes": [
+        "Georgia-resident eligibility remains unverified because the public quote flow was challenge-gated during this run.",
+        "Need brochure or table of benefits to verify coverage geography options relevant to Georgia and Germany.",
+        "Need quote-flow output to confirm eligibility for residents of Georgia.",
+        "Need brochure, table of benefits, or quote output to verify Georgia-resident eligibility.",
+        "Need direct evidence for a worldwide-excluding-US configuration and family pricing.",
+        "The public challenge may be anti-bot rather than a customer login requirement; account-creation or email/phone verification requirements beyond the challenge remain unverified.",
+        "Reviewed public materials remained too generic or too gated to state Germany/home-country treatment confidently."
+      ]
+    },
+    {
+      "record_index": 5,
+      "candidate_id": "axa_global_healthcare",
+      "insurer_name": "AXA Global Healthcare",
+      "plan_name": "International Health Insurance Plans",
+      "priority_candidate": true,
+      "completion_status": "partially_hardened",
+      "audit_snapshot": {
+        "pricing_availability_status": "partially_visible",
+        "family_pricing_status": "partially_shown",
+        "georgia_coverage_state": "inferred",
+        "germany_coverage_state": "inferred",
+        "worldwide_ex_us_coverage_state": "indirectly_indicated"
+      },
+      "missing_evidence": [
+        {
+          "dimension": "georgia_residence_eligibility",
+          "dimension_label": "Georgia residence eligibility",
+          "current_status": "inferred",
+          "evidence_status": "indirect_public_evidence",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "related_but_incomplete_wording_found",
+          "missing_or_unresolved_evidence": [
+            "Does the insurer actually issue this plan to a family whose legal residence is Georgia, rather than merely listing Georgia in a selector, regional description, or broker flow?",
+            "If the family resides in Georgia, does the chosen area of cover still allow treatment or home-country-style access in Germany under the same family policy?",
+            "Does German citizenship trigger any eligibility, underwriting, signing-country, or home-country restrictions that were not visible in the reviewed public sources?"
+          ]
+        },
+        {
+          "dimension": "germany_or_home_country_treatment",
+          "dimension_label": "Germany or home-country treatment",
+          "current_status": "inferred",
+          "evidence_status": "indirect_public_evidence",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "related_but_incomplete_wording_found",
+          "missing_or_unresolved_evidence": [
+            "Need official wording or quote-output language naming Germany or home-country treatment directly rather than relying on regional or geography-structure inference.",
+            "Need confirmation that German citizenship does not trigger extra signing-country, eligibility, or home-country restrictions that were not visible in reviewed public sources."
+          ]
+        },
+        {
+          "dimension": "worldwide_ex_us_area_of_cover",
+          "dimension_label": "Worldwide excluding U.S. area of cover",
+          "current_status": "unknown",
+          "evidence_status": "not_found_in_reviewed_public_sources",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "document_not_found",
+          "missing_or_unresolved_evidence": [
+            "Need explicit official wording or quote-path evidence for a worldwide-excluding-U.S. or materially equivalent area-of-cover option."
+          ]
+        },
+        {
+          "dimension": "family_quote_flow",
+          "dimension_label": "Family quote flow",
+          "current_status": "entry_only_verified",
+          "entrypoint_type": "official_quote_flow",
+          "quote_result_visibility": "partial_plan_options_visible",
+          "missing_or_unresolved_evidence": [
+            "Family-of-four scenario can proceed into AXA’s public quote-routing flow, but this pass verified only the duration/product precheck rather than a family-specific quote output.",
+            "AXA’s public router accepted quote-precheck inputs about cover duration and insurance type, but no family-size or age collection and no family quote result were captured.",
+            "Next required step: continue_public_quote_flow"
+          ]
+        },
+        {
+          "dimension": "policy_document_access",
+          "dimension_label": "Policy document access",
+          "current_status": "no_public_document_found",
+          "document_type_status": [
+            "none_verified"
+          ],
+          "missing_or_unresolved_evidence": [
+            "The reviewed public insurer/quote journey for AXA Global Healthcare did not surface a clearly plan-specific downloadable brochure, policy wording PDF, or table of benefits in the public sources checked during the discovery run. Outcome remains 'no_downloadable_plan_document_found_in_reviewed_public_sources', so later gated or alternate-locale paths may still expose documents."
+          ]
+        },
+        {
+          "dimension": "pricing_visibility",
+          "dimension_label": "Pricing visibility",
+          "current_status": "not_visible_in_reviewed_public_sources",
+          "numeric_price_visible": false,
+          "price_visibility_scope": "none",
+          "missing_or_unresolved_evidence": [
+            "Starter placeholder slot only; evidence hardening for this candidate has not yet been populated in this completion-pass ledger."
+          ]
+        },
+        {
+          "dimension": "medical_underwriting_preexisting_conditions",
+          "dimension_label": "Medical underwriting / pre-existing conditions",
+          "current_status": "not_found_in_reviewed_public_sources",
+          "visibility": "not_visible",
+          "underwriting_model": "unclear",
+          "missing_or_unresolved_evidence": [
+            "Starter placeholder slot only; evidence hardening for this candidate has not yet been populated in this completion-pass ledger."
+          ]
+        }
+      ],
+      "unresolved_next_actions": [
+        {
+          "action_type": "continue_public_quote_flow",
+          "priority": "high",
+          "description": "Proceed through AXA’s duration and product-type router using the long-term international-healthcare path to see whether Georgia residence, Germany treatment, and a family-of-four scenario are supported downstream.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "capture_home_country_wording",
+          "priority": "high",
+          "description": "Find AXA’s official brochure, membership guide, or benefits wording that names Germany or clarifies how treatment outside the country of residence works for a Georgia-resident policy.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "capture_worldwide_ex_us_wording",
+          "priority": "medium",
+          "description": "Because AXA publicly mentions USA exclusion at a high level, capture the deeper quote or document evidence showing the exact worldwide-excluding-U.S. option and note any gate before price output.",
+          "blocking_dependency": null
+        }
+      ],
+      "required_follow_up_mode": {
+        "primary_mode": "public_web_review_or_public_quote_flow_continuation",
+        "requires_personal_data": false,
+        "requires_broker_contact": false,
+        "requires_account_creation": false,
+        "public_web_review_only": true,
+        "gate_reasons": [
+          "family_quote_flow.quote_result_visibility=partial_plan_options_visible",
+          "family_quote_flow.next_required_step=continue_public_quote_flow",
+          "friction.primary_barrier=policy_wording_not_public",
+          "friction.primary_barrier=country_or_residence_gating"
+        ],
+        "interpretation_note": "Boolean follow-up flags are conservative extractions from explicit family_quote_flow gates in the existing local ledger and audit only. false means not explicitly required in the reviewed artifacts, not that later steps could never require it."
+      },
+      "uncertainty_notes": [
+        "Need quote or policy wording to verify that Georgia falls within the relevant AXA area-of-cover choice for this family.",
+        "Need quote-flow or brochure to verify exact geography bands including Georgia and Germany.",
+        "Need family pricing and underwriting specifics.",
+        "Need quote or policy documents to confirm Georgian residency acceptance.",
+        "Need exact Germany/Georgia area-of-cover rules and pricing for a family of four.",
+        "The downstream quote.axaglobalhealthcare.com flow was not fully traversed here, so later verification requirements remain unverified.",
+        "Germany treatment handling is still inferred from geography structure or market-context wording rather than directly named benefit language."
+      ]
+    },
+    {
+      "record_index": 6,
+      "candidate_id": "william_russell",
+      "insurer_name": "William Russell",
+      "plan_name": "International Health Insurance",
+      "priority_candidate": true,
+      "completion_status": "partially_hardened",
+      "audit_snapshot": {
+        "pricing_availability_status": "quote_flow_gated",
+        "family_pricing_status": "unavailable",
+        "georgia_coverage_state": "inferred",
+        "germany_coverage_state": "inferred",
+        "worldwide_ex_us_coverage_state": "worldwide_positioned_but_ex_us_not_verified"
+      },
+      "missing_evidence": [
+        {
+          "dimension": "georgia_residence_eligibility",
+          "dimension_label": "Georgia residence eligibility",
+          "current_status": "inferred",
+          "evidence_status": "indirect_public_evidence",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "related_but_incomplete_wording_found",
+          "missing_or_unresolved_evidence": [
+            "Does the insurer actually issue this plan to a family whose legal residence is Georgia, rather than merely listing Georgia in a selector, regional description, or broker flow?",
+            "If the family resides in Georgia, does the chosen area of cover still allow treatment or home-country-style access in Germany under the same family policy?",
+            "Does German citizenship trigger any eligibility, underwriting, signing-country, or home-country restrictions that were not visible in the reviewed public sources?"
+          ]
+        },
+        {
+          "dimension": "germany_or_home_country_treatment",
+          "dimension_label": "Germany or home-country treatment",
+          "current_status": "inferred",
+          "evidence_status": "indirect_public_evidence",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "related_but_incomplete_wording_found",
+          "missing_or_unresolved_evidence": [
+            "Need official wording or quote-output language naming Germany or home-country treatment directly rather than relying on regional or geography-structure inference.",
+            "Need confirmation that German citizenship does not trigger extra signing-country, eligibility, or home-country restrictions that were not visible in reviewed public sources."
+          ]
+        },
+        {
+          "dimension": "worldwide_ex_us_area_of_cover",
+          "dimension_label": "Worldwide excluding U.S. area of cover",
+          "current_status": "unknown",
+          "evidence_status": "not_found_in_reviewed_public_sources",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "document_not_found",
+          "missing_or_unresolved_evidence": [
+            "Need explicit official wording or quote-path evidence for a worldwide-excluding-U.S. or materially equivalent area-of-cover option."
+          ]
+        },
+        {
+          "dimension": "family_quote_flow",
+          "dimension_label": "Family quote flow",
+          "current_status": "entry_only_verified",
+          "entrypoint_type": "official_quote_flow",
+          "quote_result_visibility": "no_quote_result_visible",
+          "missing_or_unresolved_evidence": [
+            "Family-of-four scenario has a visible online quote path, but the actual quote journey was not captured deeply enough to verify whether the household can proceed to a result online.",
+            "William Russell publicly advertises an online quote tool with prices shown within minutes, but the reviewed evidence did not capture the downstream quote form or a family-of-four result.",
+            "Next required step: continue_public_quote_flow"
+          ]
+        },
+        {
+          "dimension": "policy_document_access",
+          "dimension_label": "Policy document access",
+          "current_status": "no_public_document_found",
+          "document_type_status": [
+            "none_verified"
+          ],
+          "missing_or_unresolved_evidence": [
+            "The reviewed public insurer/quote journey for William Russell did not surface a clearly plan-specific downloadable brochure, policy wording PDF, or table of benefits in the public sources checked during the discovery run. Outcome remains 'no_downloadable_plan_document_found_in_reviewed_public_sources', so later gated or alternate-locale paths may still expose documents."
+          ]
+        },
+        {
+          "dimension": "pricing_visibility",
+          "dimension_label": "Pricing visibility",
+          "current_status": "not_visible_in_reviewed_public_sources",
+          "numeric_price_visible": false,
+          "price_visibility_scope": "none",
+          "missing_or_unresolved_evidence": [
+            "Starter placeholder slot only; evidence hardening for this candidate has not yet been populated in this completion-pass ledger."
+          ]
+        },
+        {
+          "dimension": "medical_underwriting_preexisting_conditions",
+          "dimension_label": "Medical underwriting / pre-existing conditions",
+          "current_status": "not_found_in_reviewed_public_sources",
+          "visibility": "not_visible",
+          "underwriting_model": "unclear",
+          "missing_or_unresolved_evidence": [
+            "Starter placeholder slot only; evidence hardening for this candidate has not yet been populated in this completion-pass ledger."
+          ]
+        }
+      ],
+      "unresolved_next_actions": [
+        {
+          "action_type": "continue_public_quote_flow",
+          "priority": "high",
+          "description": "Follow William Russell’s public “online quote tool” path until family inputs or quote output appear, so the dataset can confirm whether Georgia residence is accepted in the actual quote journey rather than only in marketing text.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "capture_worldwide_ex_us_wording",
+          "priority": "high",
+          "description": "Look for a William Russell brochure, table of benefits, or policy wording that names the coverage zones and clarifies whether Germany treatment or home-country use is allowed for a Georgia-resident family.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "record_gate_and_stop",
+          "priority": "medium",
+          "description": "If the online quote tool redirects, requires contact details, or otherwise withholds pricing, record that blocker and the required next public step instead of treating the plan as anonymously quotable.",
+          "blocking_dependency": null
+        }
+      ],
+      "required_follow_up_mode": {
+        "primary_mode": "public_web_review_or_public_quote_flow_continuation",
+        "requires_personal_data": false,
+        "requires_broker_contact": false,
+        "requires_account_creation": false,
+        "public_web_review_only": true,
+        "gate_reasons": [
+          "family_quote_flow.quote_result_visibility=no_quote_result_visible",
+          "family_quote_flow.next_required_step=continue_public_quote_flow",
+          "friction.primary_barrier=policy_wording_not_public",
+          "friction.primary_barrier=country_or_residence_gating"
+        ],
+        "interpretation_note": "Boolean follow-up flags are conservative extractions from explicit family_quote_flow gates in the existing local ledger and audit only. false means not explicitly required in the reviewed artifacts, not that later steps could never require it."
+      },
+      "uncertainty_notes": [
+        "Need quote or plan wording to test Georgia specifically.",
+        "Need quote results or policy wording to confirm Georgia residence acceptance.",
+        "Need confirmation of Germany/Georgia geography band and family rates.",
+        "Need quote or policy wording to confirm Georgian residency acceptance and geography band details.",
+        "Need family pricing and underwriting evidence.",
+        "The dedicated quote app was referenced but not deeply traversed here, so later account, email, or phone verification remains unverified.",
+        "Germany treatment handling is still inferred from geography structure or market-context wording rather than directly named benefit language."
+      ]
+    },
+    {
+      "record_index": 7,
+      "candidate_id": "now_health_international",
+      "insurer_name": "Now Health International",
+      "plan_name": "SimpleCare / WorldCare International Health Insurance Plans",
+      "priority_candidate": true,
+      "completion_status": "partially_hardened",
+      "audit_snapshot": {
+        "pricing_availability_status": "partially_visible",
+        "family_pricing_status": "partially_shown",
+        "georgia_coverage_state": "unknown",
+        "germany_coverage_state": "unknown",
+        "worldwide_ex_us_coverage_state": "indirectly_indicated"
+      },
+      "missing_evidence": [
+        {
+          "dimension": "georgia_residence_eligibility",
+          "dimension_label": "Georgia residence eligibility",
+          "current_status": "unknown",
+          "evidence_status": "partial_public_evidence",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "document_not_found",
+          "missing_or_unresolved_evidence": [
+            "Does the insurer actually issue this plan to a family whose legal residence is Georgia, rather than merely listing Georgia in a selector, regional description, or broker flow?",
+            "If the family resides in Georgia, does the chosen area of cover still allow treatment or home-country-style access in Germany under the same family policy?",
+            "Does German citizenship trigger any eligibility, underwriting, signing-country, or home-country restrictions that were not visible in the reviewed public sources?"
+          ]
+        },
+        {
+          "dimension": "germany_or_home_country_treatment",
+          "dimension_label": "Germany or home-country treatment",
+          "current_status": "unknown",
+          "evidence_status": "partial_public_evidence",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "related_but_incomplete_wording_found",
+          "missing_or_unresolved_evidence": [
+            "Need official wording or quote-path evidence that names Germany or explains home-country treatment behavior for this family context.",
+            "Need confirmation that German citizenship does not trigger extra signing-country, eligibility, or home-country restrictions that were not visible in reviewed public sources."
+          ]
+        },
+        {
+          "dimension": "worldwide_ex_us_area_of_cover",
+          "dimension_label": "Worldwide excluding U.S. area of cover",
+          "current_status": "unknown",
+          "evidence_status": "not_found_in_reviewed_public_sources",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "document_not_found",
+          "missing_or_unresolved_evidence": [
+            "Need explicit official wording or quote-path evidence for a worldwide-excluding-U.S. or materially equivalent area-of-cover option."
+          ]
+        },
+        {
+          "dimension": "family_quote_flow",
+          "dimension_label": "Family quote flow",
+          "current_status": "gated_before_family_specific_result",
+          "entrypoint_type": "no_public_quote_path_verified",
+          "quote_result_visibility": "no_quote_result_visible",
+          "missing_or_unresolved_evidence": [
+            "Family-of-four scenario cannot yet be confirmed as quotable online from the reviewed public evidence because only plan-comparison content, not a live public quote journey, was verified.",
+            "Public plan-comparison materials were visible, but this pass did not verify any insurer-controlled online quote path for a family-of-four scenario.",
+            "Next required step: use_broker_or_sales_contact"
+          ]
+        },
+        {
+          "dimension": "policy_document_access",
+          "dimension_label": "Policy document access",
+          "current_status": "no_public_document_found",
+          "document_type_status": [
+            "none_verified"
+          ],
+          "missing_or_unresolved_evidence": [
+            "The reviewed public insurer/quote journey for Now Health International did not surface a clearly plan-specific downloadable brochure, policy wording PDF, or table of benefits in the public sources checked during the discovery run. Outcome remains 'no_downloadable_plan_document_found_in_reviewed_public_sources', so later gated or alternate-locale paths may still expose documents."
+          ]
+        },
+        {
+          "dimension": "pricing_visibility",
+          "dimension_label": "Pricing visibility",
+          "current_status": "not_visible_in_reviewed_public_sources",
+          "numeric_price_visible": false,
+          "price_visibility_scope": "none",
+          "missing_or_unresolved_evidence": [
+            "Starter placeholder slot only; evidence hardening for this candidate has not yet been populated in this completion-pass ledger."
+          ]
+        },
+        {
+          "dimension": "medical_underwriting_preexisting_conditions",
+          "dimension_label": "Medical underwriting / pre-existing conditions",
+          "current_status": "not_found_in_reviewed_public_sources",
+          "visibility": "not_visible",
+          "underwriting_model": "unclear",
+          "missing_or_unresolved_evidence": [
+            "Starter placeholder slot only; evidence hardening for this candidate has not yet been populated in this completion-pass ledger."
+          ]
+        }
+      ],
+      "unresolved_next_actions": [
+        {
+          "action_type": "continue_public_quote_flow",
+          "priority": "high",
+          "description": "Because no public family quote path was verified in this run, locate the official Now Health quote-start or sales-contact route needed to move from public plan comparison into an insurer-controlled intake flow.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "capture_home_country_wording",
+          "priority": "high",
+          "description": "Use Now Health’s public plan-comparison pages and document-library references to obtain the relevant brochure or policy wording that can confirm Georgia residence fit and Germany/home-country treatment rules.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "record_gate_and_stop",
+          "priority": "medium",
+          "description": "If pricing or family eligibility can only be clarified through sales, broker follow-up, login, or a non-public portal, record that dependency explicitly as the next action required to secure pricing.",
+          "blocking_dependency": null
+        }
+      ],
+      "required_follow_up_mode": {
+        "primary_mode": "broker_or_sales_follow_up_required",
+        "requires_personal_data": false,
+        "requires_broker_contact": true,
+        "requires_account_creation": false,
+        "public_web_review_only": false,
+        "gate_reasons": [
+          "family_quote_flow.quote_result_visibility=no_quote_result_visible",
+          "family_quote_flow.next_required_step=use_broker_or_sales_contact",
+          "friction.primary_barrier=country_or_residence_gating",
+          "friction.primary_barrier=policy_wording_not_public"
+        ],
+        "interpretation_note": "Boolean follow-up flags are conservative extractions from explicit family_quote_flow gates in the existing local ledger and audit only. false means not explicitly required in the reviewed artifacts, not that later steps could never require it."
+      },
+      "uncertainty_notes": [
+        "Need member handbook or quote flow to verify whether Georgia is an accepted country of residence.",
+        "Need member handbook or quote flow to verify geography bands and Georgian residency eligibility.",
+        "Need family pricing and underwriting specifics.",
+        "A distinct public quote-entry path was not verified in this run, so quote-stage friction remains unknown.",
+        "Discovery-only ledger entry: this record captures publicly visible ambiguity signals, not final eligibility or underwriting acceptance.",
+        "Reviewed public materials remained too generic or too gated to state Germany/home-country treatment confidently."
+      ]
+    },
+    {
+      "record_index": 8,
+      "candidate_id": "foyer_global_health",
+      "insurer_name": "Foyer Global Health",
+      "plan_name": "Expat Health Insurance / International Health Insurance comparison",
+      "priority_candidate": true,
+      "completion_status": "partially_hardened",
+      "audit_snapshot": {
+        "pricing_availability_status": "unavailable_during_discovery",
+        "family_pricing_status": "unavailable",
+        "georgia_coverage_state": "inferred",
+        "germany_coverage_state": "inferred",
+        "worldwide_ex_us_coverage_state": "worldwide_positioned_but_ex_us_not_verified"
+      },
+      "missing_evidence": [
+        {
+          "dimension": "georgia_residence_eligibility",
+          "dimension_label": "Georgia residence eligibility",
+          "current_status": "inferred",
+          "evidence_status": "indirect_public_evidence",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "related_but_incomplete_wording_found",
+          "missing_or_unresolved_evidence": [
+            "Does the insurer actually issue this plan to a family whose legal residence is Georgia, rather than merely listing Georgia in a selector, regional description, or broker flow?",
+            "If the family resides in Georgia, does the chosen area of cover still allow treatment or home-country-style access in Germany under the same family policy?",
+            "Does German citizenship trigger any eligibility, underwriting, signing-country, or home-country restrictions that were not visible in the reviewed public sources?"
+          ]
+        },
+        {
+          "dimension": "germany_or_home_country_treatment",
+          "dimension_label": "Germany or home-country treatment",
+          "current_status": "inferred",
+          "evidence_status": "indirect_public_evidence",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "related_but_incomplete_wording_found",
+          "missing_or_unresolved_evidence": [
+            "Need official wording or quote-output language naming Germany or home-country treatment directly rather than relying on regional or geography-structure inference.",
+            "Need confirmation that German citizenship does not trigger extra signing-country, eligibility, or home-country restrictions that were not visible in reviewed public sources."
+          ]
+        },
+        {
+          "dimension": "worldwide_ex_us_area_of_cover",
+          "dimension_label": "Worldwide excluding U.S. area of cover",
+          "current_status": "unknown",
+          "evidence_status": "not_found_in_reviewed_public_sources",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "document_not_found",
+          "missing_or_unresolved_evidence": [
+            "Need explicit official wording or quote-path evidence for a worldwide-excluding-U.S. or materially equivalent area-of-cover option."
+          ]
+        },
+        {
+          "dimension": "family_quote_flow",
+          "dimension_label": "Family quote flow",
+          "current_status": "entry_only_verified",
+          "entrypoint_type": "official_quote_flow",
+          "quote_result_visibility": "partial_plan_options_visible",
+          "missing_or_unresolved_evidence": [
+            "Family-of-four scenario appears able to proceed from Foyer’s public quote-entry CTAs, but the journey was not traversed far enough to verify whether the household receives an online result or is later gated.",
+            "Foyer’s public comparison page exposed quote/application CTAs, but the reviewed evidence stopped before a family-specific quote step or quote result.",
+            "Next required step: continue_public_quote_flow"
+          ]
+        },
+        {
+          "dimension": "policy_document_access",
+          "dimension_label": "Policy document access",
+          "current_status": "public_document_found",
+          "document_type_status": [
+            "brochure",
+            "table_of_benefits"
+          ],
+          "missing_or_unresolved_evidence": [
+            "Official public discovery evidence located a plan-relevant downloadable document for Foyer Global Health. The reviewed public path exposed public page linked pdf access via public page direct download link, with the document currently verified at https://www.foyerglobalhealth.com/wp-content/uploads/2024/02/Brochure-commerciale-EN_V2-General.pdf."
+          ]
+        },
+        {
+          "dimension": "pricing_visibility",
+          "dimension_label": "Pricing visibility",
+          "current_status": "not_visible_in_reviewed_public_sources",
+          "numeric_price_visible": false,
+          "price_visibility_scope": "none",
+          "missing_or_unresolved_evidence": [
+            "Starter placeholder slot only; evidence hardening for this candidate has not yet been populated in this completion-pass ledger."
+          ]
+        },
+        {
+          "dimension": "medical_underwriting_preexisting_conditions",
+          "dimension_label": "Medical underwriting / pre-existing conditions",
+          "current_status": "not_found_in_reviewed_public_sources",
+          "visibility": "not_visible",
+          "underwriting_model": "unclear",
+          "missing_or_unresolved_evidence": [
+            "Starter placeholder slot only; evidence hardening for this candidate has not yet been populated in this completion-pass ledger."
+          ]
+        }
+      ],
+      "unresolved_next_actions": [
+        {
+          "action_type": "capture_family_quote_result",
+          "priority": "high",
+          "description": "Use Foyer Global Health’s public “Receive a quote” or “Get a quick quote” path to determine whether a Georgia-resident German family of four can reach plan output, not just quote-entry buttons.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "find_public_policy_document",
+          "priority": "high",
+          "description": "Review the public brochure or other accessible Foyer documents already found and capture the sections that decide Germany treatment, home-country use, and worldwide-excluding-U.S. geography for this family context.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "record_gate_and_stop",
+          "priority": "medium",
+          "description": "If Foyer’s deeper quote or application path asks for contact details or switches to an application before showing price, preserve that gate as the unresolved next step.",
+          "blocking_dependency": null
+        }
+      ],
+      "required_follow_up_mode": {
+        "primary_mode": "public_web_review_or_public_quote_flow_continuation",
+        "requires_personal_data": false,
+        "requires_broker_contact": false,
+        "requires_account_creation": false,
+        "public_web_review_only": true,
+        "gate_reasons": [
+          "family_quote_flow.quote_result_visibility=partial_plan_options_visible",
+          "family_quote_flow.next_required_step=continue_public_quote_flow",
+          "friction.primary_barrier=policy_wording_not_public",
+          "friction.primary_barrier=country_or_residence_gating"
+        ],
+        "interpretation_note": "Boolean follow-up flags are conservative extractions from explicit family_quote_flow gates in the existing local ledger and audit only. false means not explicitly required in the reviewed artifacts, not that later steps could never require it."
+      },
+      "uncertainty_notes": [
+        "Georgia guide presence does not prove plan eligibility or underwriting acceptance for Georgia residents.",
+        "Need direct page extraction or brochure review for stronger evidence.",
+        "Added as an eleventh backup provider to keep the shortlist above the required minimum of 10.",
+        "Need plan comparison details or policy wording to confirm Georgia-resident eligibility.",
+        "Need exact geography split and pricing for this family profile.",
+        "The quick-quote/application flow itself was not fully traversed here, so later account or verification requirements remain unverified.",
+        "Germany treatment handling is still inferred from geography structure or market-context wording rather than directly named benefit language."
+      ]
+    },
+    {
+      "record_index": 9,
+      "candidate_id": "safetywing",
+      "insurer_name": "SafetyWing",
+      "plan_name": "Nomad Insurance Complete",
+      "priority_candidate": true,
+      "completion_status": "partially_hardened",
+      "audit_snapshot": {
+        "pricing_availability_status": "public_pricing_available",
+        "family_pricing_status": "partially_shown",
+        "georgia_coverage_state": "inferred",
+        "germany_coverage_state": "inferred",
+        "worldwide_ex_us_coverage_state": "indirectly_indicated"
+      },
+      "missing_evidence": [
+        {
+          "dimension": "georgia_residence_eligibility",
+          "dimension_label": "Georgia residence eligibility",
+          "current_status": "inferred",
+          "evidence_status": "indirect_public_evidence",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "related_but_incomplete_wording_found",
+          "missing_or_unresolved_evidence": [
+            "Does the insurer actually issue this plan to a family whose legal residence is Georgia, rather than merely listing Georgia in a selector, regional description, or broker flow?",
+            "If the family resides in Georgia, does the chosen area of cover still allow treatment or home-country-style access in Germany under the same family policy?",
+            "Does German citizenship trigger any eligibility, underwriting, signing-country, or home-country restrictions that were not visible in the reviewed public sources?"
+          ]
+        },
+        {
+          "dimension": "germany_or_home_country_treatment",
+          "dimension_label": "Germany or home-country treatment",
+          "current_status": "inferred",
+          "evidence_status": "indirect_public_evidence",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "related_but_incomplete_wording_found",
+          "missing_or_unresolved_evidence": [
+            "Need official wording or quote-output language naming Germany or home-country treatment directly rather than relying on regional or geography-structure inference.",
+            "Need confirmation that German citizenship does not trigger extra signing-country, eligibility, or home-country restrictions that were not visible in reviewed public sources."
+          ]
+        },
+        {
+          "dimension": "worldwide_ex_us_area_of_cover",
+          "dimension_label": "Worldwide excluding U.S. area of cover",
+          "current_status": "unknown",
+          "evidence_status": "not_found_in_reviewed_public_sources",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "document_not_found",
+          "missing_or_unresolved_evidence": [
+            "Need explicit official wording or quote-path evidence for a worldwide-excluding-U.S. or materially equivalent area-of-cover option."
+          ]
+        },
+        {
+          "dimension": "family_quote_flow",
+          "dimension_label": "Family quote flow",
+          "current_status": "gated_before_family_specific_result",
+          "entrypoint_type": "official_application_flow",
+          "quote_result_visibility": "login_or_account_before_result",
+          "missing_or_unresolved_evidence": [
+            "Family-of-four scenario is gated behind mandatory account access rather than a public quote flow; the reviewed SafetyWing path would not show a family-specific result without login or account creation.",
+            "SafetyWing required Google sign-in or email/password account credentials before any household inputs or quote result became visible.",
+            "Next required step: solve_challenge_or_use_clean_browser_session"
+          ]
+        },
+        {
+          "dimension": "policy_document_access",
+          "dimension_label": "Policy document access",
+          "current_status": "public_document_found",
+          "document_type_status": [
+            "policy_wording"
+          ],
+          "missing_or_unresolved_evidence": [
+            "Official public discovery evidence located a plan-relevant downloadable document for SafetyWing. The reviewed public path exposed public pdf link access via captured public pdf url, with the document currently verified at https://safetywing.com/nomad-insurance/complete/standard_nomad_insurance_complete_vumi+carrier_2024-12.pdf?referenceID=24734754&utm_source=24734754&utm_medium=Ambassador."
+          ]
+        },
+        {
+          "dimension": "pricing_visibility",
+          "dimension_label": "Pricing visibility",
+          "current_status": "not_visible_in_reviewed_public_sources",
+          "numeric_price_visible": false,
+          "price_visibility_scope": "none",
+          "missing_or_unresolved_evidence": [
+            "Starter placeholder slot only; evidence hardening for this candidate has not yet been populated in this completion-pass ledger."
+          ]
+        },
+        {
+          "dimension": "medical_underwriting_preexisting_conditions",
+          "dimension_label": "Medical underwriting / pre-existing conditions",
+          "current_status": "not_found_in_reviewed_public_sources",
+          "visibility": "not_visible",
+          "underwriting_model": "unclear",
+          "missing_or_unresolved_evidence": [
+            "Starter placeholder slot only; evidence hardening for this candidate has not yet been populated in this completion-pass ledger."
+          ]
+        }
+      ],
+      "unresolved_next_actions": [
+        {
+          "action_type": "find_public_policy_document",
+          "priority": "high",
+          "description": "Use the already captured public SafetyWing policy PDF to confirm whether Georgia residence, Germany treatment, and any USA-exclusion mechanics are actually supported for the family product.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "record_gate_and_stop",
+          "priority": "high",
+          "description": "Keep the signup/login wall documented as the blocking dependency for any family-specific quote or premium output, since the public flow stops before anonymous household pricing appears.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "continue_public_quote_flow",
+          "priority": "medium",
+          "description": "Verify whether SafetyWing offers any separate public calculator, sample-price page, or brokerless pricing path outside the signup flow; if none exists, record that absence explicitly.",
+          "blocking_dependency": null
+        }
+      ],
+      "required_follow_up_mode": {
+        "primary_mode": "account_or_login_required_before_family_specific_follow_up",
+        "requires_personal_data": false,
+        "requires_broker_contact": false,
+        "requires_account_creation": true,
+        "public_web_review_only": false,
+        "gate_reasons": [
+          "family_quote_flow.quote_result_visibility=login_or_account_before_result",
+          "family_quote_flow.next_required_step=solve_challenge_or_use_clean_browser_session",
+          "friction.primary_barrier=policy_wording_not_public",
+          "friction.primary_barrier=country_or_residence_gating"
+        ],
+        "interpretation_note": "Boolean follow-up flags are conservative extractions from explicit family_quote_flow gates in the existing local ledger and audit only. false means not explicitly required in the reviewed artifacts, not that later steps could never require it."
+      },
+      "uncertainty_notes": [
+        "Need policy wording or quote-input testing to determine whether Georgia residence is accepted.",
+        "Need policy wording or quote results to verify residence-country acceptance for a German family living in Georgia.",
+        "Need exact Germany/Georgia geography treatment and underwriting details beyond the marketing page.",
+        "The run did not determine whether any anonymous quote-only path exists elsewhere outside this signup URL.",
+        "Discovery-only ledger entry: this record captures publicly visible ambiguity signals, not final eligibility or underwriting acceptance.",
+        "Germany treatment handling is still inferred from geography structure or market-context wording rather than directly named benefit language."
+      ]
+    },
+    {
+      "record_index": 10,
+      "candidate_id": "expatriate_group",
+      "insurer_name": "Expatriate Group",
+      "plan_name": "International Health Insurance / Select / Primary+ / Primary+ Lite / Primary",
+      "priority_candidate": true,
+      "completion_status": "partially_hardened",
+      "audit_snapshot": {
+        "pricing_availability_status": "partially_visible",
+        "family_pricing_status": "gated_behind_contact_details",
+        "georgia_coverage_state": "inferred",
+        "germany_coverage_state": "inferred",
+        "worldwide_ex_us_coverage_state": "explicitly_indicated"
+      },
+      "missing_evidence": [
+        {
+          "dimension": "georgia_residence_eligibility",
+          "dimension_label": "Georgia residence eligibility",
+          "current_status": "inferred",
+          "evidence_status": "indirect_public_evidence",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "related_but_incomplete_wording_found",
+          "missing_or_unresolved_evidence": [
+            "Does the insurer actually issue this plan to a family whose legal residence is Georgia, rather than merely listing Georgia in a selector, regional description, or broker flow?",
+            "If the family resides in Georgia, does the chosen area of cover still allow treatment or home-country-style access in Germany under the same family policy?",
+            "Does German citizenship trigger any eligibility, underwriting, signing-country, or home-country restrictions that were not visible in the reviewed public sources?"
+          ]
+        },
+        {
+          "dimension": "germany_or_home_country_treatment",
+          "dimension_label": "Germany or home-country treatment",
+          "current_status": "inferred",
+          "evidence_status": "indirect_public_evidence",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "related_but_incomplete_wording_found",
+          "missing_or_unresolved_evidence": [
+            "Need official wording or quote-output language naming Germany or home-country treatment directly rather than relying on regional or geography-structure inference.",
+            "Need confirmation that German citizenship does not trigger extra signing-country, eligibility, or home-country restrictions that were not visible in reviewed public sources."
+          ]
+        },
+        {
+          "dimension": "worldwide_ex_us_area_of_cover",
+          "dimension_label": "Worldwide excluding U.S. area of cover",
+          "current_status": "unknown",
+          "evidence_status": "not_found_in_reviewed_public_sources",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "document_not_found",
+          "missing_or_unresolved_evidence": [
+            "Need explicit official wording or quote-path evidence for a worldwide-excluding-U.S. or materially equivalent area-of-cover option."
+          ]
+        },
+        {
+          "dimension": "family_quote_flow",
+          "dimension_label": "Family quote flow",
+          "current_status": "advanced_without_quote_result",
+          "entrypoint_type": "official_quote_flow",
+          "quote_result_visibility": "contact_capture_before_result",
+          "missing_or_unresolved_evidence": [
+            "Family-of-four scenario can be modeled in Expatriate Group’s public quote flow, but the household is referred into contact capture before any family-specific quote result is verified online.",
+            "Expatriate Group’s quote flow collected people to insure, dates of birth, and area of cover, but then required an email address before the quote could proceed or be retrieved.",
+            "Next required step: supply_contact_details"
+          ]
+        },
+        {
+          "dimension": "policy_document_access",
+          "dimension_label": "Policy document access",
+          "current_status": "public_document_found",
+          "document_type_status": [
+            "brochure",
+            "policy_wording",
+            "ipid_or_product_sheet"
+          ],
+          "missing_or_unresolved_evidence": [
+            "Official public discovery evidence located a plan-relevant downloadable document for Expatriate Group. The reviewed public path exposed public pdf link access via captured public pdf url, with the document currently verified at https://www.expatriatehealthcare.com/wp-content/uploads/2016/09/Expatriate-Group-Brochure-International-Insurance-Specialists.pdf."
+          ]
+        },
+        {
+          "dimension": "pricing_visibility",
+          "dimension_label": "Pricing visibility",
+          "current_status": "not_visible_in_reviewed_public_sources",
+          "numeric_price_visible": false,
+          "price_visibility_scope": "none",
+          "missing_or_unresolved_evidence": [
+            "Starter placeholder slot only; evidence hardening for this candidate has not yet been populated in this completion-pass ledger."
+          ]
+        },
+        {
+          "dimension": "medical_underwriting_preexisting_conditions",
+          "dimension_label": "Medical underwriting / pre-existing conditions",
+          "current_status": "not_found_in_reviewed_public_sources",
+          "visibility": "not_visible",
+          "underwriting_model": "unclear",
+          "missing_or_unresolved_evidence": [
+            "Starter placeholder slot only; evidence hardening for this candidate has not yet been populated in this completion-pass ledger."
+          ]
+        }
+      ],
+      "unresolved_next_actions": [
+        {
+          "action_type": "record_gate_and_stop",
+          "priority": "high",
+          "description": "Record that Expatriate Group’s quote flow already reaches family inputs and area-of-cover choices but requires an email address before the quotation can be delivered, so the next step is gated by contact submission.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "capture_home_country_wording",
+          "priority": "high",
+          "description": "Use the public brochure or plan documents already captured to verify whether the Georgia-resident family can use the Area 2 worldwide-excluding-USA option while retaining treatment access in Germany.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "find_public_policy_document",
+          "priority": "medium",
+          "description": "If no anonymous premium can be seen without providing an email, preserve that as the pricing blocker instead of estimating a family quote.",
+          "blocking_dependency": null
+        }
+      ],
+      "required_follow_up_mode": {
+        "primary_mode": "contact_submission_required_before_pricing_or_plan_result",
+        "requires_personal_data": true,
+        "requires_broker_contact": false,
+        "requires_account_creation": false,
+        "public_web_review_only": false,
+        "gate_reasons": [
+          "family_quote_flow.quote_result_visibility=contact_capture_before_result",
+          "family_quote_flow.next_required_step=supply_contact_details",
+          "friction.primary_barrier=policy_wording_not_public",
+          "friction.primary_barrier=country_or_residence_gating"
+        ],
+        "interpretation_note": "Boolean follow-up flags are conservative extractions from explicit family_quote_flow gates in the existing local ledger and audit only. false means not explicitly required in the reviewed artifacts, not that later steps could never require it."
+      },
+      "uncertainty_notes": [
+        "Georgia is inferred as falling within Area 1 geography but was not named directly; plan wording should confirm this.",
+        "Need quote-form output or policy wording to confirm Georgian residency acceptance for this family profile.",
+        "Need exact plan availability, underwriting, and pricing for two adults and two children.",
+        "This run did not verify whether the system displays pricing before or only after email submission, but email capture is clearly embedded in the initial quote stage.",
+        "Discovery-only ledger entry: this record captures publicly visible ambiguity signals, not final eligibility or underwriting acceptance.",
+        "Germany treatment handling is still inferred from geography structure or market-context wording rather than directly named benefit language."
+      ]
+    },
+    {
+      "record_index": 11,
+      "candidate_id": "img_global_medical",
+      "insurer_name": "IMG (International Medical Group)",
+      "plan_name": "Global Medical international health insurance",
+      "priority_candidate": true,
+      "completion_status": "partially_hardened",
+      "audit_snapshot": {
+        "pricing_availability_status": null,
+        "family_pricing_status": null,
+        "georgia_coverage_state": null,
+        "germany_coverage_state": null,
+        "worldwide_ex_us_coverage_state": null
+      },
+      "missing_evidence": [
+        {
+          "dimension": "georgia_residence_eligibility",
+          "dimension_label": "Georgia residence eligibility",
+          "current_status": "partially_confirmed",
+          "evidence_status": "explicit_public_evidence",
+          "public_quote_flow_outcome": "country_or_option_visible",
+          "public_policy_document_outcome": "document_not_found",
+          "missing_or_unresolved_evidence": [
+            "Does the insurer actually issue this plan to a family whose legal residence is Georgia, rather than merely listing Georgia in a selector, regional description, or broker flow?",
+            "Even though both Georgia and Germany appear in public discovery evidence, does the issued family policy still permit Georgia residence together with Germany treatment/home-country use under the desired geography option?",
+            "Does German citizenship trigger any eligibility, underwriting, signing-country, or home-country restrictions that were not visible in the reviewed public sources?"
+          ]
+        },
+        {
+          "dimension": "germany_or_home_country_treatment",
+          "dimension_label": "Germany or home-country treatment",
+          "current_status": "confirmed",
+          "evidence_status": "explicit_public_evidence",
+          "public_quote_flow_outcome": "country_or_option_visible",
+          "public_policy_document_outcome": "document_found_but_not_decisive",
+          "missing_or_unresolved_evidence": [
+            "Even though Germany appears in public selector or intake evidence, need official wording showing whether Germany treatment or home-country use remains available after issue for a Georgia-resident family policy.",
+            "Need confirmation that German citizenship does not trigger extra signing-country, eligibility, or home-country restrictions that were not visible in reviewed public sources."
+          ]
+        },
+        {
+          "dimension": "worldwide_ex_us_area_of_cover",
+          "dimension_label": "Worldwide excluding U.S. area of cover",
+          "current_status": "unknown",
+          "evidence_status": "not_found_in_reviewed_public_sources",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "document_not_found",
+          "missing_or_unresolved_evidence": [
+            "Need explicit official wording or quote-path evidence for a worldwide-excluding-U.S. or materially equivalent area-of-cover option."
+          ]
+        },
+        {
+          "dimension": "family_quote_flow",
+          "dimension_label": "Family quote flow",
+          "current_status": "entry_only_verified",
+          "entrypoint_type": "official_quote_flow",
+          "quote_result_visibility": "partial_plan_options_visible",
+          "missing_or_unresolved_evidence": [
+            "Family-of-four scenario has a visible online pricing or purchase entrypoint at IMG, but this pass did not verify whether the household can proceed to a family-specific result online.",
+            "IMG publicly exposed Buy Now and See Price links for Global Medical plans, but the reviewed evidence did not capture the downstream family-of-four quote journey.",
+            "Next required step: continue_public_quote_flow"
+          ]
+        },
+        {
+          "dimension": "policy_document_access",
+          "dimension_label": "Policy document access",
+          "current_status": "public_document_found",
+          "document_type_status": [
+            "brochure"
+          ],
+          "missing_or_unresolved_evidence": [
+            "Official public discovery evidence located a plan-relevant downloadable document for IMG (International Medical Group). The reviewed public path exposed public page linked pdf access via public page direct download link, with the document currently verified at https://www.imglobal.com/docs/library/forms-library/gmi-brochure.pdf."
+          ]
+        },
+        {
+          "dimension": "pricing_visibility",
+          "dimension_label": "Pricing visibility",
+          "current_status": "not_visible_in_reviewed_public_sources",
+          "numeric_price_visible": false,
+          "price_visibility_scope": "none",
+          "missing_or_unresolved_evidence": [
+            "Starter placeholder slot only; evidence hardening for this candidate has not yet been populated in this completion-pass ledger."
+          ]
+        },
+        {
+          "dimension": "medical_underwriting_preexisting_conditions",
+          "dimension_label": "Medical underwriting / pre-existing conditions",
+          "current_status": "not_found_in_reviewed_public_sources",
+          "visibility": "not_visible",
+          "underwriting_model": "unclear",
+          "missing_or_unresolved_evidence": [
+            "Starter placeholder slot only; evidence hardening for this candidate has not yet been populated in this completion-pass ledger."
+          ]
+        }
+      ],
+      "unresolved_next_actions": [
+        {
+          "action_type": "capture_family_quote_result",
+          "priority": "high",
+          "description": "Follow IMG’s public “See Price” path far enough to verify whether a Georgia-resident German family of four can obtain plan-specific pricing or whether later household or residence gates appear.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "find_public_policy_document",
+          "priority": "high",
+          "description": "Review the public IMG brochures or certificates already linked to confirm Germany treatment, home-country use, and worldwide-excluding-U.S. availability for the Global Medical family scenario.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "record_gate_and_stop",
+          "priority": "medium",
+          "description": "If IMG reveals only partial prices, redirects into application, or asks for more personal data before a final quote, record that exact blocker as the next action required for pricing validation.",
+          "blocking_dependency": null
+        }
+      ],
+      "required_follow_up_mode": {
+        "primary_mode": "public_web_review_or_public_quote_flow_continuation",
+        "requires_personal_data": false,
+        "requires_broker_contact": false,
+        "requires_account_creation": false,
+        "public_web_review_only": true,
+        "gate_reasons": [
+          "family_quote_flow.quote_result_visibility=partial_plan_options_visible",
+          "family_quote_flow.next_required_step=continue_public_quote_flow",
+          "friction.primary_barrier=country_or_residence_gating",
+          "friction.primary_barrier=policy_wording_not_public"
+        ],
+        "interpretation_note": "Boolean follow-up flags are conservative extractions from explicit family_quote_flow gates in the existing local ledger and audit only. false means not explicitly required in the reviewed artifacts, not that later steps could never require it."
+      },
+      "uncertainty_notes": [
+        "Need product-specific quote or plan wording to confirm Georgia-resident acceptance for full expat medical products, not just travel products.",
+        "Need Global Medical plan docs or quote flow to verify country eligibility and area-of-cover choices.",
+        "Need suitability check because some IMG products are travel-medical rather than full expat medical.",
+        "This run did not open the downstream purchase/price pages, so later signup or identity verification requirements remain unverified.",
+        "Discovery-only ledger entry: this record captures publicly visible ambiguity signals, not final eligibility or underwriting acceptance.",
+        "Germany visibility is source-backed, but that does not by itself prove final issuance or the exact scope of Germany home-country treatment after enrollment."
+      ]
+    },
+    {
+      "record_index": 12,
+      "candidate_id": "genki",
+      "insurer_name": "Genki",
+      "plan_name": "Native / international health insurance",
+      "priority_candidate": true,
+      "completion_status": "partially_hardened",
+      "audit_snapshot": {
+        "pricing_availability_status": "quote_flow_gated",
+        "family_pricing_status": "unavailable",
+        "georgia_coverage_state": "confirmed",
+        "germany_coverage_state": "confirmed",
+        "worldwide_ex_us_coverage_state": "worldwide_positioned_but_ex_us_not_verified"
+      },
+      "missing_evidence": [
+        {
+          "dimension": "georgia_residence_eligibility",
+          "dimension_label": "Georgia residence eligibility",
+          "current_status": "partially_confirmed",
+          "evidence_status": "explicit_public_evidence",
+          "public_quote_flow_outcome": "country_or_option_visible",
+          "public_policy_document_outcome": "document_not_found",
+          "missing_or_unresolved_evidence": [
+            "Does the insurer actually issue this plan to a family whose legal residence is Georgia, rather than merely listing Georgia in a selector, regional description, or broker flow?",
+            "Even though both Georgia and Germany appear in public discovery evidence, does the issued family policy still permit Georgia residence together with Germany treatment/home-country use under the desired geography option?",
+            "Does German citizenship trigger any eligibility, underwriting, signing-country, or home-country restrictions that were not visible in the reviewed public sources?"
+          ]
+        },
+        {
+          "dimension": "germany_or_home_country_treatment",
+          "dimension_label": "Germany or home-country treatment",
+          "current_status": "confirmed",
+          "evidence_status": "explicit_public_evidence",
+          "public_quote_flow_outcome": "country_or_option_visible",
+          "public_policy_document_outcome": "document_found_but_not_decisive",
+          "missing_or_unresolved_evidence": [
+            "Even though Germany appears in public selector or intake evidence, need official wording showing whether Germany treatment or home-country use remains available after issue for a Georgia-resident family policy.",
+            "Need confirmation that German citizenship does not trigger extra signing-country, eligibility, or home-country restrictions that were not visible in reviewed public sources."
+          ]
+        },
+        {
+          "dimension": "worldwide_ex_us_area_of_cover",
+          "dimension_label": "Worldwide excluding U.S. area of cover",
+          "current_status": "unknown",
+          "evidence_status": "not_found_in_reviewed_public_sources",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "document_not_found",
+          "missing_or_unresolved_evidence": [
+            "Need explicit official wording or quote-path evidence for a worldwide-excluding-U.S. or materially equivalent area-of-cover option."
+          ]
+        },
+        {
+          "dimension": "family_quote_flow",
+          "dimension_label": "Family quote flow",
+          "current_status": "entry_only_verified",
+          "entrypoint_type": "official_quote_flow",
+          "quote_result_visibility": "partial_plan_options_visible",
+          "missing_or_unresolved_evidence": [
+            "Family-of-four scenario can enter Genki’s public recommendation flow, but the reviewed evidence only verifies the early screening journey rather than a family-specific quote outcome.",
+            "Genki’s public questionnaire accepted destination and travel-context inputs and advertises price visibility later, but no spouse, children, or age-specific family quote result was captured.",
+            "Next required step: continue_public_quote_flow"
+          ]
+        },
+        {
+          "dimension": "policy_document_access",
+          "dimension_label": "Policy document access",
+          "current_status": "no_public_document_found",
+          "document_type_status": [
+            "none_verified"
+          ],
+          "missing_or_unresolved_evidence": [
+            "The reviewed public insurer/quote journey for Genki did not surface a clearly plan-specific downloadable brochure, policy wording PDF, or table of benefits in the public sources checked during the discovery run. Outcome remains 'no_downloadable_plan_document_found_in_reviewed_public_sources', so later gated or alternate-locale paths may still expose documents."
+          ]
+        },
+        {
+          "dimension": "pricing_visibility",
+          "dimension_label": "Pricing visibility",
+          "current_status": "not_visible_in_reviewed_public_sources",
+          "numeric_price_visible": false,
+          "price_visibility_scope": "none",
+          "missing_or_unresolved_evidence": [
+            "Starter placeholder slot only; evidence hardening for this candidate has not yet been populated in this completion-pass ledger."
+          ]
+        },
+        {
+          "dimension": "medical_underwriting_preexisting_conditions",
+          "dimension_label": "Medical underwriting / pre-existing conditions",
+          "current_status": "not_found_in_reviewed_public_sources",
+          "visibility": "not_visible",
+          "underwriting_model": "unclear",
+          "missing_or_unresolved_evidence": [
+            "Starter placeholder slot only; evidence hardening for this candidate has not yet been populated in this completion-pass ledger."
+          ]
+        }
+      ],
+      "unresolved_next_actions": [
+        {
+          "action_type": "capture_family_quote_result",
+          "priority": "high",
+          "description": "Progress Genki’s questionnaire beyond the initial recommendation screens to determine whether the Georgia-resident family reaches a product recommendation and visible price, or whether later steps exclude the case.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "find_public_policy_document",
+          "priority": "high",
+          "description": "Obtain Genki’s official plan wording or product terms that clarify whether the relevant product is suitable for long-term Georgia residence with Germany treatment needs for a family of four.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "record_gate_and_stop",
+          "priority": "medium",
+          "description": "If Genki shows only a recommendation teaser and withholds the final price or terms until signup or purchase steps, record that gate explicitly rather than treating pricing as publicly available.",
+          "blocking_dependency": null
+        }
+      ],
+      "required_follow_up_mode": {
+        "primary_mode": "public_web_review_or_public_quote_flow_continuation",
+        "requires_personal_data": false,
+        "requires_broker_contact": false,
+        "requires_account_creation": false,
+        "public_web_review_only": true,
+        "gate_reasons": [
+          "family_quote_flow.quote_result_visibility=partial_plan_options_visible",
+          "family_quote_flow.next_required_step=continue_public_quote_flow",
+          "friction.primary_barrier=country_or_residence_gating",
+          "friction.primary_barrier=policy_wording_not_public"
+        ],
+        "interpretation_note": "Boolean follow-up flags are conservative extractions from explicit family_quote_flow gates in the existing local ledger and audit only. false means not explicitly required in the reviewed artifacts, not that later steps could never require it."
+      },
+      "uncertainty_notes": [
+        "Need product-specific terms to confirm family fit and whether long-term Georgia residence is acceptable for this exact plan.",
+        "Need the specific Native/Resident product page or policy wording to verify whether this is a full expat-medical fit for a Germany/Georgia family rather than a lighter nomad-oriented product.",
+        "Need residence eligibility and family-plan details.",
+        "The wording implies signup later in the process, but this run did not verify whether account creation is required before the final price display or only at purchase.",
+        "Discovery-only ledger entry: this record captures publicly visible ambiguity signals, not final eligibility or underwriting acceptance.",
+        "Germany visibility is source-backed, but that does not by itself prove final issuance or the exact scope of Germany home-country treatment after enrollment."
+      ]
+    },
+    {
+      "record_index": 13,
+      "candidate_id": "wellaway",
+      "insurer_name": "WellAway",
+      "plan_name": "EXPAT / Gold / Diamond / Expat Plus",
+      "priority_candidate": true,
+      "completion_status": "partially_hardened",
+      "audit_snapshot": {
+        "pricing_availability_status": "quote_flow_gated",
+        "family_pricing_status": "gated_behind_contact_details",
+        "georgia_coverage_state": "confirmed",
+        "germany_coverage_state": "confirmed",
+        "worldwide_ex_us_coverage_state": "not_verified_from_reviewed_sources"
+      },
+      "missing_evidence": [
+        {
+          "dimension": "georgia_residence_eligibility",
+          "dimension_label": "Georgia residence eligibility",
+          "current_status": "unknown",
+          "evidence_status": "partial_public_evidence",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "document_not_found",
+          "missing_or_unresolved_evidence": [
+            "Does the insurer actually issue this plan to a family whose legal residence is Georgia, rather than merely listing Georgia in a selector, regional description, or broker flow?",
+            "Even though both Georgia and Germany appear in public discovery evidence, does the issued family policy still permit Georgia residence together with Germany treatment/home-country use under the desired geography option?",
+            "How does German citizenship interact with the visible nationality/residency intake rules for this plan, especially for two adults and two dependent children applying from Georgia?"
+          ]
+        },
+        {
+          "dimension": "germany_or_home_country_treatment",
+          "dimension_label": "Germany or home-country treatment",
+          "current_status": "confirmed",
+          "evidence_status": "explicit_public_evidence",
+          "public_quote_flow_outcome": "country_or_option_visible",
+          "public_policy_document_outcome": "document_found_but_not_decisive",
+          "missing_or_unresolved_evidence": [
+            "Even though Germany appears in public selector or intake evidence, need official wording showing whether Germany treatment or home-country use remains available after issue for a Georgia-resident family policy.",
+            "Need confirmation that German citizenship does not trigger extra signing-country, eligibility, or home-country restrictions that were not visible in reviewed public sources."
+          ]
+        },
+        {
+          "dimension": "worldwide_ex_us_area_of_cover",
+          "dimension_label": "Worldwide excluding U.S. area of cover",
+          "current_status": "unknown",
+          "evidence_status": "not_found_in_reviewed_public_sources",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "document_not_found",
+          "missing_or_unresolved_evidence": [
+            "Need explicit official wording or quote-path evidence for a worldwide-excluding-U.S. or materially equivalent area-of-cover option."
+          ]
+        },
+        {
+          "dimension": "family_quote_flow",
+          "dimension_label": "Family quote flow",
+          "current_status": "advanced_without_quote_result",
+          "entrypoint_type": "official_quote_flow",
+          "quote_result_visibility": "contact_capture_before_result",
+          "missing_or_unresolved_evidence": [
+            "Family-of-four scenario can be entered into WellAway’s quote flow, but the reviewed path requires contact details and family data before any plan or price result is shown.",
+            "WellAway’s Step 1 quote screen collected family basics including spouse/dependent participation and DOBs, but required email, phone, and consent before reaching the Plans step.",
+            "Next required step: supply_contact_details"
+          ]
+        },
+        {
+          "dimension": "policy_document_access",
+          "dimension_label": "Policy document access",
+          "current_status": "public_document_found",
+          "document_type_status": [
+            "brochure",
+            "benefit_schedule"
+          ],
+          "missing_or_unresolved_evidence": [
+            "Official public discovery evidence located a plan-relevant downloadable document for WellAway. The reviewed public path exposed public pdf link access via captured public pdf url, with the document currently verified at https://www.wellaway.com/media/filer_public/31/5d/315d7f0b-9976-4fd2-8b43-ad597fd59b4a/expat-plans-brochure_1292026.pdf."
+          ]
+        },
+        {
+          "dimension": "pricing_visibility",
+          "dimension_label": "Pricing visibility",
+          "current_status": "not_visible_in_reviewed_public_sources",
+          "numeric_price_visible": false,
+          "price_visibility_scope": "none",
+          "missing_or_unresolved_evidence": [
+            "Starter placeholder slot only; evidence hardening for this candidate has not yet been populated in this completion-pass ledger."
+          ]
+        },
+        {
+          "dimension": "medical_underwriting_preexisting_conditions",
+          "dimension_label": "Medical underwriting / pre-existing conditions",
+          "current_status": "not_found_in_reviewed_public_sources",
+          "visibility": "not_visible",
+          "underwriting_model": "unclear",
+          "missing_or_unresolved_evidence": [
+            "Starter placeholder slot only; evidence hardening for this candidate has not yet been populated in this completion-pass ledger."
+          ]
+        }
+      ],
+      "unresolved_next_actions": [
+        {
+          "action_type": "record_gate_and_stop",
+          "priority": "high",
+          "description": "Record that WellAway’s quote flow already collects family composition, ages, nationality, and destination but requires email, phone, and consent before the Plans step, so anonymous family pricing remains blocked.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "find_public_policy_document",
+          "priority": "high",
+          "description": "Use WellAway’s public brochure and plan-comparison PDFs to determine whether Georgia residence, Germany treatment, and a worldwide-excluding-U.S. style geography can coexist on the same family policy.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "record_gate_and_stop",
+          "priority": "medium",
+          "description": "If the plan or premium result cannot be seen without submitting contact details, preserve that dependency as the unresolved step needed to secure pricing.",
+          "blocking_dependency": null
+        }
+      ],
+      "required_follow_up_mode": {
+        "primary_mode": "contact_submission_required_before_pricing_or_plan_result",
+        "requires_personal_data": true,
+        "requires_broker_contact": false,
+        "requires_account_creation": false,
+        "public_web_review_only": false,
+        "gate_reasons": [
+          "family_quote_flow.quote_result_visibility=contact_capture_before_result",
+          "family_quote_flow.next_required_step=supply_contact_details",
+          "friction.primary_barrier=country_or_residence_gating",
+          "friction.primary_barrier=policy_wording_not_public"
+        ],
+        "interpretation_note": "Boolean follow-up flags are conservative extractions from explicit family_quote_flow gates in the existing local ledger and audit only. false means not explicitly required in the reviewed artifacts, not that later steps could never require it."
+      },
+      "uncertainty_notes": [
+        "Need completed quote or brochure review to verify whether Georgia residence is fully accepted after underwriting.",
+        "Need brochure or quote-flow review to determine whether non-US area-of-cover options exist and whether Georgia residence is accepted.",
+        "Medical underwriting and family pricing require follow-up.",
+        "The flow was only inspected at Step 1, so any later account creation or email/phone verification mechanism remains unverified.",
+        "Discovery-only ledger entry: this record captures publicly visible ambiguity signals, not final eligibility or underwriting acceptance.",
+        "Germany visibility is source-backed, but that does not by itself prove final issuance or the exact scope of Germany home-country treatment after enrollment."
+      ]
+    },
+    {
+      "record_index": 14,
+      "candidate_id": "passportcard",
+      "insurer_name": "PassportCard",
+      "plan_name": "Expat Basic / Expat Comprehensive / Executive",
+      "priority_candidate": true,
+      "completion_status": "partially_hardened",
+      "audit_snapshot": {
+        "pricing_availability_status": "public_pricing_available",
+        "family_pricing_status": "partially_shown",
+        "georgia_coverage_state": "inferred",
+        "germany_coverage_state": "confirmed",
+        "worldwide_ex_us_coverage_state": "worldwide_positioned_but_ex_us_not_verified"
+      },
+      "missing_evidence": [
+        {
+          "dimension": "georgia_residence_eligibility",
+          "dimension_label": "Georgia residence eligibility",
+          "current_status": "inferred",
+          "evidence_status": "indirect_public_evidence",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "related_but_incomplete_wording_found",
+          "missing_or_unresolved_evidence": [
+            "Does the insurer actually issue this plan to a family whose legal residence is Georgia, rather than merely listing Georgia in a selector, regional description, or broker flow?",
+            "If the family resides in Georgia, does the chosen area of cover still allow treatment or home-country-style access in Germany under the same family policy?",
+            "Does German citizenship trigger any eligibility, underwriting, signing-country, or home-country restrictions that were not visible in the reviewed public sources?"
+          ]
+        },
+        {
+          "dimension": "germany_or_home_country_treatment",
+          "dimension_label": "Germany or home-country treatment",
+          "current_status": "confirmed",
+          "evidence_status": "explicit_public_evidence",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "explicit_wording_found",
+          "missing_or_unresolved_evidence": [
+            "Need official eligibility wording confirming whether a Georgia-resident German family can buy the PassportCard configuration that includes Germany home-visit treatment.",
+            "Need public evidence showing whether Germany home-visit treatment is limited by destination zone, residency, or issuance-market rules for this family profile."
+          ]
+        },
+        {
+          "dimension": "worldwide_ex_us_area_of_cover",
+          "dimension_label": "Worldwide excluding U.S. area of cover",
+          "current_status": "unknown",
+          "evidence_status": "not_found_in_reviewed_public_sources",
+          "public_quote_flow_outcome": "not_tested_in_this_pass",
+          "public_policy_document_outcome": "document_not_found",
+          "missing_or_unresolved_evidence": [
+            "Need explicit official wording or quote-path evidence for a worldwide-excluding-U.S. or materially equivalent area-of-cover option."
+          ]
+        },
+        {
+          "dimension": "family_quote_flow",
+          "dimension_label": "Family quote flow",
+          "current_status": "gated_before_family_specific_result",
+          "entrypoint_type": "no_public_quote_path_verified",
+          "quote_result_visibility": "price_or_plan_result_visible",
+          "missing_or_unresolved_evidence": [
+            "Family-of-four scenario cannot yet be confirmed as quotable online from reviewed public evidence: PassportCard exposed sample pricing and plan information, but not a verifiable public family quote journey.",
+            "PassportCard publicly showed plan tiers and sample monthly prices, but no insurer-controlled family quote flow for the four-person scenario was verified in this pass.",
+            "Next required step: use_broker_or_sales_contact"
+          ]
+        },
+        {
+          "dimension": "policy_document_access",
+          "dimension_label": "Policy document access",
+          "current_status": "public_document_found",
+          "document_type_status": [
+            "table_of_benefits"
+          ],
+          "missing_or_unresolved_evidence": [
+            "Official public discovery evidence located a plan-relevant downloadable document for PassportCard. The reviewed public path exposed public page linked pdf access via public page direct download link, with the document currently verified at https://www.passportcard.de/wp-content/uploads/2023/02/TOB_Individuals_ENG-MGAWP.pdf."
+          ]
+        },
+        {
+          "dimension": "pricing_visibility",
+          "dimension_label": "Pricing visibility",
+          "current_status": "not_visible_in_reviewed_public_sources",
+          "numeric_price_visible": false,
+          "price_visibility_scope": "none",
+          "missing_or_unresolved_evidence": [
+            "Starter placeholder slot only; evidence hardening for this candidate has not yet been populated in this completion-pass ledger."
+          ]
+        },
+        {
+          "dimension": "medical_underwriting_preexisting_conditions",
+          "dimension_label": "Medical underwriting / pre-existing conditions",
+          "current_status": "not_found_in_reviewed_public_sources",
+          "visibility": "not_visible",
+          "underwriting_model": "unclear",
+          "missing_or_unresolved_evidence": [
+            "Starter placeholder slot only; evidence hardening for this candidate has not yet been populated in this completion-pass ledger."
+          ]
+        }
+      ],
+      "unresolved_next_actions": [
+        {
+          "action_type": "continue_public_quote_flow",
+          "priority": "high",
+          "description": "Because this run only verified public information pages and sample prices, locate the insurer-controlled PassportCard quote or application entrypoint needed to test a Georgia-resident family case.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "capture_home_country_wording",
+          "priority": "high",
+          "description": "Review the publicly accessible PassportCard brochures or policy materials to confirm whether Germany treatment or home-country visits are available to a German family residing in Georgia.",
+          "blocking_dependency": null
+        },
+        {
+          "action_type": "record_gate_and_stop",
+          "priority": "medium",
+          "description": "If PassportCard only exposes sample monthly prices publicly and requires sales, broker, or contact follow-up for a real family quote, capture that dependency explicitly as the next step for pricing.",
+          "blocking_dependency": null
+        }
+      ],
+      "required_follow_up_mode": {
+        "primary_mode": "broker_or_sales_follow_up_required",
+        "requires_personal_data": false,
+        "requires_broker_contact": true,
+        "requires_account_creation": false,
+        "public_web_review_only": false,
+        "gate_reasons": [
+          "family_quote_flow.quote_result_visibility=price_or_plan_result_visible",
+          "family_quote_flow.next_required_step=use_broker_or_sales_contact",
+          "friction.primary_barrier=country_or_residence_gating",
+          "friction.primary_barrier=policy_wording_not_public"
+        ],
+        "interpretation_note": "Boolean follow-up flags are conservative extractions from explicit family_quote_flow gates in the existing local ledger and audit only. false means not explicitly required in the reviewed artifacts, not that later steps could never require it."
+      },
+      "uncertainty_notes": [
+        "Need zone table or quote flow confirming whether Georgia sits in a supported destination zone.",
+        "Need quote or policy wording to confirm whether residents of Georgia are accepted.",
+        "Sample monthly prices on the page are illustrative and not specific to this family profile.",
+        "A direct quote/application path was not verified in this run, so quote-stage contact or verification friction remains unknown.",
+        "Discovery-only ledger entry: this record captures publicly visible ambiguity signals, not final eligibility or underwriting acceptance.",
+        "Germany home-visit treatment is source-backed, but that does not by itself prove final issuance or the exact PassportCard zone/configuration available to a Georgia-resident German family."
+      ]
+    }
+  ]
+}

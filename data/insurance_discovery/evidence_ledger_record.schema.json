@@ -1,0 +1,394 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "data/insurance_discovery/evidence_ledger_record.schema.json",
+  "title": "International Expat Health Insurance Discovery Evidence Ledger Record",
+  "description": "Canonical JSON Schema for one evidence-entry record in the discovery-stage insurance evidence ledger. This is the schema-level contract for JSONL evidence-entry lines and for wrapped JSON ledger records inside the top-level records array.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "dataset",
+    "run_scope",
+    "section",
+    "ledger_name",
+    "record_type",
+    "candidate_id",
+    "evidence_id",
+    "insurer_name",
+    "plan_name",
+    "source_origin",
+    "source_directness_classification",
+    "uncertainty_notes"
+  ],
+  "properties": {
+    "dataset": {
+      "const": "international_expat_health_insurance_discovery"
+    },
+    "run_scope": {
+      "const": "discovery_only"
+    },
+    "section": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ledger_name": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z0-9_]+$"
+    },
+    "record_type": {
+      "const": "evidence_entry"
+    },
+    "record_index": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "candidate_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:_[a-z0-9]+)*$",
+      "minLength": 3
+    },
+    "evidence_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_:-]+$",
+      "minLength": 3
+    },
+    "candidate_type": {
+      "type": "string",
+      "enum": [
+        "primary",
+        "supplemental"
+      ]
+    },
+    "insurer_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "plan_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_origin": {
+      "type": "string",
+      "enum": [
+        "shared_candidate_staging.source_refs",
+        "derived_candidate_source_ledger_reference"
+      ]
+    },
+    "source_directness_classification": {
+      "type": "string",
+      "enum": [
+        "high",
+        "medium",
+        "low"
+      ]
+    },
+    "source_directness_justification": {
+      "type": "string",
+      "minLength": 1
+    },
+    "finding_statement": {
+      "type": "string",
+      "minLength": 1
+    },
+    "evidence_excerpt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "pricing_summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "uncertainty_notes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "supporting_source_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/supportingSourceRef"
+      }
+    },
+    "citations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/citation"
+      }
+    },
+    "quote_or_application_url": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uri"
+    },
+    "broker_url": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uri"
+    },
+    "policy_wording_or_pdf_url": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uri"
+    },
+    "coverage_dimension": {
+      "type": "string",
+      "enum": [
+        "georgia",
+        "germany",
+        "worldwide_ex_us"
+      ]
+    },
+    "coverage_state": {
+      "type": "string",
+      "enum": [
+        "confirmed",
+        "inferred",
+        "unknown",
+        "explicitly_indicated",
+        "indirectly_indicated",
+        "worldwide_positioned_but_ex_us_not_verified",
+        "not_verified_from_reviewed_sources"
+      ]
+    },
+    "eligibility_ambiguity_status": {
+      "type": "string",
+      "enum": [
+        "explicit_country_selector_but_final_eligibility_unverified",
+        "residence_or_nationality_rules_visible_but_family_fit_unresolved",
+        "geography_structure_visible_but_country_fit_inferred",
+        "generic_international_positioning_only",
+        "gated_or_incomplete_public_evidence"
+      ]
+    },
+    "pricing_availability_status": {
+      "type": "string",
+      "enum": [
+        "public_pricing_available",
+        "partially_visible",
+        "quote_flow_gated",
+        "unavailable_during_discovery"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "anyOf": [
+        {
+          "required": [
+            "finding_statement"
+          ]
+        },
+        {
+          "required": [
+            "evidence_excerpt"
+          ]
+        },
+        {
+          "required": [
+            "pricing_summary"
+          ]
+        }
+      ]
+    },
+    {
+      "anyOf": [
+        {
+          "properties": {
+            "citations": {
+              "type": "array",
+              "minItems": 1
+            }
+          },
+          "required": [
+            "citations"
+          ]
+        },
+        {
+          "properties": {
+            "supporting_source_refs": {
+              "type": "array",
+              "minItems": 1
+            }
+          },
+          "required": [
+            "supporting_source_refs"
+          ]
+        }
+      ]
+    }
+  ],
+  "$defs": {
+    "citation": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "citation_id",
+        "source_type",
+        "excerpt"
+      ],
+      "properties": {
+        "citation_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_:-]+$",
+          "minLength": 3
+        },
+        "source_url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uri"
+        },
+        "source_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "excerpt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "page_reference": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "screenshot_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "screenshot_status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "supportingSourceRef": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "source_title",
+        "evidence_excerpt"
+      ],
+      "properties": {
+        "dataset_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dataset_section": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uri"
+        },
+        "source_title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_kind": {
+          "type": "string",
+          "enum": [
+            "official insurer page",
+            "official insurer page via search result",
+            "official quote page",
+            "policy wording or brochure PDF",
+            "broker page"
+          ]
+        },
+        "evidence_excerpt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "quote_or_application_url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uri"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "dataset": "international_expat_health_insurance_discovery",
+      "run_scope": "discovery_only",
+      "section": "access_and_intake_evidence_ledger",
+      "ledger_name": "access_and_intake_evidence_ledger",
+      "record_type": "evidence_entry",
+      "candidate_id": "cigna_global",
+      "evidence_id": "cigna_global:intake",
+      "candidate_type": "primary",
+      "insurer_name": "Cigna Global",
+      "plan_name": "International Health Insurance / Global Medical Cover",
+      "source_origin": "derived_candidate_source_ledger_reference",
+      "source_directness_classification": "high",
+      "source_directness_justification": "Official insurer-controlled quote path directly shows the intake step used during discovery.",
+      "finding_statement": "Quote page immediately asks for country of residence before continuing.",
+      "citations": [
+        {
+          "citation_id": "cigna_global:intake:cite1",
+          "source_url": "https://www.cignaglobal.com/quote/pages/quote/CountrySelector.html",
+          "source_type": "official quote page",
+          "page_reference": "public_quote_country_selector",
+          "excerpt": "Where will you be living for the duration of the policy?*",
+          "screenshot_path": null,
+          "screenshot_status": "not_captured_in_this_run"
+        }
+      ],
+      "uncertainty_notes": [
+        "Later steps may add account or eligibility gating that was not verified in this run."
+      ]
+    },
+    {
+      "dataset": "international_expat_health_insurance_discovery",
+      "run_scope": "discovery_only",
+      "section": "pricing_evidence_ledger",
+      "ledger_name": "pricing_evidence_ledger",
+      "record_type": "evidence_entry",
+      "candidate_id": "allianz_care",
+      "evidence_id": "allianz_care:pricing",
+      "candidate_type": "primary",
+      "insurer_name": "Allianz Care",
+      "plan_name": "Care International Health Insurance Plans",
+      "source_origin": "shared_candidate_staging.source_refs",
+      "source_directness_classification": "medium",
+      "source_directness_justification": "The reviewed pricing evidence came from an official public insurer page, but not from a completed quote result or policy wording.",
+      "pricing_summary": "A 10% promotion was publicly visible, but the usable premium remained quote-gated.",
+      "pricing_availability_status": "partially_visible",
+      "supporting_source_refs": [
+        {
+          "dataset_path": "data/insurance_discovery/global_providers.discovery.json",
+          "dataset_section": "global_providers",
+          "source_url": "https://www.allianzcare.com/en/personal-international-health-insurance.html",
+          "source_title": "International Health Insurance for Individuals | Allianz",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "10% off your international health insurance for life...",
+          "quote_or_application_url": "https://my.allianzcare.com/myquote/5"
+        }
+      ],
+      "uncertainty_notes": [
+        "The quote path was challenge-gated in this run, so public pricing may exist deeper in the flow without being verified here."
+      ]
+    }
+  ]
+}

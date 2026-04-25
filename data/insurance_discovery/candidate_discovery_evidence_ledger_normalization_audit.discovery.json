@@ -1,0 +1,646 @@
+{
+  "dataset": "international_expat_health_insurance_discovery",
+  "run_scope": "discovery_only",
+  "section": "candidate_discovery_evidence_ledger_normalization_audit",
+  "generated_from": [
+    "data/insurance_discovery/candidate_discovery_evidence_ledger.discovery.jsonl",
+    "data/insurance_discovery/candidate_discovery_evidence_ledger.discovery.json",
+    "data/insurance_discovery/evidence_ledger_record.schema.json",
+    "data/insurance_discovery/evidence_ledger_data_model.discovery.json"
+  ],
+  "validation_scope": {
+    "target_ledgers": [
+      "data/insurance_discovery/candidate_discovery_evidence_ledger.discovery.jsonl",
+      "data/insurance_discovery/candidate_discovery_evidence_ledger.discovery.json"
+    ],
+    "canonical_schema": "data/insurance_discovery/evidence_ledger_record.schema.json",
+    "validation_modes": [
+      "jsonl_parse_validation",
+      "wrapped_json_parse_validation",
+      "required_field_presence_audit",
+      "duplicate_evidence_key_audit",
+      "single_evidence_item_per_row_audit"
+    ]
+  },
+  "summary": {
+    "total_lines_in_jsonl": 55,
+    "wrapped_json_record_count": 55,
+    "parsed_records": 55,
+    "json_parse_errors": 0,
+    "records_with_all_schema_required_fields": 55,
+    "records_with_citations": 55,
+    "records_with_supporting_source_refs": 55,
+    "records_with_candidate_linkage": 55,
+    "records_with_exactly_one_citation": 55,
+    "records_with_exactly_one_supporting_source_ref": 55,
+    "duplicate_evidence_key_groups": 0,
+    "rows_flagged_for_follow_up": 0,
+    "repeated_candidate_url_groups_reviewed": 7,
+    "repeated_candidate_title_groups_reviewed": 6
+  },
+  "normalization_actions": [
+    "Rebuilt the ledger from normalized_candidate_discovery_items.discovery.json using one row per source_traceability evidence item.",
+    "Split previously multi-source candidate-level rows into discrete evidence-entry rows keyed by source_id.",
+    "Kept source attribution by carrying forward source_id, source dataset path/section, citation metadata, and candidate_source_ledger refs on every row.",
+    "Emitted both JSONL and wrapped JSON forms of the same one-evidence-item-per-row ledger for stable machine consumption.",
+    "Applied canonical deduplication on repeated candidate/source URL/source kind groups, retaining one canonical row per repeated item and merging duplicate provenance into duplicate_resolution."
+  ],
+  "issue_counts": {
+    "json_parse_errors": 0,
+    "duplicate_evidence_key_groups": 0,
+    "rows_with_multiple_citations": 0,
+    "rows_with_multiple_supporting_source_refs": 0,
+    "rows_missing_candidate_linkage": 0
+  },
+  "duplicate_evidence_key_groups": {},
+  "repeated_source_url_groups": [
+    {
+      "candidate_id": "allianz_care",
+      "source_url": "https://www.allianzcare.com/en/personal-international-health-insurance.html",
+      "source_kind": "official insurer page",
+      "row_count_before_dedupe": 2,
+      "canonical_evidence_id": "allianz_care:source:2",
+      "dropped_duplicate_evidence_ids": [
+        "allianz_care:source:1"
+      ],
+      "dedupe_disposition": "canonical_row_retained",
+      "canonical_selection_rule": "Prefer the row with the longest evidence excerpt; tie-break on richer supporting-source metadata, then earliest record_index, then evidence_id."
+    },
+    {
+      "candidate_id": "april_international",
+      "source_url": "https://www.april-international.com/en/long-term-international-health-insurance",
+      "source_kind": "official insurer page",
+      "row_count_before_dedupe": 2,
+      "canonical_evidence_id": "april_international:source:1",
+      "dropped_duplicate_evidence_ids": [
+        "april_international:source:2"
+      ],
+      "dedupe_disposition": "canonical_row_retained",
+      "canonical_selection_rule": "Prefer the row with the longest evidence excerpt; tie-break on richer supporting-source metadata, then earliest record_index, then evidence_id."
+    },
+    {
+      "candidate_id": "axa_global_healthcare",
+      "source_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/",
+      "source_kind": "official insurer page",
+      "row_count_before_dedupe": 2,
+      "canonical_evidence_id": "axa_global_healthcare:source:2",
+      "dropped_duplicate_evidence_ids": [
+        "axa_global_healthcare:source:1"
+      ],
+      "dedupe_disposition": "canonical_row_retained",
+      "canonical_selection_rule": "Prefer the row with the longest evidence excerpt; tie-break on richer supporting-source metadata, then earliest record_index, then evidence_id."
+    },
+    {
+      "candidate_id": "bupa_global",
+      "source_url": "https://www.bupaglobal.com/en/private-health-insurance",
+      "source_kind": "official insurer page",
+      "row_count_before_dedupe": 2,
+      "canonical_evidence_id": "bupa_global:source:1",
+      "dropped_duplicate_evidence_ids": [
+        "bupa_global:source:2"
+      ],
+      "dedupe_disposition": "canonical_row_retained",
+      "canonical_selection_rule": "Prefer the row with the longest evidence excerpt; tie-break on richer supporting-source metadata, then earliest record_index, then evidence_id."
+    },
+    {
+      "candidate_id": "foyer_global_health",
+      "source_url": "https://www.foyerglobalhealth.com/",
+      "source_kind": "official insurer page via search result",
+      "row_count_before_dedupe": 2,
+      "canonical_evidence_id": "foyer_global_health:source:1",
+      "dropped_duplicate_evidence_ids": [
+        "foyer_global_health:source:2"
+      ],
+      "dedupe_disposition": "canonical_row_retained",
+      "canonical_selection_rule": "Prefer the row with the longest evidence excerpt; tie-break on richer supporting-source metadata, then earliest record_index, then evidence_id."
+    },
+    {
+      "candidate_id": "msh_international",
+      "source_url": "https://www.msh-intl.com/en/individuals/",
+      "source_kind": "official insurer page",
+      "row_count_before_dedupe": 2,
+      "canonical_evidence_id": "msh_international:source:1",
+      "dropped_duplicate_evidence_ids": [
+        "msh_international:source:2"
+      ],
+      "dedupe_disposition": "canonical_row_retained",
+      "canonical_selection_rule": "Prefer the row with the longest evidence excerpt; tie-break on richer supporting-source metadata, then earliest record_index, then evidence_id."
+    },
+    {
+      "candidate_id": "william_russell",
+      "source_url": "https://www.william-russell.com/international-health-insurance/",
+      "source_kind": "official insurer page",
+      "row_count_before_dedupe": 2,
+      "canonical_evidence_id": "william_russell:source:2",
+      "dropped_duplicate_evidence_ids": [
+        "william_russell:source:1"
+      ],
+      "dedupe_disposition": "canonical_row_retained",
+      "canonical_selection_rule": "Prefer the row with the longest evidence excerpt; tie-break on richer supporting-source metadata, then earliest record_index, then evidence_id."
+    }
+  ],
+  "repeated_source_title_groups": [
+    {
+      "candidate_id": "allianz_care",
+      "source_title": "International Health Insurance for Individuals | Allianz",
+      "row_count_before_dedupe": 2,
+      "canonical_evidence_id": "allianz_care:source:2",
+      "dropped_duplicate_evidence_ids": [
+        "allianz_care:source:1"
+      ],
+      "dedupe_disposition": "canonical_row_retained"
+    },
+    {
+      "candidate_id": "april_international",
+      "source_title": "Long-term expat international health insurance | APRIL International",
+      "row_count_before_dedupe": 2,
+      "canonical_evidence_id": "april_international:source:1",
+      "dropped_duplicate_evidence_ids": [
+        "april_international:source:2"
+      ],
+      "dedupe_disposition": "canonical_row_retained"
+    },
+    {
+      "candidate_id": "axa_global_healthcare",
+      "source_title": "International Health Insurance Plans: AXA Global Healthcare",
+      "row_count_before_dedupe": 2,
+      "canonical_evidence_id": "axa_global_healthcare:source:2",
+      "dropped_duplicate_evidence_ids": [
+        "axa_global_healthcare:source:1"
+      ],
+      "dedupe_disposition": "canonical_row_retained"
+    },
+    {
+      "candidate_id": "bupa_global",
+      "source_title": "Private Health Insurance & Medical Insurance | Bupa Global",
+      "row_count_before_dedupe": 2,
+      "canonical_evidence_id": "bupa_global:source:1",
+      "dropped_duplicate_evidence_ids": [
+        "bupa_global:source:2"
+      ],
+      "dedupe_disposition": "canonical_row_retained"
+    },
+    {
+      "candidate_id": "msh_international",
+      "source_title": "International Health Insurance for Individuals - MSH",
+      "row_count_before_dedupe": 2,
+      "canonical_evidence_id": "msh_international:source:1",
+      "dropped_duplicate_evidence_ids": [
+        "msh_international:source:2"
+      ],
+      "dedupe_disposition": "canonical_row_retained"
+    },
+    {
+      "candidate_id": "william_russell",
+      "source_title": "International Health Insurance | William Russell",
+      "row_count_before_dedupe": 2,
+      "canonical_evidence_id": "william_russell:source:2",
+      "dropped_duplicate_evidence_ids": [
+        "william_russell:source:1"
+      ],
+      "dedupe_disposition": "canonical_row_retained"
+    }
+  ],
+  "row_audits": [
+    {
+      "candidate_id": "acs_expat",
+      "evidence_id": "acs_expat:source:1",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "acs_expat",
+      "evidence_id": "acs_expat:source:quote_path",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "acs_expat",
+      "evidence_id": "acs_expat:source:plan_document",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "aetna_international",
+      "evidence_id": "aetna_international:source:1",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "aetna_international",
+      "evidence_id": "aetna_international:source:quote_path",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "alc_health",
+      "evidence_id": "alc_health:source:1",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "allianz_care",
+      "evidence_id": "allianz_care:source:2",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "allianz_care",
+      "evidence_id": "allianz_care:source:quote_path",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "april_international",
+      "evidence_id": "april_international:source:1",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "april_international",
+      "evidence_id": "april_international:source:quote_path",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "axa_global_healthcare",
+      "evidence_id": "axa_global_healthcare:source:2",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "axa_global_healthcare",
+      "evidence_id": "axa_global_healthcare:source:quote_path",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "bupa_global",
+      "evidence_id": "bupa_global:source:1",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "cigna_global",
+      "evidence_id": "cigna_global:source:1",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "cigna_global",
+      "evidence_id": "cigna_global:source:quote_path",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "expatriate_group_global_health",
+      "evidence_id": "expatriate_group_global_health:source:1",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "expatriate_group_global_health",
+      "evidence_id": "expatriate_group_global_health:source:quote_path",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "expatriate_group_global_health",
+      "evidence_id": "expatriate_group_global_health:source:plan_document",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "foyer_global_health",
+      "evidence_id": "foyer_global_health:source:1",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "foyer_global_health",
+      "evidence_id": "foyer_global_health:source:quote_path",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "foyer_global_health",
+      "evidence_id": "foyer_global_health:source:plan_document",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "genki_native",
+      "evidence_id": "genki_native:source:1",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "genki_native",
+      "evidence_id": "genki_native:source:quote_path",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "geoblue_xplorer_bcbs_global_solutions",
+      "evidence_id": "geoblue_xplorer_bcbs_global_solutions:source:1",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "geoblue_xplorer_bcbs_global_solutions",
+      "evidence_id": "geoblue_xplorer_bcbs_global_solutions:source:plan_document",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "globality_health",
+      "evidence_id": "globality_health:source:1",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "globality_health",
+      "evidence_id": "globality_health:source:quote_path",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "hci_group_health_protect",
+      "evidence_id": "hci_group_health_protect:source:1",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "hci_group_health_protect",
+      "evidence_id": "hci_group_health_protect:source:quote_path",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "hci_group_health_protect",
+      "evidence_id": "hci_group_health_protect:source:plan_document",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "henner",
+      "evidence_id": "henner:source:1",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "img_global",
+      "evidence_id": "img_global:source:1",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "img_global",
+      "evidence_id": "img_global:source:quote_path",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "img_global",
+      "evidence_id": "img_global:source:plan_document",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "integra_global",
+      "evidence_id": "integra_global:source:1",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "integra_global",
+      "evidence_id": "integra_global:source:plan_document",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "medihelp_international",
+      "evidence_id": "medihelp_international:source:1",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "morgan_price",
+      "evidence_id": "morgan_price:source:1",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "morgan_price",
+      "evidence_id": "morgan_price:source:quote_path",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "morgan_price",
+      "evidence_id": "morgan_price:source:plan_document",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "msh_international",
+      "evidence_id": "msh_international:source:1",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "msh_international",
+      "evidence_id": "msh_international:source:quote_path",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "now_health_international",
+      "evidence_id": "now_health_international:source:1",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "passportcard_global",
+      "evidence_id": "passportcard_global:source:1",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "passportcard_global",
+      "evidence_id": "passportcard_global:source:plan_document",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "safetywing_nomad_complete",
+      "evidence_id": "safetywing_nomad_complete:source:1",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "safetywing_nomad_complete",
+      "evidence_id": "safetywing_nomad_complete:source:quote_path",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "safetywing_nomad_complete",
+      "evidence_id": "safetywing_nomad_complete:source:plan_document",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "securus_global_health_cover",
+      "evidence_id": "securus_global_health_cover:source:1",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "securus_global_health_cover",
+      "evidence_id": "securus_global_health_cover:source:plan_document",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "vumi",
+      "evidence_id": "vumi:source:1",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "wellaway_expat",
+      "evidence_id": "wellaway_expat:source:1",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "wellaway_expat",
+      "evidence_id": "wellaway_expat:source:quote_path",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "wellaway_expat",
+      "evidence_id": "wellaway_expat:source:plan_document",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    },
+    {
+      "candidate_id": "william_russell",
+      "evidence_id": "william_russell:source:2",
+      "has_single_citation": true,
+      "has_single_supporting_source_ref": true,
+      "has_candidate_linkage": true,
+      "issue_flags": []
+    }
+  ]
+}

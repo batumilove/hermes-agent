@@ -1,0 +1,951 @@
+{
+  "dataset": "international_expat_health_insurance_discovery",
+  "run_scope": "discovery_only",
+  "section": "access_path_contact_models",
+  "generated_from": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+  "family_context": {
+    "citizenship": "German",
+    "residence": "Georgia",
+    "adults": [
+      42,
+      37
+    ],
+    "children": 2,
+    "preferred_cover_geography": "Georgia and Germany, ideally worldwide excluding the US"
+  },
+  "method_notes": [
+    "This ledger is discovery-only and classifies how each candidate is initially reached from public evidence already staged in the repository.",
+    "direct_to_consumer_official_quote_or_application means an insurer-owned public page and an insurer-owned quote/application/signup URL were both captured on the same registrable domain family.",
+    "official_marketing_page_to_external_or_specialized_quote_flow means an official page exists but the captured quote/application flow lives on a different domain family or specialist portal, so the retail handoff is plausible but not fully verified as same-brand self-serve.",
+    "broker_or_intermediary_led means the staged evidence is broker-sourced, so no direct-to-consumer insurer path was verified in this run.",
+    "official_information_page_without_public_quote_path_verified means discovery found an official public page but did not capture a distinct quote/application URL.",
+    "legacy_brand_redirect_to_other_insurer is reserved for candidates whose public page explicitly routes new business to another insurer or platform.",
+    "Uncertainty is preserved instead of inferring hidden agent, broker, or underwriting steps from incomplete public pages."
+  ],
+  "summary": {
+    "verified_total_unique_candidates": 27,
+    "contact_model_counts": {
+      "direct_to_consumer_official_quote_or_application": 18,
+      "official_marketing_page_to_external_or_specialized_quote_flow": 2,
+      "official_information_page_without_public_quote_path_verified": 4,
+      "broker_or_intermediary_led": 2,
+      "legacy_brand_redirect_to_other_insurer": 1
+    }
+  },
+  "records": [
+    {
+      "index": 1,
+      "candidate_id": "cigna_global",
+      "insurer_name": "Cigna Global",
+      "plan_name": "International Health Insurance / Global Medical Cover",
+      "candidate_type": "primary",
+      "initial_access_path_type": "official_insurer_page_to_official_quote_or_application",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "direct_to_consumer_availability": "yes",
+      "broker_or_intermediary_only": false,
+      "official_quote_or_application_url_captured": true,
+      "primary_source_url": "https://www.cignaglobal.com/",
+      "primary_quote_or_application_url": "https://www.cignaglobal.com/quote/pages/quote/CountrySelector.html",
+      "primary_source_domain": "cignaglobal.com",
+      "primary_quote_domain": "cignaglobal.com",
+      "source_quote_same_registrable_domain_family": true,
+      "access_channel_markers": [
+        "official insurer marketing page",
+        "public quote/application/signup URL captured"
+      ],
+      "classification_reason": "Discovery includes an insurer-owned public page plus an insurer-owned quote/application or signup path on the same registrable domain family.",
+      "source_kind_basis": [
+        "official insurer page"
+      ],
+      "evidence_ledger_entries": [
+        "International Health Insurance & Global Medical Cover | Cigna; source=https://www.cignaglobal.com/; quote_or_application=https://www.cignaglobal.com/quote/pages/quote/CountrySelector.html; excerpt=Cigna says its international health insurance serves individuals and families, offers access to medical support in over 200 markets and territories, and provides flexible plans with global medical care essentials."
+      ],
+      "uncertainty_notes": [
+        "Need quote-flow or policy guide review to verify whether Georgia residence is accepted for this family profile.",
+        "Need plan documents to confirm worldwide excluding US pricing and underwriting for German citizens resident in Georgia."
+      ],
+      "relevance_status": "likely_relevant"
+    },
+    {
+      "index": 2,
+      "candidate_id": "allianz_care",
+      "insurer_name": "Allianz Care",
+      "plan_name": "Care International Health Insurance Plans",
+      "candidate_type": "primary",
+      "initial_access_path_type": "official_insurer_page_to_official_quote_or_application",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "direct_to_consumer_availability": "yes",
+      "broker_or_intermediary_only": false,
+      "official_quote_or_application_url_captured": true,
+      "primary_source_url": "https://www.allianzcare.com/en/personal-international-health-insurance.html",
+      "primary_quote_or_application_url": "https://my.allianzcare.com/myquote/5",
+      "primary_source_domain": "allianzcare.com",
+      "primary_quote_domain": "my.allianzcare.com",
+      "source_quote_same_registrable_domain_family": true,
+      "access_channel_markers": [
+        "official insurer marketing page",
+        "public quote/application/signup URL captured"
+      ],
+      "classification_reason": "Discovery includes an insurer-owned public page plus an insurer-owned quote/application or signup path on the same registrable domain family.",
+      "source_kind_basis": [
+        "official insurer page"
+      ],
+      "evidence_ledger_entries": [
+        "International Health Insurance for Individuals | Allianz; source=https://www.allianzcare.com/en/personal-international-health-insurance.html; quote_or_application=https://my.allianzcare.com/myquote/5; excerpt=Allianz states its Care international health insurance plans are designed for people who spend long periods overseas and offers dedicated paths for professionals, families, students, and nomads.",
+        "International Health Insurance for Individuals | Allianz; source=https://www.allianzcare.com/en/personal-international-health-insurance.html; quote_or_application=https://my.allianzcare.com/myquote/5; excerpt=Allianz says its Care plans are designed for people who spend long periods overseas and are aimed at individuals, families, students, nomads, professionals, and expats living, working, or studying abroad."
+      ],
+      "uncertainty_notes": [
+        "Need brochure or table of benefits to verify coverage geography options relevant to Georgia and Germany.",
+        "Need quote-flow output to confirm eligibility for residents of Georgia.",
+        "Need brochure, table of benefits, or quote output to verify Georgia-resident eligibility.",
+        "Need direct evidence for a worldwide-excluding-US configuration and family pricing."
+      ],
+      "relevance_status": "likely_relevant"
+    },
+    {
+      "index": 3,
+      "candidate_id": "bupa_global",
+      "insurer_name": "Bupa Global",
+      "plan_name": "Private Health Insurance & Medical Insurance for Individuals and Families",
+      "candidate_type": "primary",
+      "initial_access_path_type": "official_insurer_page_to_official_quote_or_application",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "direct_to_consumer_availability": "yes",
+      "broker_or_intermediary_only": false,
+      "official_quote_or_application_url_captured": true,
+      "primary_source_url": "https://www.bupaglobal.com/en/private-health-insurance",
+      "primary_quote_or_application_url": "https://www.bupaglobal.com/en/private-health-insurance",
+      "primary_source_domain": "bupaglobal.com",
+      "primary_quote_domain": "bupaglobal.com",
+      "source_quote_same_registrable_domain_family": true,
+      "access_channel_markers": [
+        "official insurer marketing page",
+        "public quote/application/signup URL captured"
+      ],
+      "classification_reason": "Discovery includes an insurer-owned public page plus an insurer-owned quote/application or signup path on the same registrable domain family.",
+      "source_kind_basis": [
+        "official insurer page"
+      ],
+      "evidence_ledger_entries": [
+        "Private Health Insurance & Medical Insurance | Bupa Global; source=https://www.bupaglobal.com/en/private-health-insurance; quote_or_application=https://www.bupaglobal.com/en/private-health-insurance; excerpt=Bupa Global's official plan selector for individuals and families includes both Georgia and Germany in the residence-country dropdown, indicating public-facing availability exploration for those markets.",
+        "Private Health Insurance & Medical Insurance | Bupa Global; source=https://www.bupaglobal.com/en/private-health-insurance; quote_or_application=https://www.bupaglobal.com/en/private-health-insurance; excerpt=Bupa Global's official individuals-and-families selector asks where the customer will be living and publicly lists both Georgia and Germany in the residence-country dropdown."
+      ],
+      "uncertainty_notes": [
+        "Need actual quote or brochure for Georgia-resident family to confirm available plans and area-of-cover options.",
+        "Need pricing and underwriting evidence; public page is mostly selector UI.",
+        "Need actual quote output or brochure to verify plan availability for a Georgia-resident German family.",
+        "Need explicit area-of-cover evidence for worldwide excluding the US."
+      ],
+      "relevance_status": "likely_relevant"
+    },
+    {
+      "index": 4,
+      "candidate_id": "axa_global_healthcare",
+      "insurer_name": "AXA Global Healthcare",
+      "plan_name": "International Health Insurance Plans",
+      "candidate_type": "primary",
+      "initial_access_path_type": "official_insurer_page_to_official_quote_or_application",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "direct_to_consumer_availability": "yes",
+      "broker_or_intermediary_only": false,
+      "official_quote_or_application_url_captured": true,
+      "primary_source_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/",
+      "primary_quote_or_application_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/get-a-quote/?camp=online-default",
+      "primary_source_domain": "axaglobalhealthcare.com",
+      "primary_quote_domain": "axaglobalhealthcare.com",
+      "source_quote_same_registrable_domain_family": true,
+      "access_channel_markers": [
+        "official insurer marketing page",
+        "public quote/application/signup URL captured"
+      ],
+      "classification_reason": "Discovery includes an insurer-owned public page plus an insurer-owned quote/application or signup path on the same registrable domain family.",
+      "source_kind_basis": [
+        "official insurer page"
+      ],
+      "evidence_ledger_entries": [
+        "International Health Insurance Plans: AXA Global Healthcare; source=https://www.axaglobalhealthcare.com/en/international-health-insurance/; quote_or_application=https://www.axaglobalhealthcare.com/en/international-health-insurance/get-a-quote/?camp=online-default; excerpt=AXA describes its product as international private health insurance for people living abroad or travelling overseas frequently, with treatment anywhere within the selected region of cover.",
+        "International Health Insurance Plans: AXA Global Healthcare; source=https://www.axaglobalhealthcare.com/en/international-health-insurance/; quote_or_application=https://www.axaglobalhealthcare.com/en/international-health-insurance/get-a-quote/?camp=online-default; excerpt=AXA describes international health insurance for people living abroad or travelling overseas frequently, with five cover levels and an explicit step allowing customers to choose whether to include the USA."
+      ],
+      "uncertainty_notes": [
+        "Need quote-flow or brochure to verify exact geography bands including Georgia and Germany.",
+        "Need family pricing and underwriting specifics.",
+        "Need quote or policy documents to confirm Georgian residency acceptance.",
+        "Need exact Germany/Georgia area-of-cover rules and pricing for a family of four."
+      ],
+      "relevance_status": "likely_relevant"
+    },
+    {
+      "index": 5,
+      "candidate_id": "april_international",
+      "insurer_name": "APRIL International",
+      "plan_name": "Long-term Expat International Health Insurance",
+      "candidate_type": "primary",
+      "initial_access_path_type": "official_insurer_page_to_official_quote_or_application",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "direct_to_consumer_availability": "yes",
+      "broker_or_intermediary_only": false,
+      "official_quote_or_application_url_captured": true,
+      "primary_source_url": "https://www.april-international.com/en/long-term-international-health-insurance",
+      "primary_quote_or_application_url": "https://www.april-international.com/en",
+      "primary_source_domain": "april-international.com",
+      "primary_quote_domain": "april-international.com",
+      "source_quote_same_registrable_domain_family": true,
+      "access_channel_markers": [
+        "official insurer marketing page",
+        "public quote/application/signup URL captured"
+      ],
+      "classification_reason": "Discovery includes an insurer-owned public page plus an insurer-owned quote/application or signup path on the same registrable domain family.",
+      "source_kind_basis": [
+        "official insurer page"
+      ],
+      "evidence_ledger_entries": [
+        "Long-term expat international health insurance | APRIL International; source=https://www.april-international.com/en/long-term-international-health-insurance; quote_or_application=https://www.april-international.com/en; excerpt=APRIL positions this as long-term international health insurance for expatriates and globally mobile individuals staying abroad longer than 12 months, with worldwide cover depending on area of cover. The country selector excerpt includes Germany.",
+        "Long-term expat international health insurance | APRIL International; source=https://www.april-international.com/en/long-term-international-health-insurance; quote_or_application=https://www.april-international.com/en; excerpt=APRIL positions the product for expatriates and globally mobile people staying abroad longer than 12 months, says policies are annually renewable, and states that worldwide cover depends on the selected geographic area."
+      ],
+      "uncertainty_notes": [
+        "Need full quote-flow or benefits guide to verify Georgia selection and geography bands.",
+        "Need pricing and family underwriting details.",
+        "Need quote-flow or benefits guide to verify Georgia selection and geography bands.",
+        "Need pricing and underwriting details for the specific family profile."
+      ],
+      "relevance_status": "likely_relevant"
+    },
+    {
+      "index": 6,
+      "candidate_id": "william_russell",
+      "insurer_name": "William Russell",
+      "plan_name": "International Health Insurance",
+      "candidate_type": "primary",
+      "initial_access_path_type": "official_insurer_page_to_official_quote_or_application",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "direct_to_consumer_availability": "yes",
+      "broker_or_intermediary_only": false,
+      "official_quote_or_application_url_captured": true,
+      "primary_source_url": "https://www.william-russell.com/international-health-insurance/",
+      "primary_quote_or_application_url": "https://www.william-russell.com/international-health-insurance/",
+      "primary_source_domain": "william-russell.com",
+      "primary_quote_domain": "william-russell.com",
+      "source_quote_same_registrable_domain_family": true,
+      "access_channel_markers": [
+        "official insurer marketing page",
+        "public quote/application/signup URL captured"
+      ],
+      "classification_reason": "Discovery includes an insurer-owned public page plus an insurer-owned quote/application or signup path on the same registrable domain family.",
+      "source_kind_basis": [
+        "official insurer page"
+      ],
+      "evidence_ledger_entries": [
+        "International Health Insurance | William Russell; source=https://www.william-russell.com/international-health-insurance/; quote_or_application=https://www.william-russell.com/international-health-insurance/; excerpt=William Russell describes its product as international health insurance for expats and people living, working, or studying abroad, with members able to choose doctors or hospitals within their coverage zone.",
+        "International Health Insurance | William Russell; source=https://www.william-russell.com/international-health-insurance/; quote_or_application=https://apps.william-russell.com/quote/individual/; excerpt=William Russell markets international health insurance for expats, digital nomads, families, and students living, working, or studying abroad, with freedom to choose any doctor or hospital within the coverage zone."
+      ],
+      "uncertainty_notes": [
+        "Need quote results or policy wording to confirm Georgia residence acceptance.",
+        "Need confirmation of Germany/Georgia geography band and family rates.",
+        "Need quote or policy wording to confirm Georgian residency acceptance and geography band details.",
+        "Need family pricing and underwriting evidence."
+      ],
+      "relevance_status": "likely_relevant"
+    },
+    {
+      "index": 7,
+      "candidate_id": "msh_international",
+      "insurer_name": "MSH International",
+      "plan_name": "First'Expat+ / International Health Insurance for Individuals",
+      "candidate_type": "primary",
+      "initial_access_path_type": "official_insurer_page_to_official_quote_or_application",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "direct_to_consumer_availability": "yes",
+      "broker_or_intermediary_only": false,
+      "official_quote_or_application_url_captured": true,
+      "primary_source_url": "https://www.msh-intl.com/en/individuals/",
+      "primary_quote_or_application_url": "https://www.msh-intl.com/en/comparisons-offers-msh",
+      "primary_source_domain": "msh-intl.com",
+      "primary_quote_domain": "msh-intl.com",
+      "source_quote_same_registrable_domain_family": true,
+      "access_channel_markers": [
+        "official insurer marketing page",
+        "public quote/application/signup URL captured"
+      ],
+      "classification_reason": "Discovery includes an insurer-owned public page plus an insurer-owned quote/application or signup path on the same registrable domain family.",
+      "source_kind_basis": [
+        "official insurer page"
+      ],
+      "evidence_ledger_entries": [
+        "International Health Insurance for Individuals - MSH; source=https://www.msh-intl.com/en/individuals/; quote_or_application=https://www.msh-intl.com/en/comparisons-offers-msh; excerpt=MSH presents First'Expat+ as a comprehensive, flexible international health insurance plan for individuals and frames itself as a healthcare partner for mobility needs with 24/7 support.",
+        "International Health Insurance for Individuals - MSH; source=https://www.msh-intl.com/en/individuals/; quote_or_application=https://www.msh-intl.com/en/comparisons-offers-msh; excerpt=MSH presents First'Expat+ as a comprehensive, flexible international health insurance plan with 100% coverage and frames itself as a healthcare partner for mobility needs."
+      ],
+      "uncertainty_notes": [
+        "Need plan comparison output or PDF wording to confirm eligible residence/country combinations.",
+        "Need family suitability and pricing evidence.",
+        "Need product comparison or policy wording to confirm geography fit for Georgia and Germany.",
+        "Need explicit family suitability and pricing evidence."
+      ],
+      "relevance_status": "likely_relevant"
+    },
+    {
+      "index": 8,
+      "candidate_id": "now_health_international",
+      "insurer_name": "Now Health International",
+      "plan_name": "SimpleCare / WorldCare International Health Insurance Plans",
+      "candidate_type": "primary",
+      "initial_access_path_type": "official_insurer_page_to_official_quote_or_application",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "direct_to_consumer_availability": "yes",
+      "broker_or_intermediary_only": false,
+      "official_quote_or_application_url_captured": true,
+      "primary_source_url": "https://www.now-health.com/en/insurance-plans/",
+      "primary_quote_or_application_url": "https://www.now-health.com/en/insurance-plans/",
+      "primary_source_domain": "now-health.com",
+      "primary_quote_domain": "now-health.com",
+      "source_quote_same_registrable_domain_family": true,
+      "access_channel_markers": [
+        "official insurer marketing page",
+        "public quote/application/signup URL captured"
+      ],
+      "classification_reason": "Discovery includes an insurer-owned public page plus an insurer-owned quote/application or signup path on the same registrable domain family.",
+      "source_kind_basis": [
+        "official insurer page"
+      ],
+      "evidence_ledger_entries": [
+        "Compare International Health Insurance Plans from Now Health; source=https://www.now-health.com/en/insurance-plans/; quote_or_application=https://www.now-health.com/en/insurance-plans/; excerpt=Now Health compares seven international plan options across SimpleCare and WorldCare product lines and includes evacuation/repatriation and optional USA treatment mechanics in the public comparison table."
+      ],
+      "uncertainty_notes": [
+        "Need member handbook or quote flow to verify geography bands and Georgian residency eligibility.",
+        "Need family pricing and underwriting specifics."
+      ],
+      "relevance_status": "likely_relevant"
+    },
+    {
+      "index": 9,
+      "candidate_id": "img_global",
+      "insurer_name": "IMG (International Medical Group)",
+      "plan_name": "Global Medical international health insurance",
+      "candidate_type": "primary",
+      "initial_access_path_type": "official_insurer_page_to_official_quote_or_application",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "direct_to_consumer_availability": "yes",
+      "broker_or_intermediary_only": false,
+      "official_quote_or_application_url_captured": true,
+      "primary_source_url": "https://www.imglobal.com/",
+      "primary_quote_or_application_url": "https://www.imglobal.com/international-health-insurance",
+      "primary_source_domain": "imglobal.com",
+      "primary_quote_domain": "imglobal.com",
+      "source_quote_same_registrable_domain_family": true,
+      "access_channel_markers": [
+        "official insurer marketing page",
+        "public quote/application/signup URL captured"
+      ],
+      "classification_reason": "Discovery includes an insurer-owned public page plus an insurer-owned quote/application or signup path on the same registrable domain family.",
+      "source_kind_basis": [
+        "official insurer page"
+      ],
+      "evidence_ledger_entries": [
+        "International Health & Travel Medical Insurance - IMG; source=https://www.imglobal.com/; quote_or_application=https://www.imglobal.com/international-health-insurance; excerpt=IMG states that its international health insurance offers annually renewable private medical coverage for expats and global citizens living or working internationally, with Global Medical Silver, Gold, and Platinum plans."
+      ],
+      "uncertainty_notes": [
+        "Need Global Medical plan docs or quote flow to verify country eligibility and area-of-cover choices.",
+        "Need suitability check because some IMG products are travel-medical rather than full expat medical."
+      ],
+      "relevance_status": "possibly_relevant"
+    },
+    {
+      "index": 10,
+      "candidate_id": "aetna_international",
+      "insurer_name": "Aetna International",
+      "plan_name": "Aetna International global healthcare entrypoint",
+      "candidate_type": "primary",
+      "initial_access_path_type": "official_insurer_page_to_external_quote_or_portal",
+      "contact_model": "official_marketing_page_to_external_or_specialized_quote_flow",
+      "direct_to_consumer_availability": "uncertain_but_plausible",
+      "broker_or_intermediary_only": false,
+      "official_quote_or_application_url_captured": true,
+      "primary_source_url": "https://www.aetnainternational.com/",
+      "primary_quote_or_application_url": "https://www.aetna.com/employers-organizations/aetna-international-insurance.html",
+      "primary_source_domain": "aetnainternational.com",
+      "primary_quote_domain": "aetna.com",
+      "source_quote_same_registrable_domain_family": false,
+      "access_channel_markers": [
+        "official insurer marketing page",
+        "public quote/application/signup URL captured"
+      ],
+      "classification_reason": "An official marketing page points to a quote/application flow on a different domain family, which looks like a sales/portal handoff but not a fully self-contained same-domain retail path.",
+      "source_kind_basis": [
+        "official insurer page"
+      ],
+      "evidence_ledger_entries": [
+        "Home | Aetna; source=https://www.aetnainternational.com/; quote_or_application=https://www.aetna.com/employers-organizations/aetna-international-insurance.html; excerpt=Aetna International says it serves globally mobile members with access to quality care and support wherever they are, with provider network access in 200+ countries and territories."
+      ],
+      "uncertainty_notes": [
+        "Need an individual/family-specific public plan page or broker evidence to confirm retail availability for this profile.",
+        "Need pricing and underwriting evidence; Aetna may skew employer/group depending on market."
+      ],
+      "relevance_status": "possibly_relevant"
+    },
+    {
+      "index": 11,
+      "candidate_id": "foyer_global_health",
+      "insurer_name": "Foyer Global Health",
+      "plan_name": "Expat Health Insurance / International Health Insurance comparison",
+      "candidate_type": "primary",
+      "initial_access_path_type": "official_insurer_page_to_official_quote_or_application",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "direct_to_consumer_availability": "yes",
+      "broker_or_intermediary_only": false,
+      "official_quote_or_application_url_captured": true,
+      "primary_source_url": "https://www.foyerglobalhealth.com/",
+      "primary_quote_or_application_url": "https://www.foyerglobalhealth.com/plans-services/our-plans/international-health-insurance-comparison/",
+      "primary_source_domain": "foyerglobalhealth.com",
+      "primary_quote_domain": "foyerglobalhealth.com",
+      "source_quote_same_registrable_domain_family": true,
+      "access_channel_markers": [
+        "official insurer marketing page",
+        "public quote/application/signup URL captured"
+      ],
+      "classification_reason": "Discovery includes an insurer-owned public page plus an insurer-owned quote/application or signup path on the same registrable domain family.",
+      "source_kind_basis": [
+        "official insurer page via search result",
+        "official insurer page"
+      ],
+      "evidence_ledger_entries": [
+        "Foyer Global Health: Expat Health Insurance; source=https://www.foyerglobalhealth.com/; quote_or_application=https://www.foyerglobalhealth.com/plans-services/our-plans/international-health-insurance-comparison/; excerpt=The official search result describes Foyer Global Health as an international health insurance and service provider for digital nomads, expats, and globally mobile people; a public plan comparison page is also available.",
+        "Expat Health Insurance | Foyer Global Health; source=https://www.foyerglobalhealth.com/; quote_or_application=https://www.foyerglobalhealth.com/quick-quote-and-online-application/; excerpt=Foyer Global Health says it provides international health insurance for expats, digital nomads, globally mobile people, and families moving abroad, and describes its health coverage as worldwide and flexible."
+      ],
+      "uncertainty_notes": [
+        "Need direct page extraction or brochure review for stronger evidence.",
+        "Added as an eleventh backup provider to keep the shortlist above the required minimum of 10.",
+        "Need plan comparison details or policy wording to confirm Georgia-resident eligibility.",
+        "Need exact geography split and pricing for this family profile."
+      ],
+      "relevance_status": "likely_relevant"
+    },
+    {
+      "index": 12,
+      "candidate_id": "henner",
+      "insurer_name": "Henner",
+      "plan_name": "Individuals & Families international health solutions",
+      "candidate_type": "primary",
+      "initial_access_path_type": "official_insurer_page_to_official_quote_or_application",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "direct_to_consumer_availability": "yes",
+      "broker_or_intermediary_only": false,
+      "official_quote_or_application_url_captured": true,
+      "primary_source_url": "https://www.henner.com/en/customers/individuals-families/",
+      "primary_quote_or_application_url": "https://www.henner.com/en/customers/individuals-families/",
+      "primary_source_domain": "henner.com",
+      "primary_quote_domain": "henner.com",
+      "source_quote_same_registrable_domain_family": true,
+      "access_channel_markers": [
+        "official insurer marketing page",
+        "public quote/application/signup URL captured"
+      ],
+      "classification_reason": "Discovery includes an insurer-owned public page plus an insurer-owned quote/application or signup path on the same registrable domain family.",
+      "source_kind_basis": [
+        "official insurer page"
+      ],
+      "evidence_ledger_entries": [
+        "Individuals & Families - Henner; source=https://www.henner.com/en/customers/individuals-families/; quote_or_application=https://www.henner.com/en/customers/individuals-families/; excerpt=Henner says it has developed unique expertise in personal insurance for people living abroad, offers international health insurance tailored to all lifestyles, and works with healthcare professionals in 240 countries."
+      ],
+      "uncertainty_notes": [
+        "Need product-specific public plan page, brochure, or broker evidence to identify exact retail plan names.",
+        "Need quote or underwriting evidence for Georgian residency and family pricing."
+      ],
+      "relevance_status": "possibly_relevant"
+    },
+    {
+      "index": 13,
+      "candidate_id": "globality_health",
+      "insurer_name": "Globality Health",
+      "plan_name": "YouGenio individual international health insurance plans",
+      "candidate_type": "primary",
+      "initial_access_path_type": "official_insurer_page_to_official_quote_or_application",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "direct_to_consumer_availability": "yes",
+      "broker_or_intermediary_only": false,
+      "official_quote_or_application_url_captured": true,
+      "primary_source_url": "https://www.globality-health.com/",
+      "primary_quote_or_application_url": "https://application.globality-health.com/?locale=en",
+      "primary_source_domain": "globality-health.com",
+      "primary_quote_domain": "application.globality-health.com",
+      "source_quote_same_registrable_domain_family": true,
+      "access_channel_markers": [
+        "official insurer marketing page",
+        "public quote/application/signup URL captured"
+      ],
+      "classification_reason": "Discovery includes an insurer-owned public page plus an insurer-owned quote/application or signup path on the same registrable domain family.",
+      "source_kind_basis": [
+        "official insurer page"
+      ],
+      "evidence_ledger_entries": [
+        "International Health Insurance for Expats - Globality Health; source=https://www.globality-health.com/; quote_or_application=https://application.globality-health.com/?locale=en; excerpt=Globality Health describes itself as an international health insurer for expatriates and says its YouGenio individual plans offer comprehensive coverage with various plan levels tailored to personal needs."
+      ],
+      "uncertainty_notes": [
+        "Need plan-page or brochure review to confirm residency/citizenship rules relevant to German citizens living in Georgia.",
+        "Need exact area-of-cover and family-pricing evidence."
+      ],
+      "relevance_status": "possibly_relevant"
+    },
+    {
+      "index": 14,
+      "candidate_id": "morgan_price",
+      "insurer_name": "Morgan Price International Healthcare",
+      "plan_name": "Evolution Health / Flexible Choices individual international healthcare plans",
+      "candidate_type": "primary",
+      "initial_access_path_type": "official_insurer_page_to_official_quote_or_application",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "direct_to_consumer_availability": "yes",
+      "broker_or_intermediary_only": false,
+      "official_quote_or_application_url_captured": true,
+      "primary_source_url": "https://www.morgan-price.com/individual/",
+      "primary_quote_or_application_url": "https://morgan-price.com/quick-quote/",
+      "primary_source_domain": "morgan-price.com",
+      "primary_quote_domain": "morgan-price.com",
+      "source_quote_same_registrable_domain_family": true,
+      "access_channel_markers": [
+        "official insurer marketing page",
+        "public quote/application/signup URL captured"
+      ],
+      "classification_reason": "Discovery includes an insurer-owned public page plus an insurer-owned quote/application or signup path on the same registrable domain family.",
+      "source_kind_basis": [
+        "official insurer page"
+      ],
+      "evidence_ledger_entries": [
+        "International Healthcare Insurance Plans for Expats | Morgan Price International Healthcare; source=https://www.morgan-price.com/individual/; quote_or_application=https://morgan-price.com/quick-quote/; excerpt=Morgan Price says Evolution Health is an expatriate health insurance product for expatriates and eligible dependants, includes home-country cover excluding USA, and publishes policy wording and tables of benefits on the public page."
+      ],
+      "uncertainty_notes": [
+        "Need policy wording review to see whether residents of Georgia are eligible.",
+        "Need to reconcile residence exclusions and geography zones for this family profile."
+      ],
+      "relevance_status": "likely_relevant"
+    },
+    {
+      "index": 15,
+      "candidate_id": "passportcard_global",
+      "insurer_name": "PassportCard",
+      "plan_name": "Expat Basic / Expat Comprehensive / Executive",
+      "candidate_type": "supplemental",
+      "initial_access_path_type": "official_insurer_information_page",
+      "contact_model": "official_information_page_without_public_quote_path_verified",
+      "direct_to_consumer_availability": "uncertain",
+      "broker_or_intermediary_only": false,
+      "official_quote_or_application_url_captured": false,
+      "primary_source_url": "https://www.passportcard.de/en/international-health-insurance/",
+      "primary_quote_or_application_url": null,
+      "primary_source_domain": "passportcard.de",
+      "primary_quote_domain": null,
+      "source_quote_same_registrable_domain_family": false,
+      "access_channel_markers": [
+        "official insurer marketing page"
+      ],
+      "classification_reason": "Official insurer evidence exists, but this run did not capture a distinct public quote/application URL for a direct purchase path.",
+      "source_kind_basis": [
+        "official insurer page"
+      ],
+      "evidence_ledger_entries": [
+        "International health insurance for expats & nomads | PassportCard; source=https://www.passportcard.de/en/international-health-insurance/; excerpt=PassportCard says it offers international private health insurance for expats, students, and digital nomads, advertises worldwide medical coverage for long-term stays abroad, and shows three plan tiers with example EUR pricing."
+      ],
+      "uncertainty_notes": [
+        "Need quote or policy wording to confirm whether residents of Georgia are accepted.",
+        "Sample monthly prices on the page are illustrative and not specific to this family profile."
+      ],
+      "relevance_status": "possibly_relevant"
+    },
+    {
+      "index": 16,
+      "candidate_id": "vumi",
+      "insurer_name": "VUMI",
+      "plan_name": "Absolute VIP / Universal VIP / Special VIP / Access VIP product family",
+      "candidate_type": "supplemental",
+      "initial_access_path_type": "official_insurer_information_page",
+      "contact_model": "official_information_page_without_public_quote_path_verified",
+      "direct_to_consumer_availability": "uncertain",
+      "broker_or_intermediary_only": false,
+      "official_quote_or_application_url_captured": false,
+      "primary_source_url": "https://www.vumigroup.com/",
+      "primary_quote_or_application_url": null,
+      "primary_source_domain": "vumigroup.com",
+      "primary_quote_domain": null,
+      "source_quote_same_registrable_domain_family": false,
+      "access_channel_markers": [
+        "official insurer marketing page"
+      ],
+      "classification_reason": "Official insurer evidence exists, but this run did not capture a distinct public quote/application URL for a direct purchase path.",
+      "source_kind_basis": [
+        "official insurer page"
+      ],
+      "evidence_ledger_entries": [
+        "Home - VUMI; source=https://www.vumigroup.com/; excerpt=VUMI's homepage markets international health insurance with worldwide coverage, says its solutions protect you and your family anywhere anytime, and lists multiple long-term medical plan families plus a Europe region selector."
+      ],
+      "uncertainty_notes": [
+        "Need a Europe-market quote or plan overview to verify Georgian residency acceptance and practical availability for this family.",
+        "Need plan documents to distinguish broad IPMI products from any more region-specific offerings."
+      ],
+      "relevance_status": "possibly_relevant"
+    },
+    {
+      "index": 17,
+      "candidate_id": "integra_global",
+      "insurer_name": "Integra Global",
+      "plan_name": "yourLife / PremierLife / yourFamily / PremierFamily",
+      "candidate_type": "supplemental",
+      "initial_access_path_type": "broker_plan_page",
+      "contact_model": "broker_or_intermediary_led",
+      "direct_to_consumer_availability": "no_public_direct_path_verified",
+      "broker_or_intermediary_only": true,
+      "official_quote_or_application_url_captured": false,
+      "primary_source_url": "https://www.internationalinsurance.com/integra-global/",
+      "primary_quote_or_application_url": null,
+      "primary_source_domain": "internationalinsurance.com",
+      "primary_quote_domain": null,
+      "source_quote_same_registrable_domain_family": false,
+      "access_channel_markers": [
+        "broker/intermediary plan page"
+      ],
+      "classification_reason": "Only broker/intermediary evidence is staged for this candidate, so discovery currently starts through a broker rather than a verified insurer-owned quote path.",
+      "source_kind_basis": [
+        "broker plan page"
+      ],
+      "evidence_ledger_entries": [
+        "Integra Health Insurance | Integra Expat Medical Plan; source=https://www.internationalinsurance.com/integra-global/; excerpt=The broker page describes Integra Global as international health insurance for expatriates, globally mobile individuals, and families, and explicitly lists two coverage areas: worldwide and worldwide excluding the U.S., Canada, and their territories."
+      ],
+      "uncertainty_notes": [
+        "This evidence is broker-sourced rather than directly from an official insurer page.",
+        "Need official plan wording or quote output to confirm eligibility for German citizens resident in Georgia."
+      ],
+      "relevance_status": "possibly_relevant"
+    },
+    {
+      "index": 18,
+      "candidate_id": "medihelp_international",
+      "insurer_name": "MediHelp International",
+      "plan_name": "My Global Health individual plans: Blue / Azure / Cobalt / Admiral / Royal",
+      "candidate_type": "supplemental",
+      "initial_access_path_type": "official_insurer_information_page",
+      "contact_model": "official_information_page_without_public_quote_path_verified",
+      "direct_to_consumer_availability": "uncertain",
+      "broker_or_intermediary_only": false,
+      "official_quote_or_application_url_captured": false,
+      "primary_source_url": "https://www.medihelp-assistance.com/en/medihelp-plans/individual-plans",
+      "primary_quote_or_application_url": null,
+      "primary_source_domain": "medihelp-assistance.com",
+      "primary_quote_domain": null,
+      "source_quote_same_registrable_domain_family": false,
+      "access_channel_markers": [
+        "official insurer marketing page"
+      ],
+      "classification_reason": "Official insurer evidence exists, but this run did not capture a distinct public quote/application URL for a direct purchase path.",
+      "source_kind_basis": [
+        "official insurer page"
+      ],
+      "evidence_ledger_entries": [
+        "Individual plans | MediHelp International; source=https://www.medihelp-assistance.com/en/medihelp-plans/individual-plans; excerpt=MediHelp's official individual-plans page says My Global Health offers international coverage and top medical services worldwide, allows freedom to choose the doctor and clinic, and lists five individual plan tiers."
+      ],
+      "uncertainty_notes": [
+        "Need underwriting territory and residence-country rules for Georgia.",
+        "Need family-plan or dependent-enrollment details beyond the individual-plan landing page."
+      ],
+      "relevance_status": "possibly_relevant"
+    },
+    {
+      "index": 19,
+      "candidate_id": "alc_health",
+      "insurer_name": "ALC Health",
+      "plan_name": "Global Prima Medical Insurance / Flying Colours legacy entrypoints",
+      "candidate_type": "supplemental",
+      "initial_access_path_type": "official_legacy_page_with_new_business_redirect",
+      "contact_model": "legacy_brand_redirect_to_other_insurer",
+      "direct_to_consumer_availability": "legacy_only_redirects_for_new_business",
+      "broker_or_intermediary_only": false,
+      "official_quote_or_application_url_captured": false,
+      "primary_source_url": "https://www.alchealth.com/",
+      "primary_quote_or_application_url": null,
+      "primary_source_domain": "alchealth.com",
+      "primary_quote_domain": null,
+      "source_quote_same_registrable_domain_family": false,
+      "access_channel_markers": [
+        "official insurer marketing page"
+      ],
+      "classification_reason": "Public evidence shows a legacy insurer-branded page, but new-business contact is redirected to IMG rather than retained on the original brand path.",
+      "source_kind_basis": [
+        "official insurer page"
+      ],
+      "evidence_ledger_entries": [
+        "Global Health and International Medical Insurance For Expatriates; source=https://www.alchealth.com/; excerpt=ALC Health's homepage advertises global health and international medical insurance for expatriates, local nationals, and international travellers worldwide, includes an Individuals & Families path, and notes that new business quotes and sales moved to IMG's updated international website."
+      ],
+      "uncertainty_notes": [
+        "Need to follow the IMG migration path to confirm which current IMG products replace the older ALC entrypoints.",
+        "Need current policy documents because the landing page mixes legacy servicing information with new-business routing."
+      ],
+      "relevance_status": "excluded"
+    },
+    {
+      "index": 20,
+      "candidate_id": "geoblue_xplorer_bcbs_global_solutions",
+      "insurer_name": "Blue Cross Blue Shield Global Solutions (formerly GeoBlue Xplorer)",
+      "plan_name": "Worldwide Premier / Outside U.S. / Outside U.S. Select",
+      "candidate_type": "supplemental",
+      "initial_access_path_type": "broker_plan_page",
+      "contact_model": "broker_or_intermediary_led",
+      "direct_to_consumer_availability": "no_public_direct_path_verified",
+      "broker_or_intermediary_only": true,
+      "official_quote_or_application_url_captured": false,
+      "primary_source_url": "https://www.internationalinsurance.com/geoblue/xplorer/",
+      "primary_quote_or_application_url": null,
+      "primary_source_domain": "internationalinsurance.com",
+      "primary_quote_domain": null,
+      "source_quote_same_registrable_domain_family": false,
+      "access_channel_markers": [
+        "broker/intermediary plan page"
+      ],
+      "classification_reason": "Only broker/intermediary evidence is staged for this candidate, so discovery currently starts through a broker rather than a verified insurer-owned quote path.",
+      "source_kind_basis": [
+        "broker plan page"
+      ],
+      "evidence_ledger_entries": [
+        "GeoBlue Health Insurance Plan - GeoBlue Xplorer; source=https://www.internationalinsurance.com/geoblue/xplorer/; excerpt=The broker page says the rebranded BCBS Global Solutions plans serve expatriates, global citizens, and families residing overseas, and that the Outside U.S. plan does not include U.S. coverage."
+      ],
+      "uncertainty_notes": [
+        "This product may be more suitable for U.S. citizens abroad or people with U.S. coverage links than for a German family resident in Georgia.",
+        "Need direct eligibility rules to verify whether this family profile can actually enroll."
+      ],
+      "relevance_status": "excluded"
+    },
+    {
+      "index": 21,
+      "candidate_id": "safetywing_nomad_complete",
+      "insurer_name": "SafetyWing",
+      "plan_name": "Nomad Insurance Complete",
+      "candidate_type": "supplemental",
+      "initial_access_path_type": "official_insurer_page_to_official_quote_or_application",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "direct_to_consumer_availability": "yes",
+      "broker_or_intermediary_only": false,
+      "official_quote_or_application_url_captured": true,
+      "primary_source_url": "https://explore.safetywing.com/nomad-insurance-complete",
+      "primary_quote_or_application_url": "https://safetywing.com/signup?product=nomad-health",
+      "primary_source_domain": "explore.safetywing.com",
+      "primary_quote_domain": "safetywing.com",
+      "source_quote_same_registrable_domain_family": true,
+      "access_channel_markers": [
+        "official insurer marketing page",
+        "public quote/application/signup URL captured"
+      ],
+      "classification_reason": "Discovery includes an insurer-owned public page plus an insurer-owned quote/application or signup path on the same registrable domain family.",
+      "source_kind_basis": [
+        "official insurer page"
+      ],
+      "evidence_ledger_entries": [
+        "SafetyWing | Complete Health And Travel Insurance For Nomads; source=https://explore.safetywing.com/nomad-insurance-complete; quote_or_application=https://safetywing.com/signup?product=nomad-health; excerpt=SafetyWing describes Nomad Insurance Complete as full health and travel insurance for digital nomads, expats, remote workers, and families living abroad, with global coverage and an add-on for Hong Kong, Singapore, and the US."
+      ],
+      "uncertainty_notes": [
+        "Need policy wording or quote results to verify residence-country acceptance for a German family living in Georgia.",
+        "Need exact Germany/Georgia geography treatment and underwriting details beyond the marketing page."
+      ],
+      "relevance_status": "likely_relevant"
+    },
+    {
+      "index": 22,
+      "candidate_id": "genki_native",
+      "insurer_name": "Genki",
+      "plan_name": "Native / international health insurance",
+      "candidate_type": "supplemental",
+      "initial_access_path_type": "official_insurer_page_to_official_quote_or_application",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "direct_to_consumer_availability": "yes",
+      "broker_or_intermediary_only": false,
+      "official_quote_or_application_url_captured": true,
+      "primary_source_url": "https://genki.world/",
+      "primary_quote_or_application_url": "https://consultation.genki.world/v2",
+      "primary_source_domain": "genki.world",
+      "primary_quote_domain": "consultation.genki.world",
+      "source_quote_same_registrable_domain_family": true,
+      "access_channel_markers": [
+        "official insurer marketing page",
+        "public quote/application/signup URL captured"
+      ],
+      "classification_reason": "Discovery includes an insurer-owned public page plus an insurer-owned quote/application or signup path on the same registrable domain family.",
+      "source_kind_basis": [
+        "official insurer page"
+      ],
+      "evidence_ledger_entries": [
+        "Genki • Health Insurance for Digital Nomads; source=https://genki.world/; quote_or_application=https://consultation.genki.world/v2; excerpt=Genki says it offers two health-insurance options for digital nomads, including an international health insurance option, covers treatment at every licensed healthcare provider worldwide, and lets users get an instant price online."
+      ],
+      "uncertainty_notes": [
+        "Need the specific Native/Resident product page or policy wording to verify whether this is a full expat-medical fit for a Germany/Georgia family rather than a lighter nomad-oriented product.",
+        "Need residence eligibility and family-plan details."
+      ],
+      "relevance_status": "possibly_relevant"
+    },
+    {
+      "index": 23,
+      "candidate_id": "acs_expat",
+      "insurer_name": "ACS",
+      "plan_name": "ACS Expat",
+      "candidate_type": "supplemental",
+      "initial_access_path_type": "official_insurer_page_to_official_quote_or_application",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "direct_to_consumer_availability": "yes",
+      "broker_or_intermediary_only": false,
+      "official_quote_or_application_url_captured": true,
+      "primary_source_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat/",
+      "primary_quote_or_application_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat-quote-request/",
+      "primary_source_domain": "acs-ami.com",
+      "primary_quote_domain": "acs-ami.com",
+      "source_quote_same_registrable_domain_family": true,
+      "access_channel_markers": [
+        "official insurer marketing page",
+        "public quote/application/signup URL captured",
+        "public plan-document links also noted"
+      ],
+      "classification_reason": "Discovery includes an insurer-owned public page plus an insurer-owned quote/application or signup path on the same registrable domain family.",
+      "source_kind_basis": [
+        "official insurer page",
+        "official brochure/PDF links"
+      ],
+      "evidence_ledger_entries": [
+        "ACS Expat - Customisable Expatriate Health Insurance Solution; source=https://www.acs-ami.com/en/expat-health-insurance/acs-expat/; quote_or_application=https://www.acs-ami.com/en/expat-health-insurance/acs-expat-quote-request/; excerpt=ACS Expat is presented as modular lifetime international health insurance for expatriates of all nationalities, available individually, as a couple, or as a family, with home-country visit coverage and geography-zone based cover."
+      ],
+      "uncertainty_notes": [
+        "Need brochure/table-of-benefits review to confirm Georgia eligibility and the exact geography zone that would include Germany and Georgia.",
+        "Need family-specific pricing and underwriting evidence."
+      ],
+      "relevance_status": "likely_relevant"
+    },
+    {
+      "index": 24,
+      "candidate_id": "hci_group_health_protect",
+      "insurer_name": "HCI Group",
+      "plan_name": "Health Protect / Protector Plans / Nimbl Health",
+      "candidate_type": "supplemental",
+      "initial_access_path_type": "official_insurer_page_to_external_quote_or_portal",
+      "contact_model": "official_marketing_page_to_external_or_specialized_quote_flow",
+      "direct_to_consumer_availability": "uncertain_but_plausible",
+      "broker_or_intermediary_only": false,
+      "official_quote_or_application_url_captured": true,
+      "primary_source_url": "https://hcigroupglobal.com/health-protect/",
+      "primary_quote_or_application_url": "https://hcigroup.outgrow.us/P21-2026",
+      "primary_source_domain": "hcigroupglobal.com",
+      "primary_quote_domain": "hcigroup.outgrow.us",
+      "source_quote_same_registrable_domain_family": false,
+      "access_channel_markers": [
+        "official insurer marketing page",
+        "public quote/application/signup URL captured",
+        "public plan-document links also noted"
+      ],
+      "classification_reason": "An official marketing page points to a quote/application flow on a different domain family, which looks like a sales/portal handoff but not a fully self-contained same-domain retail path.",
+      "source_kind_basis": [
+        "official insurer page",
+        "official plan PDF links"
+      ],
+      "evidence_ledger_entries": [
+        "International Healthcare | Healthcare International | HCI Global; source=https://hcigroupglobal.com/health-protect/; quote_or_application=https://hcigroup.outgrow.us/P21-2026; excerpt=HCI Group says its Health Protect policies offer international private medical insurance for expatriates, digital nomads, international students, and others living abroad, with five Protector Plan levels from $500,000 to $2,500,000 and optional maternity/newborn benefits."
+      ],
+      "uncertainty_notes": [
+        "Need quote or plan-PDF review to verify whether residents of Georgia are eligible and how Germany fits into geography rules.",
+        "Need plan-zone and family pricing details."
+      ],
+      "relevance_status": "possibly_relevant"
+    },
+    {
+      "index": 25,
+      "candidate_id": "expatriate_group_global_health",
+      "insurer_name": "Expatriate Group",
+      "plan_name": "International Health Insurance / Select / Primary+ / Primary+ Lite / Primary",
+      "candidate_type": "supplemental",
+      "initial_access_path_type": "official_insurer_page_to_official_quote_or_application",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "direct_to_consumer_availability": "yes",
+      "broker_or_intermediary_only": false,
+      "official_quote_or_application_url_captured": true,
+      "primary_source_url": "https://www.expatriatehealthcare.com/international-health-insurance/",
+      "primary_quote_or_application_url": "https://quote.expatriatehealthcare.com/healthcare/",
+      "primary_source_domain": "expatriatehealthcare.com",
+      "primary_quote_domain": "quote.expatriatehealthcare.com",
+      "source_quote_same_registrable_domain_family": true,
+      "access_channel_markers": [
+        "official insurer marketing page",
+        "public quote/application/signup URL captured"
+      ],
+      "classification_reason": "Discovery includes an insurer-owned public page plus an insurer-owned quote/application or signup path on the same registrable domain family.",
+      "source_kind_basis": [
+        "official insurer page"
+      ],
+      "evidence_ledger_entries": [
+        "International Health Insurance | Global Private Medical Cover; source=https://www.expatriatehealthcare.com/international-health-insurance/; quote_or_application=https://quote.expatriatehealthcare.com/healthcare/; excerpt=Expatriate Group markets international private medical insurance for expat families and individuals, provides four plan levels, and publicly shows area-of-cover options including Europe/Middle East/Africa/Asia/Oceania, worldwide excluding the USA, and worldwide."
+      ],
+      "uncertainty_notes": [
+        "Need quote-form output or policy wording to confirm Georgian residency acceptance for this family profile.",
+        "Need exact plan availability, underwriting, and pricing for two adults and two children."
+      ],
+      "relevance_status": "likely_relevant"
+    },
+    {
+      "index": 26,
+      "candidate_id": "wellaway_expat",
+      "insurer_name": "WellAway",
+      "plan_name": "EXPAT / Gold / Diamond / Expat Plus",
+      "candidate_type": "supplemental",
+      "initial_access_path_type": "official_insurer_page_to_official_quote_or_application",
+      "contact_model": "direct_to_consumer_official_quote_or_application",
+      "direct_to_consumer_availability": "yes",
+      "broker_or_intermediary_only": false,
+      "official_quote_or_application_url_captured": true,
+      "primary_source_url": "https://www.wellaway.com/en/our-plans/expat/",
+      "primary_quote_or_application_url": "https://portal.wellaway.com/Quote/EXPAT/Step1",
+      "primary_source_domain": "wellaway.com",
+      "primary_quote_domain": "portal.wellaway.com",
+      "source_quote_same_registrable_domain_family": true,
+      "access_channel_markers": [
+        "official insurer marketing page",
+        "public quote/application/signup URL captured",
+        "public plan-document links also noted"
+      ],
+      "classification_reason": "Discovery includes an insurer-owned public page plus an insurer-owned quote/application or signup path on the same registrable domain family.",
+      "source_kind_basis": [
+        "official insurer page",
+        "official brochure/PDF links"
+      ],
+      "evidence_ledger_entries": [
+        "Expat health insurance plans for living abroad | WellAway; source=https://www.wellaway.com/en/our-plans/expat/; quote_or_application=https://portal.wellaway.com/Quote/EXPAT/Step1; excerpt=WellAway presents EXPAT as a top-tier expat health insurance plan for individuals, families, and groups living abroad, with Gold, Diamond, and Expat Plus coverage levels and annual limits up to $3,000,000."
+      ],
+      "uncertainty_notes": [
+        "Need brochure or quote-flow review to determine whether non-US area-of-cover options exist and whether Georgia residence is accepted.",
+        "Medical underwriting and family pricing require follow-up."
+      ],
+      "relevance_status": "excluded"
+    },
+    {
+      "index": 27,
+      "candidate_id": "securus_global_health_cover",
+      "insurer_name": "Securus International",
+      "plan_name": "Global Health Cover",
+      "candidate_type": "supplemental",
+      "initial_access_path_type": "official_insurer_information_page",
+      "contact_model": "official_information_page_without_public_quote_path_verified",
+      "direct_to_consumer_availability": "uncertain",
+      "broker_or_intermediary_only": false,
+      "official_quote_or_application_url_captured": false,
+      "primary_source_url": "https://www.securus.co.uk/benefits/global-health-cover",
+      "primary_quote_or_application_url": null,
+      "primary_source_domain": "securus.co.uk",
+      "primary_quote_domain": null,
+      "source_quote_same_registrable_domain_family": false,
+      "access_channel_markers": [
+        "official insurer marketing page",
+        "public plan-document links also noted"
+      ],
+      "classification_reason": "Official insurer evidence exists, but this run did not capture a distinct public quote/application URL for a direct purchase path.",
+      "source_kind_basis": [
+        "official insurer page",
+        "official benefit-table PDF links"
+      ],
+      "evidence_ledger_entries": [
+        "Securus - Global Health Cover; source=https://www.securus.co.uk/benefits/global-health-cover; excerpt=Securus says international health insurance is a necessity in a connected world, that its packages let clients choose who, how, and where they are treated, and that they provide access to hospitals and doctors around the world with public brochure links."
+      ],
+      "uncertainty_notes": [
+        "Need the published benefit tables and membership guide reviewed to confirm geographic eligibility and whether the plans suit a German citizen family resident in Georgia.",
+        "Pricing and area-of-cover selection remain uncertain from the landing page alone."
+      ],
+      "relevance_status": "possibly_relevant"
+    }
+  ]
+}

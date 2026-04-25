@@ -1,0 +1,830 @@
+{
+  "dataset": "international_expat_health_insurance_discovery",
+  "run_scope": "discovery_only",
+  "section": "candidate_discovery_overlap_resolution",
+  "ledger_name": "candidate_discovery_overlap_resolution",
+  "generated_from": [
+    "data/insurance_discovery/candidate_discovery_evidence_ledger.discovery.json",
+    "data/insurance_discovery/candidate_discovery_evidence_ledger_normalization_audit.discovery.json"
+  ],
+  "purpose": "Final non-overlap audit for candidate discovery evidence rows after canonical deduplication of partially overlapping source evidence items.",
+  "summary": {
+    "final_record_count": 55,
+    "unique_candidate_ids": 27,
+    "canonical_rows_with_merged_overlap": 7,
+    "resolved_repeated_source_url_groups": 7,
+    "resolved_repeated_source_title_groups": 6,
+    "residual_candidate_plus_source_url_and_source_kind_groups": 0,
+    "residual_candidate_plus_source_url_groups": 0,
+    "residual_candidate_plus_source_title_and_source_kind_groups": 0,
+    "residual_candidate_plus_source_title_groups": 0,
+    "final_ledger_is_non_overlapping": true
+  },
+  "resolution_policy": {
+    "policy_name": "candidate_discovery_canonical_source_item_resolution",
+    "policy_version": "2026-04-25-canonical-source-item-v1",
+    "canonical_selection_rule": "Prefer the row with the longest evidence excerpt; tie-break on richer supporting-source metadata, then earliest record_index, then evidence_id.",
+    "merge_behavior": "Retain one canonical evidence row per overlapping source item and preserve dropped duplicate evidence IDs plus merged provenance in duplicate_resolution."
+  },
+  "resolved_overlap_groups": {
+    "source_url_groups": [
+      {
+        "candidate_id": "allianz_care",
+        "source_url": "https://www.allianzcare.com/en/personal-international-health-insurance.html",
+        "source_kind": "official insurer page",
+        "row_count_before_dedupe": 2,
+        "canonical_evidence_id": "allianz_care:source:2",
+        "dropped_duplicate_evidence_ids": [
+          "allianz_care:source:1"
+        ],
+        "dedupe_disposition": "canonical_row_retained",
+        "canonical_selection_rule": "Prefer the row with the longest evidence excerpt; tie-break on richer supporting-source metadata, then earliest record_index, then evidence_id."
+      },
+      {
+        "candidate_id": "april_international",
+        "source_url": "https://www.april-international.com/en/long-term-international-health-insurance",
+        "source_kind": "official insurer page",
+        "row_count_before_dedupe": 2,
+        "canonical_evidence_id": "april_international:source:1",
+        "dropped_duplicate_evidence_ids": [
+          "april_international:source:2"
+        ],
+        "dedupe_disposition": "canonical_row_retained",
+        "canonical_selection_rule": "Prefer the row with the longest evidence excerpt; tie-break on richer supporting-source metadata, then earliest record_index, then evidence_id."
+      },
+      {
+        "candidate_id": "axa_global_healthcare",
+        "source_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/",
+        "source_kind": "official insurer page",
+        "row_count_before_dedupe": 2,
+        "canonical_evidence_id": "axa_global_healthcare:source:2",
+        "dropped_duplicate_evidence_ids": [
+          "axa_global_healthcare:source:1"
+        ],
+        "dedupe_disposition": "canonical_row_retained",
+        "canonical_selection_rule": "Prefer the row with the longest evidence excerpt; tie-break on richer supporting-source metadata, then earliest record_index, then evidence_id."
+      },
+      {
+        "candidate_id": "bupa_global",
+        "source_url": "https://www.bupaglobal.com/en/private-health-insurance",
+        "source_kind": "official insurer page",
+        "row_count_before_dedupe": 2,
+        "canonical_evidence_id": "bupa_global:source:1",
+        "dropped_duplicate_evidence_ids": [
+          "bupa_global:source:2"
+        ],
+        "dedupe_disposition": "canonical_row_retained",
+        "canonical_selection_rule": "Prefer the row with the longest evidence excerpt; tie-break on richer supporting-source metadata, then earliest record_index, then evidence_id."
+      },
+      {
+        "candidate_id": "foyer_global_health",
+        "source_url": "https://www.foyerglobalhealth.com/",
+        "source_kind": "official insurer page via search result",
+        "row_count_before_dedupe": 2,
+        "canonical_evidence_id": "foyer_global_health:source:1",
+        "dropped_duplicate_evidence_ids": [
+          "foyer_global_health:source:2"
+        ],
+        "dedupe_disposition": "canonical_row_retained",
+        "canonical_selection_rule": "Prefer the row with the longest evidence excerpt; tie-break on richer supporting-source metadata, then earliest record_index, then evidence_id."
+      },
+      {
+        "candidate_id": "msh_international",
+        "source_url": "https://www.msh-intl.com/en/individuals/",
+        "source_kind": "official insurer page",
+        "row_count_before_dedupe": 2,
+        "canonical_evidence_id": "msh_international:source:1",
+        "dropped_duplicate_evidence_ids": [
+          "msh_international:source:2"
+        ],
+        "dedupe_disposition": "canonical_row_retained",
+        "canonical_selection_rule": "Prefer the row with the longest evidence excerpt; tie-break on richer supporting-source metadata, then earliest record_index, then evidence_id."
+      },
+      {
+        "candidate_id": "william_russell",
+        "source_url": "https://www.william-russell.com/international-health-insurance/",
+        "source_kind": "official insurer page",
+        "row_count_before_dedupe": 2,
+        "canonical_evidence_id": "william_russell:source:2",
+        "dropped_duplicate_evidence_ids": [
+          "william_russell:source:1"
+        ],
+        "dedupe_disposition": "canonical_row_retained",
+        "canonical_selection_rule": "Prefer the row with the longest evidence excerpt; tie-break on richer supporting-source metadata, then earliest record_index, then evidence_id."
+      }
+    ],
+    "source_title_groups": [
+      {
+        "candidate_id": "allianz_care",
+        "source_title": "International Health Insurance for Individuals | Allianz",
+        "row_count_before_dedupe": 2,
+        "canonical_evidence_id": "allianz_care:source:2",
+        "dropped_duplicate_evidence_ids": [
+          "allianz_care:source:1"
+        ],
+        "dedupe_disposition": "canonical_row_retained"
+      },
+      {
+        "candidate_id": "april_international",
+        "source_title": "Long-term expat international health insurance | APRIL International",
+        "row_count_before_dedupe": 2,
+        "canonical_evidence_id": "april_international:source:1",
+        "dropped_duplicate_evidence_ids": [
+          "april_international:source:2"
+        ],
+        "dedupe_disposition": "canonical_row_retained"
+      },
+      {
+        "candidate_id": "axa_global_healthcare",
+        "source_title": "International Health Insurance Plans: AXA Global Healthcare",
+        "row_count_before_dedupe": 2,
+        "canonical_evidence_id": "axa_global_healthcare:source:2",
+        "dropped_duplicate_evidence_ids": [
+          "axa_global_healthcare:source:1"
+        ],
+        "dedupe_disposition": "canonical_row_retained"
+      },
+      {
+        "candidate_id": "bupa_global",
+        "source_title": "Private Health Insurance & Medical Insurance | Bupa Global",
+        "row_count_before_dedupe": 2,
+        "canonical_evidence_id": "bupa_global:source:1",
+        "dropped_duplicate_evidence_ids": [
+          "bupa_global:source:2"
+        ],
+        "dedupe_disposition": "canonical_row_retained"
+      },
+      {
+        "candidate_id": "msh_international",
+        "source_title": "International Health Insurance for Individuals - MSH",
+        "row_count_before_dedupe": 2,
+        "canonical_evidence_id": "msh_international:source:1",
+        "dropped_duplicate_evidence_ids": [
+          "msh_international:source:2"
+        ],
+        "dedupe_disposition": "canonical_row_retained"
+      },
+      {
+        "candidate_id": "william_russell",
+        "source_title": "International Health Insurance | William Russell",
+        "row_count_before_dedupe": 2,
+        "canonical_evidence_id": "william_russell:source:2",
+        "dropped_duplicate_evidence_ids": [
+          "william_russell:source:1"
+        ],
+        "dedupe_disposition": "canonical_row_retained"
+      }
+    ]
+  },
+  "residual_overlap_groups": {
+    "candidate_plus_source_url_and_source_kind": [],
+    "candidate_plus_source_url": [],
+    "candidate_plus_source_title_and_source_kind": [],
+    "candidate_plus_source_title": []
+  },
+  "candidate_overlap_summary": [
+    {
+      "candidate_id": "acs_expat",
+      "record_count": 3,
+      "canonical_rows_with_merged_overlap": 0,
+      "rows": [
+        {
+          "evidence_id": "acs_expat:source:1",
+          "source_title": "ACS Expat - Customisable Expatriate Health Insurance Solution",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat/",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        },
+        {
+          "evidence_id": "acs_expat:source:quote_path",
+          "source_title": "ACS quote or application path",
+          "source_kind": "official quote page",
+          "source_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat-quote-request/",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        },
+        {
+          "evidence_id": "acs_expat:source:plan_document",
+          "source_title": "ACS plan document or brochure",
+          "source_kind": "policy wording or brochure PDF",
+          "source_url": "https://www.acs-ami.com/files/pdf/ACS-Expat-ALC-IB-en.pdf",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        }
+      ]
+    },
+    {
+      "candidate_id": "aetna_international",
+      "record_count": 2,
+      "canonical_rows_with_merged_overlap": 0,
+      "rows": [
+        {
+          "evidence_id": "aetna_international:source:1",
+          "source_title": "Home | Aetna",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.aetnainternational.com/",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        },
+        {
+          "evidence_id": "aetna_international:source:quote_path",
+          "source_title": "Aetna International quote or application path",
+          "source_kind": "official quote page",
+          "source_url": "https://www.aetna.com/employers-organizations/aetna-international-insurance.html",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        }
+      ]
+    },
+    {
+      "candidate_id": "alc_health",
+      "record_count": 1,
+      "canonical_rows_with_merged_overlap": 0,
+      "rows": [
+        {
+          "evidence_id": "alc_health:source:1",
+          "source_title": "Global Health and International Medical Insurance For Expatriates",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.alchealth.com/",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        }
+      ]
+    },
+    {
+      "candidate_id": "allianz_care",
+      "record_count": 2,
+      "canonical_rows_with_merged_overlap": 1,
+      "rows": [
+        {
+          "evidence_id": "allianz_care:source:2",
+          "source_title": "International Health Insurance for Individuals | Allianz",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.allianzcare.com/en/personal-international-health-insurance.html",
+          "dedupe_disposition": "canonical_row_retained",
+          "dropped_duplicate_evidence_ids": [
+            "allianz_care:source:1"
+          ]
+        },
+        {
+          "evidence_id": "allianz_care:source:quote_path",
+          "source_title": "Allianz Care quote or application path",
+          "source_kind": "official quote page",
+          "source_url": "https://my.allianzcare.com/myquote/5",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        }
+      ]
+    },
+    {
+      "candidate_id": "april_international",
+      "record_count": 2,
+      "canonical_rows_with_merged_overlap": 1,
+      "rows": [
+        {
+          "evidence_id": "april_international:source:1",
+          "source_title": "Long-term expat international health insurance | APRIL International",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.april-international.com/en/long-term-international-health-insurance",
+          "dedupe_disposition": "canonical_row_retained",
+          "dropped_duplicate_evidence_ids": [
+            "april_international:source:2"
+          ]
+        },
+        {
+          "evidence_id": "april_international:source:quote_path",
+          "source_title": "APRIL International quote or application path",
+          "source_kind": "official quote page",
+          "source_url": "https://www.april-international.com/en",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        }
+      ]
+    },
+    {
+      "candidate_id": "axa_global_healthcare",
+      "record_count": 2,
+      "canonical_rows_with_merged_overlap": 1,
+      "rows": [
+        {
+          "evidence_id": "axa_global_healthcare:source:2",
+          "source_title": "International Health Insurance Plans: AXA Global Healthcare",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/",
+          "dedupe_disposition": "canonical_row_retained",
+          "dropped_duplicate_evidence_ids": [
+            "axa_global_healthcare:source:1"
+          ]
+        },
+        {
+          "evidence_id": "axa_global_healthcare:source:quote_path",
+          "source_title": "AXA Global Healthcare quote or application path",
+          "source_kind": "official quote page",
+          "source_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/get-a-quote/?camp=online-default",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        }
+      ]
+    },
+    {
+      "candidate_id": "bupa_global",
+      "record_count": 1,
+      "canonical_rows_with_merged_overlap": 1,
+      "rows": [
+        {
+          "evidence_id": "bupa_global:source:1",
+          "source_title": "Private Health Insurance & Medical Insurance | Bupa Global",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.bupaglobal.com/en/private-health-insurance",
+          "dedupe_disposition": "canonical_row_retained",
+          "dropped_duplicate_evidence_ids": [
+            "bupa_global:source:2"
+          ]
+        }
+      ]
+    },
+    {
+      "candidate_id": "cigna_global",
+      "record_count": 2,
+      "canonical_rows_with_merged_overlap": 0,
+      "rows": [
+        {
+          "evidence_id": "cigna_global:source:1",
+          "source_title": "International Health Insurance & Global Medical Cover | Cigna",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.cignaglobal.com/",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        },
+        {
+          "evidence_id": "cigna_global:source:quote_path",
+          "source_title": "Cigna Global quote or application path",
+          "source_kind": "official quote page",
+          "source_url": "https://www.cignaglobal.com/quote/pages/quote/CountrySelector.html",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        }
+      ]
+    },
+    {
+      "candidate_id": "expatriate_group_global_health",
+      "record_count": 3,
+      "canonical_rows_with_merged_overlap": 0,
+      "rows": [
+        {
+          "evidence_id": "expatriate_group_global_health:source:1",
+          "source_title": "International Health Insurance | Global Private Medical Cover",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.expatriatehealthcare.com/international-health-insurance/",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        },
+        {
+          "evidence_id": "expatriate_group_global_health:source:quote_path",
+          "source_title": "Expatriate Group quote or application path",
+          "source_kind": "official quote page",
+          "source_url": "https://quote.expatriatehealthcare.com/healthcare/",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        },
+        {
+          "evidence_id": "expatriate_group_global_health:source:plan_document",
+          "source_title": "Expatriate Group plan document or brochure",
+          "source_kind": "policy wording or brochure PDF",
+          "source_url": "https://www.expatriatehealthcare.com/wp-content/uploads/2016/09/Expatriate-Group-Brochure-International-Insurance-Specialists.pdf",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        }
+      ]
+    },
+    {
+      "candidate_id": "foyer_global_health",
+      "record_count": 3,
+      "canonical_rows_with_merged_overlap": 1,
+      "rows": [
+        {
+          "evidence_id": "foyer_global_health:source:1",
+          "source_title": "Foyer Global Health: Expat Health Insurance",
+          "source_kind": "official insurer page via search result",
+          "source_url": "https://www.foyerglobalhealth.com/",
+          "dedupe_disposition": "canonical_row_retained",
+          "dropped_duplicate_evidence_ids": [
+            "foyer_global_health:source:2"
+          ]
+        },
+        {
+          "evidence_id": "foyer_global_health:source:quote_path",
+          "source_title": "Foyer Global Health quote or application path",
+          "source_kind": "official quote page",
+          "source_url": "https://www.foyerglobalhealth.com/plans-services/our-plans/international-health-insurance-comparison/",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        },
+        {
+          "evidence_id": "foyer_global_health:source:plan_document",
+          "source_title": "Foyer Global Health plan document or brochure",
+          "source_kind": "policy wording or brochure PDF",
+          "source_url": "https://www.foyerglobalhealth.com/wp-content/uploads/2024/02/Brochure-commerciale-EN_V2-General.pdf",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        }
+      ]
+    },
+    {
+      "candidate_id": "genki_native",
+      "record_count": 2,
+      "canonical_rows_with_merged_overlap": 0,
+      "rows": [
+        {
+          "evidence_id": "genki_native:source:1",
+          "source_title": "Genki • Health Insurance for Digital Nomads",
+          "source_kind": "official insurer page",
+          "source_url": "https://genki.world/",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        },
+        {
+          "evidence_id": "genki_native:source:quote_path",
+          "source_title": "Genki quote or application path",
+          "source_kind": "official quote page",
+          "source_url": "https://consultation.genki.world/v2",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        }
+      ]
+    },
+    {
+      "candidate_id": "geoblue_xplorer_bcbs_global_solutions",
+      "record_count": 2,
+      "canonical_rows_with_merged_overlap": 0,
+      "rows": [
+        {
+          "evidence_id": "geoblue_xplorer_bcbs_global_solutions:source:1",
+          "source_title": "GeoBlue Health Insurance Plan - GeoBlue Xplorer",
+          "source_kind": "broker page",
+          "source_url": "https://www.internationalinsurance.com/geoblue/xplorer/",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        },
+        {
+          "evidence_id": "geoblue_xplorer_bcbs_global_solutions:source:plan_document",
+          "source_title": "Blue Cross Blue Shield Global Solutions (formerly GeoBlue Xplorer) plan document or brochure",
+          "source_kind": "policy wording or brochure PDF",
+          "source_url": "https://c8s387h5.media.zestyio.com/4ELI-Medical-Coverage-for-Living-Abroad-Worldwide-Premier.HJBCYKZQhel.pdf?download=true",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        }
+      ]
+    },
+    {
+      "candidate_id": "globality_health",
+      "record_count": 2,
+      "canonical_rows_with_merged_overlap": 0,
+      "rows": [
+        {
+          "evidence_id": "globality_health:source:1",
+          "source_title": "International Health Insurance for Expats - Globality Health",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.globality-health.com/",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        },
+        {
+          "evidence_id": "globality_health:source:quote_path",
+          "source_title": "Globality Health quote or application path",
+          "source_kind": "official quote page",
+          "source_url": "https://application.globality-health.com/?locale=en",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        }
+      ]
+    },
+    {
+      "candidate_id": "hci_group_health_protect",
+      "record_count": 3,
+      "canonical_rows_with_merged_overlap": 0,
+      "rows": [
+        {
+          "evidence_id": "hci_group_health_protect:source:1",
+          "source_title": "International Healthcare | Healthcare International | HCI Global",
+          "source_kind": "official insurer page",
+          "source_url": "https://hcigroupglobal.com/health-protect/",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        },
+        {
+          "evidence_id": "hci_group_health_protect:source:quote_path",
+          "source_title": "HCI Group quote or application path",
+          "source_kind": "official quote page",
+          "source_url": "https://hcigroup.outgrow.us/P21-2026",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        },
+        {
+          "evidence_id": "hci_group_health_protect:source:plan_document",
+          "source_title": "HCI Group plan document or brochure",
+          "source_kind": "policy wording or brochure PDF",
+          "source_url": "https://hcigroupglobal.com/wp-content/uploads/2024/06/Inpatient.pdf",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        }
+      ]
+    },
+    {
+      "candidate_id": "henner",
+      "record_count": 1,
+      "canonical_rows_with_merged_overlap": 0,
+      "rows": [
+        {
+          "evidence_id": "henner:source:1",
+          "source_title": "Individuals & Families - Henner",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.henner.com/en/customers/individuals-families/",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        }
+      ]
+    },
+    {
+      "candidate_id": "img_global",
+      "record_count": 3,
+      "canonical_rows_with_merged_overlap": 0,
+      "rows": [
+        {
+          "evidence_id": "img_global:source:1",
+          "source_title": "International Health & Travel Medical Insurance - IMG",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.imglobal.com/",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        },
+        {
+          "evidence_id": "img_global:source:quote_path",
+          "source_title": "IMG (International Medical Group) quote or application path",
+          "source_kind": "official quote page",
+          "source_url": "https://www.imglobal.com/international-health-insurance",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        },
+        {
+          "evidence_id": "img_global:source:plan_document",
+          "source_title": "IMG (International Medical Group) plan document or brochure",
+          "source_kind": "policy wording or brochure PDF",
+          "source_url": "https://www.imglobal.com/docs/library/forms-library/gmi-brochure.pdf",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        }
+      ]
+    },
+    {
+      "candidate_id": "integra_global",
+      "record_count": 2,
+      "canonical_rows_with_merged_overlap": 0,
+      "rows": [
+        {
+          "evidence_id": "integra_global:source:1",
+          "source_title": "Integra Health Insurance | Integra Expat Medical Plan",
+          "source_kind": "broker page",
+          "source_url": "https://www.internationalinsurance.com/integra-global/",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        },
+        {
+          "evidence_id": "integra_global:source:plan_document",
+          "source_title": "Integra Global plan document or brochure",
+          "source_kind": "policy wording or brochure PDF",
+          "source_url": "https://www.internationalinsurance.com/pdf-brochures/integra-global-brochure.pdf",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        }
+      ]
+    },
+    {
+      "candidate_id": "medihelp_international",
+      "record_count": 1,
+      "canonical_rows_with_merged_overlap": 0,
+      "rows": [
+        {
+          "evidence_id": "medihelp_international:source:1",
+          "source_title": "Individual plans | MediHelp International",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.medihelp-assistance.com/en/medihelp-plans/individual-plans",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        }
+      ]
+    },
+    {
+      "candidate_id": "morgan_price",
+      "record_count": 3,
+      "canonical_rows_with_merged_overlap": 0,
+      "rows": [
+        {
+          "evidence_id": "morgan_price:source:1",
+          "source_title": "International Healthcare Insurance Plans for Expats | Morgan Price International Healthcare",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.morgan-price.com/individual/",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        },
+        {
+          "evidence_id": "morgan_price:source:quote_path",
+          "source_title": "Morgan Price International Healthcare quote or application path",
+          "source_kind": "official quote page",
+          "source_url": "https://morgan-price.com/quick-quote/",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        },
+        {
+          "evidence_id": "morgan_price:source:plan_document",
+          "source_title": "Morgan Price International Healthcare plan document or brochure",
+          "source_kind": "policy wording or brochure PDF",
+          "source_url": "https://morgan-price.com/media/4ibjjwku/evolutionhealth_ant_policywording_04-26_v2-final.pdf",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        }
+      ]
+    },
+    {
+      "candidate_id": "msh_international",
+      "record_count": 2,
+      "canonical_rows_with_merged_overlap": 1,
+      "rows": [
+        {
+          "evidence_id": "msh_international:source:1",
+          "source_title": "International Health Insurance for Individuals - MSH",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.msh-intl.com/en/individuals/",
+          "dedupe_disposition": "canonical_row_retained",
+          "dropped_duplicate_evidence_ids": [
+            "msh_international:source:2"
+          ]
+        },
+        {
+          "evidence_id": "msh_international:source:quote_path",
+          "source_title": "MSH International quote or application path",
+          "source_kind": "official quote page",
+          "source_url": "https://www.msh-intl.com/en/comparisons-offers-msh",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        }
+      ]
+    },
+    {
+      "candidate_id": "now_health_international",
+      "record_count": 1,
+      "canonical_rows_with_merged_overlap": 0,
+      "rows": [
+        {
+          "evidence_id": "now_health_international:source:1",
+          "source_title": "Compare International Health Insurance Plans from Now Health",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.now-health.com/en/insurance-plans/",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        }
+      ]
+    },
+    {
+      "candidate_id": "passportcard_global",
+      "record_count": 2,
+      "canonical_rows_with_merged_overlap": 0,
+      "rows": [
+        {
+          "evidence_id": "passportcard_global:source:1",
+          "source_title": "International health insurance for expats & nomads | PassportCard",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.passportcard.de/en/international-health-insurance/",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        },
+        {
+          "evidence_id": "passportcard_global:source:plan_document",
+          "source_title": "PassportCard plan document or brochure",
+          "source_kind": "policy wording or brochure PDF",
+          "source_url": "https://www.passportcard.de/wp-content/uploads/2023/02/TOB_Individuals_ENG-MGAWP.pdf",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        }
+      ]
+    },
+    {
+      "candidate_id": "safetywing_nomad_complete",
+      "record_count": 3,
+      "canonical_rows_with_merged_overlap": 0,
+      "rows": [
+        {
+          "evidence_id": "safetywing_nomad_complete:source:1",
+          "source_title": "SafetyWing | Complete Health And Travel Insurance For Nomads",
+          "source_kind": "official insurer page",
+          "source_url": "https://explore.safetywing.com/nomad-insurance-complete",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        },
+        {
+          "evidence_id": "safetywing_nomad_complete:source:quote_path",
+          "source_title": "SafetyWing quote or application path",
+          "source_kind": "official quote page",
+          "source_url": "https://safetywing.com/signup?product=nomad-health",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        },
+        {
+          "evidence_id": "safetywing_nomad_complete:source:plan_document",
+          "source_title": "SafetyWing plan document or brochure",
+          "source_kind": "policy wording or brochure PDF",
+          "source_url": "https://safetywing.com/nomad-insurance/complete/standard_nomad_insurance_complete_vumi+carrier_2024-12.pdf?referenceID=24734754&utm_source=24734754&utm_medium=Ambassador",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        }
+      ]
+    },
+    {
+      "candidate_id": "securus_global_health_cover",
+      "record_count": 2,
+      "canonical_rows_with_merged_overlap": 0,
+      "rows": [
+        {
+          "evidence_id": "securus_global_health_cover:source:1",
+          "source_title": "Securus - Global Health Cover",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.securus.co.uk/benefits/global-health-cover",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        },
+        {
+          "evidence_id": "securus_global_health_cover:source:plan_document",
+          "source_title": "Securus International plan document or brochure",
+          "source_kind": "policy wording or brochure PDF",
+          "source_url": "https://www.securus.co.uk/storage/JZJIi-Securus%20Individual%20&%20Group%20Benefit%20Table%202026%20(USD).pdf",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        }
+      ]
+    },
+    {
+      "candidate_id": "vumi",
+      "record_count": 1,
+      "canonical_rows_with_merged_overlap": 0,
+      "rows": [
+        {
+          "evidence_id": "vumi:source:1",
+          "source_title": "Home - VUMI",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.vumigroup.com/",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        }
+      ]
+    },
+    {
+      "candidate_id": "wellaway_expat",
+      "record_count": 3,
+      "canonical_rows_with_merged_overlap": 0,
+      "rows": [
+        {
+          "evidence_id": "wellaway_expat:source:1",
+          "source_title": "Expat health insurance plans for living abroad | WellAway",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.wellaway.com/en/our-plans/expat/",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        },
+        {
+          "evidence_id": "wellaway_expat:source:quote_path",
+          "source_title": "WellAway quote or application path",
+          "source_kind": "official quote page",
+          "source_url": "https://portal.wellaway.com/Quote/EXPAT/Step1",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        },
+        {
+          "evidence_id": "wellaway_expat:source:plan_document",
+          "source_title": "WellAway plan document or brochure",
+          "source_kind": "policy wording or brochure PDF",
+          "source_url": "https://www.wellaway.com/media/filer_public/31/5d/315d7f0b-9976-4fd2-8b43-ad597fd59b4a/expat-plans-brochure_1292026.pdf",
+          "dedupe_disposition": "not_applicable",
+          "dropped_duplicate_evidence_ids": []
+        }
+      ]
+    },
+    {
+      "candidate_id": "william_russell",
+      "record_count": 1,
+      "canonical_rows_with_merged_overlap": 1,
+      "rows": [
+        {
+          "evidence_id": "william_russell:source:2",
+          "source_title": "International Health Insurance | William Russell",
+          "source_kind": "official insurer page",
+          "source_url": "https://www.william-russell.com/international-health-insurance/",
+          "dedupe_disposition": "canonical_row_retained",
+          "dropped_duplicate_evidence_ids": [
+            "william_russell:source:1"
+          ]
+        }
+      ]
+    }
+  ]
+}

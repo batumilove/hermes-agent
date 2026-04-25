@@ -1,0 +1,52 @@
+{
+  "dataset": "international_expat_health_insurance_discovery",
+  "run_scope": "discovery_only",
+  "section": "candidate_discovery_citation_completeness_audit",
+  "artifact_under_test": "data/insurance_discovery/candidate_discovery_evidence_ledger.discovery.jsonl",
+  "audit_focus": "verification_ready_citation_fields_per_evidence_row",
+  "required_citation_fields": [
+    "citation_id",
+    "source_title",
+    "source_url",
+    "document_identifier",
+    "access_date",
+    "publication_date",
+    "page_reference",
+    "section_reference",
+    "anchor_reference",
+    "exact_reference",
+    "source_type",
+    "excerpt"
+  ],
+  "summary": {
+    "total_evidence_rows": 62,
+    "total_citations": 62,
+    "rows_with_citations": 62,
+    "citations_with_source_title": 62,
+    "citations_with_source_url": 62,
+    "citations_with_document_identifier": 62,
+    "citations_with_access_date": 62,
+    "citations_with_publication_date_available": 0,
+    "citations_with_page_reference": 62,
+    "citations_with_section_reference": 62,
+    "citations_with_anchor_reference_available": 0,
+    "citations_with_exact_reference": 62,
+    "missing_field_failures": 0,
+    "audit_passed": true
+  },
+  "notes": [
+    "access_date reflects the discovery-run retrieval date for this repository worktree update.",
+    "publication_date is preserved as null when no public publication date was visible in the reviewed source metadata.",
+    "section_reference points to the originating dataset section or ledger section used to reopen the source context.",
+    "anchor_reference is null unless the reviewed public URL exposed an explicit fragment anchor.",
+    "exact_reference is a normalized page/section/anchor locator string for verification-oriented reopening of the cited source."
+  ],
+  "source_kind_breakdown": {
+    "official insurer page": 30,
+    "official quote page": 16,
+    "policy wording or brochure PDF": 12,
+    "official insurer page via search result": 2,
+    "broker page": 2
+  },
+  "failures": []
+}

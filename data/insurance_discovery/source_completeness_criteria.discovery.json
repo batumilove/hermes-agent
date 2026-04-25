@@ -1,0 +1,2833 @@
+{
+  "dataset": "international_expat_health_insurance_discovery",
+  "run_scope": "discovery_only",
+  "section": "source_completeness_criteria",
+  "generated_by": "gpt-5.4",
+  "family_context": {
+    "citizenship": "German",
+    "residence": "Georgia",
+    "adults": [
+      42,
+      37
+    ],
+    "children": 2,
+    "preferred_cover_geography": "Georgia and Germany, ideally worldwide excluding the US"
+  },
+  "generated_from": [
+    "data/insurance_discovery/shared_candidate_staging.discovery.json",
+    "data/insurance_discovery/candidate_source_ledger.discovery.json",
+    "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+    "data/insurance_discovery/germany_coverage_evidence_ledger.discovery.json",
+    "data/insurance_discovery/global_coverage_evidence_ledger.discovery.json"
+  ],
+  "purpose": "Defines the minimum source-completeness contract for discovery-stage candidate evidence entries and audits the current candidate set against that contract.",
+  "notes": [
+    "Discovery-only rubric: this artifact does not rank, score, or recommend plans.",
+    "A field can be required-to-present while still allowing an unknown or partial evidence state.",
+    "Null URL slots are allowed in discovery if the record explicitly preserves that the URL was not verified publicly in this run.",
+    "Unknown/inferred states are not failures by themselves; silent omission is the failure mode this rubric is meant to prevent."
+  ],
+  "required_entry_fields": [
+    {
+      "field": "candidate_id",
+      "required_presence": "must_be_present",
+      "why_it_matters": "Stable machine-readable join key across all discovery ledgers."
+    },
+    {
+      "field": "normalized_insurer_name",
+      "required_presence": "must_be_present",
+      "why_it_matters": "Identifies the insurer responsible for the candidate plan family."
+    },
+    {
+      "field": "normalized_plan_name",
+      "required_presence": "must_be_present",
+      "why_it_matters": "Retains the discovered plan or product-family label even at discovery stage."
+    },
+    {
+      "field": "source_refs",
+      "required_presence": "must_be_present_and_non_empty",
+      "why_it_matters": "Every candidate evidence entry must remain source-backed rather than being a memory-only stub."
+    },
+    {
+      "field": "relevance_status",
+      "required_presence": "must_be_present",
+      "why_it_matters": "Preserves whether the candidate still looks plausibly relevant to this family profile."
+    },
+    {
+      "field": "relevance_status_reason",
+      "required_presence": "must_be_present",
+      "why_it_matters": "Keeps the relevance classification explainable and auditable."
+    },
+    {
+      "field": "uncertainty_notes",
+      "required_presence": "must_be_present",
+      "why_it_matters": "Discovery is allowed to be incomplete, but the uncertainty must be explicit."
+    },
+    {
+      "field": "pricing_availability_status",
+      "required_presence": "must_be_present",
+      "why_it_matters": "Quote/pricing visibility is a recurring gating factor in this market."
+    },
+    {
+      "field": "pricing_availability_status_reason",
+      "required_presence": "must_be_present",
+      "why_it_matters": "Explains whether public pricing was visible, gated, partial, or absent."
+    },
+    {
+      "field": "access_and_intake_evidence_refs",
+      "required_presence": "must_be_present",
+      "why_it_matters": "Links the candidate entry to access and gating evidence rather than hiding friction."
+    },
+    {
+      "field": "eligibility_ambiguity_evidence_ref",
+      "required_presence": "must_be_present",
+      "why_it_matters": "Links the candidate entry to the ambiguity ledger for unresolved residence/eligibility questions."
+    }
+  ],
+  "required_coverage_fields": [
+    {
+      "field": "georgia_country_coverage_assessment",
+      "artifact": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+      "required_presence": "must_be_present",
+      "allowed_states": [
+        "confirmed",
+        "inferred",
+        "unknown"
+      ],
+      "unknown_is_allowed": true,
+      "partial_or_inferred_is_allowed": true,
+      "why_it_matters": "The family resides in Georgia, so Georgia coverage is a non-optional screening dimension."
+    },
+    {
+      "field": "germany_country_coverage_assessment",
+      "artifact": "data/insurance_discovery/germany_coverage_evidence_ledger.discovery.json",
+      "required_presence": "must_be_present",
+      "allowed_states": [
+        "confirmed",
+        "inferred",
+        "unknown"
+      ],
+      "unknown_is_allowed": true,
+      "partial_or_inferred_is_allowed": true,
+      "why_it_matters": "The family is German, so Germany relevance and home-country treatment matter even when living abroad."
+    },
+    {
+      "field": "worldwide_ex_us_status",
+      "artifact": "data/insurance_discovery/global_coverage_evidence_ledger.discovery.json",
+      "required_presence": "must_be_present",
+      "allowed_states": [
+        "explicitly_indicated",
+        "indirectly_indicated",
+        "worldwide_positioned_but_ex_us_not_verified",
+        "not_verified_from_reviewed_sources"
+      ],
+      "unknown_is_allowed": true,
+      "partial_or_inferred_is_allowed": true,
+      "why_it_matters": "The target preference is worldwide excluding the US, but discovery must still preserve weaker evidence states."
+    }
+  ],
+  "allowed_partial_unknown_states": {
+    "country_coverage_assessment": {
+      "confirmed": "Captured public source language directly names the country or equivalent selector evidence.",
+      "inferred": "Captured public source language is source-backed but indirect, such as region/area-of-cover wording, home-country mechanics, or destination references.",
+      "unknown": "Reviewed sources were too generic, gated, or incomplete to support a responsible country-level inference."
+    },
+    "worldwide_ex_us_status": {
+      "explicitly_indicated": "A reviewed public source explicitly described a worldwide excluding U.S. (or equivalent outside-U.S.) coverage area/plan, or used materially equivalent wording such as Area 2 worldwide excluding the USA.",
+      "indirectly_indicated": "A reviewed public source gave strong source-backed signals of a non-U.S. global configuration, such as an include-USA toggle, U.S. add-on, or outside-U.S. benefit wording, but did not explicitly state a worldwide-excluding-U.S. area of cover for the exact plan wording captured.",
+      "worldwide_positioned_but_ex_us_not_verified": "A reviewed public source positioned the plan as worldwide/global/international, but the captured evidence did not explicitly confirm a worldwide-excluding-U.S. configuration.",
+      "not_verified_from_reviewed_sources": "The reviewed public sources in this run did not verify a worldwide/global geography detail sufficient to infer a worldwide-excluding-U.S. configuration."
+    },
+    "source_url_capture_state": {
+      "verified_public_url": "A public URL was verified and stored in the candidate source ledger.",
+      "not_verified_publicly_in_this_run": "Represented as null for official_url, broker_url, quote_or_application_url, or policy_wording_or_pdf_url; null does not mean impossible or unavailable, only unverified in this run."
+    },
+    "source_directness_classification": {
+      "high": "Official insurer-controlled quote/application paths and official policy wording, brochure, benefit-table, or similar plan documents.",
+      "medium": "Official insurer-controlled landing or marketing pages that are direct but less authoritative for exact eligibility or benefit details than quote or policy documents.",
+      "low": "Broker/intermediary pages or other indirect public sources that materially help discovery but are not primary insurer-controlled evidence."
+    },
+    "evidence_entry_completeness_level": {
+      "source_backed_complete_for_discovery": "Entry has all required join/explanation fields and all three required coverage fields are present with source-backed states. Some states may still be inferred rather than direct.",
+      "source_backed_partial_but_usable": "Entry is still usable for discovery because required fields are present, but one or more coverage dimensions remain inferred or unknown, or important source URLs/documents remain unverified.",
+      "insufficient_for_discovery": "Entry is missing required structural or source-backed fields and should not be treated as a valid discovery candidate entry."
+    }
+  },
+  "summary": {
+    "total_candidates": 27,
+    "required_entry_field_presence": {
+      "candidate_id": 27,
+      "normalized_insurer_name": 27,
+      "normalized_plan_name": 27,
+      "source_refs": 27,
+      "relevance_status": 27,
+      "relevance_status_reason": 27,
+      "uncertainty_notes": 27,
+      "pricing_availability_status": 27,
+      "pricing_availability_status_reason": 27,
+      "access_and_intake_evidence_refs": 27,
+      "eligibility_ambiguity_evidence_ref": 27
+    },
+    "required_coverage_field_presence": {
+      "georgia_country_coverage_assessment": 27,
+      "germany_country_coverage_assessment": 27,
+      "worldwide_ex_us_status": 27
+    },
+    "coverage_state_counts": {
+      "georgia_country_coverage_assessment": {
+        "confirmed": 6,
+        "unknown": 9,
+        "inferred": 12
+      },
+      "germany_country_coverage_assessment": {
+        "confirmed": 8,
+        "unknown": 7,
+        "inferred": 12
+      },
+      "worldwide_ex_us_status": {
+        "worldwide_positioned_but_ex_us_not_verified": 15,
+        "not_verified_from_reviewed_sources": 4,
+        "indirectly_indicated": 5,
+        "explicitly_indicated": 3
+      }
+    },
+    "completeness_level_counts": {
+      "source_backed_partial_but_usable": 27
+    },
+    "candidates_missing_required_entry_fields": 0,
+    "candidates_missing_required_coverage_fields": 0,
+    "all_candidates_meet_minimum_discovery_schema": true,
+    "required_coverage_detail_sourcing_review": {
+      "candidates_with_all_required_coverage_details_fully_sourced": 0,
+      "candidates_with_at_least_one_required_coverage_detail_missing_or_partial": 27,
+      "required_coverage_detail_fully_sourced_counts": {
+        "georgia_country_coverage_assessment": 6,
+        "germany_country_coverage_assessment": 8,
+        "worldwide_ex_us_status": 3
+      },
+      "required_coverage_detail_missing_or_partial_counts": {
+        "georgia_country_coverage_assessment": 21,
+        "germany_country_coverage_assessment": 19,
+        "worldwide_ex_us_status": 24
+      }
+    }
+  },
+  "audit_records": [
+    {
+      "candidate_id": "cigna_global",
+      "insurer_name": "Cigna Global",
+      "plan_name": "International Health Insurance / Global Medical Cover",
+      "required_entry_fields_missing": [],
+      "required_coverage_fields_missing": [],
+      "coverage_states": {
+        "georgia_country_coverage_assessment": "confirmed",
+        "germany_country_coverage_assessment": "confirmed",
+        "worldwide_ex_us_status": "worldwide_positioned_but_ex_us_not_verified"
+      },
+      "source_url_capture_state": {
+        "official_url": "verified_public_url",
+        "quote_or_application_url": "verified_public_url",
+        "broker_url": "not_verified_publicly_in_this_run",
+        "policy_wording_or_pdf_url": "not_verified_publicly_in_this_run"
+      },
+      "source_directness_present": {
+        "high": 1,
+        "medium": 1,
+        "low": 0
+      },
+      "inferred_or_unknown_dimensions": [
+        {
+          "field": "worldwide_ex_us_status",
+          "state": "worldwide_positioned_but_ex_us_not_verified"
+        }
+      ],
+      "completeness_level": "source_backed_partial_but_usable",
+      "completeness_reason": "Required discovery fields are present, but at least one coverage dimension remains inferred/unknown or one or more source URLs remain unverified publicly in this run.",
+      "required_coverage_detail_sourcing_review": {
+        "coverage_detail_review_scope": "Required coverage details only: Georgia, Germany, and worldwide excluding the US preference alignment.",
+        "fully_sourced_details": [
+          "georgia_country_coverage_assessment",
+          "germany_country_coverage_assessment"
+        ],
+        "missing_or_partial_details": [
+          "worldwide_ex_us_status"
+        ],
+        "all_required_coverage_details_fully_sourced": false,
+        "coverage_detail_matrix": [
+          {
+            "coverage_detail": "georgia_country_coverage_assessment",
+            "detail_label": "Georgia country coverage",
+            "entry_state": "confirmed",
+            "sourcing_completeness": "fully_sourced",
+            "why_not_fully_sourced": null,
+            "source_backing_basis": "georgia_explicitly_listed",
+            "primary_supporting_source": {
+              "source_url": "https://www.cignaglobal.com/quote/pages/quote/CountrySelector.html",
+              "source_title": "Cigna Global quote country selector",
+              "source_kind": "official quote page",
+              "evidence_excerpt": "The HTML country list includes “Georgia” and “Germany” as selectable options."
+            }
+          },
+          {
+            "coverage_detail": "germany_country_coverage_assessment",
+            "detail_label": "Germany country coverage",
+            "entry_state": "confirmed",
+            "sourcing_completeness": "fully_sourced",
+            "why_not_fully_sourced": null,
+            "source_backing_basis": "germany_explicitly_listed",
+            "primary_supporting_source": {
+              "source_url": "https://www.cignaglobal.com/",
+              "source_title": "International Health Insurance & Global Medical Cover | Cigna",
+              "source_kind": "records",
+              "evidence_excerpt": "Cigna says its international health insurance serves individuals and families, offers access to medical support in over 200 markets and territories, and provides flexible plans with global medical care essentials."
+            }
+          },
+          {
+            "coverage_detail": "worldwide_ex_us_status",
+            "detail_label": "Worldwide excluding the US positioning",
+            "entry_state": "worldwide_positioned_but_ex_us_not_verified",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Reviewed evidence supports global/wide geography positioning, but not a verified ex-U.S. configuration.",
+            "source_backing_basis": "global_positioning_only",
+            "primary_supporting_source": {
+              "source_url": "https://www.cignaglobal.com/",
+              "source_title": "International Health Insurance & Global Medical Cover | Cigna",
+              "source_kind": "records",
+              "evidence_excerpt": "Cigna says its international health insurance serves individuals and families, offers access to medical support in over 200 markets and territories, and provides flexible plans with global medical care essentials."
+            }
+          }
+        ],
+        "candidate_source_context": {
+          "official_url_verified": true,
+          "quote_or_application_url_verified": true,
+          "policy_wording_or_pdf_url_verified": false,
+          "broker_url_verified": false
+        }
+      }
+    },
+    {
+      "candidate_id": "allianz_care",
+      "insurer_name": "Allianz Care",
+      "plan_name": "Care International Health Insurance Plans",
+      "required_entry_fields_missing": [],
+      "required_coverage_fields_missing": [],
+      "coverage_states": {
+        "georgia_country_coverage_assessment": "unknown",
+        "germany_country_coverage_assessment": "unknown",
+        "worldwide_ex_us_status": "worldwide_positioned_but_ex_us_not_verified"
+      },
+      "source_url_capture_state": {
+        "official_url": "verified_public_url",
+        "quote_or_application_url": "verified_public_url",
+        "broker_url": "not_verified_publicly_in_this_run",
+        "policy_wording_or_pdf_url": "not_verified_publicly_in_this_run"
+      },
+      "source_directness_present": {
+        "high": 1,
+        "medium": 2,
+        "low": 0
+      },
+      "inferred_or_unknown_dimensions": [
+        {
+          "field": "georgia_country_coverage_assessment",
+          "state": "unknown"
+        },
+        {
+          "field": "germany_country_coverage_assessment",
+          "state": "unknown"
+        },
+        {
+          "field": "worldwide_ex_us_status",
+          "state": "worldwide_positioned_but_ex_us_not_verified"
+        }
+      ],
+      "completeness_level": "source_backed_partial_but_usable",
+      "completeness_reason": "Required discovery fields are present, but at least one coverage dimension remains inferred/unknown or one or more source URLs remain unverified publicly in this run.",
+      "required_coverage_detail_sourcing_review": {
+        "coverage_detail_review_scope": "Required coverage details only: Georgia, Germany, and worldwide excluding the US preference alignment.",
+        "fully_sourced_details": [],
+        "missing_or_partial_details": [
+          "georgia_country_coverage_assessment",
+          "germany_country_coverage_assessment",
+          "worldwide_ex_us_status"
+        ],
+        "all_required_coverage_details_fully_sourced": false,
+        "coverage_detail_matrix": [
+          {
+            "coverage_detail": "georgia_country_coverage_assessment",
+            "detail_label": "Georgia country coverage",
+            "entry_state": "unknown",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Official public page confirms long-stay international cover for people living abroad, but this run did not verify Georgia in the quote flow because the quote page was challenge-protected.",
+            "source_backing_basis": "georgia_not_named_global_positioning_only",
+            "primary_supporting_source": {
+              "source_url": "https://www.allianzcare.com/en/personal-international-health-insurance.html",
+              "source_title": "International Health Insurance for Individuals | Allianz",
+              "source_kind": "official insurer page",
+              "evidence_excerpt": "Allianz says its Care plans are designed for people who spend long periods overseas and offers cover for people working, studying, or living abroad."
+            }
+          },
+          {
+            "coverage_detail": "germany_country_coverage_assessment",
+            "detail_label": "Germany country coverage",
+            "entry_state": "unknown",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Allianz publicly markets long-term international cover for people living abroad, but no captured source in this run named Germany directly.",
+            "source_backing_basis": "germany_not_named_global_positioning_only",
+            "primary_supporting_source": {
+              "source_url": "https://www.allianzcare.com/en/personal-international-health-insurance.html",
+              "source_title": "International Health Insurance for Individuals | Allianz",
+              "source_kind": "records",
+              "evidence_excerpt": "Allianz states its Care international health insurance plans are designed for people who spend long periods overseas and offers dedicated paths for professionals, families, students, and nomads."
+            }
+          },
+          {
+            "coverage_detail": "worldwide_ex_us_status",
+            "detail_label": "Worldwide excluding the US positioning",
+            "entry_state": "worldwide_positioned_but_ex_us_not_verified",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Reviewed evidence supports global/wide geography positioning, but not a verified ex-U.S. configuration.",
+            "source_backing_basis": "global_positioning_only",
+            "primary_supporting_source": {
+              "source_url": "https://www.allianzcare.com/en/personal-international-health-insurance.html",
+              "source_title": "International Health Insurance for Individuals | Allianz",
+              "source_kind": "records",
+              "evidence_excerpt": "Allianz states its Care international health insurance plans are designed for people who spend long periods overseas and offers dedicated paths for professionals, families, students, and nomads."
+            }
+          }
+        ],
+        "candidate_source_context": {
+          "official_url_verified": true,
+          "quote_or_application_url_verified": true,
+          "policy_wording_or_pdf_url_verified": false,
+          "broker_url_verified": false
+        }
+      }
+    },
+    {
+      "candidate_id": "bupa_global",
+      "insurer_name": "Bupa Global",
+      "plan_name": "Private Health Insurance & Medical Insurance for Individuals and Families",
+      "required_entry_fields_missing": [],
+      "required_coverage_fields_missing": [],
+      "coverage_states": {
+        "georgia_country_coverage_assessment": "confirmed",
+        "germany_country_coverage_assessment": "confirmed",
+        "worldwide_ex_us_status": "not_verified_from_reviewed_sources"
+      },
+      "source_url_capture_state": {
+        "official_url": "verified_public_url",
+        "quote_or_application_url": "verified_public_url",
+        "broker_url": "not_verified_publicly_in_this_run",
+        "policy_wording_or_pdf_url": "not_verified_publicly_in_this_run"
+      },
+      "source_directness_present": {
+        "high": 0,
+        "medium": 2,
+        "low": 0
+      },
+      "inferred_or_unknown_dimensions": [
+        {
+          "field": "worldwide_ex_us_status",
+          "state": "not_verified_from_reviewed_sources"
+        }
+      ],
+      "completeness_level": "source_backed_partial_but_usable",
+      "completeness_reason": "Required discovery fields are present, but at least one coverage dimension remains inferred/unknown or one or more source URLs remain unverified publicly in this run.",
+      "required_coverage_detail_sourcing_review": {
+        "coverage_detail_review_scope": "Required coverage details only: Georgia, Germany, and worldwide excluding the US preference alignment.",
+        "fully_sourced_details": [
+          "georgia_country_coverage_assessment",
+          "germany_country_coverage_assessment"
+        ],
+        "missing_or_partial_details": [
+          "worldwide_ex_us_status"
+        ],
+        "all_required_coverage_details_fully_sourced": false,
+        "coverage_detail_matrix": [
+          {
+            "coverage_detail": "georgia_country_coverage_assessment",
+            "detail_label": "Georgia country coverage",
+            "entry_state": "confirmed",
+            "sourcing_completeness": "fully_sourced",
+            "why_not_fully_sourced": null,
+            "source_backing_basis": "georgia_explicitly_listed",
+            "primary_supporting_source": {
+              "source_url": "https://www.bupaglobal.com/en/private-health-insurance",
+              "source_title": "Private Health Insurance & Medical Insurance | Bupa Global",
+              "source_kind": "official insurer page / selector",
+              "evidence_excerpt": "The official individuals-and-families selector asks where the customer will be living and publicly lists both Georgia and Germany in the residence-country dropdown."
+            }
+          },
+          {
+            "coverage_detail": "germany_country_coverage_assessment",
+            "detail_label": "Germany country coverage",
+            "entry_state": "confirmed",
+            "sourcing_completeness": "fully_sourced",
+            "why_not_fully_sourced": null,
+            "source_backing_basis": "germany_explicitly_listed",
+            "primary_supporting_source": {
+              "source_url": "https://www.bupaglobal.com/en/private-health-insurance",
+              "source_title": "Private Health Insurance & Medical Insurance | Bupa Global",
+              "source_kind": "records",
+              "evidence_excerpt": "Bupa Global's official plan selector for individuals and families includes both Georgia and Germany in the residence-country dropdown, indicating public-facing availability exploration for those markets."
+            }
+          },
+          {
+            "coverage_detail": "worldwide_ex_us_status",
+            "detail_label": "Worldwide excluding the US positioning",
+            "entry_state": "not_verified_from_reviewed_sources",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Reviewed evidence did not verify enough geography detail to support a worldwide ex-U.S. indication.",
+            "source_backing_basis": "not_verified",
+            "primary_supporting_source": {
+              "source_url": "https://www.bupaglobal.com/en/private-health-insurance",
+              "source_title": "Private Health Insurance & Medical Insurance | Bupa Global",
+              "source_kind": "records",
+              "evidence_excerpt": "Bupa Global's official plan selector for individuals and families includes both Georgia and Germany in the residence-country dropdown, indicating public-facing availability exploration for those markets."
+            }
+          }
+        ],
+        "candidate_source_context": {
+          "official_url_verified": true,
+          "quote_or_application_url_verified": true,
+          "policy_wording_or_pdf_url_verified": false,
+          "broker_url_verified": false
+        }
+      }
+    },
+    {
+      "candidate_id": "axa_global_healthcare",
+      "insurer_name": "AXA Global Healthcare",
+      "plan_name": "International Health Insurance Plans",
+      "required_entry_fields_missing": [],
+      "required_coverage_fields_missing": [],
+      "coverage_states": {
+        "georgia_country_coverage_assessment": "inferred",
+        "germany_country_coverage_assessment": "inferred",
+        "worldwide_ex_us_status": "indirectly_indicated"
+      },
+      "source_url_capture_state": {
+        "official_url": "verified_public_url",
+        "quote_or_application_url": "verified_public_url",
+        "broker_url": "not_verified_publicly_in_this_run",
+        "policy_wording_or_pdf_url": "not_verified_publicly_in_this_run"
+      },
+      "source_directness_present": {
+        "high": 1,
+        "medium": 2,
+        "low": 0
+      },
+      "inferred_or_unknown_dimensions": [
+        {
+          "field": "georgia_country_coverage_assessment",
+          "state": "inferred"
+        },
+        {
+          "field": "germany_country_coverage_assessment",
+          "state": "inferred"
+        },
+        {
+          "field": "worldwide_ex_us_status",
+          "state": "indirectly_indicated"
+        }
+      ],
+      "completeness_level": "source_backed_partial_but_usable",
+      "completeness_reason": "Required discovery fields are present, but at least one coverage dimension remains inferred/unknown or one or more source URLs remain unverified publicly in this run.",
+      "required_coverage_detail_sourcing_review": {
+        "coverage_detail_review_scope": "Required coverage details only: Georgia, Germany, and worldwide excluding the US preference alignment.",
+        "fully_sourced_details": [],
+        "missing_or_partial_details": [
+          "georgia_country_coverage_assessment",
+          "germany_country_coverage_assessment",
+          "worldwide_ex_us_status"
+        ],
+        "all_required_coverage_details_fully_sourced": false,
+        "coverage_detail_matrix": [
+          {
+            "coverage_detail": "georgia_country_coverage_assessment",
+            "detail_label": "Georgia country coverage",
+            "entry_state": "inferred",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "AXA publicly documents area-of-cover logic and optional exclusion of the USA, but Georgia itself was not named in the captured public text.",
+            "source_backing_basis": "georgia_not_named_area_of_cover_structure",
+            "primary_supporting_source": {
+              "source_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/",
+              "source_title": "International Health Insurance Plans: AXA Global Healthcare",
+              "source_kind": "official insurer page",
+              "evidence_excerpt": "AXA says it will give customers the option to exclude the USA from their area of cover, while treatment outside the chosen area of cover is not covered."
+            }
+          },
+          {
+            "coverage_detail": "germany_country_coverage_assessment",
+            "detail_label": "Germany country coverage",
+            "entry_state": "inferred",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "AXA exposes area-of-cover mechanics and USA exclusion options, but Germany was not named directly in the captured public text.",
+            "source_backing_basis": "germany_not_named_area_of_cover_structure",
+            "primary_supporting_source": {
+              "source_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/",
+              "source_title": "International Health Insurance Plans: AXA Global Healthcare",
+              "source_kind": "records",
+              "evidence_excerpt": "AXA describes its product as international private health insurance for people living abroad or travelling overseas frequently, with treatment anywhere within the selected region of cover."
+            }
+          },
+          {
+            "coverage_detail": "worldwide_ex_us_status",
+            "detail_label": "Worldwide excluding the US positioning",
+            "entry_state": "indirectly_indicated",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Reviewed evidence strongly suggests a non-U.S. global option exists, but the exact worldwide-excluding-U.S. wording was not captured verbatim.",
+            "source_backing_basis": "strong_but_indirect",
+            "primary_supporting_source": {
+              "source_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/",
+              "source_title": "International Health Insurance Plans: AXA Global Healthcare",
+              "source_kind": "records",
+              "evidence_excerpt": "AXA describes its product as international private health insurance for people living abroad or travelling overseas frequently, with treatment anywhere within the selected region of cover."
+            }
+          }
+        ],
+        "candidate_source_context": {
+          "official_url_verified": true,
+          "quote_or_application_url_verified": true,
+          "policy_wording_or_pdf_url_verified": false,
+          "broker_url_verified": false
+        }
+      }
+    },
+    {
+      "candidate_id": "april_international",
+      "insurer_name": "APRIL International",
+      "plan_name": "Long-term Expat International Health Insurance",
+      "required_entry_fields_missing": [],
+      "required_coverage_fields_missing": [],
+      "coverage_states": {
+        "georgia_country_coverage_assessment": "confirmed",
+        "germany_country_coverage_assessment": "confirmed",
+        "worldwide_ex_us_status": "worldwide_positioned_but_ex_us_not_verified"
+      },
+      "source_url_capture_state": {
+        "official_url": "verified_public_url",
+        "quote_or_application_url": "verified_public_url",
+        "broker_url": "not_verified_publicly_in_this_run",
+        "policy_wording_or_pdf_url": "not_verified_publicly_in_this_run"
+      },
+      "source_directness_present": {
+        "high": 1,
+        "medium": 2,
+        "low": 0
+      },
+      "inferred_or_unknown_dimensions": [
+        {
+          "field": "worldwide_ex_us_status",
+          "state": "worldwide_positioned_but_ex_us_not_verified"
+        }
+      ],
+      "completeness_level": "source_backed_partial_but_usable",
+      "completeness_reason": "Required discovery fields are present, but at least one coverage dimension remains inferred/unknown or one or more source URLs remain unverified publicly in this run.",
+      "required_coverage_detail_sourcing_review": {
+        "coverage_detail_review_scope": "Required coverage details only: Georgia, Germany, and worldwide excluding the US preference alignment.",
+        "fully_sourced_details": [
+          "georgia_country_coverage_assessment",
+          "germany_country_coverage_assessment"
+        ],
+        "missing_or_partial_details": [
+          "worldwide_ex_us_status"
+        ],
+        "all_required_coverage_details_fully_sourced": false,
+        "coverage_detail_matrix": [
+          {
+            "coverage_detail": "georgia_country_coverage_assessment",
+            "detail_label": "Georgia country coverage",
+            "entry_state": "confirmed",
+            "sourcing_completeness": "fully_sourced",
+            "why_not_fully_sourced": null,
+            "source_backing_basis": "georgia_explicitly_listed",
+            "primary_supporting_source": {
+              "source_url": "https://www.april-international.com/en/long-term-international-health-insurance",
+              "source_title": "Long-term expat international health insurance | APRIL International",
+              "source_kind": "official insurer page",
+              "evidence_excerpt": "The public country-of-coverage list includes Georgia and Germany, and APRIL says worldwide cover depends on the chosen area of cover."
+            }
+          },
+          {
+            "coverage_detail": "germany_country_coverage_assessment",
+            "detail_label": "Germany country coverage",
+            "entry_state": "confirmed",
+            "sourcing_completeness": "fully_sourced",
+            "why_not_fully_sourced": null,
+            "source_backing_basis": "germany_explicitly_listed",
+            "primary_supporting_source": {
+              "source_url": "https://www.april-international.com/en/long-term-international-health-insurance",
+              "source_title": "Long-term expat international health insurance | APRIL International",
+              "source_kind": "records",
+              "evidence_excerpt": "APRIL positions this as long-term international health insurance for expatriates and globally mobile individuals staying abroad longer than 12 months, with worldwide cover depending on area of cover. The country selector excerpt includes Germany."
+            }
+          },
+          {
+            "coverage_detail": "worldwide_ex_us_status",
+            "detail_label": "Worldwide excluding the US positioning",
+            "entry_state": "worldwide_positioned_but_ex_us_not_verified",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Reviewed evidence supports global/wide geography positioning, but not a verified ex-U.S. configuration.",
+            "source_backing_basis": "global_positioning_only",
+            "primary_supporting_source": {
+              "source_url": "https://www.april-international.com/en/long-term-international-health-insurance",
+              "source_title": "Long-term expat international health insurance | APRIL International",
+              "source_kind": "records",
+              "evidence_excerpt": "APRIL positions this as long-term international health insurance for expatriates and globally mobile individuals staying abroad longer than 12 months, with worldwide cover depending on area of cover. The country selector excerpt includes Germany."
+            }
+          }
+        ],
+        "candidate_source_context": {
+          "official_url_verified": true,
+          "quote_or_application_url_verified": true,
+          "policy_wording_or_pdf_url_verified": false,
+          "broker_url_verified": false
+        }
+      }
+    },
+    {
+      "candidate_id": "william_russell",
+      "insurer_name": "William Russell",
+      "plan_name": "International Health Insurance",
+      "required_entry_fields_missing": [],
+      "required_coverage_fields_missing": [],
+      "coverage_states": {
+        "georgia_country_coverage_assessment": "inferred",
+        "germany_country_coverage_assessment": "inferred",
+        "worldwide_ex_us_status": "worldwide_positioned_but_ex_us_not_verified"
+      },
+      "source_url_capture_state": {
+        "official_url": "verified_public_url",
+        "quote_or_application_url": "verified_public_url",
+        "broker_url": "not_verified_publicly_in_this_run",
+        "policy_wording_or_pdf_url": "not_verified_publicly_in_this_run"
+      },
+      "source_directness_present": {
+        "high": 0,
+        "medium": 2,
+        "low": 0
+      },
+      "inferred_or_unknown_dimensions": [
+        {
+          "field": "georgia_country_coverage_assessment",
+          "state": "inferred"
+        },
+        {
+          "field": "germany_country_coverage_assessment",
+          "state": "inferred"
+        },
+        {
+          "field": "worldwide_ex_us_status",
+          "state": "worldwide_positioned_but_ex_us_not_verified"
+        }
+      ],
+      "completeness_level": "source_backed_partial_but_usable",
+      "completeness_reason": "Required discovery fields are present, but at least one coverage dimension remains inferred/unknown or one or more source URLs remain unverified publicly in this run.",
+      "required_coverage_detail_sourcing_review": {
+        "coverage_detail_review_scope": "Required coverage details only: Georgia, Germany, and worldwide excluding the US preference alignment.",
+        "fully_sourced_details": [],
+        "missing_or_partial_details": [
+          "georgia_country_coverage_assessment",
+          "germany_country_coverage_assessment",
+          "worldwide_ex_us_status"
+        ],
+        "all_required_coverage_details_fully_sourced": false,
+        "coverage_detail_matrix": [
+          {
+            "coverage_detail": "georgia_country_coverage_assessment",
+            "detail_label": "Georgia country coverage",
+            "entry_state": "inferred",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "William Russell publicly shows region-based and worldwide cover examples, but Georgia was not named directly in captured text.",
+            "source_backing_basis": "georgia_not_named_zone_based_cover",
+            "primary_supporting_source": {
+              "source_url": "https://www.william-russell.com/international-health-insurance/",
+              "source_title": "International Health Insurance | William Russell",
+              "source_kind": "official insurer page",
+              "evidence_excerpt": "The page says customers have different coverage options ranging from worldwide cover to cover in just one region, and examples are priced by country of residence and coverage area."
+            }
+          },
+          {
+            "coverage_detail": "germany_country_coverage_assessment",
+            "detail_label": "Germany country coverage",
+            "entry_state": "inferred",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "William Russell shows region-based and worldwide cover structures, but Germany was not named directly in the captured sources.",
+            "source_backing_basis": "germany_not_named_zone_based_cover",
+            "primary_supporting_source": {
+              "source_url": "https://www.william-russell.com/international-health-insurance/",
+              "source_title": "International Health Insurance | William Russell",
+              "source_kind": "records",
+              "evidence_excerpt": "William Russell describes its product as international health insurance for expats and people living, working, or studying abroad, with members able to choose doctors or hospitals within their coverage zone."
+            }
+          },
+          {
+            "coverage_detail": "worldwide_ex_us_status",
+            "detail_label": "Worldwide excluding the US positioning",
+            "entry_state": "worldwide_positioned_but_ex_us_not_verified",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Reviewed evidence supports global/wide geography positioning, but not a verified ex-U.S. configuration.",
+            "source_backing_basis": "global_positioning_only",
+            "primary_supporting_source": {
+              "source_url": "https://www.william-russell.com/international-health-insurance/",
+              "source_title": "International Health Insurance | William Russell",
+              "source_kind": "records",
+              "evidence_excerpt": "William Russell describes its product as international health insurance for expats and people living, working, or studying abroad, with members able to choose doctors or hospitals within their coverage zone."
+            }
+          }
+        ],
+        "candidate_source_context": {
+          "official_url_verified": true,
+          "quote_or_application_url_verified": true,
+          "policy_wording_or_pdf_url_verified": false,
+          "broker_url_verified": false
+        }
+      }
+    },
+    {
+      "candidate_id": "msh_international",
+      "insurer_name": "MSH International",
+      "plan_name": "First'Expat+ / International Health Insurance for Individuals",
+      "required_entry_fields_missing": [],
+      "required_coverage_fields_missing": [],
+      "coverage_states": {
+        "georgia_country_coverage_assessment": "unknown",
+        "germany_country_coverage_assessment": "unknown",
+        "worldwide_ex_us_status": "worldwide_positioned_but_ex_us_not_verified"
+      },
+      "source_url_capture_state": {
+        "official_url": "verified_public_url",
+        "quote_or_application_url": "verified_public_url",
+        "broker_url": "not_verified_publicly_in_this_run",
+        "policy_wording_or_pdf_url": "not_verified_publicly_in_this_run"
+      },
+      "source_directness_present": {
+        "high": 1,
+        "medium": 2,
+        "low": 0
+      },
+      "inferred_or_unknown_dimensions": [
+        {
+          "field": "georgia_country_coverage_assessment",
+          "state": "unknown"
+        },
+        {
+          "field": "germany_country_coverage_assessment",
+          "state": "unknown"
+        },
+        {
+          "field": "worldwide_ex_us_status",
+          "state": "worldwide_positioned_but_ex_us_not_verified"
+        }
+      ],
+      "completeness_level": "source_backed_partial_but_usable",
+      "completeness_reason": "Required discovery fields are present, but at least one coverage dimension remains inferred/unknown or one or more source URLs remain unverified publicly in this run.",
+      "required_coverage_detail_sourcing_review": {
+        "coverage_detail_review_scope": "Required coverage details only: Georgia, Germany, and worldwide excluding the US preference alignment.",
+        "fully_sourced_details": [],
+        "missing_or_partial_details": [
+          "georgia_country_coverage_assessment",
+          "germany_country_coverage_assessment",
+          "worldwide_ex_us_status"
+        ],
+        "all_required_coverage_details_fully_sourced": false,
+        "coverage_detail_matrix": [
+          {
+            "coverage_detail": "georgia_country_coverage_assessment",
+            "detail_label": "Georgia country coverage",
+            "entry_state": "unknown",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "MSH positions First’Expat+ as international cover for mobility needs, but no Georgia-specific country evidence was visible in this run.",
+            "source_backing_basis": "georgia_not_named_mobility_positioning_only",
+            "primary_supporting_source": {
+              "source_url": "https://www.msh-intl.com/en/individuals/",
+              "source_title": "International Health Insurance for Individuals - MSH",
+              "source_kind": "official insurer page",
+              "evidence_excerpt": "MSH describes First’Expat+ as a comprehensive, flexible international health insurance plan and frames itself as the healthcare partner for mobility needs."
+            }
+          },
+          {
+            "coverage_detail": "germany_country_coverage_assessment",
+            "detail_label": "Germany country coverage",
+            "entry_state": "unknown",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "MSH positions the plan for international mobility, but the reviewed public evidence did not place Germany inside a named territory or selector.",
+            "source_backing_basis": "germany_not_named_mobility_positioning_only",
+            "primary_supporting_source": {
+              "source_url": "https://www.msh-intl.com/en/individuals/",
+              "source_title": "International Health Insurance for Individuals - MSH",
+              "source_kind": "records",
+              "evidence_excerpt": "MSH presents First'Expat+ as a comprehensive, flexible international health insurance plan for individuals and frames itself as a healthcare partner for mobility needs with 24/7 support."
+            }
+          },
+          {
+            "coverage_detail": "worldwide_ex_us_status",
+            "detail_label": "Worldwide excluding the US positioning",
+            "entry_state": "worldwide_positioned_but_ex_us_not_verified",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Reviewed evidence supports global/wide geography positioning, but not a verified ex-U.S. configuration.",
+            "source_backing_basis": "global_positioning_only",
+            "primary_supporting_source": {
+              "source_url": "https://www.msh-intl.com/en/individuals/",
+              "source_title": "International Health Insurance for Individuals - MSH",
+              "source_kind": "records",
+              "evidence_excerpt": "MSH presents First'Expat+ as a comprehensive, flexible international health insurance plan for individuals and frames itself as a healthcare partner for mobility needs with 24/7 support."
+            }
+          }
+        ],
+        "candidate_source_context": {
+          "official_url_verified": true,
+          "quote_or_application_url_verified": true,
+          "policy_wording_or_pdf_url_verified": false,
+          "broker_url_verified": false
+        }
+      }
+    },
+    {
+      "candidate_id": "now_health_international",
+      "insurer_name": "Now Health International",
+      "plan_name": "SimpleCare / WorldCare International Health Insurance Plans",
+      "required_entry_fields_missing": [],
+      "required_coverage_fields_missing": [],
+      "coverage_states": {
+        "georgia_country_coverage_assessment": "unknown",
+        "germany_country_coverage_assessment": "unknown",
+        "worldwide_ex_us_status": "indirectly_indicated"
+      },
+      "source_url_capture_state": {
+        "official_url": "verified_public_url",
+        "quote_or_application_url": "verified_public_url",
+        "broker_url": "not_verified_publicly_in_this_run",
+        "policy_wording_or_pdf_url": "not_verified_publicly_in_this_run"
+      },
+      "source_directness_present": {
+        "high": 0,
+        "medium": 1,
+        "low": 0
+      },
+      "inferred_or_unknown_dimensions": [
+        {
+          "field": "georgia_country_coverage_assessment",
+          "state": "unknown"
+        },
+        {
+          "field": "germany_country_coverage_assessment",
+          "state": "unknown"
+        },
+        {
+          "field": "worldwide_ex_us_status",
+          "state": "indirectly_indicated"
+        }
+      ],
+      "completeness_level": "source_backed_partial_but_usable",
+      "completeness_reason": "Required discovery fields are present, but at least one coverage dimension remains inferred/unknown or one or more source URLs remain unverified publicly in this run.",
+      "required_coverage_detail_sourcing_review": {
+        "coverage_detail_review_scope": "Required coverage details only: Georgia, Germany, and worldwide excluding the US preference alignment.",
+        "fully_sourced_details": [],
+        "missing_or_partial_details": [
+          "georgia_country_coverage_assessment",
+          "germany_country_coverage_assessment",
+          "worldwide_ex_us_status"
+        ],
+        "all_required_coverage_details_fully_sourced": false,
+        "coverage_detail_matrix": [
+          {
+            "coverage_detail": "georgia_country_coverage_assessment",
+            "detail_label": "Georgia country coverage",
+            "entry_state": "unknown",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Now Health exposes international-plan geography mechanics tied to country of nationality or residence, but Georgia was not named directly in the captured page text.",
+            "source_backing_basis": "georgia_not_named_country_of_residence_mechanics",
+            "primary_supporting_source": {
+              "source_url": "https://www.now-health.com/en/insurance-plans/",
+              "source_title": "Compare International Health Insurance Plans from Now Health",
+              "source_kind": "official insurer page",
+              "evidence_excerpt": "The public comparison table references repatriation to the country of nationality or residence and includes residence-specific issuance notes for some markets."
+            }
+          },
+          {
+            "coverage_detail": "germany_country_coverage_assessment",
+            "detail_label": "Germany country coverage",
+            "entry_state": "unknown",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Now Health exposes country-of-residence mechanics relevant to Germany screening, but Germany was not named directly.",
+            "source_backing_basis": "germany_not_named_country_of_residence_mechanics",
+            "primary_supporting_source": {
+              "source_url": "https://www.now-health.com/en/insurance-plans/",
+              "source_title": "Compare International Health Insurance Plans from Now Health",
+              "source_kind": "records",
+              "evidence_excerpt": "Now Health compares seven international plan options across SimpleCare and WorldCare product lines and includes evacuation/repatriation and optional USA treatment mechanics in the public comparison table."
+            }
+          },
+          {
+            "coverage_detail": "worldwide_ex_us_status",
+            "detail_label": "Worldwide excluding the US positioning",
+            "entry_state": "indirectly_indicated",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Reviewed evidence strongly suggests a non-U.S. global option exists, but the exact worldwide-excluding-U.S. wording was not captured verbatim.",
+            "source_backing_basis": "strong_but_indirect",
+            "primary_supporting_source": {
+              "source_url": "https://www.now-health.com/en/insurance-plans/",
+              "source_title": "Compare International Health Insurance Plans from Now Health",
+              "source_kind": "records",
+              "evidence_excerpt": "Now Health compares seven international plan options across SimpleCare and WorldCare product lines and includes evacuation/repatriation and optional USA treatment mechanics in the public comparison table."
+            }
+          }
+        ],
+        "candidate_source_context": {
+          "official_url_verified": true,
+          "quote_or_application_url_verified": true,
+          "policy_wording_or_pdf_url_verified": false,
+          "broker_url_verified": false
+        }
+      }
+    },
+    {
+      "candidate_id": "img_global",
+      "insurer_name": "IMG (International Medical Group)",
+      "plan_name": "Global Medical international health insurance",
+      "required_entry_fields_missing": [],
+      "required_coverage_fields_missing": [],
+      "coverage_states": {
+        "georgia_country_coverage_assessment": "confirmed",
+        "germany_country_coverage_assessment": "confirmed",
+        "worldwide_ex_us_status": "worldwide_positioned_but_ex_us_not_verified"
+      },
+      "source_url_capture_state": {
+        "official_url": "verified_public_url",
+        "quote_or_application_url": "verified_public_url",
+        "broker_url": "not_verified_publicly_in_this_run",
+        "policy_wording_or_pdf_url": "verified_public_url"
+      },
+      "source_directness_present": {
+        "high": 2,
+        "medium": 1,
+        "low": 0
+      },
+      "inferred_or_unknown_dimensions": [
+        {
+          "field": "worldwide_ex_us_status",
+          "state": "worldwide_positioned_but_ex_us_not_verified"
+        }
+      ],
+      "completeness_level": "source_backed_partial_but_usable",
+      "completeness_reason": "Required discovery fields are present, but at least one coverage dimension remains inferred/unknown or one or more source URLs remain unverified publicly in this run.",
+      "required_coverage_detail_sourcing_review": {
+        "coverage_detail_review_scope": "Required coverage details only: Georgia, Germany, and worldwide excluding the US preference alignment.",
+        "fully_sourced_details": [
+          "georgia_country_coverage_assessment",
+          "germany_country_coverage_assessment"
+        ],
+        "missing_or_partial_details": [
+          "worldwide_ex_us_status"
+        ],
+        "all_required_coverage_details_fully_sourced": false,
+        "coverage_detail_matrix": [
+          {
+            "coverage_detail": "georgia_country_coverage_assessment",
+            "detail_label": "Georgia country coverage",
+            "entry_state": "confirmed",
+            "sourcing_completeness": "fully_sourced",
+            "why_not_fully_sourced": null,
+            "source_backing_basis": "georgia_explicitly_listed",
+            "primary_supporting_source": {
+              "source_url": "https://www.imglobal.com/international-health-insurance",
+              "source_title": "IMG international health insurance",
+              "source_kind": "official insurer page",
+              "evidence_excerpt": "The page HTML contains country options including Georgia and Germany and says IMG international health plans provide medical coverage worldwide."
+            }
+          },
+          {
+            "coverage_detail": "germany_country_coverage_assessment",
+            "detail_label": "Germany country coverage",
+            "entry_state": "confirmed",
+            "sourcing_completeness": "fully_sourced",
+            "why_not_fully_sourced": null,
+            "source_backing_basis": "germany_explicitly_listed",
+            "primary_supporting_source": {
+              "source_url": "https://www.imglobal.com/",
+              "source_title": "International Health & Travel Medical Insurance - IMG",
+              "source_kind": "records",
+              "evidence_excerpt": "IMG states that its international health insurance offers annually renewable private medical coverage for expats and global citizens living or working internationally, with Global Medical Silver, Gold, and Platinum plans."
+            }
+          },
+          {
+            "coverage_detail": "worldwide_ex_us_status",
+            "detail_label": "Worldwide excluding the US positioning",
+            "entry_state": "worldwide_positioned_but_ex_us_not_verified",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Reviewed evidence supports global/wide geography positioning, but not a verified ex-U.S. configuration.",
+            "source_backing_basis": "global_positioning_only",
+            "primary_supporting_source": {
+              "source_url": "https://www.imglobal.com/",
+              "source_title": "International Health & Travel Medical Insurance - IMG",
+              "source_kind": "records",
+              "evidence_excerpt": "IMG states that its international health insurance offers annually renewable private medical coverage for expats and global citizens living or working internationally, with Global Medical Silver, Gold, and Platinum plans."
+            }
+          }
+        ],
+        "candidate_source_context": {
+          "official_url_verified": true,
+          "quote_or_application_url_verified": true,
+          "policy_wording_or_pdf_url_verified": true,
+          "broker_url_verified": false
+        }
+      }
+    },
+    {
+      "candidate_id": "aetna_international",
+      "insurer_name": "Aetna International",
+      "plan_name": "Aetna International global healthcare entrypoint",
+      "required_entry_fields_missing": [],
+      "required_coverage_fields_missing": [],
+      "coverage_states": {
+        "georgia_country_coverage_assessment": "unknown",
+        "germany_country_coverage_assessment": "unknown",
+        "worldwide_ex_us_status": "indirectly_indicated"
+      },
+      "source_url_capture_state": {
+        "official_url": "verified_public_url",
+        "quote_or_application_url": "verified_public_url",
+        "broker_url": "not_verified_publicly_in_this_run",
+        "policy_wording_or_pdf_url": "not_verified_publicly_in_this_run"
+      },
+      "source_directness_present": {
+        "high": 1,
+        "medium": 1,
+        "low": 0
+      },
+      "inferred_or_unknown_dimensions": [
+        {
+          "field": "georgia_country_coverage_assessment",
+          "state": "unknown"
+        },
+        {
+          "field": "germany_country_coverage_assessment",
+          "state": "unknown"
+        },
+        {
+          "field": "worldwide_ex_us_status",
+          "state": "indirectly_indicated"
+        }
+      ],
+      "completeness_level": "source_backed_partial_but_usable",
+      "completeness_reason": "Required discovery fields are present, but at least one coverage dimension remains inferred/unknown or one or more source URLs remain unverified publicly in this run.",
+      "required_coverage_detail_sourcing_review": {
+        "coverage_detail_review_scope": "Required coverage details only: Georgia, Germany, and worldwide excluding the US preference alignment.",
+        "fully_sourced_details": [],
+        "missing_or_partial_details": [
+          "georgia_country_coverage_assessment",
+          "germany_country_coverage_assessment",
+          "worldwide_ex_us_status"
+        ],
+        "all_required_coverage_details_fully_sourced": false,
+        "coverage_detail_matrix": [
+          {
+            "coverage_detail": "georgia_country_coverage_assessment",
+            "detail_label": "Georgia country coverage",
+            "entry_state": "unknown",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Aetna International publicly shows worldwide telehealth or network reach, but no Georgia-specific country selector evidence was captured.",
+            "source_backing_basis": "georgia_not_named_global_network_only",
+            "primary_supporting_source": {
+              "source_url": "https://www.aetnainternational.com/",
+              "source_title": "Home | Aetna International",
+              "source_kind": "official insurer page",
+              "evidence_excerpt": "Aetna says members can access care anywhere, anytime through the member website and worldwide telehealth services."
+            }
+          },
+          {
+            "coverage_detail": "germany_country_coverage_assessment",
+            "detail_label": "Germany country coverage",
+            "entry_state": "unknown",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Aetna International shows worldwide service reach, but no Germany-specific plan or selector evidence was captured.",
+            "source_backing_basis": "germany_not_named_global_network_only",
+            "primary_supporting_source": {
+              "source_url": "https://www.aetnainternational.com/",
+              "source_title": "Home | Aetna",
+              "source_kind": "records",
+              "evidence_excerpt": "Aetna International says it serves globally mobile members with access to quality care and support wherever they are, with provider network access in 200+ countries and territories."
+            }
+          },
+          {
+            "coverage_detail": "worldwide_ex_us_status",
+            "detail_label": "Worldwide excluding the US positioning",
+            "entry_state": "indirectly_indicated",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Reviewed evidence strongly suggests a non-U.S. global option exists, but the exact worldwide-excluding-U.S. wording was not captured verbatim.",
+            "source_backing_basis": "strong_but_indirect",
+            "primary_supporting_source": {
+              "source_url": "https://www.aetnainternational.com/",
+              "source_title": "Home | Aetna",
+              "source_kind": "records",
+              "evidence_excerpt": "Aetna International says it serves globally mobile members with access to quality care and support wherever they are, with provider network access in 200+ countries and territories."
+            }
+          }
+        ],
+        "candidate_source_context": {
+          "official_url_verified": true,
+          "quote_or_application_url_verified": true,
+          "policy_wording_or_pdf_url_verified": false,
+          "broker_url_verified": false
+        }
+      }
+    },
+    {
+      "candidate_id": "foyer_global_health",
+      "insurer_name": "Foyer Global Health",
+      "plan_name": "Expat Health Insurance / International Health Insurance comparison",
+      "required_entry_fields_missing": [],
+      "required_coverage_fields_missing": [],
+      "coverage_states": {
+        "georgia_country_coverage_assessment": "inferred",
+        "germany_country_coverage_assessment": "inferred",
+        "worldwide_ex_us_status": "worldwide_positioned_but_ex_us_not_verified"
+      },
+      "source_url_capture_state": {
+        "official_url": "verified_public_url",
+        "quote_or_application_url": "verified_public_url",
+        "broker_url": "not_verified_publicly_in_this_run",
+        "policy_wording_or_pdf_url": "verified_public_url"
+      },
+      "source_directness_present": {
+        "high": 2,
+        "medium": 2,
+        "low": 0
+      },
+      "inferred_or_unknown_dimensions": [
+        {
+          "field": "georgia_country_coverage_assessment",
+          "state": "inferred"
+        },
+        {
+          "field": "germany_country_coverage_assessment",
+          "state": "inferred"
+        },
+        {
+          "field": "worldwide_ex_us_status",
+          "state": "worldwide_positioned_but_ex_us_not_verified"
+        }
+      ],
+      "completeness_level": "source_backed_partial_but_usable",
+      "completeness_reason": "Required discovery fields are present, but at least one coverage dimension remains inferred/unknown or one or more source URLs remain unverified publicly in this run.",
+      "required_coverage_detail_sourcing_review": {
+        "coverage_detail_review_scope": "Required coverage details only: Georgia, Germany, and worldwide excluding the US preference alignment.",
+        "fully_sourced_details": [],
+        "missing_or_partial_details": [
+          "georgia_country_coverage_assessment",
+          "germany_country_coverage_assessment",
+          "worldwide_ex_us_status"
+        ],
+        "all_required_coverage_details_fully_sourced": false,
+        "coverage_detail_matrix": [
+          {
+            "coverage_detail": "georgia_country_coverage_assessment",
+            "detail_label": "Georgia country coverage",
+            "entry_state": "inferred",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Foyer publicly references Georgia in dedicated destination and health guides, which is useful country-specific discovery evidence even though it is not a formal eligibility table.",
+            "source_backing_basis": "georgia_destination_reference",
+            "primary_supporting_source": {
+              "source_url": "https://www.foyerglobalhealth.com/",
+              "source_title": "Expat Health Insurance | Foyer Global Health",
+              "source_kind": "official insurer page",
+              "evidence_excerpt": "The official site lists destination guides for Georgia, including living, health, and budget content, and markets worldwide expat-family coverage."
+            }
+          },
+          {
+            "coverage_detail": "germany_country_coverage_assessment",
+            "detail_label": "Germany country coverage",
+            "entry_state": "inferred",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Foyer’s official public footprint includes Germany destination content, which supports Germany relevance even though a Germany selector was not captured.",
+            "source_backing_basis": "germany_destination_reference",
+            "primary_supporting_source": {
+              "source_url": "https://www.foyerglobalhealth.com/",
+              "source_title": "Foyer Global Health: Expat Health Insurance",
+              "source_kind": "records",
+              "evidence_excerpt": "The official search result describes Foyer Global Health as an international health insurance and service provider for digital nomads, expats, and globally mobile people; a public plan comparison page is also available."
+            }
+          },
+          {
+            "coverage_detail": "worldwide_ex_us_status",
+            "detail_label": "Worldwide excluding the US positioning",
+            "entry_state": "worldwide_positioned_but_ex_us_not_verified",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Reviewed evidence supports global/wide geography positioning, but not a verified ex-U.S. configuration.",
+            "source_backing_basis": "global_positioning_only",
+            "primary_supporting_source": {
+              "source_url": "https://www.foyerglobalhealth.com/",
+              "source_title": "Foyer Global Health: Expat Health Insurance",
+              "source_kind": "records",
+              "evidence_excerpt": "The official search result describes Foyer Global Health as an international health insurance and service provider for digital nomads, expats, and globally mobile people; a public plan comparison page is also available."
+            }
+          }
+        ],
+        "candidate_source_context": {
+          "official_url_verified": true,
+          "quote_or_application_url_verified": true,
+          "policy_wording_or_pdf_url_verified": true,
+          "broker_url_verified": false
+        }
+      }
+    },
+    {
+      "candidate_id": "henner",
+      "insurer_name": "Henner",
+      "plan_name": "Individuals & Families international health solutions",
+      "required_entry_fields_missing": [],
+      "required_coverage_fields_missing": [],
+      "coverage_states": {
+        "georgia_country_coverage_assessment": "unknown",
+        "germany_country_coverage_assessment": "unknown",
+        "worldwide_ex_us_status": "not_verified_from_reviewed_sources"
+      },
+      "source_url_capture_state": {
+        "official_url": "verified_public_url",
+        "quote_or_application_url": "verified_public_url",
+        "broker_url": "not_verified_publicly_in_this_run",
+        "policy_wording_or_pdf_url": "not_verified_publicly_in_this_run"
+      },
+      "source_directness_present": {
+        "high": 0,
+        "medium": 1,
+        "low": 0
+      },
+      "inferred_or_unknown_dimensions": [
+        {
+          "field": "georgia_country_coverage_assessment",
+          "state": "unknown"
+        },
+        {
+          "field": "germany_country_coverage_assessment",
+          "state": "unknown"
+        },
+        {
+          "field": "worldwide_ex_us_status",
+          "state": "not_verified_from_reviewed_sources"
+        }
+      ],
+      "completeness_level": "source_backed_partial_but_usable",
+      "completeness_reason": "Required discovery fields are present, but at least one coverage dimension remains inferred/unknown or one or more source URLs remain unverified publicly in this run.",
+      "required_coverage_detail_sourcing_review": {
+        "coverage_detail_review_scope": "Required coverage details only: Georgia, Germany, and worldwide excluding the US preference alignment.",
+        "fully_sourced_details": [],
+        "missing_or_partial_details": [
+          "georgia_country_coverage_assessment",
+          "germany_country_coverage_assessment",
+          "worldwide_ex_us_status"
+        ],
+        "all_required_coverage_details_fully_sourced": false,
+        "coverage_detail_matrix": [
+          {
+            "coverage_detail": "georgia_country_coverage_assessment",
+            "detail_label": "Georgia country coverage",
+            "entry_state": "unknown",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Henner shows individuals-and-families living-abroad positioning and a 240-country healthcare-professional network, but Georgia was not explicitly captured.",
+            "source_backing_basis": "georgia_not_named_global_network_only",
+            "primary_supporting_source": {
+              "source_url": "https://www.henner.com/en/customers/individuals-families/",
+              "source_title": "Individuals & Families - Henner",
+              "source_kind": "official insurer page",
+              "evidence_excerpt": "Henner says it supports people living abroad and has a network of healthcare professionals in 240 countries."
+            }
+          },
+          {
+            "coverage_detail": "germany_country_coverage_assessment",
+            "detail_label": "Germany country coverage",
+            "entry_state": "unknown",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Henner’s reviewed public evidence supported international-family positioning, but did not directly verify Germany.",
+            "source_backing_basis": "germany_not_named_global_network_only",
+            "primary_supporting_source": {
+              "source_url": "https://www.henner.com/en/customers/individuals-families/",
+              "source_title": "Individuals & Families - Henner",
+              "source_kind": "records",
+              "evidence_excerpt": "Henner says it has developed unique expertise in personal insurance for people living abroad, offers international health insurance tailored to all lifestyles, and works with healthcare professionals in 240 countries."
+            }
+          },
+          {
+            "coverage_detail": "worldwide_ex_us_status",
+            "detail_label": "Worldwide excluding the US positioning",
+            "entry_state": "not_verified_from_reviewed_sources",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Reviewed evidence did not verify enough geography detail to support a worldwide ex-U.S. indication.",
+            "source_backing_basis": "not_verified",
+            "primary_supporting_source": {
+              "source_url": "https://www.henner.com/en/customers/individuals-families/",
+              "source_title": "Individuals & Families - Henner",
+              "source_kind": "records",
+              "evidence_excerpt": "Henner says it has developed unique expertise in personal insurance for people living abroad, offers international health insurance tailored to all lifestyles, and works with healthcare professionals in 240 countries."
+            }
+          }
+        ],
+        "candidate_source_context": {
+          "official_url_verified": true,
+          "quote_or_application_url_verified": true,
+          "policy_wording_or_pdf_url_verified": false,
+          "broker_url_verified": false
+        }
+      }
+    },
+    {
+      "candidate_id": "globality_health",
+      "insurer_name": "Globality Health",
+      "plan_name": "YouGenio individual international health insurance plans",
+      "required_entry_fields_missing": [],
+      "required_coverage_fields_missing": [],
+      "coverage_states": {
+        "georgia_country_coverage_assessment": "unknown",
+        "germany_country_coverage_assessment": "unknown",
+        "worldwide_ex_us_status": "not_verified_from_reviewed_sources"
+      },
+      "source_url_capture_state": {
+        "official_url": "verified_public_url",
+        "quote_or_application_url": "verified_public_url",
+        "broker_url": "not_verified_publicly_in_this_run",
+        "policy_wording_or_pdf_url": "not_verified_publicly_in_this_run"
+      },
+      "source_directness_present": {
+        "high": 1,
+        "medium": 1,
+        "low": 0
+      },
+      "inferred_or_unknown_dimensions": [
+        {
+          "field": "georgia_country_coverage_assessment",
+          "state": "unknown"
+        },
+        {
+          "field": "germany_country_coverage_assessment",
+          "state": "unknown"
+        },
+        {
+          "field": "worldwide_ex_us_status",
+          "state": "not_verified_from_reviewed_sources"
+        }
+      ],
+      "completeness_level": "source_backed_partial_but_usable",
+      "completeness_reason": "Required discovery fields are present, but at least one coverage dimension remains inferred/unknown or one or more source URLs remain unverified publicly in this run.",
+      "required_coverage_detail_sourcing_review": {
+        "coverage_detail_review_scope": "Required coverage details only: Georgia, Germany, and worldwide excluding the US preference alignment.",
+        "fully_sourced_details": [],
+        "missing_or_partial_details": [
+          "georgia_country_coverage_assessment",
+          "germany_country_coverage_assessment",
+          "worldwide_ex_us_status"
+        ],
+        "all_required_coverage_details_fully_sourced": false,
+        "coverage_detail_matrix": [
+          {
+            "coverage_detail": "georgia_country_coverage_assessment",
+            "detail_label": "Georgia country coverage",
+            "entry_state": "unknown",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Globality’s application flow uses a broad country list for future residency, but the extracted summary did not explicitly name Georgia even though the flow is country-driven.",
+            "source_backing_basis": "georgia_residency_dropdown_unresolved",
+            "primary_supporting_source": {
+              "source_url": "https://application.globality-health.com/?locale=en",
+              "source_title": "Globality Health application / quote flow",
+              "source_kind": "official quote page",
+              "evidence_excerpt": "The application requires a country of future residency from a broad country list and warns: “Please choose another country of future residency for the quotation.”"
+            }
+          },
+          {
+            "coverage_detail": "germany_country_coverage_assessment",
+            "detail_label": "Germany country coverage",
+            "entry_state": "unknown",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Globality surfaced Germany-relevant residency distinctions in related public evidence, but Germany coverage itself was not verified from the captured plan page.",
+            "source_backing_basis": "germany_residence_rules_relevant_not_verified",
+            "primary_supporting_source": {
+              "source_url": "https://www.globality-health.com/",
+              "source_title": "International Health Insurance for Expats - Globality Health",
+              "source_kind": "records",
+              "evidence_excerpt": "Globality Health describes itself as an international health insurer for expatriates and says its YouGenio individual plans offer comprehensive coverage with various plan levels tailored to personal needs."
+            }
+          },
+          {
+            "coverage_detail": "worldwide_ex_us_status",
+            "detail_label": "Worldwide excluding the US positioning",
+            "entry_state": "not_verified_from_reviewed_sources",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Reviewed evidence did not verify enough geography detail to support a worldwide ex-U.S. indication.",
+            "source_backing_basis": "not_verified",
+            "primary_supporting_source": {
+              "source_url": "https://www.globality-health.com/",
+              "source_title": "International Health Insurance for Expats - Globality Health",
+              "source_kind": "records",
+              "evidence_excerpt": "Globality Health describes itself as an international health insurer for expatriates and says its YouGenio individual plans offer comprehensive coverage with various plan levels tailored to personal needs."
+            }
+          }
+        ],
+        "candidate_source_context": {
+          "official_url_verified": true,
+          "quote_or_application_url_verified": true,
+          "policy_wording_or_pdf_url_verified": false,
+          "broker_url_verified": false
+        }
+      }
+    },
+    {
+      "candidate_id": "morgan_price",
+      "insurer_name": "Morgan Price International Healthcare",
+      "plan_name": "Evolution Health / Flexible Choices individual international healthcare plans",
+      "required_entry_fields_missing": [],
+      "required_coverage_fields_missing": [],
+      "coverage_states": {
+        "georgia_country_coverage_assessment": "unknown",
+        "germany_country_coverage_assessment": "inferred",
+        "worldwide_ex_us_status": "indirectly_indicated"
+      },
+      "source_url_capture_state": {
+        "official_url": "verified_public_url",
+        "quote_or_application_url": "verified_public_url",
+        "broker_url": "not_verified_publicly_in_this_run",
+        "policy_wording_or_pdf_url": "verified_public_url"
+      },
+      "source_directness_present": {
+        "high": 2,
+        "medium": 1,
+        "low": 0
+      },
+      "inferred_or_unknown_dimensions": [
+        {
+          "field": "georgia_country_coverage_assessment",
+          "state": "unknown"
+        },
+        {
+          "field": "germany_country_coverage_assessment",
+          "state": "inferred"
+        },
+        {
+          "field": "worldwide_ex_us_status",
+          "state": "indirectly_indicated"
+        }
+      ],
+      "completeness_level": "source_backed_partial_but_usable",
+      "completeness_reason": "Required discovery fields are present, but at least one coverage dimension remains inferred/unknown or one or more source URLs remain unverified publicly in this run.",
+      "required_coverage_detail_sourcing_review": {
+        "coverage_detail_review_scope": "Required coverage details only: Georgia, Germany, and worldwide excluding the US preference alignment.",
+        "fully_sourced_details": [],
+        "missing_or_partial_details": [
+          "georgia_country_coverage_assessment",
+          "germany_country_coverage_assessment",
+          "worldwide_ex_us_status"
+        ],
+        "all_required_coverage_details_fully_sourced": false,
+        "coverage_detail_matrix": [
+          {
+            "coverage_detail": "georgia_country_coverage_assessment",
+            "detail_label": "Georgia country coverage",
+            "entry_state": "unknown",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Morgan Price publishes unusually concrete residence rules and area-of-cover wording, but Georgia itself was not named in the captured public text.",
+            "source_backing_basis": "georgia_residence_rules_relevant_not_verified",
+            "primary_supporting_source": {
+              "source_url": "https://www.morgan-price.com/individual/",
+              "source_title": "International Healthcare Insurance Plans for Expats | Morgan Price International Healthcare",
+              "source_kind": "official insurer page",
+              "evidence_excerpt": "Morgan Price states some plans are only available to applicants whose primary residence is in named countries, and Flexible Choices applicants must reside outside the EU or EEA."
+            }
+          },
+          {
+            "coverage_detail": "germany_country_coverage_assessment",
+            "detail_label": "Germany country coverage",
+            "entry_state": "inferred",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Morgan Price exposes Europe/EU residency restrictions and home-country cover wording that are materially relevant to Germany.",
+            "source_backing_basis": "germany_home_country_cover_relevant",
+            "primary_supporting_source": {
+              "source_url": "https://www.morgan-price.com/individual/",
+              "source_title": "International Healthcare Insurance Plans for Expats | Morgan Price International Healthcare",
+              "source_kind": "records",
+              "evidence_excerpt": "Morgan Price says Evolution Health is an expatriate health insurance product for expatriates and eligible dependants, includes home-country cover excluding USA, and publishes policy wording and tables of benefits on the public page."
+            }
+          },
+          {
+            "coverage_detail": "worldwide_ex_us_status",
+            "detail_label": "Worldwide excluding the US positioning",
+            "entry_state": "indirectly_indicated",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Reviewed evidence strongly suggests a non-U.S. global option exists, but the exact worldwide-excluding-U.S. wording was not captured verbatim.",
+            "source_backing_basis": "strong_but_indirect",
+            "primary_supporting_source": {
+              "source_url": "https://www.morgan-price.com/individual/",
+              "source_title": "International Healthcare Insurance Plans for Expats | Morgan Price International Healthcare",
+              "source_kind": "records",
+              "evidence_excerpt": "Morgan Price says Evolution Health is an expatriate health insurance product for expatriates and eligible dependants, includes home-country cover excluding USA, and publishes policy wording and tables of benefits on the public page."
+            }
+          }
+        ],
+        "candidate_source_context": {
+          "official_url_verified": true,
+          "quote_or_application_url_verified": true,
+          "policy_wording_or_pdf_url_verified": true,
+          "broker_url_verified": false
+        }
+      }
+    },
+    {
+      "candidate_id": "passportcard_global",
+      "insurer_name": "PassportCard",
+      "plan_name": "Expat Basic / Expat Comprehensive / Executive",
+      "required_entry_fields_missing": [],
+      "required_coverage_fields_missing": [],
+      "coverage_states": {
+        "georgia_country_coverage_assessment": "inferred",
+        "germany_country_coverage_assessment": "confirmed",
+        "worldwide_ex_us_status": "worldwide_positioned_but_ex_us_not_verified"
+      },
+      "source_url_capture_state": {
+        "official_url": "verified_public_url",
+        "quote_or_application_url": "not_verified_publicly_in_this_run",
+        "broker_url": "not_verified_publicly_in_this_run",
+        "policy_wording_or_pdf_url": "verified_public_url"
+      },
+      "source_directness_present": {
+        "high": 1,
+        "medium": 1,
+        "low": 0
+      },
+      "inferred_or_unknown_dimensions": [
+        {
+          "field": "georgia_country_coverage_assessment",
+          "state": "inferred"
+        },
+        {
+          "field": "worldwide_ex_us_status",
+          "state": "worldwide_positioned_but_ex_us_not_verified"
+        }
+      ],
+      "completeness_level": "source_backed_partial_but_usable",
+      "completeness_reason": "Required discovery fields are present, but at least one coverage dimension remains inferred/unknown or one or more source URLs remain unverified publicly in this run.",
+      "required_coverage_detail_sourcing_review": {
+        "coverage_detail_review_scope": "Required coverage details only: Georgia, Germany, and worldwide excluding the US preference alignment.",
+        "fully_sourced_details": [
+          "germany_country_coverage_assessment"
+        ],
+        "missing_or_partial_details": [
+          "georgia_country_coverage_assessment",
+          "worldwide_ex_us_status"
+        ],
+        "all_required_coverage_details_fully_sourced": false,
+        "coverage_detail_matrix": [
+          {
+            "coverage_detail": "georgia_country_coverage_assessment",
+            "detail_label": "Georgia country coverage",
+            "entry_state": "inferred",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "PassportCard provides clear worldwide-ex-USA territory structure and Germany home-visit wording, but Georgia itself was not captured in public text.",
+            "source_backing_basis": "georgia_not_named_worldwide_ex_us_structure",
+            "primary_supporting_source": {
+              "source_url": "https://www.passportcard.de/en/international-health-insurance/",
+              "source_title": "International health insurance for expats & nomads | PassportCard",
+              "source_kind": "official insurer page",
+              "evidence_excerpt": "PassportCard says the contract currency is EUR for coverage worldwide excluding USA territories, and that some zones include treatment in Germany during home visits."
+            }
+          },
+          {
+            "coverage_detail": "germany_country_coverage_assessment",
+            "detail_label": "Germany country coverage",
+            "entry_state": "confirmed",
+            "sourcing_completeness": "fully_sourced",
+            "why_not_fully_sourced": null,
+            "source_backing_basis": "germany_home_country_reference",
+            "primary_supporting_source": {
+              "source_url": "https://www.passportcard.de/en/international-health-insurance/",
+              "source_title": "International health insurance for expats & nomads | PassportCard",
+              "source_kind": "supplemental_candidates",
+              "evidence_excerpt": "PassportCard says it offers international private health insurance for expats, students, and digital nomads, advertises worldwide medical coverage for long-term stays abroad, and shows three plan tiers with example EUR pricing."
+            }
+          },
+          {
+            "coverage_detail": "worldwide_ex_us_status",
+            "detail_label": "Worldwide excluding the US positioning",
+            "entry_state": "worldwide_positioned_but_ex_us_not_verified",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Reviewed evidence supports global/wide geography positioning, but not a verified ex-U.S. configuration.",
+            "source_backing_basis": "global_positioning_only",
+            "primary_supporting_source": {
+              "source_url": "https://www.passportcard.de/en/international-health-insurance/",
+              "source_title": "International health insurance for expats & nomads | PassportCard",
+              "source_kind": "supplemental_candidates",
+              "evidence_excerpt": "PassportCard says it offers international private health insurance for expats, students, and digital nomads, advertises worldwide medical coverage for long-term stays abroad, and shows three plan tiers with example EUR pricing."
+            }
+          }
+        ],
+        "candidate_source_context": {
+          "official_url_verified": true,
+          "quote_or_application_url_verified": false,
+          "policy_wording_or_pdf_url_verified": true,
+          "broker_url_verified": false
+        }
+      }
+    },
+    {
+      "candidate_id": "vumi",
+      "insurer_name": "VUMI",
+      "plan_name": "Absolute VIP / Universal VIP / Special VIP / Access VIP product family",
+      "required_entry_fields_missing": [],
+      "required_coverage_fields_missing": [],
+      "coverage_states": {
+        "georgia_country_coverage_assessment": "inferred",
+        "germany_country_coverage_assessment": "inferred",
+        "worldwide_ex_us_status": "worldwide_positioned_but_ex_us_not_verified"
+      },
+      "source_url_capture_state": {
+        "official_url": "verified_public_url",
+        "quote_or_application_url": "not_verified_publicly_in_this_run",
+        "broker_url": "not_verified_publicly_in_this_run",
+        "policy_wording_or_pdf_url": "not_verified_publicly_in_this_run"
+      },
+      "source_directness_present": {
+        "high": 0,
+        "medium": 1,
+        "low": 0
+      },
+      "inferred_or_unknown_dimensions": [
+        {
+          "field": "georgia_country_coverage_assessment",
+          "state": "inferred"
+        },
+        {
+          "field": "germany_country_coverage_assessment",
+          "state": "inferred"
+        },
+        {
+          "field": "worldwide_ex_us_status",
+          "state": "worldwide_positioned_but_ex_us_not_verified"
+        }
+      ],
+      "completeness_level": "source_backed_partial_but_usable",
+      "completeness_reason": "Required discovery fields are present, but at least one coverage dimension remains inferred/unknown or one or more source URLs remain unverified publicly in this run.",
+      "required_coverage_detail_sourcing_review": {
+        "coverage_detail_review_scope": "Required coverage details only: Georgia, Germany, and worldwide excluding the US preference alignment.",
+        "fully_sourced_details": [],
+        "missing_or_partial_details": [
+          "georgia_country_coverage_assessment",
+          "germany_country_coverage_assessment",
+          "worldwide_ex_us_status"
+        ],
+        "all_required_coverage_details_fully_sourced": false,
+        "coverage_detail_matrix": [
+          {
+            "coverage_detail": "georgia_country_coverage_assessment",
+            "detail_label": "Georgia country coverage",
+            "entry_state": "inferred",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "VUMI markets worldwide coverage for individuals and families, but no Georgia-specific country evidence was captured.",
+            "source_backing_basis": "georgia_not_named_worldwide_only",
+            "primary_supporting_source": {
+              "source_url": "https://www.vumigroup.com/",
+              "source_title": "Home - VUMI",
+              "source_kind": "official insurer page",
+              "evidence_excerpt": "VUMI says it offers international health insurance with worldwide coverage and that families are protected anywhere, anytime."
+            }
+          },
+          {
+            "coverage_detail": "germany_country_coverage_assessment",
+            "detail_label": "Germany country coverage",
+            "entry_state": "inferred",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "VUMI shows broad worldwide positioning, but no captured source named Germany directly.",
+            "source_backing_basis": "germany_not_named_global_only",
+            "primary_supporting_source": {
+              "source_url": "https://www.vumigroup.com/",
+              "source_title": "Home - VUMI",
+              "source_kind": "supplemental_candidates",
+              "evidence_excerpt": "VUMI's homepage markets international health insurance with worldwide coverage, says its solutions protect you and your family anywhere anytime, and lists multiple long-term medical plan families plus a Europe region selector."
+            }
+          },
+          {
+            "coverage_detail": "worldwide_ex_us_status",
+            "detail_label": "Worldwide excluding the US positioning",
+            "entry_state": "worldwide_positioned_but_ex_us_not_verified",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Reviewed evidence supports global/wide geography positioning, but not a verified ex-U.S. configuration.",
+            "source_backing_basis": "global_positioning_only",
+            "primary_supporting_source": {
+              "source_url": "https://www.vumigroup.com/",
+              "source_title": "Home - VUMI",
+              "source_kind": "supplemental_candidates",
+              "evidence_excerpt": "VUMI's homepage markets international health insurance with worldwide coverage, says its solutions protect you and your family anywhere anytime, and lists multiple long-term medical plan families plus a Europe region selector."
+            }
+          }
+        ],
+        "candidate_source_context": {
+          "official_url_verified": true,
+          "quote_or_application_url_verified": false,
+          "policy_wording_or_pdf_url_verified": false,
+          "broker_url_verified": false
+        }
+      }
+    },
+    {
+      "candidate_id": "integra_global",
+      "insurer_name": "Integra Global",
+      "plan_name": "yourLife / PremierLife / yourFamily / PremierFamily",
+      "required_entry_fields_missing": [],
+      "required_coverage_fields_missing": [],
+      "coverage_states": {
+        "georgia_country_coverage_assessment": "inferred",
+        "germany_country_coverage_assessment": "inferred",
+        "worldwide_ex_us_status": "explicitly_indicated"
+      },
+      "source_url_capture_state": {
+        "official_url": "verified_public_url",
+        "quote_or_application_url": "not_verified_publicly_in_this_run",
+        "broker_url": "verified_public_url",
+        "policy_wording_or_pdf_url": "verified_public_url"
+      },
+      "source_directness_present": {
+        "high": 0,
+        "medium": 0,
+        "low": 2
+      },
+      "inferred_or_unknown_dimensions": [
+        {
+          "field": "georgia_country_coverage_assessment",
+          "state": "inferred"
+        },
+        {
+          "field": "germany_country_coverage_assessment",
+          "state": "inferred"
+        }
+      ],
+      "completeness_level": "source_backed_partial_but_usable",
+      "completeness_reason": "Required discovery fields are present, but at least one coverage dimension remains inferred/unknown or one or more source URLs remain unverified publicly in this run.",
+      "required_coverage_detail_sourcing_review": {
+        "coverage_detail_review_scope": "Required coverage details only: Georgia, Germany, and worldwide excluding the US preference alignment.",
+        "fully_sourced_details": [
+          "worldwide_ex_us_status"
+        ],
+        "missing_or_partial_details": [
+          "georgia_country_coverage_assessment",
+          "germany_country_coverage_assessment"
+        ],
+        "all_required_coverage_details_fully_sourced": false,
+        "coverage_detail_matrix": [
+          {
+            "coverage_detail": "georgia_country_coverage_assessment",
+            "detail_label": "Georgia country coverage",
+            "entry_state": "inferred",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Integra Global clearly exposes worldwide including or excluding US+Canada cover options, but Georgia itself was not named.",
+            "source_backing_basis": "georgia_not_named_area_of_cover_structure",
+            "primary_supporting_source": {
+              "source_url": "https://hcigroupglobal.com/integra-global/",
+              "source_title": "Integra Global | HCI Group Global",
+              "source_kind": "official insurer page",
+              "evidence_excerpt": "Integra says Cover 1 is worldwide including the US and Canada, Cover 2 is worldwide excluding the US and Canada, and coverage depends on the chosen region."
+            }
+          },
+          {
+            "coverage_detail": "germany_country_coverage_assessment",
+            "detail_label": "Germany country coverage",
+            "entry_state": "inferred",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Integra’s reviewed broker-backed evidence points to selectable geography structures, but Germany was not directly named.",
+            "source_backing_basis": "germany_not_named_area_of_cover_structure",
+            "primary_supporting_source": {
+              "source_url": "https://www.internationalinsurance.com/integra-global/",
+              "source_title": "Integra Health Insurance | Integra Expat Medical Plan",
+              "source_kind": "supplemental_candidates",
+              "evidence_excerpt": "The broker page describes Integra Global as international health insurance for expatriates, globally mobile individuals, and families, and explicitly lists two coverage areas: worldwide and worldwide excluding the U.S., Canada, and their territories."
+            }
+          },
+          {
+            "coverage_detail": "worldwide_ex_us_status",
+            "detail_label": "Worldwide excluding the US positioning",
+            "entry_state": "explicitly_indicated",
+            "sourcing_completeness": "fully_sourced",
+            "why_not_fully_sourced": null,
+            "source_backing_basis": "explicit",
+            "primary_supporting_source": {
+              "source_url": "https://www.internationalinsurance.com/integra-global/",
+              "source_title": "Integra Health Insurance | Integra Expat Medical Plan",
+              "source_kind": "supplemental_candidates",
+              "evidence_excerpt": "The broker page describes Integra Global as international health insurance for expatriates, globally mobile individuals, and families, and explicitly lists two coverage areas: worldwide and worldwide excluding the U.S., Canada, and their territories."
+            }
+          }
+        ],
+        "candidate_source_context": {
+          "official_url_verified": true,
+          "quote_or_application_url_verified": false,
+          "policy_wording_or_pdf_url_verified": true,
+          "broker_url_verified": true
+        }
+      }
+    },
+    {
+      "candidate_id": "medihelp_international",
+      "insurer_name": "MediHelp International",
+      "plan_name": "My Global Health individual plans: Blue / Azure / Cobalt / Admiral / Royal",
+      "required_entry_fields_missing": [],
+      "required_coverage_fields_missing": [],
+      "coverage_states": {
+        "georgia_country_coverage_assessment": "inferred",
+        "germany_country_coverage_assessment": "inferred",
+        "worldwide_ex_us_status": "worldwide_positioned_but_ex_us_not_verified"
+      },
+      "source_url_capture_state": {
+        "official_url": "verified_public_url",
+        "quote_or_application_url": "not_verified_publicly_in_this_run",
+        "broker_url": "not_verified_publicly_in_this_run",
+        "policy_wording_or_pdf_url": "not_verified_publicly_in_this_run"
+      },
+      "source_directness_present": {
+        "high": 0,
+        "medium": 1,
+        "low": 0
+      },
+      "inferred_or_unknown_dimensions": [
+        {
+          "field": "georgia_country_coverage_assessment",
+          "state": "inferred"
+        },
+        {
+          "field": "germany_country_coverage_assessment",
+          "state": "inferred"
+        },
+        {
+          "field": "worldwide_ex_us_status",
+          "state": "worldwide_positioned_but_ex_us_not_verified"
+        }
+      ],
+      "completeness_level": "source_backed_partial_but_usable",
+      "completeness_reason": "Required discovery fields are present, but at least one coverage dimension remains inferred/unknown or one or more source URLs remain unverified publicly in this run.",
+      "required_coverage_detail_sourcing_review": {
+        "coverage_detail_review_scope": "Required coverage details only: Georgia, Germany, and worldwide excluding the US preference alignment.",
+        "fully_sourced_details": [],
+        "missing_or_partial_details": [
+          "georgia_country_coverage_assessment",
+          "germany_country_coverage_assessment",
+          "worldwide_ex_us_status"
+        ],
+        "all_required_coverage_details_fully_sourced": false,
+        "coverage_detail_matrix": [
+          {
+            "coverage_detail": "georgia_country_coverage_assessment",
+            "detail_label": "Georgia country coverage",
+            "entry_state": "inferred",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "MediHelp describes My Global Health as international coverage with worldwide treatment choice, but Georgia was not named directly.",
+            "source_backing_basis": "georgia_not_named_worldwide_only",
+            "primary_supporting_source": {
+              "source_url": "https://www.medihelp-assistance.com/en/medihelp-plans/individual-plans",
+              "source_title": "Individual plans | MediHelp International",
+              "source_kind": "official insurer page",
+              "evidence_excerpt": "MediHelp describes My Global Health as international coverage with top medical services worldwide and freedom to choose the doctor and clinic."
+            }
+          },
+          {
+            "coverage_detail": "germany_country_coverage_assessment",
+            "detail_label": "Germany country coverage",
+            "entry_state": "inferred",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "MediHelp’s reviewed public evidence supports global positioning but did not name Germany directly.",
+            "source_backing_basis": "germany_not_named_global_only",
+            "primary_supporting_source": {
+              "source_url": "https://www.medihelp-assistance.com/en/medihelp-plans/individual-plans",
+              "source_title": "Individual plans | MediHelp International",
+              "source_kind": "supplemental_candidates",
+              "evidence_excerpt": "MediHelp's official individual-plans page says My Global Health offers international coverage and top medical services worldwide, allows freedom to choose the doctor and clinic, and lists five individual plan tiers."
+            }
+          },
+          {
+            "coverage_detail": "worldwide_ex_us_status",
+            "detail_label": "Worldwide excluding the US positioning",
+            "entry_state": "worldwide_positioned_but_ex_us_not_verified",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Reviewed evidence supports global/wide geography positioning, but not a verified ex-U.S. configuration.",
+            "source_backing_basis": "global_positioning_only",
+            "primary_supporting_source": {
+              "source_url": "https://www.medihelp-assistance.com/en/medihelp-plans/individual-plans",
+              "source_title": "Individual plans | MediHelp International",
+              "source_kind": "supplemental_candidates",
+              "evidence_excerpt": "MediHelp's official individual-plans page says My Global Health offers international coverage and top medical services worldwide, allows freedom to choose the doctor and clinic, and lists five individual plan tiers."
+            }
+          }
+        ],
+        "candidate_source_context": {
+          "official_url_verified": true,
+          "quote_or_application_url_verified": false,
+          "policy_wording_or_pdf_url_verified": false,
+          "broker_url_verified": false
+        }
+      }
+    },
+    {
+      "candidate_id": "alc_health",
+      "insurer_name": "ALC Health",
+      "plan_name": "Global Prima Medical Insurance / Flying Colours legacy entrypoints",
+      "required_entry_fields_missing": [],
+      "required_coverage_fields_missing": [],
+      "coverage_states": {
+        "georgia_country_coverage_assessment": "unknown",
+        "germany_country_coverage_assessment": "confirmed",
+        "worldwide_ex_us_status": "worldwide_positioned_but_ex_us_not_verified"
+      },
+      "source_url_capture_state": {
+        "official_url": "verified_public_url",
+        "quote_or_application_url": "not_verified_publicly_in_this_run",
+        "broker_url": "not_verified_publicly_in_this_run",
+        "policy_wording_or_pdf_url": "not_verified_publicly_in_this_run"
+      },
+      "source_directness_present": {
+        "high": 0,
+        "medium": 1,
+        "low": 0
+      },
+      "inferred_or_unknown_dimensions": [
+        {
+          "field": "georgia_country_coverage_assessment",
+          "state": "unknown"
+        },
+        {
+          "field": "worldwide_ex_us_status",
+          "state": "worldwide_positioned_but_ex_us_not_verified"
+        }
+      ],
+      "completeness_level": "source_backed_partial_but_usable",
+      "completeness_reason": "Required discovery fields are present, but at least one coverage dimension remains inferred/unknown or one or more source URLs remain unverified publicly in this run.",
+      "required_coverage_detail_sourcing_review": {
+        "coverage_detail_review_scope": "Required coverage details only: Georgia, Germany, and worldwide excluding the US preference alignment.",
+        "fully_sourced_details": [
+          "germany_country_coverage_assessment"
+        ],
+        "missing_or_partial_details": [
+          "georgia_country_coverage_assessment",
+          "worldwide_ex_us_status"
+        ],
+        "all_required_coverage_details_fully_sourced": false,
+        "coverage_detail_matrix": [
+          {
+            "coverage_detail": "georgia_country_coverage_assessment",
+            "detail_label": "Georgia country coverage",
+            "entry_state": "unknown",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "ALC Health shows strong global-country marketing and a Germany regional page, but Georgia itself was not surfaced in captured text.",
+            "source_backing_basis": "georgia_not_named_country_pages_elsewhere",
+            "primary_supporting_source": {
+              "source_url": "https://www.alchealth.com/",
+              "source_title": "ALC Health home",
+              "source_kind": "official insurer page",
+              "evidence_excerpt": "ALC describes global cover across many named countries and regions and links to a Germany page and 2026 downloads."
+            }
+          },
+          {
+            "coverage_detail": "germany_country_coverage_assessment",
+            "detail_label": "Germany country coverage",
+            "entry_state": "confirmed",
+            "sourcing_completeness": "fully_sourced",
+            "why_not_fully_sourced": null,
+            "source_backing_basis": "germany_country_pages_elsewhere",
+            "primary_supporting_source": {
+              "source_url": "https://www.alchealth.com/",
+              "source_title": "Global Health and International Medical Insurance For Expatriates",
+              "source_kind": "supplemental_candidates",
+              "evidence_excerpt": "ALC Health's homepage advertises global health and international medical insurance for expatriates, local nationals, and international travellers worldwide, includes an Individuals & Families path, and notes that new business quotes and sales moved to IMG's updated international website."
+            }
+          },
+          {
+            "coverage_detail": "worldwide_ex_us_status",
+            "detail_label": "Worldwide excluding the US positioning",
+            "entry_state": "worldwide_positioned_but_ex_us_not_verified",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Reviewed evidence supports global/wide geography positioning, but not a verified ex-U.S. configuration.",
+            "source_backing_basis": "global_positioning_only",
+            "primary_supporting_source": {
+              "source_url": "https://www.alchealth.com/",
+              "source_title": "Global Health and International Medical Insurance For Expatriates",
+              "source_kind": "supplemental_candidates",
+              "evidence_excerpt": "ALC Health's homepage advertises global health and international medical insurance for expatriates, local nationals, and international travellers worldwide, includes an Individuals & Families path, and notes that new business quotes and sales moved to IMG's updated international website."
+            }
+          }
+        ],
+        "candidate_source_context": {
+          "official_url_verified": true,
+          "quote_or_application_url_verified": false,
+          "policy_wording_or_pdf_url_verified": false,
+          "broker_url_verified": false
+        }
+      }
+    },
+    {
+      "candidate_id": "geoblue_xplorer_bcbs_global_solutions",
+      "insurer_name": "Blue Cross Blue Shield Global Solutions (formerly GeoBlue Xplorer)",
+      "plan_name": "Worldwide Premier / Outside U.S. / Outside U.S. Select",
+      "required_entry_fields_missing": [],
+      "required_coverage_fields_missing": [],
+      "coverage_states": {
+        "georgia_country_coverage_assessment": "inferred",
+        "germany_country_coverage_assessment": "inferred",
+        "worldwide_ex_us_status": "explicitly_indicated"
+      },
+      "source_url_capture_state": {
+        "official_url": "verified_public_url",
+        "quote_or_application_url": "not_verified_publicly_in_this_run",
+        "broker_url": "verified_public_url",
+        "policy_wording_or_pdf_url": "verified_public_url"
+      },
+      "source_directness_present": {
+        "high": 1,
+        "medium": 0,
+        "low": 1
+      },
+      "inferred_or_unknown_dimensions": [
+        {
+          "field": "georgia_country_coverage_assessment",
+          "state": "inferred"
+        },
+        {
+          "field": "germany_country_coverage_assessment",
+          "state": "inferred"
+        }
+      ],
+      "completeness_level": "source_backed_partial_but_usable",
+      "completeness_reason": "Required discovery fields are present, but at least one coverage dimension remains inferred/unknown or one or more source URLs remain unverified publicly in this run.",
+      "required_coverage_detail_sourcing_review": {
+        "coverage_detail_review_scope": "Required coverage details only: Georgia, Germany, and worldwide excluding the US preference alignment.",
+        "fully_sourced_details": [
+          "worldwide_ex_us_status"
+        ],
+        "missing_or_partial_details": [
+          "georgia_country_coverage_assessment",
+          "germany_country_coverage_assessment"
+        ],
+        "all_required_coverage_details_fully_sourced": false,
+        "coverage_detail_matrix": [
+          {
+            "coverage_detail": "georgia_country_coverage_assessment",
+            "detail_label": "Georgia country coverage",
+            "entry_state": "inferred",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "GeoBlue’s living-abroad page gives a clear Outside-the-U.S. plan structure, but Georgia was not named directly in the captured text.",
+            "source_backing_basis": "georgia_not_named_outside_us_plan",
+            "primary_supporting_source": {
+              "source_url": "https://bcbsglobalsolutions.com/individuals-and-families/international-medical-insurance/living-abroad/worldwide-and-outside-us/",
+              "source_title": "Worldwide and Outside US | BCBS Global Solutions",
+              "source_kind": "official insurer page",
+              "evidence_excerpt": "BCBS Global Solutions says customers can choose Worldwide Premier for comprehensive coverage anywhere in the world or Outside the U.S. if they do not need U.S. coverage."
+            }
+          },
+          {
+            "coverage_detail": "germany_country_coverage_assessment",
+            "detail_label": "Germany country coverage",
+            "entry_state": "inferred",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "GeoBlue/BCBS Global Solutions publicly verifies outside-U.S. plan structures, but Germany was not named directly in the captured evidence.",
+            "source_backing_basis": "germany_not_named_outside_us_plan",
+            "primary_supporting_source": {
+              "source_url": "https://www.internationalinsurance.com/geoblue/xplorer/",
+              "source_title": "GeoBlue Health Insurance Plan - GeoBlue Xplorer",
+              "source_kind": "supplemental_candidates",
+              "evidence_excerpt": "The broker page says the rebranded BCBS Global Solutions plans serve expatriates, global citizens, and families residing overseas, and that the Outside U.S. plan does not include U.S. coverage."
+            }
+          },
+          {
+            "coverage_detail": "worldwide_ex_us_status",
+            "detail_label": "Worldwide excluding the US positioning",
+            "entry_state": "explicitly_indicated",
+            "sourcing_completeness": "fully_sourced",
+            "why_not_fully_sourced": null,
+            "source_backing_basis": "explicit",
+            "primary_supporting_source": {
+              "source_url": "https://www.internationalinsurance.com/geoblue/xplorer/",
+              "source_title": "GeoBlue Health Insurance Plan - GeoBlue Xplorer",
+              "source_kind": "supplemental_candidates",
+              "evidence_excerpt": "The broker page says the rebranded BCBS Global Solutions plans serve expatriates, global citizens, and families residing overseas, and that the Outside U.S. plan does not include U.S. coverage."
+            }
+          }
+        ],
+        "candidate_source_context": {
+          "official_url_verified": true,
+          "quote_or_application_url_verified": false,
+          "policy_wording_or_pdf_url_verified": true,
+          "broker_url_verified": true
+        }
+      }
+    },
+    {
+      "candidate_id": "safetywing_nomad_complete",
+      "insurer_name": "SafetyWing",
+      "plan_name": "Nomad Insurance Complete",
+      "required_entry_fields_missing": [],
+      "required_coverage_fields_missing": [],
+      "coverage_states": {
+        "georgia_country_coverage_assessment": "inferred",
+        "germany_country_coverage_assessment": "inferred",
+        "worldwide_ex_us_status": "indirectly_indicated"
+      },
+      "source_url_capture_state": {
+        "official_url": "verified_public_url",
+        "quote_or_application_url": "verified_public_url",
+        "broker_url": "not_verified_publicly_in_this_run",
+        "policy_wording_or_pdf_url": "verified_public_url"
+      },
+      "source_directness_present": {
+        "high": 2,
+        "medium": 1,
+        "low": 0
+      },
+      "inferred_or_unknown_dimensions": [
+        {
+          "field": "georgia_country_coverage_assessment",
+          "state": "inferred"
+        },
+        {
+          "field": "germany_country_coverage_assessment",
+          "state": "inferred"
+        },
+        {
+          "field": "worldwide_ex_us_status",
+          "state": "indirectly_indicated"
+        }
+      ],
+      "completeness_level": "source_backed_partial_but_usable",
+      "completeness_reason": "Required discovery fields are present, but at least one coverage dimension remains inferred/unknown or one or more source URLs remain unverified publicly in this run.",
+      "required_coverage_detail_sourcing_review": {
+        "coverage_detail_review_scope": "Required coverage details only: Georgia, Germany, and worldwide excluding the US preference alignment.",
+        "fully_sourced_details": [],
+        "missing_or_partial_details": [
+          "georgia_country_coverage_assessment",
+          "germany_country_coverage_assessment",
+          "worldwide_ex_us_status"
+        ],
+        "all_required_coverage_details_fully_sourced": false,
+        "coverage_detail_matrix": [
+          {
+            "coverage_detail": "georgia_country_coverage_assessment",
+            "detail_label": "Georgia country coverage",
+            "entry_state": "inferred",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "SafetyWing positions Nomad Insurance Complete for expats, digital nomads, and families with global provider access, but Georgia was not named.",
+            "source_backing_basis": "georgia_not_named_global_only",
+            "primary_supporting_source": {
+              "source_url": "https://explore.safetywing.com/nomad-insurance-complete",
+              "source_title": "SafetyWing | Complete Health And Travel Insurance For Nomads",
+              "source_kind": "official insurer page",
+              "evidence_excerpt": "SafetyWing says Nomad Insurance Complete is made for digital nomads, expats, and families living abroad, with global coverage and any licensed provider worldwide."
+            }
+          },
+          {
+            "coverage_detail": "germany_country_coverage_assessment",
+            "detail_label": "Germany country coverage",
+            "entry_state": "inferred",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "SafetyWing markets global family health insurance with licensed-provider access worldwide, but Germany was not named directly.",
+            "source_backing_basis": "germany_not_named_global_only",
+            "primary_supporting_source": {
+              "source_url": "https://explore.safetywing.com/nomad-insurance-complete",
+              "source_title": "SafetyWing | Complete Health And Travel Insurance For Nomads",
+              "source_kind": "master_index_additions",
+              "evidence_excerpt": "SafetyWing describes Nomad Insurance Complete as full health and travel insurance for digital nomads, expats, remote workers, and families living abroad, with global coverage and an add-on for Hong Kong, Singapore, and the US."
+            }
+          },
+          {
+            "coverage_detail": "worldwide_ex_us_status",
+            "detail_label": "Worldwide excluding the US positioning",
+            "entry_state": "indirectly_indicated",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Reviewed evidence strongly suggests a non-U.S. global option exists, but the exact worldwide-excluding-U.S. wording was not captured verbatim.",
+            "source_backing_basis": "strong_but_indirect",
+            "primary_supporting_source": {
+              "source_url": "https://explore.safetywing.com/nomad-insurance-complete",
+              "source_title": "SafetyWing | Complete Health And Travel Insurance For Nomads",
+              "source_kind": "master_index_additions",
+              "evidence_excerpt": "SafetyWing describes Nomad Insurance Complete as full health and travel insurance for digital nomads, expats, remote workers, and families living abroad, with global coverage and an add-on for Hong Kong, Singapore, and the US."
+            }
+          }
+        ],
+        "candidate_source_context": {
+          "official_url_verified": true,
+          "quote_or_application_url_verified": true,
+          "policy_wording_or_pdf_url_verified": true,
+          "broker_url_verified": false
+        }
+      }
+    },
+    {
+      "candidate_id": "genki_native",
+      "insurer_name": "Genki",
+      "plan_name": "Native / international health insurance",
+      "required_entry_fields_missing": [],
+      "required_coverage_fields_missing": [],
+      "coverage_states": {
+        "georgia_country_coverage_assessment": "confirmed",
+        "germany_country_coverage_assessment": "confirmed",
+        "worldwide_ex_us_status": "worldwide_positioned_but_ex_us_not_verified"
+      },
+      "source_url_capture_state": {
+        "official_url": "verified_public_url",
+        "quote_or_application_url": "verified_public_url",
+        "broker_url": "not_verified_publicly_in_this_run",
+        "policy_wording_or_pdf_url": "not_verified_publicly_in_this_run"
+      },
+      "source_directness_present": {
+        "high": 1,
+        "medium": 1,
+        "low": 0
+      },
+      "inferred_or_unknown_dimensions": [
+        {
+          "field": "worldwide_ex_us_status",
+          "state": "worldwide_positioned_but_ex_us_not_verified"
+        }
+      ],
+      "completeness_level": "source_backed_partial_but_usable",
+      "completeness_reason": "Required discovery fields are present, but at least one coverage dimension remains inferred/unknown or one or more source URLs remain unverified publicly in this run.",
+      "required_coverage_detail_sourcing_review": {
+        "coverage_detail_review_scope": "Required coverage details only: Georgia, Germany, and worldwide excluding the US preference alignment.",
+        "fully_sourced_details": [
+          "georgia_country_coverage_assessment",
+          "germany_country_coverage_assessment"
+        ],
+        "missing_or_partial_details": [
+          "worldwide_ex_us_status"
+        ],
+        "all_required_coverage_details_fully_sourced": false,
+        "coverage_detail_matrix": [
+          {
+            "coverage_detail": "georgia_country_coverage_assessment",
+            "detail_label": "Georgia country coverage",
+            "entry_state": "confirmed",
+            "sourcing_completeness": "fully_sourced",
+            "why_not_fully_sourced": null,
+            "source_backing_basis": "georgia_explicitly_listed",
+            "primary_supporting_source": {
+              "source_url": "https://consultation.genki.world/v2",
+              "source_title": "Genki consultation flow",
+              "source_kind": "official quote / consultation page",
+              "evidence_excerpt": "The public options list includes Georgia and Germany, alongside messaging that users can join from anywhere."
+            }
+          },
+          {
+            "coverage_detail": "germany_country_coverage_assessment",
+            "detail_label": "Germany country coverage",
+            "entry_state": "confirmed",
+            "sourcing_completeness": "fully_sourced",
+            "why_not_fully_sourced": null,
+            "source_backing_basis": "germany_explicitly_listed",
+            "primary_supporting_source": {
+              "source_url": "https://genki.world/",
+              "source_title": "Genki • Health Insurance for Digital Nomads",
+              "source_kind": "master_index_additions",
+              "evidence_excerpt": "Genki says it offers two health-insurance options for digital nomads, including an international health insurance option, covers treatment at every licensed healthcare provider worldwide, and lets users get an instant price online."
+            }
+          },
+          {
+            "coverage_detail": "worldwide_ex_us_status",
+            "detail_label": "Worldwide excluding the US positioning",
+            "entry_state": "worldwide_positioned_but_ex_us_not_verified",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Reviewed evidence supports global/wide geography positioning, but not a verified ex-U.S. configuration.",
+            "source_backing_basis": "global_positioning_only",
+            "primary_supporting_source": {
+              "source_url": "https://genki.world/",
+              "source_title": "Genki • Health Insurance for Digital Nomads",
+              "source_kind": "master_index_additions",
+              "evidence_excerpt": "Genki says it offers two health-insurance options for digital nomads, including an international health insurance option, covers treatment at every licensed healthcare provider worldwide, and lets users get an instant price online."
+            }
+          }
+        ],
+        "candidate_source_context": {
+          "official_url_verified": true,
+          "quote_or_application_url_verified": true,
+          "policy_wording_or_pdf_url_verified": false,
+          "broker_url_verified": false
+        }
+      }
+    },
+    {
+      "candidate_id": "acs_expat",
+      "insurer_name": "ACS",
+      "plan_name": "ACS Expat",
+      "required_entry_fields_missing": [],
+      "required_coverage_fields_missing": [],
+      "coverage_states": {
+        "georgia_country_coverage_assessment": "inferred",
+        "germany_country_coverage_assessment": "inferred",
+        "worldwide_ex_us_status": "worldwide_positioned_but_ex_us_not_verified"
+      },
+      "source_url_capture_state": {
+        "official_url": "verified_public_url",
+        "quote_or_application_url": "verified_public_url",
+        "broker_url": "not_verified_publicly_in_this_run",
+        "policy_wording_or_pdf_url": "verified_public_url"
+      },
+      "source_directness_present": {
+        "high": 2,
+        "medium": 1,
+        "low": 0
+      },
+      "inferred_or_unknown_dimensions": [
+        {
+          "field": "georgia_country_coverage_assessment",
+          "state": "inferred"
+        },
+        {
+          "field": "germany_country_coverage_assessment",
+          "state": "inferred"
+        },
+        {
+          "field": "worldwide_ex_us_status",
+          "state": "worldwide_positioned_but_ex_us_not_verified"
+        }
+      ],
+      "completeness_level": "source_backed_partial_but_usable",
+      "completeness_reason": "Required discovery fields are present, but at least one coverage dimension remains inferred/unknown or one or more source URLs remain unverified publicly in this run.",
+      "required_coverage_detail_sourcing_review": {
+        "coverage_detail_review_scope": "Required coverage details only: Georgia, Germany, and worldwide excluding the US preference alignment.",
+        "fully_sourced_details": [],
+        "missing_or_partial_details": [
+          "georgia_country_coverage_assessment",
+          "germany_country_coverage_assessment",
+          "worldwide_ex_us_status"
+        ],
+        "all_required_coverage_details_fully_sourced": false,
+        "coverage_detail_matrix": [
+          {
+            "coverage_detail": "georgia_country_coverage_assessment",
+            "detail_label": "Georgia country coverage",
+            "entry_state": "inferred",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "ACS Expat is publicly framed as worldwide expatriate health insurance with trips outside the selected coverage area, but Georgia was not named directly.",
+            "source_backing_basis": "georgia_not_named_worldwide_only",
+            "primary_supporting_source": {
+              "source_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat/",
+              "source_title": "ACS Expat",
+              "source_kind": "official insurer page",
+              "evidence_excerpt": "ACS Expat says the plan covers international stays of 12+ months, worldwide healthcare access and support, and temporary stays worldwide outside the selected coverage area."
+            }
+          },
+          {
+            "coverage_detail": "germany_country_coverage_assessment",
+            "detail_label": "Germany country coverage",
+            "entry_state": "inferred",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "ACS does not name Germany directly, but its public wording about home-country visit cover is materially relevant to Germany for this family.",
+            "source_backing_basis": "germany_home_country_cover_relevant",
+            "primary_supporting_source": {
+              "source_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat/",
+              "source_title": "ACS Expat - Customisable Expatriate Health Insurance Solution",
+              "source_kind": "master_index_additions",
+              "evidence_excerpt": "ACS Expat is presented as modular lifetime international health insurance for expatriates of all nationalities, available individually, as a couple, or as a family, with home-country visit coverage and geography-zone based cover."
+            }
+          },
+          {
+            "coverage_detail": "worldwide_ex_us_status",
+            "detail_label": "Worldwide excluding the US positioning",
+            "entry_state": "worldwide_positioned_but_ex_us_not_verified",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Reviewed evidence supports global/wide geography positioning, but not a verified ex-U.S. configuration.",
+            "source_backing_basis": "global_positioning_only",
+            "primary_supporting_source": {
+              "source_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat/",
+              "source_title": "ACS Expat - Customisable Expatriate Health Insurance Solution",
+              "source_kind": "master_index_additions",
+              "evidence_excerpt": "ACS Expat is presented as modular lifetime international health insurance for expatriates of all nationalities, available individually, as a couple, or as a family, with home-country visit coverage and geography-zone based cover."
+            }
+          }
+        ],
+        "candidate_source_context": {
+          "official_url_verified": true,
+          "quote_or_application_url_verified": true,
+          "policy_wording_or_pdf_url_verified": true,
+          "broker_url_verified": false
+        }
+      }
+    },
+    {
+      "candidate_id": "hci_group_health_protect",
+      "insurer_name": "HCI Group",
+      "plan_name": "Health Protect / Protector Plans / Nimbl Health",
+      "required_entry_fields_missing": [],
+      "required_coverage_fields_missing": [],
+      "coverage_states": {
+        "georgia_country_coverage_assessment": "unknown",
+        "germany_country_coverage_assessment": "unknown",
+        "worldwide_ex_us_status": "worldwide_positioned_but_ex_us_not_verified"
+      },
+      "source_url_capture_state": {
+        "official_url": "verified_public_url",
+        "quote_or_application_url": "verified_public_url",
+        "broker_url": "not_verified_publicly_in_this_run",
+        "policy_wording_or_pdf_url": "verified_public_url"
+      },
+      "source_directness_present": {
+        "high": 2,
+        "medium": 1,
+        "low": 0
+      },
+      "inferred_or_unknown_dimensions": [
+        {
+          "field": "georgia_country_coverage_assessment",
+          "state": "unknown"
+        },
+        {
+          "field": "germany_country_coverage_assessment",
+          "state": "unknown"
+        },
+        {
+          "field": "worldwide_ex_us_status",
+          "state": "worldwide_positioned_but_ex_us_not_verified"
+        }
+      ],
+      "completeness_level": "source_backed_partial_but_usable",
+      "completeness_reason": "Required discovery fields are present, but at least one coverage dimension remains inferred/unknown or one or more source URLs remain unverified publicly in this run.",
+      "required_coverage_detail_sourcing_review": {
+        "coverage_detail_review_scope": "Required coverage details only: Georgia, Germany, and worldwide excluding the US preference alignment.",
+        "fully_sourced_details": [],
+        "missing_or_partial_details": [
+          "georgia_country_coverage_assessment",
+          "germany_country_coverage_assessment",
+          "worldwide_ex_us_status"
+        ],
+        "all_required_coverage_details_fully_sourced": false,
+        "coverage_detail_matrix": [
+          {
+            "coverage_detail": "georgia_country_coverage_assessment",
+            "detail_label": "Georgia country coverage",
+            "entry_state": "unknown",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Health Protect is clearly an IPMI product for people living abroad, but Georgia was not named in the captured page text.",
+            "source_backing_basis": "georgia_not_named_global_only",
+            "primary_supporting_source": {
+              "source_url": "https://hcigroupglobal.com/health-protect/",
+              "source_title": "International Healthcare | Healthcare International | HCI Global",
+              "source_kind": "official insurer page",
+              "evidence_excerpt": "Health Protect is described as international healthcare for expatriates, digital nomads, international students, and others living abroad."
+            }
+          },
+          {
+            "coverage_detail": "germany_country_coverage_assessment",
+            "detail_label": "Germany country coverage",
+            "entry_state": "unknown",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "HCI Group’s reviewed public evidence supports international coverage positioning, but no Germany-specific evidence was captured.",
+            "source_backing_basis": "germany_not_named_global_positioning_only",
+            "primary_supporting_source": {
+              "source_url": "https://hcigroupglobal.com/health-protect/",
+              "source_title": "International Healthcare | Healthcare International | HCI Global",
+              "source_kind": "master_index_additions",
+              "evidence_excerpt": "HCI Group says its Health Protect policies offer international private medical insurance for expatriates, digital nomads, international students, and others living abroad, with five Protector Plan levels from $500,000 to $2,500,000 and optional maternity/newborn benefits."
+            }
+          },
+          {
+            "coverage_detail": "worldwide_ex_us_status",
+            "detail_label": "Worldwide excluding the US positioning",
+            "entry_state": "worldwide_positioned_but_ex_us_not_verified",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Reviewed evidence supports global/wide geography positioning, but not a verified ex-U.S. configuration.",
+            "source_backing_basis": "global_positioning_only",
+            "primary_supporting_source": {
+              "source_url": "https://hcigroupglobal.com/health-protect/",
+              "source_title": "International Healthcare | Healthcare International | HCI Global",
+              "source_kind": "master_index_additions",
+              "evidence_excerpt": "HCI Group says its Health Protect policies offer international private medical insurance for expatriates, digital nomads, international students, and others living abroad, with five Protector Plan levels from $500,000 to $2,500,000 and optional maternity/newborn benefits."
+            }
+          }
+        ],
+        "candidate_source_context": {
+          "official_url_verified": true,
+          "quote_or_application_url_verified": true,
+          "policy_wording_or_pdf_url_verified": true,
+          "broker_url_verified": false
+        }
+      }
+    },
+    {
+      "candidate_id": "expatriate_group_global_health",
+      "insurer_name": "Expatriate Group",
+      "plan_name": "International Health Insurance / Select / Primary+ / Primary+ Lite / Primary",
+      "required_entry_fields_missing": [],
+      "required_coverage_fields_missing": [],
+      "coverage_states": {
+        "georgia_country_coverage_assessment": "inferred",
+        "germany_country_coverage_assessment": "inferred",
+        "worldwide_ex_us_status": "explicitly_indicated"
+      },
+      "source_url_capture_state": {
+        "official_url": "verified_public_url",
+        "quote_or_application_url": "verified_public_url",
+        "broker_url": "not_verified_publicly_in_this_run",
+        "policy_wording_or_pdf_url": "verified_public_url"
+      },
+      "source_directness_present": {
+        "high": 2,
+        "medium": 1,
+        "low": 0
+      },
+      "inferred_or_unknown_dimensions": [
+        {
+          "field": "georgia_country_coverage_assessment",
+          "state": "inferred"
+        },
+        {
+          "field": "germany_country_coverage_assessment",
+          "state": "inferred"
+        }
+      ],
+      "completeness_level": "source_backed_partial_but_usable",
+      "completeness_reason": "Required discovery fields are present, but at least one coverage dimension remains inferred/unknown or one or more source URLs remain unverified publicly in this run.",
+      "required_coverage_detail_sourcing_review": {
+        "coverage_detail_review_scope": "Required coverage details only: Georgia, Germany, and worldwide excluding the US preference alignment.",
+        "fully_sourced_details": [
+          "worldwide_ex_us_status"
+        ],
+        "missing_or_partial_details": [
+          "georgia_country_coverage_assessment",
+          "germany_country_coverage_assessment"
+        ],
+        "all_required_coverage_details_fully_sourced": false,
+        "coverage_detail_matrix": [
+          {
+            "coverage_detail": "georgia_country_coverage_assessment",
+            "detail_label": "Georgia country coverage",
+            "entry_state": "inferred",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Expatriate Group’s public quote flow clearly defines Area 1, 2, and 3 geography, and Georgia is plausibly within Area 1’s Europe–Middle East–Africa–Asia–Oceania band, but Georgia was not named explicitly.",
+            "source_backing_basis": "georgia_regionally_implied_not_named",
+            "primary_supporting_source": {
+              "source_url": "https://quote.expatriatehealthcare.com/healthcare/",
+              "source_title": "Expatriate Group healthcare quote",
+              "source_kind": "official quote page",
+              "evidence_excerpt": "The form offers Area 1 – Europe, Middle East, Africa, Asia and Oceania; Area 2 – Worldwide excluding the USA; and Area 3 – Worldwide."
+            }
+          },
+          {
+            "coverage_detail": "germany_country_coverage_assessment",
+            "detail_label": "Germany country coverage",
+            "entry_state": "inferred",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Expatriate Group’s quote structure includes a Europe-centered area option, which makes Germany a strong regional inference even without direct naming.",
+            "source_backing_basis": "germany_regionally_implied_not_named",
+            "primary_supporting_source": {
+              "source_url": "https://www.expatriatehealthcare.com/international-health-insurance/",
+              "source_title": "International Health Insurance | Global Private Medical Cover",
+              "source_kind": "master_index_additions",
+              "evidence_excerpt": "Expatriate Group markets international private medical insurance for expat families and individuals, provides four plan levels, and publicly shows area-of-cover options including Europe/Middle East/Africa/Asia/Oceania, worldwide excluding the USA, and worldwide."
+            }
+          },
+          {
+            "coverage_detail": "worldwide_ex_us_status",
+            "detail_label": "Worldwide excluding the US positioning",
+            "entry_state": "explicitly_indicated",
+            "sourcing_completeness": "fully_sourced",
+            "why_not_fully_sourced": null,
+            "source_backing_basis": "explicit",
+            "primary_supporting_source": {
+              "source_url": "https://www.expatriatehealthcare.com/international-health-insurance/",
+              "source_title": "International Health Insurance | Global Private Medical Cover",
+              "source_kind": "master_index_additions",
+              "evidence_excerpt": "Expatriate Group markets international private medical insurance for expat families and individuals, provides four plan levels, and publicly shows area-of-cover options including Europe/Middle East/Africa/Asia/Oceania, worldwide excluding the USA, and worldwide."
+            }
+          }
+        ],
+        "candidate_source_context": {
+          "official_url_verified": true,
+          "quote_or_application_url_verified": true,
+          "policy_wording_or_pdf_url_verified": true,
+          "broker_url_verified": false
+        }
+      }
+    },
+    {
+      "candidate_id": "wellaway_expat",
+      "insurer_name": "WellAway",
+      "plan_name": "EXPAT / Gold / Diamond / Expat Plus",
+      "required_entry_fields_missing": [],
+      "required_coverage_fields_missing": [],
+      "coverage_states": {
+        "georgia_country_coverage_assessment": "confirmed",
+        "germany_country_coverage_assessment": "confirmed",
+        "worldwide_ex_us_status": "not_verified_from_reviewed_sources"
+      },
+      "source_url_capture_state": {
+        "official_url": "verified_public_url",
+        "quote_or_application_url": "verified_public_url",
+        "broker_url": "not_verified_publicly_in_this_run",
+        "policy_wording_or_pdf_url": "verified_public_url"
+      },
+      "source_directness_present": {
+        "high": 2,
+        "medium": 1,
+        "low": 0
+      },
+      "inferred_or_unknown_dimensions": [
+        {
+          "field": "worldwide_ex_us_status",
+          "state": "not_verified_from_reviewed_sources"
+        }
+      ],
+      "completeness_level": "source_backed_partial_but_usable",
+      "completeness_reason": "Required discovery fields are present, but at least one coverage dimension remains inferred/unknown or one or more source URLs remain unverified publicly in this run.",
+      "required_coverage_detail_sourcing_review": {
+        "coverage_detail_review_scope": "Required coverage details only: Georgia, Germany, and worldwide excluding the US preference alignment.",
+        "fully_sourced_details": [
+          "georgia_country_coverage_assessment",
+          "germany_country_coverage_assessment"
+        ],
+        "missing_or_partial_details": [
+          "worldwide_ex_us_status"
+        ],
+        "all_required_coverage_details_fully_sourced": false,
+        "coverage_detail_matrix": [
+          {
+            "coverage_detail": "georgia_country_coverage_assessment",
+            "detail_label": "Georgia country coverage",
+            "entry_state": "confirmed",
+            "sourcing_completeness": "fully_sourced",
+            "why_not_fully_sourced": null,
+            "source_backing_basis": "georgia_explicitly_listed",
+            "primary_supporting_source": {
+              "source_url": "https://portal.wellaway.com/Quote/EXPAT/Step1",
+              "source_title": "Wellaway EXPAT quote Step 1",
+              "source_kind": "official quote page",
+              "evidence_excerpt": "The country options include Georgia and Germany in the public quote form."
+            }
+          },
+          {
+            "coverage_detail": "germany_country_coverage_assessment",
+            "detail_label": "Germany country coverage",
+            "entry_state": "confirmed",
+            "sourcing_completeness": "fully_sourced",
+            "why_not_fully_sourced": null,
+            "source_backing_basis": "germany_explicitly_listed",
+            "primary_supporting_source": {
+              "source_url": "https://www.wellaway.com/en/our-plans/expat/",
+              "source_title": "Expat health insurance plans for living abroad | WellAway",
+              "source_kind": "master_index_additions",
+              "evidence_excerpt": "WellAway presents EXPAT as a top-tier expat health insurance plan for individuals, families, and groups living abroad, with Gold, Diamond, and Expat Plus coverage levels and annual limits up to $3,000,000."
+            }
+          },
+          {
+            "coverage_detail": "worldwide_ex_us_status",
+            "detail_label": "Worldwide excluding the US positioning",
+            "entry_state": "not_verified_from_reviewed_sources",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Reviewed evidence did not verify enough geography detail to support a worldwide ex-U.S. indication.",
+            "source_backing_basis": "not_verified",
+            "primary_supporting_source": {
+              "source_url": "https://www.wellaway.com/en/our-plans/expat/",
+              "source_title": "Expat health insurance plans for living abroad | WellAway",
+              "source_kind": "master_index_additions",
+              "evidence_excerpt": "WellAway presents EXPAT as a top-tier expat health insurance plan for individuals, families, and groups living abroad, with Gold, Diamond, and Expat Plus coverage levels and annual limits up to $3,000,000."
+            }
+          }
+        ],
+        "candidate_source_context": {
+          "official_url_verified": true,
+          "quote_or_application_url_verified": true,
+          "policy_wording_or_pdf_url_verified": true,
+          "broker_url_verified": false
+        }
+      }
+    },
+    {
+      "candidate_id": "securus_global_health_cover",
+      "insurer_name": "Securus International",
+      "plan_name": "Global Health Cover",
+      "required_entry_fields_missing": [],
+      "required_coverage_fields_missing": [],
+      "coverage_states": {
+        "georgia_country_coverage_assessment": "inferred",
+        "germany_country_coverage_assessment": "inferred",
+        "worldwide_ex_us_status": "worldwide_positioned_but_ex_us_not_verified"
+      },
+      "source_url_capture_state": {
+        "official_url": "verified_public_url",
+        "quote_or_application_url": "not_verified_publicly_in_this_run",
+        "broker_url": "not_verified_publicly_in_this_run",
+        "policy_wording_or_pdf_url": "verified_public_url"
+      },
+      "source_directness_present": {
+        "high": 1,
+        "medium": 1,
+        "low": 0
+      },
+      "inferred_or_unknown_dimensions": [
+        {
+          "field": "georgia_country_coverage_assessment",
+          "state": "inferred"
+        },
+        {
+          "field": "germany_country_coverage_assessment",
+          "state": "inferred"
+        },
+        {
+          "field": "worldwide_ex_us_status",
+          "state": "worldwide_positioned_but_ex_us_not_verified"
+        }
+      ],
+      "completeness_level": "source_backed_partial_but_usable",
+      "completeness_reason": "Required discovery fields are present, but at least one coverage dimension remains inferred/unknown or one or more source URLs remain unverified publicly in this run.",
+      "required_coverage_detail_sourcing_review": {
+        "coverage_detail_review_scope": "Required coverage details only: Georgia, Germany, and worldwide excluding the US preference alignment.",
+        "fully_sourced_details": [],
+        "missing_or_partial_details": [
+          "georgia_country_coverage_assessment",
+          "germany_country_coverage_assessment",
+          "worldwide_ex_us_status"
+        ],
+        "all_required_coverage_details_fully_sourced": false,
+        "coverage_detail_matrix": [
+          {
+            "coverage_detail": "georgia_country_coverage_assessment",
+            "detail_label": "Georgia country coverage",
+            "entry_state": "inferred",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Securus publicly markets global health cover with treatment choice around the world, but Georgia-specific evidence was not captured.",
+            "source_backing_basis": "georgia_not_named_worldwide_only",
+            "primary_supporting_source": {
+              "source_url": "https://www.securus.co.uk/benefits/global-health-cover",
+              "source_title": "Securus global health cover",
+              "source_kind": "official insurer page",
+              "evidence_excerpt": "Securus says global health cover gives access to the best hospitals and doctors around the world and links its 2026 benefit-plan PDFs."
+            }
+          },
+          {
+            "coverage_detail": "germany_country_coverage_assessment",
+            "detail_label": "Germany country coverage",
+            "entry_state": "inferred",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Securus uses global coverage wording, but the reviewed public evidence did not name Germany directly.",
+            "source_backing_basis": "germany_not_named_global_only",
+            "primary_supporting_source": {
+              "source_url": "https://www.securus.co.uk/benefits/global-health-cover",
+              "source_title": "Securus - Global Health Cover",
+              "source_kind": "master_index_additions",
+              "evidence_excerpt": "Securus says international health insurance is a necessity in a connected world, that its packages let clients choose who, how, and where they are treated, and that they provide access to hospitals and doctors around the world with public brochure links."
+            }
+          },
+          {
+            "coverage_detail": "worldwide_ex_us_status",
+            "detail_label": "Worldwide excluding the US positioning",
+            "entry_state": "worldwide_positioned_but_ex_us_not_verified",
+            "sourcing_completeness": "missing_or_partial",
+            "why_not_fully_sourced": "Reviewed evidence supports global/wide geography positioning, but not a verified ex-U.S. configuration.",
+            "source_backing_basis": "global_positioning_only",
+            "primary_supporting_source": {
+              "source_url": "https://www.securus.co.uk/benefits/global-health-cover",
+              "source_title": "Securus - Global Health Cover",
+              "source_kind": "master_index_additions",
+              "evidence_excerpt": "Securus says international health insurance is a necessity in a connected world, that its packages let clients choose who, how, and where they are treated, and that they provide access to hospitals and doctors around the world with public brochure links."
+            }
+          }
+        ],
+        "candidate_source_context": {
+          "official_url_verified": true,
+          "quote_or_application_url_verified": false,
+          "policy_wording_or_pdf_url_verified": true,
+          "broker_url_verified": false
+        }
+      }
+    }
+  ]
+}

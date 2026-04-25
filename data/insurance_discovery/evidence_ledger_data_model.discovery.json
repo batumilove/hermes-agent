@@ -1,0 +1,772 @@
+{
+  "dataset": "international_expat_health_insurance_discovery",
+  "run_scope": "discovery_only",
+  "section": "evidence_ledger_data_model",
+  "generated_by": "gpt-5.4",
+  "family_context": {
+    "citizenship": "German",
+    "residence": "Georgia",
+    "adults": [
+      42,
+      37
+    ],
+    "children": 2,
+    "preferred_cover_geography": "Georgia and Germany, ideally worldwide excluding the US"
+  },
+  "generated_from": [
+    "data/insurance_discovery/shared_candidate_staging.discovery.json",
+    "data/insurance_discovery/candidate_source_ledger.discovery.json",
+    "data/insurance_discovery/source_completeness_criteria.discovery.json",
+    "data/insurance_discovery/pricing_evidence_ledger.discovery.json",
+    "data/insurance_discovery/access_and_intake_evidence_ledger.discovery.json",
+    "data/insurance_discovery/eligibility_ambiguity_evidence_ledger.discovery.json",
+    "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+    "data/insurance_discovery/germany_coverage_evidence_ledger.discovery.json",
+    "data/insurance_discovery/global_coverage_evidence_ledger.discovery.json",
+    "data/insurance_discovery/plan_document_access_evidence_ledger.discovery.json"
+  ],
+  "purpose": "Defines the discovery-stage evidence-ledger contract for candidate insurer/plan identity, source metadata, evidence classification, and cross-artifact traceability.",
+  "notes": [
+    "Discovery-only artifact: this model supports candidate identification and evidence capture, not final ranking or recommendation.",
+    "The schema prefers explicit uncertainty states over omission. Unknown, inferred, gated, and not-verified states are valid when source-backed.",
+    "Null URL slots mean not verified publicly in this run, not necessarily unavailable.",
+    "A candidate record remains valid only when a stable candidate_id and at least one source-backed reference are preserved."
+  ],
+  "record_identity_contract": {
+    "primary_record_type": "candidate evidence entry",
+    "primary_join_key": "candidate_id",
+    "record_granularity": "one record per discovered insurer/plan candidate relevant enough to retain in discovery, including excluded candidates when exclusion itself is source-backed and auditable",
+    "uniqueness_requirements": [
+      "candidate_id must be unique within the dataset",
+      "candidate_id must be stable across derivative ledgers",
+      "source_id must be unique within candidate source_set arrays",
+      "ledger reference objects must resolve back to an existing dataset path plus candidate key or record locator"
+    ]
+  },
+  "required_field_groups": [
+    {
+      "group": "candidate_identity",
+      "description": "Fields that establish the insurer/plan candidate as a stable, machine-joinable discovery record.",
+      "fields": [
+        {
+          "field": "candidate_id",
+          "type": "string",
+          "required": true,
+          "allowed_values": "slug-like stable identifier",
+          "example": "cigna_global",
+          "traceability_requirements": [
+            "Must be reused unchanged across all linked discovery ledgers.",
+            "Must support joins from source, pricing, access, eligibility, and coverage ledgers."
+          ]
+        },
+        {
+          "field": "normalized_insurer_name",
+          "type": "string",
+          "required": true,
+          "allowed_values": "free text normalized insurer name",
+          "example": "Cigna Global",
+          "traceability_requirements": [
+            "Should reflect the insurer name shown in the supporting public source.",
+            "If insurer branding differs across sources, normalization should preserve one canonical ledger form and leave source-level variants in source_title/evidence_excerpt."
+          ]
+        },
+        {
+          "field": "normalized_plan_name",
+          "type": "string",
+          "required": true,
+          "allowed_values": "free text normalized plan or plan-family label",
+          "example": "International Health Insurance / Global Medical Cover",
+          "traceability_requirements": [
+            "Must preserve the discovered plan label or plan-family wording used in supporting evidence where available.",
+            "If plan name is ambiguous or product-family level only, preserve that ambiguity explicitly rather than fabricating a narrower plan name."
+          ]
+        },
+        {
+          "field": "candidate_type",
+          "type": "enum",
+          "required": true,
+          "allowed_values": [
+            "primary",
+            "supplemental"
+          ],
+          "traceability_requirements": [
+            "Classification must remain consistent with the candidate's origin in the discovery pipeline.",
+            "If a supplemental candidate later becomes primary in a future run, the change should be explicit and versioned rather than silently overwritten."
+          ]
+        }
+      ]
+    },
+    {
+      "group": "candidate_status_and_discovery_outcome",
+      "description": "Fields that classify whether the candidate remains relevant and how complete or visible the discovery evidence is.",
+      "fields": [
+        {
+          "field": "relevance_status",
+          "type": "enum",
+          "required": true,
+          "allowed_values": [
+            "likely_relevant",
+            "possibly_relevant",
+            "excluded"
+          ],
+          "traceability_requirements": [
+            "Must be paired with relevance_status_reason.",
+            "Excluded candidates should still retain source-backed rationale rather than disappearing from the discovery trail."
+          ]
+        },
+        {
+          "field": "relevance_status_reason",
+          "type": "string",
+          "required": true,
+          "allowed_values": "free text source-backed explanation",
+          "traceability_requirements": [
+            "Must summarize why the relevance_status was assigned using evidence captured elsewhere in the record or linked ledgers."
+          ]
+        },
+        {
+          "field": "uncertainty_notes",
+          "type": "array[string]",
+          "required": true,
+          "allowed_values": "one or more explicit uncertainty statements",
+          "traceability_requirements": [
+            "Must record unresolved questions, gating, or family-fit uncertainty explicitly.",
+            "Should align with linked ambiguity, access, pricing, or coverage evidence when those artifacts exist."
+          ]
+        },
+        {
+          "field": "pricing_availability_status",
+          "type": "enum",
+          "required": true,
+          "allowed_values": [
+            "public_pricing_available",
+            "partially_visible",
+            "quote_flow_gated",
+            "unavailable_during_discovery"
+          ],
+          "traceability_requirements": [
+            "Must be paired with pricing_availability_status_reason and pricing_evidence_ref.",
+            "Status must reflect reviewed public evidence rather than assumption."
+          ]
+        },
+        {
+          "field": "pricing_availability_status_reason",
+          "type": "string",
+          "required": true,
+          "allowed_values": "free text source-backed explanation",
+          "traceability_requirements": [
+            "Should explain whether numeric pricing was visible, partial, gated, or absent and why."
+          ]
+        },
+        {
+          "field": "pricing_transparency_friction_primary",
+          "type": "enum",
+          "required": false,
+          "allowed_values": [
+            "blocked_public_pricing",
+            "brochure_or_marketing_only_no_price",
+            "broker_or_intermediary_only_public_path",
+            "contact_or_account_gated_pricing",
+            "eligibility_gated_results",
+            "failed_or_abandoned_quote_retrieval",
+            "incomplete_quote_output",
+            "public_numeric_pricing_visible"
+          ],
+          "traceability_requirements": [
+            "If present, this should normalize the main observed pricing-friction mode for the candidate.",
+            "Should be consistent with pricing_availability_status and supporting pricing evidence."
+          ]
+        }
+      ]
+    },
+    {
+      "group": "source_metadata",
+      "description": "Fields that identify where evidence came from, what kind of source it was, and how directly it supports the claim.",
+      "fields": [
+        {
+          "field": "source_refs",
+          "type": "array[object]",
+          "required": true,
+          "allowed_values": "non-empty array of source reference objects",
+          "traceability_requirements": [
+            "At least one source-backed reference is mandatory per candidate entry.",
+            "Each source_ref should preserve dataset_path, dataset_section, record_bucket, source_url, source_title, and evidence_excerpt when available."
+          ],
+          "object_fields": [
+            {
+              "field": "dataset_path",
+              "type": "string",
+              "required": true,
+              "traceability_requirements": [
+                "Must point to the originating machine-readable artifact that produced the source reference."
+              ]
+            },
+            {
+              "field": "dataset_section",
+              "type": "string",
+              "required": true,
+              "traceability_requirements": [
+                "Must identify the section within the originating dataset."
+              ]
+            },
+            {
+              "field": "record_bucket",
+              "type": "string",
+              "required": true,
+              "allowed_values": [
+                "records"
+              ],
+              "traceability_requirements": [
+                "Must identify the list/record container used in the source dataset."
+              ]
+            },
+            {
+              "field": "source_url",
+              "type": "string|null",
+              "required": true,
+              "traceability_requirements": [
+                "If non-null, must be the public URL reviewed in this run.",
+                "If null, the absence must be explainable elsewhere rather than silent."
+              ]
+            },
+            {
+              "field": "source_title",
+              "type": "string",
+              "required": true,
+              "traceability_requirements": [
+                "Should preserve the reviewed page/PDF title or a faithful descriptive label."
+              ]
+            },
+            {
+              "field": "quote_or_application_url",
+              "type": "string|null",
+              "required": false,
+              "traceability_requirements": [
+                "Used when the reviewed source also exposes a quote/application path relevant to discovery evidence."
+              ]
+            },
+            {
+              "field": "source_kind",
+              "type": "enum",
+              "required": false,
+              "allowed_values": [
+                "official insurer page",
+                "official insurer page via search result",
+                "official quote page",
+                "policy wording or brochure PDF",
+                "broker page"
+              ],
+              "traceability_requirements": [
+                "Normalized ledger artifacts should prefer these controlled values for evidence classification.",
+                "Raw staging artifacts may contain noisier upstream source-kind strings, but derivative ledgers should normalize them."
+              ]
+            },
+            {
+              "field": "evidence_excerpt",
+              "type": "string",
+              "required": true,
+              "traceability_requirements": [
+                "Must preserve the minimal source-backed excerpt or paraphrase used to justify the candidate/source link.",
+                "Should be specific enough for a reviewer to understand why the source matters without reopening the URL immediately."
+              ]
+            }
+          ]
+        },
+        {
+          "field": "official_url",
+          "type": "string|null",
+          "required": false,
+          "traceability_requirements": [
+            "If present, must identify the main verified official insurer or plan page retained for the candidate source ledger.",
+            "Null means not verified publicly in this run, not necessarily absent in reality."
+          ]
+        },
+        {
+          "field": "quote_or_application_url",
+          "type": "string|null",
+          "required": false,
+          "traceability_requirements": [
+            "If present, must be a verified public quote, application, consultation, or buy path."
+          ]
+        },
+        {
+          "field": "broker_url",
+          "type": "string|null",
+          "required": false,
+          "traceability_requirements": [
+            "Should be captured only when a broker/intermediary page materially supplements public discovery evidence."
+          ]
+        },
+        {
+          "field": "policy_wording_or_pdf_url",
+          "type": "string|null",
+          "required": false,
+          "traceability_requirements": [
+            "If present, must identify a reviewed public policy wording, brochure, handbook, benefit table, or similar plan document."
+          ]
+        },
+        {
+          "field": "primary_evidence_url",
+          "type": "string|null",
+          "required": false,
+          "traceability_requirements": [
+            "Should identify the best single URL to reopen first when auditing the candidate evidence entry."
+          ]
+        }
+      ]
+    },
+    {
+      "group": "evidence_classification",
+      "description": "Fields that classify evidence by role, directness, completeness, and country/coverage dimension.",
+      "fields": [
+        {
+          "field": "source_origin",
+          "type": "enum",
+          "required": true,
+          "allowed_values": [
+            "shared_candidate_staging.source_refs",
+            "derived_candidate_source_ledger_reference"
+          ],
+          "traceability_requirements": [
+            "Every normalized source entry must preserve whether it came directly from shared_candidate_staging or was derived later into the candidate source ledger."
+          ]
+        },
+        {
+          "field": "applicability_roles",
+          "type": "array[enum]",
+          "required": true,
+          "allowed_values": [
+            "access_path_evidence",
+            "benefit_detail_evidence",
+            "broker_substitute_evidence",
+            "candidate_discovery_entry",
+            "candidate_identification",
+            "geography_relevance_evidence",
+            "official_plan_positioning",
+            "plan_document_reference",
+            "pricing_or_quote_path_evidence",
+            "quote_or_application_path_reference"
+          ],
+          "traceability_requirements": [
+            "Each applicable source should declare why it belongs in the candidate evidence entry instead of forcing role inference downstream."
+          ]
+        },
+        {
+          "field": "source_directness_classification",
+          "type": "enum",
+          "required": true,
+          "allowed_values": [
+            "high",
+            "medium",
+            "low"
+          ],
+          "traceability_requirements": [
+            "Must be paired with source_directness_justification.",
+            "Should follow the controlled rubric in candidate_source_ledger.discovery.json and source_completeness_criteria.discovery.json."
+          ]
+        },
+        {
+          "field": "source_directness_justification",
+          "type": "string",
+          "required": true,
+          "allowed_values": "free text rubric-based explanation",
+          "traceability_requirements": [
+            "Must explain why the source is classified as high, medium, or low directness."
+          ]
+        },
+        {
+          "field": "evidence_entry_completeness_summary.classification",
+          "type": "enum",
+          "required": false,
+          "allowed_values": [
+            "complete",
+            "partial",
+            "insufficiently_sourced"
+          ],
+          "traceability_requirements": [
+            "Normalized candidate-source ledgers should preserve the human-facing completeness label.",
+            "When present, classification_source_value should preserve the stricter rubric value from source_completeness_criteria."
+          ]
+        },
+        {
+          "field": "evidence_entry_completeness_summary.classification_source_value",
+          "type": "enum",
+          "required": false,
+          "allowed_values": [
+            "source_backed_complete_for_discovery",
+            "source_backed_partial_but_usable",
+            "insufficient_for_discovery"
+          ],
+          "traceability_requirements": [
+            "Must link the human-facing completeness label to the stricter underlying rubric."
+          ]
+        },
+        {
+          "field": "coverage_ambiguity_annotations.<dimension>.coverage_state",
+          "type": "enum",
+          "required": false,
+          "allowed_values": [
+            "confirmed",
+            "inferred",
+            "unknown",
+            "explicitly_indicated",
+            "indirectly_indicated",
+            "worldwide_positioned_but_ex_us_not_verified",
+            "not_verified_from_reviewed_sources"
+          ],
+          "traceability_requirements": [
+            "Must be dimension-appropriate: Georgia/Germany use country assessment states; worldwide_ex_us uses worldwide status states.",
+            "Must be paired with supporting_source_refs and source_ledger_ref."
+          ]
+        },
+        {
+          "field": "coverage_ambiguity_annotations.<dimension>.explicit_uncertainty_flag",
+          "type": "enum",
+          "required": false,
+          "allowed_values": [
+            "ambiguous_because_country_fit_is_inferred_not_directly_named",
+            "ambiguous_because_global_positioning_does_not_verify_ex_us_configuration",
+            "ambiguous_because_non_us_global_configuration_is_only_indirectly_supported",
+            "ambiguous_because_reviewed_public_sources_did_not_verify_dimension",
+            "ambiguous_because_reviewed_sources_did_not_verify_ex_us_configuration",
+            "partial_because_configuration_exists_but_family_specific_terms_remain_unverified",
+            "partial_because_country_presence_does_not_equal_final_family_fit"
+          ],
+          "traceability_requirements": [
+            "Should preserve why a dimension remains partial or ambiguous instead of collapsing everything into generic uncertainty."
+          ]
+        },
+        {
+          "field": "candidate_linkage",
+          "type": "object",
+          "required": true,
+          "allowed_values": "evidence-row linkage object attached to each claim-bearing nested evidence item",
+          "traceability_requirements": [
+            "Every nested evidence row in derivative ledgers should explicitly identify the relevant candidate record instead of relying only on parent-record context.",
+            "At minimum, the linkage object should preserve candidate_ids, primary_candidate_id, linkage_basis, and the dataset path/section of the parent candidate record."
+          ],
+          "object_fields": [
+            {
+              "field": "linkage_basis",
+              "type": "enum",
+              "required": true,
+              "allowed_values": [
+                "parent_record_candidate_id"
+              ]
+            },
+            {
+              "field": "candidate_record_dataset_path",
+              "type": "string",
+              "required": true
+            },
+            {
+              "field": "candidate_record_section",
+              "type": "string",
+              "required": true
+            },
+            {
+              "field": "candidate_ids",
+              "type": "array[string]",
+              "required": true
+            },
+            {
+              "field": "primary_candidate_id",
+              "type": "string",
+              "required": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "group": "cross_ledger_traceability",
+      "description": "Fields that link a candidate evidence entry to other machine-readable ledgers created during discovery.",
+      "fields": [
+        {
+          "field": "pricing_evidence_ref",
+          "type": "object",
+          "required": true,
+          "traceability_requirements": [
+            "Must identify the pricing evidence ledger dataset path plus a candidate-level locator.",
+            "Legacy status values may be retained for backward compatibility, but the canonical join is the dataset path plus candidate key."
+          ]
+        },
+        {
+          "field": "access_and_intake_evidence_refs",
+          "type": "object",
+          "required": true,
+          "traceability_requirements": [
+            "Must preserve the access/intake ledger dataset path and candidate-specific evidence IDs for access and intake friction."
+          ]
+        },
+        {
+          "field": "eligibility_ambiguity_evidence_ref",
+          "type": "object",
+          "required": true,
+          "traceability_requirements": [
+            "Must preserve the ambiguity ledger dataset path plus the candidate-specific join key."
+          ]
+        },
+        {
+          "field": "medical_underwriting_preexisting_conditions.evidence_ledger_ref",
+          "type": "object",
+          "required": false,
+          "traceability_requirements": [
+            "If present, must identify the underwriting/pre-existing evidence ledger and record locator used for the summary."
+          ]
+        },
+        {
+          "field": "coverage_ambiguity_annotations.<dimension>.source_ledger_ref",
+          "type": "object",
+          "required": false,
+          "traceability_requirements": [
+            "Must point to the dimension-specific coverage ledger for Georgia, Germany, or worldwide_ex_us."
+          ]
+        },
+        {
+          "field": "evidence_entry_source_map",
+          "type": "object",
+          "required": false,
+          "allowed_values": {
+            "candidate_source_entry": "array[source_id]",
+            "official_positioning_source_ids": "array[source_id]",
+            "quote_or_application_source_ids": "array[source_id]",
+            "broker_source_ids": "array[source_id]",
+            "plan_document_source_ids": "array[source_id]",
+            "geography_relevance_source_ids": "array[source_id]",
+            "pricing_or_quote_source_ids": "array[source_id]",
+            "access_path_source_ids": "array[source_id]"
+          },
+          "traceability_requirements": [
+            "Every source_id listed here must resolve to a source_set entry within the same candidate record.",
+            "This map should support audit of which exact sources back which evidence roles."
+          ]
+        }
+      ]
+    }
+  ],
+  "controlled_vocabularies": {
+    "country_coverage_assessment_states": {
+      "confirmed": "Captured public source language directly names the country or equivalent selector evidence.",
+      "inferred": "Captured public source language is source-backed but indirect, such as region/area-of-cover wording or destination logic.",
+      "unknown": "Reviewed sources were too generic, gated, or incomplete to support a responsible country-level inference."
+    },
+    "worldwide_ex_us_status_states": {
+      "explicitly_indicated": "A reviewed public source explicitly described worldwide excluding U.S. coverage or materially equivalent wording.",
+      "indirectly_indicated": "A reviewed public source strongly suggested a non-U.S. global configuration without explicit exact wording for the captured plan text.",
+      "worldwide_positioned_but_ex_us_not_verified": "The plan is globally positioned, but the reviewed evidence did not directly verify an ex-U.S. configuration.",
+      "not_verified_from_reviewed_sources": "Reviewed sources did not verify enough global geography detail to support an ex-U.S. inference."
+    },
+    "source_directness_rubric": {
+      "high": "Official insurer-controlled quote/application paths and official policy wording, brochure, benefit-table, or similar plan documents.",
+      "medium": "Official insurer-controlled landing or marketing pages that are direct but less authoritative for exact eligibility or benefit details than quote or policy documents.",
+      "low": "Broker/intermediary pages or other indirect public sources that materially help discovery but are not primary insurer-controlled evidence."
+    },
+    "url_capture_state": {
+      "verified_public_url": "A public URL was verified and stored in the ledger.",
+      "not_verified_publicly_in_this_run": "Represented as null; does not mean impossible or unavailable outside this run."
+    }
+  },
+  "traceability_rules": [
+    "Every candidate evidence entry must preserve a stable candidate_id and at least one source-backed source_ref.",
+    "Every classification claim that can affect later filtering or recommendation work should be backed either by an inline supporting_source_refs array or by a ledger reference object that resolves to another dataset.",
+    "Source normalization is allowed, but the normalized ledger must preserve both source_origin and enough original metadata to reconstruct provenance.",
+    "Derived/synthetic source rows are allowed for verified quote/application paths or plan-document URLs captured outside the original staging source_refs array, but they must be labeled as derived_candidate_source_ledger_reference.",
+    "Human-readable summaries should not be the only place a join key appears; machine-readable references must exist in JSON.",
+    "Uncertainty must be explicit. Missing evidence should be represented by controlled states, null URL capture semantics, or unresolved notes rather than silent omission."
+  ],
+  "serialization_contract": {
+    "canonical_primary_format": "jsonl",
+    "format_selection_reason": [
+      "Evidence-ledger entries contain nested citations, cross-ledger reference objects, and heterogeneous per-ledger structures that are preserved cleanly in JSONL.",
+      "JSONL supports one-record-per-evidence-entry serialization without lossy flattening.",
+      "CSV is still acceptable as a derived flat export, but not as the canonical evidence-ledger representation."
+    ],
+    "canonical_file_naming": {
+      "wrapped_json_dataset": "data/insurance_discovery/<ledger_name>.discovery.json",
+      "jsonl_evidence_stream": "data/insurance_discovery/<ledger_name>.discovery.jsonl",
+      "derived_csv_export": "data/insurance_discovery/<ledger_name>.discovery.csv"
+    },
+    "record_granularity_rules": {
+      "one_record_per": "one evidence entry / finding",
+      "do_not_mix_summary_and_evidence_rows_without_record_type": true,
+      "same_candidate_multiple_findings": "emit multiple records with distinct evidence_id values",
+      "recommended_uniqueness_key": [
+        "ledger_name",
+        "candidate_id",
+        "evidence_id"
+      ]
+    },
+    "key_naming_conventions": {
+      "case_style": "snake_case",
+      "id_suffix": "_id",
+      "human_label_suffixes": [
+        "_name",
+        "_title",
+        "_summary",
+        "_reason",
+        "_statement",
+        "_notes"
+      ],
+      "url_suffixes": [
+        "_url",
+        "_urls"
+      ],
+      "classification_suffixes": [
+        "_status",
+        "_classification",
+        "_type",
+        "_level",
+        "_state",
+        "_kind"
+      ],
+      "reference_suffixes": [
+        "_ref",
+        "_refs"
+      ],
+      "boolean_style": "prefer native booleans with names that read clearly, such as is_*, has_*, was_*, or existing observed yes/no semantic fields already established in the ledger"
+    },
+    "required_fields_every_jsonl_record": [
+      "dataset",
+      "run_scope",
+      "section",
+      "ledger_name",
+      "record_type",
+      "candidate_id",
+      "evidence_id",
+      "insurer_name",
+      "plan_name",
+      "source_origin",
+      "source_directness_classification",
+      "uncertainty_notes"
+    ],
+    "required_primary_evidence_text_rule": {
+      "require_at_least_one_of": [
+        "finding_statement",
+        "evidence_excerpt",
+        "pricing_summary",
+        "ledger_specific_primary_evidence_text_field"
+      ]
+    },
+    "citations_field_rule": {
+      "field": "citations",
+      "type": "array",
+      "default_expectation": "present on every evidence-entry record",
+      "may_be_empty_only_when": "the record instead carries a non-empty supporting_source_refs array and the omission is intentional and documented by that ledger design"
+    },
+    "required_when_applicable": [
+      "candidate_type",
+      "record_index",
+      "dataset_path or ledger_dataset_path inside cross-ledger reference objects",
+      "citation_id, source_url or null, source_type, and excerpt inside each citation object"
+    ],
+    "optional_fields_examples": [
+      "quote_or_application_url",
+      "broker_url",
+      "policy_wording_or_pdf_url",
+      "page_reference",
+      "screenshot_path",
+      "coverage_ambiguity_annotations"
+    ],
+    "null_and_empty_handling": {
+      "null": "use for expected scalar values that were not publicly verified in this run",
+      "empty_string": "not allowed as a stand-in for unknown, gated, unavailable, or not captured",
+      "empty_array": "allowed only when the field is structurally present and the correct meaning is no items observed or captured",
+      "empty_object": "allowed only when the object is structurally required but currently has no populated child members; otherwise omit optional objects",
+      "null_semantics": "null means not verified or not publicly captured in this run, not proven absent in reality",
+      "gating_rule": "if a value is unknown because of gating or incomplete review, preserve that meaning in a paired uncertainty note or controlled status field rather than relying on null alone"
+    },
+    "wrapped_json_rules": [
+      "Top-level metadata lives at the dataset root.",
+      "Evidence entries live inside records.",
+      "Array order may preserve discovery order, but joins must use stable IDs rather than position."
+    ],
+    "jsonl_rules": [
+      "Each line must be a standalone valid JSON object encoded as UTF-8.",
+      "Repeat the minimal routing metadata on every line: dataset, run_scope, section, ledger_name, record_type, candidate_id, evidence_id.",
+      "Do not rely on file-level headers or sidecar metadata to interpret an individual record.",
+      "Text values containing newlines must escape them inside the JSON string, not create physical multi-line records."
+    ],
+    "csv_fallback_rules": [
+      "CSV is derivative only, not canonical, for evidence ledgers.",
+      "One CSV row still equals one evidence entry.",
+      "Flatten only stable scalar fields and counts.",
+      "Nested arrays or objects should be omitted or intentionally serialized into documented JSON-string columns.",
+      "Every CSV export should preserve a path back to the canonical JSON or JSONL source via candidate_id plus evidence_id."
+    ],
+    "minimum_jsonl_template": {
+      "dataset": "international_expat_health_insurance_discovery",
+      "run_scope": "discovery_only",
+      "section": "access_and_intake_evidence_ledger",
+      "ledger_name": "access_and_intake_evidence_ledger",
+      "record_type": "evidence_entry",
+      "candidate_id": "cigna_global",
+      "evidence_id": "cigna_global:intake",
+      "insurer_name": "Cigna Global",
+      "plan_name": "International Health Insurance / Global Medical Cover",
+      "source_origin": "derived_candidate_source_ledger_reference",
+      "source_directness_classification": "high",
+      "finding_statement": "Quote page immediately asks for country of residence before continuing.",
+      "citations": [
+        {
+          "citation_id": "cigna_global:intake:cite1",
+          "source_url": "https://www.cignaglobal.com/quote/pages/quote/CountrySelector.html",
+          "source_type": "official quote page",
+          "page_reference": "public_quote_country_selector",
+          "excerpt": "Where will you be living for the duration of the policy?*",
+          "screenshot_path": null,
+          "screenshot_status": "not_captured_in_this_run"
+        }
+      ],
+      "uncertainty_notes": [
+        "Later steps may add account or eligibility gating that was not verified in this run."
+      ]
+    },
+    "validation_expectations": [
+      "Every JSONL line must parse as a JSON object.",
+      "No duplicate evidence_id values may exist for the same ledger_name plus candidate_id combination.",
+      "Required keys must be present even when some values are null or arrays are empty by rule.",
+      "Unknowns must be explicit through controlled states, null semantics, or uncertainty notes rather than silent omission."
+    ],
+    "canonical_schema_path": "data/insurance_discovery/evidence_ledger_record.schema.json",
+    "canonical_schema_usage": [
+      "Use this schema to validate each JSONL line independently.",
+      "For wrapped .discovery.json ledgers, validate each object inside records against the same schema after projecting dataset root metadata onto the record or when those fields are repeated at record level.",
+      "Ledger-specific fields may extend the base schema because additionalProperties remains enabled; the schema constrains the canonical minimum contract rather than every possible ledger-specific field."
+    ],
+    "canonical_schema_examples": [
+      {
+        "example_id": "access_intake_minimal_compliant_record",
+        "path": "data/insurance_discovery/evidence_ledger_record.schema.json#/examples/0",
+        "description": "High-directness access/intake evidence entry with citation-backed finding_statement."
+      },
+      {
+        "example_id": "pricing_minimal_compliant_record",
+        "path": "data/insurance_discovery/evidence_ledger_record.schema.json#/examples/1",
+        "description": "Medium-directness pricing evidence entry using supporting_source_refs instead of citations."
+      }
+    ],
+    "canonical_validation_constraints": [
+      "dataset must equal international_expat_health_insurance_discovery",
+      "run_scope must equal discovery_only",
+      "record_type must equal evidence_entry",
+      "candidate_id must be snake_case and evidence_id must be a non-empty joinable identifier",
+      "source_origin must be one of the controlled provenance enums",
+      "source_directness_classification must be high, medium, or low",
+      "At least one of finding_statement, evidence_excerpt, or pricing_summary must be present",
+      "At least one of citations or supporting_source_refs must be non-empty"
+    ]
+  },
+  "canonical_schema_artifact": {
+    "path": "data/insurance_discovery/evidence_ledger_record.schema.json",
+    "schema_type": "json_schema",
+    "draft": "2020-12",
+    "applies_to": "one evidence-entry record in canonical JSONL form and one record object inside wrapped JSON ledger datasets",
+    "validation_focus": [
+      "required routing and join fields",
+      "controlled enums for evidence-origin and directness",
+      "at least one primary evidence text field",
+      "at least one citation or supporting_source_ref",
+      "examples for access/intake and pricing evidence entries"
+    ]
+  }
+}

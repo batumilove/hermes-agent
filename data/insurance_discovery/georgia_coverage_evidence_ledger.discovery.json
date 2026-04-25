@@ -1,0 +1,1349 @@
+{
+  "dataset": "international_expat_health_insurance_discovery",
+  "run_scope": "discovery_only",
+  "section": "georgia_coverage_evidence_ledger",
+  "generated_from": "data/insurance_discovery/shared_candidate_staging.discovery.json",
+  "generated_by": "gpt-5.4",
+  "family_context": {
+    "citizenship": "German",
+    "residence": "Georgia",
+    "adults": [
+      42,
+      37
+    ],
+    "children": 2,
+    "preferred_cover_geography": "Georgia and Germany, ideally worldwide excluding the US"
+  },
+  "status_legend": {
+    "georgia_explicitly_listed": "Georgia was directly observed in an official country selector or equivalent public plan or quote artifact.",
+    "georgia_destination_reference": "Georgia was directly referenced on an official destination or health guide, but not as a formal eligibility selector.",
+    "georgia_regionally_implied_not_named": "Public area-of-cover wording strongly suggests Georgia falls inside a named geography, but Georgia was not quoted verbatim.",
+    "georgia_not_named_area_of_cover_structure": "Public evidence gave relevant area-of-cover or territorial wording, but Georgia itself was not named.",
+    "georgia_not_named_worldwide_ex_us_structure": "Public evidence gave worldwide or worldwide-ex-US geographic structure relevant to Georgia, but Georgia was not named.",
+    "georgia_not_named_country_of_residence_mechanics": "Public evidence shows country-of-residence mechanics or restrictions, but Georgia was not named in captured text.",
+    "georgia_not_named_global_positioning_only": "Public evidence only confirmed broad international or living-abroad positioning; Georgia remains unverified.",
+    "georgia_not_named_mobility_positioning_only": "Public evidence confirmed international mobility positioning but no country-specific Georgia evidence was visible.",
+    "georgia_not_named_global_network_only": "Public evidence showed global provider networks or worldwide service access, but no Georgia-specific evidence.",
+    "georgia_residency_dropdown_unresolved": "A country-of-residency quote flow exists and appears country-driven, but Georgia acceptance was not directly confirmed in captured output.",
+    "georgia_residence_rules_relevant_not_verified": "Public sources show residence-country restrictions relevant to Georgia screening, but Georgia itself was not verified.",
+    "georgia_not_named_country_pages_elsewhere": "Public sources show geography-specific country pages or regional marketing, but not Georgia in captured evidence.",
+    "georgia_not_named_outside_us_plan": "Public evidence verifies a worldwide or outside-US structure but not Georgia specifically.",
+    "georgia_not_named_global_only": "Public evidence verifies worldwide or global positioning only, without Georgia-specific proof.",
+    "georgia_not_named_zone_based_cover": "Public evidence verifies region or zone-based geography logic, but Georgia was not named directly.",
+    "georgia_country_coverage_assessment_confirmed": "Georgia coverage is directly confirmed by captured public source language, such as a Georgia country selector or equivalent explicit country naming in a plan or quote artifact.",
+    "georgia_country_coverage_assessment_inferred": "Georgia was not directly confirmed, but the captured source language provides a geography rule, territory structure, destination reference, or worldwide wording that makes Georgia coverage a reasonable inference pending plan-specific verification.",
+    "georgia_country_coverage_assessment_unknown": "Captured source language did not directly confirm Georgia and was too generic, gated, or incomplete to support a reliable Georgia coverage inference."
+  },
+  "summary": {
+    "verified_total_unique_candidates": 27,
+    "georgia_coverage_status_counts": {
+      "georgia_explicitly_listed": 6,
+      "georgia_not_named_global_positioning_only": 1,
+      "georgia_not_named_area_of_cover_structure": 2,
+      "georgia_not_named_zone_based_cover": 1,
+      "georgia_not_named_mobility_positioning_only": 1,
+      "georgia_not_named_country_of_residence_mechanics": 1,
+      "georgia_not_named_global_network_only": 2,
+      "georgia_destination_reference": 1,
+      "georgia_residency_dropdown_unresolved": 1,
+      "georgia_residence_rules_relevant_not_verified": 1,
+      "georgia_not_named_worldwide_ex_us_structure": 1,
+      "georgia_not_named_worldwide_only": 4,
+      "georgia_not_named_country_pages_elsewhere": 1,
+      "georgia_not_named_outside_us_plan": 1,
+      "georgia_not_named_global_only": 2,
+      "georgia_regionally_implied_not_named": 1
+    },
+    "notes": [
+      "Discovery-only ledger: this artifact does not rank, recommend, or determine eligibility.",
+      "For challenge-gated or JS-heavy quote flows, unresolved entries keep the uncertainty explicit rather than inferring acceptance."
+    ],
+    "georgia_country_coverage_assessment_counts": {
+      "confirmed": 6,
+      "inferred": 12,
+      "unknown": 9
+    },
+    "georgia_country_coverage_logic": [
+      "confirmed = captured public evidence explicitly named Georgia in an insurer-controlled selector or equivalent quote artifact.",
+      "inferred = captured public evidence did not name Georgia directly, but did expose geography wording broad enough to place Georgia plausibly inside the covered territory.",
+      "unknown = captured public evidence stayed too generic, too gated, or too incomplete to infer Georgia responsibly."
+    ]
+  },
+  "records": [
+    {
+      "index": 1,
+      "candidate_id": "cigna_global",
+      "insurer_name": "Cigna Global",
+      "plan_name": "International Health Insurance / Global Medical Cover",
+      "candidate_type": "primary",
+      "georgia_coverage_status": "georgia_explicitly_listed",
+      "georgia_coverage_summary": "Official quote country selector explicitly lists both Georgia and Germany as selectable countries.",
+      "direct_georgia_relevance_evidence": [
+        "Cigna's quote country selector HTML includes Georgia and Germany as adjacent options, giving direct public evidence that Georgia can at least be entered in the residence/selection flow.",
+        "The main site also exposes a Where We Cover destination list with a Germany page and broader global positioning, but Georgia evidence in this run comes from the quote selector rather than a dedicated country page."
+      ],
+      "supporting_source_refs": [
+        {
+          "source_url": "https://www.cignaglobal.com/quote/pages/quote/CountrySelector.html",
+          "source_title": "Cigna Global quote country selector",
+          "source_kind": "official quote page",
+          "evidence_excerpt": "The HTML country list includes “Georgia” and “Germany” as selectable options.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "cigna_global"
+            ],
+            "primary_candidate_id": "cigna_global"
+          }
+        },
+        {
+          "source_url": "https://www.cignaglobal.com/",
+          "source_title": "International Health Insurance & Global Medical Cover | Cigna",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "Cigna markets international health insurance for individuals and families and says it supports customers worldwide through a large medical network.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "cigna_global"
+            ],
+            "primary_candidate_id": "cigna_global"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Selector presence does not by itself prove final underwriting acceptance or pricing for a German family resident in Georgia."
+      ],
+      "georgia_country_coverage_assessment": "confirmed",
+      "georgia_country_coverage_rationale": "Georgia is directly confirmed because captured public source language explicitly lists Georgia in an official selector or equivalent insurer-controlled artifact."
+    },
+    {
+      "index": 2,
+      "candidate_id": "allianz_care",
+      "insurer_name": "Allianz Care",
+      "plan_name": "Care International Health Insurance Plans",
+      "candidate_type": "primary",
+      "georgia_coverage_status": "georgia_not_named_global_positioning_only",
+      "georgia_coverage_summary": "Official public page confirms long-stay international cover for people living abroad, but this run did not verify Georgia in the quote flow because the quote page was challenge-protected.",
+      "direct_georgia_relevance_evidence": [
+        "Allianz says its Care plans are for people working, studying, or living abroad for long periods and provides an official long-term quote path.",
+        "The public quote URL returned a challenge-validation page in this run, so Georgia-specific selector evidence could not be captured publicly."
+      ],
+      "supporting_source_refs": [
+        {
+          "source_url": "https://www.allianzcare.com/en/personal-international-health-insurance.html",
+          "source_title": "International Health Insurance for Individuals | Allianz",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "Allianz says its Care plans are designed for people who spend long periods overseas and offers cover for people working, studying, or living abroad.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "allianz_care"
+            ],
+            "primary_candidate_id": "allianz_care"
+          }
+        },
+        {
+          "source_url": "https://my.allianzcare.com/myquote/5",
+          "source_title": "Allianz Care quote page",
+          "source_kind": "official quote page",
+          "evidence_excerpt": "Public access in this run surfaced a challenge-validation page rather than a readable country selector.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "allianz_care"
+            ],
+            "primary_candidate_id": "allianz_care"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Georgia-resident eligibility remains unverified because the public quote flow was challenge-gated during this run."
+      ],
+      "georgia_country_coverage_assessment": "unknown",
+      "georgia_country_coverage_rationale": "Only long-term abroad marketing was visible, while the quote flow that might confirm Georgia was challenge-gated, so the reviewed source language is too incomplete to infer Georgia."
+    },
+    {
+      "index": 3,
+      "candidate_id": "bupa_global",
+      "insurer_name": "Bupa Global",
+      "plan_name": "Private Health Insurance & Medical Insurance for Individuals and Families",
+      "candidate_type": "primary",
+      "georgia_coverage_status": "georgia_explicitly_listed",
+      "georgia_coverage_summary": "Existing official-source evidence already captured Georgia and Germany in Bupa Global’s individuals-and-families selector.",
+      "direct_georgia_relevance_evidence": [
+        "Bupa Global's official individuals-and-families selector publicly lists Georgia and Germany in the residence-country dropdown.",
+        "This is one of the clearest direct-public indicators that the family can at least test Georgia residence in an official flow."
+      ],
+      "supporting_source_refs": [
+        {
+          "source_url": "https://www.bupaglobal.com/en/private-health-insurance",
+          "source_title": "Private Health Insurance & Medical Insurance | Bupa Global",
+          "source_kind": "official insurer page / selector",
+          "evidence_excerpt": "The official individuals-and-families selector asks where the customer will be living and publicly lists both Georgia and Germany in the residence-country dropdown.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "bupa_global"
+            ],
+            "primary_candidate_id": "bupa_global"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Need full quote output or policy wording to verify available plans and final acceptance for Georgian residents."
+      ],
+      "georgia_country_coverage_assessment": "confirmed",
+      "georgia_country_coverage_rationale": "Georgia is directly confirmed because captured public source language explicitly lists Georgia in an official selector or equivalent insurer-controlled artifact."
+    },
+    {
+      "index": 4,
+      "candidate_id": "axa_global_healthcare",
+      "insurer_name": "AXA Global Healthcare",
+      "plan_name": "International Health Insurance Plans",
+      "candidate_type": "primary",
+      "georgia_coverage_status": "georgia_not_named_area_of_cover_structure",
+      "georgia_coverage_summary": "AXA publicly documents area-of-cover logic and optional exclusion of the USA, but Georgia itself was not named in the captured public text.",
+      "direct_georgia_relevance_evidence": [
+        "AXA says customers can exclude the USA from their area of cover, which is relevant for worldwide-ex-US screening.",
+        "AXA states treatment outside the selected area of cover is not covered, so Georgia fit depends on selecting an area that includes Georgia; this was not directly resolved from captured text."
+      ],
+      "supporting_source_refs": [
+        {
+          "source_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/",
+          "source_title": "International Health Insurance Plans: AXA Global Healthcare",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "AXA says it will give customers the option to exclude the USA from their area of cover, while treatment outside the chosen area of cover is not covered.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "axa_global_healthcare"
+            ],
+            "primary_candidate_id": "axa_global_healthcare"
+          }
+        },
+        {
+          "source_url": "https://www.axaglobalhealthcare.com/en/international-health-insurance/get-a-quote/?camp=online-default",
+          "source_title": "AXA Global Healthcare quote guide",
+          "source_kind": "official quote page",
+          "evidence_excerpt": "AXA explains that local insurance is limited to the country of residence, while international plans provide private healthcare across the globe.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "axa_global_healthcare"
+            ],
+            "primary_candidate_id": "axa_global_healthcare"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Need quote or policy wording to verify that Georgia falls within the relevant AXA area-of-cover choice for this family."
+      ],
+      "georgia_country_coverage_assessment": "inferred",
+      "georgia_country_coverage_rationale": "AXA publicly describes area-of-cover logic and optional USA exclusion, so Georgia is reasonably inferable as a territory-dependent destination even though it was not named."
+    },
+    {
+      "index": 5,
+      "candidate_id": "april_international",
+      "insurer_name": "APRIL International",
+      "plan_name": "Long-term Expat International Health Insurance",
+      "candidate_type": "primary",
+      "georgia_coverage_status": "georgia_explicitly_listed",
+      "georgia_coverage_summary": "APRIL’s public page and entry flow explicitly expose Georgia in the country-of-coverage list.",
+      "direct_georgia_relevance_evidence": [
+        "APRIL's public page text includes a country-of-coverage list containing Georgia and Germany.",
+        "APRIL also states long-term plans provide worldwide cover depending on the chosen area of cover, making Georgia-relevance direct but still area-dependent."
+      ],
+      "supporting_source_refs": [
+        {
+          "source_url": "https://www.april-international.com/en/long-term-international-health-insurance",
+          "source_title": "Long-term expat international health insurance | APRIL International",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "The public country-of-coverage list includes Georgia and Germany, and APRIL says worldwide cover depends on the chosen area of cover.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "april_international"
+            ],
+            "primary_candidate_id": "april_international"
+          }
+        },
+        {
+          "source_url": "https://www.april-international.com/en",
+          "source_title": "APRIL International home / entry page",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "APRIL states it covers 180+ countries and the visible country selector includes Georgia and Germany.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "april_international"
+            ],
+            "primary_candidate_id": "april_international"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Need quote output or benefits guide to confirm which APRIL area-of-cover choice applies to Georgia-resident German citizens."
+      ],
+      "georgia_country_coverage_assessment": "confirmed",
+      "georgia_country_coverage_rationale": "Georgia is directly confirmed because captured public source language explicitly lists Georgia in an official selector or equivalent insurer-controlled artifact."
+    },
+    {
+      "index": 6,
+      "candidate_id": "william_russell",
+      "insurer_name": "William Russell",
+      "plan_name": "International Health Insurance",
+      "candidate_type": "primary",
+      "georgia_coverage_status": "georgia_not_named_zone_based_cover",
+      "georgia_coverage_summary": "William Russell publicly shows region-based and worldwide cover examples, but Georgia was not named directly in captured text.",
+      "direct_georgia_relevance_evidence": [
+        "William Russell says customers can buy anything from worldwide cover to one-region cover.",
+        "Public pricing examples show that country of residence and coverage outside country of residence are core underwriting variables, which makes Georgia relevant even though it was not directly named."
+      ],
+      "supporting_source_refs": [
+        {
+          "source_url": "https://www.william-russell.com/international-health-insurance/",
+          "source_title": "International Health Insurance | William Russell",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "The page says customers have different coverage options ranging from worldwide cover to cover in just one region, and examples are priced by country of residence and coverage area.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "william_russell"
+            ],
+            "primary_candidate_id": "william_russell"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Need quote or plan wording to test Georgia specifically."
+      ],
+      "georgia_country_coverage_assessment": "inferred",
+      "georgia_country_coverage_rationale": "Region-based and worldwide cover wording makes Georgia a reasonable inference because the product language ties cover to selectable geography bands rather than a closed named-country list."
+    },
+    {
+      "index": 7,
+      "candidate_id": "msh_international",
+      "insurer_name": "MSH International",
+      "plan_name": "First'Expat+ / International Health Insurance for Individuals",
+      "candidate_type": "primary",
+      "georgia_coverage_status": "georgia_not_named_mobility_positioning_only",
+      "georgia_coverage_summary": "MSH positions First’Expat+ as international cover for mobility needs, but no Georgia-specific country evidence was visible in this run.",
+      "direct_georgia_relevance_evidence": [
+        "MSH markets itself as a healthcare partner for mobility needs and offers a quote path for international individual plans.",
+        "The public page showed region-selection context including an Asia site version but did not expose a country dropdown naming Georgia in the extracted text."
+      ],
+      "supporting_source_refs": [
+        {
+          "source_url": "https://www.msh-intl.com/en/individuals/",
+          "source_title": "International Health Insurance for Individuals - MSH",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "MSH describes First’Expat+ as a comprehensive, flexible international health insurance plan and frames itself as the healthcare partner for mobility needs.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "msh_international"
+            ],
+            "primary_candidate_id": "msh_international"
+          }
+        },
+        {
+          "source_url": "https://www.msh-intl.com/en/comparisons-offers-msh",
+          "source_title": "MSH find your plan / quote path",
+          "source_kind": "official quote page",
+          "evidence_excerpt": "MSH offers a public quote/comparison path for individual international plans, but Georgia was not visible in captured country-selection text.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "msh_international"
+            ],
+            "primary_candidate_id": "msh_international"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Georgia-resident eligibility still needs quote-flow or document confirmation."
+      ],
+      "georgia_country_coverage_assessment": "unknown",
+      "georgia_country_coverage_rationale": "The captured language showed international-mobility positioning but no country list or territorial wording specific enough to infer Georgia."
+    },
+    {
+      "index": 8,
+      "candidate_id": "now_health_international",
+      "insurer_name": "Now Health International",
+      "plan_name": "SimpleCare / WorldCare International Health Insurance Plans",
+      "candidate_type": "primary",
+      "georgia_coverage_status": "georgia_not_named_country_of_residence_mechanics",
+      "georgia_coverage_summary": "Now Health exposes international-plan geography mechanics tied to country of nationality or residence, but Georgia was not named directly in the captured page text.",
+      "direct_georgia_relevance_evidence": [
+        "The public comparison table repeatedly refers to repatriation or transportation to the country of nationality or residence.",
+        "Now Health also lists plan-issuance restrictions for some UAE residence-visa holders, showing country-of-residence matters even though Georgia was not named."
+      ],
+      "supporting_source_refs": [
+        {
+          "source_url": "https://www.now-health.com/en/insurance-plans/",
+          "source_title": "Compare International Health Insurance Plans from Now Health",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "The public comparison table references repatriation to the country of nationality or residence and includes residence-specific issuance notes for some markets.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "now_health_international"
+            ],
+            "primary_candidate_id": "now_health_international"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Need member handbook or quote flow to verify whether Georgia is an accepted country of residence."
+      ],
+      "georgia_country_coverage_assessment": "unknown",
+      "georgia_country_coverage_rationale": "The reviewed text proves residence-country mechanics matter, but it does not show whether Georgia is accepted or included, so Georgia remains unknown."
+    },
+    {
+      "index": 9,
+      "candidate_id": "img_global",
+      "insurer_name": "IMG (International Medical Group)",
+      "plan_name": "Global Medical international health insurance",
+      "candidate_type": "primary",
+      "georgia_coverage_status": "georgia_explicitly_listed",
+      "georgia_coverage_summary": "IMG’s public HTML includes Georgia and Germany in country-selection lists on both the main site and international health page.",
+      "direct_georgia_relevance_evidence": [
+        "IMG country lists publicly include Georgia and Germany, providing direct evidence that Georgia can be selected in IMG’s public web flow.",
+        "IMG also says international health plans provide medical coverage worldwide and are suitable for expats and their families."
+      ],
+      "supporting_source_refs": [
+        {
+          "source_url": "https://www.imglobal.com/international-health-insurance",
+          "source_title": "IMG international health insurance",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "The page HTML contains country options including Georgia and Germany and says IMG international health plans provide medical coverage worldwide.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "img_global"
+            ],
+            "primary_candidate_id": "img_global"
+          }
+        },
+        {
+          "source_url": "https://www.imglobal.com/",
+          "source_title": "International Health & Travel Medical Insurance - IMG",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "IMG states its international health insurance is for expats and global citizens living or working internationally.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "img_global"
+            ],
+            "primary_candidate_id": "img_global"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Need product-specific quote or plan wording to confirm Georgia-resident acceptance for full expat medical products, not just travel products."
+      ],
+      "georgia_country_coverage_assessment": "confirmed",
+      "georgia_country_coverage_rationale": "Georgia is directly confirmed because captured public source language explicitly lists Georgia in an official selector or equivalent insurer-controlled artifact."
+    },
+    {
+      "index": 10,
+      "candidate_id": "aetna_international",
+      "insurer_name": "Aetna International",
+      "plan_name": "Aetna International global healthcare entrypoint",
+      "candidate_type": "primary",
+      "georgia_coverage_status": "georgia_not_named_global_network_only",
+      "georgia_coverage_summary": "Aetna International publicly shows worldwide telehealth or network reach, but no Georgia-specific country selector evidence was captured.",
+      "direct_georgia_relevance_evidence": [
+        "Aetna says members can access care anywhere, anytime through global solutions and worldwide telehealth services.",
+        "This is relevant but weaker than a country selector because Georgia was not named or surfaced in an individual quote flow during this run."
+      ],
+      "supporting_source_refs": [
+        {
+          "source_url": "https://www.aetnainternational.com/",
+          "source_title": "Home | Aetna International",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "Aetna says members can access care anywhere, anytime through the member website and worldwide telehealth services.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "aetna_international"
+            ],
+            "primary_candidate_id": "aetna_international"
+          }
+        },
+        {
+          "source_url": "https://www.aetna.com/employers-organizations/aetna-international-insurance.html",
+          "source_title": "Aetna International insurance overview",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "The related Aetna international page did not provide captured Georgia-specific country evidence in this run.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "aetna_international"
+            ],
+            "primary_candidate_id": "aetna_international"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Need individual or family market evidence or quote path showing Georgia residence support."
+      ],
+      "georgia_country_coverage_assessment": "unknown",
+      "georgia_country_coverage_rationale": "Worldwide service-access and telehealth wording describe network reach, not plan geography or residence eligibility, so Georgia cannot be inferred reliably."
+    },
+    {
+      "index": 11,
+      "candidate_id": "foyer_global_health",
+      "insurer_name": "Foyer Global Health",
+      "plan_name": "Expat Health Insurance / International Health Insurance comparison",
+      "candidate_type": "primary",
+      "georgia_coverage_status": "georgia_destination_reference",
+      "georgia_coverage_summary": "Foyer publicly references Georgia in dedicated destination and health guides, which is useful country-specific discovery evidence even though it is not a formal eligibility table.",
+      "direct_georgia_relevance_evidence": [
+        "Foyer’s official site highlights Georgia among popular destination guides, including Georgia living, health, and budget guides.",
+        "Foyer also positions its plans as worldwide and suitable for expats and families going abroad."
+      ],
+      "supporting_source_refs": [
+        {
+          "source_url": "https://www.foyerglobalhealth.com/",
+          "source_title": "Expat Health Insurance | Foyer Global Health",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "The official site lists destination guides for Georgia, including living, health, and budget content, and markets worldwide expat-family coverage.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "foyer_global_health"
+            ],
+            "primary_candidate_id": "foyer_global_health"
+          }
+        },
+        {
+          "source_url": "https://www.foyerglobalhealth.com/plans-services/our-plans/international-health-insurance-comparison/",
+          "source_title": "Foyer plan comparison",
+          "source_kind": "official plan comparison page",
+          "evidence_excerpt": "The plan comparison includes benefits tied to return travel to the country of residence after evacuation.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "foyer_global_health"
+            ],
+            "primary_candidate_id": "foyer_global_health"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Georgia guide presence does not prove plan eligibility or underwriting acceptance for Georgia residents."
+      ],
+      "georgia_country_coverage_assessment": "inferred",
+      "georgia_country_coverage_rationale": "Official Georgia destination and health guides make Georgia a plausible supported market signal, even though they do not directly prove policy eligibility or cover."
+    },
+    {
+      "index": 12,
+      "candidate_id": "henner",
+      "insurer_name": "Henner",
+      "plan_name": "Individuals & Families international health solutions",
+      "candidate_type": "primary",
+      "georgia_coverage_status": "georgia_not_named_global_network_only",
+      "georgia_coverage_summary": "Henner shows individuals-and-families living-abroad positioning and a 240-country healthcare-professional network, but Georgia was not explicitly captured.",
+      "direct_georgia_relevance_evidence": [
+        "Henner says it developed personal-insurance expertise for people living abroad and supports members wherever they are.",
+        "Henner also states it works with healthcare professionals in 240 countries, which is geography-relevant but not a Georgia-specific eligibility proof."
+      ],
+      "supporting_source_refs": [
+        {
+          "source_url": "https://www.henner.com/en/customers/individuals-families/",
+          "source_title": "Individuals & Families - Henner",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "Henner says it supports people living abroad and has a network of healthcare professionals in 240 countries.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "henner"
+            ],
+            "primary_candidate_id": "henner"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Need product-specific quote or brochure evidence naming Georgia or clarifying country-of-residence eligibility."
+      ],
+      "georgia_country_coverage_assessment": "unknown",
+      "georgia_country_coverage_rationale": "A 240-country provider network is weaker than plan geography wording; it suggests service reach but does not reliably establish Georgia plan coverage."
+    },
+    {
+      "index": 13,
+      "candidate_id": "globality_health",
+      "insurer_name": "Globality Health",
+      "plan_name": "YouGenio individual international health insurance plans",
+      "candidate_type": "primary",
+      "georgia_coverage_status": "georgia_residency_dropdown_unresolved",
+      "georgia_coverage_summary": "Globality’s application flow uses a broad country list for future residency, but the extracted summary did not explicitly name Georgia even though the flow is country-driven.",
+      "direct_georgia_relevance_evidence": [
+        "The application requires country of future residency and country where the application is signed, using a broad country or territory list.",
+        "The page warns that some future-residency countries may not be supported for quotation, which is directly relevant to Georgia screening."
+      ],
+      "supporting_source_refs": [
+        {
+          "source_url": "https://application.globality-health.com/?locale=en",
+          "source_title": "Globality Health application / quote flow",
+          "source_kind": "official quote page",
+          "evidence_excerpt": "The application requires a country of future residency from a broad country list and warns: “Please choose another country of future residency for the quotation.”",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "globality_health"
+            ],
+            "primary_candidate_id": "globality_health"
+          }
+        },
+        {
+          "source_url": "https://www.globality-health.com/",
+          "source_title": "International Health Insurance for Expats - Globality Health",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "Globality positions itself as an international health insurer for expatriates, but the home page did not yield a Georgia-specific excerpt in this run.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "globality_health"
+            ],
+            "primary_candidate_id": "globality_health"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Need a live test of Georgia as future residency to determine whether the quote flow accepts or rejects it."
+      ],
+      "georgia_country_coverage_assessment": "unknown",
+      "georgia_country_coverage_rationale": "The quote flow is country-driven, but the captured output did not show Georgia and warned that some residencies are unsupported, so Georgia stays unknown until tested."
+    },
+    {
+      "index": 14,
+      "candidate_id": "morgan_price",
+      "insurer_name": "Morgan Price International Healthcare",
+      "plan_name": "Evolution Health / Flexible Choices individual international healthcare plans",
+      "candidate_type": "primary",
+      "georgia_coverage_status": "georgia_residence_rules_relevant_not_verified",
+      "georgia_coverage_summary": "Morgan Price publishes unusually concrete residence rules and area-of-cover wording, but Georgia itself was not named in the captured public text.",
+      "direct_georgia_relevance_evidence": [
+        "Morgan Price states some products are available only where applicants’ primary residence is in specified countries or regions, proving residence-country rules are material.",
+        "The page also says Flexible Choices applicants must reside outside the EU or EEA and includes emergency treatment outside area of cover and home-country cover excluding USA, all directly relevant to a Germany-citizen and Georgia-resident family."
+      ],
+      "supporting_source_refs": [
+        {
+          "source_url": "https://www.morgan-price.com/individual/",
+          "source_title": "International Healthcare Insurance Plans for Expats | Morgan Price International Healthcare",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "Morgan Price states some plans are only available to applicants whose primary residence is in named countries, and Flexible Choices applicants must reside outside the EU or EEA.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "morgan_price"
+            ],
+            "primary_candidate_id": "morgan_price"
+          }
+        },
+        {
+          "source_url": "https://morgan-price.com/quick-quote/",
+          "source_title": "Morgan Price quick quote",
+          "source_kind": "official quote page",
+          "evidence_excerpt": "The public quote flow makes Country of Residence a core input and says some circumstances cannot be quoted online.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "morgan_price"
+            ],
+            "primary_candidate_id": "morgan_price"
+          }
+        },
+        {
+          "source_url": "https://morgan-price.com/media/4ibjjwku/evolutionhealth_ant_policywording_04-26_v2-final.pdf",
+          "source_title": "Morgan Price International Healthcare public brochure or policy PDF",
+          "source_kind": "public pdf link",
+          "evidence_excerpt": "Public PDF link captured in this discovery run; not fully parsed into this Georgia ledger unless quoted above.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "morgan_price"
+            ],
+            "primary_candidate_id": "morgan_price"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Need Georgia-specific quote attempt or policy wording review to confirm whether Georgia residence fits available Morgan Price products."
+      ],
+      "georgia_country_coverage_assessment": "unknown",
+      "georgia_country_coverage_rationale": "Residence-country rules and area-of-cover language are relevant, but the captured text does not place Georgia inside an available territory or accepted residence set."
+    },
+    {
+      "index": 15,
+      "candidate_id": "passportcard_global",
+      "insurer_name": "PassportCard",
+      "plan_name": "Expat Basic / Expat Comprehensive / Executive",
+      "candidate_type": "supplemental",
+      "georgia_coverage_status": "georgia_not_named_worldwide_ex_us_structure",
+      "georgia_coverage_summary": "PassportCard provides clear worldwide-ex-USA territory structure and Germany home-visit wording, but Georgia itself was not captured in public text.",
+      "direct_georgia_relevance_evidence": [
+        "PassportCard states contract currency is EUR for coverage worldwide excluding USA territories and USD for policies including the USA.",
+        "It also says insureds traveling to countries in zones 0–3 can receive treatment in Germany during home visits after relocation, which is highly relevant for Germany but does not itself verify Georgia as destination."
+      ],
+      "supporting_source_refs": [
+        {
+          "source_url": "https://www.passportcard.de/en/international-health-insurance/",
+          "source_title": "International health insurance for expats & nomads | PassportCard",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "PassportCard says the contract currency is EUR for coverage worldwide excluding USA territories, and that some zones include treatment in Germany during home visits.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "passportcard_global"
+            ],
+            "primary_candidate_id": "passportcard_global"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Need zone table or quote flow confirming whether Georgia sits in a supported destination zone."
+      ],
+      "georgia_country_coverage_assessment": "inferred",
+      "georgia_country_coverage_rationale": "Worldwide-excluding-USA territorial wording and zone-based Germany home-visit language provide enough geography structure to infer Georgia may fit a non-U.S. territory, pending zone confirmation."
+    },
+    {
+      "index": 16,
+      "candidate_id": "vumi",
+      "insurer_name": "VUMI",
+      "plan_name": "Absolute VIP / Universal VIP / Special VIP / Access VIP product family",
+      "candidate_type": "supplemental",
+      "georgia_coverage_status": "georgia_not_named_worldwide_only",
+      "georgia_coverage_summary": "VUMI markets worldwide coverage for individuals and families, but no Georgia-specific country evidence was captured.",
+      "direct_georgia_relevance_evidence": [
+        "VUMI’s homepage repeatedly says its international health insurance provides worldwide coverage.",
+        "The company frames its plans as protecting families anywhere, anytime, but that is still weaker than a country-specific selector."
+      ],
+      "supporting_source_refs": [
+        {
+          "source_url": "https://www.vumigroup.com/",
+          "source_title": "Home - VUMI",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "VUMI says it offers international health insurance with worldwide coverage and that families are protected anywhere, anytime.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "vumi"
+            ],
+            "primary_candidate_id": "vumi"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Need plan brochure, application flow, or regional site to verify Georgia residence explicitly."
+      ],
+      "georgia_country_coverage_assessment": "inferred",
+      "georgia_country_coverage_rationale": "Repeated worldwide-coverage wording supports a Georgia inference because Georgia is not carved out in the captured source language, though explicit eligibility still needs verification."
+    },
+    {
+      "index": 17,
+      "candidate_id": "integra_global",
+      "insurer_name": "Integra Global",
+      "plan_name": "yourLife / PremierLife / yourFamily / PremierFamily",
+      "candidate_type": "supplemental",
+      "georgia_coverage_status": "georgia_not_named_area_of_cover_structure",
+      "georgia_coverage_summary": "Integra Global clearly exposes worldwide including or excluding US+Canada cover options, but Georgia itself was not named.",
+      "direct_georgia_relevance_evidence": [
+        "Integra says members can choose worldwide coverage including the US and Canada or worldwide coverage excluding the US and Canada.",
+        "It also states the plan will cover members worldwide depending on the chosen region and the country where they intend to stay longest."
+      ],
+      "supporting_source_refs": [
+        {
+          "source_url": "https://hcigroupglobal.com/integra-global/",
+          "source_title": "Integra Global | HCI Group Global",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "Integra says Cover 1 is worldwide including the US and Canada, Cover 2 is worldwide excluding the US and Canada, and coverage depends on the chosen region.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "integra_global"
+            ],
+            "primary_candidate_id": "integra_global"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Need quote or eligibility wording to verify Georgia-resident acceptance."
+      ],
+      "georgia_country_coverage_assessment": "inferred",
+      "georgia_country_coverage_rationale": "Explicit worldwide including or excluding US+Canada cover options provide a concrete geography structure from which Georgia can be reasonably inferred."
+    },
+    {
+      "index": 18,
+      "candidate_id": "medihelp_international",
+      "insurer_name": "MediHelp International",
+      "plan_name": "My Global Health individual plans: Blue / Azure / Cobalt / Admiral / Royal",
+      "candidate_type": "supplemental",
+      "georgia_coverage_status": "georgia_not_named_worldwide_only",
+      "georgia_coverage_summary": "MediHelp describes My Global Health as international coverage with worldwide treatment choice, but Georgia was not named directly.",
+      "direct_georgia_relevance_evidence": [
+        "MediHelp says its individual plans provide international coverage and top medical services worldwide.",
+        "The page emphasizes freedom to choose doctor and clinic worldwide, which is relevant but not Georgia-specific."
+      ],
+      "supporting_source_refs": [
+        {
+          "source_url": "https://www.medihelp-assistance.com/en/medihelp-plans/individual-plans",
+          "source_title": "Individual plans | MediHelp International",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "MediHelp describes My Global Health as international coverage with top medical services worldwide and freedom to choose the doctor and clinic.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "medihelp_international"
+            ],
+            "primary_candidate_id": "medihelp_international"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Need brochure or application evidence naming accepted residence countries including or excluding Georgia."
+      ],
+      "georgia_country_coverage_assessment": "inferred",
+      "georgia_country_coverage_rationale": "The captured source language promises worldwide treatment choice, which is enough to infer Georgia at discovery stage absent contrary exclusions."
+    },
+    {
+      "index": 19,
+      "candidate_id": "alc_health",
+      "insurer_name": "ALC Health",
+      "plan_name": "Global Prima Medical Insurance / Flying Colours legacy entrypoints",
+      "candidate_type": "supplemental",
+      "georgia_coverage_status": "georgia_not_named_country_pages_elsewhere",
+      "georgia_coverage_summary": "ALC Health shows strong global-country marketing and a Germany regional page, but Georgia itself was not surfaced in captured text.",
+      "direct_georgia_relevance_evidence": [
+        "ALC says it provides global cover across the world and explicitly references multiple countries plus a Germany regional page.",
+        "This suggests geography-specific sales structure, but Georgia was not named among the captured country references."
+      ],
+      "supporting_source_refs": [
+        {
+          "source_url": "https://www.alchealth.com/",
+          "source_title": "ALC Health home",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "ALC describes global cover across many named countries and regions and links to a Germany page and 2026 downloads.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "alc_health"
+            ],
+            "primary_candidate_id": "alc_health"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Need Georgia-specific country page, quote result, or broker confirmation."
+      ],
+      "georgia_country_coverage_assessment": "unknown",
+      "georgia_country_coverage_rationale": "Country-specific marketing exists elsewhere, but the captured evidence named Germany rather than Georgia, so Georgia cannot be inferred from the reviewed text alone."
+    },
+    {
+      "index": 20,
+      "candidate_id": "geoblue_xplorer_bcbs_global_solutions",
+      "insurer_name": "Blue Cross Blue Shield Global Solutions (formerly GeoBlue Xplorer)",
+      "plan_name": "Worldwide Premier / Outside U.S. / Outside U.S. Select",
+      "candidate_type": "supplemental",
+      "georgia_coverage_status": "georgia_not_named_outside_us_plan",
+      "georgia_coverage_summary": "GeoBlue’s living-abroad page gives a clear Outside-the-U.S. plan structure, but Georgia was not named directly in the captured text.",
+      "direct_georgia_relevance_evidence": [
+        "The page offers an Outside the U.S. plan for people who do not need U.S. coverage, which is directly relevant to worldwide-ex-US screening.",
+        "Germany appears in Schengen-insurance support text, but Georgia was not named or tied to residence eligibility."
+      ],
+      "supporting_source_refs": [
+        {
+          "source_url": "https://bcbsglobalsolutions.com/individuals-and-families/international-medical-insurance/living-abroad/worldwide-and-outside-us/",
+          "source_title": "Worldwide and Outside US | BCBS Global Solutions",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "BCBS Global Solutions says customers can choose Worldwide Premier for comprehensive coverage anywhere in the world or Outside the U.S. if they do not need U.S. coverage.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "geoblue_xplorer_bcbs_global_solutions"
+            ],
+            "primary_candidate_id": "geoblue_xplorer_bcbs_global_solutions"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Need eligibility wording clarifying whether Georgia residents can buy the individual or family plan."
+      ],
+      "georgia_country_coverage_assessment": "inferred",
+      "georgia_country_coverage_rationale": "Outside-the-U.S. and worldwide plan structures make Georgia geographically plausible, even though Georgia-specific eligibility was not shown."
+    },
+    {
+      "index": 21,
+      "candidate_id": "safetywing_nomad_complete",
+      "insurer_name": "SafetyWing",
+      "plan_name": "Nomad Insurance Complete",
+      "candidate_type": "supplemental",
+      "georgia_coverage_status": "georgia_not_named_global_only",
+      "georgia_coverage_summary": "SafetyWing positions Nomad Insurance Complete for expats, digital nomads, and families with global provider access, but Georgia was not named.",
+      "direct_georgia_relevance_evidence": [
+        "SafetyWing says Complete offers global coverage and lets members use any licensed provider at any clinic or hospital, private or public.",
+        "The visible add-on logic references the U.S., Hong Kong, and Singapore rather than Georgia, so country-specific Georgia support remains unresolved."
+      ],
+      "supporting_source_refs": [
+        {
+          "source_url": "https://explore.safetywing.com/nomad-insurance-complete",
+          "source_title": "SafetyWing | Complete Health And Travel Insurance For Nomads",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "SafetyWing says Nomad Insurance Complete is made for digital nomads, expats, and families living abroad, with global coverage and any licensed provider worldwide.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "safetywing_nomad_complete"
+            ],
+            "primary_candidate_id": "safetywing_nomad_complete"
+          }
+        },
+        {
+          "source_url": "https://safetywing.com/signup?product=nomad-health",
+          "source_title": "SafetyWing signup",
+          "source_kind": "official quote page",
+          "evidence_excerpt": "The signup page exposes product enrollment but did not yield Georgia-specific country evidence in this run.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "safetywing_nomad_complete"
+            ],
+            "primary_candidate_id": "safetywing_nomad_complete"
+          }
+        },
+        {
+          "source_url": "https://safetywing.com/nomad-insurance/complete/standard_nomad_insurance_complete_vumi+carrier_2024-12.pdf?referenceID=24734754&utm_source=24734754&utm_medium=Ambassador",
+          "source_title": "SafetyWing public brochure or policy PDF",
+          "source_kind": "public pdf link",
+          "evidence_excerpt": "Public PDF link captured in this discovery run; not fully parsed into this Georgia ledger unless quoted above.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "safetywing_nomad_complete"
+            ],
+            "primary_candidate_id": "safetywing_nomad_complete"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Need policy wording or quote-input testing to determine whether Georgia residence is accepted."
+      ],
+      "georgia_country_coverage_assessment": "inferred",
+      "georgia_country_coverage_rationale": "Global coverage and any-licensed-provider worldwide wording are strong enough to infer Georgia for discovery screening, despite missing Georgia-specific residence proof."
+    },
+    {
+      "index": 22,
+      "candidate_id": "genki_native",
+      "insurer_name": "Genki",
+      "plan_name": "Native / international health insurance",
+      "candidate_type": "supplemental",
+      "georgia_coverage_status": "georgia_explicitly_listed",
+      "georgia_coverage_summary": "Genki’s consultation flow explicitly lists Georgia and Germany and markets worldwide cover from any country.",
+      "direct_georgia_relevance_evidence": [
+        "Genki’s public consultation flow contains Georgia and Germany in its country options.",
+        "Genki also says it offers worldwide cover and that users can join from anywhere, which materially supports Georgia discovery."
+      ],
+      "supporting_source_refs": [
+        {
+          "source_url": "https://consultation.genki.world/v2",
+          "source_title": "Genki consultation flow",
+          "source_kind": "official quote / consultation page",
+          "evidence_excerpt": "The public options list includes Georgia and Germany, alongside messaging that users can join from anywhere.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "genki_native"
+            ],
+            "primary_candidate_id": "genki_native"
+          }
+        },
+        {
+          "source_url": "https://genki.world/",
+          "source_title": "Genki • Health Insurance for Digital Nomads",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "Genki says it offers worldwide health insurance and covers treatment at every licensed healthcare provider worldwide.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "genki_native"
+            ],
+            "primary_candidate_id": "genki_native"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Need product-specific terms to confirm family fit and whether long-term Georgia residence is acceptable for this exact plan."
+      ],
+      "georgia_country_coverage_assessment": "confirmed",
+      "georgia_country_coverage_rationale": "Georgia is directly confirmed because captured public source language explicitly lists Georgia in an official selector or equivalent insurer-controlled artifact."
+    },
+    {
+      "index": 23,
+      "candidate_id": "acs_expat",
+      "insurer_name": "ACS",
+      "plan_name": "ACS Expat",
+      "candidate_type": "supplemental",
+      "georgia_coverage_status": "georgia_not_named_worldwide_only",
+      "georgia_coverage_summary": "ACS Expat is publicly framed as worldwide expatriate health insurance with trips outside the selected coverage area, but Georgia was not named directly.",
+      "direct_georgia_relevance_evidence": [
+        "ACS Expat says it covers international stays of 12+ months with worldwide healthcare access and support.",
+        "ACS also says temporary stays worldwide are covered for up to 7 weeks outside the selected coverage area, which is geography-relevant but still not Georgia-specific."
+      ],
+      "supporting_source_refs": [
+        {
+          "source_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat/",
+          "source_title": "ACS Expat",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "ACS Expat says the plan covers international stays of 12+ months, worldwide healthcare access and support, and temporary stays worldwide outside the selected coverage area.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "acs_expat"
+            ],
+            "primary_candidate_id": "acs_expat"
+          }
+        },
+        {
+          "source_url": "https://www.acs-ami.com/en/expat-health-insurance/acs-expat-quote-request/",
+          "source_title": "ACS Expat quote request",
+          "source_kind": "official quote page",
+          "evidence_excerpt": "The quote path repeats ACS Expat’s worldwide expatriate-health positioning but did not expose Georgia-specific country input in this run.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "acs_expat"
+            ],
+            "primary_candidate_id": "acs_expat"
+          }
+        },
+        {
+          "source_url": "https://www.acs-ami.com/files/pdf/ACS-Expat-ALC-IB-en.pdf",
+          "source_title": "ACS public brochure or policy PDF",
+          "source_kind": "public pdf link",
+          "evidence_excerpt": "Public PDF link captured in this discovery run; not fully parsed into this Georgia ledger unless quoted above.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "acs_expat"
+            ],
+            "primary_candidate_id": "acs_expat"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Need policy wording or quote-flow testing to verify whether Georgia is within the selectable or accepted residence geography."
+      ],
+      "georgia_country_coverage_assessment": "inferred",
+      "georgia_country_coverage_rationale": "ACS Expat uses worldwide expatriate cover language plus limited cover outside the selected area, which supports a Georgia inference pending area-of-cover confirmation."
+    },
+    {
+      "index": 24,
+      "candidate_id": "hci_group_health_protect",
+      "insurer_name": "HCI Group",
+      "plan_name": "Health Protect / Protector Plans / Nimbl Health",
+      "candidate_type": "supplemental",
+      "georgia_coverage_status": "georgia_not_named_global_only",
+      "georgia_coverage_summary": "Health Protect is clearly an IPMI product for people living abroad, but Georgia was not named in the captured page text.",
+      "direct_georgia_relevance_evidence": [
+        "HCI says Health Protect serves expatriates, digital nomads, international students, and holiday-home owners living abroad or traveling frequently.",
+        "The page provides plan-benefits PDFs and quote entry points, but the captured content did not expose a Georgia country list or territorial exclusion table."
+      ],
+      "supporting_source_refs": [
+        {
+          "source_url": "https://hcigroupglobal.com/health-protect/",
+          "source_title": "International Healthcare | Healthcare International | HCI Global",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "Health Protect is described as international healthcare for expatriates, digital nomads, international students, and others living abroad.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "hci_group_health_protect"
+            ],
+            "primary_candidate_id": "hci_group_health_protect"
+          }
+        },
+        {
+          "source_url": "https://hcigroup.outgrow.us/P21-2026",
+          "source_title": "HCI quote flow",
+          "source_kind": "official quote page",
+          "evidence_excerpt": "The quote path is public, but no Georgia-specific country-selection evidence was captured in this run.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "hci_group_health_protect"
+            ],
+            "primary_candidate_id": "hci_group_health_protect"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Need quote-flow or PDF review to verify Georgia residence rules."
+      ],
+      "georgia_country_coverage_assessment": "unknown",
+      "georgia_country_coverage_rationale": "The captured evidence shows an international-health product, but not a country list, territory schedule, or worldwide wording strong enough to infer Georgia confidently."
+    },
+    {
+      "index": 25,
+      "candidate_id": "expatriate_group_global_health",
+      "insurer_name": "Expatriate Group",
+      "plan_name": "International Health Insurance / Select / Primary+ / Primary+ Lite / Primary",
+      "candidate_type": "supplemental",
+      "georgia_coverage_status": "georgia_regionally_implied_not_named",
+      "georgia_coverage_summary": "Expatriate Group’s public quote flow clearly defines Area 1, 2, and 3 geography, and Georgia is plausibly within Area 1’s Europe–Middle East–Africa–Asia–Oceania band, but Georgia was not named explicitly.",
+      "direct_georgia_relevance_evidence": [
+        "The quote form lists Area 1 as Europe, Middle East, Africa, Asia and Oceania excluding China, Hong Kong and Singapore, Area 2 as Worldwide excluding the USA, and Area 3 as Worldwide.",
+        "The page also states treatment outside the selected Area of Cover is limited, making the area definition directly relevant to Georgia screening."
+      ],
+      "supporting_source_refs": [
+        {
+          "source_url": "https://quote.expatriatehealthcare.com/healthcare/",
+          "source_title": "Expatriate Group healthcare quote",
+          "source_kind": "official quote page",
+          "evidence_excerpt": "The form offers Area 1 – Europe, Middle East, Africa, Asia and Oceania; Area 2 – Worldwide excluding the USA; and Area 3 – Worldwide.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "expatriate_group_global_health"
+            ],
+            "primary_candidate_id": "expatriate_group_global_health"
+          }
+        },
+        {
+          "source_url": "https://www.expatriatehealthcare.com/international-health-insurance/",
+          "source_title": "International health insurance | Expatriate Group",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "The public international health insurance page repeats the same area-of-cover structure and notes limited cover outside the selected area.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "expatriate_group_global_health"
+            ],
+            "primary_candidate_id": "expatriate_group_global_health"
+          }
+        },
+        {
+          "source_url": "https://www.expatriatehealthcare.com/wp-content/uploads/2016/09/Expatriate-Group-Brochure-International-Insurance-Specialists.pdf",
+          "source_title": "Expatriate Group public brochure or policy PDF",
+          "source_kind": "public pdf link",
+          "evidence_excerpt": "Public PDF link captured in this discovery run; not fully parsed into this Georgia ledger unless quoted above.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "expatriate_group_global_health"
+            ],
+            "primary_candidate_id": "expatriate_group_global_health"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Georgia is inferred as falling within Area 1 geography but was not named directly; plan wording should confirm this."
+      ],
+      "georgia_country_coverage_assessment": "inferred",
+      "georgia_country_coverage_rationale": "The published Area 1 geography explicitly spans Europe, the Middle East, Africa, Asia, and Oceania, so Georgia is reasonably inferable from the territorial definition."
+    },
+    {
+      "index": 26,
+      "candidate_id": "wellaway_expat",
+      "insurer_name": "WellAway",
+      "plan_name": "EXPAT / Gold / Diamond / Expat Plus",
+      "candidate_type": "supplemental",
+      "georgia_coverage_status": "georgia_explicitly_listed",
+      "georgia_coverage_summary": "Wellaway’s EXPAT quote flow explicitly lists Georgia and Germany in country selections.",
+      "direct_georgia_relevance_evidence": [
+        "The public quote Step 1 HTML includes Georgia and Germany in the country list.",
+        "The official EXPAT page positions the plan for individuals, families, and groups living abroad, making the selector evidence directly relevant to this family."
+      ],
+      "supporting_source_refs": [
+        {
+          "source_url": "https://portal.wellaway.com/Quote/EXPAT/Step1",
+          "source_title": "Wellaway EXPAT quote Step 1",
+          "source_kind": "official quote page",
+          "evidence_excerpt": "The country options include Georgia and Germany in the public quote form.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "wellaway_expat"
+            ],
+            "primary_candidate_id": "wellaway_expat"
+          }
+        },
+        {
+          "source_url": "https://www.wellaway.com/en/our-plans/expat/",
+          "source_title": "Expat health insurance plans for living abroad | Wellaway",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "Wellaway markets EXPAT to individuals, families, and groups living abroad and links directly to the quote flow.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "wellaway_expat"
+            ],
+            "primary_candidate_id": "wellaway_expat"
+          }
+        },
+        {
+          "source_url": "https://www.wellaway.com/media/filer_public/31/5d/315d7f0b-9976-4fd2-8b43-ad597fd59b4a/expat-plans-brochure_1292026.pdf",
+          "source_title": "WellAway public brochure or policy PDF",
+          "source_kind": "public pdf link",
+          "evidence_excerpt": "Public PDF link captured in this discovery run; not fully parsed into this Georgia ledger unless quoted above.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "wellaway_expat"
+            ],
+            "primary_candidate_id": "wellaway_expat"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Need completed quote or brochure review to verify whether Georgia residence is fully accepted after underwriting."
+      ],
+      "georgia_country_coverage_assessment": "confirmed",
+      "georgia_country_coverage_rationale": "Georgia is directly confirmed because captured public source language explicitly lists Georgia in an official selector or equivalent insurer-controlled artifact."
+    },
+    {
+      "index": 27,
+      "candidate_id": "securus_global_health_cover",
+      "insurer_name": "Securus International",
+      "plan_name": "Global Health Cover",
+      "candidate_type": "supplemental",
+      "georgia_coverage_status": "georgia_not_named_worldwide_only",
+      "georgia_coverage_summary": "Securus publicly markets global health cover with treatment choice around the world, but Georgia-specific evidence was not captured.",
+      "direct_georgia_relevance_evidence": [
+        "Securus says global health cover lets customers choose who, how, and where they are treated around the world.",
+        "The page links benefit-plan PDFs, but no Georgia-specific country list or exclusion wording was captured in the HTML reviewed here."
+      ],
+      "supporting_source_refs": [
+        {
+          "source_url": "https://www.securus.co.uk/benefits/global-health-cover",
+          "source_title": "Securus global health cover",
+          "source_kind": "official insurer page",
+          "evidence_excerpt": "Securus says global health cover gives access to the best hospitals and doctors around the world and links its 2026 benefit-plan PDFs.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "securus_global_health_cover"
+            ],
+            "primary_candidate_id": "securus_global_health_cover"
+          }
+        },
+        {
+          "source_url": "https://www.securus.co.uk/storage/JZJIi-Securus%20Individual%20&%20Group%20Benefit%20Table%202026%20(USD).pdf",
+          "source_title": "Securus International public brochure or policy PDF",
+          "source_kind": "public pdf link",
+          "evidence_excerpt": "Public PDF link captured in this discovery run; not fully parsed into this Georgia ledger unless quoted above.",
+          "candidate_linkage": {
+            "linkage_basis": "parent_record_candidate_id",
+            "candidate_record_dataset_path": "data/insurance_discovery/georgia_coverage_evidence_ledger.discovery.json",
+            "candidate_record_section": "georgia_coverage_evidence_ledger",
+            "candidate_ids": [
+              "securus_global_health_cover"
+            ],
+            "primary_candidate_id": "securus_global_health_cover"
+          }
+        }
+      ],
+      "uncertainty_notes": [
+        "Need benefit-table or application review to verify whether Georgia is accepted as residence or treatment geography."
+      ],
+      "georgia_country_coverage_assessment": "inferred",
+      "georgia_country_coverage_rationale": "Treatment-choice language around the world is sufficient to infer Georgia at discovery stage, although explicit residence acceptance still needs documentation."
+    }
+  ]
+}
