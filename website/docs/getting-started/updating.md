@@ -113,6 +113,36 @@ A few behaviors are worth knowing before you run `hermes update` on a customized
 
 If you maintain significant local modifications or a fork workflow, verify your remotes and branch state before updating, and check whether any local-only commits on `main` need to be preserved separately.
 
+#### Maintaining a local patch stack
+
+For machines that intentionally carry local fixes on top of upstream, keep those fixes on an explicit branch instead of relying on `main` to remain divergent. Before updating:
+
+```bash
+git fetch origin upstream --prune
+git status --short --branch
+git log --oneline --decorate origin/main..HEAD
+
+git branch backup/local-patches-before-update-$(date +%Y%m%d-%H%M%S) HEAD
+```
+
+Then rebase the patch branch onto the freshly updated upstream main:
+
+```bash
+git switch <local-patch-branch>
+git rebase origin/main
+```
+
+After any update or rebase, audit the result before declaring success:
+
+```bash
+git status --short --branch
+git log --oneline --decorate origin/main..HEAD
+git diff --stat
+git grep -n -E '^(<<<<<<<|>>>>>>>)' -- '*.py' '*.md' '*.yaml' '*.yml' '*.json' || true
+```
+
+If `hermes update` dirties lockfiles via dependency installation, inspect the diff and revert accidental lockfile churn unless dependency changes were intended.
+
 ### Checking your current version
 
 ```bash
