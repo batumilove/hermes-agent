@@ -49,33 +49,35 @@ git log --oneline --decorate origin/main..HEAD
 
 Avoid running `hermes update` blindly from a feature/local patch branch. The built-in updater may switch to `main` and hard-reset it to `origin/main`, dropping local-only commits from `main` history.
 
-Recommended workflow:
+Use the local wrapper instead:
 
 ```bash
 cd ~/.hermes/hermes-agent
+scripts/local-update-with-patches.sh
+```
 
-git fetch origin upstream myfork --prune
+Dry-run what it will do:
 
-git status --short --branch
-git log --oneline --decorate origin/main..HEAD
+```bash
+scripts/local-update-with-patches.sh --dry-run
+```
 
-# Keep an explicit backup ref before moving anything.
-git branch backup/local-patches-before-update-$(date +%Y%m%d-%H%M%S) HEAD
+The wrapper automates the workflow that previously had to be remembered manually:
 
-# Rebase the local patch branch on the new upstream main.
-git switch local/hermes-patch-stack-20260426
-git rebase origin/main
+1. Fetch `origin`, `upstream`, and `myfork` with prune.
+2. Switch to `local/hermes-patch-stack-20260426`.
+3. Create `backup/local-patches-before-update-<timestamp>`.
+4. Rebase on `origin/main`.
+5. Check for conflict markers.
+6. Run targeted patch-stack tests, including `tests/cron/test_cron_context_from.py`.
+7. Restart `hermes-gateway` unless `--no-restart` is passed.
 
-# If conflicts occur, resolve them, then:
+If conflicts occur, resolve them, then:
+
+```bash
 git add <resolved-files>
 git rebase --continue
-
-# Verify after the rebase.
-git status --short --branch
-git log --oneline --decorate origin/main..HEAD
-git grep -n -E '^(<<<<<<<|>>>>>>>)' -- '*.py' '*.md' '*.yaml' '*.yml' '*.json' || true
-source venv/bin/activate
-python -m pytest tests/cron/test_cron_context_from.py tests/tools/test_approval.py tests/hermes_cli/test_update_bundled_scripts.py tests/tools/test_bundled_scripts_sync.py -q -o 'addopts='
+scripts/local-update-with-patches.sh --no-restart
 ```
 
 If you do run `hermes update`, audit immediately afterward:
@@ -95,3 +97,14 @@ Expected cleanup after `hermes update`:
 - Ensure `config/mcporter.json` remains ignored.
 - Re-apply/rebase the local patch stack onto updated upstream before reporting the update done.
 - Restart the gateway after the desired branch/patch stack is checked out.
+
+## Cron `context_from` smoke test
+
+Use the live smoke helper after cron scheduler/tooling changes:
+
+```bash
+cd ~/.hermes/hermes-agent
+scripts/smoke-cron-context-from.py
+```
+
+It creates temporary cron jobs, runs a source job, runs a dependent job with `context_from`, verifies that the dependent prompt includes the source output, then removes the temporary jobs. Use `--help` for options.
