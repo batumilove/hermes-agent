@@ -60,7 +60,9 @@ backup/local-patches-before-update-$(date +%Y%m%d-%H%M%S)
 EOF
 fi
 
-run git fetch origin upstream myfork --prune
+for remote in origin upstream myfork; do
+  run git fetch "$remote" --prune
+done
 run git switch "$PATCH_BRANCH"
 run git status --short --branch
 run git branch "backup/local-patches-before-update-$(date +%Y%m%d-%H%M%S)" HEAD
