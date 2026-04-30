@@ -1441,7 +1441,7 @@ if __name__ == "__main__":
 
 SKILLS_LIST_SCHEMA = {
     "name": "skills_list",
-    "description": "List available skills (name + description). Use skill_view(name) to load full content.",
+    "description": "List available skills (name + description). Use skill_view(name) to load full content. Relevant means directly matching the request, requirements, or chosen execution path; topical adjacency is not enough.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1456,7 +1456,7 @@ SKILLS_LIST_SCHEMA = {
 
 SKILL_VIEW_SCHEMA = {
     "name": "skill_view",
-    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts. To access those, call again with file_path parameter.",
+    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). Relevant means directly matching the request, requirements, or chosen execution path; topical adjacency is not enough. Prefer the most specific matching skill. First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts. To access those, call again with file_path parameter.",
     "parameters": {
         "type": "object",
         "properties": {
