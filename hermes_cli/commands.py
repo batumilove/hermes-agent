@@ -105,6 +105,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("model", "Switch model for this session", "Configuration",
                aliases=("provider",), args_hint="[model] [--provider name] [--global]"),
+    CommandDef("droidmodels", "Configure Factory Droid BYOK/inherit routing", "Configuration",
+               gateway_only=True, aliases=("droid_models", "droid-models")),
     CommandDef("gquota", "Show Google Gemini Code Assist quota usage", "Info",
                cli_only=True),
 
@@ -438,12 +440,19 @@ def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:
     return entries
 
 
+def _requires_argument(args_hint: str) -> bool:
+    """Return True when selecting a command without text would be incomplete."""
+    return args_hint.strip().startswith("<")
+
+
 def telegram_bot_commands() -> list[tuple[str, str]]:
     """Return (command_name, description) pairs for Telegram setMyCommands.
 
     Telegram command names cannot contain hyphens, so they are replaced with
     underscores.  Aliases are skipped -- Telegram shows one menu entry per
-    canonical command.
+    canonical command. Commands that require arguments are skipped because
+    selecting a Telegram BotCommand sends only ``/command`` and would execute
+    an incomplete command.
 
     Plugin-registered slash commands are included so plugins get native
     autocomplete in Telegram without touching core code.
@@ -453,10 +462,14 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
+        if _requires_argument(cmd.args_hint):
+            continue
         tg_name = _sanitize_telegram_name(cmd.name)
         if tg_name:
             result.append((tg_name, cmd.description))
-    for name, description, _args_hint in _iter_plugin_command_entries():
+    for name, description, args_hint in _iter_plugin_command_entries():
+        if _requires_argument(args_hint):
+            continue
         tg_name = _sanitize_telegram_name(name)
         if tg_name:
             result.append((tg_name, description))
