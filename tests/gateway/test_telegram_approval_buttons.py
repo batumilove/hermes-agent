@@ -140,6 +140,32 @@ class TestTelegramExecApproval:
         kwargs = adapter._bot.send_message.call_args[1]
         assert kwargs.get("message_thread_id") == 999
 
+
+    @pytest.mark.asyncio
+    async def test_retries_without_thread_when_thread_missing(self):
+        adapter = _make_adapter()
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 42
+        adapter._bot.send_message = AsyncMock(
+            side_effect=[Exception("Message thread not found"), mock_msg]
+        )
+
+        result = await adapter.send_exec_approval(
+            chat_id="12345",
+            command="rm -rf /important",
+            session_key="s",
+            metadata={"thread_id": "999"},
+        )
+
+        assert result.success is True
+        assert result.message_id == "42"
+        assert adapter._bot.send_message.await_count == 2
+        first_kwargs = adapter._bot.send_message.await_args_list[0].kwargs
+        second_kwargs = adapter._bot.send_message.await_args_list[1].kwargs
+        assert first_kwargs["message_thread_id"] == 999
+        assert "message_thread_id" not in second_kwargs
+
     @pytest.mark.asyncio
     async def test_not_connected(self):
         adapter = _make_adapter()

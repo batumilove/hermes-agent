@@ -1566,7 +1566,19 @@ class TelegramAdapter(BasePlatformAdapter):
             if message_thread_id is not None:
                 kwargs["message_thread_id"] = message_thread_id
 
-            msg = await self._bot.send_message(**kwargs)
+            try:
+                msg = await self._bot.send_message(**kwargs)
+            except Exception as send_err:
+                if self._is_thread_not_found_error(send_err) and "message_thread_id" in kwargs:
+                    logger.warning(
+                        "[%s] Thread %s not found for exec approval, retrying without message_thread_id",
+                        self.name,
+                        kwargs.get("message_thread_id"),
+                    )
+                    kwargs.pop("message_thread_id", None)
+                    msg = await self._bot.send_message(**kwargs)
+                else:
+                    raise
 
             # Store session_key keyed by approval_id for the callback handler
             self._approval_state[approval_id] = session_key
