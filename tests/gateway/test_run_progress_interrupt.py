@@ -36,15 +36,15 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         return None
 
     async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
-        self.sent.append({"chat_id": chat_id, "content": content})
+        self.sent.append({"chat_id": chat_id, "content": content, "metadata": metadata})
         return SendResult(success=True, message_id="progress-1")
 
-    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+    async def edit_message(self, chat_id, message_id, content, *, finalize=False) -> SendResult:
         self.edits.append({"message_id": message_id, "content": content})
         return SendResult(success=True, message_id=message_id)
 
     async def send_typing(self, chat_id, metadata=None) -> None:
-        self.typing.append(chat_id)
+        self.typing.append({"chat_id": chat_id, "metadata": metadata})
 
     async def stop_typing(self, chat_id) -> None:
         return None
@@ -131,7 +131,7 @@ def _make_runner(adapter):
     return runner
 
 
-async def _run_once(monkeypatch, tmp_path, agent_cls, session_id):
+async def _run_once(monkeypatch, tmp_path, agent_cls, session_id, platform=Platform.TELEGRAM):
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 
     fake_dotenv = types.ModuleType("dotenv")
@@ -142,7 +142,7 @@ async def _run_once(monkeypatch, tmp_path, agent_cls, session_id):
     fake_run_agent.AIAgent = agent_cls
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
-    adapter = ProgressCaptureAdapter()
+    adapter = ProgressCaptureAdapter(platform=platform)
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
@@ -152,7 +152,7 @@ async def _run_once(monkeypatch, tmp_path, agent_cls, session_id):
         lambda: {"api_key": "fake"},
     )
     source = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=platform,
         chat_id="-1001",
         chat_type="group",
         thread_id="17585",
@@ -213,3 +213,45 @@ async def test_progress_suppressed_when_agent_is_interrupted(monkeypatch, tmp_pa
             f"event '{leaked_query}' leaked into the UI after interrupt — "
             f"progress_callback / drain loop is not checking is_interrupted"
         )
+
+
+@pytest.mark.asyncio
+async def test_telegram_tool_progress_suppresses_root_fallback_metadata(monkeypatch, tmp_path):
+    """Telegram tool-progress sends must not fall back into All Messages.
+
+    Final replies may retry without message_thread_id so the user still sees a
+    result when Telegram reports a dead private topic. Tool/progress/status
+    bubbles are different: if they fall back, they become visible only in the
+    main chat while the active topic view stays stale. Mark their metadata so
+    the Telegram adapter can fail quietly instead of rerouting progress to root.
+    """
+    adapter, result = await _run_once(
+        monkeypatch,
+        tmp_path,
+        PreInterruptAgent,
+        "sess-telegram-progress-thread-metadata",
+        platform=Platform.TELEGRAM,
+    )
+    assert result["final_response"] == "done"
+    assert adapter.sent, "baseline tool-progress should send at least one bubble"
+
+    first_meta = adapter.sent[0]["metadata"]
+    assert first_meta == {
+        "thread_id": "17585",
+        "suppress_thread_fallback": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_non_telegram_tool_progress_keeps_plain_thread_metadata(monkeypatch, tmp_path):
+    """The Telegram-only fallback flag must not leak to other platforms."""
+    adapter, result = await _run_once(
+        monkeypatch,
+        tmp_path,
+        PreInterruptAgent,
+        "sess-discord-progress-thread-metadata",
+        platform=Platform.DISCORD,
+    )
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    assert adapter.sent[0]["metadata"] == {"thread_id": "17585"}

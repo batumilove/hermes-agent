@@ -13401,7 +13401,24 @@ class GatewayRunner:
             _progress_thread_id = source.thread_id or event_message_id
         else:
             _progress_thread_id = source.thread_id
-        _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        # Tool/progress/status bubbles are part of the active UI for this
+        # turn.  In Telegram private-topic mode, falling back to the main
+        # DM when Telegram rejects a thread makes tool calls appear only in
+        # All Messages while the actual topic view stays silent/stale.  The
+        # final answer and approval prompts may still fall back so the user
+        # gets a visible failure/safety path, but progress should either
+        # stay in the topic or stay quiet.
+        if source.platform == Platform.TELEGRAM:
+            _progress_metadata = (
+                {
+                    "thread_id": _progress_thread_id,
+                    "suppress_thread_fallback": True,
+                }
+                if _progress_thread_id
+                else None
+            )
+        else:
+            _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
         _progress_reply_to = (
             event_message_id
             if source.platform == Platform.FEISHU and source.thread_id and event_message_id
@@ -13661,7 +13678,15 @@ class GatewayRunner:
                 "reply_to_message_id": event_message_id,
             }
         else:
-            _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+            _status_thread_metadata = dict(_progress_metadata) if _progress_metadata else None
+            if source.platform == Platform.TELEGRAM and event_message_id:
+                # Telegram private-topic sends can reject stale message_thread_id
+                # while still accepting reply_to_message_id as an in-view anchor.
+                # Approval/status paths only receive metadata, so carry the
+                # triggering message id for platform senders that can use it.
+                if _status_thread_metadata is None:
+                    _status_thread_metadata = {}
+                _status_thread_metadata["reply_to_message_id"] = event_message_id
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
@@ -14120,10 +14145,18 @@ class GatewayRunner:
                     f"for the session, `/approve always` to approve permanently, or `/deny` to cancel."
                 )
                 try:
+                    _fallback_reply_to = (
+                        event_message_id
+                        if source.platform in (Platform.TELEGRAM, Platform.FEISHU)
+                        and source.thread_id
+                        and event_message_id
+                        else None
+                    )
                     asyncio.run_coroutine_threadsafe(
                         _status_adapter.send(
                             _status_chat_id,
                             msg,
+                            reply_to=_fallback_reply_to,
                             metadata=_status_thread_metadata,
                         ),
                         _loop_for_step,

@@ -132,6 +132,67 @@ def test_forum_general_topic_without_message_thread_id_keeps_thread_context():
     assert event.source.thread_id == "1"
 
 
+def test_unknown_private_chat_thread_preserves_thread_context():
+    """Replies from old Telegram private topic views should answer in-thread."""
+    adapter = _make_adapter()
+    message = SimpleNamespace(
+        text="continue in an old topic view",
+        caption=None,
+        chat=SimpleNamespace(
+            id=407304892,
+            type="private",
+            title=None,
+            full_name="Aleman",
+        ),
+        from_user=SimpleNamespace(id=407304892, full_name="Aleman"),
+        message_thread_id=62120,
+        forum_topic_created=None,
+        reply_to_message=None,
+        message_id=20,
+        date=None,
+    )
+
+    event = adapter._build_message_event(message, msg_type=SimpleNamespace(value="text"))
+
+    assert event.source.chat_id == "407304892"
+    assert event.source.chat_type == "dm"
+    assert event.source.thread_id == "62120"
+
+
+def test_known_private_chat_topic_keeps_thread_context_and_skill():
+    """Configured Telegram private topics still get isolated topic sessions."""
+    adapter = _make_adapter()
+    adapter._dm_topics = {"407304892:Finance": 62360}
+    adapter._dm_topics_config = [
+        {
+            "chat_id": "407304892",
+            "topics": [{"name": "Finance", "thread_id": 62360, "skill": "finance"}],
+        }
+    ]
+    message = SimpleNamespace(
+        text="topic-specific question",
+        caption=None,
+        chat=SimpleNamespace(
+            id=407304892,
+            type="private",
+            title=None,
+            full_name="Aleman",
+        ),
+        from_user=SimpleNamespace(id=407304892, full_name="Aleman"),
+        message_thread_id=62360,
+        forum_topic_created=None,
+        reply_to_message=None,
+        message_id=21,
+        date=None,
+    )
+
+    event = adapter._build_message_event(message, msg_type=SimpleNamespace(value="text"))
+
+    assert event.source.thread_id == "62360"
+    assert event.source.chat_topic == "Finance"
+    assert event.auto_skill == "finance"
+
+
 @pytest.mark.asyncio
 async def test_send_omits_general_topic_thread_id():
     """Telegram sends to forum General should omit message_thread_id=1."""
@@ -381,3 +442,89 @@ async def test_send_retries_retry_after_errors():
     assert result.success is True
     assert result.message_id == "300"
     assert attempt[0] == 2
+
+
+@pytest.mark.asyncio
+async def test_send_can_suppress_thread_not_found_fallback():
+    """Tool-progress callers can prevent invalid DM topic sends leaking to root."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        raise FakeBadRequest("Message thread not found")
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="123",
+        content="progress bubble",
+        metadata={"thread_id": "99999", "suppress_thread_fallback": True},
+    )
+
+    assert result.success is False
+    assert "Message thread not found" in result.error
+    assert len(call_log) == 1
+    assert call_log[0]["message_thread_id"] == 99999
+
+
+@pytest.mark.asyncio
+async def test_send_tries_reply_anchor_before_main_chat_thread_fallback():
+    """Final replies in stale DM topics should try reply-only before root fallback."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        if kwargs.get("message_thread_id") is not None:
+            raise FakeBadRequest("Message thread not found")
+        return SimpleNamespace(message_id=42)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="123",
+        content="final reply",
+        reply_to="777",
+        metadata={"thread_id": "99999"},
+    )
+
+    assert result.success is True
+    assert result.message_id == "42"
+    assert len(call_log) == 2
+    assert call_log[0]["message_thread_id"] == 99999
+    assert call_log[0]["reply_to_message_id"] == 777
+    assert call_log[1]["message_thread_id"] is None
+    assert call_log[1]["reply_to_message_id"] == 777
+
+
+@pytest.mark.asyncio
+async def test_send_suppressed_thread_fallback_still_tries_reply_only_once():
+    """Progress callers with reply anchors may try reply-only but never root-only."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        if kwargs.get("message_thread_id") is not None:
+            raise FakeBadRequest("Message thread not found")
+        if kwargs.get("reply_to_message_id") is not None:
+            raise FakeBadRequest("Message to be replied not found")
+        return SimpleNamespace(message_id=42)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="123",
+        content="progress bubble",
+        reply_to="777",
+        metadata={"thread_id": "99999", "suppress_thread_fallback": True},
+    )
+
+    assert result.success is False
+    assert "Message to be replied not found" in result.error
+    assert len(call_log) == 2
+    assert call_log[0]["message_thread_id"] == 99999
+    assert call_log[0]["reply_to_message_id"] == 777
+    assert call_log[1]["message_thread_id"] is None
+    assert call_log[1]["reply_to_message_id"] == 777

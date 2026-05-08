@@ -1241,6 +1241,13 @@ class TelegramAdapter(BasePlatformAdapter):
             
             message_ids = []
             thread_id = self._metadata_thread_id(metadata)
+            suppress_thread_fallback = bool(
+                metadata
+                and (
+                    metadata.get("suppress_thread_fallback")
+                    or metadata.get("no_thread_fallback")
+                )
+            )
             
             try:
                 from telegram.error import NetworkError as _NetErr
@@ -1263,6 +1270,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 effective_thread_id = self._message_thread_id_for_send(thread_id)
 
                 msg = None
+                tried_reply_only_after_thread_fallback = False
                 for _send_attempt in range(3):
                     try:
                         # Try Markdown first, fall back to plain text if it fails
@@ -1298,9 +1306,28 @@ class TelegramAdapter(BasePlatformAdapter):
                         # specific cases instead of blindly retrying.
                         if _BadReq and isinstance(send_err, _BadReq):
                             if self._is_thread_not_found_error(send_err) and effective_thread_id is not None:
-                                # Thread doesn't exist — retry without
-                                # message_thread_id so the message still
-                                # reaches the chat.
+                                if reply_to_id is not None:
+                                    # Telegram private-chat topics can reject stale
+                                    # message_thread_id values while still allowing
+                                    # an in-view reply anchor to keep the response
+                                    # inside the same topic.  Try reply-only before
+                                    # falling back to the DM root.
+                                    logger.warning(
+                                        "[%s] Thread %s not found, retrying with reply_to only before main-chat fallback",
+                                        self.name, effective_thread_id,
+                                    )
+                                    tried_reply_only_after_thread_fallback = True
+                                    effective_thread_id = None
+                                    continue
+                                if suppress_thread_fallback:
+                                    logger.warning(
+                                        "[%s] Thread %s not found, suppressing fallback to main chat",
+                                        self.name, effective_thread_id,
+                                    )
+                                    raise
+                                # Thread doesn't exist and we have no reply
+                                # anchor — retry without message_thread_id so
+                                # critical replies still reach the chat.
                                 logger.warning(
                                     "[%s] Thread %s not found, retrying without message_thread_id",
                                     self.name, effective_thread_id,
@@ -1309,6 +1336,12 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                             err_lower = str(send_err).lower()
                             if "message to be replied not found" in err_lower and reply_to_id is not None:
+                                if suppress_thread_fallback and tried_reply_only_after_thread_fallback:
+                                    logger.warning(
+                                        "[%s] Reply target missing after thread fallback; suppressing main-chat fallback",
+                                        self.name,
+                                    )
+                                    raise
                                 # Original message was deleted before we
                                 # could reply — clear reply target and retry
                                 # so the response is still delivered.
@@ -1533,8 +1566,24 @@ class TelegramAdapter(BasePlatformAdapter):
                 f"Reason: {_html.escape(description)}"
             )
 
-            # Resolve thread context for thread replies
+            # Resolve thread/reply context for topic replies.  Telegram private
+            # topics sometimes reject stale message_thread_id values but still
+            # keep a message in the topic when it replies to the triggering
+            # message.
             thread_id = self._metadata_thread_id(metadata)
+            reply_to_id = None
+            if metadata and metadata.get("reply_to_message_id") is not None:
+                try:
+                    reply_to_id = int(metadata.get("reply_to_message_id"))
+                except (TypeError, ValueError):
+                    reply_to_id = None
+            suppress_thread_fallback = bool(
+                metadata
+                and (
+                    metadata.get("suppress_thread_fallback")
+                    or metadata.get("no_thread_fallback")
+                )
+            )
 
             # We'll use the message_id as part of callback_data to look up session_key
             # Send a placeholder first, then update — or use a counter.
@@ -1563,6 +1612,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 **self._link_preview_kwargs(),
             }
             message_thread_id = self._message_thread_id_for_send(thread_id)
+            if reply_to_id is not None:
+                kwargs["reply_to_message_id"] = reply_to_id
             if message_thread_id is not None:
                 kwargs["message_thread_id"] = message_thread_id
 
@@ -1570,11 +1621,25 @@ class TelegramAdapter(BasePlatformAdapter):
                 msg = await self._bot.send_message(**kwargs)
             except Exception as send_err:
                 if self._is_thread_not_found_error(send_err) and "message_thread_id" in kwargs:
-                    logger.warning(
-                        "[%s] Thread %s not found for exec approval, retrying without message_thread_id",
-                        self.name,
-                        kwargs.get("message_thread_id"),
-                    )
+                    if suppress_thread_fallback:
+                        logger.warning(
+                            "[%s] Thread %s not found for exec approval, suppressing fallback to main chat",
+                            self.name,
+                            kwargs.get("message_thread_id"),
+                        )
+                        raise
+                    if reply_to_id is not None:
+                        logger.warning(
+                            "[%s] Thread %s not found for exec approval, retrying with reply_to only before main-chat fallback",
+                            self.name,
+                            kwargs.get("message_thread_id"),
+                        )
+                    else:
+                        logger.warning(
+                            "[%s] Thread %s not found for exec approval, retrying without message_thread_id",
+                            self.name,
+                            kwargs.get("message_thread_id"),
+                        )
                     kwargs.pop("message_thread_id", None)
                     msg = await self._bot.send_message(**kwargs)
                 else:
@@ -3944,7 +4009,11 @@ class TelegramAdapter(BasePlatformAdapter):
         elif chat.type == ChatType.CHANNEL:
             chat_type = "channel"
 
-        # Resolve DM topic name and skill binding
+        # Resolve DM topic name and skill binding. Telegram private-chat topics
+        # also expose ``message_thread_id``; preserve it so replies typed inside
+        # an old topic/thread view are answered in that same view.  Outbound
+        # approval/text sends handle deleted topics by retrying without
+        # ``message_thread_id`` only when Telegram rejects the thread.
         thread_id_raw = message.message_thread_id
         thread_id_str = str(thread_id_raw) if thread_id_raw is not None else None
         if chat_type == "group" and thread_id_str is None and getattr(chat, "is_forum", False):
