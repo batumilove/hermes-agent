@@ -25,14 +25,28 @@ This pulls the latest code, updates dependencies, and prompts you to configure a
 When you run `hermes update`, the following steps occur:
 
 1. **Pairing-data snapshot** — a lightweight pre-update state snapshot is saved (covers `~/.hermes/pairing/`, Feishu comment rules, and other state files that get modified at runtime). Rollbackable via `hermes backup restore --state pre-update`.
-2. **Git pull** — pulls the latest code from the `main` branch and updates submodules
+2. **Git pull** — pulls the latest code from the current branch's configured upstream (for example `origin/main` or your fork's deploy branch)
 3. **Dependency install** — runs `uv pip install -e ".[all]"` to pick up new or changed dependencies
 4. **Config migration** — detects new config options added since your version and prompts you to set them
 5. **Gateway auto-restart** — running gateways are refreshed after the update completes so the new code takes effect immediately. Service-managed gateways (systemd on Linux, launchd on macOS) are restarted through the service manager. Manual gateways are relaunched automatically when Hermes can map the running PID back to a profile.
 
 ### Preview-only: `hermes update --check`
 
-Want to know if you're behind `origin/main` before actually pulling? Run `hermes update --check` — it fetches, prints your local commit and the latest remote commit side-by-side, and exits `0` if in sync or `1` if behind. No files are modified, no gateway is restarted. Useful in scripts and cron jobs that gate on "is there an update".
+Want to know if you're behind your configured update source before actually pulling? Run `hermes update --check` — it fetches, prints your local commit and the latest remote commit side-by-side, and exits `0` if in sync or `1` if behind. No files are modified, no gateway is restarted. Useful in scripts and cron jobs that gate on "is there an update".
+
+### Updating from a fork or private patch branch
+
+`hermes update` respects the current branch's Git upstream. If you keep local patches in a fork, put both installations on the same branch and set that branch's upstream once:
+
+```bash
+cd ~/.hermes/hermes-agent
+git remote set-url origin git@github.com:YOURNAME/hermes-agent.git
+git fetch origin
+git checkout -B batumi/live origin/batumi/live
+git branch --set-upstream-to=origin/batumi/live batumi/live
+```
+
+After that, `hermes update` on that installation fetches and pulls `origin batumi/live`; it does not silently switch back to `origin/main` or merge `upstream/main` into the deploy branch. Keep the deploy branch up to date by merging or rebasing upstream in your fork, then push once and run `hermes update` on each instance.
 
 ### Full pre-update backup: `--backup`
 

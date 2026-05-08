@@ -9,11 +9,19 @@ import pytest
 from hermes_cli.main import cmd_update, PROJECT_ROOT
 
 
-def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
+def _make_run_side_effect(
+    branch="main", verify_ok=True, commit_count="0", tracking_ref="origin/main"
+):
     """Build a side_effect function for subprocess.run that simulates git commands."""
 
     def side_effect(cmd, **kwargs):
         joined = " ".join(str(c) for c in cmd)
+
+        # git rev-parse --abbrev-ref --symbolic-full-name @{u} (upstream ref)
+        if "rev-parse" in joined and "@{u}" in joined:
+            if tracking_ref:
+                return subprocess.CompletedProcess(cmd, 0, stdout=f"{tracking_ref}\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="")
 
         # git rev-parse --abbrev-ref HEAD  (get current branch)
         if "rev-parse" in joined and "--abbrev-ref" in joined:
@@ -48,7 +56,7 @@ class TestCmdUpdateBranchFallback:
         self, mock_run, _mock_which, mock_args, capsys
     ):
         mock_run.side_effect = _make_run_side_effect(
-            branch="fix/stoicneko", verify_ok=False, commit_count="3"
+            branch="fix/stoicneko", verify_ok=False, commit_count="3", tracking_ref=None
         )
 
         cmd_update(mock_args)
@@ -85,7 +93,38 @@ class TestCmdUpdateBranchFallback:
 
         pull_cmds = [c for c in commands if "pull" in c]
         assert len(pull_cmds) == 1
-        assert "main" in pull_cmds[0]
+        assert "origin main" in pull_cmds[0]
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_respects_configured_fork_tracking_branch(
+        self, mock_run, _mock_which, mock_args, capsys
+    ):
+        mock_run.side_effect = _make_run_side_effect(
+            branch="batumi/live",
+            tracking_ref="origin/batumi/live",
+            commit_count="2",
+        )
+
+        cmd_update(mock_args)
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+
+        fetch_cmds = [c for c in commands if c.startswith("git fetch")]
+        assert fetch_cmds == ["git fetch origin"]
+
+        rev_list_cmds = [c for c in commands if "rev-list" in c]
+        assert len(rev_list_cmds) == 1
+        assert "HEAD..origin/batumi/live" in rev_list_cmds[0]
+        assert "origin/main" not in rev_list_cmds[0]
+
+        pull_cmds = [c for c in commands if "pull" in c]
+        assert len(pull_cmds) == 1
+        assert "origin batumi/live" in pull_cmds[0]
+
+        # Custom fork branches must not be implicitly synced from upstream/main.
+        assert all("fetch upstream" not in c for c in commands)
+        assert all("pull --ff-only upstream main" not in c for c in commands)
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")

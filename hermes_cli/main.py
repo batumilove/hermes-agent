@@ -6237,6 +6237,69 @@ def _count_commits_between(git_cmd: list[str], cwd: Path, base: str, head: str) 
     return -1
 
 
+def _get_tracking_ref(git_cmd: list[str], cwd: Path) -> Optional[str]:
+    """Return the current branch's upstream ref, e.g. ``origin/main``.
+
+    ``hermes update`` must respect user-controlled deploy branches. A forked
+    install may intentionally track ``myfork/batumi/live``; treating every
+    update as ``origin/main`` would drop those patches. Detached HEAD or
+    branches without an upstream return ``None`` and use the legacy main path.
+    """
+    try:
+        result = subprocess.run(
+            git_cmd + ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            ref = result.stdout.strip()
+            if ref and ref != "@{u}" and "/" in ref:
+                return ref
+    except Exception:
+        pass
+    return None
+
+
+def _split_remote_ref(ref: str) -> tuple[str, str] | None:
+    """Split ``remote/branch`` while preserving slash-containing branch names."""
+    remote, sep, branch = ref.partition("/")
+    if remote and sep and branch:
+        return remote, branch
+    return None
+
+
+def _resolve_update_target(
+    git_cmd: list[str], cwd: Path, current_branch: str
+) -> dict[str, str | bool]:
+    """Resolve the git remote/branch that ``hermes update`` should use.
+
+    Preferred path: use the current branch's configured upstream. This makes
+    fork/deploy branches first-class and keeps ``hermes update`` pointed at the
+    same source of truth as ``git pull``. Legacy fallback remains ``origin/main``
+    when detached or no upstream is configured.
+    """
+    if current_branch != "HEAD":
+        tracking_ref = _get_tracking_ref(git_cmd, cwd)
+        if tracking_ref:
+            split = _split_remote_ref(tracking_ref)
+            if split:
+                remote, branch = split
+                return {
+                    "remote": remote,
+                    "branch": branch,
+                    "remote_ref": tracking_ref,
+                    "uses_tracking": True,
+                }
+
+    return {
+        "remote": "origin",
+        "branch": "main",
+        "remote_ref": "origin/main",
+        "uses_tracking": False,
+    }
+
+
 def _should_skip_upstream_prompt() -> bool:
     """Check if user previously declined to add upstream."""
     from hermes_constants import get_hermes_home
@@ -6762,28 +6825,25 @@ def _cmd_update_check():
     if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
-    # Fetch both origin and upstream; prefer upstream as the canonical reference
-    print("→ Fetching from upstream...")
+    current_branch_result = subprocess.run(
+        git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    current_branch = current_branch_result.stdout.strip()
+    target = _resolve_update_target(git_cmd, PROJECT_ROOT, current_branch)
+    remote = str(target["remote"])
+    compare_branch = str(target["remote_ref"])
+
+    print(f"→ Fetching from {remote}...")
     fetch_result = subprocess.run(
-        git_cmd + ["fetch", "upstream"],
+        git_cmd + ["fetch", remote],
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
     )
-    if fetch_result.returncode != 0:
-        # Fallback to origin if upstream doesn't exist
-        print("→ Fetching from origin...")
-        fetch_result = subprocess.run(
-            git_cmd + ["fetch", "origin"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-        )
-        upstream_exists = False
-        compare_branch = "origin/main"
-    else:
-        upstream_exists = True
-        compare_branch = "upstream/main"
 
     if fetch_result.returncode != 0:
         stderr = fetch_result.stderr.strip()
@@ -6792,7 +6852,7 @@ def _cmd_update_check():
         elif "Authentication failed" in stderr or "could not read Username" in stderr:
             print("✗ Authentication failed — check your git credentials or SSH key.")
         else:
-            print("✗ Failed to fetch.")
+            print(f"✗ Failed to fetch from {remote}.")
             if stderr:
                 print(f"  {stderr.splitlines()[0]}")
         sys.exit(1)
@@ -7102,9 +7162,28 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # Fetch and pull
     try:
 
+        # Get current branch (returns literal "HEAD" when detached)
+        result = subprocess.run(
+            git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        current_branch = result.stdout.strip()
+
+        # Resolve the update target before fetching so a branch that tracks a
+        # non-origin remote (for example myfork/batumi/live) fetches the right
+        # remote instead of always fetching origin/main.
+        target = _resolve_update_target(git_cmd, PROJECT_ROOT, current_branch)
+        remote = str(target["remote"])
+        branch = str(target["branch"])
+        remote_ref = str(target["remote_ref"])
+        uses_tracking = bool(target["uses_tracking"])
+
         print("→ Fetching updates...")
         fetch_result = subprocess.run(
-            git_cmd + ["fetch", "origin"],
+            git_cmd + ["fetch", remote],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -7121,43 +7200,21 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     "✗ Authentication failed — check your git credentials or SSH key."
                 )
             else:
-                print(f"✗ Failed to fetch updates from origin.")
+                print(f"✗ Failed to fetch updates from {remote}.")
                 if stderr:
                     print(f"  {stderr.splitlines()[0]}")
             sys.exit(1)
 
-        # Get current branch (returns literal "HEAD" when detached)
-        result = subprocess.run(
-            git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        current_branch = result.stdout.strip()
-
-        # Always update against main
-        branch = "main"
-
-        # If user is on a non-main branch or detached HEAD, switch to main
-        if current_branch != "main":
-            label = (
-                "detached HEAD"
-                if current_branch == "HEAD"
-                else f"branch '{current_branch}'"
+        auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+        if uses_tracking:
+            print(f"  → Updating from configured upstream: {remote_ref}")
+        elif current_branch == "HEAD":
+            print("  ⚠ Detached HEAD — using fallback update target origin/main")
+        elif current_branch != "main":
+            print(
+                f"  ⚠ Branch '{current_branch}' has no configured upstream — "
+                "using fallback update target origin/main"
             )
-            print(f"  ⚠ Currently on {label} — switching to main for update...")
-            # Stash before checkout so uncommitted work isn't lost
-            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
-            subprocess.run(
-                git_cmd + ["checkout", "main"],
-                cwd=PROJECT_ROOT,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-        else:
-            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
 
         prompt_for_restore = (
             auto_stash_ref is not None
@@ -7167,7 +7224,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         # Check if there are updates
         result = subprocess.run(
-            git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
+            git_cmd + ["rev-list", f"HEAD..{remote_ref}", "--count"],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -7186,9 +7243,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     prompt_user=prompt_for_restore,
                     input_fn=gw_input_fn,
                 )
-            if current_branch not in ("main", "HEAD"):
+            if current_branch == "HEAD":
                 subprocess.run(
-                    git_cmd + ["checkout", current_branch],
+                    git_cmd + ["checkout", "main"],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
                     text=True,
@@ -7219,7 +7276,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         update_succeeded = False
         try:
             pull_result = subprocess.run(
-                git_cmd + ["pull", "--ff-only", "origin", branch],
+                git_cmd + ["pull", "--ff-only", remote, branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
@@ -7232,17 +7289,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
                 )
                 reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
+                    git_cmd + ["reset", "--hard", remote_ref],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
                     text=True,
                 )
                 if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
+                    print(f"✗ Failed to reset to {remote_ref}.")
                     if reset_result.stderr.strip():
                         print(f"  {reset_result.stderr.strip()}")
                     print(
-                        "  Try manually: git fetch origin && git reset --hard origin/main"
+                        f"  Try manually: git fetch {remote} && git reset --hard {remote_ref}"
                     )
                     sys.exit(1)
             update_succeeded = True
@@ -7275,8 +7332,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
             )
 
-        # Fork upstream sync logic (only for main branch on forks)
-        if is_fork and branch == "main":
+        # Legacy fork/main upstream sync logic only applies when the resolved
+        # update target is origin/main. Custom deploy branches such as
+        # myfork/batumi/live intentionally carry fork-only patches; never pull
+        # upstream/main into those branches implicitly.
+        if is_fork and remote == "origin" and branch == "main":
             _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
 
         # Reinstall Python dependencies. Prefer .[all], but if one optional extra

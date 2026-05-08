@@ -54,6 +54,10 @@ def _make_run_side_effect(
     def side_effect(cmd, **kwargs):
         joined = " ".join(str(c) for c in cmd)
 
+        # git rev-parse --abbrev-ref --symbolic-full-name @{u}
+        if "rev-parse" in joined and "@{u}" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="origin/main\n", stderr="")
+
         # git rev-parse --abbrev-ref HEAD
         if "rev-parse" in joined and "--abbrev-ref" in joined:
             return subprocess.CompletedProcess(cmd, 0, stdout=f"{branch}\n", stderr="")
