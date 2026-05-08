@@ -132,6 +132,67 @@ def test_forum_general_topic_without_message_thread_id_keeps_thread_context():
     assert event.source.thread_id == "1"
 
 
+def test_unknown_private_chat_thread_routes_to_main_dm_session():
+    """Replies from stale Telegram private topics should continue the main DM."""
+    adapter = _make_adapter()
+    message = SimpleNamespace(
+        text="continue in an old topic view",
+        caption=None,
+        chat=SimpleNamespace(
+            id=407304892,
+            type="private",
+            title=None,
+            full_name="Aleman",
+        ),
+        from_user=SimpleNamespace(id=407304892, full_name="Aleman"),
+        message_thread_id=62120,
+        forum_topic_created=None,
+        reply_to_message=None,
+        message_id=20,
+        date=None,
+    )
+
+    event = adapter._build_message_event(message, msg_type=SimpleNamespace(value="text"))
+
+    assert event.source.chat_id == "407304892"
+    assert event.source.chat_type == "dm"
+    assert event.source.thread_id is None
+
+
+def test_known_private_chat_topic_keeps_thread_context_and_skill():
+    """Configured Telegram private topics still get isolated topic sessions."""
+    adapter = _make_adapter()
+    adapter._dm_topics = {"407304892:Finance": 62360}
+    adapter._dm_topics_config = [
+        {
+            "chat_id": "407304892",
+            "topics": [{"name": "Finance", "thread_id": 62360, "skill": "finance"}],
+        }
+    ]
+    message = SimpleNamespace(
+        text="topic-specific question",
+        caption=None,
+        chat=SimpleNamespace(
+            id=407304892,
+            type="private",
+            title=None,
+            full_name="Aleman",
+        ),
+        from_user=SimpleNamespace(id=407304892, full_name="Aleman"),
+        message_thread_id=62360,
+        forum_topic_created=None,
+        reply_to_message=None,
+        message_id=21,
+        date=None,
+    )
+
+    event = adapter._build_message_event(message, msg_type=SimpleNamespace(value="text"))
+
+    assert event.source.thread_id == "62360"
+    assert event.source.chat_topic == "Finance"
+    assert event.auto_skill == "finance"
+
+
 @pytest.mark.asyncio
 async def test_send_omits_general_topic_thread_id():
     """Telegram sends to forum General should omit message_thread_id=1."""

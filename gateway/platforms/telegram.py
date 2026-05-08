@@ -3944,7 +3944,15 @@ class TelegramAdapter(BasePlatformAdapter):
         elif chat.type == ChatType.CHANNEL:
             chat_type = "channel"
 
-        # Resolve DM topic name and skill binding
+        # Resolve DM topic name and skill binding.  Telegram Bot API 9.4
+        # exposes ``message_thread_id`` on private-chat topic messages too, but
+        # clients can leave old/deleted private topics visible.  Replies typed
+        # in those stale topic views arrive with a non-existent thread id; if
+        # we keep it, Hermes creates an isolated ``dm:<chat>:<thread>`` session
+        # and every outbound send has to fall back from ``Message thread not
+        # found``.  Only preserve DM thread ids that map to a configured/known
+        # DM topic or a topic-creation service message; otherwise collapse to
+        # the normal DM lane so old threads continue the main conversation.
         thread_id_raw = message.message_thread_id
         thread_id_str = str(thread_id_raw) if thread_id_raw is not None else None
         if chat_type == "group" and thread_id_str is None and getattr(chat, "is_forum", False):
@@ -3954,17 +3962,25 @@ class TelegramAdapter(BasePlatformAdapter):
 
         if chat_type == "dm" and thread_id_str:
             topic_info = self._get_dm_topic_info(str(chat.id), thread_id_str)
+            is_topic_created = bool(getattr(message, "forum_topic_created", None))
             if topic_info:
                 chat_topic = topic_info.get("name")
                 topic_skill = topic_info.get("skill")
+            elif not is_topic_created:
+                logger.info(
+                    "[%s] Ignoring unknown Telegram DM thread_id=%s for chat %s; routing to main DM session",
+                    self.name, thread_id_str, chat.id,
+                )
+                thread_id_str = None
 
             # Also check forum_topic_created service message for topic discovery
-            if hasattr(message, "forum_topic_created") and message.forum_topic_created:
+            if is_topic_created:
                 created_name = message.forum_topic_created.name
                 if created_name:
-                    self._cache_dm_topic_from_message(str(chat.id), thread_id_str, created_name)
+                    self._cache_dm_topic_from_message(str(chat.id), str(thread_id_raw), created_name)
                     if not chat_topic:
                         chat_topic = created_name
+                    thread_id_str = str(thread_id_raw)
 
         elif chat_type == "group" and thread_id_str:
             # Group/supergroup forum topic skill binding via config.extra['group_topics']
