@@ -939,6 +939,8 @@ DEFAULT_CONFIG = {
     "stt": {
         "enabled": True,
         "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe)
+        "echo_transcript": False,  # If true, echo successful voice transcripts back to the user
+        "echo_mode": "prefix",  # "prefix" prepends Heard: to agent input; "separate" sends a separate gateway message
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force

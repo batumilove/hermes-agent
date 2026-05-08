@@ -5990,6 +5990,7 @@ class GatewayRunner:
                 message_text = await self._enrich_message_with_transcription(
                     message_text,
                     audio_paths,
+                    source=source,
                 )
                 _stt_fail_markers = (
                     "No STT provider",
@@ -12006,6 +12007,7 @@ class GatewayRunner:
         self,
         user_text: str,
         audio_paths: List[str],
+        source: Optional[SessionSource] = None,
     ) -> str:
         """
         Auto-transcribe user voice/audio messages using the configured STT provider
@@ -12014,6 +12016,7 @@ class GatewayRunner:
         Args:
             user_text:   The user's original caption / message text.
             audio_paths: List of local file paths to cached audio files.
+            source:      Optional platform routing metadata for transcript echo.
 
         Returns:
             The enriched message string with transcriptions prepended.
@@ -12032,17 +12035,29 @@ class GatewayRunner:
 
         from tools.transcription_tools import transcribe_audio
 
+        stt_cfg = getattr(self.config, "stt", None)
+        if not isinstance(stt_cfg, dict):
+            stt_cfg = {}
+        echo_transcript = bool(stt_cfg.get("echo_transcript") or stt_cfg.get("echo"))
+        echo_mode = str(stt_cfg.get("echo_mode") or "prefix").strip().lower()
+        if echo_mode not in {"prefix", "separate"}:
+            echo_mode = "prefix"
+
         enriched_parts = []
+        echo_parts = []
         for path in audio_paths:
             try:
                 logger.debug("Transcribing user voice: %s", path)
                 result = await asyncio.to_thread(transcribe_audio, path)
                 if result["success"]:
-                    transcript = result["transcript"]
+                    transcript = str(result.get("transcript") or "").strip()
+                    if not transcript:
+                        continue
                     enriched_parts.append(
                         f'[The user sent a voice message~ '
                         f'Here\'s what they said: "{transcript}"]'
                     )
+                    echo_parts.append(f'Heard: "{transcript}"')
                 else:
                     error = result.get("error", "unknown error")
                     if (
@@ -12074,6 +12089,19 @@ class GatewayRunner:
                     "[The user sent a voice message but something went wrong "
                     "when I tried to listen to it~ Let them know!]"
                 )
+
+        echo_text = "\n\n".join(echo_parts)
+        if echo_transcript and echo_text:
+            if echo_mode == "separate" and source is not None:
+                adapter = self.adapters.get(source.platform)
+                if adapter:
+                    metadata = {"thread_id": source.thread_id} if source.thread_id else None
+                    try:
+                        await adapter.send(source.chat_id, echo_text, metadata=metadata)
+                    except Exception as exc:
+                        logger.debug("Failed to send STT transcript echo: %s", exc)
+            elif echo_mode == "prefix":
+                enriched_parts.insert(0, echo_text)
 
         if enriched_parts:
             prefix = "\n\n".join(enriched_parts)
