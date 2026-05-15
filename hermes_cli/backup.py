@@ -383,7 +383,10 @@ def run_import(args) -> None:
             try:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(member) as src, open(target, "wb") as dst:
-                    dst.write(src.read())
+                    # Stream members instead of src.read() into memory. Real Hermes
+                    # backups can contain multi-GB SQLite snapshots; loading one
+                    # member at a time can OOM-kill restore smoke tests on small VMs.
+                    shutil.copyfileobj(src, dst, length=1024 * 1024)
                 if target.name in _SECRET_FILE_NAMES:
                     os.chmod(target, 0o600)
                 restored += 1

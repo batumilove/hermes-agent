@@ -310,6 +310,63 @@ class TestImport:
                 else:
                     zf.writestr(name, content)
 
+    def test_import_streams_large_members_instead_of_reading_into_memory(self, tmp_path, monkeypatch):
+        """Import streams zip members rather than slurping each file at once.
+
+        Real Hermes backups can contain multi-GB SQLite snapshots. A single
+        dst.write(src.read()) allocates the whole decompressed member and can
+        OOM-kill restore smoke tests on small VMs.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        zip_path = tmp_path / "backup.zip"
+        self._make_backup_zip(zip_path, {
+            "config.yaml": "model: test\n",
+            "state.db": b"sqlite-ish",
+        })
+
+        class ReadAllBlocked:
+            def __init__(self, wrapped):
+                self._wrapped = wrapped
+
+            def read(self, size=-1):
+                if size == -1:
+                    raise AssertionError("run_import must not call read() without a size")
+                return self._wrapped.read(size)
+
+            def readable(self):
+                return True
+
+            def close(self):
+                return self._wrapped.close()
+
+            @property
+            def closed(self):
+                return self._wrapped.closed
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                self.close()
+                return False
+
+        original_open = zipfile.ZipFile.open
+
+        def wrapped_open(self, *args, **kwargs):
+            return ReadAllBlocked(original_open(self, *args, **kwargs))
+
+        args = Namespace(zipfile=str(zip_path), force=True)
+        from hermes_cli.backup import run_import
+        with patch.object(zipfile.ZipFile, "open", wrapped_open):
+            run_import(args)
+
+        assert (hermes_home / "config.yaml").read_text() == "model: test\n"
+        assert (hermes_home / "state.db").read_bytes() == b"sqlite-ish"
+
     def test_restores_files(self, tmp_path, monkeypatch):
         """Import extracts files into hermes home."""
         hermes_home = tmp_path / ".hermes"
