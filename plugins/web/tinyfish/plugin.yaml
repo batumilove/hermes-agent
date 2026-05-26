@@ -1,0 +1,7 @@
+name: web-tinyfish
+version: 1.0.0
+description: "TinyFish web Search and Fetch provider. Requires TINYFISH_API_KEY — sign up at https://agent.tinyfish.ai/api-keys."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - tinyfish

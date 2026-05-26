@@ -383,10 +383,18 @@ class TestBackendSelection:
              patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
             assert _get_backend() == "firecrawl"
 
-    def test_fallback_no_keys_defaults_to_firecrawl(self):
-        """No keys, no config → 'firecrawl' (will fail at client init)."""
+    def test_fallback_no_keys_picks_ddgs_if_importable(self):
+        """No keys, no config → use ddgs as last-resort no-key search if installed."""
         from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}):
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch("tools.web_tools._ddgs_package_importable", return_value=True):
+            assert _get_backend() == "ddgs"
+
+    def test_fallback_no_keys_defaults_to_firecrawl_when_ddgs_unavailable(self):
+        """No keys and no no-key search backend → 'firecrawl' for legacy error path."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch("tools.web_tools._ddgs_package_importable", return_value=False):
             assert _get_backend() == "firecrawl"
 
     def test_invalid_config_falls_through_to_fallback(self):
@@ -558,6 +566,7 @@ class TestCheckWebApiKey:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        "TINYFISH_API_KEY",
     )
 
     def setup_method(self):
@@ -601,9 +610,10 @@ class TestCheckWebApiKey:
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
-    def test_no_keys_returns_false(self):
-        from tools.web_tools import check_web_api_key
-        assert check_web_api_key() is False
+    def test_no_keys_returns_false_when_ddgs_unavailable(self):
+        from tools import web_tools
+        with patch("tools.web_tools._ddgs_package_importable", return_value=False):
+            assert web_tools.check_web_api_key() is False
 
     def test_both_keys_returns_true(self):
         with patch.dict(os.environ, {
