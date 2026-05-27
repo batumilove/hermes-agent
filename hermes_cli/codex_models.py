@@ -4,12 +4,22 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 from typing import List, Optional
 
 import os
 
 logger = logging.getLogger(__name__)
+
+# ─── In-memory TTL cache for live API results ────────────────────────────
+# Avoids hitting chatgpt.com on every /model invocation within the same
+# long-lived gateway/TUI process.  5 minutes is short enough that newly
+# released Codex models appear promptly while eliminating ~600 ms of
+# network latency per picker open.
+_CODEX_CACHE: List[str] = []
+_CODEX_CACHE_TIME: float = 0.0
+_CODEX_CACHE_TTL: float = 300  # 5 minutes
 
 DEFAULT_CODEX_MODELS: List[str] = [
     "gpt-5.5",
@@ -171,7 +181,17 @@ def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
     
     Resolution order: API (live, if token provided) > config.toml default >
     local cache > hardcoded defaults.
+    
+    Results from the live API are cached in-memory for 5 minutes so repeated
+    ``/model`` picker opens in the same gateway/TUI process skip the network
+    roundtrip to chatgpt.com.
     """
+    global _CODEX_CACHE, _CODEX_CACHE_TIME
+
+    # Return cached result if fresh enough.
+    if _CODEX_CACHE and (time.time() - _CODEX_CACHE_TIME) < _CODEX_CACHE_TTL:
+        return list(_CODEX_CACHE)
+
     codex_home_str = os.getenv("CODEX_HOME", "").strip() or str(Path.home() / ".codex")
     codex_home = Path(codex_home_str).expanduser()
     ordered: List[str] = []
@@ -180,7 +200,10 @@ def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
     if access_token:
         api_models = _fetch_models_from_api(access_token)
         if api_models:
-            return _add_forward_compat_models(api_models)
+            result = _add_forward_compat_models(api_models)
+            _CODEX_CACHE = list(result)
+            _CODEX_CACHE_TIME = time.time()
+            return result
 
     # Fall back to local sources
     default_model = _read_default_model(codex_home)
