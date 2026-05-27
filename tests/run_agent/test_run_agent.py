@@ -1979,6 +1979,38 @@ class TestExecuteToolCalls:
 
         mock_print.assert_not_called()
 
+    def test_nous_401_refresh_notice_does_not_crash_when_stdout_closed(self, agent):
+        class _AuthError(Exception):
+            status_code = 401
+
+            def __str__(self):
+                return "Error code: 401 - invalid agent key"
+
+        responses = [_AuthError(), _mock_response(content="Recovered")]
+
+        def _fake_api_call(api_kwargs):
+            result = responses.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        closed_stdout = io.StringIO()
+        closed_stdout.close()
+
+        agent.provider = "nous"
+        agent.api_mode = "chat_completions"
+        agent.quiet_mode = False
+        agent._print_fn = lambda *args, **kw: print(*args, file=closed_stdout, **kw)
+        agent._interruptible_api_call = _fake_api_call
+        agent._try_refresh_nous_client_credentials = lambda force=False: True
+        agent._persist_session = lambda *args, **kwargs: None
+        agent._save_trajectory = lambda *args, **kwargs: None
+
+        result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered"
+
     def test_run_conversation_suppresses_retry_noise_in_parseable_quiet_mode(self, agent):
         class _RateLimitError(Exception):
             status_code = 429
