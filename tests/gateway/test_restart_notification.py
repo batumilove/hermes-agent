@@ -84,11 +84,37 @@ async def test_restart_command_uses_service_restart_under_systemd(tmp_path, monk
     runner.request_restart.assert_called_once_with(detached=False, via_service=True)
 
 
+
+
 @pytest.mark.asyncio
-async def test_restart_command_uses_detached_without_systemd(tmp_path, monkeypatch):
-    """Without systemd, /restart uses the detached subprocess approach."""
+async def test_restart_command_uses_service_restart_under_launchd(tmp_path, monkeypatch):
+    """Under launchd (macOS service manager), /restart exits for service restart."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setenv("LAUNCHD_JOB_LABEL", "ai.hermes.gateway")
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    source = make_restart_source(chat_id="42")
+    event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="m1",
+    )
+
+    await runner._handle_restart_command(event)
+    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+
+
+@pytest.mark.asyncio
+async def test_restart_command_uses_detached_without_service_manager(tmp_path, monkeypatch):
+    """Without a service manager, /restart uses the detached subprocess approach."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.delenv("LAUNCHD_JOB_LABEL", raising=False)
+    monkeypatch.delenv("XPC_SERVICE_NAME", raising=False)
 
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
@@ -441,6 +467,29 @@ async def test_send_restart_notification_cleans_up_on_send_failure(
     # File cleaned up even though send raised.
     assert delivered_target is None
     assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_drops_unreachable_target(tmp_path, monkeypatch):
+    """A failed direct restart notify is removed so stale chats are not retried forever."""
+    from gateway.platforms.base import SendResult
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "123456",
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(return_value=SendResult(success=False, error="Chat not found"))
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target is None
+    assert not notify_path.exists()
+    adapter.send.assert_called_once()
 
 
 @pytest.mark.asyncio

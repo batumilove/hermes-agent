@@ -10039,9 +10039,15 @@ class GatewayRunner:
         # us.  The detached subprocess approach (setsid + bash) doesn't work
         # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
         # exits when the gateway dies, taking the detached helper with it).
-        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
+        _under_systemd = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
+        # launchd exposes the service label as XPC_SERVICE_NAME to the job.
+        # Newer Hermes plists also set LAUNCHD_JOB_LABEL explicitly so tests
+        # and nonstandard wrappers can exercise the same path.
+        _under_launchd = bool(
+            os.environ.get("LAUNCHD_JOB_LABEL") or os.environ.get("XPC_SERVICE_NAME")
+        )
         _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
-        if _under_service or _in_container:
+        if _under_systemd or _under_launchd or _in_container:
             self.request_restart(detached=False, via_service=True)
         else:
             self.request_restart(detached=True, via_service=False)

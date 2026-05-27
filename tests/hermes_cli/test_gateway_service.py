@@ -450,6 +450,12 @@ class TestGatewayStopCleanup:
 
 
 class TestLaunchdServiceRecovery:
+    def test_generate_launchd_plist_sets_job_label_env(self):
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "<key>LAUNCHD_JOB_LABEL</key>" in plist
+        assert f"<string>{gateway_cli.get_launchd_label()}</string>" in plist
+
     def test_get_restart_drain_timeout_prefers_env_then_config_then_default(self, monkeypatch):
         monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
         monkeypatch.setattr(gateway_cli, "read_raw_config", lambda: {})

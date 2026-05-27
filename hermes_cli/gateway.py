@@ -2909,6 +2909,8 @@ def generate_launchd_plist() -> str:
         <string>{venv_dir}</string>
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
+        <key>LAUNCHD_JOB_LABEL</key>
+        <string>{label}</string>
     </dict>
     
     <key>RunAtLoad</key>
