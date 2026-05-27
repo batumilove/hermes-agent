@@ -38,6 +38,7 @@ class FailoverReason(enum.Enum):
 
     # Transport
     timeout = "timeout"                  # Connection/read timeout — rebuild client + retry
+    silent_hang = "silent_hang"          # Connected but never produced first byte/event — fail over eagerly
 
     # Context / payload
     context_overflow = "context_overflow"  # Context too large — compress, not failover
@@ -663,6 +664,19 @@ def classify_api_error(
         return _result(FailoverReason.server_error, retryable=True)
 
     # ── 7. Transport / timeout heuristics ───────────────────────────
+
+    # Codex silent-hang watchdog intentionally raises a TimeoutError with a
+    # distinctive message when the backend accepts the socket but never emits
+    # a single stream event.  This is materially different from a generic
+    # timeout: reconnecting the same model often re-hangs, while switching to
+    # the next fallback model/provider succeeds immediately.  Classify before
+    # the generic transport bucket so the retry loop can eager-failover.
+    if "no bytes within" in error_msg and "ttfb threshold" in error_msg:
+        return _result(
+            FailoverReason.silent_hang,
+            retryable=True,
+            should_fallback=True,
+        )
 
     if error_type in _TRANSPORT_ERROR_TYPES or isinstance(error, (TimeoutError, ConnectionError, OSError)):
         return _result(FailoverReason.timeout, retryable=True)

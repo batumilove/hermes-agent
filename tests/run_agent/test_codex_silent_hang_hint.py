@@ -50,6 +50,24 @@ def test_hint_fires_for_bare_gpt_5_5_on_codex(tmp_path):
     assert "fallback chain" in hint
 
 
+def test_classifier_marks_codex_ttfb_timeout_as_silent_hang():
+    from agent.error_classifier import classify_api_error, FailoverReason
+
+    err = TimeoutError(
+        "Codex stream produced no bytes within 45s (TTFB threshold: 45s). "
+        "Codex backend appears to be silently rejecting 'gpt-5.5'"
+    )
+
+    classified = classify_api_error(
+        err,
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+
+    assert classified.reason is FailoverReason.silent_hang
+    assert classified.should_fallback is True
+
+
 def test_hint_fires_for_vendor_prefixed_gpt_5_5(tmp_path):
     agent = _make_agent(tmp_path, model="openai/gpt-5.5")
     agent.api_mode = "codex_responses"

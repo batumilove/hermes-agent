@@ -3034,6 +3034,64 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["final_response"] == "Fallback answer."
 
+    def test_codex_silent_hang_eagerly_triggers_fallback(self, agent):
+        """Codex no-first-byte watchdog should switch models immediately instead of retrying primary."""
+        self._setup_agent(agent)
+        agent.api_mode = "codex_responses"
+        agent.provider = "openai-codex"
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+        agent.model = "gpt-5.5"
+        agent._fallback_chain = [{"provider": "openai-codex", "model": "gpt-5.4"}]
+        agent._fallback_index = 0
+        agent._fallback_activated = False
+
+        timeout_exc = TimeoutError(
+            "Codex stream produced no bytes within 45s (TTFB threshold: 45s). "
+            "Codex backend appears to be silently rejecting 'gpt-5.5'"
+        )
+        success_resp = SimpleNamespace(
+            status="completed",
+            id="resp_fallback",
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    id="msg_fallback",
+                    role="assistant",
+                    status="completed",
+                    content=[SimpleNamespace(type="output_text", text="Recovered via fallback.")],
+                )
+            ],
+            output_text="Recovered via fallback.",
+            usage=None,
+            incomplete_details=None,
+            error=None,
+            model="gpt-5.4",
+        )
+
+        fallback_reasons = []
+
+        def _mock_fallback(reason=None):
+            fallback_reasons.append(reason)
+            agent._fallback_index = 1
+            agent._fallback_activated = True
+            agent.model = "gpt-5.4"
+            agent.provider = "openai-codex"
+            return True
+
+        with (
+            patch.object(agent, "_run_codex_stream", side_effect=[timeout_exc, success_resp]) as run_stream_mock,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_try_activate_fallback", side_effect=_mock_fallback),
+        ):
+            result = agent.run_conversation("answer me")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered via fallback."
+        assert fallback_reasons == [FailoverReason.silent_hang]
+        assert run_stream_mock.call_count == 2
+
     def test_empty_response_fallback_also_empty_returns_empty(self, agent):
         """If fallback also returns empty, final response is (empty)."""
         self._setup_agent(agent)
