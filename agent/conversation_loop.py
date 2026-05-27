@@ -2822,6 +2822,20 @@ def run_conversation(
                 # provider/network failure (malformed response body,
                 # truncated stream, routing layer corruption), not a
                 # local programming bug, and should be retried (#14782).
+                # ── Responses SDK NoneType bug exclusion ──────────────
+                # The OpenAI SDK raises TypeError("'NoneType' object is
+                # not iterable") when the Codex backend returns a response
+                # with output=None.  error_classifier.py already maps this
+                # to FailoverReason.server_error (retryable=True), but
+                # the generic TypeError catch below would short-circuit
+                # that classification and mark it as a non-retryable local
+                # validation error.  Detect the pattern and skip so the
+                # classifier's retryable=True recommendation is honoured.
+                _is_responses_null_output = (
+                    isinstance(api_error, TypeError)
+                    and "nonetype" in str(api_error).lower()
+                    and "not iterable" in str(api_error).lower()
+                )
                 is_local_validation_error = (
                     isinstance(api_error, (ValueError, TypeError))
                     and not isinstance(
@@ -2835,6 +2849,12 @@ def run_conversation(
                     # ssl.SSLError explicitly so the error classifier's
                     # retryable=True mapping takes effect instead.
                     and not isinstance(api_error, ssl.SSLError)
+                    # Exclude the Responses SDK NoneType bug — the error
+                    # classifier maps it to server_error/retryable=True,
+                    # and the codex_runtime.py stream handler already tries
+                    # to recover from it.  Treating it as a local validation
+                    # error would abort the retry loop immediately.
+                    and not _is_responses_null_output
                 )
                 # ``FailoverReason.billing`` (HTTP 402) is NOT in this
                 # exclusion set.  By the time we reach this block:
