@@ -88,6 +88,16 @@ class _OpenAIProxy:
     __slots__ = ()
 
     def __call__(self, *args, **kwargs):
+        # Auto-inject a system-CA httpx.Client when connecting to a host
+        # that bypasses the proxy (NO_PROXY / HERMES_DIRECT_TLS_HOSTS) but
+        # SSL_CERT_FILE points at a MITM CA.  This transparently fixes
+        # "certificate verify failed" for direct OpenAI/Codex endpoints.
+        if "http_client" not in kwargs:
+            base_url = kwargs.get("base_url", "")
+            if base_url and _is_direct_tls_host(str(base_url)):
+                direct_client = _get_system_ca_httpx_client()
+                if direct_client is not None:
+                    kwargs["http_client"] = direct_client
         return _load_openai_cls()(*args, **kwargs)
 
     def __instancecheck__(self, obj):
@@ -98,6 +108,106 @@ class _OpenAIProxy:
 
 
 OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
+
+
+# ── Direct-TLS httpx client for Agent Vault bypass ──────────────────────────
+# When Agent Vault (or any MITM proxy) sets ``SSL_CERT_FILE`` to its own CA
+# but ``NO_PROXY`` / ``HERMES_DIRECT_TLS_HOSTS`` exempts certain hosts from
+# the proxy, direct connections fail because they verify the real server cert
+# against the MITM CA.  This helper creates an ``httpx.Client`` that uses the
+# system CA bundle for those exempt hosts, so ``OpenAI(http_client=...)`` does
+# the right thing transparently.
+
+_DIRECT_TLS_HOSTS_CACHE: Optional[set] = None
+_SYSTEM_CA_HTTPX_CLIENT: Optional[Any] = None
+
+
+def _get_direct_tls_hosts() -> set:
+    """Parse HERMES_DIRECT_TLS_HOSTS and NO_PROXY into a set of hostnames."""
+    global _DIRECT_TLS_HOSTS_CACHE
+    if _DIRECT_TLS_HOSTS_CACHE is not None:
+        return _DIRECT_TLS_HOSTS_CACHE
+    hosts: set = set()
+    for env_var in ("HERMES_DIRECT_TLS_HOSTS", "NO_PROXY", "no_proxy"):
+        raw = os.environ.get(env_var, "")
+        for entry in raw.split(","):
+            entry = entry.strip().lower()
+            if entry:
+                hosts.add(entry.lstrip("."))  # .example.com → example.com
+    _DIRECT_TLS_HOSTS_CACHE = hosts
+    return hosts
+
+
+def _is_direct_tls_host(base_url: str) -> bool:
+    """True when *base_url*'s host should bypass the proxy."""
+    host = base_url_hostname(base_url) or ""
+    if not host:
+        return False
+    direct = _get_direct_tls_hosts()
+    # Exact match or parent-domain match (e.g. api.openai.com matches .openai.com)
+    while host:
+        if host in direct:
+            return True
+        dot = host.find(".")
+        if dot < 0:
+            break
+        host = host[dot + 1:]
+    return False
+
+
+def _get_system_ca_httpx_client() -> Optional[Any]:
+    """Return a cached ``httpx.Client`` that uses the system CA bundle.
+
+    Returns ``None`` when no MITM-CA override is active (normal case).
+    """
+    global _SYSTEM_CA_HTTPX_CLIENT
+    if _SYSTEM_CA_HTTPX_CLIENT is not None:
+        return _SYSTEM_CA_HTTPX_CLIENT
+
+    ssl_cert_file = os.environ.get("SSL_CERT_FILE", "")
+    if not ssl_cert_file:
+        return None
+
+    # Only intervene when SSL_CERT_FILE points to something that is NOT a
+    # standard system CA bundle (i.e. Agent Vault / MITM CA).
+    system_paths = {
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/ssl/cert.pem",
+        "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+    }
+    try:
+        import certifi
+        system_paths.add(certifi.where())
+    except ImportError:
+        pass
+    if ssl_cert_file in system_paths:
+        return None  # already pointing at a real bundle, nothing to fix
+
+    # Find the system CA bundle for the httpx client.
+    system_ca = None
+    for candidate in sorted(system_paths):
+        if os.path.exists(candidate):
+            system_ca = candidate
+            break
+    if not system_ca:
+        try:
+            import certifi
+            system_ca = certifi.where()
+        except ImportError:
+            return None
+
+    try:
+        import httpx
+        _SYSTEM_CA_HTTPX_CLIENT = httpx.Client(verify=system_ca)
+        logger.debug(
+            "Direct-TLS: created httpx.Client with system CA (%s) for "
+            "bypassing MITM CA (%s)", system_ca, ssl_cert_file,
+        )
+    except Exception as exc:
+        logger.debug("Direct-TLS: failed to create httpx.Client: %s", exc)
+        return None
+    return _SYSTEM_CA_HTTPX_CLIENT
 
 from agent.credential_pool import load_pool
 from hermes_cli.config import get_hermes_home
