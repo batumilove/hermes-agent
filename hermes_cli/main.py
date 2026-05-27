@@ -6988,7 +6988,11 @@ def _update_via_zip(args):
     import zipfile
     from urllib.request import urlretrieve
 
-    branch = "main"
+    branch = _resolve_update_branch(args)
+    if branch != "main":
+        print(f"✗ ZIP update fallback: --branch={branch!r} is not supported.")
+        print("  Retry from a git checkout, or update the requested branch manually.")
+        sys.exit(1)
     zip_url = (
         f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip"
     )
@@ -8648,13 +8652,22 @@ def _finalize_update_output(state):
             pass
 
 
+def _resolve_update_branch(args) -> str:
+    """Normalize ``args.branch`` into a non-empty branch name."""
+    return (getattr(args, "branch", None) or "main").strip() or "main"
+
+
 def _cmd_update_check(args=None):
     """Implement ``hermes update --check``: fetch and report without installing."""
     from hermes_cli.config import detect_install_method
     method = detect_install_method(PROJECT_ROOT)
+    branch = _resolve_update_branch(args)
+    branch_explicit = bool(getattr(args, "branch", None))
     if method == "pip":
         from hermes_cli.config import recommended_update_command
         from hermes_cli.banner import check_via_pypi
+        if branch_explicit and branch != "main":
+            print(f"⚠ --branch is ignored for PyPI installs (would have checked '{branch}').")
         result = check_via_pypi()
         if result is None:
             print("✗ Could not reach PyPI to check for updates.")
@@ -8675,31 +8688,50 @@ def _cmd_update_check(args=None):
     if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
-    current_branch_result = subprocess.run(
-        git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
-        cwd=PROJECT_ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    current_branch = current_branch_result.stdout.strip()
     force_upstream = bool(getattr(args, "upstream", False))
-    if force_upstream and not _ensure_upstream_remote(git_cmd, PROJECT_ROOT):
-        print("✗ Could not add upstream remote for NousResearch/hermes-agent.")
-        sys.exit(1)
-    target = _resolve_update_target(
-        git_cmd, PROJECT_ROOT, current_branch, force_upstream=force_upstream
-    )
-    remote = str(target["remote"])
-    compare_branch = str(target["remote_ref"])
-
-    print(f"→ Fetching from {remote}...")
-    fetch_result = subprocess.run(
-        git_cmd + ["fetch", remote],
-        cwd=PROJECT_ROOT,
-        capture_output=True,
-        text=True,
-    )
+    if branch_explicit:
+        remote = "origin"
+        compare_branch = f"origin/{branch}"
+        print("→ Fetching from origin...")
+        fetch_result = subprocess.run(
+            git_cmd + ["fetch", "origin"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+    elif force_upstream:
+        if not _ensure_upstream_remote(git_cmd, PROJECT_ROOT):
+            print("✗ Could not add upstream remote for NousResearch/hermes-agent.")
+            sys.exit(1)
+        remote = "upstream"
+        compare_branch = "upstream/main"
+        print("→ Fetching from upstream...")
+        fetch_result = subprocess.run(
+            git_cmd + ["fetch", "upstream"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+    else:
+        remote = "upstream"
+        compare_branch = "upstream/main"
+        print("→ Fetching from upstream...")
+        fetch_result = subprocess.run(
+            git_cmd + ["fetch", "upstream"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        if fetch_result.returncode != 0:
+            remote = "origin"
+            compare_branch = "origin/main"
+            print("→ Fetching from origin...")
+            fetch_result = subprocess.run(
+                git_cmd + ["fetch", "origin"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+            )
 
     if fetch_result.returncode != 0:
         stderr = fetch_result.stderr.strip()
@@ -8711,6 +8743,16 @@ def _cmd_update_check(args=None):
             print(f"✗ Failed to fetch from {remote}.")
             if stderr:
                 print(f"  {stderr.splitlines()[0]}")
+        sys.exit(1)
+
+    verify_result = subprocess.run(
+        git_cmd + ["rev-parse", "--verify", "--quiet", compare_branch],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if verify_result.returncode != 0:
+        print(f"✗ Branch '{branch}' not found on {compare_branch.split('/', 1)[0]}.")
         sys.exit(1)
 
     rev_result = subprocess.run(
@@ -9083,6 +9125,33 @@ def _cmd_update_impl(args, gateway_mode: bool):
         target = _resolve_update_target(
             git_cmd, PROJECT_ROOT, current_branch, force_upstream=force_upstream
         )
+        explicit_branch = _resolve_update_branch(args)
+        if explicit_branch != "main" and not force_upstream and not sync_fork:
+            target = {
+                "remote": "origin",
+                "branch": explicit_branch,
+                "remote_ref": f"origin/{explicit_branch}",
+                "uses_tracking": False,
+            }
+            if current_branch != explicit_branch:
+                print(f"  → switching to {explicit_branch}")
+                checkout_result = subprocess.run(
+                    git_cmd + ["checkout", explicit_branch],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                )
+                if checkout_result.returncode != 0:
+                    track_result = subprocess.run(
+                        git_cmd + ["checkout", "-B", explicit_branch, f"origin/{explicit_branch}"],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if track_result.returncode != 0:
+                        print(f"✗ Branch '{explicit_branch}' does not exist locally or on origin.")
+                        sys.exit(1)
+                current_branch = explicit_branch
         if sync_fork:
             _sync_tracking_branch_with_upstream(
                 git_cmd,
