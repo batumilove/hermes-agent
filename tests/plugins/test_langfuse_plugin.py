@@ -851,10 +851,14 @@ class TestTraceMetadataEnrichment:
             def create_trace_id(self, *, seed=None):
                 return "trace-tags-test"
 
+            def _create_trace_tags_via_ingestion(self, *, trace_id=None, tags=None):
+                captured["tags"] = tags
+                captured["trace_id"] = trace_id
+
             def start_as_current_observation(self, *, trace_context=None, name=None,
                                              as_type=None, input=None, metadata=None,
-                                             end_on_exit=False, tags=None):
-                captured["tags"] = tags
+                                             end_on_exit=False, **kwargs):
+                captured["unexpected_kwargs"] = kwargs
                 captured["metadata"] = metadata
 
                 class _Ctx:
@@ -893,6 +897,8 @@ class TestTraceMetadataEnrichment:
             client=fake_client,
         )
 
+        assert captured["unexpected_kwargs"] == {}
+        assert captured["trace_id"] == "trace-tags-test"
         tags = captured["tags"]
         assert "hermes" in tags
         assert "langfuse" in tags

@@ -577,8 +577,10 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
     if session_id:
         trace_ctx["session_id"] = session_id
 
-    # Dynamic tags for dashboard filtering.
+    # Dynamic tags for dashboard filtering. Langfuse v4 no longer accepts
+    # tags= on start_as_current_observation(); attach via trace ingestion below.
     tags = _build_trace_tags(platform=platform, provider=provider, api_mode=api_mode)
+    metadata["tags"] = tags
 
     if propagate_attributes is not None:
         try:
@@ -593,7 +595,6 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
                     as_type="chain",
                     input=trace_input,
                     metadata=metadata,
-                    tags=tags,
                     end_on_exit=False,
                 )
                 root_span = root_ctx.__enter__()
@@ -604,7 +605,6 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
                 as_type="chain",
                 input=trace_input,
                 metadata=metadata,
-                tags=tags,
                 end_on_exit=False,
             )
             root_span = root_ctx.__enter__()
@@ -615,10 +615,15 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
             as_type="chain",
             input=trace_input,
             metadata=metadata,
-            tags=tags,
             end_on_exit=False,
         )
         root_span = root_ctx.__enter__()
+
+
+    try:
+        client._create_trace_tags_via_ingestion(trace_id=trace_id, tags=tags)
+    except Exception:
+        pass
 
     try:
         root_span.set_trace_io(input=trace_input)
