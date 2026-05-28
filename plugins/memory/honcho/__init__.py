@@ -24,6 +24,13 @@ from typing import Any, Dict, List, Optional
 
 from agent.memory_manager import sanitize_context
 from agent.memory_provider import MemoryProvider
+from plugins.memory.honcho.injection_filter import (
+    MemoryChunk,
+    classify_memory,
+    filter_stale_memories,
+    annotate_chunks,
+    REASON_STABLE_USER_PREFERENCE,
+)
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -599,7 +606,11 @@ class HonchoMemoryProvider(MemoryProvider):
                     base_context = formatted
 
         if base_context:
-            parts.append(base_context)
+            parts.append(MemoryChunk(
+                text=base_context,
+                reason=classify_memory(base_context),
+                source="base_context",
+            ))
 
         # ----- Layer 2: Dialectic supplement -----
         # On the very first turn, no queue_prefetch() has run yet so the
@@ -673,12 +684,24 @@ class HonchoMemoryProvider(MemoryProvider):
             dialectic_result = ""
 
         if dialectic_result and dialectic_result.strip():
-            parts.append(dialectic_result)
+            parts.append(MemoryChunk(
+                text=dialectic_result,
+                reason=classify_memory(dialectic_result),
+                source="dialectic",
+            ))
 
         if not parts:
             return ""
 
-        result = "\n\n".join(parts)
+        # ----- Injection-time filtering and annotation -----
+        # Suppress task-progress, stale, and contradicted memories.
+        # This is retrieval-time behavior only — Honcho's raw memories
+        # are never modified.
+        filtered = filter_stale_memories(parts)
+        if not filtered:
+            return ""
+
+        result = annotate_chunks(filtered)
 
         # ----- Port #3265: token budget enforcement -----
         result = self._truncate_to_budget(result)

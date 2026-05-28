@@ -539,6 +539,22 @@ def _usage_and_cost(response: Any, *, provider: str, api_mode: str, model: str, 
     return usage_details, cost_details
 
 
+def _build_trace_tags(*, platform: str, provider: str, api_mode: str) -> list[str]:
+    """Build dynamic tags for trace filtering in the Langfuse dashboard.
+
+    Always includes the static ``hermes`` and ``langfuse`` tags plus
+    platform/provider/api_mode tags when the values are non-empty.
+    """
+    tags = ["hermes", "langfuse"]
+    if platform:
+        tags.append(f"platform:{platform}")
+    if provider:
+        tags.append(f"provider:{provider}")
+    if api_mode:
+        tags.append(f"api_mode:{api_mode}")
+    return tags
+
+
 def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform: str, provider: str, model: str,
                       api_mode: str, messages: Any, client: Langfuse) -> TraceState:
     trace_id = client.create_trace_id(seed=f"{session_id or 'sessionless'}::{task_id or task_key}")
@@ -551,18 +567,25 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
         "model": model,
         "api_mode": api_mode,
     }
+    # Include session_id in metadata for dashboard filtering even when
+    # Langfuse session grouping is handled via trace_context.
+    if session_id:
+        metadata["session_id"] = session_id
 
     # session_id must be passed in trace_context for Langfuse session grouping.
     trace_ctx: Dict[str, Any] = {"trace_id": trace_id}
     if session_id:
         trace_ctx["session_id"] = session_id
 
+    # Dynamic tags for dashboard filtering.
+    tags = _build_trace_tags(platform=platform, provider=provider, api_mode=api_mode)
+
     if propagate_attributes is not None:
         try:
             with propagate_attributes(
                 session_id=session_id or task_key,
                 trace_name="Hermes turn",
-                tags=["hermes", "langfuse"],
+                tags=tags,
             ):
                 root_ctx = client.start_as_current_observation(
                     trace_context=trace_ctx,
@@ -570,6 +593,7 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
                     as_type="chain",
                     input=trace_input,
                     metadata=metadata,
+                    tags=tags,
                     end_on_exit=False,
                 )
                 root_span = root_ctx.__enter__()
@@ -580,6 +604,7 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
                 as_type="chain",
                 input=trace_input,
                 metadata=metadata,
+                tags=tags,
                 end_on_exit=False,
             )
             root_span = root_ctx.__enter__()
@@ -590,6 +615,7 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
             as_type="chain",
             input=trace_input,
             metadata=metadata,
+            tags=tags,
             end_on_exit=False,
         )
         root_span = root_ctx.__enter__()
@@ -804,7 +830,7 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
                      api_duration: float = 0.0, finish_reason: str = "",
                      usage: Any = None, assistant_content_chars: int = 0,
                      assistant_tool_call_count: int = 0, assistant_response: Any = None,
-                     **_: Any) -> None:
+                     response_model: str = "", **_: Any) -> None:
     client = _get_langfuse()
     if client is None:
         return
@@ -904,6 +930,8 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
         gen_metadata["api_duration_s"] = round(api_duration, 3)
     if finish_reason:
         gen_metadata["finish_reason"] = finish_reason
+    if response_model:
+        gen_metadata["response_model"] = response_model
     _end_observation(
         generation,
         output=output,
@@ -945,7 +973,8 @@ def on_pre_tool_call(*, tool_name: str = "", args: Any = None, task_id: str = ""
 
 
 def on_post_tool_call(*, tool_name: str = "", args: Any = None, result: Any = None,
-                      task_id: str = "", session_id: str = "", tool_call_id: str = "", **_: Any) -> None:
+                      task_id: str = "", session_id: str = "", tool_call_id: str = "",
+                      duration_ms: int = 0, **_: Any) -> None:
     task_key = _trace_key(task_id, session_id)
     observation = None
 
@@ -985,10 +1014,21 @@ def on_post_tool_call(*, tool_name: str = "", args: Any = None, result: Any = No
                             function_payload["output"] = safe_result_value
                         break
 
+    # Build enriched tool metadata.
+    tool_metadata: Dict[str, Any] = {"tool_name": tool_name, "args": _safe_value(args, parse_json_strings=True)}
+    if duration_ms:
+        tool_metadata["duration_ms"] = duration_ms
+    # Detect errors in parsed JSON results.
+    if isinstance(result_value, dict) and "error" in result_value:
+        tool_metadata["error_present"] = True
+        error_val = result_value["error"]
+        if isinstance(error_val, str) and error_val:
+            tool_metadata["error_summary"] = _truncate_text(error_val, 200)
+
     _end_observation(
         observation,
         output=safe_result_value,
-        metadata={"tool_name": tool_name, "args": _safe_value(args, parse_json_strings=True)},
+        metadata=tool_metadata,
     )
 
 

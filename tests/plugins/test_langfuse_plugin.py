@@ -704,3 +704,344 @@ class TestToolObservationKeying:
         assert ended["output"] == {"status": "done"}
         assert not state.tools
 
+
+# ---------------------------------------------------------------------------
+# Trace metadata enrichment: session_id, dynamic tags, response_model,
+# duration_ms, tool error detection.
+# ---------------------------------------------------------------------------
+
+class TestTraceMetadataEnrichment:
+    """Tests for the MVP metadata extensions defined in the Langfuse
+    observability spec (t_6ee1a37c).  These tests exercise the plugin's
+    internal helpers and hook handlers without requiring a real Langfuse
+    client — they monkeypatch _get_langfuse to return None and instead
+    capture the metadata dicts passed to _start_root_trace /
+    _start_child_observation / _end_observation."""
+
+    def _fresh_mod(self):
+        """Import the plugin fresh (clears cached client)."""
+        mod_name = "plugins.observability.langfuse"
+        sys.modules.pop(mod_name, None)
+        return importlib.import_module(mod_name)
+
+    # -- session_id in root trace metadata ------------------------------------
+
+    def test_start_root_trace_includes_session_id_in_metadata(self, monkeypatch):
+        """session_id must appear in root trace metadata so operators can
+        filter/group traces by session in the Langfuse dashboard."""
+        mod = self._fresh_mod()
+
+        captured = {}
+
+        class _FakeClient:
+            def create_trace_id(self, *, seed=None):
+                return "trace-sid-test"
+
+            def start_as_current_observation(self, *, trace_context=None, name=None,
+                                             as_type=None, input=None, metadata=None,
+                                             end_on_exit=False, **kwargs):
+                captured["metadata"] = metadata
+                captured["trace_context"] = trace_context
+
+                class _Ctx:
+                    def __enter__(self_inner):
+                        return self_inner
+                    def __exit__(self_inner, *a):
+                        pass
+                    def set_trace_io(self_inner, **kw):
+                        pass
+                    def update(self_inner, **kw):
+                        pass
+                    def start_observation(self_inner, **kw):
+                        class _Obs:
+                            def update(self, **kw2):
+                                pass
+                            def end(self):
+                                pass
+                        return _Obs()
+                    def end(self_inner):
+                        pass
+                return _Ctx()
+
+        fake_client = _FakeClient()
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: fake_client)
+        monkeypatch.setattr(mod, "propagate_attributes", None, raising=False)
+
+        state = mod._start_root_trace(
+            "test-key",
+            task_id="task-1",
+            session_id="sess-abc123",
+            platform="telegram",
+            provider="openrouter",
+            model="anthropic/claude-sonnet-4",
+            api_mode="chat_completions",
+            messages=[{"role": "user", "content": "hello"}],
+            client=fake_client,
+        )
+
+        assert captured["metadata"]["session_id"] == "sess-abc123"
+        assert captured["trace_context"]["session_id"] == "sess-abc123"
+
+    def test_start_root_trace_includes_task_id_and_platform(self, monkeypatch):
+        mod = self._fresh_mod()
+
+        captured = {}
+
+        class _FakeClient:
+            def create_trace_id(self, *, seed=None):
+                return "trace-tid-test"
+
+            def start_as_current_observation(self, *, trace_context=None, name=None,
+                                             as_type=None, input=None, metadata=None,
+                                             end_on_exit=False, **kwargs):
+                captured["metadata"] = metadata
+
+                class _Ctx:
+                    def __enter__(self_inner):
+                        return self_inner
+                    def __exit__(self_inner, *a):
+                        pass
+                    def set_trace_io(self_inner, **kw):
+                        pass
+                    def update(self_inner, **kw):
+                        pass
+                    def start_observation(self_inner, **kw):
+                        class _Obs:
+                            def update(self, **kw2):
+                                pass
+                            def end(self):
+                                pass
+                        return _Obs()
+                    def end(self_inner):
+                        pass
+                return _Ctx()
+
+        fake_client = _FakeClient()
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: fake_client)
+        monkeypatch.setattr(mod, "propagate_attributes", None, raising=False)
+
+        mod._start_root_trace(
+            "test-key",
+            task_id="task-xyz",
+            session_id="",
+            platform="cli",
+            provider="anthropic",
+            model="claude-sonnet-4",
+            api_mode="chat_completions",
+            messages=[],
+            client=fake_client,
+        )
+
+        meta = captured["metadata"]
+        assert meta["task_id"] == "task-xyz"
+        assert meta["platform"] == "cli"
+        assert meta["provider"] == "anthropic"
+        assert "session_id" not in meta or meta.get("session_id") == ""
+
+    # -- dynamic tags ---------------------------------------------------------
+
+    def test_start_root_trace_includes_dynamic_tags(self, monkeypatch):
+        """Root trace must include dynamic tags for platform, provider,
+        and api_mode to enable filtering in the Langfuse dashboard."""
+        mod = self._fresh_mod()
+
+        captured = {}
+
+        class _FakeClient:
+            def create_trace_id(self, *, seed=None):
+                return "trace-tags-test"
+
+            def start_as_current_observation(self, *, trace_context=None, name=None,
+                                             as_type=None, input=None, metadata=None,
+                                             end_on_exit=False, tags=None):
+                captured["tags"] = tags
+                captured["metadata"] = metadata
+
+                class _Ctx:
+                    def __enter__(self_inner):
+                        return self_inner
+                    def __exit__(self_inner, *a):
+                        pass
+                    def set_trace_io(self_inner, **kw):
+                        pass
+                    def update(self_inner, **kw):
+                        pass
+                    def start_observation(self_inner, **kw):
+                        class _Obs:
+                            def update(self, **kw2):
+                                pass
+                            def end(self):
+                                pass
+                        return _Obs()
+                    def end(self_inner):
+                        pass
+                return _Ctx()
+
+        fake_client = _FakeClient()
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: fake_client)
+        monkeypatch.setattr(mod, "propagate_attributes", None, raising=False)
+
+        mod._start_root_trace(
+            "test-key",
+            task_id="task-1",
+            session_id="sess-1",
+            platform="telegram",
+            provider="openrouter",
+            model="anthropic/claude-sonnet-4",
+            api_mode="chat_completions",
+            messages=[],
+            client=fake_client,
+        )
+
+        tags = captured["tags"]
+        assert "hermes" in tags
+        assert "langfuse" in tags
+        assert "platform:telegram" in tags
+        assert "provider:openrouter" in tags
+        assert "api_mode:chat_completions" in tags
+
+    # -- response_model in generation metadata --------------------------------
+
+    def test_post_llm_call_records_response_model_in_generation_metadata(self, monkeypatch):
+        """When the API returns a different model than configured (e.g.
+        provider routing), the response_model must appear in generation
+        metadata alongside the configured model."""
+        mod = self._fresh_mod()
+
+        # Ensure _get_langfuse returns a truthy value so on_post_llm_call proceeds.
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: "fake_client")
+
+        # Set up a fake trace state with a pre-existing generation observation.
+        fake_gen = object()
+        state = mod.TraceState(trace_id="t", root_ctx=None, root_span=None)
+        state.generations["1"] = fake_gen
+
+        task_key = mod._trace_key("task-1", "sess-1")
+        monkeypatch.setitem(mod._TRACE_STATE, task_key, state)
+
+        ended = {}
+
+        def fake_end(obs, *, output=None, metadata=None, usage_details=None, cost_details=None):
+            ended["obs"] = obs
+            ended["metadata"] = metadata
+
+        monkeypatch.setattr(mod, "_end_observation", fake_end)
+
+        # Simulate post_api_request with response_model
+        mod.on_post_llm_call(
+            task_id="task-1",
+            session_id="sess-1",
+            provider="openrouter",
+            base_url="",
+            api_mode="chat_completions",
+            model="anthropic/claude-sonnet-4",
+            api_call_count=1,
+            response_model="anthropic/claude-sonnet-4-20250514",
+            assistant_content_chars=100,
+            assistant_tool_call_count=0,
+        )
+
+        assert ended["obs"] is fake_gen
+        assert ended["metadata"]["response_model"] == "anthropic/claude-sonnet-4-20250514"
+
+    # -- duration_ms in tool metadata -----------------------------------------
+
+    def test_post_tool_call_records_duration_ms(self, monkeypatch):
+        """The model_tools dispatcher passes duration_ms to post_tool_call.
+        The Langfuse plugin must record it in tool observation metadata."""
+        mod = self._fresh_mod()
+
+        obs = object()
+        state = mod.TraceState(trace_id="t", root_ctx=None, root_span=None)
+        state.tools["call-dur"] = obs
+
+        task_key = mod._trace_key("task-dur", "sess-dur")
+        monkeypatch.setitem(mod._TRACE_STATE, task_key, state)
+
+        ended = {}
+
+        def fake_end(o, *, output=None, metadata=None, **kw):
+            ended["obs"] = o
+            ended["metadata"] = metadata
+
+        monkeypatch.setattr(mod, "_end_observation", fake_end)
+
+        mod.on_post_tool_call(
+            tool_name="web_search",
+            args={"query": "test"},
+            result='{"results": []}',
+            task_id="task-dur",
+            session_id="sess-dur",
+            tool_call_id="call-dur",
+            duration_ms=142,
+        )
+
+        assert ended["obs"] is obs
+        assert ended["metadata"]["duration_ms"] == 142
+
+    # -- tool error detection -------------------------------------------------
+
+    def test_post_tool_call_detects_error_in_json_result(self, monkeypatch):
+        """When a tool returns JSON with an 'error' key, the plugin should
+        set error metadata on the tool observation."""
+        mod = self._fresh_mod()
+
+        obs = object()
+        state = mod.TraceState(trace_id="t", root_ctx=None, root_span=None)
+        state.tools["call-err"] = obs
+
+        task_key = mod._trace_key("task-err", "sess-err")
+        monkeypatch.setitem(mod._TRACE_STATE, task_key, state)
+
+        ended = {}
+
+        def fake_end(o, *, output=None, metadata=None, **kw):
+            ended["obs"] = o
+            ended["metadata"] = metadata
+            ended["output"] = output
+
+        monkeypatch.setattr(mod, "_end_observation", fake_end)
+
+        mod.on_post_tool_call(
+            tool_name="read_file",
+            args={"path": "/etc/shadow"},
+            result='{"error": "Permission denied", "content": ""}',
+            task_id="task-err",
+            session_id="sess-err",
+            tool_call_id="call-err",
+        )
+
+        assert ended["obs"] is obs
+        assert ended["metadata"]["error_present"] is True
+        # Should preserve existing tool_name in metadata
+        assert ended["metadata"]["tool_name"] == "read_file"
+
+    def test_post_tool_call_no_error_flag_on_success(self, monkeypatch):
+        """Successful tool results must NOT set error_present."""
+        mod = self._fresh_mod()
+
+        obs = object()
+        state = mod.TraceState(trace_id="t", root_ctx=None, root_span=None)
+        state.tools["call-ok"] = obs
+
+        task_key = mod._trace_key("task-ok", "sess-ok")
+        monkeypatch.setitem(mod._TRACE_STATE, task_key, state)
+
+        ended = {}
+
+        def fake_end(o, *, output=None, metadata=None, **kw):
+            ended["metadata"] = metadata
+
+        monkeypatch.setattr(mod, "_end_observation", fake_end)
+
+        mod.on_post_tool_call(
+            tool_name="read_file",
+            args={"path": "/tmp/test.txt"},
+            result='{"content": "hello world", "total_lines": 1, "file_size": 11, "is_binary": false, "is_image": false}',
+            task_id="task-ok",
+            session_id="sess-ok",
+            tool_call_id="call-ok",
+        )
+
+        assert "error_present" not in ended["metadata"]
+
