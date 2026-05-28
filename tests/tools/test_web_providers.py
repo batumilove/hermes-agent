@@ -29,7 +29,7 @@ class TestWebProviderABCs:
     in-tree ABCs at ``tools.web_providers.base`` (separate
     ``WebSearchProvider`` + ``WebExtractProvider``) were deleted in the
     same PR — providers now advertise capabilities via
-    ``supports_search() / supports_extract() / supports_crawl()`` flags.
+    ``supports_search() / supports_extract()`` flags.
     """
 
     def test_cannot_instantiate_abc_directly(self):
@@ -65,7 +65,6 @@ class TestWebProviderABCs:
         assert d.is_available() is True
         assert d.supports_search() is True
         assert d.supports_extract() is False  # default
-        assert d.supports_crawl() is False  # default
         assert d.search("test")["success"] is True
 
     def test_concrete_multi_capability_provider_works(self):
@@ -89,27 +88,19 @@ class TestWebProviderABCs:
             def supports_extract(self) -> bool:
                 return True
 
-            def supports_crawl(self) -> bool:
-                return True
-
             def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
                 return {"success": True, "data": {"web": []}}
 
             def extract(self, urls: List[str], **kwargs: Any) -> List[Dict[str, Any]]:
                 return [{"url": urls[0], "content": "x"}]
 
-            def crawl(self, url: str, **kwargs: Any) -> Dict[str, Any]:
-                return {"results": [{"url": url, "content": "x"}]}
-
         d = Dummy()
         assert d.supports_search() is True
         assert d.supports_extract() is True
-        assert d.supports_crawl() is True
         assert d.extract(["https://example.com"])[0]["url"] == "https://example.com"
-        assert d.crawl("https://example.com")["results"][0]["url"] == "https://example.com"
 
-    def test_search_only_provider_skips_extract_and_crawl(self):
-        """Search-only providers don't have to implement extract() / crawl()."""
+    def test_search_only_provider_skips_extract(self):
+        """Search-only providers don't have to implement extract()."""
         from agent.web_search_provider import WebSearchProvider
 
         class SearchOnly(WebSearchProvider):
@@ -130,13 +121,12 @@ class TestWebProviderABCs:
             def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
                 return {"success": True, "data": {"web": []}}
 
-        # Should instantiate fine — extract/crawl have default
-        # supports_*() returning False and aren't required to be
-        # overridden when not advertised.
+        # Should instantiate fine — extract has default supports_*()
+        # returning False and isn't required to be overridden when not
+        # advertised.
         s = SearchOnly()
         assert s.supports_search() is True
         assert s.supports_extract() is False
-        assert s.supports_crawl() is False
 
 
 # ---------------------------------------------------------------------------
