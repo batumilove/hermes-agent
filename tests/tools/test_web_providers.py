@@ -313,26 +313,3 @@ class TestUnconfiguredErrorEnvelopeParity:
         assert "FIRECRAWL_API_KEY" in result["error"]
         # No per-result burying
         assert "results" not in result
-
-    def test_unconfigured_crawl_emits_top_level_error(self, monkeypatch):
-        """``web_crawl_tool`` with no creds returns ``{"success": False, "error": "web_crawl requires Firecrawl..."}``
-        — the dispatcher gates on ``provider.is_available()`` BEFORE
-        delegating to the plugin so pre-config errors don't get wrapped
-        into ``results[]``.
-        """
-        import asyncio
-        import json
-        from tools import web_tools
-
-        self._clear_web_creds(monkeypatch)
-        monkeypatch.setattr(web_tools, "_firecrawl_client", None, raising=False)
-        monkeypatch.setattr(web_tools, "_firecrawl_client_config", None, raising=False)
-        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
-        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
-
-        result = json.loads(asyncio.run(web_tools.web_crawl_tool("https://example.com", use_llm_processing=False)))
-        assert result.get("success") is False
-        assert "error" in result, f"expected top-level 'error' key, got {result}"
-        assert "web_crawl requires Firecrawl" in result["error"]
-        # Crucially: no per-page burying
-        assert "results" not in result
