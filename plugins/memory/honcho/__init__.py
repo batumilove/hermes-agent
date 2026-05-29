@@ -26,15 +26,28 @@ from agent.memory_manager import sanitize_context
 from agent.memory_provider import MemoryProvider
 from plugins.memory.honcho.injection_filter import (
     MemoryChunk,
-    classify_memory,
     filter_stale_memories,
     annotate_chunks,
+    split_and_classify,
     REASON_STABLE_USER_PREFERENCE,
 )
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
+# ActiveGraph event bridge — safe, non-breaking import
+try:
+    from hermes_plugins.activegraph import _emit as _ag_emit
+except Exception:
+    _ag_emit = None  # type: ignore[assignment]
+
+def _ag(event_type: str, payload: dict) -> None:
+    """Emit ActiveGraph event if plugin is loaded."""
+    if _ag_emit is not None:
+        try:
+            _ag_emit(event_type, payload)
+        except Exception:
+            pass
 
 # ---------------------------------------------------------------------------
 # Tool schemas (moved from tools/honcho_tools.py)
@@ -605,11 +618,7 @@ class HonchoMemoryProvider(MemoryProvider):
                     base_context = formatted
 
         if base_context:
-            parts.append(MemoryChunk(
-                text=base_context,
-                reason=classify_memory(base_context),
-                source="base_context",
-            ))
+            parts.extend(split_and_classify(base_context, source="base_context"))
 
         # ----- Layer 2: Dialectic supplement -----
         # On the very first turn, no queue_prefetch() has run yet so the
@@ -683,11 +692,7 @@ class HonchoMemoryProvider(MemoryProvider):
             dialectic_result = ""
 
         if dialectic_result and dialectic_result.strip():
-            parts.append(MemoryChunk(
-                text=dialectic_result,
-                reason=classify_memory(dialectic_result),
-                source="dialectic",
-            ))
+            parts.extend(split_and_classify(dialectic_result, source="dialectic"))
 
         if not parts:
             return ""
@@ -704,6 +709,12 @@ class HonchoMemoryProvider(MemoryProvider):
 
         # ----- Port #3265: token budget enforcement -----
         result = self._truncate_to_budget(result)
+
+        _ag("hermes.honcho.prefetch", {
+            "session_id": session_id or "",
+            "query_preview": (query or "")[:200],
+            "result_len": len(result),
+        })
 
         return result
 
@@ -1154,6 +1165,13 @@ class HonchoMemoryProvider(MemoryProvider):
         clean_user_content = sanitize_context(user_content or "").strip()
         clean_assistant_content = sanitize_context(assistant_content or "").strip()
 
+        _ag("hermes.honcho.sync_turn", {
+            "session_id": session_id,
+            "session_key": self._session_key or "",
+            "user_len": len(clean_user_content),
+            "assistant_len": len(clean_assistant_content),
+        })
+
         def _sync():
             try:
                 session = self._manager.get_or_create(self._session_key)
@@ -1192,6 +1210,13 @@ class HonchoMemoryProvider(MemoryProvider):
             return
         if not self._manager or not self._session_key:
             return
+
+        _ag("hermes.honcho.memory_write", {
+            "action": action,
+            "target": target,
+            "content_preview": (content or "")[:200],
+            "session_key": self._session_key or "",
+        })
 
         def _write():
             try:

@@ -43,6 +43,20 @@ from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
 
+# ActiveGraph event bridge — safe, non-breaking import
+try:
+    from hermes_plugins.activegraph import _emit as _ag_emit
+except Exception:
+    _ag_emit = None  # type: ignore[assignment]
+
+def _ag(event_type: str, payload: dict) -> None:
+    """Emit ActiveGraph event if plugin is loaded."""
+    if _ag_emit is not None:
+        try:
+            _ag_emit(event_type, payload)
+        except Exception:
+            pass
+
 
 class CronPromptInjectionBlocked(Exception):
     """Raised by _build_job_prompt when the fully-assembled prompt trips the
@@ -1940,6 +1954,15 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
 
         def _process_job(job: dict) -> bool:
             """Run one due job end-to-end: execute, save, deliver, mark."""
+            job_id = job.get("id", "?")
+            job_name = str(job.get("name") or job.get("prompt", "")[:60] or job_id)
+            _ag("hermes.cron.started", {
+                "job_id": job_id,
+                "job_name": job_name,
+                "schedule": job.get("schedule_display", ""),
+                "no_agent": job.get("no_agent", False),
+                "has_script": bool(job.get("script")),
+            })
             try:
                 success, output, final_response, error = run_job(job)
 
@@ -1974,11 +1997,26 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     success = False
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
+                _ag("hermes.cron.completed" if success else "hermes.cron.failed", {
+                    "job_id": job_id,
+                    "job_name": job_name,
+                    "success": success,
+                    "output_len": len(output) if output else 0,
+                    "response_len": len(final_response) if final_response else 0,
+                    "error": (error or "")[:500],
+                })
+
                 mark_job_run(job["id"], success, error, delivery_error=delivery_error)
                 return True
 
             except Exception as e:
                 logger.error("Error processing job %s: %s", job['id'], e)
+                _ag("hermes.cron.failed", {
+                    "job_id": job.get("id", "?"),
+                    "job_name": str(job.get("name") or job.get("prompt", "")[:60] or "?"),
+                    "success": False,
+                    "error": f"{type(e).__name__}: {str(e)}"[:500],
+                })
                 mark_job_run(job["id"], False, str(e))
                 return False
 
