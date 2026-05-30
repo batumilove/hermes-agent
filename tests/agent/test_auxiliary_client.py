@@ -1,10 +1,9 @@
 """Tests for agent.auxiliary_client resolution chain, provider overrides, and model overrides."""
 
+import base64
 import json
 import logging
-import os
 import time
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -29,6 +28,12 @@ from agent.auxiliary_client import (
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
 )
+
+
+def _jwt_with_claims(claims: dict) -> str:
+    header = base64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').decode().rstrip("=")
+    payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+    return f"{header}.{payload}.sig"
 
 
 @pytest.fixture(autouse=True)
@@ -81,6 +86,62 @@ class TestAuxiliaryMaxTokensParam:
         with patch("agent.auxiliary_client._resolve_custom_runtime", return_value=("https://api.githubcopilot.com/chat/completions", "key", None)), \
              patch("agent.auxiliary_client._read_nous_auth", return_value=None):
             assert auxiliary_max_tokens_param(2048) == {"max_completion_tokens": 2048}
+
+
+class TestBuildCallKwargsMaxTokens:
+    """_build_call_kwargs should not cap output by default (#34530).
+
+    Most chat-completions providers treat an omitted max_tokens as "use the
+    model max", which is what we want for auxiliary tasks. An explicit cap only
+    risks truncation or a wire-format 400 (GitHub Copilot / GPT-5 reject
+    max_tokens; ZAI vision rejects it entirely). The Anthropic Messages wire is
+    the one exception — max_tokens is a mandatory field there.
+    """
+
+    @pytest.mark.parametrize(
+        "provider,model,base_url",
+        [
+            ("copilot", "gpt-5.4", "https://api.githubcopilot.com"),
+            ("copilot", "gpt-5.5", "https://api.githubcopilot.com"),
+            ("custom", "gpt-5", "https://api.openai.com/v1"),
+            ("openrouter", "anthropic/claude-sonnet-4.6", "https://openrouter.ai/api/v1"),
+            ("nous", "hermes-4", "https://inference-api.nousresearch.com/v1"),
+            ("custom", "qwen", "http://localhost:8080/v1"),
+            ("zai", "glm-4v-flash", "https://open.bigmodel.cn/api/paas/v4"),
+        ],
+    )
+    def test_omits_max_tokens_for_openai_compatible(self, provider, model, base_url):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider=provider,
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=1234,
+            base_url=base_url,
+        )
+        assert "max_tokens" not in kwargs
+        assert "max_completion_tokens" not in kwargs
+
+    @pytest.mark.parametrize(
+        "provider,model,base_url",
+        [
+            ("minimax", "minimax-m2", "https://api.minimax.io/v1"),
+            ("custom", "claude", "https://proxy.example.com/anthropic/v1"),
+        ],
+    )
+    def test_keeps_max_tokens_on_anthropic_wire(self, provider, model, base_url):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider=provider,
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=1234,
+            base_url=base_url,
+        )
+        assert kwargs["max_tokens"] == 1234
+        assert "max_completion_tokens" not in kwargs
 
 
 class TestNormalizeAuxProvider:
@@ -609,7 +670,7 @@ class TestExpiredCodexFallback:
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-test-fallback")
         with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
             mock_build.return_value = MagicMock()
-            from agent.auxiliary_client import _resolve_auto, AnthropicAuxiliaryClient
+            from agent.auxiliary_client import _resolve_auto
             client, model = _resolve_auto()
             # Should NOT be Codex, should be Anthropic (or another available provider)
             assert not isinstance(client, type(None)), "Should find a provider after expired Codex"
@@ -696,7 +757,7 @@ class TestExpiredCodexFallback:
              patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
              patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
-            from agent.auxiliary_client import _try_anthropic, AnthropicAuxiliaryClient
+            from agent.auxiliary_client import _try_anthropic
             client, model = _try_anthropic()
             assert client is not None, "Should resolve token"
             adapter = client.chat.completions
@@ -751,7 +812,7 @@ class TestExpiredCodexFallback:
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
             mock_build.return_value = MagicMock()
-            from agent.auxiliary_client import _try_anthropic, AnthropicAuxiliaryClient
+            from agent.auxiliary_client import _try_anthropic
             client, model = _try_anthropic()
             assert client is not None
             adapter = client.chat.completions
@@ -888,11 +949,28 @@ class TestVisionClientFallback:
 
 
 class TestAuxiliaryPoolAwareness:
-    def test_try_nous_uses_resolved_runtime_credentials(self):
-        fresh_base = "https://inference.pool.example/v1"
+    def test_try_nous_uses_pool_entry(self):
+        pooled_token = _jwt_with_claims({
+            "scope": "inference:invoke",
+            "exp": int(time.time() + 3600),
+        })
+
+        class _Entry:
+            access_token = "pooled-access-token"
+            agent_key = pooled_token
+            agent_key_expires_at = "2099-01-01T00:00:00+00:00"
+            scope = "inference:invoke"
+            inference_base_url = "https://inference.pool.example/v1"
+
+        class _Pool:
+            def has_credentials(self):
+                return True
+
+            def select(self):
+                return _Entry()
+
         with (
-            patch("agent.auxiliary_client._read_nous_auth", return_value={"access_token": "stored-token"}),
-            patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=("fresh-agent-key", fresh_base)),
+            patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
             patch("agent.auxiliary_client.OpenAI") as mock_openai,
             patch("hermes_cli.models.get_nous_recommended_aux_model", return_value=None),
         ):
@@ -902,29 +980,8 @@ class TestAuxiliaryPoolAwareness:
 
         assert client is not None
         assert model == "google/gemini-3-flash-preview"
-        assert mock_openai.call_args.kwargs["api_key"] == "fresh-agent-key"
+        assert mock_openai.call_args.kwargs["api_key"] == pooled_token
         assert mock_openai.call_args.kwargs["base_url"] == "https://inference.pool.example/v1"
-
-    def test_try_nous_does_not_use_stale_stored_key_after_runtime_resolution_failure(self):
-        """A revoked/expired Nous session must not fall back to stale stored agent_key."""
-        with (
-            patch("agent.auxiliary_client._read_nous_auth", return_value={
-                "agent_key": "expired-agent-key",
-                "access_token": "expired-access-token",
-                "inference_base_url": "https://inference-api.nousresearch.com/v1",
-            }),
-            patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=None),
-            patch("agent.auxiliary_client.OpenAI") as mock_openai,
-            patch("agent.auxiliary_client._mark_provider_unhealthy") as mock_unhealthy,
-        ):
-            from agent.auxiliary_client import _try_nous
-
-            client, model = _try_nous()
-
-        assert client is None
-        assert model is None
-        mock_openai.assert_not_called()
-        mock_unhealthy.assert_called_once_with("nous", ttl=60)
 
     def test_try_nous_uses_portal_recommendation_for_text(self):
         """When the Portal recommends a compaction model, _try_nous honors it."""

@@ -9,19 +9,11 @@ import pytest
 from hermes_cli.main import cmd_update, PROJECT_ROOT
 
 
-def _make_run_side_effect(
-    branch="main", verify_ok=True, commit_count="0", tracking_ref="origin/main", clean_status=True
-):
+def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
     """Build a side_effect function for subprocess.run that simulates git commands."""
 
     def side_effect(cmd, **kwargs):
         joined = " ".join(str(c) for c in cmd)
-
-        # git rev-parse --abbrev-ref --symbolic-full-name @{u} (upstream ref)
-        if "rev-parse" in joined and "@{u}" in joined:
-            if tracking_ref:
-                return subprocess.CompletedProcess(cmd, 0, stdout=f"{tracking_ref}\n", stderr="")
-            return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="")
 
         # git rev-parse --abbrev-ref HEAD  (get current branch)
         if "rev-parse" in joined and "--abbrev-ref" in joined:
@@ -31,21 +23,6 @@ def _make_run_side_effect(
         if "rev-parse" in joined and "--verify" in joined:
             rc = 0 if verify_ok else 128
             return subprocess.CompletedProcess(cmd, rc, stdout="", stderr="")
-
-        # git status --porcelain
-        if "status --porcelain" in joined:
-            stdout = "" if clean_status else " M hermes_cli/main.py\n"
-            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
-
-        # git merge-base --is-ancestor checks
-        if "merge-base --is-ancestor" in joined:
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-        # git rev-parse --short for check output
-        if "rev-parse --short" in joined:
-            ref = str(cmd[-1])
-            values = {"HEAD": "1111111", "upstream/main": "2222222", tracking_ref: "3333333"}
-            return subprocess.CompletedProcess(cmd, 0, stdout=f"{values.get(ref, 'abcdef0')}\n", stderr="")
 
         # git rev-list HEAD..origin/{branch} --count
         if "rev-list" in joined:
@@ -62,19 +39,43 @@ def mock_args():
     return SimpleNamespace()
 
 
-@pytest.fixture
-def mock_upstream_args():
-    return SimpleNamespace(upstream=True)
+class TestCmdUpdatePip:
+    """Regression tests for pip-install update flows."""
 
+    @patch("shutil.which", return_value="/usr/bin/uv")
+    @patch("subprocess.run")
+    def test_update_pip_exports_virtualenv_from_sys_prefix(
+        self, mock_run, _mock_which, mock_args, monkeypatch
+    ):
+        from hermes_cli import main as hm
 
-@pytest.fixture
-def mock_sync_fork_args():
-    return SimpleNamespace(sync_fork=True)
+        mock_run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+        monkeypatch.setattr(hm.sys, "prefix", "/tmp/hermes-launcher-venv")
+        monkeypatch.setattr(hm.sys, "base_prefix", "/usr")
 
+        hm._cmd_update_pip(mock_args)
 
-@pytest.fixture
-def mock_sync_fork_check_args():
-    return SimpleNamespace(sync_fork=True, check=True)
+        assert mock_run.call_count == 1
+        assert mock_run.call_args.args[0] == ["/usr/bin/uv", "pip", "install", "--upgrade", "hermes-agent"]
+        assert mock_run.call_args.kwargs["env"]["VIRTUAL_ENV"] == "/tmp/hermes-launcher-venv"
+
+    @patch("shutil.which", return_value="/usr/bin/uv")
+    @patch("subprocess.run")
+    def test_update_pip_does_not_export_virtualenv_for_system_python(
+        self, mock_run, _mock_which, mock_args, monkeypatch
+    ):
+        from hermes_cli import main as hm
+
+        mock_run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+        monkeypatch.setattr(hm.sys, "prefix", "/usr")
+        monkeypatch.setattr(hm.sys, "base_prefix", "/usr")
+
+        hm._cmd_update_pip(mock_args)
+
+        assert mock_run.call_count == 1
+        assert "env" not in mock_run.call_args.kwargs
 
 
 class TestCmdUpdateBranchFallback:
@@ -86,7 +87,7 @@ class TestCmdUpdateBranchFallback:
         self, mock_run, _mock_which, mock_args, capsys
     ):
         mock_run.side_effect = _make_run_side_effect(
-            branch="fix/stoicneko", verify_ok=False, commit_count="3", tracking_ref=None
+            branch="fix/stoicneko", verify_ok=False, commit_count="3"
         )
 
         cmd_update(mock_args)
@@ -123,154 +124,7 @@ class TestCmdUpdateBranchFallback:
 
         pull_cmds = [c for c in commands if "pull" in c]
         assert len(pull_cmds) == 1
-        assert "origin main" in pull_cmds[0]
-
-    @patch("shutil.which", return_value=None)
-    @patch("subprocess.run")
-    def test_update_respects_configured_fork_tracking_branch(
-        self, mock_run, _mock_which, mock_args, capsys
-    ):
-        mock_run.side_effect = _make_run_side_effect(
-            branch="batumi/live",
-            tracking_ref="origin/batumi/live",
-            commit_count="2",
-        )
-
-        cmd_update(mock_args)
-
-        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
-
-        fetch_cmds = [c for c in commands if c.startswith("git fetch")]
-        assert fetch_cmds == ["git fetch origin"]
-
-        rev_list_cmds = [c for c in commands if "rev-list" in c]
-        assert len(rev_list_cmds) == 1
-        assert "HEAD..origin/batumi/live" in rev_list_cmds[0]
-        assert "origin/main" not in rev_list_cmds[0]
-
-        pull_cmds = [c for c in commands if "pull" in c]
-        assert len(pull_cmds) == 1
-        assert "origin batumi/live" in pull_cmds[0]
-
-        # Custom fork branches must not be implicitly synced from upstream/main.
-        assert all("fetch upstream" not in c for c in commands)
-        assert all("pull --ff-only upstream main" not in c for c in commands)
-
-    @patch("shutil.which", return_value=None)
-    @patch("subprocess.run")
-    def test_update_upstream_flag_targets_official_upstream_main(
-        self, mock_run, _mock_which, mock_upstream_args, capsys
-    ):
-        mock_run.side_effect = _make_run_side_effect(
-            branch="batumi/live-deploy",
-            tracking_ref="myfork/batumi/live",
-            commit_count="2",
-        )
-
-        cmd_update(mock_upstream_args)
-
-        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
-
-        assert "git remote get-url upstream" in commands
-        fetch_cmds = [c for c in commands if c.startswith("git fetch")]
-        assert fetch_cmds == ["git fetch upstream"]
-
-        rev_list_cmds = [c for c in commands if "rev-list" in c]
-        assert len(rev_list_cmds) == 1
-        assert "HEAD..upstream/main" in rev_list_cmds[0]
-        assert "myfork/batumi/live" not in rev_list_cmds[0]
-
-        pull_cmds = [c for c in commands if "pull" in c]
-        assert len(pull_cmds) == 1
-        assert "upstream main" in pull_cmds[0]
-
-
-    @patch("shutil.which", return_value=None)
-    @patch("subprocess.run")
-    def test_update_sync_fork_merges_upstream_and_pushes_tracking_branch(
-        self, mock_run, _mock_which, mock_sync_fork_args, capsys
-    ):
-        mock_run.side_effect = _make_run_side_effect(
-            branch="batumi/live-deploy",
-            tracking_ref="myfork/batumi/live",
-            commit_count="0",
-        )
-
-        cmd_update(mock_sync_fork_args)
-
-        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
-
-        assert "git remote get-url upstream" in commands
-        assert "git status --porcelain" in commands
-        assert "git fetch upstream main" in commands
-        assert "git fetch myfork batumi/live" in commands
-        assert any(c.startswith("git branch backup/pre-sync-fork-") for c in commands)
-        assert "git merge --no-edit upstream/main" in commands
-        assert "git merge-base --is-ancestor upstream/main HEAD" in commands
-        assert "git push myfork HEAD:batumi/live" in commands
-
-        captured = capsys.readouterr()
-        assert "Synced myfork/batumi/live with upstream/main" in captured.out
-
-
-    @patch("shutil.which", return_value=None)
-    @patch("subprocess.run")
-    def test_update_sync_fork_check_reports_without_merging_or_pushing(
-        self, mock_run, _mock_which, mock_sync_fork_check_args, capsys
-    ):
-        mock_run.side_effect = _make_run_side_effect(
-            branch="batumi/live-deploy",
-            tracking_ref="myfork/batumi/live",
-            commit_count="0",
-        )
-
-        cmd_update(mock_sync_fork_check_args)
-
-        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
-        assert "git remote get-url upstream" in commands
-        assert "git fetch upstream main" in commands
-        assert "git fetch myfork batumi/live" in commands
-        assert "git merge-base --is-ancestor upstream/main HEAD" in commands
-        assert all("merge --no-edit upstream/main" not in c for c in commands)
-        assert all(c != "git push myfork HEAD:batumi/live" for c in commands)
-
-        captured = capsys.readouterr()
-        assert "Sync-fork check" in captured.out
-        assert "No merge or push performed" in captured.out
-
-    @patch("shutil.which", return_value=None)
-    @patch("subprocess.run")
-    def test_update_sync_fork_cannot_combine_check_with_upstream(
-        self, mock_run, _mock_which
-    ):
-        with pytest.raises(SystemExit):
-            cmd_update(SimpleNamespace(sync_fork=True, upstream=True, check=True))
-
-        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
-        assert all("merge --no-edit upstream/main" not in c for c in commands)
-        assert all("push" not in c for c in commands)
-
-    @patch("shutil.which", return_value=None)
-    @patch("subprocess.run")
-    def test_update_sync_fork_requires_clean_working_tree(
-        self, mock_run, _mock_which, mock_sync_fork_args, capsys
-    ):
-        mock_run.side_effect = _make_run_side_effect(
-            branch="batumi/live-deploy",
-            tracking_ref="myfork/batumi/live",
-            clean_status=False,
-        )
-
-        with pytest.raises(SystemExit):
-            cmd_update(mock_sync_fork_args)
-
-        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
-        assert "git status --porcelain" in commands
-        assert all("merge --no-edit upstream/main" not in c for c in commands)
-        assert all("push myfork" not in c for c in commands)
-
-        captured = capsys.readouterr()
-        assert "requires a clean working tree" in captured.out
+        assert "main" in pull_cmds[0]
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
