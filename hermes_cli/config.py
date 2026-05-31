@@ -205,6 +205,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL",
     "IRC_USE_TLS", "IRC_SERVER_PASSWORD", "IRC_NICKSERV_PASSWORD",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
+    "TERMINAL_KATA_IMAGE", "TERMINAL_KATA_NAMESPACE", "TERMINAL_KATA_KUBECONFIG",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_HOME_CHANNEL_NAME", "MATTERMOST_REPLY_MODE",
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
@@ -824,6 +825,9 @@ DEFAULT_CONFIG = {
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+        "kata_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+        "kata_namespace": "sandbox",
+        "kata_kubeconfig": "",
         # Container resource limits (docker, singularity, modal, daytona — ignored for local/ssh)
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
@@ -5486,6 +5490,11 @@ def show_config():
         print(f"  Daytona image: {terminal.get('daytona_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
         daytona_key = get_env_value('DAYTONA_API_KEY')
         print(f"  API key:      {'configured' if daytona_key else '(not set)'}")
+    elif terminal.get('backend') == 'kata':
+        print(f"  Kata image:   {terminal.get('kata_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
+        print(f"  Namespace:    {terminal.get('kata_namespace', 'sandbox')}")
+        kubeconfig = terminal.get('kata_kubeconfig', '')
+        print(f"  Kubeconfig:   {kubeconfig or '(kubectl default context)'}")
     elif terminal.get('backend') == 'ssh':
         ssh_host = get_env_value('TERMINAL_SSH_HOST')
         ssh_user = get_env_value('TERMINAL_SSH_USER')
@@ -5682,6 +5691,9 @@ def set_config_value(key: str, value: str):
         "terminal.singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "terminal.modal_image": "TERMINAL_MODAL_IMAGE",
         "terminal.daytona_image": "TERMINAL_DAYTONA_IMAGE",
+        "terminal.kata_image": "TERMINAL_KATA_IMAGE",
+        "terminal.kata_namespace": "TERMINAL_KATA_NAMESPACE",
+        "terminal.kata_kubeconfig": "TERMINAL_KATA_KUBECONFIG",
         "terminal.docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
         "terminal.docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
         "terminal.docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",

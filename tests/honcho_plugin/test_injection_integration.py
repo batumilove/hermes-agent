@@ -252,3 +252,144 @@ class TestPrefetchAnnotationFormat:
 
         # Should contain at least one [reason: ...] annotation
         assert "[reason:" in result
+
+
+# ---------------------------------------------------------------------------
+# Mixed-content filtering via prefetch()
+# ---------------------------------------------------------------------------
+
+
+class TestPrefetchMixedContentFiltering:
+    """prefetch() correctly handles mixed content within the same block.
+
+    Before split_and_classify, wrapping a whole base_context or dialectic
+    block as a single MemoryChunk meant:
+      - classify_memory() returned the first matching reason for the entire
+        text, so a block with both "user prefers X" and "submitted PR #123"
+        was classified as stable_user_preference, leaking task-progress.
+      - OR the reverse: task_progress matched first, the whole chunk was
+        dropped, and the user preference was lost.
+
+    With split_and_classify, each line is classified independently so that
+    filter_stale_memories() can suppress task-progress lines while preserving
+    stable preferences in the same formatted block.
+    """
+
+    def test_mixed_base_context_retains_preference_suppresses_progress(self):
+        """base_context with preference + task-progress: only preference survives."""
+        provider = _make_provider()
+        provider._session_key = "test"
+        provider._base_context_cache = (
+            "User prefers concise responses\n"
+            "Fixed bug X and submitted PR #123"
+        )
+        provider._turn_count = 5
+        provider._last_dialectic_turn = 0
+
+        result = provider.prefetch("what do you know?")
+
+        assert result != ""
+        assert "User prefers concise responses" in result
+        assert REASON_STABLE_USER_PREFERENCE in result
+        # task-progress line should NOT appear
+        assert "submitted PR #123" not in result
+        assert "Fixed bug X" not in result
+
+    def test_mixed_base_context_project_survives_progress_filtered(self):
+        """base_context with project fact + task-progress: project survives."""
+        provider = _make_provider()
+        provider._session_key = "test"
+        provider._base_context_cache = (
+            "Phase 2 done, commit abc1234\n"
+            "Project uses pytest with xdist"
+        )
+        provider._turn_count = 5
+        provider._last_dialectic_turn = 0
+
+        result = provider.prefetch("project info?")
+
+        assert result != ""
+        assert "Project uses pytest with xdist" in result
+        assert REASON_ACTIVE_PROJECT_MATCH in result
+        assert "Phase 2 done" not in result
+
+    def test_mixed_dialectic_preference_survives_progress_filtered(self):
+        """dialectic with preference + task-progress: preference survives."""
+        provider = _make_provider()
+        provider._session_key = "test"
+        provider._base_context_cache = ""
+        provider._turn_count = 5
+
+        provider._prefetch_result = (
+            "Phase 2 done, commit abc1234\n"
+            "User prefers dark mode"
+        )
+        provider._prefetch_result_fired_at = 3
+        provider._last_dialectic_turn = 3
+
+        result = provider.prefetch("preferences?")
+
+        assert result != ""
+        assert "User prefers dark mode" in result
+        assert "Phase 2 done" not in result
+
+    def test_mixed_correction_and_progress_in_same_dialectic(self):
+        """dialectic with correction + task-progress: correction survives."""
+        provider = _make_provider()
+        provider._session_key = "test"
+        provider._base_context_cache = ""
+        provider._turn_count = 5
+
+        provider._prefetch_result = (
+            "Submitted PR #456 and closed issue #789\n"
+            "Corrected: user timezone is PST, not EST"
+        )
+        provider._prefetch_result_fired_at = 3
+        provider._last_dialectic_turn = 3
+
+        result = provider.prefetch("timezone?")
+
+        assert result != ""
+        assert "Corrected: user timezone is PST" in result
+        assert REASON_RECENT_CORRECTION in result
+        assert "Submitted PR #456" not in result
+
+    def test_mixed_both_layers_filtered_independently(self):
+        """base_context preference + dialectic task-progress: only preference survives."""
+        provider = _make_provider()
+        provider._session_key = "test"
+        provider._base_context_cache = "User prefers concise responses"
+        provider._turn_count = 5
+
+        # dialectic is task-progress only → should be fully suppressed
+        provider._prefetch_result = "Phase 2 done, commit abc1234"
+        provider._prefetch_result_fired_at = 3
+        provider._last_dialectic_turn = 3
+
+        result = provider.prefetch("summary?")
+
+        assert result != ""
+        assert "User prefers concise responses" in result
+        assert "Phase 2 done" not in result
+
+    def test_three_way_mixed_block(self):
+        """A block with preference + progress + project fact: keeps pref + project."""
+        provider = _make_provider()
+        provider._session_key = "test"
+        provider._base_context_cache = (
+            "User prefers dark mode\n"
+            "Phase 2 done, commit abc1234\n"
+            "Project uses pytest with xdist"
+        )
+        provider._turn_count = 5
+        provider._last_dialectic_turn = 0
+
+        result = provider.prefetch("info?")
+
+        assert result != ""
+        assert "User prefers dark mode" in result
+        assert "Project uses pytest with xdist" in result
+        assert "Phase 2 done" not in result
+        # Both reasons should be present
+        assert REASON_STABLE_USER_PREFERENCE in result
+        assert REASON_ACTIVE_PROJECT_MATCH in result

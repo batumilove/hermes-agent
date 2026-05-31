@@ -1,0 +1,501 @@
+     1|<!DOCTYPE html>
+     2|<html lang="en">
+     3|<head>
+     4|  <meta charset="UTF-8" />
+     5|  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+     6|  <title>Batumi Panorama — Story Dashboard</title>
+     7|  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+     8|  <style>
+     9|    :root {
+    10|      --bg: #07090d;
+    11|      --bg-soft: #0d1016;
+    12|      --panel: rgba(16, 20, 29, 0.74);
+    13|      --panel-2: rgba(18, 24, 34, 0.92);
+    14|      --text: #f7f8f8;
+    15|      --muted: #a1a8b6;
+    16|      --muted-2: #727887;
+    17|      --border: rgba(255,255,255,0.08);
+    18|      --border-soft: rgba(255,255,255,0.05);
+    19|      --brand: #7170ff;
+    20|      --brand-2: #5e6ad2;
+    21|      --danger: #ff6f85;
+    22|      --danger-soft: rgba(255,111,133,0.14);
+    23|      --warn: #ffbe63;
+    24|      --warn-soft: rgba(255,190,99,0.16);
+    25|      --ok: #57d68d;
+    26|      --shadow: 0 30px 80px rgba(0,0,0,0.42);
+    27|      --radius-xl: 28px;
+    28|      --radius-lg: 20px;
+    29|      --radius-md: 14px;
+    30|      --max: 1420px;
+    31|    }
+    32|
+    33|    * { box-sizing: border-box; }
+    34|    html, body { margin: 0; padding: 0; }
+    35|    body {
+    36|      font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    37|      font-feature-settings: 'cv01', 'ss03';
+    38|      color: var(--text);
+    39|      background:
+    40|        radial-gradient(900px 500px at 15% -10%, rgba(113,112,255,0.18), transparent 55%),
+    41|        radial-gradient(700px 420px at 90% 8%, rgba(255,111,133,0.16), transparent 45%),
+    42|        linear-gradient(180deg, #050608 0%, #090c12 100%);
+    43|      line-height: 1.5;
+    44|    }
+    45|
+    46|    .wrap { width: min(calc(100vw - 28px), var(--max)); margin: 0 auto; padding: 20px 0 60px; }
+    47|    .glass {
+    48|      background: var(--panel);
+    49|      border: 1px solid var(--border-soft);
+    50|      box-shadow: var(--shadow);
+    51|      backdrop-filter: blur(18px) saturate(140%);
+    52|      -webkit-backdrop-filter: blur(18px) saturate(140%);
+    53|      border-radius: var(--radius-xl);
+    54|    }
+    55|
+    56|    .hero {
+    57|      position: relative;
+    58|      overflow: hidden;
+    59|      min-height: 86vh;
+    60|      display: grid;
+    61|      grid-template-columns: 1.12fr 0.88fr;
+    62|      gap: 20px;
+    63|      margin-bottom: 18px;
+    64|      padding: 22px;
+    65|      background:
+    66|        linear-gradient(90deg, rgba(7,9,13,0.86) 0%, rgba(7,9,13,0.68) 42%, rgba(7,9,13,0.42) 60%, rgba(7,9,13,0.28) 100%),
+    67|        url('batumi-panorama-assets/hero.jpg') center/cover no-repeat;
+    68|    }
+    69|
+    70|    .hero::after {
+    71|      content: '';
+    72|      position: absolute;
+    73|      inset: auto 0 0 0;
+    74|      height: 34%;
+    75|      background: linear-gradient(180deg, transparent, rgba(5,6,8,0.78));
+    76|      pointer-events: none;
+    77|    }
+    78|
+    79|    .hero-copy, .hero-side { position: relative; z-index: 2; }
+    80|    .hero-copy { align-self: end; padding: 8px 6px 14px 6px; }
+    81|    .eyebrow {
+    82|      color: #d0d6e0;
+    83|      font-size: 12px;
+    84|      letter-spacing: 0.18em;
+    85|      text-transform: uppercase;
+    86|      font-weight: 700;
+    87|      margin-bottom: 16px;
+    88|      opacity: 0.9;
+    89|    }
+    90|    h1 {
+    91|      margin: 0 0 14px;
+    92|      max-width: 9.5ch;
+    93|      font-size: clamp(42px, 7vw, 86px);
+    94|      line-height: 0.96;
+    95|      letter-spacing: -0.06em;
+    96|      font-weight: 700;
+    97|    }
+    98|    .hero-sub {
+    99|      max-width: 54ch;
+   100|      color: #d0d6e0;
+   101|      font-size: 19px;
+   102|      line-height: 1.55;
+   103|      margin-bottom: 18px;
+   104|    }
+   105|    .emotion-line {
+   106|      display: flex; flex-wrap: wrap; gap: 10px;
+   107|    }
+   108|    .pill {
+   109|      display: inline-flex; align-items: center; gap: 8px;
+   110|      padding: 10px 14px; border-radius: 999px;
+   111|      background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+   112|      color: #f7f8f8; font-size: 13px;
+   113|    }
+   114|
+   115|    .hero-side {
+   116|      display: grid;
+   117|      align-content: space-between;
+   118|      gap: 16px;
+   119|      padding: 4px 0 4px 10px;
+   120|    }
+   121|
+   122|    .verdict-card, .stats-card {
+   123|      background: rgba(14,18,26,0.72);
+   124|      border: 1px solid var(--border);
+   125|      border-radius: 24px;
+   126|      padding: 20px;
+   127|      box-shadow: 0 18px 50px rgba(0,0,0,0.32);
+   128|    }
+   129|
+   130|    .verdict-kicker, .stats-kicker, .section-kicker {
+   131|      font-size: 11px; text-transform: uppercase; letter-spacing: 0.16em; color: var(--muted-2); font-weight: 700;
+   132|      margin-bottom: 12px;
+   133|    }
+   134|    .verdict-card h2 {
+   135|      margin: 0 0 12px; font-size: 28px; line-height: 1.05; letter-spacing: -0.04em;
+   136|    }
+   137|    .verdict-card p { margin: 0; color: var(--muted); font-size: 15px; }
+   138|
+   139|    .meter {
+   140|      width: 100%; height: 12px; border-radius: 999px; overflow: hidden;
+   141|      background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.04); margin: 14px 0 10px;
+   142|    }
+   143|    .meter > div {
+   144|      height: 100%; width: 32%;
+   145|      background: linear-gradient(90deg, var(--danger), var(--warn));
+   146|      box-shadow: 0 0 18px rgba(255,111,133,0.28);
+   147|    }
+   148|    .score-row { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 13px; }
+   149|
+   150|    .mini-stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-top: 8px; }
+   151|    .mini {
+   152|      padding: 14px; border-radius: 16px; background: rgba(255,255,255,0.03); border: 1px solid var(--border-soft);
+   153|    }
+   154|    .mini .num { font-size: 26px; font-weight: 800; letter-spacing: -0.05em; margin-bottom: 4px; }
+   155|    .mini .lab { color: var(--muted); font-size: 12px; }
+   156|
+   157|    .section { margin-bottom: 18px; padding: 22px; }
+   158|    .section-head { display:flex; justify-content:space-between; align-items:end; gap:14px; margin-bottom:16px; }
+   159|    .section-head h2 { margin: 0 0 8px; font-size: 30px; line-height: 1.02; letter-spacing: -0.04em; }
+   160|    .section-sub { max-width: 70ch; color: var(--muted); font-size: 15px; }
+   161|
+   162|    .story-grid { display:grid; grid-template-columns: 1.05fr 0.95fr; gap:18px; }
+   163|    .photo-card {
+   164|      position: relative; overflow: hidden; min-height: 400px;
+   165|      border-radius: 24px; border: 1px solid var(--border);
+   166|      background: linear-gradient(180deg, rgba(0,0,0,0.1), rgba(0,0,0,0.62)), url('batumi-panorama-assets/apt1.jpg') center/cover no-repeat;
+   167|    }
+   168|    .photo-card .overlay {
+   169|      position: absolute; left: 0; right: 0; bottom: 0; padding: 20px;
+   170|      background: linear-gradient(180deg, transparent, rgba(5,6,8,0.86));
+   171|    }
+   172|    .photo-card .title { font-size: 28px; line-height: 1.04; letter-spacing: -0.04em; margin-bottom: 8px; }
+   173|    .photo-card .body { color: #d0d6e0; max-width: 44ch; }
+   174|
+   175|    .root-causes { display:grid; gap:12px; }
+   176|    .cause {
+   177|      padding: 16px; border-radius: 18px; background: rgba(255,255,255,0.03); border: 1px solid var(--border-soft);
+   178|    }
+   179|    .cause .tag { color: var(--danger); font-size: 11px; text-transform: uppercase; letter-spacing: 0.14em; font-weight: 700; margin-bottom: 8px; }
+   180|    .cause h3 { margin: 0 0 8px; font-size: 19px; line-height: 1.08; }
+   181|    .cause p { margin: 0; color: var(--muted); font-size: 14px; }
+   182|
+   183|    .emotion-strip {
+   184|      display:grid; grid-template-columns: repeat(4,1fr); gap:12px;
+   185|    }
+   186|    .emotion {
+   187|      min-height: 140px; border-radius: 20px; padding: 18px; border:1px solid var(--border-soft);
+   188|      background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.02));
+   189|    }
+   190|    .emotion .step { color: var(--muted-2); font-size: 11px; text-transform: uppercase; letter-spacing: 0.14em; margin-bottom: 10px; font-weight: 700; }
+   191|    .emotion h3 { margin: 0 0 8px; font-size: 24px; letter-spacing: -0.04em; }
+   192|    .emotion p { margin: 0; color: var(--muted); }
+   193|
+   194|    .timeline {
+   195|      position: relative; padding: 18px 0 2px;
+   196|    }
+   197|    .timeline-line {
+   198|      position: absolute; left: 30px; top: 10px; bottom: 10px; width: 2px;
+   199|      background: linear-gradient(180deg, rgba(113,112,255,0.5), rgba(255,111,133,0.7));
+   200|      border-radius: 999px;
+   201|    }
+   202|    .event { position: relative; padding-left: 68px; padding-bottom: 24px; }
+   203|    .event:last-child { padding-bottom: 6px; }
+   204|    .dot {
+   205|      position: absolute; left: 20px; top: 2px; width: 22px; height: 22px; border-radius: 50%;
+   206|      border: 2px solid rgba(255,255,255,0.85); background: var(--brand); box-shadow: 0 0 0 8px rgba(113,112,255,0.14);
+   207|    }
+   208|    .dot.warn { background: var(--warn); box-shadow: 0 0 0 8px rgba(255,190,99,0.14); }
+   209|    .dot.danger { background: var(--danger); box-shadow: 0 0 0 8px rgba(255,111,133,0.14); }
+   210|    .event .date { color: var(--muted-2); font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; font-weight: 700; margin-bottom: 8px; }
+   211|    .event h3 { margin: 0 0 8px; font-size: 22px; letter-spacing: -0.03em; }
+   212|    .event p { margin: 0; color: var(--muted); max-width: 52ch; }
+   213|
+   214|    .collage {
+   215|      display:grid; grid-template-columns: 1.1fr 0.9fr; gap: 12px; min-height: 520px;
+   216|    }
+   217|    .collage-main, .stack-top, .stack-bottom {
+   218|      border-radius: 22px; overflow: hidden; border: 1px solid var(--border);
+   219|      position: relative;
+   220|      background-size: cover; background-position: center;
+   221|    }
+   222|    .collage-main { background-image: linear-gradient(180deg, rgba(0,0,0,0.06), rgba(0,0,0,0.7)), url('batumi-panorama-assets/apt2.jpg'); min-height: 520px; }
+   223|    .stack { display:grid; grid-template-rows: 1fr 1fr; gap:12px; }
+   224|    .stack-top { background-image: linear-gradient(180deg, rgba(0,0,0,0.08), rgba(0,0,0,0.72)), url('batumi-panorama-assets/apt3.jpg'); }
+   225|    .stack-bottom { background-image: linear-gradient(180deg, rgba(0,0,0,0.08), rgba(0,0,0,0.72)), url('batumi-panorama-assets/hero.jpg'); }
+   226|    .caption {
+   227|      position:absolute; left:0; right:0; bottom:0; padding:18px;
+   228|      background: linear-gradient(180deg, transparent, rgba(5,6,8,0.85));
+   229|    }
+   230|    .caption h3 { margin:0 0 8px; font-size:24px; letter-spacing:-0.04em; }
+   231|    .caption p { margin:0; color:#d0d6e0; font-size:14px; max-width:42ch; }
+   232|
+   233|    .problems-grid { display:grid; grid-template-columns: repeat(3,1fr); gap:12px; }
+   234|    .problem {
+   235|      padding: 16px; border-radius: 18px; border:1px solid var(--border-soft);
+   236|      background: rgba(255,255,255,0.03);
+   237|    }
+   238|    .problem .k { color: var(--warn); font-size: 11px; text-transform: uppercase; letter-spacing: .14em; font-weight: 700; margin-bottom: 8px; }
+   239|    .problem h3 { margin:0 0 8px; font-size: 18px; }
+   240|    .problem p { margin:0; color:var(--muted); font-size:14px; }
+   241|
+   242|    .meeting-grid { display:grid; grid-template-columns: 0.9fr 1.1fr; gap:18px; }
+   243|    .big-quote {
+   244|      display:flex; align-items:center; justify-content:center; min-height:100%;
+   245|      border-radius: 24px; padding: 24px;
+   246|      background: linear-gradient(180deg, rgba(113,112,255,0.12), rgba(255,111,133,0.08));
+   247|      border: 1px solid rgba(255,255,255,0.08);
+   248|    }
+   249|    .big-quote blockquote {
+   250|      margin:0; font-size: clamp(26px, 3vw, 42px); line-height:1.08; letter-spacing:-0.05em; font-weight:600;
+   251|    }
+   252|    .question-list { display:grid; gap:12px; }
+   253|    .q {
+   254|      padding: 15px 16px; border-radius: 16px; background: rgba(255,255,255,0.03); border:1px solid var(--border-soft);
+   255|      color: #e7eaf0;
+   256|    }
+   257|    .q strong { color: #fff; }
+   258|
+   259|    .source-cards { display:grid; grid-template-columns: repeat(4,1fr); gap:12px; }
+   260|    .src {
+   261|      padding: 16px; border-radius: 18px; border:1px solid var(--border-soft); background: rgba(255,255,255,0.03);
+   262|    }
+   263|    .src .type { color: var(--muted-2); font-size: 11px; text-transform: uppercase; letter-spacing: .14em; font-weight:700; margin-bottom:8px; }
+   264|    .src a { color: #f7f8f8; text-decoration:none; font-weight:600; display:block; margin-bottom:8px; word-break: break-word; }
+   265|    .src p { margin:0; color:var(--muted); font-size:14px; }
+   266|
+   267|    .footer-note { margin-top: 14px; font-size: 12px; color: var(--muted-2); }
+   268|
+   269|    .lang-toggle {
+   270|      position: fixed; top: 20px; right: 20px; z-index: 9999;
+   271|      display: flex; gap: 4px; padding: 4px;
+   272|      background: rgba(10,14,22,0.88); border: 1px solid var(--border);
+   273|      border-radius: 999px; backdrop-filter: blur(12px);
+   274|      box-shadow: 0 8px 30px rgba(0,0,0,0.4);
+   275|    }
+   276|    .lang-btn {
+   277|      padding: 8px 14px; border-radius: 999px; border: none;
+   278|      background: transparent; color: var(--muted); font-size: 13px; font-weight: 600;
+   279|      cursor: pointer; transition: all .2s;
+   280|      font-family: 'Inter', system-ui, sans-serif;
+   281|    }
+   282|    .lang-btn:hover { color: var(--text); background: rgba(255,255,255,0.06); }
+   283|    .lang-btn.active { color: #fff; background: var(--brand); }
+   284|
+   285|    @media (max-width: 1180px) {
+   286|      .hero, .story-grid, .meeting-grid, .collage, .source-cards, .problems-grid, .emotion-strip { grid-template-columns: 1fr; }
+   287|      .mini-stats { grid-template-columns: repeat(2,1fr); }
+   288|      .hero { min-height: auto; }
+   289|      h1 { max-width: none; }
+   290|    }
+   291|
+   292|    @media (max-width: 760px) {
+   293|      .wrap { width: min(calc(100vw - 16px), var(--max)); padding-top: 10px; }
+   294|      .hero, .section { padding: 16px; }
+   295|      .hero-copy, .hero-side { padding: 0; }
+   296|      .mini-stats, .source-cards { grid-template-columns: 1fr; }
+   297|      .emotion-strip, .problems-grid { grid-template-columns: 1fr; }
+   298|      .photo-card, .collage-main { min-height: 320px; }
+   299|    }
+   300|  </style>
+   301|</head>
+   302|<body>
+   303|  <div class="lang-toggle">
+   304|    <button class="lang-btn active" data-lang="en">EN</button>
+   305|    <button class="lang-btn" data-lang="ru">RU</button>
+   306|    <button class="lang-btn" data-lang="ka">GE</button>
+   307|  </div>
+   308|  <div class="wrap">
+   309|    <section class="hero glass">
+   310|      <div class="hero-copy">
+   311|        <div class="eyebrow" data-i18n="hero_eyebrow">Batumi Panorama · Charnali</div>
+   312|        <h1 data-i18n="hero_title">A beautiful promise that now feels like a broken story.</h1>
+   313|        <div class="hero-sub" data-i18n="hero_sub">
+   314|          The project photographs well. The view sells. But the public story no longer matches a single, clear reality — and that kills buyer confidence before any sales conversation starts.
+   315|        </div>
+   316|        <div class="emotion-line">
+   317|          <span class="pill" data-i18n="pill_1">View sells the dream</span>
+   318|          <span class="pill" data-i18n="pill_2">Silence creates suspicion</span>
+   319|          <span class="pill" data-i18n="pill_3">Contradictions destroy trust</span>
+   320|          <span class="pill" data-i18n="pill_4">Trust collapse kills sales</span>
+   321|        </div>
+   322|      </div>
+   323|
+   324|      <div class="hero-side">
+   325|        <div class="verdict-card">
+   326|          <div class="verdict-kicker" data-i18n="verdict_kicker">Executive verdict</div>
+   327|          <h2 data-i18n="verdict_title">This does not feel abandoned. It feels unmanaged.</h2>
+   328|          <p data-i18n="verdict_body">
+   329|            That is almost worse. A fully dead project is legible. This one is still alive enough to keep selling dreams,
+   330|            but not clear enough to earn confidence.
+   331|          </p>
+   332|          <div class="meter"><div></div></div>
+   333|          <div class="score-row"><span data-i18n="investor_confidence">Investor confidence</span><strong>3 / 10</strong></div>
+   334|        </div>
+   335|
+   336|        <div class="stats-card">
+   337|          <div class="stats-kicker" data-i18n="stats_kicker">The signal in one glance</div>
+   338|          <div class="mini-stats">
+   339|            <div class="mini"><div class="num">2019</div><div class="lab" data-i18n="stat_2019">claimed completion</div></div>
+   340|            <div class="mini"><div class="num">2021</div><div class="lab" data-i18n="stat_2021">last visible progress tracking</div></div>
+   341|            <div class="mini"><div class="num">2026</div><div class="lab" data-i18n="stat_2026">still selling against ambiguity</div></div>
+   342|            <div class="mini"><div class="num">100 / 300</div><div class="lab" data-i18n="stat_units">public unit-count contradiction</div></div>
+   343|          </div>
+   344|        </div>
+   345|      </div>
+   346|    </section>
+   347|
+   348|    <section class="section glass">
+   349|      <div class="section-head">
+   350|        <div>
+   351|          <div class="section-kicker" data-i18n="roots_kicker">The real story</div>
+   352|          <h2 data-i18n="roots_title">The root causes</h2>
+   353|          <div class="section-sub" data-i18n="roots_sub">Not symptoms. Causes.</div>
+   354|        </div>
+   355|      </div>
+   356|      <div class="story-grid">
+   357|        <div class="photo-card">
+   358|          <div class="overlay">
+   359|            <div class="title" data-i18n="photo_title">The project still photographs well.</div>
+   360|            <div class="body" data-i18n="photo_body">
+   361|              That is exactly why the problem is dangerous. Pretty images buy attention. But once buyers try to verify the truth,
+   362|              the story fractures.
+   363|            </div>
+   364|          </div>
+   365|        </div>
+   366|
+   367|        <div class="root-causes">
+   368|          <div class="cause">
+   369|            <div class="tag" data-i18n="rc1_tag">Root cause 1</div>
+   370|            <h3 data-i18n="rc1_title">No single source of truth</h3>
+   371|            <p data-i18n="rc1_body">Public sources disagree on completion status, inventory, finish, and delivery. The market sees multiple realities at once.</p>
+   372|          </div>
+   373|          <div class="cause">
+   374|            <div class="tag" data-i18n="rc2_tag">Root cause 2</div>
+   375|            <h3 data-i18n="rc2_title">Silence where proof should be</h3>
+   376|            <p data-i18n="rc2_body">There is not enough fresh, dated evidence showing what exists, what operates, what is sold, and what is occupied today.</p>
+   377|          </div>
+   378|          <div class="cause">
+   379|            <div class="tag" data-i18n="rc3_tag">Root cause 3</div>
+   380|            <h3 data-i18n="rc3_title">Sales promises outran execution proof</h3>
+   381|            <p data-i18n="rc3_body">ROI, payback, and management comfort were marketed more aggressively than the current operational reality was documented.</p>
+   382|          </div>
+   383|          <div class="cause">
+   384|            <div class="tag" data-i18n="rc4_tag">Root cause 4</div>
+   385|            <h3 data-i18n="rc4_title">The secondary market took over the narrative</h3>
+   386|            <p data-i18n="rc4_body">Resale and unfinished-inventory style listings now explain the project to the public more powerfully than the developer does.</p>
+   387|          </div>
+   388|        </div>
+   389|      </div>
+   390|    </section>
+   391|
+   392|    <section class="section glass">
+   393|      <div class="section-head">
+   394|        <div>
+   395|          <div class="section-kicker" data-i18n="funnel_kicker">The emotional funnel</div>
+   396|          <h2 data-i18n="funnel_title">How a buyer actually feels</h2>
+   397|          <div class="section-sub" data-i18n="funnel_sub">This is what happens. In order.</div>
+   398|        </div>
+   399|      </div>
+   400|      <div class="emotion-strip">
+   401|        <div class="emotion">
+   402|          <div class="step">01</div>
+   403|          <h3 data-i18n="emo1_title">Attraction</h3>
+   404|          <p data-i18n="emo1_body">The hillside view, greenery, and low-rise promise feel different from crowded Batumi towers.</p>
+   405|        </div>
+   406|        <div class="emotion">
+   407|          <div class="step">02</div>
+   408|          <h3 data-i18n="emo2_title">Confusion</h3>
+   409|          <p data-i18n="emo2_body">Buyers find several different versions of the project at once: delivered, unfinished, active, stale.</p>
+   410|        </div>
+   411|        <div class="emotion">
+   412|          <div class="step">03</div>
+   413|          <h3 data-i18n="emo3_title">Suspicion</h3>
+   414|          <p data-i18n="emo3_body">Once dates, numbers, and finish levels conflict, the natural assumption becomes execution trouble or liquidity pressure.</p>
+   415|        </div>
+   416|        <div class="emotion">
+   417|          <div class="step">04</div>
+   418|          <h3 data-i18n="emo4_title">Exit</h3>
+   419|          <p data-i18n="emo4_body">Unless the developer can produce hard proof fast, the buyer moves to a cleaner, simpler, safer-looking competitor.</p>
+   420|        </div>
+   421|      </div>
+   422|    </section>
+   423|
+   424|    <section class="section glass">
+   425|      <div class="section-head">
+   426|        <div>
+   427|          <div class="section-kicker" data-i18n="tl_kicker">Timeline of trust collapse</div>
+   428|          <h2 data-i18n="tl_title">What the market sees over time</h2>
+   429|          <div class="section-sub" data-i18n="tl_sub">The danger is not just delay. It is delay without narrative repair.</div>
+   430|        </div>
+   431|      </div>
+   432|      <div class="timeline">
+   433|        <div class="timeline-line"></div>
+   434|        <div class="event">
+   435|          <div class="dot"></div>
+   436|          <div class="date">December 2019</div>
+   437|          <h3 data-i18n="ev1_title">Completion is claimed.</h3>
+   438|          <p data-i18n="ev1_body">A public project page indicates completion by December 2019. That creates a simple, strong expectation: by now this asset should read as settled, operating, and proven.</p>
+   439|        </div>
+   440|        <div class="event">
+   441|          <div class="dot warn"></div>
+   442|          <div class="date">February 2021</div>
+   443|          <h3 data-i18n="ev2_title">Independent-looking progress tracking goes stale.</h3>
+   444|          <p data-i18n="ev2_body">Construction progress snapshots appear to stop around early 2021. Once updates freeze, silence becomes part of the product experience.</p>
+   445|        </div>
+   446|        <div class="event">
+   447|          <div class="dot danger"></div>
+   448|          <div class="date">2026</div>
+   449|          <h3 data-i18n="ev3_title">The project is still being discovered through contradictions.</h3>
+   450|          <p data-i18n="ev3_body">Buyers still encounter inconsistent finish levels, inconsistent counts, and secondary-market style inventory. That means the story was never repaired.</p>
+   451|        </div>
+   452|      </div>
+   453|    </section>
+   454|
+   455|    <section class="section glass">
+   456|      <div class="section-head">
+   457|        <div>
+   458|          <div class="section-kicker" data-i18n="img_kicker">Visual proof vs narrative risk</div>
+   459|          <h2 data-i18n="img_title">Why the imagery still works — and why that is not enough</h2>
+   460|          <div class="section-sub" data-i18n="img_sub">The project remains visually sellable. The problem is what happens after the first click.</div>
+   461|        </div>
+   462|      </div>
+   463|      <div class="collage">
+   464|        <div class="collage-main">
+   465|          <div class="caption">
+   466|            <h3 data-i18n="cap1_title">The dream is still marketable.</h3>
+   467|            <p data-i18n="cap1_body">Views, light, and a low-rise promise still create desire. This is not a product with no appeal. It is a product with appeal that leaks trust.</p>
+   468|          </div>
+   469|        </div>
+   470|        <div class="stack">
+   471|          <div class="stack-top">
+   472|            <div class="caption">
+   473|              <h3 data-i18n="cap2_title">Inventory is still circulating.</h3>
+   474|              <p data-i18n="cap2_body">Fresh listings prove the project is not invisible. But they also make the contradictions more current, not less.</p>
+   475|            </div>
+   476|          </div>
+   477|          <div class="stack-bottom">
+   478|            <div class="caption">
+   479|              <h3 data-i18n="cap3_title">The landscape helps the fantasy.</h3>
+   480|              <p data-i18n="cap3_body">The hilltop setting sells peace and distance from Batumi density. That positioning is strong. The proof stack is weak.</p>
+   481|            </div>
+   482|          </div>
+   483|        </div>
+   484|      </div>
+   485|    </section>
+   486|
+   487|    <section class="section glass">
+   488|      <div class="section-head">
+   489|        <div>
+   490|          <div class="section-kicker" data-i18n="prob_kicker">The concrete problems</div>
+   491|          <h2 data-i18n="prob_title">What breaks trust fast</h2>
+   492|          <div class="section-sub" data-i18n="prob_sub">These are the things you can point to immediately.</div>
+   493|        </div>
+   494|      </div>
+   495|      <div class="problems-grid">
+   496|        <div class="problem">
+   497|          <div class="k" data-i18n="p1_k">Contradiction</div>
+   498|          <h3 data-i18n="p1_title">Completion story</h3>
+   499|          <p data-i18n="p1_body">One source implies completion years ago; another still frames construction progress as the main storyline.</p>
+   500|        </div>
+   501|

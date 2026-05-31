@@ -144,6 +144,46 @@ def classify_memory(text: str) -> str:
     return REASON_UNKNOWN
 
 
+def split_and_classify(text: str, source: str = "") -> List[MemoryChunk]:
+    """Split a formatted memory block into per-line chunks and classify each.
+
+    Honcho base_context and dialectic_result blocks can contain mixed
+    content — e.g. a stable user preference on one line and a task-progress
+    mention on the next.  Wrapping the whole block as a single MemoryChunk
+    means classify_memory() returns the first matching reason for the entire
+    text, causing either over-filtering (dropping a preference because
+    another line looked like task progress) or under-filtering (leaking
+    task-progress because the preference matched first).
+
+    This function splits on newlines, skips blank lines, and classifies
+    each non-empty line independently.  The result is a list of
+    independently classified MemoryChunks that filter_stale_memories() can
+    evaluate per-line instead of all-or-nothing.
+
+    Args:
+        text: The formatted memory block (may be multi-line).
+        source: Origin label (e.g. "base_context" or "dialectic").
+
+    Returns:
+        List of MemoryChunk, one per non-blank line, each with its own
+        reason classification.  Returns an empty list for blank/empty input.
+    """
+    if not text or not text.strip():
+        return []
+
+    chunks: List[MemoryChunk] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        chunks.append(MemoryChunk(
+            text=stripped,
+            reason=classify_memory(stripped),
+            source=source,
+        ))
+    return chunks
+
+
 # ---------------------------------------------------------------------------
 # Stale / task-progress suppression
 # ---------------------------------------------------------------------------

@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Batumi Panorama — Story Dashboard</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #07090d;
+      --bg-soft: #0d1016;
+      --panel: rgba(16, 20, 29, 0.74);
+      --panel-2: rgba(18, 24, 34, 0.92);
+      --text: #f7f8f8;
+      --muted: #a1a8b6;
+      --muted-2: #727887;
+      --border: rgba(255,255,255,0.08);
+      --border-soft: rgba(255,255,255,0.05);
+      --brand: #7170ff;
+      --brand-2: #5e6ad2;
+      --danger: #ff6f85;
+      --danger-soft: rgba(255,111,133,0.14);
+      --warn: #ffbe63;
+      --warn-soft: rgba(255,190,99,0.16);
+      --ok: #57d68d;
+      --shadow: 0 30px 80px rgba(0,0,0,0.42);
+      --radius-xl: 28px;
+      --radius-lg: 20px;
+      --radius-md: 14px;
+      --max: 1420px;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      font-feature-settings: 'cv01', 'ss03';
+      color: var(--text);
+      background:
+        radial-gradient(900px 500px at 15% -10%, rgba(113,112,255,0.18), transparent 55%),
+        radial-gradient(700px 420px at 90% 8%, rgba(255,111,133,0.16), transparent 45%),
+        linear-gradient(180deg, #050608 0%, #090c12 100%);
+      line-height: 1.5;
+    }
+
+    .wrap { width: min(calc(100vw - 28px), var(--max)); margin: 0 auto; padding: 20px 0 60px; }
+    .glass {
+      background: var(--panel);
+      border: 1px solid var(--border-soft);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(18px) saturate(140%);
+      -webkit-backdrop-filter: blur(18px) saturate(140%);
+      border-radius: var(--radius-xl);
+    }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      min-height: 86vh;
+      display: grid;
+      grid-template-columns: 1.12fr 0.88fr;
+      gap: 20px;
+      margin-bottom: 18px;
+      padding: 22px;
+      background:
+        linear-gradient(90deg, rgba(7,9,13,0.86) 0%, rgba(7,9,13,0.68) 42%, rgba(7,9,13,0.42) 60%, rgba(7,9,13,0.28) 100%),
+        url('batumi-panorama-assets/hero.jpg') center/cover no-repeat;
+    }
+
+    .hero::after {
+      content: '';
+      position: absolute;
+      inset: auto 0 0 0;
+      height: 34%;
+      background: linear-gradient(180deg, transparent, rgba(5,6,8,0.78));
+      pointer-events: none;
+    }
+
+    .hero-copy, .hero-side { position: relative; z-index: 2; }
+    .hero-copy { align-self: end; padding: 8px 6px 14px 6px; }
+    .eyebrow {
+      color: #d0d6e0;
+      font-size: 12px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      font-weight: 700;
+      margin-bottom: 16px;
+      opacity: 0.9;
+    }
+    h1 {
+      margin: 0 0 14px;
+      max-width: 9.5ch;
+      font-size: clamp(42px, 7vw, 86px);
+      line-height: 0.96;
+      letter-spacing: -0.06em;
+      font-weight: 700;
+    }
+    .hero-sub {
+      max-width: 54ch;
+      color: #d0d6e0;
+      font-size: 19px;
+      line-height: 1.55;
+      margin-bottom: 18px;
+    }
+    .emotion-line {
+      display: flex; flex-wrap: wrap; gap: 10px;
+    }
+    .pill {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 10px 14px; border-radius: 999px;
+      background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+      color: #f7f8f8; font-size: 13px;
+    }
+
+    .hero-side {
+      display: grid;
+      align-content: space-between;
+      gap: 16px;
+      padding: 4px 0 4px 10px;
+    }
+
+    .verdict-card, .stats-card {
+      background: rgba(14,18,26,0.72);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 20px;
+      box-shadow: 0 18px 50px rgba(0,0,0,0.32);
+    }
+
+    .verdict-kicker, .stats-kicker, .section-kicker {
+      font-size: 11px; text-transform: uppercase; letter-spacing: 0.16em; color: var(--muted-2); font-weight: 700;
+      margin-bottom: 12px;
+    }
+    .verdict-card h2 {
+      margin: 0 0 12px; font-size: 28px; line-height: 1.05; letter-spacing: -0.04em;
+    }
+    .verdict-card p { margin: 0; color: var(--muted); font-size: 15px; }
+
+    .meter {
+      width: 100%; height: 12px; border-radius: 999px; overflow: hidden;
+      background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.04); margin: 14px 0 10px;
+    }
+    .meter > div {
+      height: 100%; width: 32%;
+      background: linear-gradient(90deg, var(--danger), var(--warn));
+      box-shadow: 0 0 18px rgba(255,111,133,0.28);
+    }
+    .score-row { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 13px; }
+
+    .mini-stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-top: 8px; }
+    .mini {
+      padding: 14px; border-radius: 16px; background: rgba(255,255,255,0.03); border: 1px solid var(--border-soft);
+    }
+    .mini .num { font-size: 26px; font-weight: 800; letter-spacing: -0.05em; margin-bottom: 4px; }
+    .mini .lab { color: var(--muted); font-size: 12px; }
+
+    .section { margin-bottom: 18px; padding: 22px; }
+    .section-head { display:flex; justify-content:space-between; align-items:end; gap:14px; margin-bottom:16px; }
+    .section-head h2 { margin: 0 0 8px; font-size: 30px; line-height: 1.02; letter-spacing: -0.04em; }
+    .section-sub { max-width: 70ch; color: var(--muted); font-size: 15px; }
+
+    .story-grid { display:grid; grid-template-columns: 1.05fr 0.95fr; gap:18px; }
+    .photo-card {
+      position: relative; overflow: hidden; min-height: 400px;
+      border-radius: 24px; border: 1px solid var(--border);
+      background: linear-gradient(180deg, rgba(0,0,0,0.1), rgba(0,0,0,0.62)), url('batumi-panorama-assets/apt1.jpg') center/cover no-repeat;
+    }
+    .photo-card .overlay {
+      position: absolute; left: 0; right: 0; bottom: 0; padding: 20px;
+      background: linear-gradient(180deg, transparent, rgba(5,6,8,0.86));
+    }
+    .photo-card .title { font-size: 28px; line-height: 1.04; letter-spacing: -0.04em; margin-bottom: 8px; }
+    .photo-card .body { color: #d0d6e0; max-width: 44ch; }
+
+    .root-causes { display:grid; gap:12px; }
+    .cause {
+      padding: 16px; border-radius: 18px; background: rgba(255,255,255,0.03); border: 1px solid var(--border-soft);
+    }
+    .cause .tag { color: var(--danger); font-size: 11px; text-transform: uppercase; letter-spacing: 0.14em; font-weight: 700; margin-bottom: 8px; }
+    .cause h3 { margin: 0 0 8px; font-size: 19px; line-height: 1.08; }
+    .cause p { margin: 0; color: var(--muted); font-size: 14px; }
+
+    .emotion-strip {
+      display:grid; grid-template-columns: repeat(4,1fr); gap:12px;
+    }
+    .emotion {
+      min-height: 140px; border-radius: 20px; padding: 18px; border:1px solid var(--border-soft);
+      background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.02));
+    }
+    .emotion .step { color: var(--muted-2); font-size: 11px; text-transform: uppercase; letter-spacing: 0.14em; margin-bottom: 10px; font-weight: 700; }
+    .emotion h3 { margin: 0 0 8px; font-size: 24px; letter-spacing: -0.04em; }
+    .emotion p { margin: 0; color: var(--muted); }
+
+    .timeline {
+      position: relative; padding: 18px 0 2px;
+    }
+    .timeline-line {
+      position: absolute; left: 30px; top: 10px; bottom: 10px; width: 2px;
+      background: linear-gradient(180deg, rgba(113,112,255,0.5), rgba(255,111,133,0.7));
+      border-radius: 999px;
+    }
+    .event { position: relative; padding-left: 68px; padding-bottom: 24px; }
+    .event:last-child { padding-bottom: 6px; }
+    .dot {
+      position: absolute; left: 20px; top: 2px; width: 22px; height: 22px; border-radius: 50%;
+      border: 2px solid rgba(255,255,255,0.85); background: var(--brand); box-shadow: 0 0 0 8px rgba(113,112,255,0.14);
+    }
+    .dot.warn { background: var(--warn); box-shadow: 0 0 0 8px rgba(255,190,99,0.14); }
+    .dot.danger { background: var(--danger); box-shadow: 0 0 0 8px rgba(255,111,133,0.14); }
+    .event .date { color: var(--muted-2); font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; font-weight: 700; margin-bottom: 8px; }
+    .event h3 { margin: 0 0 8px; font-size: 22px; letter-spacing: -0.03em; }
+    .event p { margin: 0; color: var(--muted); max-width: 52ch; }
+
+    .collage {
+      display:grid; grid-template-columns: 1.1fr 0.9fr; gap: 12px; min-height: 520px;
+    }
+    .collage-main, .stack-top, .stack-bottom {
+      border-radius: 22px; overflow: hidden; border: 1px solid var(--border);
+      position: relative;
+      background-size: cover; background-position: center;
+    }
+    .collage-main { background-image: linear-gradient(180deg, rgba(0,0,0,0.06), rgba(0,0,0,0.7)), url('batumi-panorama-assets/apt2.jpg'); min-height: 520px; }
+    .stack { display:grid; grid-template-rows: 1fr 1fr; gap:12px; }
+    .stack-top { background-image: linear-gradient(180deg, rgba(0,0,0,0.08), rgba(0,0,0,0.72)), url('batumi-panorama-assets/apt3.jpg'); }
+    .stack-bottom { background-image: linear-gradient(180deg, rgba(0,0,0,0.08), rgba(0,0,0,0.72)), url('batumi-panorama-assets/hero.jpg'); }
+    .caption {
+      position:absolute; left:0; right:0; bottom:0; padding:18px;
+      background: linear-gradient(180deg, transparent, rgba(5,6,8,0.85));
+    }
+    .caption h3 { margin:0 0 8px; font-size:24px; letter-spacing:-0.04em; }
+    .caption p { margin:0; color:#d0d6e0; font-size:14px; max-width:42ch; }
+
+    .problems-grid { display:grid; grid-template-columns: repeat(3,1fr); gap:12px; }
+    .problem {
+      padding: 16px; border-radius: 18px; border:1px solid var(--border-soft);
+      background: rgba(255,255,255,0.03);
+    }
+    .problem .k { color: var(--warn); font-size: 11px; text-transform: uppercase; letter-spacing: .14em; font-weight: 700; margin-bottom: 8px; }
+    .problem h3 { margin:0 0 8px; font-size: 18px; }
+    .problem p { margin:0; color:var(--muted); font-size:14px; }
+
+    .meeting-grid { display:grid; grid-template-columns: 0.9fr 1.1fr; gap:18px; }
+    .big-quote {
+      display:flex; align-items:center; justify-content:center; min-height:100%;
+      border-radius: 24px; padding: 24px;
+      background: linear-gradient(180deg, rgba(113,112,255,0.12), rgba(255,111,133,0.08));
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    .big-quote blockquote {
+      margin:0; font-size: clamp(26px, 3vw, 42px); line-height:1.08; letter-spacing:-0.05em; font-weight:600;
+    }
+    .question-list { display:grid; gap:12px; }
+    .q {
+      padding: 15px 16px; border-radius: 16px; background: rgba(255,255,255,0.03); border:1px solid var(--border-soft);
+      color: #e7eaf0;
+    }
+    .q strong { color: #fff; }
+
+    .source-cards { display:grid; grid-template-columns: repeat(4,1fr); gap:12px; }
+    .src {
+      padding: 16px; border-radius: 18px; border:1px solid var(--border-soft); background: rgba(255,255,255,0.03);
+    }
+    .src .type { color: var(--muted-2); font-size: 11px; text-transform: uppercase; letter-spacing: .14em; font-weight:700; margin-bottom:8px; }
+    .src a { color: #f7f8f8; text-decoration:none; font-weight:600; display:block; margin-bottom:8px; word-break: break-word; }
+    .src p { margin:0; color:var(--muted); font-size:14px; }
+
+    .footer-note { margin-top: 14px; font-size: 12px; color: var(--muted-2); }
+
+    .lang-toggle {
+      position: fixed; top: 20px; right: 20px; z-index: 9999;
+      display: flex; gap: 4px; padding: 4px;
+      background: rgba(10,14,22,0.88); border: 1px solid var(--border);
+      border-radius: 999px; backdrop-filter: blur(12px);
+      box-shadow: 0 8px 30px rgba(0,0,0,0.4);
+    }
+    .lang-btn {
+      padding: 8px 14px; border-radius: 999px; border: none;
+      background: transparent; color: var(--muted); font-size: 13px; font-weight: 600;
+      cursor: pointer; transition: all .2s;
+      font-family: 'Inter', system-ui, sans-serif;
+    }
+    .lang-btn:hover { color: var(--text); background: rgba(255,255,255,0.06); }
+    .lang-btn.active { color: #fff; background: var(--brand); }
+
+    @media (max-width: 1180px) {
+      .hero, .story-grid, .meeting-grid, .collage, .source-cards, .problems-grid, .emotion-strip { grid-template-columns: 1fr; }
+      .mini-stats { grid-template-columns: repeat(2,1fr); }
+      .hero { min-height: auto; }
+      h1 { max-width: none; }
+    }
+
+    @media (max-width: 760px) {
+      .wrap { width: min(calc(100vw - 16px), var(--max)); padding-top: 10px; }
+      .hero, .section { padding: 16px; }
+      .hero-copy, .hero-side { padding: 0; }
+      .mini-stats, .source-cards { grid-template-columns: 1fr; }
+      .emotion-strip, .problems-grid { grid-template-columns: 1fr; }
+      .photo-card, .collage-main { min-height: 320px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="lang-toggle">
+    <button class="lang-btn active" data-lang="en">EN</button>
+    <button class="lang-btn" data-lang="ru">RU</button>
+    <button class="lang-btn" data-lang="ka">GE</button>
+  </div>
+  <div class="wrap">
+    <section class="hero glass">
+      <div class="hero-copy">
+        <div class="eyebrow" data-i18n="hero_eyebrow">Batumi Panorama · Charnali · public-facing forensic audit</div>
+        <h1 data-i18n="hero_title">A beautiful promise that now feels like a broken story.</h1>
+        <div class="hero-sub" data-i18n="hero_sub">
+          People do not first experience this project as an investment. They experience it as a feeling: first attraction, then confusion, then doubt. The root problem is not design quality. The root problem is that the public story no longer matches a single, clear reality.
+        </div>
+        <div class="emotion-line">
+          <span class="pill" data-i18n="pill_1">View sells the dream</span>
+          <span class="pill" data-i18n="pill_2">Silence creates suspicion</span>
+          <span class="pill" data-i18n="pill_3">Contradictions destroy trust</span>
+          <span class="pill" data-i18n="pill_4">Trust collapse kills sales</span>
+        </div>
+      </div>
+
+      <div class="hero-side">
+        <div class="verdict-card">
+          <div class="verdict-kicker" data-i18n="verdict_kicker">Executive verdict</div>
+          <h2 data-i18n="verdict_title">This does not feel abandoned. It feels unmanaged.</h2>
+          <p data-i18n="verdict_body">
+            That is almost worse. A fully dead project is legible. This one is still alive enough to keep selling dreams,
+            but not clear enough to earn confidence.
+          </p>
+          <div class="meter"><div></div></div>
+          <div class="score-row"><span data-i18n="investor_confidence">Investor confidence</span><strong>3 / 10</strong></div>
+        </div>
+
+        <div class="stats-card">
+          <div class="stats-kicker" data-i18n="stats_kicker">The signal in one glance</div>
+          <div class="mini-stats">
+            <div class="mini"><div class="num">2019</div><div class="lab" data-i18n="stat_2019">claimed completion</div></div>
+            <div class="mini"><div class="num">2021</div><div class="lab" data-i18n="stat_2021">last visible progress tracking</div></div>
+            <div class="mini"><div class="num">2026</div><div class="lab" data-i18n="stat_2026">still selling against ambiguity</div></div>
+            <div class="mini"><div class="num">100 / 300</div><div class="lab" data-i18n="stat_units">public unit-count contradiction</div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section glass">
+      <div class="section-head">
+        <div>
+          <div class="section-kicker" data-i18n="roots_kicker">The real story</div>
+          <h2 data-i18n="roots_title">The root causes</h2>
+          <div class="section-sub" data-i18n="roots_sub">This is the level that matters in your meeting. Not symptoms. Causes.</div>
+        </div>
+      </div>
+      <div class="story-grid">
+        <div class="photo-card">
+          <div class="overlay">
+            <div class="title" data-i18n="photo_title">The project still photographs well.</div>
+            <div class="body" data-i18n="photo_body">
+              That is exactly why the problem is dangerous. Pretty images buy attention. But once buyers try to verify the truth,
+              the story fractures.
+            </div>
+          </div>
+        </div>
+
+        <div class="root-causes">
+          <div class="cause">
+            <div class="tag" data-i18n="rc1_tag">Root cause 1</div>
+            <h3 data-i18n="rc1_title">No single source of truth</h3>
+            <p data-i18n="rc1_body">Public sources disagree on completion status, inventory, finish, and delivery. The market sees multiple realities at once.</p>
+          </div>
+          <div class="cause">
+            <div class="tag" data-i18n="rc2_tag">Root cause 2</div>
+            <h3 data-i18n="rc2_title">Silence where proof should be</h3>
+            <p data-i18n="rc2_body">There is not enough fresh, dated evidence showing what exists, what operates, what is sold, and what is occupied today.</p>
+          </div>
+          <div class="cause">
+            <div class="tag" data-i18n="rc3_tag">Root cause 3</div>
+            <h3 data-i18n="rc3_title">Sales promises outran execution proof</h3>
+            <p data-i18n="rc3_body">ROI, payback, and management comfort were marketed more aggressively than the current operational reality was documented.</p>
+          </div>
+          <div class="cause">
+            <div class="tag" data-i18n="rc4_tag">Root cause 4</div>
+            <h3 data-i18n="rc4_title">The secondary market took over the narrative</h3>
+            <p data-i18n="rc4_body">Resale and unfinished-inventory style listings now explain the project to the public more powerfully than the developer does.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section glass">
+      <div class="section-head">
+        <div>
+          <div class="section-kicker" data-i18n="funnel_kicker">The emotional funnel</div>
+          <h2 data-i18n="funnel_title">How a buyer actually feels</h2>
+          <div class="section-sub" data-i18n="funnel_sub">This is the sequence that kills conversion.</div>
+        </div>
+      </div>
+      <div class="emotion-strip">
+        <div class="emotion">
+          <div class="step">01</div>
+          <h3 data-i18n="emo1_title">Attraction</h3>
+          <p data-i18n="emo1_body">The hillside view, greenery, and low-rise promise feel different from crowded Batumi towers.</p>
+        </div>
+        <div class="emotion">
+          <div class="step">02</div>
+          <h3 data-i18n="emo2_title">Confusion</h3>
+          <p data-i18n="emo2_body">Buyers find several different versions of the project at once: delivered, unfinished, active, stale.</p>
+        </div>
+        <div class="emotion">
+          <div class="step">03</div>
+          <h3 data-i18n="emo3_title">Suspicion</h3>
+          <p data-i18n="emo3_body">Once dates, numbers, and finish levels conflict, the natural assumption becomes execution trouble or liquidity pressure.</p>
+        </div>
+        <div class="emotion">
+          <div class="step">04</div>
+          <h3 data-i18n="emo4_title">Exit</h3>
+          <p data-i18n="emo4_body">Unless the developer can produce hard proof fast, the buyer moves to a cleaner, simpler, safer-looking competitor.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section glass">
+      <div class="section-head">
+        <div>
+          <div class="section-kicker" data-i18n="tl_kicker">Timeline of trust collapse</div>
+          <h2 data-i18n="tl_title">What the market sees over time</h2>
+          <div class="section-sub" data-i18n="tl_sub">The danger is not just delay. It is delay without narrative repair.</div>
+        </div>
+      </div>
+      <div class="timeline">
+        <div class="timeline-line"></div>
+        <div class="event">
+          <div class="dot"></div>
+          <div class="date">December 2019</div>
+          <h3 data-i18n="ev1_title">Completion is claimed.</h3>
+          <p data-i18n="ev1_body">A public project page indicates completion by December 2019. That creates a simple, strong expectation: by now this asset should read as settled, operating, and proven.</p>
+        </div>
+        <div class="event">
+          <div class="dot warn"></div>
+          <div class="date">February 2021</div>
+          <h3 data-i18n="ev2_title">Independent-looking progress tracking goes stale.</h3>
+          <p data-i18n="ev2_body">Construction progress snapshots appear to stop around early 2021. Once updates freeze, silence becomes part of the product experience.</p>
+        </div>
+        <div class="event">
+          <div class="dot danger"></div>
+          <div class="date">2026</div>
+          <h3 data-i18n="ev3_title">The project is still being discovered through contradictions.</h3>
+          <p data-i18n="ev3_body">Buyers still encounter inconsistent finish levels, inconsistent counts, and secondary-market style inventory. That means the story was never repaired.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section glass">
+      <div class="section-head">
+        <div>
+          <div class="section-kicker" data-i18n="img_kicker">Visual proof vs narrative risk</div>
+          <h2 data-i18n="img_title">Why the imagery still works — and why that is not enough</h2>
+          <div class="section-sub" data-i18n="img_sub">The project remains visually sellable. The problem is what happens after the first click.</div>
+        </div>
+      </div>
+      <div class="collage">
+        <div class="collage-main">
+          <div class="caption">
+            <h3 data-i18n="cap1_title">The dream is still marketable.</h3>
+            <p data-i18n="cap1_body">Views, light, and a low-rise promise still create desire. This is not a product with no appeal. It is a product with appeal that leaks trust.</p>
+          </div>
+        </div>
+        <div class="stack">
+          <div class="stack-top">
+            <div class="caption">
+              <h3 data-i18n="cap2_title">Inventory is still circulating.</h3>
+              <p data-i18n="cap2_body">Fresh listings prove the project is not invisible. But they also make the contradictions more current, not less.</p>
+            </div>
+          </div>
+          <div class="stack-bottom">
+            <div class="caption">
+              <h3 data-i18n="cap3_title">The landscape helps the fantasy.</h3>
+              <p data-i18n="cap3_body">The hilltop setting sells peace and distance from Batumi density. That positioning is strong. The proof stack is weak.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section glass">
+      <div class="section-head">
+        <div>
+          <div class="section-kicker" data-i18n="prob_kicker">The concrete problems</div>
+          <h2 data-i18n="prob_title">What breaks trust fast</h2>
+          <div class="section-sub" data-i18n="prob_sub">These are the things you can point to immediately.</div>
+        </div>
+      </div>
+      <div class="problems-grid">
+        <div class="problem">
+          <div class="k" data-i18n="p1_k">Contradiction</div>
+          <h3 data-i18n="p1_title">Completion story</h3>
+          <p data-i18n="p1_body">One source implies completion years ago; another still frames construction progress as the main storyline.</p>
+        </div>
+        <div class="problem">
+          <div class="k" data-i18n="p2_k">Contradiction</div>
+          <h3 data-i18n="p2_title">Unit count</h3>
+          <p data-i18n="p2_body">Public descriptions do not agree on how many apartments or total units actually exist.</p>
+        </div>
+        <div class="problem">
+          <div class="k" data-i18n="p3_k">Contradiction</div>
+          <h3 data-i18n="p3_title">Finish level</h3>
+          <p data-i18n="p3_body">Turnkey, white frame, and black-wall style descriptions coexist. That alone can kill remote trust.</p>
+        </div>
+        <div class="problem">
+          <div class="k" data-i18n="p4_k">Narrative failure</div>
+          <h3 data-i18n="p4_title">Portal dependency</h3>
+          <p data-i18n="p4_body">The project is largely explained by aggregators and third parties instead of by a strong official source.</p>
+        </div>
+        <div class="problem">
+          <div class="k" data-i18n="p5_k">Proof failure</div>
+          <h3 data-i18n="p5_title">Stale freshness</h3>
+          <p data-i18n="p5_body">The strongest progress-tracking signal looks old. The market sees that as neglect or unresolved difficulty.</p>
+        </div>
+        <div class="problem">
+          <div class="k" data-i18n="p6_k">Commercial failure</div>
+          <h3 data-i18n="p6_title">Sales overreach</h3>
+          <p data-i18n="p6_body">High-return language appears stronger than current operating proof. That turns ambition into suspicion.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section glass">
+      <div class="section-head">
+        <div>
+          <div class="section-kicker" data-i18n="meet_kicker">Meeting mode</div>
+          <h2 data-i18n="meet_title">The line to take in the room</h2>
+          <div class="section-sub" data-i18n="meet_sub">Don't let them drag you into soft marketing talk. Force them onto reality.</div>
+        </div>
+      </div>
+      <div class="meeting-grid">
+        <div class="big-quote">
+          <blockquote data-i18n="meet_quote">
+            "This is not mainly a marketing problem. It is a trust problem created by conflicting public realities."
+          </blockquote>
+        </div>
+        <div class="question-list">
+          <div class="q" data-i18n="q1"><strong>1.</strong> What is the exact current status today — completed, partially completed, stalled, or relaunching?</div>
+          <div class="q" data-i18n="q2"><strong>2.</strong> Why do public sources conflict on completion timing, finish level, and total unit count?</div>
+          <div class="q" data-i18n="q3"><strong>3.</strong> Which amenities are physically operational right now, not planned?</div>
+          <div class="q" data-i18n="q4"><strong>4.</strong> Where is the dated proof: current video, occupancy, operator, rent, resident activity?</div>
+          <div class="q" data-i18n="q5"><strong>5.</strong> If the project is healthy, why is the public story still mostly being told by stale aggregator pages?</div>
+          <div class="q" data-i18n="q6"><strong>6.</strong> What is the 12-month recovery plan, with milestones and named accountability?</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section glass">
+      <div class="section-head">
+        <div>
+          <div class="section-kicker" data-i18n="src_kicker">Evidence base</div>
+          <h2 data-i18n="src_title">The sources driving perception</h2>
+          <div class="section-sub" data-i18n="src_sub">These are the surfaces currently shaping what outsiders believe.</div>
+        </div>
+      </div>
+      <div class="source-cards">
+        <div class="src">
+          <div class="type" data-i18n="s1_type">Project tracker</div>
+          <a href="https://korter.ge/en/panorama-batumi-batumi">Korter — Panorama Batumi in Charnali</a>
+          <p data-i18n="s1_body">The strongest public source for current discovery, listings, and old construction-progress framing.</p>
+        </div>
+        <div class="src">
+          <div class="type" data-i18n="s2_type">Project profile</div>
+          <a href="https://geoln.com/georgia/batumi/264">GEOLN — Panorama Batumi project page</a>
+          <p data-i18n="s2_body">Important because it supplies aggressive completion and investment framing.</p>
+        </div>
+        <div class="src">
+          <div class="type" data-i18n="s3_type">Developer page</div>
+          <a href="https://geoln.com/developers/batumi-panorama">GEOLN — Batumi Panorama developer page</a>
+          <p data-i18n="s3_body">Pushes bank comfort, payback, and investment reassurance messaging.</p>
+        </div>
+        <div class="src">
+          <div class="type" data-i18n="s4_type">Secondary market</div>
+          <a href="https://home.ss.ge/en/real-estate/Summer-Cottage-For-Sale-Charnali-6301970">ss.ge — cottage resale inside Panorama Batumi</a>
+          <p data-i18n="s4_body">Shows the secondary market continuing to narrate the project in public.</p>
+        </div>
+      </div>
+      <div class="footer-note" data-i18n="footer">Basis: public web sources only. This is a public-perception and root-cause audit, not a legal or construction-engineering audit.</div>
+    </section>
+  </div>
+  <script>
+    const translations = {
+      en: {
+        hero_eyebrow: 'Batumi Panorama · Charnali · public-facing forensic audit',
+        hero_title: 'A beautiful promise that now feels like a broken story.',
+        hero_sub: 'People do not first experience this project as an investment. They experience it as a feeling: first attraction, then confusion, then doubt. The root problem is not design quality. The root problem is that the public story no longer matches a single, clear reality.',
+        pill_1: 'View sells the dream', pill_2: 'Silence creates suspicion', pill_3: 'Contradictions destroy trust', pill_4: 'Trust collapse kills sales',
+        verdict_kicker: 'Executive verdict', verdict_title: 'This does not feel abandoned. It feels unmanaged.', verdict_body: 'That is almost worse. A fully dead project is legible. This one is still alive enough to keep selling dreams, but not clear enough to earn confidence.', investor_confidence: 'Investor confidence',
+        stats_kicker: 'The signal in one glance', stat_2019: 'claimed completion', stat_2021: 'last visible progress tracking', stat_2026: 'still selling against ambiguity', stat_units: 'public unit-count contradiction',
+        roots_kicker: 'The real story', roots_title: 'The root causes', roots_sub: 'This is the level that matters in your meeting. Not symptoms. Causes.', photo_title: 'The project still photographs well.', photo_body: 'That is exactly why the problem is dangerous. Pretty images buy attention. But once buyers try to verify the truth, the story fractures.',
+        rc1_tag: 'Root cause 1', rc1_title: 'No single source of truth', rc1_body: 'Public sources disagree on completion status, inventory, finish, and delivery. The market sees multiple realities at once.',
+        rc2_tag: 'Root cause 2', rc2_title: 'Silence where proof should be', rc2_body: 'There is not enough fresh, dated evidence showing what exists, what operates, what is sold, and what is occupied today.',
+        rc3_tag: 'Root cause 3', rc3_title: 'Sales promises outran execution proof', rc3_body: 'ROI, payback, and management comfort were marketed more aggressively than the current operational reality was documented.',
+        rc4_tag: 'Root cause 4', rc4_title: 'The secondary market took over the narrative', rc4_body: 'Resale and unfinished-inventory style listings now explain the project to the public more powerfully than the developer does.',
+        funnel_kicker: 'The emotional funnel', funnel_title: 'How a buyer actually feels', funnel_sub: 'This is the sequence that kills conversion.',
+        emo1_title: 'Attraction', emo1_body: 'The hillside view, greenery, and low-rise promise feel different from crowded Batumi towers.', emo2_title: 'Confusion', emo2_body: 'Buyers find several different versions of the project at once: delivered, unfinished, active, stale.', emo3_title: 'Suspicion', emo3_body: 'Once dates, numbers, and finish levels conflict, the natural assumption becomes execution trouble or liquidity pressure.', emo4_title: 'Exit', emo4_body: 'Unless the developer can produce hard proof fast, the buyer moves to a cleaner, simpler, safer-looking competitor.',
+        tl_kicker: 'Timeline of trust collapse', tl_title: 'What the market sees over time', tl_sub: 'The danger is not just delay. It is delay without narrative repair.',
+        ev1_title: 'Completion is claimed.', ev1_body: 'A public project page indicates completion by December 2019. That creates a simple, strong expectation: by now this asset should read as settled, operating, and proven.', ev2_title: 'Independent-looking progress tracking goes stale.', ev2_body: 'Construction progress snapshots appear to stop around early 2021. Once updates freeze, silence becomes part of the product experience.', ev3_title: 'The project is still being discovered through contradictions.', ev3_body: 'Buyers still encounter inconsistent finish levels, inconsistent counts, and secondary-market style inventory. That means the story was never repaired.',
+        img_kicker: 'Visual proof vs narrative risk', img_title: 'Why the imagery still works — and why that is not enough', img_sub: 'The project remains visually sellable. The problem is what happens after the first click.',
+        cap1_title: 'The dream is still marketable.', cap1_body: 'Views, light, and a low-rise promise still create desire. This is not a product with no appeal. It is a product with appeal that leaks trust.', cap2_title: 'Inventory is still circulating.', cap2_body: 'Fresh listings prove the project is not invisible. But they also make the contradictions more current, not less.', cap3_title: 'The landscape helps the fantasy.', cap3_body: 'The hilltop setting sells peace and distance from Batumi density. That positioning is strong. The proof stack is weak.',
+        prob_kicker: 'The concrete problems', prob_title: 'What breaks trust fast', prob_sub: 'These are the things you can point to immediately.',
+        p1_k: 'Contradiction', p1_title: 'Completion story', p1_body: 'One source implies completion years ago; another still frames construction progress as the main storyline.', p2_k: 'Contradiction', p2_title: 'Unit count', p2_body: 'Public descriptions do not agree on how many apartments or total units actually exist.', p3_k: 'Contradiction', p3_title: 'Finish level', p3_body: 'Turnkey, white frame, and black-wall style descriptions coexist. That alone can kill remote trust.', p4_k: 'Narrative failure', p4_title: 'Portal dependency', p4_body: 'The project is largely explained by aggregators and third parties instead of by a strong official source.', p5_k: 'Proof failure', p5_title: 'Stale freshness', p5_body: 'The strongest progress-tracking signal looks old. The market sees that as neglect or unresolved difficulty.', p6_k: 'Commercial failure', p6_title: 'Sales overreach', p6_body: 'High-return language appears stronger than current operating proof. That turns ambition into suspicion.',
+        meet_kicker: 'Meeting mode', meet_title: 'The line to take in the room', meet_sub: "Don't let them drag you into soft marketing talk. Force them onto reality.", meet_quote: '"This is not mainly a marketing problem. It is a trust problem created by conflicting public realities."',
+        q1: '<strong>1.</strong> What is the exact current status today — completed, partially completed, stalled, or relaunching?', q2: '<strong>2.</strong> Why do public sources conflict on completion timing, finish level, and total unit count?', q3: '<strong>3.</strong> Which amenities are physically operational right now, not planned?', q4: '<strong>4.</strong> Where is the dated proof: current video, occupancy, operator, rent, resident activity?', q5: '<strong>5.</strong> If the project is healthy, why is the public story still mostly being told by stale aggregator pages?', q6: '<strong>6.</strong> What is the 12-month recovery plan, with milestones and named accountability?',
+        src_kicker: 'Evidence base', src_title: 'The sources driving perception', src_sub: 'These are the surfaces currently shaping what outsiders believe.', s1_type: 'Project tracker', s1_body: 'The strongest public source for current discovery, listings, and old construction-progress framing.', s2_type: 'Project profile', s2_body: 'Important because it supplies aggressive completion and investment framing.', s3_type: 'Developer page', s3_body: 'Pushes bank comfort, payback, and investment reassurance messaging.', s4_type: 'Secondary market', s4_body: 'Shows the secondary market continuing to narrate the project in public.', footer: 'Basis: public web sources only. This is a public-perception and root-cause audit, not a legal or construction-engineering audit.'
+      },
+      ru: {
+        hero_eyebrow: 'Batumi Panorama · Чарнали · публичный форензик-аудит', hero_title: 'Красивое обещание, которое теперь ощущается как сломанная история.', hero_sub: 'Люди сначала воспринимают этот проект не как инвестицию. Они воспринимают его как ощущение: сначала притяжение, потом путаница, потом сомнение. Корневая проблема не в дизайне. Корневая проблема в том, что публичная история больше не совпадает с одной ясной реальностью.', pill_1: 'Вид продаёт мечту', pill_2: 'Молчание рождает подозрение', pill_3: 'Противоречия убивают доверие', pill_4: 'Крах доверия убивает продажи', verdict_kicker: 'Ключевой вывод', verdict_title: 'Это не выглядит заброшенным. Это выглядит бесхозным.', verdict_body: 'И это почти хуже. Полностью мёртвый проект хотя бы понятен. Этот всё ещё достаточно жив, чтобы продавать мечты, но недостаточно ясен, чтобы внушать уверенность.', investor_confidence: 'Уверенность инвестора', stats_kicker: 'Сигнал с одного взгляда', stat_2019: 'заявленное завершение', stat_2021: 'последний видимый прогресс-трекинг', stat_2026: 'всё ещё продаётся на фоне неоднозначности', stat_units: 'публичное противоречие по числу юнитов', roots_kicker: 'Настоящая история', roots_title: 'Корневые причины', roots_sub: 'Именно этот уровень важен на встрече. Не симптомы. Причины.', photo_title: 'Проект всё ещё хорошо фотографируется.', photo_body: 'Именно поэтому проблема опасна. Красивые картинки покупают внимание. Но как только покупатель пытается проверить правду, история рассыпается.', rc1_tag: 'Причина 1', rc1_title: 'Нет единого источника правды', rc1_body: 'Публичные источники расходятся в статусе завершения, инвентаре, типе отделки и факте сдачи. Рынок видит сразу несколько реальностей.', rc2_tag: 'Причина 2', rc2_title: 'Молчание там, где должны быть доказательства', rc2_body: 'Недостаточно свежих, датированных доказательств того, что именно существует, что работает, что продано и что заселено сегодня.', rc3_tag: 'Причина 3', rc3_title: 'Обещания продаж обогнали подтверждение исполнения', rc3_body: 'ROI, окупаемость и комфорт управления продавались агрессивнее, чем документировалась текущая операционная реальность.', rc4_tag: 'Причина 4', rc4_title: 'Вторичный рынок перехватил нарратив', rc4_body: 'Перепродажи и листинги в стиле недостроенного инвентаря теперь объясняют проект публике сильнее, чем сам девелопер.', funnel_kicker: 'Эмоциональная воронка', funnel_title: 'Что реально чувствует покупатель', funnel_sub: 'Это последовательность, которая убивает конверсию.', emo1_title: 'Притяжение', emo1_body: 'Вид с холма, зелень и низкоэтажная концепция ощущаются иначе, чем перегруженные башни Батуми.', emo2_title: 'Путаница', emo2_body: 'Покупатель находит сразу несколько версий проекта: сдан, не достроен, активен, устарел.', emo3_title: 'Подозрение', emo3_body: 'Как только даты, цифры и отделка начинают конфликтовать, естественное предположение — проблемы с исполнением или ликвидностью.', emo4_title: 'Выход', emo4_body: 'Если девелопер не может быстро дать жёсткие доказательства, покупатель уходит к более чистому и безопасному конкуренту.', tl_kicker: 'Хронология распада доверия', tl_title: 'Что рынок видит во времени', tl_sub: 'Опасность не только в задержке. Опасность в задержке без восстановления истории.', ev1_title: 'Заявлено завершение.', ev1_body: 'Публичная страница проекта указывает завершение в декабре 2019 года. Это создаёт простое ожидание: к текущему моменту актив должен выглядеть устоявшимся, работающим и доказанным.', ev2_title: 'Псевдонезависимый трекинг прогресса замирает.', ev2_body: 'Снимки строительного прогресса, похоже, прекращаются примерно в начале 2021 года. Когда обновления замолкают, молчание становится частью продуктового опыта.', ev3_title: 'Проект по-прежнему обнаруживается через противоречия.', ev3_body: 'Покупатели всё ещё сталкиваются с несогласованной отделкой, разными цифрами и инвентарём вторичного рынка. Это значит, что история так и не была восстановлена.', img_kicker: 'Визуальная сила против нарративного риска', img_title: 'Почему картинки всё ещё работают — и почему этого недостаточно', img_sub: 'Проект по-прежнему визуально продаваемый. Проблема начинается после первого клика.', cap1_title: 'Мечта всё ещё продаётся.', cap1_body: 'Виды, свет и низкоэтажное обещание всё ещё создают желание. У проекта есть привлекательность. Но вместе с ней утекает доверие.', cap2_title: 'Инвентарь всё ещё циркулирует.', cap2_body: 'Свежие листинги доказывают, что проект не невидим. Но они лишь делают противоречия более актуальными.', cap3_title: 'Ландшафт подпитывает фантазию.', cap3_body: 'Холм продаёт тишину и дистанцию от плотного Батуми. Позиционирование сильное. Доказательная база слабая.', prob_kicker: 'Конкретные проблемы', prob_title: 'Что быстро ломает доверие', prob_sub: 'Это вещи, на которые можно указывать сразу.', p1_k: 'Противоречие', p1_title: 'История завершения', p1_body: 'Один источник намекает, что всё завершено давно; другой по-прежнему строит историю вокруг строительного прогресса.', p2_k: 'Противоречие', p2_title: 'Количество юнитов', p2_body: 'Публичные описания не совпадают по тому, сколько квартир или общих юнитов вообще существует.', p3_k: 'Противоречие', p3_title: 'Уровень отделки', p3_body: 'Turnkey, white frame и black-wall описания сосуществуют. Для удалённого инвестора этого уже достаточно, чтобы потерять доверие.', p4_k: 'Провал нарратива', p4_title: 'Зависимость от порталов', p4_body: 'Проект в основном объясняется агрегаторами и третьими сторонами, а не сильным официальным источником.', p5_k: 'Провал доказательств', p5_title: 'Устаревшая свежесть', p5_body: 'Самый сильный сигнал о прогрессе выглядит старым. Рынок читает это как запущенность или нерешённую проблему.', p6_k: 'Коммерческий провал', p6_title: 'Продажный перегиб', p6_body: 'Язык высокой доходности звучит сильнее, чем текущие операционные доказательства. Это превращает амбицию в подозрение.', meet_kicker: 'Режим встречи', meet_title: 'Линия, которую нужно держать в комнате', meet_sub: 'Не позволяйте увести разговор в мягкий маркетинг. Возвращайте их к реальности.', meet_quote: '«Это не в первую очередь маркетинговая проблема. Это проблема доверия, созданная конфликтующими публичными реальностями.»', q1: '<strong>1.</strong> Каков точный текущий статус сегодня — завершён, частично завершён, заморожен или перезапускается?', q2: '<strong>2.</strong> Почему публичные источники конфликтуют по сроку завершения, уровню отделки и общему числу юнитов?', q3: '<strong>3.</strong> Какие удобства физически работают прямо сейчас, а не только обещаны?', q4: '<strong>4.</strong> Где датированные доказательства: текущее видео, заселённость, оператор, аренда, жизнь резидентов?', q5: '<strong>5.</strong> Если проект здоров, почему его публичная история до сих пор в основном рассказывается старыми страницами агрегаторов?', q6: '<strong>6.</strong> Каков 12-месячный план восстановления с вехами и персональной ответственностью?', src_kicker: 'Доказательная база', src_title: 'Источники, формирующие восприятие', src_sub: 'Именно эти поверхности сейчас формируют то, во что верят внешние наблюдатели.', s1_type: 'Трекер проекта', s1_body: 'Самый сильный публичный источник для текущего обнаружения, листингов и старой рамки строительного прогресса.', s2_type: 'Профиль проекта', s2_body: 'Важен тем, что даёт агрессивную рамку завершения и инвестиционного обещания.', s3_type: 'Страница девелопера', s3_body: 'Продвигает банковский комфорт, окупаемость и инвестиционное успокоение.', s4_type: 'Вторичный рынок', s4_body: 'Показывает, что вторичный рынок продолжает рассказывать проект публике.', footer: 'Основа: только публичные веб-источники. Это аудит публичного восприятия и корневых причин, а не юридический или инженерно-строительный аудит.'
+      },
+      ka: {
+        hero_eyebrow: 'Batumi Panorama · ჩარნალი · საჯარო ფორენზიკული აუდიტი', hero_title: 'ლამაზი დაპირება, რომელიც ახლა გატეხილ ისტორიად იგრძნობა.', hero_sub: 'ადამიანები ამ პროექტს თავიდან ინვესტიციად არ აღიქვამენ. ისინი მას გრძნობად აღიქვამენ: ჯერ მიზიდულობა, მერე დაბნეულობა, მერე ეჭვი. ძირეული პრობლემა დიზაინში არ არის. ძირეული პრობლემა იმაშია, რომ საჯარო ისტორია აღარ ემთხვევა ერთ მკაფიო რეალობას.', pill_1: 'ხედი ყიდის ოცნებას', pill_2: 'სიჩუმე აჩენს ეჭვს', pill_3: 'წინააღმდეგობები ანგრევს ნდობას', pill_4: 'ნდობის კრახი კლავს გაყიდვებს', verdict_kicker: 'ძირითადი დასკვნა', verdict_title: 'ეს მიტოვებულს არ ჰგავს. ეს უმეთვალყურეოს ჰგავს.', verdict_body: 'და ეს თითქმის უარესია. სრულიად მკვდარი პროექტი მაინც გასაგებია. ეს ჯერ კიდევ საკმარისად ცოცხალია, რომ ოცნება გაყიდოს, მაგრამ საკმარისად მკაფიო აღარ არის, რომ ნდობა გააჩინოს.', investor_confidence: 'ინვესტორის ნდობა', stats_kicker: 'სიგნალი ერთი შეხედვით', stat_2019: 'გამოცხადებული დასრულება', stat_2021: 'ბოლოს ხილული პროგრეს-ტრეკინგი', stat_2026: 'ჯერ კიდევ იყიდება ბუნდოვანების ფონზე', stat_units: 'საჯარო წინააღმდეგობა ერთეულების რაოდენობაზე', roots_kicker: 'ნამდვილი ისტორია', roots_title: 'ძირეული მიზეზები', roots_sub: 'შეხვედრაზე სწორედ ეს დონეა მნიშვნელოვანი. არა სიმპტომები. მიზეზები.', photo_title: 'პროექტი ჯერ კიდევ კარგად ფოტოგენურია.', photo_body: 'ზუსტად ამიტომ არის პრობლემა საშიში. ლამაზი ფოტოები ყურადღებას ყიდულობს. მაგრამ როგორც კი მყიდველი სიმართლის გადამოწმებას იწყებს, ისტორია იშლება.', rc1_tag: 'მიზეზი 1', rc1_title: 'არ არსებობს ერთი სანდო სიმართლის წყარო', rc1_body: 'საჯარო წყაროები არ თანხმდებიან დასრულების სტატუსზე, ინვენტარზე, მოპირკეთებაზე და ჩაბარებაზე. ბაზარი ერთდროულად რამდენიმე რეალობას ხედავს.', rc2_tag: 'მიზეზი 2', rc2_title: 'სიჩუმეა იქ, სადაც მტკიცებულება უნდა იყოს', rc2_body: 'არ არის საკმარისი ახალი, დათარიღებული მტკიცებულება იმის შესახებ, თუ რა არსებობს, რა მუშაობს, რა არის გაყიდული და რა არის დასახლებული დღეს.', rc3_tag: 'მიზეზი 3', rc3_title: 'გაყიდვების დაპირებები აღემატა შესრულების მტკიცებულებას', rc3_body: 'ROI, ამონაგები და მართვის კომფორტი უფრო აგრესიულად გაიყიდა, ვიდრე მიმდინარე ოპერაციული რეალობა დოკუმენტირდებოდა.', rc4_tag: 'მიზეზი 4', rc4_title: 'მეორადმა ბაზარმა ნარატივი გადაიბარა', rc4_body: 'გადაყიდვები და დაუმთავრებელი ინვენტარის ტიპის განცხადებები დღეს საზოგადოებას პროექტს უფრო ძლიერად უხსნის, ვიდრე თავად დეველოპერი.', funnel_kicker: 'ემოციური გვირაბი', funnel_title: 'რას გრძნობს რეალურად მყიდველი', funnel_sub: 'ეს ის თანმიმდევრობაა, რომელიც კონვერსიას კლავს.', emo1_title: 'მიზიდულობა', emo1_body: 'მთის ხედები, სიმწვანე და დაბალსართულიანი კონცეფცია განსხვავებულად აღიქმება ბათუმის გადატვირთულ კოშკებთან შედარებით.', emo2_title: 'დაბნეულობა', emo2_body: 'მყიდველი ერთდროულად რამდენიმე ვერსიას აწყდება: ჩაბარებული, დაუმთავრებელი, აქტიური, მოძველებული.', emo3_title: 'ეჭვი', emo3_body: 'როგორც კი თარიღები, ციფრები და მოპირკეთება ერთმანეთს ეწინააღმდეგება, ბუნებრივი დასკვნა ხდება შესრულების ან ლიკვიდობის პრობლემა.', emo4_title: 'გასვლა', emo4_body: 'თუ დეველოპერი სწრაფად ვერ აჩვენებს მყარ მტკიცებულებას, მყიდველი გადადის უფრო სუფთა და უსაფრთხო კონკურენტთან.', tl_kicker: 'ნდობის კრახის ქრონოლოგია', tl_title: 'რას ხედავს ბაზარი დროში', tl_sub: 'საფრთხე მხოლოდ დაგვიანებაში არაა. საფრთხე არის დაგვიანება ისტორიის აღდგენის გარეშე.', ev1_title: 'დასრულება დეკლარირებულია.', ev1_body: 'საჯარო პროექტის გვერდი მიუთითებს დასრულებას 2019 წლის დეკემბერში. ეს ქმნის მარტივ მოლოდინს: დღევანდელი მდგომარეობით ეს აქტივი უკვე უნდა ჩანდეს დამკვიდრებულად, მოქმედად და დადასტურებულად.', ev2_title: 'თითქოს დამოუკიდებელი პროგრეს-ტრეკინგი ჩერდება.', ev2_body: 'სამშენებლო პროგრესის სურათები, როგორც ჩანს, 2021 წლის დასაწყისში ჩერდება. როდესაც განახლებები ჩუმდება, სიჩუმე თავად ხდება პროდუქტის გამოცდილების ნაწილი.', ev3_title: 'პროექტი ჯერ კიდევ წინააღმდეგობებით აღმოაჩინება.', ev3_body: 'მყიდველები კვლავ აწყდებიან შეუსაბამო მოპირკეთებას, სხვადასხვა ციფრებს და მეორადი ბაზრის ტიპის ინვენტარს. ეს ნიშნავს, რომ ისტორია არასოდეს აღდგა.', img_kicker: 'ვიზუალური ძალა vs ნარატიული რისკი', img_title: 'რატომ მუშაობს გამოსახულება ჯერ კიდევ — და რატომ არ არის ეს საკმარისი', img_sub: 'პროექტი ჯერ კიდევ ვიზუალურად გაყიდვადია. პრობლემა იწყება პირველი დაკლიკების შემდეგ.', cap1_title: 'ოცნება ჯერ კიდევ იყიდება.', cap1_body: 'ხედები, სინათლე და დაბალსართულიანი დაპირება სურვილს ჯერ კიდევ ქმნის. ამ პროდუქტს მიმზიდველობა აქვს. მაგრამ ნდობა გასდის.', cap2_title: 'ინვენტარი ჯერ კიდევ ბრუნავს.', cap2_body: 'ახალი განცხადებები ამტკიცებს, რომ პროექტი უხილავი არაა. მაგრამ ამით წინააღმდეგობები უფრო ახლანდელი ხდება.', cap3_title: 'ლანდშაფტი ფანტაზიას აძლიერებს.', cap3_body: 'მთის ფერდობი ყიდის სიმშვიდეს და ბათუმის სიმჭიდროვისგან დისტანციას. პოზიციონირება ძლიერია. მტკიცებულებების ფენა სუსტია.', prob_kicker: 'კონკრეტული პრობლემები', prob_title: 'რა ანგრევს ნდობას სწრაფად', prob_sub: 'ეს ის საკითხებია, რომლებზეც შეგიძლიათ პირდაპირ მიუთითოთ.', p1_k: 'წინააღმდეგობა', p1_title: 'დასრულების ისტორია', p1_body: 'ერთი წყარო მიანიშნებს, რომ ყველაფერი დიდი ხნის წინ დასრულდა; მეორე ისევ სამშენებლო პროგრესის გარშემო აშენებს ისტორიას.', p2_k: 'წინააღმდეგობა', p2_title: 'ერთეულების რაოდენობა', p2_body: 'საჯარო აღწერები არ თანხმდება იმაზე, რამდენი ბინა ან საერთო ერთეული რეალურად არსებობს.', p3_k: 'წინააღმდეგობა', p3_title: 'მოპირკეთების დონე', p3_body: 'Turnkey, white frame და black-wall ტიპის აღწერები თანაარსებობს. ეს უკვე საკმარისია, რომ დისტანციური ნდობა დაინგრეს.', p4_k: 'ნარატივის ჩავარდნა', p4_title: 'პორტალებზე დამოკიდებულება', p4_body: 'პროექტს ძირითადად აგრეგატორები და მესამე მხარეები ხსნიან და არა ძლიერი ოფიციალური წყარო.', p5_k: 'მტკიცებულების ჩავარდნა', p5_title: 'მოძველებული სიახლე', p5_body: 'ყველაზე ძლიერი პროგრეს-სიგნალი ძველად ჩანს. ბაზარი ამას კითხულობს როგორც მიტოვებას ან გადაუჭრელ სირთულეს.', p6_k: 'კომერციული ჩავარდნა', p6_title: 'გაყიდვების გადაჭარბება', p6_body: 'მაღალი ამონაგების ენა უფრო ძლიერად ჟღერს, ვიდრე მიმდინარე ოპერაციული მტკიცებულება. ეს ამბიციას ეჭვად აქცევს.', meet_kicker: 'შეხვედრის რეჟიმი', meet_title: 'რა ხაზი უნდა დაიჭიროთ ოთახში', meet_sub: 'არ მისცეთ საშუალება რბილ მარკეტინგულ ლაპარაკში გადაგიყვანონ. დააბრუნეთ ისინი რეალობაზე.', meet_quote: '„ეს პირველ რიგში მარკეტინგის პრობლემა არ არის. ეს ნდობის პრობლემაა, რომელიც საჯარო რეალობების წინააღმდეგობამ შექმნა.“', q1: '<strong>1.</strong> რა არის ზუსტი მიმდინარე სტატუსი დღეს — დასრულებული, ნაწილობრივ დასრულებული, გაჩერებული თუ ხელახლა გაშვებული?', q2: '<strong>2.</strong> რატომ ეწინააღმდეგება ერთმანეთს საჯარო წყაროები დასრულების ვადაზე, მოპირკეთების დონეზე და ერთეულების საერთო რაოდენობაზე?', q3: '<strong>3.</strong> რომელი კეთილმოწყობა მუშაობს ფიზიკურად ახლა და არა მხოლოდ გეგმაში?', q4: '<strong>4.</strong> სად არის დათარიღებული მტკიცებულება: მიმდინარე ვიდეო, დასახლება, ოპერატორი, ქირა, რეზიდენტების აქტივობა?', q5: '<strong>5.</strong> თუ პროექტი ჯანმრთელია, რატომ ყვებიან მის საჯარო ისტორიას ჯერ კიდევ მოძველებული აგრეგატორის გვერდები?', q6: '<strong>6.</strong> რა არის 12-თვიანი აღდგენის გეგმა ეტაპებით და პირადი პასუხისმგებლობით?', src_kicker: 'მტკიცებულებების ბაზა', src_title: 'წყაროები, რომლებიც აღქმას აყალიბებს', src_sub: 'სწორედ ეს ზედაპირებია, რომლებიც დღეს გარედან მნახველს რწმენას უყალიბებს.', s1_type: 'პროექტის ტრეკერი', s1_body: 'ყველაზე ძლიერი საჯარო წყარო მიმდინარე აღმოჩენის, განცხადებების და ძველი სამშენებლო პროგრესის ჩარჩოსთვის.', s2_type: 'პროექტის პროფილი', s2_body: 'მნიშვნელოვანია, რადგან აგრესიულად აწვდის დასრულების და საინვესტიციო დაპირების ჩარჩოს.', s3_type: 'დეველოპერის გვერდი', s3_body: 'ყიდის ბანკის კომფორტს, ამონაგებს და საინვესტიციო დამშვიდებას.', s4_type: 'მეორადი ბაზარი', s4_body: 'აჩვენებს, რომ მეორადი ბაზარი აგრძელებს პროექტის მოყოლას საზოგადოებისათვის.', footer: 'საფუძველი: მხოლოდ საჯარო ვებ-წყაროები. ეს არის საჯარო აღქმისა და ძირეული მიზეზების აუდიტი და არა იურიდიული ან სამშენებლო-საინჟინრო აუდიტი.'
+      }
+    };
+
+    function applyLanguage(lang) {
+      const dict = translations[lang] || translations.en;
+      document.documentElement.lang = lang === 'ka' ? 'ka' : lang;
+      document.querySelectorAll('[data-i18n]').forEach(el => {
+        const key = el.dataset.i18n;
+        if (dict[key]) el.innerHTML = dict[key];
+      });
+      document.querySelectorAll('.lang-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.lang === lang);
+      });
+      localStorage.setItem('batumi_panorama_lang', lang);
+    }
+
+    document.querySelectorAll('.lang-btn').forEach(btn => {
+      btn.addEventListener('click', () => applyLanguage(btn.dataset.lang));
+    });
+
+    applyLanguage(localStorage.getItem('batumi_panorama_lang') || 'en');
+  </script>
+</body>
+</html>

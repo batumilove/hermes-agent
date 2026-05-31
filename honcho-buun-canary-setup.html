@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Honcho Minimal Dialectic Canary Architecture</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'JetBrains Mono', monospace;
+      background: #020617;
+      min-height: 100vh;
+      padding: 2rem;
+      color: white;
+    }
+    .container { max-width: 1400px; margin: 0 auto; }
+    .header { margin-bottom: 2rem; }
+    .header-row { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem; }
+    .pulse-dot { width: 12px; height: 12px; background: #22d3ee; border-radius: 50%; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.025em; }
+    .subtitle { color: #94a3b8; font-size: 0.875rem; margin-left: 1.75rem; }
+    .diagram-container {
+      background: rgba(15, 23, 42, 0.5);
+      border-radius: 1rem;
+      border: 1px solid #1e293b;
+      padding: 1.5rem;
+      overflow-x: auto;
+    }
+    svg { width: 100%; min-width: 1200px; display: block; }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1rem;
+      margin-top: 2rem;
+    }
+    .card {
+      background: rgba(15, 23, 42, 0.5);
+      border-radius: 0.75rem;
+      border: 1px solid #1e293b;
+      padding: 1.25rem;
+    }
+    .card-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
+    .card-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .card-dot.cyan { background: #22d3ee; }
+    .card-dot.emerald { background: #34d399; }
+    .card-dot.violet { background: #a78bfa; }
+    .card-dot.amber { background: #fbbf24; }
+    .card-dot.rose { background: #fb7185; }
+    .card h3 { font-size: 0.875rem; font-weight: 600; }
+    .card ul { list-style: none; color: #94a3b8; font-size: 0.75rem; }
+    .card li { margin-bottom: 0.375rem; }
+    .footer { text-align: center; margin-top: 1.5rem; color: #475569; font-size: 0.75rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="header-row">
+        <div class="pulse-dot"></div>
+        <h1>Honcho Minimal Dialectic Canary Architecture</h1>
+      </div>
+      <p class="subtitle">Hermes → Honcho API → minimal dialectic on buun canary, while higher reasoning levels stay on aeon-ultimate</p>
+    </div>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 1360 860">
+        <defs>
+          <marker id="arrowhead-slate" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#64748b" />
+          </marker>
+          <marker id="arrowhead-cyan" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#22d3ee" />
+          </marker>
+          <marker id="arrowhead-emerald" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#34d399" />
+          </marker>
+          <marker id="arrowhead-amber" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#fbbf24" />
+          </marker>
+          <marker id="arrowhead-violet" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#a78bfa" />
+          </marker>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
+          </pattern>
+        </defs>
+
+        <rect width="100%" height="100%" fill="url(#grid)" />
+
+        <line x1="150" y1="290" x2="300" y2="290" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrowhead-cyan)"/>
+        <text x="225" y="278" fill="#94a3b8" font-size="10" text-anchor="middle">tool call / memory request</text>
+
+        <line x1="480" y1="210" x2="650" y2="210" stroke="#34d399" stroke-width="2" marker-end="url(#arrowhead-emerald)"/>
+        <text x="565" y="198" fill="#94a3b8" font-size="10" text-anchor="middle">minimal reasoning</text>
+
+        <line x1="480" y1="410" x2="650" y2="410" stroke="#fbbf24" stroke-width="2" marker-end="url(#arrowhead-amber)"/>
+        <text x="565" y="398" fill="#94a3b8" font-size="10" text-anchor="middle">low / high reasoning</text>
+
+        <line x1="830" y1="210" x2="1020" y2="210" stroke="#34d399" stroke-width="2" marker-end="url(#arrowhead-emerald)"/>
+        <text x="925" y="198" fill="#94a3b8" font-size="10" text-anchor="middle">OpenAI-compatible /v1/chat/completions</text>
+
+        <line x1="830" y1="410" x2="1020" y2="410" stroke="#fbbf24" stroke-width="2" marker-end="url(#arrowhead-amber)"/>
+        <text x="925" y="398" fill="#94a3b8" font-size="10" text-anchor="middle">OpenAI-compatible /v1/chat/completions</text>
+
+        <line x1="1120" y1="210" x2="1280" y2="210" stroke="#a78bfa" stroke-width="2" marker-end="url(#arrowhead-violet)"/>
+        <text x="1200" y="198" fill="#94a3b8" font-size="10" text-anchor="middle">Qwen 3.5 / buun template</text>
+
+        <line x1="1120" y1="410" x2="1280" y2="410" stroke="#a78bfa" stroke-width="2" marker-end="url(#arrowhead-violet)"/>
+        <text x="1200" y="398" fill="#94a3b8" font-size="10" text-anchor="middle">primary non-canary path</text>
+
+        <rect x="20" y="110" width="1320" height="620" rx="12" fill="rgba(251, 191, 36, 0.05)" stroke="#fbbf24" stroke-width="1" stroke-dasharray="8,4"/>
+        <text x="34" y="130" fill="#fbbf24" font-size="11" font-weight="600">Tailscale private network / internal services only</text>
+
+        <rect x="40" y="240" width="110" height="100" rx="8" fill="#0f172a"/>
+        <rect x="40" y="240" width="110" height="100" rx="8" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="95" y="270" fill="white" font-size="12" font-weight="600" text-anchor="middle">Hermes</text>
+        <text x="95" y="290" fill="#94a3b8" font-size="9" text-anchor="middle">Telegram + tools</text>
+        <text x="95" y="305" fill="#94a3b8" font-size="9" text-anchor="middle">honcho_reasoning()</text>
+        <text x="95" y="322" fill="#94a3b8" font-size="8" text-anchor="middle">user-facing agent</text>
+
+        <rect x="300" y="150" width="180" height="320" rx="10" fill="rgba(120, 53, 15, 0.12)" stroke="#fbbf24" stroke-width="1.2" stroke-dasharray="4,4"/>
+        <text x="314" y="170" fill="#fbbf24" font-size="9">VM306 · 100.67.206.76</text>
+
+        <rect x="330" y="180" width="150" height="80" rx="8" fill="#0f172a"/>
+        <rect x="330" y="180" width="150" height="80" rx="8" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="405" y="208" fill="white" font-size="12" font-weight="600" text-anchor="middle">Honcho API</text>
+        <text x="405" y="226" fill="#94a3b8" font-size="9" text-anchor="middle">Docker: honcho-api-1</text>
+        <text x="405" y="242" fill="#94a3b8" font-size="9" text-anchor="middle">:8000</text>
+
+        <rect x="330" y="285" width="150" height="80" rx="8" fill="#0f172a"/>
+        <rect x="330" y="285" width="150" height="80" rx="8" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="405" y="313" fill="white" font-size="12" font-weight="600" text-anchor="middle">Postgres</text>
+        <text x="405" y="331" fill="#94a3b8" font-size="9" text-anchor="middle">memory + metadata</text>
+        <text x="405" y="347" fill="#94a3b8" font-size="9" text-anchor="middle">docker database</text>
+
+        <rect x="330" y="390" width="150" height="60" rx="8" fill="#0f172a"/>
+        <rect x="330" y="390" width="150" height="60" rx="8" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="405" y="417" fill="white" font-size="12" font-weight="600" text-anchor="middle">Redis</text>
+        <text x="405" y="435" fill="#94a3b8" font-size="9" text-anchor="middle">cache / queues</text>
+
+        <rect x="650" y="160" width="180" height="100" rx="8" fill="#0f172a"/>
+        <rect x="650" y="160" width="180" height="100" rx="8" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="740" y="190" fill="white" font-size="12" font-weight="600" text-anchor="middle">Minimal dialectic</text>
+        <text x="740" y="208" fill="#94a3b8" font-size="9" text-anchor="middle">routing override in .env</text>
+        <text x="740" y="224" fill="#34d399" font-size="9" text-anchor="middle">model=qwen35-buun-canary</text>
+        <text x="740" y="240" fill="#34d399" font-size="9" text-anchor="middle">base_url=100.110.104.77:8097/v1</text>
+
+        <rect x="650" y="360" width="180" height="100" rx="8" fill="#0f172a"/>
+        <rect x="650" y="360" width="180" height="100" rx="8" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="740" y="390" fill="white" font-size="12" font-weight="600" text-anchor="middle">Other dialectic levels</text>
+        <text x="740" y="408" fill="#94a3b8" font-size="9" text-anchor="middle">low / high / non-minimal</text>
+        <text x="740" y="424" fill="#fbbf24" font-size="9" text-anchor="middle">model=aeon-ultimate</text>
+        <text x="740" y="440" fill="#fbbf24" font-size="9" text-anchor="middle">base_url=100.69.54.37:8001/v1</text>
+
+        <rect x="1020" y="160" width="100" height="100" rx="8" fill="#0f172a"/>
+        <rect x="1020" y="160" width="100" height="100" rx="8" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="1070" y="192" fill="white" font-size="11" font-weight="600" text-anchor="middle">mac-horse</text>
+        <text x="1070" y="210" fill="#94a3b8" font-size="8" text-anchor="middle">100.110.104.77</text>
+        <text x="1070" y="226" fill="#94a3b8" font-size="8" text-anchor="middle">Kaiwolf Mac Studio</text>
+        <text x="1070" y="242" fill="#94a3b8" font-size="8" text-anchor="middle">canary host</text>
+
+        <rect x="1020" y="360" width="100" height="100" rx="8" fill="#0f172a"/>
+        <rect x="1020" y="360" width="100" height="100" rx="8" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="1070" y="392" fill="white" font-size="11" font-weight="600" text-anchor="middle">aeon host</text>
+        <text x="1070" y="410" fill="#94a3b8" font-size="8" text-anchor="middle">100.69.54.37</text>
+        <text x="1070" y="426" fill="#94a3b8" font-size="8" text-anchor="middle">primary backend</text>
+        <text x="1070" y="442" fill="#94a3b8" font-size="8" text-anchor="middle">non-minimal</text>
+
+        <rect x="1280" y="160" width="50" height="100" rx="8" fill="#0f172a"/>
+        <rect x="1280" y="160" width="50" height="100" rx="8" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="1305" y="188" fill="white" font-size="10" font-weight="600" text-anchor="middle">:8097</text>
+        <text x="1305" y="206" fill="#94a3b8" font-size="7" text-anchor="middle">llama-server</text>
+        <text x="1305" y="220" fill="#94a3b8" font-size="7" text-anchor="middle">Qwen 3.5</text>
+        <text x="1305" y="234" fill="#94a3b8" font-size="7" text-anchor="middle">397B</text>
+        <text x="1305" y="248" fill="#34d399" font-size="7" text-anchor="middle">buun jinja</text>
+
+        <rect x="1280" y="360" width="50" height="100" rx="8" fill="#0f172a"/>
+        <rect x="1280" y="360" width="50" height="100" rx="8" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="1305" y="388" fill="white" font-size="10" font-weight="600" text-anchor="middle">:8001</text>
+        <text x="1305" y="406" fill="#94a3b8" font-size="7" text-anchor="middle">aeon-ultimate</text>
+        <text x="1305" y="420" fill="#94a3b8" font-size="7" text-anchor="middle">existing</text>
+        <text x="1305" y="434" fill="#94a3b8" font-size="7" text-anchor="middle">backend</text>
+        <text x="1305" y="448" fill="#fbbf24" font-size="7" text-anchor="middle">stable path</text>
+
+        <path d="M 410 260 L 410 280" fill="none" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrowhead-violet)"/>
+        <path d="M 410 365 L 410 388" fill="none" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrowhead-violet)"/>
+        <text x="424" y="276" fill="#94a3b8" font-size="8">state</text>
+
+        <path d="M 95 240 L 95 165 Q 95 140 120 140 L 365 140 Q 390 140 390 178" fill="none" stroke="#fb7185" stroke-width="1.5" stroke-dasharray="5,5"/>
+        <text x="200" y="132" fill="#fb7185" font-size="8">Telegram user request enters Hermes</text>
+
+        <text x="1110" y="95" fill="white" font-size="11" font-weight="600">Legend</text>
+        <rect x="1110" y="108" width="16" height="10" rx="2" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1"/>
+        <text x="1132" y="116" fill="#94a3b8" font-size="8">Minimal dialectic path</text>
+        <rect x="1110" y="124" width="16" height="10" rx="2" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1"/>
+        <text x="1132" y="132" fill="#94a3b8" font-size="8">Non-minimal dialectic path</text>
+        <rect x="1110" y="140" width="16" height="10" rx="2" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1"/>
+        <text x="1132" y="148" fill="#94a3b8" font-size="8">State / storage</text>
+        <line x1="1110" y1="164" x2="1126" y2="164" stroke="#fb7185" stroke-width="1" stroke-dasharray="3,3"/>
+        <text x="1132" y="167" fill="#94a3b8" font-size="8">User/request context</text>
+      </svg>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot emerald"></div>
+          <h3>Canary path</h3>
+        </div>
+        <ul>
+          <li>• Only minimal dialectic was rerouted</li>
+          <li>• Honcho API now loads qwen35-buun-canary for minimal</li>
+          <li>• Requests go to mac-horse at 100.110.104.77:8097</li>
+          <li>• Endpoint speaks OpenAI-compatible chat completions</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot amber"></div>
+          <h3>Stable path</h3>
+        </div>
+        <ul>
+          <li>• Low/high reasoning levels still use aeon-ultimate</li>
+          <li>• Base URL remains 100.69.54.37:8001/v1</li>
+          <li>• Existing non-canary behavior preserved</li>
+          <li>• Scope of change stayed intentionally narrow</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot violet"></div>
+          <h3>Verification</h3>
+        </div>
+        <ul>
+          <li>• Honcho API container restarted cleanly</li>
+          <li>• Search endpoints remained healthy</li>
+          <li>• Logs showed minimal traffic hitting :8097</li>
+          <li>• Higher-level traffic still hit :8001</li>
+        </ul>
+      </div>
+    </div>
+
+    <p class="footer">
+      Honcho minimal dialectic canary • generated by Hermes • 2026-05-28
+    </p>
+  </div>
+</body>
+</html>

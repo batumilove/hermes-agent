@@ -635,13 +635,15 @@ def _get_or_create_env(task_id: str):
             image = overrides.get("modal_image") or config["modal_image"]
         elif env_type == "daytona":
             image = overrides.get("daytona_image") or config["daytona_image"]
+        elif env_type == "kata":
+            image = overrides.get("kata_image") or config["kata_image"]
         else:
             image = ""
 
         cwd = overrides.get("cwd") or config["cwd"]
 
         container_config = None
-        if env_type in {"docker", "singularity", "modal", "daytona"}:
+        if env_type in {"docker", "singularity", "modal", "daytona", "kata"}:
             container_config = {
                 "container_cpu": config.get("container_cpu", 1),
                 "container_memory": config.get("container_memory", 5120),
@@ -649,6 +651,8 @@ def _get_or_create_env(task_id: str):
                 "container_persistent": config.get("container_persistent", True),
                 "docker_volumes": config.get("docker_volumes", []),
                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+                "kata_namespace": config.get("kata_namespace", "sandbox"),
+                "kata_kubeconfig": config.get("kata_kubeconfig", ""),
             }
 
         ssh_config = None

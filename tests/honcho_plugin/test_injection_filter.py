@@ -338,3 +338,102 @@ class TestAnnotateChunks:
         ]
         result = annotate_chunks(chunks)
         assert result.index("AAA") < result.index("BBB")
+
+
+# ---------------------------------------------------------------------------
+# split_and_classify — line-level splitting
+# ---------------------------------------------------------------------------
+
+
+class TestSplitAndClassify:
+    """split_and_classify splits multi-line text into per-line MemoryChunks."""
+
+    def test_empty_input_returns_empty(self):
+        from plugins.memory.honcho.injection_filter import split_and_classify
+        assert split_and_classify("") == []
+
+    def test_blank_input_returns_empty(self):
+        from plugins.memory.honcho.injection_filter import split_and_classify
+        assert split_and_classify("   \n  \n  ") == []
+
+    def test_single_line(self):
+        from plugins.memory.honcho.injection_filter import split_and_classify
+        chunks = split_and_classify("User prefers dark mode", source="base_context")
+        assert len(chunks) == 1
+        assert chunks[0].text == "User prefers dark mode"
+        assert chunks[0].reason == REASON_STABLE_USER_PREFERENCE
+        assert chunks[0].source == "base_context"
+
+    def test_multi_line_independent_classification(self):
+        """Each line gets its own classification, not the whole block's."""
+        from plugins.memory.honcho.injection_filter import split_and_classify
+        text = (
+            "User prefers concise responses\n"
+            "Fixed bug X and submitted PR #123\n"
+            "Project uses pytest with xdist"
+        )
+        chunks = split_and_classify(text, source="base_context")
+        assert len(chunks) == 3
+        assert chunks[0].reason == REASON_STABLE_USER_PREFERENCE
+        assert chunks[1].reason == REASON_TASK_PROGRESS
+        assert chunks[2].reason == REASON_ACTIVE_PROJECT_MATCH
+
+    def test_blank_lines_skipped(self):
+        from plugins.memory.honcho.injection_filter import split_and_classify
+        text = "User prefers dark mode\n\n\nProject uses React"
+        chunks = split_and_classify(text)
+        assert len(chunks) == 2
+
+    def test_lines_stripped_of_whitespace(self):
+        from plugins.memory.honcho.injection_filter import split_and_classify
+        text = "  User prefers dark mode  \n  Phase 2 done, commit abc1234  "
+        chunks = split_and_classify(text)
+        assert chunks[0].text == "User prefers dark mode"
+        assert chunks[1].text == "Phase 2 done, commit abc1234"
+
+    def test_source_propagated(self):
+        from plugins.memory.honcho.injection_filter import split_and_classify
+        chunks = split_and_classify("hello", source="dialectic")
+        assert chunks[0].source == "dialectic"
+
+    def test_mixed_preference_and_progress_filtering(self):
+        """Splitting then filtering: preference survives, progress suppressed."""
+        from plugins.memory.honcho.injection_filter import split_and_classify
+        text = (
+            "User prefers concise responses\n"
+            "Fixed bug X and submitted PR #123"
+        )
+        chunks = split_and_classify(text, source="base_context")
+        filtered = filter_stale_memories(chunks)
+        assert len(filtered) == 1
+        assert filtered[0].reason == REASON_STABLE_USER_PREFERENCE
+        assert "concise" in filtered[0].text
+
+    def test_mixed_project_and_stale_filtering(self):
+        """Project facts survive when stale lines are in the same block."""
+        from plugins.memory.honcho.injection_filter import split_and_classify
+        text = (
+            "Project uses pytest with xdist\n"
+            "Phase 2 done, commit abc1234\n"
+            "Corrected: user timezone is PST, not EST"
+        )
+        chunks = split_and_classify(text, source="base_context")
+        filtered = filter_stale_memories(chunks)
+        reasons = [c.reason for c in filtered]
+        assert REASON_ACTIVE_PROJECT_MATCH in reasons
+        assert REASON_RECENT_CORRECTION in reasons
+        assert REASON_TASK_PROGRESS not in reasons
+        assert len(filtered) == 2
+
+    def test_same_block_preference_not_dropped_by_task_progress(self):
+        """Regression: before split_and_classify, a mixed block where task_progress
+        matched first would drop the whole thing including the preference."""
+        from plugins.memory.honcho.injection_filter import split_and_classify
+        # This text starts with task-progress pattern; old code classified
+        # the whole block as task_progress and dropped it.
+        text = "Phase 2 done, commit abc1234\nUser prefers concise responses"
+        chunks = split_and_classify(text, source="dialectic")
+        filtered = filter_stale_memories(chunks)
+        assert len(filtered) == 1
+        assert "concise" in filtered[0].text
+        assert filtered[0].reason == REASON_STABLE_USER_PREFERENCE

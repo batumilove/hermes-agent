@@ -1,0 +1,915 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Batumi Panorama — Forensic Audit Dashboard</title>
+  <style>
+    :root {
+      --bg: #041019;
+      --bg-2: #071827;
+      --panel: rgba(10, 20, 33, 0.72);
+      --panel-strong: rgba(12, 24, 40, 0.9);
+      --panel-soft: rgba(255, 255, 255, 0.03);
+      --line: rgba(171, 196, 255, 0.12);
+      --line-strong: rgba(171, 196, 255, 0.2);
+      --text: #eef5ff;
+      --muted: #9ab0c8;
+      --muted-2: #74879e;
+      --cyan: #6de2ff;
+      --blue: #78a6ff;
+      --amber: #ffbe63;
+      --red: #ff6d82;
+      --green: #71e5a0;
+      --shadow: 0 30px 80px rgba(0, 0, 0, 0.36);
+      --radius-xl: 28px;
+      --radius-lg: 22px;
+      --radius-md: 16px;
+      --max: 1380px;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(900px 500px at 10% -10%, rgba(109,226,255,0.15), transparent 55%),
+        radial-gradient(900px 600px at 100% 0%, rgba(255,109,130,0.12), transparent 48%),
+        radial-gradient(800px 500px at 60% 20%, rgba(120,166,255,0.10), transparent 60%),
+        linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 100%);
+      min-height: 100vh;
+      line-height: 1.48;
+      letter-spacing: 0.01em;
+    }
+
+    .noise::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0.04;
+      background-image:
+        linear-gradient(to right, rgba(255,255,255,0.22) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255,255,255,0.22) 1px, transparent 1px);
+      background-size: 26px 26px;
+      mask-image: radial-gradient(circle at center, black 40%, transparent 95%);
+    }
+
+    .wrap {
+      width: min(calc(100vw - 28px), var(--max));
+      margin: 0 auto;
+      padding: 24px 0 64px;
+    }
+
+    .glass {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(16px) saturate(140%);
+      -webkit-backdrop-filter: blur(16px) saturate(140%);
+      border-radius: var(--radius-xl);
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1.35fr 0.85fr;
+      gap: 18px;
+      margin-bottom: 18px;
+    }
+
+    .hero-main {
+      padding: 28px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero-main::after {
+      content: "";
+      position: absolute;
+      width: 360px;
+      height: 360px;
+      right: -110px;
+      bottom: -160px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(109,226,255,0.18), transparent 68%);
+      filter: blur(8px);
+      pointer-events: none;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 16px;
+      color: var(--cyan);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+    }
+
+    .eyebrow::before {
+      content: "";
+      width: 34px;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--cyan));
+      opacity: 0.75;
+    }
+
+    h1 {
+      margin: 0 0 14px;
+      font-size: clamp(34px, 5vw, 60px);
+      line-height: 0.96;
+      max-width: 10.5ch;
+    }
+
+    .lead {
+      margin: 0;
+      max-width: 66ch;
+      color: var(--muted);
+      font-size: 17px;
+    }
+
+    .hero-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 22px;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      padding: 10px 14px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08);
+      color: var(--text);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .hero-side {
+      padding: 22px;
+      display: grid;
+      gap: 16px;
+      align-content: space-between;
+    }
+
+    .score-ring {
+      width: 190px;
+      height: 190px;
+      margin: 0 auto;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(closest-side, rgba(11, 22, 37, 0.95) 74%, transparent 75% 100%),
+        conic-gradient(var(--red) 0 252deg, rgba(255,255,255,0.08) 252deg 360deg);
+      border: 1px solid var(--line);
+      box-shadow: inset 0 0 50px rgba(255,255,255,0.03);
+    }
+
+    .score-inner { text-align: center; }
+    .score-num {
+      font-size: 54px;
+      line-height: 1;
+      font-weight: 800;
+      letter-spacing: -0.04em;
+    }
+    .score-label {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+    }
+
+    .verdict {
+      padding: 16px 18px;
+      border-radius: 18px;
+      border: 1px solid rgba(255,109,130,0.22);
+      background: rgba(255,109,130,0.08);
+      color: #ffd7dd;
+      font-size: 14px;
+    }
+
+    .mini-grid,
+    .section-grid-2,
+    .section-grid-3 {
+      display: grid;
+      gap: 18px;
+      margin-bottom: 18px;
+    }
+
+    .mini-grid { grid-template-columns: repeat(4, 1fr); }
+    .section-grid-2 { grid-template-columns: 1.1fr 0.9fr; }
+    .section-grid-3 { grid-template-columns: repeat(3, 1fr); }
+
+    .metric, .section, .panel {
+      padding: 22px;
+      border-radius: var(--radius-lg);
+    }
+
+    .metric {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(14px);
+    }
+
+    .metric .kicker,
+    .panel-kicker {
+      color: var(--muted-2);
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      margin-bottom: 10px;
+    }
+
+    .metric .val {
+      font-size: 40px;
+      font-weight: 800;
+      line-height: 1;
+      letter-spacing: -0.04em;
+      margin-bottom: 10px;
+    }
+
+    .metric p,
+    .section p,
+    .panel p,
+    .bullet-list li,
+    .q-list li,
+    .timeline-note,
+    .matrix td,
+    .matrix th,
+    .source-card p {
+      color: var(--muted);
+      font-size: 14px;
+      margin: 0;
+    }
+
+    .section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(14px);
+      margin-bottom: 18px;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 16px;
+    }
+
+    .section-head h2 {
+      margin: 0 0 8px;
+      font-size: 26px;
+      letter-spacing: -0.03em;
+    }
+
+    .section-head .sub {
+      max-width: 72ch;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .diag-box {
+      border-radius: 18px;
+      padding: 18px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.02));
+      border: 1px solid var(--line);
+    }
+
+    .diag-box strong { color: var(--text); }
+
+    .journey {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 12px;
+    }
+
+    .step {
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.025);
+      padding: 16px;
+      min-height: 170px;
+    }
+
+    .step .n {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: rgba(109,226,255,0.12);
+      color: var(--cyan);
+      font-weight: 800;
+      margin-bottom: 12px;
+    }
+
+    .step h3 {
+      margin: 0 0 8px;
+      font-size: 16px;
+    }
+
+    .bars {
+      display: grid;
+      gap: 14px;
+    }
+
+    .bar-row {
+      display: grid;
+      grid-template-columns: 210px 1fr 52px;
+      gap: 14px;
+      align-items: center;
+    }
+
+    .bar-label {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .bar {
+      height: 12px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.08);
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,0.04);
+    }
+
+    .fill {
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--red), var(--amber));
+      box-shadow: 0 0 18px rgba(255,109,130,0.35);
+    }
+
+    .bar-score {
+      text-align: right;
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .timeline-wrap {
+      margin-top: 10px;
+      padding: 10px 2px 2px;
+    }
+
+    .timeline {
+      position: relative;
+      height: 120px;
+      margin: 16px 0 8px;
+    }
+
+    .timeline-line {
+      position: absolute;
+      top: 54px;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, rgba(120,166,255,0.25), rgba(255,109,130,0.45));
+      border-radius: 999px;
+    }
+
+    .timeline-gap {
+      position: absolute;
+      top: 48px;
+      left: 16%;
+      width: 54%;
+      height: 14px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, rgba(255,190,99,0.35), rgba(255,109,130,0.38));
+      border: 1px solid rgba(255,255,255,0.08);
+      box-shadow: 0 0 24px rgba(255,109,130,0.16);
+    }
+
+    .tick {
+      position: absolute;
+      top: 26px;
+      transform: translateX(-50%);
+      width: min(240px, 30vw);
+    }
+
+    .tick .dot {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      margin: 20px auto 10px;
+      background: var(--blue);
+      border: 2px solid rgba(255,255,255,0.8);
+      box-shadow: 0 0 0 6px rgba(120,166,255,0.12);
+    }
+
+    .tick.warn .dot {
+      background: var(--amber);
+      box-shadow: 0 0 0 6px rgba(255,190,99,0.12);
+    }
+
+    .tick.danger .dot {
+      background: var(--red);
+      box-shadow: 0 0 0 6px rgba(255,109,130,0.12);
+    }
+
+    .tick .date {
+      font-size: 12px;
+      color: var(--muted-2);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      text-align: center;
+      margin-bottom: 6px;
+    }
+
+    .tick .desc {
+      text-align: center;
+      font-size: 13px;
+      color: var(--text);
+      line-height: 1.35;
+      padding: 0 8px;
+    }
+
+    .timeline-note {
+      margin-top: 10px;
+      color: var(--muted);
+    }
+
+    .matrix {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.025);
+    }
+
+    .matrix th,
+    .matrix td {
+      padding: 14px 14px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+      text-align: left;
+    }
+
+    .matrix th {
+      color: var(--text);
+      font-size: 13px;
+      background: rgba(255,255,255,0.04);
+    }
+
+    .matrix tr:last-child td { border-bottom: none; }
+
+    .status-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      font-weight: 700;
+      border: 1px solid transparent;
+      white-space: nowrap;
+    }
+
+    .chip-red { background: rgba(255,109,130,0.1); color: #ffc6cf; border-color: rgba(255,109,130,0.24); }
+    .chip-amber { background: rgba(255,190,99,0.1); color: #ffe0af; border-color: rgba(255,190,99,0.24); }
+    .chip-cyan { background: rgba(109,226,255,0.1); color: #c6f6ff; border-color: rgba(109,226,255,0.24); }
+    .chip-green { background: rgba(113,229,160,0.1); color: #cbffe1; border-color: rgba(113,229,160,0.24); }
+
+    .q-list, .bullet-list {
+      margin: 0;
+      padding-left: 18px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .q-list li strong,
+    .bullet-list li strong { color: var(--text); }
+
+    .source-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 14px;
+    }
+
+    .source-card {
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.03);
+      padding: 16px;
+    }
+
+    .source-type {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.13em;
+      color: var(--cyan);
+      margin-bottom: 8px;
+      font-weight: 700;
+    }
+
+    .source-card a {
+      color: var(--text);
+      text-decoration: none;
+      font-weight: 700;
+      word-break: break-word;
+      display: inline-block;
+      margin-bottom: 8px;
+    }
+
+    .footer-note {
+      margin-top: 14px;
+      color: var(--muted-2);
+      font-size: 12px;
+    }
+
+    .top-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .buttonish {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.04);
+      color: var(--text);
+      font-size: 13px;
+      text-decoration: none;
+    }
+
+    @media (max-width: 1180px) {
+      .hero, .section-grid-2, .section-grid-3, .mini-grid, .source-grid { grid-template-columns: 1fr; }
+      .journey { grid-template-columns: 1fr 1fr; }
+      .bar-row { grid-template-columns: 1fr; }
+      .tick { width: 30vw; }
+    }
+
+    @media (max-width: 820px) {
+      .wrap { width: min(calc(100vw - 18px), var(--max)); padding-top: 14px; }
+      .hero-main, .hero-side, .metric, .section, .panel { padding: 18px; }
+      .journey { grid-template-columns: 1fr; }
+      .timeline { height: 180px; }
+      .timeline-line { top: 84px; }
+      .timeline-gap { top: 78px; }
+      .tick { top: 10px; width: 31%; }
+      .tick .dot { margin-top: 44px; }
+      h1 { max-width: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="noise"></div>
+  <div class="wrap">
+    <section class="hero">
+      <div class="glass hero-main">
+        <div class="eyebrow">Forensic public-facing audit · Batumi Panorama · Charnali / Cernali</div>
+        <h1>Sold like an investment product. Discovered like a distressed asset.</h1>
+        <p class="lead">
+          This dashboard condenses the public online reality of Batumi Panorama: fragmented narrative control,
+          stale proof, conflicting project facts, and a buyer journey that increasingly feels risky instead of investable.
+        </p>
+        <div class="hero-tags">
+          <span class="tag">Low-rise resort / aparthotel concept</span>
+          <span class="tag">Stale construction-tracking evidence</span>
+          <span class="tag">Conflicting unit / finish / completion claims</span>
+          <span class="tag">Heavy ROI language, weak proof-of-delivery</span>
+        </div>
+      </div>
+
+      <div class="glass hero-side">
+        <div class="score-ring">
+          <div class="score-inner">
+            <div class="score-num">3/10</div>
+            <div class="score-label">Investor confidence</div>
+          </div>
+        </div>
+        <div class="verdict">
+          Publicly, the project does not read as definitively dead. It reads as under-controlled, under-explained,
+          and credibility-damaged — which for remote buyers is often functionally enough.
+        </div>
+        <div class="top-actions">
+          <span class="buttonish">Audit mode: trust failure</span>
+          <span class="buttonish">Meeting mode: hard questions</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="mini-grid">
+      <div class="metric">
+        <div class="kicker">Discoverability</div>
+        <div class="val">5/10</div>
+        <p>Findable, but mostly through portals and recycled third-party descriptions.</p>
+      </div>
+      <div class="metric">
+        <div class="kicker">Narrative control</div>
+        <div class="val">2/10</div>
+        <p>The project does not appear to own a current official source of truth.</p>
+      </div>
+      <div class="metric">
+        <div class="kicker">Credibility</div>
+        <div class="val">3/10</div>
+        <p>Public contradictions on completion, inventory, and finish degrade trust fast.</p>
+      </div>
+      <div class="metric">
+        <div class="kicker">PR resilience</div>
+        <div class="val">1/10</div>
+        <p>If challenged by a skeptical buyer, the current public record is easy to attack.</p>
+      </div>
+    </section>
+
+    <section class="section glass">
+      <div class="section-head">
+        <div>
+          <h2>Core diagnosis</h2>
+          <div class="sub">The issue is not weak aesthetics. It is trust collapse through inconsistent narratives.</div>
+        </div>
+      </div>
+      <div class="diag-box">
+        <p>
+          <strong>Batumi Panorama does not read like a live, well-managed project.</strong> It reads like a fragmented promise with no clear current owner of the truth. Public sources conflict on completion, unit count, finish level, and what is actually operational. For outside buyers, that confusion becomes the story — and the market fills silence with assumptions of delay, liquidity stress, or execution failure.
+        </p>
+      </div>
+    </section>
+
+    <section class="section glass">
+      <div class="section-head">
+        <div>
+          <h2>Timeline of trust decay</h2>
+          <div class="sub">The biggest optics problem is the long gap between what was promised, what was last independently tracked, and what the public still sees now.</div>
+        </div>
+        <span class="status-chip chip-red">High-risk narrative gap</span>
+      </div>
+      <div class="timeline-wrap">
+        <div class="timeline">
+          <div class="timeline-line"></div>
+          <div class="timeline-gap" title="Optics gap between claimed completion and stale public tracking"></div>
+
+          <div class="tick" style="left: 16%;">
+            <div class="date">Dec 2019</div>
+            <div class="desc">GEOLN project page claims completion by December 2019.</div>
+            <div class="dot"></div>
+          </div>
+
+          <div class="tick warn" style="left: 40%;">
+            <div class="date">Feb 2021</div>
+            <div class="desc">Korter’s last cited construction update appears around February 2021.</div>
+            <div class="dot"></div>
+          </div>
+
+          <div class="tick danger" style="left: 78%;">
+            <div class="date">2026</div>
+            <div class="desc">Public still sees conflicting status claims and resale of white-frame inventory.</div>
+            <div class="dot"></div>
+          </div>
+        </div>
+        <p class="timeline-note">
+          A buyer does not interpret this as “minor data mismatch.” They interpret it as “nobody serious has updated the truth in years.”
+        </p>
+      </div>
+    </section>
+
+    <section class="section-grid-2">
+      <div class="section glass">
+        <div class="section-head">
+          <div>
+            <h2>Buyer journey</h2>
+            <div class="sub">How a potential buyer or investor is likely to experience the project online.</div>
+          </div>
+        </div>
+        <div class="journey">
+          <div class="step">
+            <div class="n">1</div>
+            <h3>Interest</h3>
+            <p>The low-rise panoramic concept feels differentiated versus central Batumi tower inventory.</p>
+          </div>
+          <div class="step">
+            <div class="n">2</div>
+            <h3>Search</h3>
+            <p>Search results are dominated by portals, legacy descriptions, and lightly controlled third-party pages.</p>
+          </div>
+          <div class="step">
+            <div class="n">3</div>
+            <h3>Confusion</h3>
+            <p>The buyer sees several truths at once: off-plan, completed, delivered, unfinished.</p>
+          </div>
+          <div class="step">
+            <div class="n">4</div>
+            <h3>Suspicion</h3>
+            <p>Stale progress data plus resale leakage starts to smell like distress rather than momentum.</p>
+          </div>
+          <div class="step">
+            <div class="n">5</div>
+            <h3>Defection</h3>
+            <p>Without hard proof from the developer, the prospect likely defects to a cleaner competitor.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="section glass">
+        <div class="section-head">
+          <div>
+            <h2>Scorecard</h2>
+            <div class="sub">Public perception scores across the trust stack.</div>
+          </div>
+        </div>
+        <div class="bars">
+          <div class="bar-row"><div class="bar-label">Discoverability</div><div class="bar"><div class="fill" style="width:50%"></div></div><div class="bar-score">5/10</div></div>
+          <div class="bar-row"><div class="bar-label">Narrative control</div><div class="bar"><div class="fill" style="width:20%"></div></div><div class="bar-score">2/10</div></div>
+          <div class="bar-row"><div class="bar-label">Freshness</div><div class="bar"><div class="fill" style="width:20%"></div></div><div class="bar-score">2/10</div></div>
+          <div class="bar-row"><div class="bar-label">Credibility</div><div class="bar"><div class="fill" style="width:30%"></div></div><div class="bar-score">3/10</div></div>
+          <div class="bar-row"><div class="bar-label">Proof of delivery</div><div class="bar"><div class="fill" style="width:20%"></div></div><div class="bar-score">2/10</div></div>
+          <div class="bar-row"><div class="bar-label">Investor confidence</div><div class="bar"><div class="fill" style="width:30%"></div></div><div class="bar-score">3/10</div></div>
+          <div class="bar-row"><div class="bar-label">PR resilience</div><div class="bar"><div class="fill" style="width:10%"></div></div><div class="bar-score">1/10</div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section glass">
+      <div class="section-head">
+        <div>
+          <h2>Contradiction matrix</h2>
+          <div class="sub">The project’s credibility problem is easiest to see when public sources are placed side by side.</div>
+        </div>
+      </div>
+      <table class="matrix">
+        <thead>
+          <tr>
+            <th>Fact area</th>
+            <th>Source A</th>
+            <th>Source B</th>
+            <th>Why it hurts</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Completion status</strong></td>
+            <td>GEOLN project page: completion listed as <strong>Dec 2019</strong>.</td>
+            <td>Korter: latest construction update appears around <strong>Feb 2021</strong>.</td>
+            <td>Buyers cannot tell whether they are evaluating a finished asset, a delayed asset, or a half-complete relaunch.</td>
+          </tr>
+          <tr>
+            <td><strong>Delivery state</strong></td>
+            <td>HomesOverseas: complex described as <strong>delivered / сдаn</strong>.</td>
+            <td>2026 ss.ge resale listing still markets <strong>white-frame</strong> product with planned infrastructure.</td>
+            <td>“Delivered” means little if the market still sees unfinished inventory conditions years later.</td>
+          </tr>
+          <tr>
+            <td><strong>Unit count</strong></td>
+            <td>One public source describes <strong>300 apartments</strong>.</td>
+            <td>Other descriptions suggest <strong>100 units</strong> or 100 apartments plus cottages/townhouses.</td>
+            <td>If the product definition itself is unstable, every financial claim becomes suspect.</td>
+          </tr>
+          <tr>
+            <td><strong>Finish level</strong></td>
+            <td>Some promotional copy says <strong>turnkey</strong>.</td>
+            <td>Other sources say <strong>white frame</strong> or <strong>black walls</strong>.</td>
+            <td>Remote investors need exact delivered condition, not a menu of contradictory possibilities.</td>
+          </tr>
+          <tr>
+            <td><strong>Investment claims</strong></td>
+            <td>4–5 year payback and up to <strong>22% annual ROI</strong>.</td>
+            <td>Weak public proof of active operations, occupancy, and management performance.</td>
+            <td>High-return messaging without transparent proof reads like sales fiction, not asset management.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section-grid-3">
+      <div class="section glass">
+        <div class="section-head">
+          <div>
+            <h2>Public-relations failure</h2>
+            <div class="sub">This is mostly a silence problem.</div>
+          </div>
+        </div>
+        <ul class="bullet-list">
+          <li><strong>No strong current official narrative.</strong> Third-party portals are still carrying the story.</li>
+          <li><strong>Weak social proof.</strong> Public social footprint appears thin, stale, or low-engagement.</li>
+          <li><strong>No crisis framing.</strong> There is no visible explanation for delays, partial delivery, or status ambiguity.</li>
+          <li><strong>Silence invites the worst inference.</strong> In distressed real estate, silence gets interpreted as liquidity or execution trouble.</li>
+        </ul>
+      </div>
+
+      <div class="section glass">
+        <div class="section-head">
+          <div>
+            <h2>Marketing failure</h2>
+            <div class="sub">The concept is coherent. The proof is not.</div>
+          </div>
+        </div>
+        <ul class="bullet-list">
+          <li><strong>Positioning is not the problem.</strong> Quiet hillside alternative to dense Batumi towers is a plausible offer.</li>
+          <li><strong>Proof stack is weak.</strong> Little visible evidence of current site reality, live amenities, or successful operations.</li>
+          <li><strong>Too much portal dependency.</strong> The project does not dominate its own search footprint.</li>
+          <li><strong>Location language is soft.</strong> “10–15 minutes” and “5 minutes to sea” undersell actual access friction.</li>
+        </ul>
+      </div>
+
+      <div class="section glass">
+        <div class="section-head">
+          <div>
+            <h2>Sales failure</h2>
+            <div class="sub">The public pitch is stronger than the public evidence.</div>
+          </div>
+        </div>
+        <ul class="bullet-list">
+          <li><strong>Investor language is aggressive.</strong> Installments, bank comfort, fast payback, management ease.</li>
+          <li><strong>But buyers ask basic questions first.</strong> Is it finished, occupied, rentable, and actually functioning?</li>
+          <li><strong>Resale leakage complicates the story.</strong> Secondary-market inventory starts to narrate the project instead of the developer.</li>
+          <li><strong>Conversion likely collapses at diligence.</strong> Prospects get intrigued, then confused, then suspicious.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="section glass">
+      <div class="section-head">
+        <div>
+          <h2>Meeting talking points</h2>
+          <div class="sub">Use these in the room. Sharp, document-focused, hard to charm.</div>
+        </div>
+        <span class="status-chip chip-amber">Consultant posture</span>
+      </div>
+      <div class="section-grid-2" style="margin:0; gap:14px;">
+        <div class="panel" style="background: rgba(255,255,255,0.025); border:1px solid var(--line);">
+          <div class="panel-kicker">Recommended posture</div>
+          <p>Be direct, document-focused, and hard to charm. Do not argue theory; ask for dated proof, exact numbers, and operational facts. If answers stay vague, treat that as the answer.</p>
+        </div>
+        <div class="panel" style="background: rgba(255,255,255,0.025); border:1px solid var(--line);">
+          <div class="panel-kicker">Primary diagnosis to test</div>
+          <p>Is this mainly a communications failure layered over a real asset — or a deeper completion / capital / execution problem that better marketing cannot mask?</p>
+        </div>
+      </div>
+      <ol class="q-list" style="margin-top: 16px;">
+        <li><strong>What is the exact current status today?</strong> Completed, partially completed, stalled, or relaunching — with a phase-by-phase breakdown, not sales language.</li>
+        <li><strong>Why do public sources conflict on completion timing?</strong> GEOLN shows Dec 2019, while Korter’s last tracking appears around Feb 2021. Which record is true?</li>
+        <li><strong>How many total units actually exist?</strong> Explain the 100-unit vs 300-apartment discrepancy and provide the definitive product map.</li>
+        <li><strong>What finish standard was actually delivered?</strong> Black frame, white frame, or turnkey — broken down by unit type.</li>
+        <li><strong>Which amenities are physically operational right now?</strong> Pool, spa, restaurant, shop, security, concierge, playground — live today or still planned?</li>
+        <li><strong>Why does the project still rely on stale aggregator pages?</strong> If the project is healthy, why is there no dominant official source of truth?</li>
+        <li><strong>Where is the current proof?</strong> Dated walkthroughs, live occupancy, resident activity, operator details, and current rent/use evidence.</li>
+        <li><strong>Why have contradictory public claims been left uncorrected for years?</strong> Is this neglect, or is there no internally agreed version of reality?</li>
+        <li><strong>Do the ROI claims still stand?</strong> If 4–5 year payback and 22% annual ROI were real, show actual operating numbers — not brochures.</li>
+        <li><strong>What is the 12-month recovery plan?</strong> Construction, operations, sales, communications, milestones, and who is accountable for each.</li>
+      </ol>
+    </section>
+
+    <section class="section glass">
+      <div class="section-head">
+        <div>
+          <h2>Key sources shaping perception</h2>
+          <div class="sub">These are the main public surfaces driving what an outsider believes.</div>
+        </div>
+      </div>
+      <div class="source-grid">
+        <div class="source-card">
+          <div class="source-type">Construction tracker / portal</div>
+          <a href="https://korter.ge/en/panorama-batumi-batumi">Korter — Panorama Batumi in Charnali</a>
+          <p>Important because it supplies independent-looking project facts and a dated progress snapshot around February 2021.</p>
+        </div>
+        <div class="source-card">
+          <div class="source-type">Project page</div>
+          <a href="https://geoln.com/georgia/batumi/264">GEOLN — Panorama Batumi project page</a>
+          <p>Important because it asserts completion in December 2019 and repeats the investment case aggressively.</p>
+        </div>
+        <div class="source-card">
+          <div class="source-type">Developer page</div>
+          <a href="https://geoln.com/developers/batumi-panorama">GEOLN — Batumi Panorama developer page</a>
+          <p>Pushes bank comfort, fast payback, management support, and installment convenience.</p>
+        </div>
+        <div class="source-card">
+          <div class="source-type">Resale evidence</div>
+          <a href="https://home.ss.ge/en/real-estate/Summer-Cottage-For-Sale-Charnali-6301970">ss.ge — cottage listing inside Panorama Batumi complex</a>
+          <p>Shows ongoing secondary-market circulation of product in conditions that feel unfinished rather than stabilized.</p>
+        </div>
+        <div class="source-card">
+          <div class="source-type">Social footprint</div>
+          <a href="https://www.facebook.com/batumipanorama/">Facebook — Panorama Batumi</a>
+          <p>The project has a social presence, but not one strong enough to control the narrative or overcome skepticism.</p>
+        </div>
+        <div class="source-card">
+          <div class="source-type">Video analysis</div>
+          <a href="https://www.youtube.com/watch?v=w2cCbcq_bRA">YouTube — Panorama Batumi analysis walkthrough</a>
+          <p>An independent real-estate reviewer's walkthrough of the complex, useful as a third-party visual reference.</p>
+        </div>
+      </div>
+      <div class="footer-note">
+        Working basis: public web search and extraction only. This is a public-perception / trust audit, not a legal or engineering audit.
+      </div>
+    </section>
+  </div>
+</body>
+</html>

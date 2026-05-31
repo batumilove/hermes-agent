@@ -1310,11 +1310,12 @@ def setup_terminal_backend(config: dict):
         "Modal - serverless cloud sandbox",
         "SSH - run on a remote machine",
         "Daytona - persistent cloud development environment",
+        "Kata - Kubernetes pod with runtimeClassName=kata",
     ]
-    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona"}
-    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4}
+    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona", 5: "kata"}
+    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4, "kata": 5}
 
-    next_idx = 5
+    next_idx = 6
     if is_linux:
         terminal_choices.append("Singularity/Apptainer - HPC-friendly container")
         idx_to_backend[next_idx] = "singularity"
@@ -1401,6 +1402,27 @@ def setup_terminal_backend(config: dict):
         image = prompt("  Container image", current_image)
         config["terminal"]["singularity_image"] = image
         save_env_value("TERMINAL_SINGULARITY_IMAGE", image)
+
+        _prompt_container_resources(config)
+
+    elif selected_backend == "kata":
+        print_success("Terminal backend: Kata")
+        print_info("Runs commands in a Kubernetes pod with runtimeClassName=kata.")
+        current_image = cfg_get(config, "terminal", "kata_image", default="nikolaik/python-nodejs:python3.11-nodejs20")
+        image = prompt("  Kata image", current_image)
+        config["terminal"]["kata_image"] = image
+        save_env_value("TERMINAL_KATA_IMAGE", image)
+
+        current_namespace = cfg_get(config, "terminal", "kata_namespace", default="sandbox")
+        namespace = prompt("  Kubernetes namespace", current_namespace)
+        config["terminal"]["kata_namespace"] = namespace
+        save_env_value("TERMINAL_KATA_NAMESPACE", namespace)
+
+        current_kubeconfig = cfg_get(config, "terminal", "kata_kubeconfig", default="")
+        kubeconfig = prompt("  Kubeconfig path (blank = kubectl default context)", current_kubeconfig)
+        config["terminal"]["kata_kubeconfig"] = kubeconfig
+        if kubeconfig:
+            save_env_value("TERMINAL_KATA_KUBECONFIG", kubeconfig)
 
         _prompt_container_resources(config)
 

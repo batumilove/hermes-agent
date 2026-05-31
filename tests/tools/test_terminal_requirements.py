@@ -19,6 +19,7 @@ def _clear_terminal_env(monkeypatch):
         "TERMINAL_SSH_HOST",
         "TERMINAL_SSH_PORT",
         "TERMINAL_SSH_USER",
+        "TERMINAL_KATA_KUBECONFIG",
         "TERMINAL_TIMEOUT",
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",
@@ -185,3 +186,31 @@ def test_modal_backend_managed_mode_without_feature_flag_logs_clear_error(monkey
         "Nous Tool Gateway access is not currently available" in record.getMessage()
         for record in caplog.records
     )
+
+
+def test_kata_backend_without_kubectl_logs_and_returns_false(monkeypatch, caplog):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "kata")
+    monkeypatch.setattr(terminal_tool_module.shutil, "which", lambda _name: None)
+
+    with caplog.at_level(logging.ERROR):
+        ok = terminal_tool_module.check_terminal_requirements()
+
+    assert ok is False
+    assert any(
+        "kubectl was not found in PATH" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_kata_backend_with_kubectl_returns_true(monkeypatch):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "kata")
+    monkeypatch.setattr(terminal_tool_module.shutil, "which", lambda _name: "/usr/bin/kubectl")
+
+    def fake_run(cmd, capture_output=True, timeout=10):
+        assert cmd[0] == "/usr/bin/kubectl"
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(terminal_tool_module.subprocess, "run", fake_run)
+    assert terminal_tool_module.check_terminal_requirements() is True

@@ -1,0 +1,1003 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Batumi Panorama — Buyer Trust Audit</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #06080c;
+      --bg2: #0b1017;
+      --panel: rgba(16,22,32,0.78);
+      --panel-solid: #101722;
+      --panel-soft: rgba(255,255,255,0.03);
+      --text: #f3f6fb;
+      --muted: #a4adbb;
+      --muted2: #738095;
+      --line: rgba(255,255,255,0.08);
+      --brand: #86a7ff;
+      --brand2: #5f83ff;
+      --danger: #ff6f87;
+      --warn: #ffbf69;
+      --ok: #50d39a;
+      --shadow: 0 24px 80px rgba(0,0,0,0.45);
+      --radius-xl: 30px;
+      --radius-lg: 22px;
+      --radius-md: 16px;
+      --max: 1340px;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      background:
+        radial-gradient(1000px 500px at 0% -10%, rgba(95,131,255,0.18), transparent 55%),
+        radial-gradient(900px 500px at 100% 0%, rgba(255,111,135,0.14), transparent 48%),
+        linear-gradient(180deg, var(--bg) 0%, var(--bg2) 100%);
+      color: var(--text);
+      line-height: 1.45;
+    }
+
+    .lang-switcher {
+      position: fixed;
+      top: 18px;
+      right: 18px;
+      z-index: 1000;
+      display: flex;
+      gap: 6px;
+      padding: 6px;
+      border-radius: 999px;
+      background: rgba(10,14,20,0.82);
+      border: 1px solid rgba(255,255,255,0.08);
+      backdrop-filter: blur(14px);
+      box-shadow: var(--shadow);
+    }
+
+    .lang-btn {
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      padding: 10px 12px;
+      border-radius: 999px;
+      cursor: pointer;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      font-size: 12px;
+    }
+
+    .lang-btn.active {
+      background: linear-gradient(135deg, var(--brand), var(--brand2));
+      color: white;
+    }
+
+    .wrap { width: min(calc(100vw - 28px), var(--max)); margin: 0 auto; padding: 18px 0 70px; }
+
+    .hero {
+      position: relative;
+      min-height: 90vh;
+      border-radius: var(--radius-xl);
+      overflow: hidden;
+      margin-bottom: 18px;
+      display: grid;
+      align-items: end;
+      padding: 28px;
+      background:
+        linear-gradient(180deg, rgba(6,8,12,0.18) 0%, rgba(6,8,12,0.45) 30%, rgba(6,8,12,0.82) 100%),
+        linear-gradient(90deg, rgba(6,8,12,0.88) 0%, rgba(6,8,12,0.48) 52%, rgba(6,8,12,0.18) 100%),
+        url('batumi-panorama-assets/hero.jpg') center/cover no-repeat;
+      box-shadow: var(--shadow);
+      border: 1px solid rgba(255,255,255,0.05);
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 22px;
+      width: 100%;
+      align-items: end;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: #dbe3f0;
+      margin-bottom: 16px;
+    }
+
+    .eyebrow::before {
+      content: '';
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--danger);
+      box-shadow: 0 0 22px var(--danger);
+    }
+
+    h1 {
+      margin: 0;
+      max-width: 8.5ch;
+      font-size: clamp(44px, 7vw, 92px);
+      line-height: 0.95;
+      letter-spacing: -0.06em;
+    }
+
+    .lead {
+      margin-top: 18px;
+      max-width: 55ch;
+      font-size: clamp(17px, 2vw, 22px);
+      color: #d9e2ef;
+    }
+
+    .hero-point {
+      max-width: 56ch;
+      margin-top: 18px;
+      padding: 16px 18px;
+      border-radius: 18px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.08);
+      font-size: 15px;
+      color: #edf2f9;
+    }
+
+    .hero-panel {
+      justify-self: end;
+      width: min(100%, 440px);
+      border-radius: 24px;
+      background: rgba(12,18,27,0.72);
+      border: 1px solid rgba(255,255,255,0.08);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(16px);
+      overflow: hidden;
+    }
+
+    .hero-panel .panel-head {
+      padding: 16px 18px 12px;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .score-list { padding: 8px 18px 18px; }
+
+    .score-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 16px;
+      padding: 14px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      align-items: center;
+    }
+
+    .score-row:last-child { border-bottom: 0; }
+    .score-label { font-size: 14px; color: #eaf0f8; }
+    .score-value {
+      font-size: 13px;
+      font-weight: 800;
+      color: white;
+      padding: 7px 11px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.08);
+    }
+    .bad { background: rgba(255,111,135,0.16); color: #ffc0cd; }
+    .warn { background: rgba(255,191,105,0.16); color: #ffd9a0; }
+
+    .section {
+      margin-top: 18px;
+      border-radius: var(--radius-xl);
+      background: rgba(16,22,32,0.72);
+      border: 1px solid rgba(255,255,255,0.06);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .section-inner { padding: 26px; }
+
+    .section-title {
+      margin: 0 0 8px;
+      font-size: clamp(28px, 4vw, 44px);
+      line-height: 1.02;
+      letter-spacing: -0.04em;
+    }
+
+    .section-kicker {
+      margin: 0 0 18px;
+      color: var(--muted);
+      font-size: 14px;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      font-weight: 700;
+    }
+
+    .big-statement {
+      font-size: clamp(26px, 4vw, 46px);
+      line-height: 1.05;
+      letter-spacing: -0.04em;
+      max-width: 16ch;
+      margin: 0 0 20px;
+    }
+
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+
+    .card {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 22px;
+      padding: 18px;
+    }
+
+    .card h3 {
+      margin: 0 0 8px;
+      font-size: 18px;
+      line-height: 1.15;
+    }
+
+    .card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .source-card {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-height: 160px;
+    }
+
+    .source-type {
+      display: inline-flex;
+      align-self: flex-start;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      background: rgba(134,167,255,0.14);
+      color: #cfe0ff;
+    }
+
+    .source-card a {
+      color: white;
+      text-decoration: none;
+      font-weight: 700;
+      line-height: 1.3;
+      word-break: break-word;
+    }
+
+    .source-card a:hover { color: #cfe0ff; }
+
+    .journey {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 12px;
+    }
+
+    .step {
+      position: relative;
+      padding: 18px;
+      border-radius: 22px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.06);
+      min-height: 190px;
+    }
+
+    .step-num {
+      font-size: 12px;
+      color: var(--muted2);
+      font-weight: 800;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      margin-bottom: 12px;
+    }
+
+    .step h3 {
+      margin: 0 0 10px;
+      font-size: 18px;
+      line-height: 1.1;
+    }
+
+    .step p {
+      margin: 0 0 12px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .emotion {
+      display: inline-flex;
+      padding: 7px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+      background: rgba(255,255,255,0.07);
+      color: #f3f6fb;
+    }
+
+    .emotion.red { background: rgba(255,111,135,0.15); color: #ffc1cd; }
+    .emotion.orange { background: rgba(255,191,105,0.15); color: #ffd9a0; }
+    .emotion.blue { background: rgba(134,167,255,0.15); color: #d4e2ff; }
+
+    .root-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 14px;
+    }
+
+    .root {
+      padding: 22px;
+      border-radius: 24px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.025));
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+
+    .root-index {
+      display: inline-flex;
+      width: 34px;
+      height: 34px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      background: rgba(255,111,135,0.16);
+      color: #ffc3ce;
+      font-weight: 800;
+      margin-bottom: 12px;
+    }
+
+    .root h3 {
+      margin: 0 0 8px;
+      font-size: 22px;
+      line-height: 1.1;
+    }
+
+    .root p {
+      margin: 0;
+      font-size: 15px;
+      color: var(--muted);
+      max-width: 50ch;
+    }
+
+    .quote-box {
+      padding: 24px;
+      border-radius: 24px;
+      background: linear-gradient(135deg, rgba(255,111,135,0.12), rgba(95,131,255,0.12));
+      border: 1px solid rgba(255,255,255,0.08);
+      font-size: clamp(24px, 3.6vw, 42px);
+      line-height: 1.08;
+      letter-spacing: -0.04em;
+    }
+
+    .compare-wrap {
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .compare-box {
+      position: relative;
+      border-radius: 26px;
+      overflow: hidden;
+      background: #0a0f15;
+      border: 1px solid rgba(255,255,255,0.08);
+      min-height: 540px;
+    }
+
+    .compare-stage {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16 / 10;
+      min-height: 540px;
+      overflow: hidden;
+    }
+
+    .compare-image,
+    .compare-overlay {
+      position: absolute;
+      inset: 0;
+      background-size: cover;
+      background-position: center;
+    }
+
+    .compare-image.before {
+      background-image: url('batumi-panorama-assets/hero.jpg');
+      filter: saturate(0.9) brightness(0.8);
+    }
+
+    .compare-overlay.after {
+      width: 50%;
+      overflow: hidden;
+      border-right: 2px solid rgba(255,255,255,0.85);
+    }
+
+    .compare-overlay.after .inner {
+      position: absolute;
+      inset: 0;
+      width: 200%;
+      background-image: url('batumi-panorama-assets/after_renovation.jpg');
+      background-size: cover;
+      background-position: center;
+    }
+
+    .compare-handle {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 50%;
+      width: 0;
+      pointer-events: none;
+    }
+
+    .compare-handle::before {
+      content: '↔';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 54px;
+      height: 54px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.95);
+      color: #111827;
+      font-size: 22px;
+      font-weight: 900;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+    }
+
+    .compare-range {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      opacity: 0;
+      cursor: ew-resize;
+    }
+
+    .compare-label {
+      position: absolute;
+      top: 16px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      background: rgba(10,14,20,0.75);
+      border: 1px solid rgba(255,255,255,0.1);
+      backdrop-filter: blur(10px);
+    }
+
+    .compare-label.before { left: 16px; }
+    .compare-label.after { right: 16px; }
+
+    .compare-copy {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .metric-big {
+      padding: 18px;
+      border-radius: 22px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.07);
+    }
+
+    .metric-big .num {
+      font-size: 42px;
+      font-weight: 800;
+      letter-spacing: -0.05em;
+      margin-bottom: 4px;
+    }
+
+    .metric-big .label {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .solutions {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 14px;
+    }
+
+    .solution {
+      padding: 20px;
+      border-radius: 24px;
+      background: rgba(80,211,154,0.06);
+      border: 1px solid rgba(80,211,154,0.14);
+    }
+
+    .solution h3 {
+      margin: 0 0 8px;
+      font-size: 20px;
+    }
+
+    .solution p {
+      margin: 0;
+      color: #d5efe5;
+      font-size: 14px;
+    }
+
+    .footer {
+      margin-top: 18px;
+      padding: 18px 22px;
+      border-radius: 22px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.05);
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 1100px) {
+      .hero-grid, .compare-wrap, .grid-4, .journey { grid-template-columns: 1fr 1fr; }
+      .grid-3, .grid-2, .root-grid, .solutions { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 760px) {
+      .wrap { width: min(calc(100vw - 18px), var(--max)); }
+      .hero { min-height: auto; padding: 18px; }
+      .hero-grid, .journey, .grid-4 { grid-template-columns: 1fr; }
+      h1 { max-width: 10ch; }
+      .section-inner { padding: 18px; }
+      .compare-stage { min-height: 360px; }
+      .lang-switcher { top: 10px; right: 10px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="lang-switcher">
+    <button class="lang-btn active" data-lang="en">EN</button>
+    <button class="lang-btn" data-lang="ru">RU</button>
+    <button class="lang-btn" data-lang="ka">GE</button>
+  </div>
+
+  <div class="wrap">
+    <section class="hero">
+      <div class="hero-grid">
+        <div>
+          <div class="eyebrow" data-i18n="heroEyebrow">Buyer trust audit</div>
+          <h1 data-i18n="heroTitle">A strong idea lost in a weak public reality.</h1>
+          <div class="lead" data-i18n="heroLead">Batumi Panorama is not failing online because the concept is bad. It is failing because a buyer cannot quickly verify what is real, what is finished, and what can be trusted.</div>
+          <div class="hero-point" data-i18n="heroPoint">This is the core message for ownership: the main problem is not traffic. It is trust. The buyer journey breaks the moment research begins.</div>
+        </div>
+        <div class="hero-panel">
+          <div class="panel-head" data-i18n="panelHead">Public perception score</div>
+          <div class="score-list">
+            <div class="score-row"><div class="score-label" data-i18n="score1Label">Narrative control</div><div class="score-value bad" data-i18n="score1Value">2 / 10</div></div>
+            <div class="score-row"><div class="score-label" data-i18n="score2Label">Fresh proof</div><div class="score-value bad" data-i18n="score2Value">2 / 10</div></div>
+            <div class="score-row"><div class="score-label" data-i18n="score3Label">Credibility</div><div class="score-value bad" data-i18n="score3Value">3 / 10</div></div>
+            <div class="score-row"><div class="score-label" data-i18n="score4Label">Investor confidence</div><div class="score-value warn" data-i18n="score4Value">3 / 10</div></div>
+            <div class="score-row"><div class="score-label" data-i18n="score5Label">PR resilience</div><div class="score-value bad" data-i18n="score5Value">1 / 10</div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-inner">
+        <div class="section-kicker" data-i18n="sourcesKicker">What a buyer finds first</div>
+        <h2 class="section-title" data-i18n="sourcesTitle">The online footprint starts with third parties, not with the project.</h2>
+        <p class="big-statement" data-i18n="sourcesBig">That means the first impression is already out of the company’s control.</p>
+        <div class="grid-4">
+          <div class="card source-card">
+            <span class="source-type" data-i18n="stypePortal">Portal</span>
+            <h3 data-i18n="s1Title">Korter project page</h3>
+            <a href="https://korter.ge/en/panorama-batumi-batumi" target="_blank">korter.ge/en/panorama-batumi-batumi</a>
+            <p data-i18n="s1Text">Major buyer entry point. Shows the project, but also exposes stale progress signals.</p>
+          </div>
+          <div class="card source-card">
+            <span class="source-type" data-i18n="stypePortal2">Portal</span>
+            <h3 data-i18n="s2Title">GEOLN project page</h3>
+            <a href="https://geoln.com/georgia/batumi/264" target="_blank">geoln.com/georgia/batumi/264</a>
+            <p data-i18n="s2Text">Important distribution source. Carries strong sales claims but also conflicting status details.</p>
+          </div>
+          <div class="card source-card">
+            <span class="source-type" data-i18n="stypeListing">Listing</span>
+            <h3 data-i18n="s3Title">HomesOverseas</h3>
+            <a href="https://www.homesoverseas.ru/complex/Panorama_Batumi" target="_blank">homesoverseas.ru/complex/Panorama_Batumi</a>
+            <p data-i18n="s3Text">Supports distribution abroad, but adds to the recycled promise layer rather than clarifying the current truth.</p>
+          </div>
+          <div class="card source-card">
+            <span class="source-type" data-i18n="stypeSocial">Social</span>
+            <h3 data-i18n="s4Title">Facebook page</h3>
+            <a href="https://www.facebook.com/batumipanorama/" target="_blank">facebook.com/batumipanorama</a>
+            <p data-i18n="s4Text">Thin official social footprint. Does not function as a living source of proof.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-inner">
+        <div class="section-kicker" data-i18n="journeyKicker">Buyer journey</div>
+        <h2 class="section-title" data-i18n="journeyTitle">How the buyer experiences the project online.</h2>
+        <div class="journey">
+          <div class="step">
+            <div class="step-num" data-i18n="j1num">Step 1</div>
+            <h3 data-i18n="j1title">Discovery</h3>
+            <p data-i18n="j1text">The project attracts attention with views, hillside positioning, and a quieter alternative to dense Batumi towers.</p>
+            <span class="emotion blue" data-i18n="j1emo">Emotion: interest</span>
+          </div>
+          <div class="step">
+            <div class="step-num" data-i18n="j2num">Step 2</div>
+            <h3 data-i18n="j2title">Research</h3>
+            <p data-i18n="j2text">The buyer sees mostly portals repeating the same promise language instead of one current official source of truth.</p>
+            <span class="emotion blue" data-i18n="j2emo">Emotion: curiosity</span>
+          </div>
+          <div class="step">
+            <div class="step-num" data-i18n="j3num">Step 3</div>
+            <h3 data-i18n="j3title">Comparison</h3>
+            <p data-i18n="j3text">Completion dates, finish levels, and inventory descriptions do not line up across sources.</p>
+            <span class="emotion orange" data-i18n="j3emo">Emotion: confusion</span>
+          </div>
+          <div class="step">
+            <div class="step-num" data-i18n="j4num">Step 4</div>
+            <h3 data-i18n="j4title">Risk check</h3>
+            <p data-i18n="j4text">The buyer notices stale construction tracking, weak social proof, and resale leakage that suggests weak control.</p>
+            <span class="emotion orange" data-i18n="j4emo">Emotion: caution</span>
+          </div>
+          <div class="step">
+            <div class="step-num" data-i18n="j5num">Step 5</div>
+            <h3 data-i18n="j5title">Decision</h3>
+            <p data-i18n="j5text">Without immediate proof, the buyer moves the project into the risky bucket and exits to a cleaner competitor.</p>
+            <span class="emotion red" data-i18n="j5emo">Emotion: distrust</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-inner">
+        <div class="section-kicker" data-i18n="diagnosisKicker">Core diagnosis</div>
+        <div class="quote-box" data-i18n="diagnosisQuote">Batumi Panorama is being sold with the language of a polished investment product, but discovered like a half-finished memory.</div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-inner">
+        <div class="section-kicker" data-i18n="rootsKicker">Root causes</div>
+        <h2 class="section-title" data-i18n="rootsTitle">The problem is structural, not cosmetic.</h2>
+        <div class="root-grid">
+          <div class="root">
+            <div class="root-index">1</div>
+            <h3 data-i18n="r1title">No single source of truth</h3>
+            <p data-i18n="r1text">A buyer cannot confirm current status from one official place. The story is scattered across portals, listings, and old promotional fragments.</p>
+          </div>
+          <div class="root">
+            <div class="root-index">2</div>
+            <h3 data-i18n="r2title">Proof is weaker than the promise</h3>
+            <p data-i18n="r2text">Investment claims are strong. Present-day evidence of completion, operation, occupancy, and delivery is weak.</p>
+          </div>
+          <div class="root">
+            <div class="root-index">3</div>
+            <h3 data-i18n="r3title">Contradictions kill trust fast</h3>
+            <p data-i18n="r3text">Completed versus unfinished. Turnkey versus white frame. Different unit counts. The buyer stops believing before the sales team gets a chance to explain.</p>
+          </div>
+          <div class="root">
+            <div class="root-index">4</div>
+            <h3 data-i18n="r4title">Silence is being read as distress</h3>
+            <p data-i18n="r4text">In a real estate market that already expects delays and overpromising, silence is interpreted as weakness, dispute, or failure.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-inner">
+        <div class="section-kicker" data-i18n="visionKicker">What the buyer needs to believe</div>
+        <h2 class="section-title" data-i18n="visionTitle">From uncertain asset to living place.</h2>
+        <div class="compare-wrap">
+          <div class="compare-box">
+            <div class="compare-stage" id="compareStage">
+              <div class="compare-image before"></div>
+              <div class="compare-overlay after" id="afterPane">
+                <div class="inner" id="afterInner"></div>
+              </div>
+              <div class="compare-label before" data-i18n="beforeLabel">Today</div>
+              <div class="compare-label after" data-i18n="afterLabel">Repaired / relaunched</div>
+              <div class="compare-handle" id="compareHandle"></div>
+              <input class="compare-range" id="compareRange" type="range" min="0" max="100" value="50" />
+            </div>
+          </div>
+          <div class="compare-copy">
+            <div class="metric-big">
+              <div class="num" data-i18n="m1num">10 minutes</div>
+              <div class="label" data-i18n="m1label">That is how long it takes for a buyer to become uncertain.</div>
+            </div>
+            <div class="metric-big">
+              <div class="num" data-i18n="m2num">1 story</div>
+              <div class="label" data-i18n="m2label">The project needs one current, dated, visual, verifiable story of what exists now.</div>
+            </div>
+            <div class="metric-big">
+              <div class="num" data-i18n="m3num">0 ambiguity</div>
+              <div class="label" data-i18n="m3label">The relaunch has to remove conflicting claims about completion, inventory, finish, and amenities.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-inner">
+        <div class="section-kicker" data-i18n="problemsKicker">Immediate problems to present</div>
+        <h2 class="section-title" data-i18n="problemsTitle">What ownership needs to hear directly.</h2>
+        <div class="grid-3">
+          <div class="card"><h3 data-i18n="p1title">The project does not own its own first impression.</h3><p data-i18n="p1text">Search results are dominated by third-party distribution, not by one current official channel.</p></div>
+          <div class="card"><h3 data-i18n="p2title">The online record creates doubt before contact.</h3><p data-i18n="p2text">A buyer sees stale progress, conflicting descriptions, and thin proof of active life.</p></div>
+          <div class="card"><h3 data-i18n="p3title">The funnel breaks at trust, not at interest.</h3><p data-i18n="p3text">The concept can attract. The verification stage is where the buyer exits.</p></div>
+          <div class="card"><h3 data-i18n="p4title">Aggressive investment language is under-supported.</h3><p data-i18n="p4text">Strong ROI and payback claims are not matched by equally strong present-day public proof.</p></div>
+          <div class="card"><h3 data-i18n="p5title">Resale leakage weakens central sales control.</h3><p data-i18n="p5text">When the product appears in secondary channels with mixed framing, the market reads it as stress.</p></div>
+          <div class="card"><h3 data-i18n="p6title">Silence is doing active damage.</h3><p data-i18n="p6text">Without a clear explanation, the market fills the gap with the worst possible assumptions.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-inner">
+        <div class="section-kicker" data-i18n="solutionsKicker">How to solve it</div>
+        <h2 class="section-title" data-i18n="solutionsTitle">The fix is a trust reconstruction program.</h2>
+        <div class="solutions">
+          <div class="solution">
+            <h3 data-i18n="sol1title">1. Publish one official source of truth</h3>
+            <p data-i18n="sol1text">One landing page. One current story. Dated photos, dated video, legal status, completion status, occupancy status, amenity status, inventory status.</p>
+          </div>
+          <div class="solution">
+            <h3 data-i18n="sol2title">2. Replace promise-first messaging with proof-first messaging</h3>
+            <p data-i18n="sol2text">Lead with what exists now. Stop asking the buyer to imagine. Show the building, the life, the management, the access, and the actual use cases.</p>
+          </div>
+          <div class="solution">
+            <h3 data-i18n="sol3title">3. Eliminate public contradictions</h3>
+            <p data-i18n="sol3text">Correct third-party descriptions. Align unit counts, finish levels, and completion claims. Remove any claim that cannot be defended in a meeting.</p>
+          </div>
+          <div class="solution">
+            <h3 data-i18n="sol4title">4. Build a relaunch narrative</h3>
+            <p data-i18n="sol4text">If the project went through delay, partial completion, or restructuring, say it clearly. Then explain what changed, what is operational now, and what happens next.</p>
+          </div>
+          <div class="solution">
+            <h3 data-i18n="sol5title">5. Show human life, not just product copy</h3>
+            <p data-i18n="sol5text">Use residents, owners, operating spaces, and real site moments. The project needs to feel inhabited, managed, and alive.</p>
+          </div>
+          <div class="solution">
+            <h3 data-i18n="sol6title">6. Rebuild the sales funnel around trust checkpoints</h3>
+            <p data-i18n="sol6text">Every buyer question should have an immediate answer: what is finished, what is available, who manages it, what is operating, and why this project is safe to believe now.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="footer" data-i18n="footerText">Public-perception audit based on publicly accessible online sources gathered on 2026-05-29. This is a buyer-trust and market-perception review, not a legal or engineering audit.</div>
+  </div>
+
+  <script>
+    const translations = {
+      en: {
+        heroEyebrow: 'Buyer trust audit',
+        heroTitle: 'A strong idea lost in a weak public reality.',
+        heroLead: 'Batumi Panorama is not failing online because the concept is bad. It is failing because a buyer cannot quickly verify what is real, what is finished, and what can be trusted.',
+        heroPoint: 'This is the core message for ownership: the main problem is not traffic. It is trust. The buyer journey breaks the moment research begins.',
+        panelHead: 'Public perception score',
+        score1Label: 'Narrative control', score1Value: '2 / 10',
+        score2Label: 'Fresh proof', score2Value: '2 / 10',
+        score3Label: 'Credibility', score3Value: '3 / 10',
+        score4Label: 'Investor confidence', score4Value: '3 / 10',
+        score5Label: 'PR resilience', score5Value: '1 / 10',
+        sourcesKicker: 'What a buyer finds first',
+        sourcesTitle: 'The online footprint starts with third parties, not with the project.',
+        sourcesBig: 'That means the first impression is already out of the company’s control.',
+        stypePortal: 'Portal', stypePortal2: 'Portal', stypeListing: 'Listing', stypeSocial: 'Social',
+        s1Title: 'Korter project page', s1Text: 'Major buyer entry point. Shows the project, but also exposes stale progress signals.',
+        s2Title: 'GEOLN project page', s2Text: 'Important distribution source. Carries strong sales claims but also conflicting status details.',
+        s3Title: 'HomesOverseas', s3Text: 'Supports distribution abroad, but adds to the recycled promise layer rather than clarifying the current truth.',
+        s4Title: 'Facebook page', s4Text: 'Thin official social footprint. Does not function as a living source of proof.',
+        journeyKicker: 'Buyer journey',
+        journeyTitle: 'How the buyer experiences the project online.',
+        j1num: 'Step 1', j1title: 'Discovery', j1text: 'The project attracts attention with views, hillside positioning, and a quieter alternative to dense Batumi towers.', j1emo: 'Emotion: interest',
+        j2num: 'Step 2', j2title: 'Research', j2text: 'The buyer sees mostly portals repeating the same promise language instead of one current official source of truth.', j2emo: 'Emotion: curiosity',
+        j3num: 'Step 3', j3title: 'Comparison', j3text: 'Completion dates, finish levels, and inventory descriptions do not line up across sources.', j3emo: 'Emotion: confusion',
+        j4num: 'Step 4', j4title: 'Risk check', j4text: 'The buyer notices stale construction tracking, weak social proof, and resale leakage that suggests weak control.', j4emo: 'Emotion: caution',
+        j5num: 'Step 5', j5title: 'Decision', j5text: 'Without immediate proof, the buyer moves the project into the risky bucket and exits to a cleaner competitor.', j5emo: 'Emotion: distrust',
+        diagnosisKicker: 'Core diagnosis',
+        diagnosisQuote: 'Batumi Panorama is being sold with the language of a polished investment product, but discovered like a half-finished memory.',
+        rootsKicker: 'Root causes',
+        rootsTitle: 'The problem is structural, not cosmetic.',
+        r1title: 'No single source of truth', r1text: 'A buyer cannot confirm current status from one official place. The story is scattered across portals, listings, and old promotional fragments.',
+        r2title: 'Proof is weaker than the promise', r2text: 'Investment claims are strong. Present-day evidence of completion, operation, occupancy, and delivery is weak.',
+        r3title: 'Contradictions kill trust fast', r3text: 'Completed versus unfinished. Turnkey versus white frame. Different unit counts. The buyer stops believing before the sales team gets a chance to explain.',
+        r4title: 'Silence is being read as distress', r4text: 'In a real estate market that already expects delays and overpromising, silence is interpreted as weakness, dispute, or failure.',
+        visionKicker: 'What the buyer needs to believe',
+        visionTitle: 'From uncertain asset to living place.',
+        beforeLabel: 'Today', afterLabel: 'Repaired / relaunched',
+        m1num: '10 minutes', m1label: 'That is how long it takes for a buyer to become uncertain.',
+        m2num: '1 story', m2label: 'The project needs one current, dated, visual, verifiable story of what exists now.',
+        m3num: '0 ambiguity', m3label: 'The relaunch has to remove conflicting claims about completion, inventory, finish, and amenities.',
+        problemsKicker: 'Immediate problems to present',
+        problemsTitle: 'What ownership needs to hear directly.',
+        p1title: 'The project does not own its own first impression.', p1text: 'Search results are dominated by third-party distribution, not by one current official channel.',
+        p2title: 'The online record creates doubt before contact.', p2text: 'A buyer sees stale progress, conflicting descriptions, and thin proof of active life.',
+        p3title: 'The funnel breaks at trust, not at interest.', p3text: 'The concept can attract. The verification stage is where the buyer exits.',
+        p4title: 'Aggressive investment language is under-supported.', p4text: 'Strong ROI and payback claims are not matched by equally strong present-day public proof.',
+        p5title: 'Resale leakage weakens central sales control.', p5text: 'When the product appears in secondary channels with mixed framing, the market reads it as stress.',
+        p6title: 'Silence is doing active damage.', p6text: 'Without a clear explanation, the market fills the gap with the worst possible assumptions.',
+        solutionsKicker: 'How to solve it',
+        solutionsTitle: 'The fix is a trust reconstruction program.',
+        sol1title: '1. Publish one official source of truth', sol1text: 'One landing page. One current story. Dated photos, dated video, legal status, completion status, occupancy status, amenity status, inventory status.',
+        sol2title: '2. Replace promise-first messaging with proof-first messaging', sol2text: 'Lead with what exists now. Stop asking the buyer to imagine. Show the building, the life, the management, the access, and the actual use cases.',
+        sol3title: '3. Eliminate public contradictions', sol3text: 'Correct third-party descriptions. Align unit counts, finish levels, and completion claims. Remove any claim that cannot be defended in a meeting.',
+        sol4title: '4. Build a relaunch narrative', sol4text: 'If the project went through delay, partial completion, or restructuring, say it clearly. Then explain what changed, what is operational now, and what happens next.',
+        sol5title: '5. Show human life, not just product copy', sol5text: 'Use residents, owners, operating spaces, and real site moments. The project needs to feel inhabited, managed, and alive.',
+        sol6title: '6. Rebuild the sales funnel around trust checkpoints', sol6text: 'Every buyer question should have an immediate answer: what is finished, what is available, who manages it, what is operating, and why this project is safe to believe now.',
+        footerText: 'Public-perception audit based on publicly accessible online sources gathered on 2026-05-29. This is a buyer-trust and market-perception review, not a legal or engineering audit.'
+      },
+      ru: {
+        heroEyebrow: 'Аудит доверия покупателя',
+        heroTitle: 'Сильная идея, потерянная в слабой публичной реальности.',
+        heroLead: 'Batumi Panorama проигрывает онлайн не потому, что концепция плохая. Проигрыш начинается там, где покупатель не может быстро проверить, что реально, что завершено и чему можно доверять.',
+        heroPoint: 'Главный месседж для собственников: проблема не в трафике. Проблема в доверии. Путь покупателя ломается в момент начала исследования.',
+        panelHead: 'Оценка публичного восприятия',
+        score1Label: 'Контроль нарратива', score1Value: '2 / 10',
+        score2Label: 'Свежие доказательства', score2Value: '2 / 10',
+        score3Label: 'Доверие', score3Value: '3 / 10',
+        score4Label: 'Уверенность инвестора', score4Value: '3 / 10',
+        score5Label: 'PR-устойчивость', score5Value: '1 / 10',
+        sourcesKicker: 'Что покупатель видит первым',
+        sourcesTitle: 'Онлайн-след проекта начинается с третьих сторон, а не с самого проекта.',
+        sourcesBig: 'Это значит, что первое впечатление уже находится вне контроля компании.',
+        stypePortal: 'Портал', stypePortal2: 'Портал', stypeListing: 'Листинг', stypeSocial: 'Соцсеть',
+        s1Title: 'Страница проекта на Korter', s1Text: 'Крупная точка входа для покупателя. Показывает проект, но одновременно подсвечивает признаки устаревшего прогресса.',
+        s2Title: 'Страница проекта на GEOLN', s2Text: 'Важный канал дистрибуции. Содержит сильные продающие обещания, но также конфликтующие детали статуса.',
+        s3Title: 'HomesOverseas', s3Text: 'Поддерживает международную дистрибуцию, но усиливает слой старых обещаний, а не проясняет текущую реальность.',
+        s4Title: 'Facebook-страница', s4Text: 'Слабое официальное социальное присутствие. Не работает как живой источник доказательств.',
+        journeyKicker: 'Путь покупателя',
+        journeyTitle: 'Как покупатель переживает проект онлайн.',
+        j1num: 'Шаг 1', j1title: 'Первый интерес', j1text: 'Проект привлекает видами, холмистым расположением и образом более спокойной альтернативы плотной застройке Батуми.', j1emo: 'Эмоция: интерес',
+        j2num: 'Шаг 2', j2title: 'Исследование', j2text: 'Покупатель видит в основном порталы, повторяющие одно и то же обещание, вместо одного актуального официального источника правды.', j2emo: 'Эмоция: любопытство',
+        j3num: 'Шаг 3', j3title: 'Сравнение', j3text: 'Даты завершения, уровни отделки и описания инвентаря не совпадают между источниками.', j3emo: 'Эмоция: путаница',
+        j4num: 'Шаг 4', j4title: 'Проверка риска', j4text: 'Покупатель замечает устаревший трекинг строительства, слабое социальное доказательство и утечку в перепродажу, что выглядит как потеря контроля.', j4emo: 'Эмоция: осторожность',
+        j5num: 'Шаг 5', j5title: 'Решение', j5text: 'Без немедленных доказательств покупатель переносит проект в категорию риска и уходит к более чистому конкуренту.', j5emo: 'Эмоция: недоверие',
+        diagnosisKicker: 'Главный диагноз',
+        diagnosisQuote: 'Batumi Panorama продается языком отполированного инвестиционного продукта, но обнаруживается как недостроенное воспоминание.',
+        rootsKicker: 'Корневые причины',
+        rootsTitle: 'Проблема структурная, а не косметическая.',
+        r1title: 'Нет единого источника правды', r1text: 'Покупатель не может подтвердить текущий статус в одном официальном месте. История разбросана по порталам, листингам и старым промо-фрагментам.',
+        r2title: 'Доказательств меньше, чем обещаний', r2text: 'Инвестиционные заявления сильные. Текущие доказательства завершенности, операционной жизни, заселенности и фактической сдачи — слабые.',
+        r3title: 'Противоречия быстро убивают доверие', r3text: 'Завершен или нет. Под ключ или white frame. Разное число юнитов. Покупатель перестает верить раньше, чем отдел продаж успеет объяснить.',
+        r4title: 'Молчание читается как дистресс', r4text: 'На рынке, где и так ожидают задержки и перепроданные обещания, молчание воспринимается как слабость, спор или провал.',
+        visionKicker: 'Во что покупатель должен поверить',
+        visionTitle: 'От сомнительного актива к живому месту.',
+        beforeLabel: 'Сегодня', afterLabel: 'После ремонта / перезапуска',
+        m1num: '10 минут', m1label: 'Именно столько нужно покупателю, чтобы начать сомневаться.',
+        m2num: '1 история', m2label: 'Проекту нужна одна актуальная, датированная, визуальная и проверяемая история о том, что существует сейчас.',
+        m3num: '0 двусмысленности', m3label: 'Перезапуск должен убрать конфликтующие заявления о завершенности, инвентаре, отделке и инфраструктуре.',
+        problemsKicker: 'Проблемы, которые надо озвучить сразу',
+        problemsTitle: 'Что собственники должны услышать прямо.',
+        p1title: 'Проект не владеет собственным первым впечатлением.', p1text: 'Поиск контролируют сторонние каналы дистрибуции, а не один актуальный официальный канал.',
+        p2title: 'Онлайн-картина создает сомнение еще до контакта.', p2text: 'Покупатель видит устаревший прогресс, конфликтующие описания и слабые доказательства живой среды.',
+        p3title: 'Воронка ломается на доверии, а не на интересе.', p3text: 'Концепция может привлечь. Покупатель выходит на этапе проверки.',
+        p4title: 'Агрессивный инвестиционный язык недостаточно подтвержден.', p4text: 'Сильные обещания ROI и окупаемости не поддержаны столь же сильными публичными доказательствами сегодняшнего дня.',
+        p5title: 'Утечка в перепродажу ослабляет центральный контроль продаж.', p5text: 'Когда продукт появляется на вторичке в смешанном формате, рынок считывает это как стресс.',
+        p6title: 'Молчание уже наносит ущерб.', p6text: 'Если нет ясного объяснения, рынок заполняет пустоту худшими предположениями.',
+        solutionsKicker: 'Как это решить',
+        solutionsTitle: 'Исправление — это программа восстановления доверия.',
+        sol1title: '1. Опубликовать единый официальный источник правды', sol1text: 'Одна посадочная страница. Одна текущая история. Датированные фото, датированное видео, юридический статус, статус завершения, статус заселенности, статус инфраструктуры, статус инвентаря.',
+        sol2title: '2. Заменить коммуникацию «сначала обещание» на «сначала доказательство»', sol2text: 'Показывать то, что существует сейчас. Не просить покупателя дорисовывать картину. Показать здание, жизнь, управление, доступ и реальные сценарии использования.',
+        sol3title: '3. Убрать публичные противоречия', sol3text: 'Исправить описания у третьих сторон. Синхронизировать число юнитов, уровни отделки и заявления о завершенности. Убрать любое утверждение, которое нельзя защитить на встрече.',
+        sol4title: '4. Построить нарратив перезапуска', sol4text: 'Если были задержка, частичная готовность или реструктуризация, это нужно сказать прямо. Затем объяснить, что изменилось, что работает сейчас и что будет дальше.',
+        sol5title: '5. Показать человеческую жизнь, а не только продуктовый текст', sol5text: 'Использовать жителей, владельцев, работающие пространства и реальные моменты на объекте. Проект должен ощущаться заселенным, управляемым и живым.',
+        sol6title: '6. Перестроить воронку продаж вокруг точек доверия', sol6text: 'На каждый вопрос покупателя должен быть немедленный ответ: что завершено, что доступно, кто управляет, что работает и почему этому проекту можно верить сейчас.',
+        footerText: 'Аудит публичного восприятия основан на открытых онлайн-источниках, собранных 2026-05-29. Это обзор доверия покупателя и рыночного восприятия, а не юридический или инженерный аудит.'
+      },
+      ka: {
+        heroEyebrow: 'მყიდველის ნდობის აუდიტი',
+        heroTitle: 'ძლიერი იდეა, დაკარგული სუსტ საჯარო რეალობაში.',
+        heroLead: 'Batumi Panorama ონლაინ არ მარცხდება იმიტომ, რომ კონცეფცია ცუდია. პრობლემა იწყება იქ, სადაც მყიდველი სწრაფად ვერ იგებს რა არის რეალური, რა არის დასრულებული და რას შეიძლება ენდოს.',
+        heroPoint: 'ეს არის მთავარი გზავნილი მფლობელებისთვის: პრობლემა ტრეფიკი არ არის. პრობლემა ნდობაა. მყიდველის გზა წყდება კვლევის დაწყებისთანავე.',
+        panelHead: 'საჯარო აღქმის შეფასება',
+        score1Label: 'ნარატივის კონტროლი', score1Value: '2 / 10',
+        score2Label: 'ახალი მტკიცებულება', score2Value: '2 / 10',
+        score3Label: 'სანდოობა', score3Value: '3 / 10',
+        score4Label: 'ინვესტორის ნდობა', score4Value: '3 / 10',
+        score5Label: 'PR გამძლეობა', score5Value: '1 / 10',
+        sourcesKicker: 'რას ხედავს მყიდველი პირველად',
+        sourcesTitle: 'პროექტის ონლაინ კვალი იწყება მესამე მხარეებით და არა თავად პროექტით.',
+        sourcesBig: 'ეს ნიშნავს, რომ პირველი შთაბეჭდილება უკვე კომპანიის კონტროლს გარეთ არის.',
+        stypePortal: 'პორტალი', stypePortal2: 'პორტალი', stypeListing: 'ლისტინგი', stypeSocial: 'სოციალური',
+        s1Title: 'Korter-ის პროექტის გვერდი', s1Text: 'მყიდველის მთავარი შესვლის წერტილი. აჩვენებს პროექტს, მაგრამ ამავე დროს აჩენს მოძველებული პროგრესის ნიშნებს.',
+        s2Title: 'GEOLN-ის პროექტის გვერდი', s2Text: 'მნიშვნელოვანი სადისტრიბუციო წყარო. შეიცავს ძლიერ გაყიდვით დაპირებებს, მაგრამ ასევე ურთიერთსაწინააღმდეგო სტატუსის დეტალებს.',
+        s3Title: 'HomesOverseas', s3Text: 'ეხმარება საერთაშორისო დისტრიბუციას, მაგრამ უფრო აძლიერებს ძველი დაპირებების ფენას, ვიდრე ხსნის მიმდინარე რეალობას.',
+        s4Title: 'Facebook გვერდი', s4Text: 'სუსტი ოფიციალური სოციალური კვალი. არ მუშაობს როგორც ცოცხალი მტკიცებულების წყარო.',
+        journeyKicker: 'მყიდველის გზა',
+        journeyTitle: 'როგორ განიცდის მყიდველი პროექტს ონლაინ.',
+        j1num: 'ნაბიჯი 1', j1title: 'აღმოჩენა', j1text: 'პროექტი იზიდავს ხედებით, გორაკზე მდებარეობით და ბატუმის მკვრივი კოშკების უფრო მშვიდ ალტერნატივად პოზიციონირებით.', j1emo: 'ემოცია: ინტერესი',
+        j2num: 'ნაბიჯი 2', j2title: 'კვლევა', j2text: 'მყიდველი ძირითადად ხედავს პორტალებს, რომლებიც იმავე დაპირებებს იმეორებენ, ერთი მიმდინარე ოფიციალური სიმართლის წყაროს ნაცვლად.', j2emo: 'ემოცია: ცნობისმოყვარეობა',
+        j3num: 'ნაბიჯი 3', j3title: 'შედარება', j3text: 'დასრულების თარიღები, მოპირკეთების დონეები და ინვენტარის აღწერები წყაროებს შორის არ ემთხვევა.', j3emo: 'ემოცია: დაბნეულობა',
+        j4num: 'ნაბიჯი 4', j4title: 'რისკის შემოწმება', j4text: 'მყიდველი ამჩნევს მშენებლობის მოძველებულ ტრეკინგს, სუსტ სოციალურ მტკიცებულებას და გადაყიდვის გაჟონვას, რაც სუსტ კონტროლზე მიანიშნებს.', j4emo: 'ემოცია: სიფრთხილე',
+        j5num: 'ნაბიჯი 5', j5title: 'გადაწყვეტილება', j5text: 'მყისიერი მტკიცებულების გარეშე მყიდველი პროექტს რისკის კატეგორიაში გადააქვს და უფრო სუფთა კონკურენტთან მიდის.', j5emo: 'ემოცია: უნდობლობა',
+        diagnosisKicker: 'ძირითადი დიაგნოზი',
+        diagnosisQuote: 'Batumi Panorama იყიდება როგორც გაპრიალებული საინვესტიციო პროდუქტი, მაგრამ აღმოჩნდება როგორც ნახევრად დასრულებული მოგონება.',
+        rootsKicker: 'ძირეული მიზეზები',
+        rootsTitle: 'პრობლემა სტრუქტურულია და არა კოსმეტიკური.',
+        r1title: 'სიმართლის ერთი წყარო არ არსებობს', r1text: 'მყიდველს არ შეუძლია მიმდინარე სტატუსის დადასტურება ერთ ოფიციალურ ადგილას. ისტორია გაფანტულია პორტალებზე, ლისტინგებზე და ძველ სარეკლამო ფრაგმენტებში.',
+        r2title: 'მტკიცებულება დაპირებაზე სუსტია', r2text: 'საინვესტიციო დაპირებები ძლიერია. დასრულების, ოპერირების, დასახლების და რეალური მიწოდების დღევანდელი მტკიცებულება — სუსტი.',
+        r3title: 'წინააღმდეგობები სწრაფად კლავს ნდობას', r3text: 'დასრულებულია თუ არა. turnkey თუ white frame. განსხვავებული იუნიტების რაოდენობა. მყიდველი რწმენას კარგავს მანამდე, სანამ გაყიდვების გუნდი ახსნას მოასწრებს.',
+        r4title: 'დუმილი აღიქმება როგორც კრიზისი', r4text: 'უძრავი ქონების ბაზარზე, სადაც ისედაც ელიან დაგვიანებებს და გადაჭარბებულ დაპირებებს, დუმილი იკითხება როგორც სისუსტე, დავა ან მარცხი.',
+        visionKicker: 'რის დაჯერება სჭირდება მყიდველს',
+        visionTitle: 'გაურკვეველი აქტივიდან ცოცხალ ადგილამდე.',
+        beforeLabel: 'დღეს', afterLabel: 'რემონტის / რელაუნჩის შემდეგ',
+        m1num: '10 წუთი', m1label: 'სწორედ ამდენი სჭირდება მყიდველს, რომ ეჭვი გაუჩნდეს.',
+        m2num: '1 ისტორია', m2label: 'პროექტს სჭირდება ერთი მიმდინარე, დათარიღებული, ვიზუალური და გადამოწმებადი ისტორია იმაზე, რაც დღეს რეალურად არსებობს.',
+        m3num: '0 ბუნდოვანება', m3label: 'რელაუნჩმა უნდა მოხსნას ურთიერთსაწინააღმდეგო განცხადებები დასრულებაზე, ინვენტარზე, მოპირკეთებასა და ინფრასტრუქტურაზე.',
+        problemsKicker: 'პრობლემები, რომლებიც პირდაპირ უნდა ითქვას',
+        problemsTitle: 'რა უნდა მოისმინონ მფლობელებმა პირდაპირ.',
+        p1title: 'პროექტი არ ფლობს საკუთარ პირველ შთაბეჭდილებას.', p1text: 'ძიების შედეგებს აკონტროლებს მესამე მხარის დისტრიბუცია და არა ერთი მიმდინარე ოფიციალური არხი.',
+        p2title: 'ონლაინ სურათი ეჭვს ქმნის კონტაქტამდე.', p2text: 'მყიდველი ხედავს მოძველებულ პროგრესს, ურთიერთსაწინააღმდეგო აღწერებს და ცოცხალი გარემოს სუსტ მტკიცებულებას.',
+        p3title: 'ფანელი ნდობაზე ტყდება და არა ინტერესზე.', p3text: 'კონცეფცია შეიძლება იზიდავდეს. მყიდველი გადამოწმების ეტაპზე გადის.',
+        p4title: 'აგრესიული საინვესტიციო ენა საკმარისად გამყარებული არ არის.', p4text: 'ROI-სა და ამონაგების ძლიერი დაპირებები არ არის გამყარებული დღევანდელი საჯარო მტკიცებულებებით.',
+        p5title: 'გადაყიდვის გაჟონვა ასუსტებს ცენტრალურ გაყიდვების კონტროლს.', p5text: 'როდესაც პროდუქტი მეორად არხებში შერეული ფორმით ჩნდება, ბაზარი ამას სტრესად კითხულობს.',
+        p6title: 'დუმილი უკვე აზიანებს პროექტს.', p6text: 'თუ მკაფიო ახსნა არ არსებობს, ბაზარი სიცარიელეს ყველაზე ცუდი ვარაუდებით ავსებს.',
+        solutionsKicker: 'როგორ უნდა მოგვარდეს',
+        solutionsTitle: 'გამოსავალი არის ნდობის აღდგენის პროგრამა.',
+        sol1title: '1. გამოაქვეყნეთ ერთი ოფიციალური სიმართლის წყარო', sol1text: 'ერთი landing page. ერთი მიმდინარე ისტორია. დათარიღებული ფოტოები, დათარიღებული ვიდეო, იურიდიული სტატუსი, დასრულების სტატუსი, დასახლების სტატუსი, ინფრასტრუქტურის სტატუსი, ინვენტარის სტატუსი.',
+        sol2title: '2. დაპირებაზე დაფუძნებული კომუნიკაცია შეცვალეთ მტკიცებულებაზე დაფუძნებულით', sol2text: 'წინ წამოწიეთ ის, რაც დღეს არსებობს. ნუ აიძულებთ მყიდველს სურათის დახატვას. აჩვენეთ შენობა, ცხოვრება, მართვა, მისადგომობა და რეალური გამოყენების სცენარები.',
+        sol3title: '3. გააქრეთ საჯარო წინააღმდეგობები', sol3text: 'გაასწორეთ მესამე მხარის აღწერები. გაათანაბრეთ იუნიტების რაოდენობა, მოპირკეთების დონეები და დასრულების განცხადებები. წაშალეთ ყველაფერი, რასაც შეხვედრაზე ვერ დაიცავთ.',
+        sol4title: '4. შექმენით რელაუნჩის ნარატივი', sol4text: 'თუ იყო დაგვიანება, ნაწილობრივი დასრულება ან რესტრუქტურიზაცია, ეს უნდა ითქვას პირდაპირ. შემდეგ ახსენით რა შეიცვალა, რა მუშაობს ახლა და რა ხდება შემდეგ.',
+        sol5title: '5. აჩვენეთ ადამიანური ცხოვრება და არა მხოლოდ სარეკლამო ტექსტი', sol5text: 'გამოიყენეთ მაცხოვრებლები, მფლობელები, მოქმედი სივრცეები და რეალური მომენტები ობიექტიდან. პროექტი უნდა იგრძნობოდეს დასახლებულად, მართულად და ცოცხლად.',
+        sol6title: '6. თავიდან ააწყვეთ გაყიდვების ფანელი ნდობის საკვანძო წერტილებზე', sol6text: 'მყიდველის ყველა კითხვას უნდა ჰქონდეს მყისიერი პასუხი: რა არის დასრულებული, რა არის ხელმისაწვდომი, ვინ მართავს, რა მუშაობს და რატომ შეიძლება ამ პროექტის დაჯერება დღეს.',
+        footerText: 'საჯარო აღქმის აუდიტი დაფუძნებულია 2026-05-29 მდგომარეობით შეგროვებულ ღია ონლაინ წყაროებზე. ეს არის მყიდველის ნდობისა და ბაზრის აღქმის მიმოხილვა და არა იურიდიული ან საინჟინრო აუდიტი.'
+      }
+    };
+
+    function setLang(lang) {
+      document.documentElement.lang = lang;
+      localStorage.setItem('bp_lang', lang);
+      document.querySelectorAll('.lang-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.lang === lang));
+      document.querySelectorAll('[data-i18n]').forEach(el => {
+        const key = el.dataset.i18n;
+        if (translations[lang] && translations[lang][key]) {
+          el.textContent = translations[lang][key];
+        }
+      });
+      document.title = {
+        en: 'Batumi Panorama — Buyer Trust Audit',
+        ru: 'Batumi Panorama — аудит доверия покупателя',
+        ka: 'Batumi Panorama — მყიდველის ნდობის აუდიტი'
+      }[lang] || 'Batumi Panorama — Buyer Trust Audit';
+    }
+
+    document.querySelectorAll('.lang-btn').forEach(btn => {
+      btn.addEventListener('click', () => setLang(btn.dataset.lang));
+    });
+
+    const savedLang = localStorage.getItem('bp_lang') || 'en';
+    setLang(savedLang);
+
+    const range = document.getElementById('compareRange');
+    const afterPane = document.getElementById('afterPane');
+    const afterInner = document.getElementById('afterInner');
+    const handle = document.getElementById('compareHandle');
+
+    function updateCompare(v) {
+      afterPane.style.width = v + '%';
+      afterInner.style.transform = `translateX(-${100 - v}%)`;
+      handle.style.left = v + '%';
+    }
+
+    range.addEventListener('input', e => updateCompare(e.target.value));
+    updateCompare(range.value);
+  </script>
+</body>
+</html>
