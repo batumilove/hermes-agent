@@ -9,11 +9,16 @@ import pytest
 from hermes_cli.main import cmd_update, PROJECT_ROOT
 
 
-def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
+def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0", tracking_ref=None):
     """Build a side_effect function for subprocess.run that simulates git commands."""
 
     def side_effect(cmd, **kwargs):
         joined = " ".join(str(c) for c in cmd)
+
+        # git rev-parse --abbrev-ref --symbolic-full-name @{u}  (get tracking ref)
+        if "rev-parse" in joined and "--symbolic-full-name" in joined and "@{u}" in joined:
+            rc = 0 if tracking_ref else 128
+            return subprocess.CompletedProcess(cmd, rc, stdout=f"{tracking_ref or ''}\n", stderr="")
 
         # git rev-parse --abbrev-ref HEAD  (get current branch)
         if "rev-parse" in joined and "--abbrev-ref" in joined:
@@ -216,8 +221,11 @@ class TestCmdUpdateBranchFallback:
             "--no-audit",
             "--progress=false",
         ]
+        # Repo root additionally passes --workspaces=false so npm does not
+        # recursively install every apps/* workspace (desktop, shared).
+        repo_flags = [*update_flags, "--workspaces=false"]
         assert npm_calls[:2] == [
-            (update_flags, PROJECT_ROOT),
+            (repo_flags, PROJECT_ROOT),
             (update_flags, PROJECT_ROOT / "ui-tui"),
         ]
         if len(npm_calls) > 2:
@@ -279,6 +287,83 @@ class TestCmdUpdateBranchFallback:
             captured = capsys.readouterr()
             assert "applying safe config migrations" in captured.out
             assert "API keys require manual entry" in captured.out
+
+
+class TestCmdUpdateMigrationPrompt:
+    """The config-migration prompt names what changed and skips the prompt
+    entirely when only the config format version moved.
+
+    Regression guard for the contentless-prompt report (ScottFive / Tt2021):
+    previously the prompt printed only counts ("1 new config option") and
+    asked "configure them now?" even for pure version bumps, where saying
+    yes looked like a no-op.
+    """
+
+    def test_version_bump_only_applies_silently_without_prompt(
+        self, mock_args, capsys
+    ):
+        """Only the version moved → apply non-interactively, never prompt."""
+        with patch("shutil.which", return_value=None), patch(
+            "subprocess.run"
+        ) as mock_run, patch("builtins.input") as mock_input, patch(
+            "hermes_cli.config.get_missing_env_vars", return_value=[]
+        ), patch(
+            "hermes_cli.config.get_missing_config_fields", return_value=[]
+        ), patch(
+            "hermes_cli.config.check_config_version", return_value=(5, 24)
+        ), patch(
+            "hermes_cli.config.migrate_config",
+            return_value={"env_added": [], "config_added": [], "warnings": []},
+        ) as mock_migrate:
+            mock_run.side_effect = _make_run_side_effect(
+                branch="main", verify_ok=True, commit_count="1"
+            )
+
+            cmd_update(mock_args)
+
+            mock_input.assert_not_called()
+            mock_migrate.assert_called_once_with(interactive=False, quiet=True)
+            out = capsys.readouterr().out
+            assert "Updating config format (v5 → v24)" in out
+            assert "no new settings to configure" in out
+            # The misleading question must NOT appear for a pure version bump.
+            assert "configure them now" not in out.lower()
+
+    def test_new_options_are_listed_by_name_before_prompt(
+        self, mock_args, capsys
+    ):
+        """New env/config keys are printed by name so the user can decide."""
+        env_items = [
+            {"name": "FOO_API_KEY", "description": "Foo service API key"},
+        ]
+        cfg_items = [
+            {"key": "display.new_widget", "description": "New config option: display.new_widget"},
+        ]
+        with patch("shutil.which", return_value=None), patch(
+            "subprocess.run"
+        ) as mock_run, patch("builtins.input", return_value="n"), patch(
+            "hermes_cli.config.get_missing_env_vars", return_value=env_items
+        ), patch(
+            "hermes_cli.config.get_missing_config_fields", return_value=cfg_items
+        ), patch(
+            "hermes_cli.config.check_config_version", return_value=(1, 24)
+        ), patch(
+            "hermes_cli.config.migrate_config",
+            return_value={"env_added": [], "config_added": [], "warnings": []},
+        ), patch("hermes_cli.main.sys") as mock_sys:
+            mock_sys.stdin.isatty.return_value = True
+            mock_sys.stdout.isatty.return_value = True
+            mock_run.side_effect = _make_run_side_effect(
+                branch="main", verify_ok=True, commit_count="1"
+            )
+
+            cmd_update(mock_args)
+
+            out = capsys.readouterr().out
+            # Names, not just counts.
+            assert "FOO_API_KEY" in out
+            assert "Foo service API key" in out
+            assert "display.new_widget" in out
 
 
 class TestCmdUpdateProfileSkillSync:
@@ -363,7 +448,7 @@ class TestCmdUpdateBranchFlag:
     target without monkey-patching the implementation.
     """
 
-    def _branch_side_effect(self, current_branch, target_branch, *, checkout_fails=False, track_fails=False, commit_count="0"):
+    def _branch_side_effect(self, current_branch, target_branch, *, checkout_fails=False, track_fails=False, commit_count="0", tracking_ref=None):
         """Mock side-effect that knows about checkout/track behavior.
 
         - ``current_branch``  what ``git rev-parse --abbrev-ref HEAD`` returns
@@ -373,10 +458,15 @@ class TestCmdUpdateBranchFlag:
         - ``track_fails``     if True, ``git checkout -B <target> origin/<target>`` ALSO fails
                               (simulates branch absent on origin too)
         - ``commit_count``    rev-list count returned (0 = up-to-date, >0 = behind)
+        - ``tracking_ref``    optional current branch upstream, e.g. ``origin/main``
         """
 
         def side_effect(cmd, **kwargs):
             joined = " ".join(str(c) for c in cmd)
+
+            if "rev-parse" in joined and "--symbolic-full-name" in joined and "@{u}" in joined:
+                rc = 0 if tracking_ref else 128
+                return subprocess.CompletedProcess(cmd, rc, stdout=f"{tracking_ref or ''}\n", stderr="")
 
             if "rev-parse" in joined and "--abbrev-ref" in joined:
                 return subprocess.CompletedProcess(cmd, 0, stdout=f"{current_branch}\n", stderr="")

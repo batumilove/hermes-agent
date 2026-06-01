@@ -305,6 +305,7 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
         "hermes_cli/main.py --profile",
         "hermes_cli/main.py -p",
         "hermes gateway",
+        "hermes.exe gateway",
         "gateway/run.py",
     ]
     current_home = str(get_hermes_home().resolve())
@@ -387,7 +388,8 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                     current_cmd = line[len("CommandLine="):]
                 elif line.startswith("ProcessId="):
                     pid_str = line[len("ProcessId="):]
-                    if any(p in current_cmd for p in patterns) and (
+                    current_cmd_lower = current_cmd.lower()
+                    if any(p in current_cmd_lower for p in patterns) and (
                         all_profiles or _matches_current_profile(current_cmd)
                     ):
                         try:
@@ -411,7 +413,8 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                         try:
                             cmdline = open(f"/proc/{pid}/cmdline", "rb").read().decode("utf-8", errors="replace")
                             cmdline = cmdline.replace("\x00", " ")
-                            if any(p in cmdline for p in patterns) and (
+                            cmdline_lower = cmdline.lower()
+                            if any(p in cmdline_lower for p in patterns) and (
                                 all_profiles or _matches_current_profile(cmdline)
                             ):
                                 _append_unique_pid(pids, pid, exclude_pids)
@@ -454,7 +457,8 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
 
                     if pid is None:
                         continue
-                    if any(pattern in command for pattern in patterns) and (
+                    command_lower = command.lower()
+                    if any(pattern in command_lower for pattern in patterns) and (
                         all_profiles or _matches_current_profile(command)
                     ):
                         _append_unique_pid(pids, pid, exclude_pids)
