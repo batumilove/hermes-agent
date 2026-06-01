@@ -28,6 +28,7 @@ Return handle fields:
 - `pane_id`
 - `name`
 - `agent_status`
+- optional `ready` when `wait_ready=true`
 - optional `agent_session` when Hermes has emitted it
 
 ### Read

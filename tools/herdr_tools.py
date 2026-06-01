@@ -66,6 +66,8 @@ def herdr_agent_start(
     workspace_id: str | None = None,
     argv: list[str] | None = None,
     no_focus: bool = True,
+    wait_ready: bool = False,
+    ready_timeout_seconds: float = 30.0,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> str:
     """Start an agent in Herdr and return its structured handle."""
@@ -94,13 +96,18 @@ def herdr_agent_start(
         )
 
     agent = (parsed.get("result") or {}).get("agent") or {}
+    pane_id = agent.get("pane_id")
+    ready = None
+    if wait_ready and pane_id:
+        ready = json.loads(herdr_wait_ready(pane_id, timeout_seconds=ready_timeout_seconds))
     return _json_result(
         success=True,
         workspace_id=agent.get("workspace_id"),
-        pane_id=agent.get("pane_id"),
+        pane_id=pane_id,
         tab_id=agent.get("tab_id"),
         name=agent.get("name"),
         agent_status=agent.get("agent_status"),
+        ready=ready,
         raw=agent,
     )
 
@@ -327,6 +334,8 @@ registry.register(
                 "workspace_id": {"type": "string", "description": "Optional Herdr workspace id to attach to."},
                 "argv": {"type": "array", "items": {"type": "string"}, "description": "Command argv after --, default ['hermes']."},
                 "no_focus": {"type": "boolean", "default": True},
+                "wait_ready": {"type": "boolean", "default": False},
+                "ready_timeout_seconds": {"type": "number", "default": 30.0},
             },
             "required": ["name"],
         },
@@ -337,6 +346,8 @@ registry.register(
         workspace_id=args.get("workspace_id"),
         argv=args.get("argv"),
         no_focus=args.get("no_focus", True),
+        wait_ready=args.get("wait_ready", False),
+        ready_timeout_seconds=args.get("ready_timeout_seconds", 30.0),
     ),
     check_fn=check_herdr_requirements,
     description="Start Herdr agent",

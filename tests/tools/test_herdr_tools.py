@@ -62,6 +62,7 @@ def test_spawn_uses_agent_start_and_returns_handle(monkeypatch):
         "tab_id": "ws1:1",
         "name": "worker-1",
         "agent_status": "idle",
+        "ready": None,
         "raw": {
             "workspace_id": "ws1",
             "pane_id": "pane1",
@@ -71,6 +72,53 @@ def test_spawn_uses_agent_start_and_returns_handle(monkeypatch):
         },
     }
     assert calls
+
+
+def test_start_can_wait_for_ready_after_pane_created(monkeypatch):
+    from tools import herdr_tools
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(("run", cmd))
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout=json.dumps(
+                {
+                    "result": {
+                        "agent": {
+                            "workspace_id": "ws1",
+                            "pane_id": "pane1",
+                            "tab_id": "ws1:1",
+                            "name": "worker-ready",
+                            "agent_status": "unknown",
+                        }
+                    }
+                }
+            ),
+            stderr="",
+        )
+
+    def fake_ready(pane_id, timeout_seconds=30.0, poll_seconds=0.5):
+        calls.append(("ready", pane_id, timeout_seconds, poll_seconds))
+        return json.dumps({"success": True, "matched_marker": "❯"})
+
+    monkeypatch.setattr(herdr_tools.subprocess, "run", fake_run)
+    monkeypatch.setattr(herdr_tools, "herdr_wait_ready", fake_ready)
+
+    result = json.loads(
+        herdr_tools.herdr_agent_start(
+            name="worker-ready",
+            argv=["hermes"],
+            wait_ready=True,
+            ready_timeout_seconds=12,
+        )
+    )
+
+    assert result["success"] is True
+    assert result["ready"] == {"success": True, "matched_marker": "❯"}
+    assert calls[-1] == ("ready", "pane1", 12, 0.5)
 
 
 def test_read_uses_recent_unwrapped_by_default(monkeypatch):
