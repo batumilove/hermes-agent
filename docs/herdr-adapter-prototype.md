@@ -52,13 +52,14 @@ Use this to feed prompts/follow-ups into spawned interactive agents.
 `herdr_run_prompt` composes send/wait/read safely:
 
 1. optional pre-send settle for freshly spawned panes
-2. `herdr_pane_send_text(..., submit=True)`
-3. wait for `working`
-4. wait for `idle`
-5. sleep briefly to let the final render flush
-6. read with `recent-unwrapped`
+2. optionally poll for readiness (`herdr_wait_ready`) until the Hermes prompt/banner is visible
+3. `herdr_pane_send_text(..., submit=True)`
+4. wait for `working`
+5. wait for `idle`
+6. sleep briefly to let the final render flush
+7. read with `recent-unwrapped`
 
-This avoids the observed race where `idle` is emitted before the final answer is visible in `pane read`.
+This avoids both observed races: sending before a fresh child is ready, and reading before the final answer is visible in `pane read`.
 
 ### Wait
 
@@ -92,6 +93,7 @@ The first in-repo prototype is `tools/herdr_tools.py`, exposed as an opt-in `her
 - `herdr_agent_start`
 - `herdr_pane_read`
 - `herdr_pane_send_text`
+- `herdr_wait_ready`
 - `herdr_run_prompt`
 - `herdr_wait_status`
 - `herdr_approval`

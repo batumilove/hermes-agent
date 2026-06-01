@@ -116,6 +116,78 @@ def test_send_text_can_submit_enter(monkeypatch):
     ]
 
 
+def test_wait_ready_polls_until_prompt_marker(monkeypatch):
+    from tools import herdr_tools
+
+    outputs = iter(["booting...", "Welcome to Hermes Agent\n❯"])
+    sleeps = []
+
+    def fake_read(pane_id, lines=80, source="recent-unwrapped", timeout=60):
+        return json.dumps({"success": True, "output": next(outputs)})
+
+    monkeypatch.setattr(herdr_tools, "herdr_pane_read", fake_read)
+    monkeypatch.setattr(herdr_tools.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    result = json.loads(herdr_tools.herdr_wait_ready("pane1", timeout_seconds=5, poll_seconds=0.25))
+
+    assert result["success"] is True
+    assert result["matched_marker"] == "❯"
+    assert sleeps == [0.25]
+
+
+def test_run_prompt_waits_ready_when_requested_then_working_idle(monkeypatch):
+    from tools import herdr_tools
+
+    calls = []
+
+    def fake_ready(pane_id, timeout_seconds=30, poll_seconds=0.5):
+        calls.append(("ready", pane_id, timeout_seconds, poll_seconds))
+        return json.dumps({"success": True, "matched_marker": "❯"})
+
+    def fake_send(pane_id, text, submit=True, timeout=60):
+        calls.append(("send", pane_id, text, submit))
+        return json.dumps({"success": True})
+
+    def fake_wait(pane_id, status, timeout_ms=30000, timeout=None):
+        calls.append(("wait", pane_id, status, timeout_ms))
+        return json.dumps({"success": True, "status": status})
+
+    def fake_read(pane_id, lines=200, source="recent-unwrapped", timeout=60):
+        calls.append(("read", pane_id, lines, source))
+        return json.dumps({"success": True, "output": "...FINAL_TOKEN..."})
+
+    monkeypatch.setattr(herdr_tools, "herdr_wait_ready", fake_ready)
+    monkeypatch.setattr(herdr_tools, "herdr_pane_send_text", fake_send)
+    monkeypatch.setattr(herdr_tools, "herdr_wait_status", fake_wait)
+    monkeypatch.setattr(herdr_tools, "herdr_pane_read", fake_read)
+    monkeypatch.setattr(herdr_tools.time, "sleep", lambda seconds: calls.append(("sleep", seconds)))
+
+    result = json.loads(
+        herdr_tools.herdr_run_prompt(
+            "pane1",
+            "do it",
+            wait_ready=True,
+            ready_timeout_seconds=12,
+            wait_working_ms=1000,
+            wait_idle_ms=2000,
+            settle_seconds=1.5,
+            lines=321,
+            expect="FINAL_TOKEN",
+        )
+    )
+
+    assert result["success"] is True
+    assert result["ready"]["matched_marker"] == "❯"
+    assert calls == [
+        ("ready", "pane1", 12, 0.5),
+        ("send", "pane1", "do it", True),
+        ("wait", "pane1", "working", 1000),
+        ("wait", "pane1", "idle", 2000),
+        ("sleep", 1.5),
+        ("read", "pane1", 321, "recent-unwrapped"),
+    ]
+
+
 def test_run_prompt_waits_working_idle_then_settles_and_reads(monkeypatch):
     from tools import herdr_tools
 
@@ -197,6 +269,7 @@ def test_herdr_toolset_resolves_to_adapter_tools():
         "herdr_agent_start",
         "herdr_pane_read",
         "herdr_pane_send_text",
+        "herdr_wait_ready",
         "herdr_run_prompt",
         "herdr_wait_status",
         "herdr_approval",

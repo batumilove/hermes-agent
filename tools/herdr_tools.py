@@ -157,12 +157,53 @@ def herdr_pane_send_text(
     )
 
 
+def herdr_wait_ready(
+    pane_id: str,
+    timeout_seconds: float = 30.0,
+    poll_seconds: float = 0.5,
+    lines: int = 80,
+    markers: list[str] | None = None,
+) -> str:
+    """Poll pane output until the interactive prompt/banner is visible."""
+    if not pane_id:
+        return _json_result(success=False, error="pane_id is required")
+    markers = markers or ["❯", "Welcome to Hermes Agent", "Type your message"]
+    deadline = time.monotonic() + timeout_seconds
+    attempts = 0
+    last_read: dict[str, Any] | None = None
+    while True:
+        attempts += 1
+        last_read = json.loads(herdr_pane_read(pane_id, lines=lines))
+        output = last_read.get("output", "") if last_read.get("success") else ""
+        for marker in markers:
+            if marker in output:
+                return _json_result(
+                    success=True,
+                    pane_id=pane_id,
+                    matched_marker=marker,
+                    attempts=attempts,
+                    output=output,
+                )
+        if time.monotonic() >= deadline:
+            return _json_result(
+                success=False,
+                pane_id=pane_id,
+                error="timed out waiting for pane readiness marker",
+                attempts=attempts,
+                markers=markers,
+                last_read=last_read,
+            )
+        time.sleep(poll_seconds)
+
+
 def herdr_run_prompt(
     pane_id: str,
     text: str,
     wait_working_ms: int = 30000,
     wait_idle_ms: int = 60000,
     pre_send_settle_seconds: float = 0.0,
+    wait_ready: bool = False,
+    ready_timeout_seconds: float = 30.0,
     settle_seconds: float = 2.0,
     lines: int = 400,
     expect: str | None = None,
@@ -170,6 +211,12 @@ def herdr_run_prompt(
     """Submit a prompt, wait for Herdr status transitions, settle, then read output."""
     if pre_send_settle_seconds > 0:
         time.sleep(pre_send_settle_seconds)
+
+    ready: dict[str, Any] | None = None
+    if wait_ready:
+        ready = json.loads(herdr_wait_ready(pane_id, timeout_seconds=ready_timeout_seconds))
+        if not ready.get("success"):
+            return _json_result(success=False, stage="wait_ready", pane_id=pane_id, ready=ready)
 
     sent = json.loads(herdr_pane_send_text(pane_id, text, submit=True))
     if not sent.get("success"):
@@ -195,6 +242,7 @@ def herdr_run_prompt(
         pane_id=pane_id,
         matched_expect=matched,
         output=output,
+        ready=ready,
         send=sent,
         working=working,
         idle=idle,
@@ -348,6 +396,36 @@ registry.register(
 )
 
 registry.register(
+    name="herdr_wait_ready",
+    toolset="herdr",
+    schema={
+        "name": "herdr_wait_ready",
+        "description": "Poll a Herdr pane until the Hermes prompt/banner is visible and ready for input.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pane_id": {"type": "string"},
+                "timeout_seconds": {"type": "number", "default": 30.0},
+                "poll_seconds": {"type": "number", "default": 0.5},
+                "lines": {"type": "integer", "default": 80},
+                "markers": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["pane_id"],
+        },
+    },
+    handler=lambda args, **kw: herdr_wait_ready(
+        pane_id=args.get("pane_id", ""),
+        timeout_seconds=args.get("timeout_seconds", 30.0),
+        poll_seconds=args.get("poll_seconds", 0.5),
+        lines=args.get("lines", 80),
+        markers=args.get("markers"),
+    ),
+    check_fn=check_herdr_requirements,
+    description="Wait for Herdr pane readiness",
+    emoji="👀",
+)
+
+registry.register(
     name="herdr_run_prompt",
     toolset="herdr",
     schema={
@@ -361,6 +439,8 @@ registry.register(
                 "wait_working_ms": {"type": "integer", "default": 30000},
                 "wait_idle_ms": {"type": "integer", "default": 60000},
                 "pre_send_settle_seconds": {"type": "number", "default": 0.0},
+                "wait_ready": {"type": "boolean", "default": False},
+                "ready_timeout_seconds": {"type": "number", "default": 30.0},
                 "settle_seconds": {"type": "number", "default": 2.0},
                 "lines": {"type": "integer", "default": 400},
                 "expect": {"type": "string", "description": "Optional token expected in final output."},
@@ -374,6 +454,8 @@ registry.register(
         wait_working_ms=args.get("wait_working_ms", 30000),
         wait_idle_ms=args.get("wait_idle_ms", 60000),
         pre_send_settle_seconds=args.get("pre_send_settle_seconds", 0.0),
+        wait_ready=args.get("wait_ready", False),
+        ready_timeout_seconds=args.get("ready_timeout_seconds", 30.0),
         settle_seconds=args.get("settle_seconds", 2.0),
         lines=args.get("lines", 400),
         expect=args.get("expect"),
