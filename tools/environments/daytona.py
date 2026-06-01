@@ -11,6 +11,7 @@ import os
 import shlex
 import threading
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 from tools.environments.base import (
     BaseEnvironment,
@@ -58,10 +59,12 @@ class DaytonaEnvironment(BaseEnvironment):
             pass
         except Exception as e:
             raise ImportError(str(e))
-        from daytona import (
+        from daytona_sdk import (
             Daytona,
+            DaytonaConfig,
             CreateSandboxFromImageParams,
             DaytonaError,
+            ListSandboxesQuery,
             Resources,
             SandboxState,
         )
@@ -69,7 +72,8 @@ class DaytonaEnvironment(BaseEnvironment):
         self._persistent = persistent_filesystem
         self._task_id = task_id
         self._SandboxState = SandboxState
-        self._daytona = Daytona()
+        self._ListSandboxesQuery = ListSandboxesQuery
+        self._daytona = Daytona(self._build_daytona_config(DaytonaConfig))
         self._sandbox = None
         self._lock = threading.Lock()
 
@@ -104,7 +108,9 @@ class DaytonaEnvironment(BaseEnvironment):
                     # Daytona SDK >=0.108.0 uses cursor-based pagination and
                     # list() returns an iterator. Offset-based pagination
                     # (page=1) is removed on June 10, 2026.
-                    results = self._daytona.list(labels=labels, limit=1)
+                    results = self._daytona.list(
+                        self._ListSandboxesQuery(labels=labels, limit=1)
+                    )
                     legacy = next(iter(results), None)
                     if legacy is not None:
                         self._sandbox = legacy
@@ -123,11 +129,14 @@ class DaytonaEnvironment(BaseEnvironment):
                     name=sandbox_name,
                     labels=labels,
                     auto_stop_interval=0,
+                    env_vars={"LANG": "C", "LC_ALL": "C"},
                     resources=resources,
                 )
             )
             logger.info("Daytona: created sandbox %s for task %s",
                         self._sandbox.id, task_id)
+
+        self._normalize_toolbox_proxy_url()
 
         # Detect remote home dir
         self._remote_home = "/root"
@@ -151,6 +160,59 @@ class DaytonaEnvironment(BaseEnvironment):
         self._sync_manager.sync(force=True)
         self.init_session()
 
+    @staticmethod
+    def _normalize_api_url(api_url: str | None) -> str | None:
+        """Return a Daytona SDK API base URL.
+
+        Self-hosted Daytona commonly exposes the dashboard at ``:3000`` and
+        the API under ``:3000/api``. The SDK expects the latter; when given
+        the dashboard root it receives HTML and fails deserializing responses.
+        """
+        if not api_url:
+            return api_url
+        normalized = api_url.rstrip("/")
+        return normalized if normalized.endswith("/api") else normalized + "/api"
+
+    @classmethod
+    def _build_daytona_config(cls, DaytonaConfig):
+        api_url = cls._normalize_api_url(os.getenv("DAYTONA_API_URL"))
+        api_key = os.getenv("DAYTONA_API_KEY")
+        if api_url or api_key:
+            return DaytonaConfig(api_key=api_key, api_url=api_url)
+        return DaytonaConfig()
+
+    def _normalize_toolbox_proxy_url(self) -> None:
+        """Rewrite self-hosted Docker Compose toolbox URLs for remote clients.
+
+        Daytona's Docker Compose defaults can return ``proxy.localhost:4000``
+        in sandbox DTOs. That works only from the Daytona VM itself; Hermes often
+        runs on a different host and reaches Daytona via ``DAYTONA_API_URL``.
+        When the toolbox proxy points at localhost, rewrite it to the API host
+        while preserving the proxy port/path.
+        """
+        toolbox_url = getattr(self._sandbox, "toolbox_proxy_url", None)
+        api_url = os.getenv("DAYTONA_API_URL")
+        if not isinstance(toolbox_url, str) or not toolbox_url or not api_url:
+            return
+
+        parsed_toolbox = urlparse(toolbox_url)
+        if parsed_toolbox.hostname not in {"localhost", "127.0.0.1", "proxy.localhost"}:
+            return
+
+        parsed_api = urlparse(api_url)
+        if not parsed_api.hostname:
+            return
+
+        host = parsed_api.hostname
+        if parsed_toolbox.port:
+            host = f"{host}:{parsed_toolbox.port}"
+        rewritten = urlunparse(parsed_toolbox._replace(netloc=host))
+        self._sandbox.toolbox_proxy_url = rewritten
+        toolbox_api = getattr(self._sandbox, "_toolbox_api", None)
+        if toolbox_api is not None and hasattr(toolbox_api, "_toolbox_base_url"):
+            toolbox_api._toolbox_base_url = rewritten
+        logger.info("Daytona: rewrote toolbox proxy URL %s -> %s", toolbox_url, rewritten)
+
     def _daytona_upload(self, host_path: str, remote_path: str) -> None:
         """Upload a single file via Daytona SDK."""
         parent = str(Path(remote_path).parent)
@@ -164,7 +226,7 @@ class DaytonaEnvironment(BaseEnvironment):
         multipart POST, avoiding per-file TLS/HTTP overhead (~580 files
         goes from ~5 min to <2 s).
         """
-        from daytona.common.filesystem import FileUpload
+        from daytona_sdk.common.filesystem import FileUpload
 
         if not files:
             return
@@ -173,11 +235,13 @@ class DaytonaEnvironment(BaseEnvironment):
         if parents:
             self._sandbox.process.exec(quoted_mkdir_command(parents))
 
-        uploads = [
-            FileUpload(source=host_path, destination=remote_path)
-            for host_path, remote_path in files
-        ]
-        self._sandbox.fs.upload_files(uploads)
+        for start in range(0, len(files), 100):
+            chunk = files[start:start + 100]
+            uploads = [
+                FileUpload(source=host_path, destination=remote_path)
+                for host_path, remote_path in chunk
+            ]
+            self._sandbox.fs.upload_files(uploads)
 
     def _daytona_bulk_download(self, dest: Path) -> None:
         """Download remote .hermes/ as a tar archive."""

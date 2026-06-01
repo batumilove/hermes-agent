@@ -35,14 +35,16 @@ def _patch_daytona_imports(monkeypatch):
         ARCHIVED = "archived"
         ERROR = "error"
 
-    daytona_mod = _types.ModuleType("daytona")
+    daytona_mod = _types.ModuleType("daytona_sdk")
     daytona_mod.Daytona = MagicMock
+    daytona_mod.DaytonaConfig = MagicMock(name="DaytonaConfig")
     daytona_mod.CreateSandboxFromImageParams = MagicMock
     daytona_mod.DaytonaError = type("DaytonaError", (Exception,), {})
+    daytona_mod.ListSandboxesQuery = MagicMock(name="ListSandboxesQuery")
     daytona_mod.Resources = MagicMock(name="Resources")
     daytona_mod.SandboxState = _SandboxState
 
-    monkeypatch.setitem(__import__("sys").modules, "daytona", daytona_mod)
+    monkeypatch.setitem(__import__("sys").modules, "daytona_sdk", daytona_mod)
     return daytona_mod
 
 
@@ -94,6 +96,10 @@ def make_env(daytona_sdk, monkeypatch):
             mock_client.list.return_value = iter([])
 
         daytona_sdk.Daytona = MagicMock(return_value=mock_client)
+        daytona_sdk.DaytonaConfig.reset_mock()
+        daytona_sdk.DaytonaConfig.return_value = SimpleNamespace(name="config")
+        daytona_sdk.ListSandboxesQuery.reset_mock()
+        daytona_sdk.ListSandboxesQuery.side_effect = lambda **kw: SimpleNamespace(**kw)
 
         from tools.environments.daytona import DaytonaEnvironment
 
@@ -161,8 +167,11 @@ class TestPersistence:
             task_id="mytask",
         )
         legacy.start.assert_called_once()
-        env._mock_client.list.assert_called_once_with(
+        daytona_sdk.ListSandboxesQuery.assert_called_once_with(
             labels={"hermes_task_id": "mytask"}, limit=1)
+        query = env._mock_client.list.call_args.args[0]
+        assert query.labels == {"hermes_task_id": "mytask"}
+        assert query.limit == 1
         env._mock_client.create.assert_not_called()
 
     def test_persistent_creates_new_when_none_found(self, make_env, daytona_sdk):
@@ -175,14 +184,33 @@ class TestPersistence:
         # Verify the name and labels were passed to CreateSandboxFromImageParams
         # by checking get() was called with the right sandbox name
         env._mock_client.get.assert_called_with("hermes-mytask")
-        env._mock_client.list.assert_called_with(
+        daytona_sdk.ListSandboxesQuery.assert_called_with(
             labels={"hermes_task_id": "mytask"}, limit=1)
+        query = env._mock_client.list.call_args.args[0]
+        assert query.labels == {"hermes_task_id": "mytask"}
+        assert query.limit == 1
 
     def test_non_persistent_skips_lookup(self, make_env):
         env = make_env(persistent=False)
         env._mock_client.get.assert_not_called()
         env._mock_client.list.assert_not_called()
         env._mock_client.create.assert_called_once()
+
+    def test_daytona_config_normalizes_dashboard_root_url(self, make_env, daytona_sdk, monkeypatch):
+        monkeypatch.setenv("DAYTONA_API_URL", "http://daytona.local:3000")
+        monkeypatch.setenv("DAYTONA_API_KEY", "test-key")
+        make_env(persistent=False)
+        daytona_sdk.DaytonaConfig.assert_called_with(
+            api_key="test-key", api_url="http://daytona.local:3000/api"
+        )
+        daytona_sdk.Daytona.assert_called_with(daytona_sdk.DaytonaConfig.return_value)
+
+    def test_daytona_config_keeps_existing_api_url(self, make_env, daytona_sdk, monkeypatch):
+        monkeypatch.setenv("DAYTONA_API_URL", "http://daytona.local:3000/api/")
+        make_env(persistent=False)
+        daytona_sdk.DaytonaConfig.assert_called_with(
+            api_key=None, api_url="http://daytona.local:3000/api"
+        )
 
 
 # ---------------------------------------------------------------------------
