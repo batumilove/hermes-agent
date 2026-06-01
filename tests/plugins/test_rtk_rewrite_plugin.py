@@ -70,6 +70,9 @@ def test_terminal_command_is_rewritten_in_place():
         callback(tool_name="terminal", args=args)
 
     assert args == {"command": "rtk git status"}
+    assert module._METRICS["attempts"] == 1
+    assert module._METRICS["rewrites"] == 1
+    assert module._METRICS["events_by_command"][("git", "rewrite")] == 1
     run.assert_called_once_with(
         ["rtk", "rewrite", "git status"],
         shell=False,
@@ -103,6 +106,9 @@ def test_passthrough_return_codes_keep_original_command_quietly(capsys):
         callback(tool_name="terminal", args=args)
 
     assert args == {"command": "echo hello"}
+    assert module._METRICS["attempts"] == 1
+    assert module._METRICS["passthrough"] == 1
+    assert module._METRICS["events_by_command"][("echo", "passthrough")] == 1
     assert capsys.readouterr().err == ""
 
 
@@ -118,6 +124,9 @@ def test_unexpected_rtk_failure_warns_but_keeps_original_command(capsys):
         callback(tool_name="terminal", args=args)
 
     assert args == {"command": "git status"}
+    assert module._METRICS["attempts"] == 1
+    assert module._METRICS["failures"] == 1
+    assert module._METRICS["events_by_command"][("git", "failure")] == 1
     assert "rtk rewrite failed with exit 42: boom" in capsys.readouterr().err
 
 
@@ -133,7 +142,28 @@ def test_timeout_fails_open_and_warns(capsys):
         callback(tool_name="terminal", args=args)
 
     assert args == {"command": "git status"}
+    assert module._METRICS["attempts"] == 1
+    assert module._METRICS["timeouts"] == 1
+    assert module._METRICS["events_by_command"][("git", "timeout")] == 1
     assert "rtk rewrite timed out" in capsys.readouterr().err
+
+
+def test_metrics_are_written_to_prometheus_textfile(tmp_path, monkeypatch):
+    module, callback = registered_callback()
+    monkeypatch.setenv("HERMES_RTK_METRICS_FILE", str(tmp_path / "rtk.prom"))
+
+    with mock.patch.object(
+        module.subprocess,
+        "run",
+        return_value=FakeCompletedProcess(returncode=0, stdout="rtk git status\n"),
+    ):
+        callback(tool_name="terminal", args={"command": "git status"})
+
+    metrics = (tmp_path / "rtk.prom").read_text()
+    assert "hermes_rtk_rewrite_attempts_total 1" in metrics
+    assert "hermes_rtk_rewrites_total 1" in metrics
+    assert 'hermes_rtk_rewrite_events_total{command="git",event="rewrite"} 1' in metrics
+    assert "hermes_rtk_binary_available 1" in metrics
 
 
 def test_manifest_exists_and_declares_pre_tool_hook():
