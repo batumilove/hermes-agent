@@ -160,6 +160,17 @@ TOOLSETS = {
         "tools": ["terminal", "process"],
         "includes": []
     },
+
+    "herdr": {
+        "description": "Herdr orchestration tools for persistent agent panes",
+        "tools": [
+            "herdr_agent_start",
+            "herdr_pane_read",
+            "herdr_wait_status",
+            "herdr_approval",
+        ],
+        "includes": [],
+    },
     
     "moa": {
         "description": "Advanced reasoning and problem-solving tools",
