@@ -142,6 +142,7 @@ def test_run_prompt_waits_working_idle_then_settles_and_reads(monkeypatch):
         herdr_tools.herdr_run_prompt(
             "pane1",
             "do it",
+            pre_send_settle_seconds=0.5,
             wait_working_ms=1000,
             wait_idle_ms=2000,
             settle_seconds=1.5,
@@ -154,6 +155,7 @@ def test_run_prompt_waits_working_idle_then_settles_and_reads(monkeypatch):
     assert result["matched_expect"] is True
     assert result["output"] == "...FINAL_TOKEN..."
     assert calls == [
+        ("sleep", 0.5),
         ("send", "pane1", "do it", True),
         ("wait", "pane1", "working", 1000),
         ("wait", "pane1", "idle", 2000),

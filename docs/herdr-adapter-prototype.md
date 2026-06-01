@@ -51,11 +51,12 @@ Use this to feed prompts/follow-ups into spawned interactive agents.
 
 `herdr_run_prompt` composes send/wait/read safely:
 
-1. `herdr_pane_send_text(..., submit=True)`
-2. wait for `working`
-3. wait for `idle`
-4. sleep briefly to let the final render flush
-5. read with `recent-unwrapped`
+1. optional pre-send settle for freshly spawned panes
+2. `herdr_pane_send_text(..., submit=True)`
+3. wait for `working`
+4. wait for `idle`
+5. sleep briefly to let the final render flush
+6. read with `recent-unwrapped`
 
 This avoids the observed race where `idle` is emitted before the final answer is visible in `pane read`.
 

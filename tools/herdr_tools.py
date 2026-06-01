@@ -162,11 +162,15 @@ def herdr_run_prompt(
     text: str,
     wait_working_ms: int = 30000,
     wait_idle_ms: int = 60000,
+    pre_send_settle_seconds: float = 0.0,
     settle_seconds: float = 2.0,
     lines: int = 400,
     expect: str | None = None,
 ) -> str:
     """Submit a prompt, wait for Herdr status transitions, settle, then read output."""
+    if pre_send_settle_seconds > 0:
+        time.sleep(pre_send_settle_seconds)
+
     sent = json.loads(herdr_pane_send_text(pane_id, text, submit=True))
     if not sent.get("success"):
         return _json_result(success=False, stage="send", pane_id=pane_id, send=sent)
@@ -356,6 +360,7 @@ registry.register(
                 "text": {"type": "string"},
                 "wait_working_ms": {"type": "integer", "default": 30000},
                 "wait_idle_ms": {"type": "integer", "default": 60000},
+                "pre_send_settle_seconds": {"type": "number", "default": 0.0},
                 "settle_seconds": {"type": "number", "default": 2.0},
                 "lines": {"type": "integer", "default": 400},
                 "expect": {"type": "string", "description": "Optional token expected in final output."},
@@ -368,6 +373,7 @@ registry.register(
         text=args.get("text", ""),
         wait_working_ms=args.get("wait_working_ms", 30000),
         wait_idle_ms=args.get("wait_idle_ms", 60000),
+        pre_send_settle_seconds=args.get("pre_send_settle_seconds", 0.0),
         settle_seconds=args.get("settle_seconds", 2.0),
         lines=args.get("lines", 400),
         expect=args.get("expect"),
