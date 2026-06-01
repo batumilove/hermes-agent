@@ -38,6 +38,15 @@ herdr pane read <pane_id> --source recent-unwrapped --lines <N>
 
 Use `recent-unwrapped` by default. Plain `recent` wraps output and produced false negatives during 12-pane stress tests.
 
+### Send text
+
+```bash
+herdr pane send-text <pane_id> <text>
+herdr pane send-keys <pane_id> Enter   # optional submit
+```
+
+Use this to feed prompts/follow-ups into spawned interactive agents.
+
 ### Wait
 
 ```bash
@@ -69,6 +78,7 @@ The first in-repo prototype is `tools/herdr_tools.py`, exposed as an opt-in `her
 
 - `herdr_agent_start`
 - `herdr_pane_read`
+- `herdr_pane_send_text`
 - `herdr_wait_status`
 - `herdr_approval`
 

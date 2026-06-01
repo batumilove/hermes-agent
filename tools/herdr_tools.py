@@ -129,6 +129,33 @@ def herdr_pane_read(
     return _json_result(success=True, pane_id=pane_id, output=proc.stdout)
 
 
+def herdr_pane_send_text(
+    pane_id: str,
+    text: str,
+    submit: bool = False,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+) -> str:
+    """Send text to a Herdr pane, optionally pressing Enter afterwards."""
+    if not pane_id:
+        return _json_result(success=False, error="pane_id is required")
+    proc = _run_herdr(["pane", "send-text", pane_id, text or ""], timeout=timeout)
+    enter_proc = None
+    if proc.returncode == 0 and submit:
+        enter_proc = _run_herdr(["pane", "send-keys", pane_id, "Enter"], timeout=timeout)
+    success = proc.returncode == 0 and (enter_proc is None or enter_proc.returncode == 0)
+    return _json_result(
+        success=success,
+        pane_id=pane_id,
+        submitted=submit,
+        stdout=proc.stdout,
+        stderr=proc.stderr,
+        exit_code=proc.returncode,
+        enter_stdout=enter_proc.stdout if enter_proc else "",
+        enter_stderr=enter_proc.stderr if enter_proc else "",
+        enter_exit_code=enter_proc.returncode if enter_proc else None,
+    )
+
+
 def herdr_wait_status(
     pane_id: str,
     status: str,
@@ -246,6 +273,32 @@ registry.register(
     check_fn=check_herdr_requirements,
     description="Read Herdr pane",
     emoji="📖",
+)
+
+registry.register(
+    name="herdr_pane_send_text",
+    toolset="herdr",
+    schema={
+        "name": "herdr_pane_send_text",
+        "description": "Send text to a Herdr pane and optionally press Enter to submit it.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pane_id": {"type": "string"},
+                "text": {"type": "string"},
+                "submit": {"type": "boolean", "default": False},
+            },
+            "required": ["pane_id", "text"],
+        },
+    },
+    handler=lambda args, **kw: herdr_pane_send_text(
+        pane_id=args.get("pane_id", ""),
+        text=args.get("text", ""),
+        submit=args.get("submit", False),
+    ),
+    check_fn=check_herdr_requirements,
+    description="Send text to Herdr pane",
+    emoji="⌨️",
 )
 
 registry.register(

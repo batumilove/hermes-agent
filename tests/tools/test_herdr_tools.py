@@ -96,6 +96,26 @@ def test_read_uses_recent_unwrapped_by_default(monkeypatch):
     assert result == {"success": True, "pane_id": "pane1", "output": "hello\n"}
 
 
+def test_send_text_can_submit_enter(monkeypatch):
+    from tools import herdr_tools
+
+    seen = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(herdr_tools.subprocess, "run", fake_run)
+
+    result = json.loads(herdr_tools.herdr_pane_send_text("pane1", "hello", submit=True))
+
+    assert result["success"] is True
+    assert seen == [
+        ["herdr", "pane", "send-text", "pane1", "hello"],
+        ["herdr", "pane", "send-keys", "pane1", "Enter"],
+    ]
+
+
 def test_approval_deny_sends_down_down_down_enter(monkeypatch):
     from tools import herdr_tools
 
@@ -128,6 +148,7 @@ def test_herdr_toolset_resolves_to_adapter_tools():
     assert set(resolve_toolset("herdr")) == {
         "herdr_agent_start",
         "herdr_pane_read",
+        "herdr_pane_send_text",
         "herdr_wait_status",
         "herdr_approval",
     }
