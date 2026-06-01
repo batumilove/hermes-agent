@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import time
 from typing import Any
 
 from tools.registry import registry
@@ -156,6 +157,47 @@ def herdr_pane_send_text(
     )
 
 
+def herdr_run_prompt(
+    pane_id: str,
+    text: str,
+    wait_working_ms: int = 30000,
+    wait_idle_ms: int = 60000,
+    settle_seconds: float = 2.0,
+    lines: int = 400,
+    expect: str | None = None,
+) -> str:
+    """Submit a prompt, wait for Herdr status transitions, settle, then read output."""
+    sent = json.loads(herdr_pane_send_text(pane_id, text, submit=True))
+    if not sent.get("success"):
+        return _json_result(success=False, stage="send", pane_id=pane_id, send=sent)
+
+    working = json.loads(herdr_wait_status(pane_id, "working", timeout_ms=wait_working_ms))
+    if not working.get("success"):
+        return _json_result(success=False, stage="wait_working", pane_id=pane_id, send=sent, working=working)
+
+    idle = json.loads(herdr_wait_status(pane_id, "idle", timeout_ms=wait_idle_ms))
+    if not idle.get("success"):
+        return _json_result(success=False, stage="wait_idle", pane_id=pane_id, send=sent, working=working, idle=idle)
+
+    if settle_seconds > 0:
+        time.sleep(settle_seconds)
+
+    read = json.loads(herdr_pane_read(pane_id, lines=lines))
+    output = read.get("output", "") if read.get("success") else ""
+    matched = expect in output if expect else None
+    return _json_result(
+        success=read.get("success", False) and (matched is not False),
+        stage="complete" if read.get("success") else "read",
+        pane_id=pane_id,
+        matched_expect=matched,
+        output=output,
+        send=sent,
+        working=working,
+        idle=idle,
+        read=read,
+    )
+
+
 def herdr_wait_status(
     pane_id: str,
     status: str,
@@ -299,6 +341,40 @@ registry.register(
     check_fn=check_herdr_requirements,
     description="Send text to Herdr pane",
     emoji="⌨️",
+)
+
+registry.register(
+    name="herdr_run_prompt",
+    toolset="herdr",
+    schema={
+        "name": "herdr_run_prompt",
+        "description": "Submit a prompt to a Herdr pane, wait working→idle, settle briefly, then read output.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pane_id": {"type": "string"},
+                "text": {"type": "string"},
+                "wait_working_ms": {"type": "integer", "default": 30000},
+                "wait_idle_ms": {"type": "integer", "default": 60000},
+                "settle_seconds": {"type": "number", "default": 2.0},
+                "lines": {"type": "integer", "default": 400},
+                "expect": {"type": "string", "description": "Optional token expected in final output."},
+            },
+            "required": ["pane_id", "text"],
+        },
+    },
+    handler=lambda args, **kw: herdr_run_prompt(
+        pane_id=args.get("pane_id", ""),
+        text=args.get("text", ""),
+        wait_working_ms=args.get("wait_working_ms", 30000),
+        wait_idle_ms=args.get("wait_idle_ms", 60000),
+        settle_seconds=args.get("settle_seconds", 2.0),
+        lines=args.get("lines", 400),
+        expect=args.get("expect"),
+    ),
+    check_fn=check_herdr_requirements,
+    description="Run prompt in Herdr pane",
+    emoji="▶️",
 )
 
 registry.register(

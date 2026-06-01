@@ -47,6 +47,18 @@ herdr pane send-keys <pane_id> Enter   # optional submit
 
 Use this to feed prompts/follow-ups into spawned interactive agents.
 
+### Run prompt helper
+
+`herdr_run_prompt` composes send/wait/read safely:
+
+1. `herdr_pane_send_text(..., submit=True)`
+2. wait for `working`
+3. wait for `idle`
+4. sleep briefly to let the final render flush
+5. read with `recent-unwrapped`
+
+This avoids the observed race where `idle` is emitted before the final answer is visible in `pane read`.
+
 ### Wait
 
 ```bash
@@ -79,6 +91,7 @@ The first in-repo prototype is `tools/herdr_tools.py`, exposed as an opt-in `her
 - `herdr_agent_start`
 - `herdr_pane_read`
 - `herdr_pane_send_text`
+- `herdr_run_prompt`
 - `herdr_wait_status`
 - `herdr_approval`
 

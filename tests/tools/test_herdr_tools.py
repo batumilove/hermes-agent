@@ -116,6 +116,52 @@ def test_send_text_can_submit_enter(monkeypatch):
     ]
 
 
+def test_run_prompt_waits_working_idle_then_settles_and_reads(monkeypatch):
+    from tools import herdr_tools
+
+    calls = []
+
+    def fake_send(pane_id, text, submit=True, timeout=60):
+        calls.append(("send", pane_id, text, submit))
+        return json.dumps({"success": True})
+
+    def fake_wait(pane_id, status, timeout_ms=30000, timeout=None):
+        calls.append(("wait", pane_id, status, timeout_ms))
+        return json.dumps({"success": True, "status": status})
+
+    def fake_read(pane_id, lines=200, source="recent-unwrapped", timeout=60):
+        calls.append(("read", pane_id, lines, source))
+        return json.dumps({"success": True, "output": "...FINAL_TOKEN..."})
+
+    monkeypatch.setattr(herdr_tools, "herdr_pane_send_text", fake_send)
+    monkeypatch.setattr(herdr_tools, "herdr_wait_status", fake_wait)
+    monkeypatch.setattr(herdr_tools, "herdr_pane_read", fake_read)
+    monkeypatch.setattr(herdr_tools.time, "sleep", lambda seconds: calls.append(("sleep", seconds)))
+
+    result = json.loads(
+        herdr_tools.herdr_run_prompt(
+            "pane1",
+            "do it",
+            wait_working_ms=1000,
+            wait_idle_ms=2000,
+            settle_seconds=1.5,
+            lines=321,
+            expect="FINAL_TOKEN",
+        )
+    )
+
+    assert result["success"] is True
+    assert result["matched_expect"] is True
+    assert result["output"] == "...FINAL_TOKEN..."
+    assert calls == [
+        ("send", "pane1", "do it", True),
+        ("wait", "pane1", "working", 1000),
+        ("wait", "pane1", "idle", 2000),
+        ("sleep", 1.5),
+        ("read", "pane1", 321, "recent-unwrapped"),
+    ]
+
+
 def test_approval_deny_sends_down_down_down_enter(monkeypatch):
     from tools import herdr_tools
 
@@ -149,6 +195,7 @@ def test_herdr_toolset_resolves_to_adapter_tools():
         "herdr_agent_start",
         "herdr_pane_read",
         "herdr_pane_send_text",
+        "herdr_run_prompt",
         "herdr_wait_status",
         "herdr_approval",
     }

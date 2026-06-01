@@ -167,6 +167,7 @@ TOOLSETS = {
             "herdr_agent_start",
             "herdr_pane_read",
             "herdr_pane_send_text",
+            "herdr_run_prompt",
             "herdr_wait_status",
             "herdr_approval",
         ],
