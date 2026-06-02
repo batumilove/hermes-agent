@@ -1,0 +1,87 @@
+"""Summaries for context-efficiency telemetry JSONL logs."""
+
+from __future__ import annotations
+
+import json
+from collections import defaultdict
+from pathlib import Path
+from statistics import mean
+from typing import Any, Iterable
+
+from agent.context_efficiency import DEFAULT_LOG_PATH
+from hermes_constants import get_hermes_home
+
+
+def resolve_input_path(path: str | None = None) -> Path:
+    candidate = Path(path or DEFAULT_LOG_PATH).expanduser()
+    if not candidate.is_absolute():
+        candidate = get_hermes_home() / candidate
+    return candidate
+
+
+def load_events(path: str | Path, *, limit: int | None = None) -> list[dict[str, Any]]:
+    p = Path(path).expanduser()
+    if not p.exists():
+        return []
+    lines = p.read_text(encoding="utf-8").splitlines()
+    if limit and limit > 0:
+        lines = lines[-limit:]
+    events: list[dict[str, Any]] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    return events
+
+
+def summarize_events(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    total = 0
+    for event in events:
+        total += 1
+        grouped[str(event.get("route") or "unknown")].append(event)
+
+    routes: list[dict[str, Any]] = []
+    for route, items in sorted(grouped.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        durations = [float(e.get("duration_s") or 0.0) for e in items]
+        result_chars = [int(e.get("result_chars") or 0) for e in items]
+        errors = sum(1 for e in items if e.get("is_error"))
+        sessions = {str(e.get("session_id") or "") for e in items if e.get("session_id")}
+        routes.append(
+            {
+                "route": route,
+                "calls": len(items),
+                "errors": errors,
+                "error_rate": round(errors / len(items), 4) if items else 0.0,
+                "avg_duration_s": round(mean(durations), 3) if durations else 0.0,
+                "avg_result_chars": round(mean(result_chars), 1) if result_chars else 0.0,
+                "sessions": len(sessions),
+            }
+        )
+    return {"events": total, "routes": routes}
+
+
+def format_summary(summary: dict[str, Any]) -> str:
+    lines = [f"Context efficiency telemetry: {summary.get('events', 0)} event(s)"]
+    routes = summary.get("routes") or []
+    if not routes:
+        lines.append("No route events found.")
+        return "\n".join(lines)
+    for row in routes:
+        lines.append(
+            "- {route}: calls={calls}, errors={errors}, avg_duration={avg_duration_s}s, "
+            "avg_result_chars={avg_result_chars}, sessions={sessions}".format(**row)
+        )
+    return "\n".join(lines)
+
+
+def build_report(path: str | None = None, *, limit: int | None = None) -> str:
+    p = resolve_input_path(path)
+    events = load_events(p, limit=limit)
+    header = f"Source: {p}"
+    return header + "\n" + format_summary(summarize_events(events))
