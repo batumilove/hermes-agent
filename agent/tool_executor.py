@@ -44,6 +44,7 @@ from tools.tool_result_storage import (
     maybe_persist_tool_result,
     enforce_turn_budget,
 )
+from agent.context_efficiency import record_tool_route
 
 logger = logging.getLogger(__name__)
 
@@ -449,6 +450,14 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             # `blocked` calls never actually ran — don't let a guardrail
             # block count as either a failure or a success.
             if not blocked:
+                record_tool_route(
+                    agent,
+                    function_name,
+                    function_args,
+                    function_result,
+                    tool_duration,
+                    is_error=is_error,
+                )
                 try:
                     agent._record_file_mutation_result(
                         function_name, function_args, function_result, is_error,
@@ -909,6 +918,15 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
         else:
             logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, _result_len)
+        if not _execution_blocked:
+            record_tool_route(
+                agent,
+                function_name,
+                function_args,
+                function_result,
+                tool_duration,
+                is_error=_is_error_result,
+            )
 
         # Track file-mutation outcome for the turn-end verifier.  See
         # the concurrent path for the rationale; both paths must feed

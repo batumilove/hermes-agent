@@ -1521,6 +1521,22 @@ DEFAULT_CONFIG = {
         "engine": "compressor",
     },
 
+    # Canary telemetry for learning a deployment-specific context Efficiency
+    # Frontier. Disabled by default and observational only: it logs selected
+    # context-route tool calls without changing routing decisions.
+    "context_efficiency": {
+        "enabled": False,
+        "log_path": "logs/context_efficiency.jsonl",
+        "routes": [
+            "session_search", "memory",
+            "honcho_profile", "honcho_search", "honcho_reasoning", "honcho_context", "honcho_conclude",
+            "lcm_grep", "lcm_load_session", "lcm_describe", "lcm_expand", "lcm_expand_query",
+            "web_search", "web_extract", "read_file", "search_files",
+        ],
+        "max_arg_chars": 500,
+        "max_result_chars": 500,
+    },
+
     # Persistent memory -- bounded curated memory injected into system prompt
     "memory": {
         "memory_enabled": True,

@@ -1055,6 +1055,14 @@ def init_agent(
         )
     except Exception as _tlg_err:
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
+    try:
+        from agent.context_efficiency import normalize_config as _normalize_context_efficiency_config
+        agent._context_efficiency_config = _normalize_context_efficiency_config(
+            _agent_cfg.get("context_efficiency", {})
+        )
+    except Exception as _cef_err:
+        agent._context_efficiency_config = {"enabled": False}
+        _ra().logger.warning("Context efficiency config ignored: %s", _cef_err)
     # Cache only the derived auxiliary compression context override that is
     # needed later by the startup feasibility check.  Avoid exposing a
     # broad pseudo-public config object on the agent instance.
