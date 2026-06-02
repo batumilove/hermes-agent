@@ -5,13 +5,55 @@ from hermes_cli.status import show_status
 
 def test_show_status_includes_tavily_key(monkeypatch, capsys, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("TAVILY_API_KEY", "tvly-1234567890abcdef")
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-1...cdef")
 
     show_status(SimpleNamespace(all=False, deep=False))
 
     output = capsys.readouterr().out
     assert "Tavily" in output
     assert "tvly...cdef" in output
+
+
+def test_show_status_messaging_uses_systemd_user_env(monkeypatch, capsys, tmp_path):
+    from hermes_cli import status as status_mod
+    import hermes_cli.auth as auth_mod
+    import hermes_cli.gateway as gateway_mod
+
+    monkeypatch.setattr(status_mod, "get_env_path", lambda: tmp_path / ".env", raising=False)
+    monkeypatch.setattr(status_mod, "get_hermes_home", lambda: tmp_path, raising=False)
+    monkeypatch.setattr(status_mod, "load_config", lambda: {"model": "gpt-5.5"}, raising=False)
+    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "openai-codex", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "openai-codex", raising=False)
+    monkeypatch.setattr(status_mod, "provider_label", lambda provider: "OpenAI Codex", raising=False)
+    monkeypatch.setattr(auth_mod, "get_nous_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_codex_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_qwen_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_minimax_oauth_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda exclude_pids=None: [], raising=False)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
+    monkeypatch.setattr(status_mod, "_SYSTEMD_USER_ENV_CACHE", None, raising=False)
+
+    real_run = status_mod.subprocess.run
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd == ["systemctl", "--user", "show-environment"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="TELEGRAM_BOT_TOKEN=123456:token\nTELEGRAM_HOME_CHANNEL=407304892\n",
+                stderr="",
+            )
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(status_mod.subprocess, "run", fake_run)
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Telegram" in output
+    assert "configured (home: 407304892)" in output
+    assert "123456:token" not in output
 
 
 def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys, tmp_path):

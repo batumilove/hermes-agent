@@ -86,7 +86,51 @@ def _effective_provider_label() -> str:
     return provider_label(effective)
 
 
+_SYSTEMD_USER_ENV_CACHE: dict[str, str] | None = None
+
+
+def _systemd_user_env() -> dict[str, str]:
+    """Return systemd --user manager environment without exposing values.
+
+    Gateway installs may inject secrets into the user manager environment at
+    service start (for example via Infisical ExecStartPre). A normal
+    `hermes status` process launched later does not necessarily inherit those
+    variables, so platform status should consult the manager environment too.
+    """
+    global _SYSTEMD_USER_ENV_CACHE
+    if _SYSTEMD_USER_ENV_CACHE is not None:
+        return _SYSTEMD_USER_ENV_CACHE
+    _SYSTEMD_USER_ENV_CACHE = {}
+    if _is_termux():
+        return _SYSTEMD_USER_ENV_CACHE
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "show-environment"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except Exception:
+        return _SYSTEMD_USER_ENV_CACHE
+    if result.returncode != 0:
+        return _SYSTEMD_USER_ENV_CACHE
+    for line in result.stdout.splitlines():
+        if not line or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key:
+            _SYSTEMD_USER_ENV_CACHE[key] = value
+    return _SYSTEMD_USER_ENV_CACHE
+
+
+def _status_env_value(name: str) -> str:
+    """Resolve env vars for status from process, .env, then systemd manager."""
+    return os.getenv(name) or get_env_value(name) or _systemd_user_env().get(name, "")
+
+
 from hermes_constants import is_termux as _is_termux
+
 
 
 def show_status(args):
@@ -442,15 +486,15 @@ def show_status(args):
     }
 
     for name, (token_var, home_var) in platforms.items():
-        token = os.getenv(token_var, "")
+        token = _status_env_value(token_var)
         has_token = bool(token)
         
         home_channel = ""
         if home_var:
-            home_channel = os.getenv(home_var, "")
+            home_channel = _status_env_value(home_var)
         # Back-compat: QQBot home channel was renamed from QQ_HOME_CHANNEL to QQBOT_HOME_CHANNEL
         if not home_channel and home_var == "QQBOT_HOME_CHANNEL":
-            home_channel = os.getenv("QQ_HOME_CHANNEL", "")
+            home_channel = _status_env_value("QQ_HOME_CHANNEL")
         
         status = "configured" if has_token else "not configured"
         if home_channel:
