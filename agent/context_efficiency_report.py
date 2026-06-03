@@ -52,6 +52,8 @@ def summarize_events(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
         result_chars = [int(e.get("result_chars") or 0) for e in items]
         errors = sum(1 for e in items if e.get("is_error"))
         sessions = {str(e.get("session_id") or "") for e in items if e.get("session_id")}
+        advisor_events = [e for e in items if e.get("advisor_family")]
+        advisor_mismatches = sum(1 for e in advisor_events if e.get("advisor_match") is False)
         routes.append(
             {
                 "route": route,
@@ -61,6 +63,8 @@ def summarize_events(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
                 "avg_duration_s": round(mean(durations), 3) if durations else 0.0,
                 "avg_result_chars": round(mean(result_chars), 1) if result_chars else 0.0,
                 "sessions": len(sessions),
+                "advisor_mismatches": advisor_mismatches,
+                "advisor_mismatch_rate": round(advisor_mismatches / len(advisor_events), 4) if advisor_events else 0.0,
             }
         )
     return {"events": total, "routes": routes}
@@ -73,9 +77,12 @@ def format_summary(summary: dict[str, Any]) -> str:
         lines.append("No route events found.")
         return "\n".join(lines)
     for row in routes:
+        advisor_suffix = ""
+        if row.get("advisor_mismatches"):
+            advisor_suffix = ", advisor_mismatches={advisor_mismatches} ({advisor_mismatch_rate})".format(**row)
         lines.append(
-            "- {route}: calls={calls}, errors={errors}, avg_duration={avg_duration_s}s, "
-            "avg_result_chars={avg_result_chars}, sessions={sessions}".format(**row)
+            ("- {route}: calls={calls}, errors={errors}, avg_duration={avg_duration_s}s, "
+             "avg_result_chars={avg_result_chars}, sessions={sessions}" + advisor_suffix).format(**row)
         )
     return "\n".join(lines)
 

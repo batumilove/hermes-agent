@@ -14,8 +14,8 @@ def test_load_events_skips_invalid_lines(tmp_path):
 
 def test_summarize_events_groups_routes_and_error_rate():
     summary = summarize_events([
-        {"route": "session_search", "duration_s": 0.1, "result_chars": 100, "session_id": "a"},
-        {"route": "session_search", "duration_s": 0.3, "result_chars": 300, "session_id": "a", "is_error": True},
+        {"route": "session_search", "duration_s": 0.1, "result_chars": 100, "session_id": "a", "advisor_family": "session_search", "advisor_match": True},
+        {"route": "session_search", "duration_s": 0.3, "result_chars": 300, "session_id": "a", "is_error": True, "advisor_family": "web", "advisor_match": False},
         {"route": "memory", "duration_s": 1.0, "result_chars": 50, "session_id": "b"},
     ])
 
@@ -26,6 +26,8 @@ def test_summarize_events_groups_routes_and_error_rate():
     assert by_route["session_search"]["error_rate"] == 0.5
     assert by_route["session_search"]["avg_duration_s"] == 0.2
     assert by_route["session_search"]["avg_result_chars"] == 200.0
+    assert by_route["session_search"]["advisor_mismatches"] == 1
+    assert by_route["session_search"]["advisor_mismatch_rate"] == 0.5
     assert by_route["memory"]["sessions"] == 1
 
 

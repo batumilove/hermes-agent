@@ -758,12 +758,14 @@ def run_conversation(
         agent._interrupt_message = None
         agent._interrupt_thread_signal_pending = False
 
+    _turn_msg = original_user_message if isinstance(original_user_message, str) else ""
+    agent._context_efficiency_user_message = _turn_msg
+
     # Notify memory providers of the new turn so cadence tracking works.
     # Must happen BEFORE prefetch_all() so providers know which turn it is
     # and can gate context/dialectic refresh via contextCadence/dialecticCadence.
     if agent._memory_manager:
         try:
-            _turn_msg = original_user_message if isinstance(original_user_message, str) else ""
             agent._memory_manager.on_turn_start(agent._user_turn_count, _turn_msg)
         except Exception:
             pass

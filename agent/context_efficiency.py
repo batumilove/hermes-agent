@@ -41,6 +41,14 @@ CONTEXT_ROUTE_TOOLS = frozenset(
 )
 DEFAULT_LOG_PATH = "logs/context_efficiency.jsonl"
 
+ROUTE_ADVISOR_FAMILIES: dict[str, tuple[str, ...]] = {
+    "session_search": ("session_search",),
+    "durable_memory": ("memory", "memory_*", "honcho_profile", "honcho_search", "honcho_reasoning", "honcho_context"),
+    "current_session_lcm": ("lcm_grep", "lcm_load_session", "lcm_describe", "lcm_expand", "lcm_expand_query"),
+    "web": ("web_search", "web_extract"),
+    "file": ("search_files", "read_file"),
+}
+
 
 def is_context_route_tool(tool_name: str, routes: Iterable[object] | None = None) -> bool:
     """Return whether ``tool_name`` should be logged as a context route.
@@ -75,13 +83,51 @@ def normalize_config(config: Mapping[str, Any] | None) -> dict[str, Any]:
         max_result_chars = int(raw.get("max_result_chars", 500))
     except Exception:
         max_result_chars = 500
+    advisor = raw.get("advisor", {}) if isinstance(raw.get("advisor", {}), Mapping) else {}
     return {
         "enabled": bool(raw.get("enabled", False)),
         "routes": frozenset(str(item) for item in routes),
         "log_path": str(raw.get("log_path") or DEFAULT_LOG_PATH),
         "max_arg_chars": max(0, max_arg_chars),
         "max_result_chars": max(0, max_result_chars),
+        "advisor_enabled": bool(advisor.get("enabled", raw.get("advisor_enabled", True))),
     }
+
+
+def route_family(tool_name: str) -> str:
+    """Return a coarse route family for advisor-vs-actual analysis."""
+    for family, routes in ROUTE_ADVISOR_FAMILIES.items():
+        if is_context_route_tool(tool_name, routes):
+            return family
+    return "other"
+
+
+def advise_context_route(user_message: str | None) -> dict[str, Any]:
+    """Heuristic, read-only route recommendation for context-source selection.
+
+    The advisor is intentionally simple and observational. It does not change
+    tool availability or execution; telemetry compares this recommendation with
+    the route the model actually chose.
+    """
+    text = (user_message or "").strip()
+    lower = text.lower()
+    if not lower:
+        return {"family": "unknown", "routes": [], "reason": "empty_prompt"}
+
+    def has_any(*needles: str) -> bool:
+        return any(needle in lower for needle in needles)
+
+    if has_any("current session", "this session", "lcm", "compressed", "summary", "expand"):
+        return {"family": "current_session_lcm", "routes": ["lcm_grep", "lcm_expand"], "reason": "current_session_or_lcm_keyword"}
+    if has_any("past session", "previous session", "prior session", "session_search", "what did we", "where did we leave", "earlier conversation", "conversation history"):
+        return {"family": "session_search", "routes": ["session_search"], "reason": "past_session_keyword"}
+    if has_any("remember", "memory", "user preference", "durable", "long-term", "honcho", "profile", "canary owner", "owner fact"):
+        return {"family": "durable_memory", "routes": ["memory_*", "honcho_search", "memory"], "reason": "durable_memory_keyword"}
+    if has_any("web", "internet", "current", "latest", "docs", "documentation", "github", "url", "website", "external", "news", "search for"):
+        return {"family": "web", "routes": ["web_search", "web_extract"], "reason": "external_or_current_keyword"}
+    if has_any("repo", "file", "path", "source", "code", "read_file", "search_files", "line", "grep", "find", "locate"):
+        return {"family": "file", "routes": ["search_files", "read_file"], "reason": "repo_file_keyword"}
+    return {"family": "unknown", "routes": [], "reason": "no_heuristic_match"}
 
 
 def resolve_log_path(config: Mapping[str, Any]) -> Path:
@@ -119,6 +165,10 @@ def record_tool_route(agent: Any, tool_name: str, args: Mapping[str, Any] | None
         if not cfg.get("enabled") or not is_context_route_tool(tool_name, cfg.get("routes", CONTEXT_ROUTE_TOOLS)):
             return
         result_text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
+        advisor = advise_context_route(getattr(agent, "_context_efficiency_user_message", "")) if cfg.get("advisor_enabled", True) else {"family": "disabled", "routes": [], "reason": "disabled"}
+        actual_family = route_family(tool_name)
+        recommended_family = str(advisor.get("family") or "unknown")
+        recommended_routes = [str(item) for item in advisor.get("routes", [])]
         event = {
             "ts": time.time(),
             "session_id": getattr(agent, "session_id", "") or "",
@@ -126,6 +176,11 @@ def record_tool_route(agent: Any, tool_name: str, args: Mapping[str, Any] | None
             "model": getattr(agent, "model", "") or "",
             "provider": getattr(agent, "provider", "") or "",
             "route": tool_name,
+            "route_family": actual_family,
+            "advisor_family": recommended_family,
+            "advisor_routes": recommended_routes,
+            "advisor_reason": str(advisor.get("reason") or ""),
+            "advisor_match": recommended_family in ("unknown", "disabled") or recommended_family == actual_family,
             "duration_s": round(float(duration or 0.0), 3),
             "is_error": bool(is_error),
             "arg_hash": _stable_hash(args or {}),

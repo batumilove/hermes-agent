@@ -1535,6 +1535,9 @@ DEFAULT_CONFIG = {
         ],
         "max_arg_chars": 500,
         "max_result_chars": 500,
+        "advisor": {
+            "enabled": True,
+        },
     },
 
     # Persistent memory -- bounded curated memory injected into system prompt
