@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from agent.context_efficiency import normalize_config, record_tool_route, resolve_log_path
+from agent.context_efficiency import is_context_route_tool, normalize_config, record_tool_route, resolve_log_path
 from hermes_cli.config import DEFAULT_CONFIG
 
 
@@ -17,8 +17,16 @@ def test_default_config_disables_context_efficiency_canary():
     cfg = DEFAULT_CONFIG["context_efficiency"]
     assert cfg["enabled"] is False
     assert "session_search" in cfg["routes"]
+    assert "memory_*" in cfg["routes"]
     assert "lcm_expand" in cfg["routes"]
     assert cfg["log_path"] == "logs/context_efficiency.jsonl"
+
+
+def test_context_route_tool_supports_provider_memory_prefix():
+    assert is_context_route_tool("memory_tencentdb_memory_search")
+    assert is_context_route_tool("memory_tencentdb_conversation_search")
+    assert not is_context_route_tool("terminal")
+    assert is_context_route_tool("custom_memory_search", ["custom_*"])
 
 
 def test_normalize_config_accepts_route_csv_and_safe_limits():
@@ -57,6 +65,21 @@ def test_record_tool_route_writes_jsonl_when_enabled(tmp_path):
     assert event["is_error"] is False
     assert event["result_chars"] == len("{\"success\": true}")
     assert "memory routing" in event["arg_preview"]
+
+
+def test_record_tool_route_writes_provider_memory_tool_with_wildcard_route(tmp_path):
+    agent = DummyAgent()
+    agent._context_efficiency_config = normalize_config({
+        "enabled": True,
+        "routes": ["memory_*"],
+        "log_path": str(tmp_path / "frontier.jsonl"),
+    })
+
+    record_tool_route(agent, "memory_tencentdb_memory_search", {"query": "canary"}, {"ok": True}, 0.5)
+
+    event = json.loads((tmp_path / "frontier.jsonl").read_text(encoding="utf-8"))
+    assert event["route"] == "memory_tencentdb_memory_search"
+    assert event["is_error"] is False
 
 
 def test_record_tool_route_ignores_unlisted_routes(tmp_path):

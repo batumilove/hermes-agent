@@ -12,7 +12,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from hermes_constants import get_hermes_home
 
@@ -22,6 +22,7 @@ CONTEXT_ROUTE_TOOLS = frozenset(
     {
         "session_search",
         "memory",
+        "memory_*",
         "honcho_profile",
         "honcho_search",
         "honcho_reasoning",
@@ -38,8 +39,26 @@ CONTEXT_ROUTE_TOOLS = frozenset(
         "search_files",
     }
 )
-
 DEFAULT_LOG_PATH = "logs/context_efficiency.jsonl"
+
+
+def is_context_route_tool(tool_name: str, routes: Iterable[object] | None = None) -> bool:
+    """Return whether ``tool_name`` should be logged as a context route.
+
+    Besides exact route names, a route ending in ``*`` acts as a prefix match.
+    This covers provider/plugin memory tools such as
+    ``memory_tencentdb_memory_search`` without needing every provider-specific
+    tool name in the global defaults.
+    """
+    route_set = routes or CONTEXT_ROUTE_TOOLS
+    try:
+        route_items = [str(item) for item in route_set]
+    except Exception:
+        route_items = list(CONTEXT_ROUTE_TOOLS)
+    name = str(tool_name)
+    if name in route_items:
+        return True
+    return any(item.endswith("*") and name.startswith(item[:-1]) for item in route_items)
 
 
 def normalize_config(config: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -97,7 +116,7 @@ def record_tool_route(agent: Any, tool_name: str, args: Mapping[str, Any] | None
     """
     try:
         cfg = getattr(agent, "_context_efficiency_config", None) or {}
-        if not cfg.get("enabled") or tool_name not in cfg.get("routes", CONTEXT_ROUTE_TOOLS):
+        if not cfg.get("enabled") or not is_context_route_tool(tool_name, cfg.get("routes", CONTEXT_ROUTE_TOOLS)):
             return
         result_text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
         event = {

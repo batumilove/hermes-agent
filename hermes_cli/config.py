@@ -1528,7 +1528,7 @@ DEFAULT_CONFIG = {
         "enabled": False,
         "log_path": "logs/context_efficiency.jsonl",
         "routes": [
-            "session_search", "memory",
+            "session_search", "memory", "memory_*",
             "honcho_profile", "honcho_search", "honcho_reasoning", "honcho_context", "honcho_conclude",
             "lcm_grep", "lcm_load_session", "lcm_describe", "lcm_expand", "lcm_expand_query",
             "web_search", "web_extract", "read_file", "search_files",
