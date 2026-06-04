@@ -34,7 +34,14 @@ Published on every merge to `main` via the existing `deploy-site.yml` GitHub Pag
       ]
     },
     "zai": {
-      "metadata": {},
+      "metadata": {
+        "display_name": "Z.AI / GLM",
+        "auth_type": "api_key",
+        "env_vars": ["GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"],
+        "base_url": "https://api.z.ai/api/paas/v4",
+        "base_url_env_var": "GLM_BASE_URL",
+        "transport": "openai_chat"
+      },
       "models": [
         {"id": "glm-5.1"},
         {"id": "glm-5"}
@@ -54,7 +61,7 @@ Published on every merge to `main` via the existing `deploy-site.yml` GitHub Pag
 Field notes:
 
 - **`version`** — integer schema version. Future schemas bump this; Hermes refuses manifests with versions it doesn't understand and falls back to the hardcoded snapshot.
-- **`metadata`** — free-form dict at the manifest, provider, and model level. Any keys. Hermes ignores unknown fields, so you can annotate entries (`"tier": "paid"`, `"tags": [...]`, etc.) without coordinating a schema change.
+- **`metadata`** — free-form dict at the manifest, provider, and model level. The generated provider metadata intentionally contains only non-secret configuration shape: `display_name`, `description`, `signup_url`, `auth_type`, env var names, base URL override env var, default base URL, transport, aggregator flag, and `dynamic_models` for providers discovered live instead of curated statically. Hermes ignores unknown fields, so you can annotate entries (`"tier": "paid"`, `"tags": [...]`, etc.) without coordinating a schema change.
 - **`description`** — optional. OpenRouter uses it for picker badge text (`"recommended"`, `"free"`, or empty). Other provider blocks usually omit it. Nous Portal free-tier gating is determined live from the Portal's pricing endpoint.
 - **Pricing and context length** are NOT in the manifest. Those come from live provider APIs (`/v1/models` endpoints, models.dev) at fetch time.
 
