@@ -158,6 +158,22 @@ def summarize_events(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
             }
         )
 
+    mismatch_items = [e for e in advisor_events if e.get("advisor_match") is False]
+    mismatch_sessions = []
+    session_items: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for event in mismatch_items:
+        session_items[str(event.get("session_id") or "unknown")].append(event)
+    for session_id, items in sorted(session_items.items(), key=lambda kv: (-len(kv[1]), kv[0]))[:10]:
+        mismatch_sessions.append(
+            {
+                "session_id": session_id,
+                "events": len(items),
+                "advisor_families": dict(Counter(str(e.get("advisor_family") or "unknown") for e in items).most_common(5)),
+                "route_families": dict(Counter(_route_family(e) for e in items).most_common(5)),
+                "routes": dict(Counter(str(e.get("route") or "unknown") for e in items).most_common(5)),
+            }
+        )
+
     family_items: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for event in advisor_events:
         family_items[str(event.get("advisor_family"))].append(event)
@@ -178,6 +194,7 @@ def summarize_events(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "mismatches": total_mismatches,
         "mismatch_rate": round(total_mismatches / len(advisor_events), 4) if advisor_events else 0.0,
         "by_family": advisor_by_family,
+        "mismatch_sessions": mismatch_sessions,
     }
     return {"events": total, "advisor": advisor, "families": families, "routes": routes}
 
@@ -196,6 +213,16 @@ def format_summary(summary: dict[str, Any]) -> str:
                 f"  - advisor_family={family}: events={row.get('events', 0)}, "
                 f"mismatches={row.get('mismatches', 0)}, top_actual_routes={route_text}"
             )
+        if advisor.get("mismatch_sessions"):
+            lines.append("Mismatch sessions:")
+            for row in advisor.get("mismatch_sessions") or []:
+                route_text = ",".join(f"{route}:{count}" for route, count in (row.get("routes") or {}).items()) or "none"
+                advisor_text = ",".join(f"{family}:{count}" for family, count in (row.get("advisor_families") or {}).items()) or "none"
+                route_family_text = ",".join(f"{family}:{count}" for family, count in (row.get("route_families") or {}).items()) or "none"
+                lines.append(
+                    f"  - {row.get('session_id', 'unknown')}: events={row.get('events', 0)}, "
+                    f"advisor={advisor_text}, actual_family={route_family_text}, routes={route_text}"
+                )
     families = summary.get("families") or []
     if families:
         lines.append("Route families:")

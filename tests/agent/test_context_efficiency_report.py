@@ -33,6 +33,15 @@ def test_summarize_events_groups_routes_and_error_rate():
     assert summary["advisor"]["mismatches"] == 1
     assert summary["advisor"]["mismatch_rate"] == 0.5
     assert summary["advisor"]["by_family"]["web"]["mismatches"] == 1
+    assert summary["advisor"]["mismatch_sessions"] == [
+        {
+            "session_id": "a",
+            "events": 1,
+            "advisor_families": {"web": 1},
+            "route_families": {"session_search": 1},
+            "routes": {"session_search": 1},
+        }
+    ]
     by_family = {row["route_family"]: row for row in summary["families"]}
     assert by_family["session_search"]["calls"] == 2
     assert by_family["durable_memory"]["calls"] == 1
@@ -91,6 +100,15 @@ def test_format_summary_includes_advisor_rollup_and_mismatch_families():
             "mismatches": 1,
             "mismatch_rate": 0.5,
             "by_family": {"web": {"events": 1, "mismatches": 1, "routes": {"session_search": 1}}},
+            "mismatch_sessions": [
+                {
+                    "session_id": "sess-a",
+                    "events": 1,
+                    "advisor_families": {"web": 1},
+                    "route_families": {"session_search": 1},
+                    "routes": {"session_search": 1},
+                }
+            ],
         },
         "routes": [
             {
@@ -108,6 +126,7 @@ def test_format_summary_includes_advisor_rollup_and_mismatch_families():
 
     assert "Advisor: events=2, mismatches=1 (0.5)" in text
     assert "advisor_family=web: events=1, mismatches=1, top_actual_routes=session_search:1" in text
+    assert "sess-a: events=1, advisor=web:1, actual_family=session_search:1, routes=session_search:1" in text
 
 
 def test_build_report_includes_source_and_route(tmp_path):

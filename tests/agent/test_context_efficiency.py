@@ -37,6 +37,7 @@ def test_route_advisor_classifies_common_context_sources():
     assert advise_context_route("remember the Canary Raven owner fact")["family"] == "durable_memory"
     assert advise_context_route("check current session LCM summary")["family"] == "current_session_lcm"
     assert advise_context_route("search current Hermes docs URL")["family"] == "web"
+    assert advise_context_route("Find the current Hermes Agent configuration docs URL")["family"] == "web"
     assert advise_context_route("check local repo docs for context efficiency telemetry")["family"] == "file"
     assert advise_context_route("find the source file path for this code")["family"] == "file"
     assert advise_context_route("hello")["family"] == "unknown"
