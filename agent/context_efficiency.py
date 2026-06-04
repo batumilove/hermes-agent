@@ -124,10 +124,10 @@ def advise_context_route(user_message: str | None) -> dict[str, Any]:
         return {"family": "session_search", "routes": ["session_search"], "reason": "past_session_keyword"}
     if has_any("remember", "memory", "user preference", "durable", "long-term", "honcho", "profile", "canary owner", "owner fact"):
         return {"family": "durable_memory", "routes": ["memory_*", "honcho_search", "memory"], "reason": "durable_memory_keyword"}
-    if has_any("web", "internet", "current", "latest", "docs", "documentation", "github", "url", "website", "external", "news", "search for"):
-        return {"family": "web", "routes": ["web_search", "web_extract"], "reason": "external_or_current_keyword"}
     if has_any("repo", "file", "path", "source", "code", "read_file", "search_files", "line", "grep", "find", "locate"):
         return {"family": "file", "routes": ["search_files", "read_file"], "reason": "repo_file_keyword"}
+    if has_any("web", "internet", "current", "latest", "docs", "documentation", "github", "url", "website", "external", "news", "search for"):
+        return {"family": "web", "routes": ["web_search", "web_extract"], "reason": "external_or_current_keyword"}
     return {"family": "unknown", "routes": [], "reason": "no_heuristic_match"}
 
 

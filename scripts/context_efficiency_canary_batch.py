@@ -82,7 +82,55 @@ EXPERIMENTAL_CASES: tuple[CanaryCase, ...] = (
     ),
 )
 
+NATURAL_TOOLSETS = ("session_search", "memory", "web", "file", "context_engine")
+
+NATURAL_CASES: tuple[CanaryCase, ...] = (
+    CanaryCase(
+        name="natural-past-decision",
+        family="session_search",
+        toolsets=NATURAL_TOOLSETS,
+        prompt="What did we decide in the previous session about context route advisor telemetry? Answer briefly.",
+    ),
+    CanaryCase(
+        name="natural-user-preference",
+        family="durable_memory",
+        toolsets=NATURAL_TOOLSETS,
+        prompt="What user preference should guide how you report infrastructure verification results? Answer briefly.",
+    ),
+    CanaryCase(
+        name="natural-current-lcm",
+        family="current_session_lcm",
+        toolsets=NATURAL_TOOLSETS,
+        prompt="Check the current session LCM state and summarize it in one sentence.",
+    ),
+    CanaryCase(
+        name="natural-current-docs",
+        family="web",
+        toolsets=NATURAL_TOOLSETS,
+        prompt="Find the current Hermes Agent configuration docs URL and answer with just the URL.",
+    ),
+    CanaryCase(
+        name="natural-repo-file",
+        family="file",
+        toolsets=NATURAL_TOOLSETS,
+        prompt="Where in this repo is the context efficiency report implemented? Answer with the path only.",
+    ),
+    CanaryCase(
+        name="natural-ambiguous-memory-session",
+        family="session_search",
+        toolsets=NATURAL_TOOLSETS,
+        prompt="Where did we leave the memory routing evaluation, and what should happen next? Answer briefly.",
+    ),
+    CanaryCase(
+        name="natural-ambiguous-current-repo-docs",
+        family="file",
+        toolsets=NATURAL_TOOLSETS,
+        prompt="Check the local repo docs for context efficiency telemetry and summarize the relevant instruction.",
+    ),
+)
+
 CASES: tuple[CanaryCase, ...] = STABLE_CASES + EXPERIMENTAL_CASES
+ALL_CASES: tuple[CanaryCase, ...] = CASES + NATURAL_CASES
 
 
 def profile_home(profile: str) -> Path:
@@ -120,13 +168,13 @@ def read_appended(path: Path, before_count: int) -> list[dict[str, object]]:
     return events
 
 
-def select_cases(names: Iterable[str], *, include_experimental: bool = False) -> list[CanaryCase]:
+def select_cases(names: Iterable[str], *, include_experimental: bool = False, natural: bool = False) -> list[CanaryCase]:
     wanted = [name.strip() for name in names if name.strip()]
-    default_cases = CASES if include_experimental else STABLE_CASES
+    default_cases = NATURAL_CASES if natural else (CASES if include_experimental else STABLE_CASES)
     if not wanted or wanted == ["all"]:
         return list(default_cases)
-    by_name = {case.name: case for case in CASES}
-    by_family = {case.family: case for case in CASES}
+    by_name = {case.name: case for case in ALL_CASES}
+    by_family = {case.family: case for case in ALL_CASES}
     selected: list[CanaryCase] = []
     unknown: list[str] = []
     for item in wanted:
@@ -187,13 +235,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--log-path", default=None, help="Telemetry JSONL path; defaults to profile logs/context_efficiency-canary.jsonl")
     parser.add_argument("--case", action="append", default=[], help="Case name or family to run; repeatable; default stable cases")
     parser.add_argument("--include-experimental", action="store_true", help="Include experimental cases such as LCM when --case is omitted/all")
+    parser.add_argument("--natural", action="store_true", help="Run representative unforced prompts with all context toolsets instead of forced-route smoke cases")
     parser.add_argument("--timeout", type=int, default=180, help="Seconds per Hermes one-shot")
     parser.add_argument("--report-limit", type=int, default=20, help="Number of recent events for final report")
     parser.add_argument("--dry-run", action="store_true", help="Print selected commands without running Hermes")
     args = parser.parse_args(argv)
 
     log_path = resolve_log_path(args.profile, args.log_path)
-    cases = select_cases(args.case or ["all"], include_experimental=args.include_experimental)
+    cases = select_cases(args.case or ["all"], include_experimental=args.include_experimental, natural=args.natural)
     before = count_lines(log_path)
     print(f"profile={args.profile}")
     print(f"log_path={log_path}")
