@@ -1,6 +1,6 @@
 import json
 
-from agent.context_efficiency_report import build_report, load_events, summarize_events, format_summary
+from agent.context_efficiency_report import build_report, filter_events, load_events, summarize_events, format_summary
 
 
 def test_load_events_skips_invalid_lines(tmp_path):
@@ -33,6 +33,40 @@ def test_summarize_events_groups_routes_and_error_rate():
     assert summary["advisor"]["mismatches"] == 1
     assert summary["advisor"]["mismatch_rate"] == 0.5
     assert summary["advisor"]["by_family"]["web"]["mismatches"] == 1
+    by_family = {row["route_family"]: row for row in summary["families"]}
+    assert by_family["unknown"]["calls"] == 3
+
+
+def test_filter_events_supports_since_family_and_mismatches_only():
+    events = [
+        {"ts": 10, "route": "session_search", "route_family": "session_search", "advisor_family": "web", "advisor_match": False},
+        {"ts": 20, "route": "web_search", "route_family": "web", "advisor_family": "web", "advisor_match": True},
+        {"ts": 30, "route": "read_file", "route_family": "file", "advisor_family": "file", "advisor_match": True},
+    ]
+
+    assert [e["route"] for e in filter_events(events, since=15)] == ["web_search", "read_file"]
+    assert [e["route"] for e in filter_events(events, family="web")] == ["session_search", "web_search"]
+    assert [e["route"] for e in filter_events(events, mismatches_only=True)] == ["session_search"]
+
+
+def test_build_report_supports_json_and_filters(tmp_path):
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        "\n".join([
+            json.dumps({"ts": 10, "route": "session_search", "route_family": "session_search", "advisor_family": "web", "advisor_match": False}),
+            json.dumps({"ts": 20, "route": "web_search", "route_family": "web", "advisor_family": "web", "advisor_match": True}),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    report = build_report(str(path), family="web", mismatches_only=True)
+    assert "Filters: family=web, mismatches_only=true" in report
+    assert "session_search: calls=1" in report
+    assert "web_search" not in report
+
+    data = json.loads(build_report(str(path), since=15, json_output=True))
+    assert data["events"] == 1
+    assert data["source"] == str(path)
 
 
 def test_format_summary_includes_advisor_rollup_and_mismatch_families():
