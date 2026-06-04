@@ -29,6 +29,7 @@ def test_default_config_disables_context_efficiency_canary():
     assert "lcm_expand" in cfg["routes"]
     assert "lcm_status" in cfg["routes"]
     assert cfg["log_path"] == "logs/context_efficiency.jsonl"
+    assert cfg["previews_enabled"] is False
     assert cfg["advisor"]["enabled"] is True
 
 
@@ -65,11 +66,23 @@ def test_normalize_config_accepts_route_csv_and_safe_limits():
         "routes": "session_search, lcm_expand",
         "max_arg_chars": "12",
         "max_result_chars": "bad",
+        "previews_enabled": True,
     })
     assert cfg["enabled"] is True
     assert cfg["routes"] == {"session_search", "lcm_expand"}
     assert cfg["max_arg_chars"] == 12
     assert cfg["max_result_chars"] == 500
+    assert cfg["previews_enabled"] is True
+
+
+def test_normalize_config_disables_previews_when_limits_are_zero():
+    cfg = normalize_config({
+        "enabled": True,
+        "previews_enabled": True,
+        "max_arg_chars": 0,
+        "max_result_chars": 500,
+    })
+    assert cfg["previews_enabled"] is False
 
 
 def test_record_tool_route_writes_jsonl_when_enabled(tmp_path):
@@ -80,6 +93,7 @@ def test_record_tool_route_writes_jsonl_when_enabled(tmp_path):
         "log_path": str(tmp_path / "frontier.jsonl"),
         "max_arg_chars": 200,
         "max_result_chars": 200,
+        "previews_enabled": True,
     })
 
     record_tool_route(agent, "session_search", {"query": "memory routing"}, "{\"success\": true}", 0.123)
@@ -98,6 +112,35 @@ def test_record_tool_route_writes_jsonl_when_enabled(tmp_path):
     assert event["advisor_family"] == "unknown"
     assert event["advisor_match"] is True
     assert "memory routing" in event["arg_preview"]
+
+
+def test_record_tool_route_omits_previews_by_default_but_keeps_safe_telemetry(tmp_path):
+    agent = DummyAgent()
+    agent._context_efficiency_config = normalize_config({
+        "enabled": True,
+        "routes": ["session_search"],
+        "log_path": str(tmp_path / "frontier.jsonl"),
+        "max_arg_chars": 200,
+        "max_result_chars": 200,
+    })
+
+    record_tool_route(agent, "session_search", {"query": "private routing secret"}, "private result secret", 0.123)
+
+    event = json.loads((tmp_path / "frontier.jsonl").read_text(encoding="utf-8"))
+    assert event["route"] == "session_search"
+    assert event["session_id"] == "sess-1"
+    assert event["duration_s"] == 0.123
+    assert event["is_error"] is False
+    assert event["result_chars"] == len("private result secret")
+    assert event["arg_hash"]
+    assert event["result_hash"]
+    assert event["route_family"] == "session_search"
+    assert event["advisor_family"] == "unknown"
+    assert event["advisor_match"] is True
+    assert event["arg_preview"] == ""
+    assert event["result_preview"] == ""
+    assert "private routing secret" not in json.dumps(event)
+    assert "private result secret" not in json.dumps(event)
 
 
 def test_record_tool_route_writes_provider_memory_tool_with_wildcard_route(tmp_path):

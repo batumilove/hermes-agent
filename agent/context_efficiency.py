@@ -85,12 +85,14 @@ def normalize_config(config: Mapping[str, Any] | None) -> dict[str, Any]:
     except Exception:
         max_result_chars = 500
     advisor = raw.get("advisor", {}) if isinstance(raw.get("advisor", {}), Mapping) else {}
+    previews_enabled = bool(raw.get("previews_enabled", False)) and max_arg_chars > 0 and max_result_chars > 0
     return {
         "enabled": bool(raw.get("enabled", False)),
         "routes": frozenset(str(item) for item in routes),
         "log_path": str(raw.get("log_path") or DEFAULT_LOG_PATH),
         "max_arg_chars": max(0, max_arg_chars),
         "max_result_chars": max(0, max_result_chars),
+        "previews_enabled": previews_enabled,
         "advisor_enabled": bool(advisor.get("enabled", raw.get("advisor_enabled", True))),
     }
 
@@ -170,6 +172,7 @@ def record_tool_route(agent: Any, tool_name: str, args: Mapping[str, Any] | None
         actual_family = route_family(tool_name)
         recommended_family = str(advisor.get("family") or "unknown")
         recommended_routes = [str(item) for item in advisor.get("routes", [])]
+        previews_enabled = bool(cfg.get("previews_enabled", False))
         event = {
             "ts": time.time(),
             "session_id": getattr(agent, "session_id", "") or "",
@@ -186,9 +189,9 @@ def record_tool_route(agent: Any, tool_name: str, args: Mapping[str, Any] | None
             "is_error": bool(is_error),
             "arg_hash": _stable_hash(args or {}),
             "result_hash": _stable_hash(result_text),
-            "arg_preview": _truncate(args or {}, int(cfg.get("max_arg_chars", 500))),
+            "arg_preview": _truncate(args or {}, int(cfg.get("max_arg_chars", 500))) if previews_enabled else "",
             "result_chars": len(result_text),
-            "result_preview": _truncate(result_text, int(cfg.get("max_result_chars", 500))),
+            "result_preview": _truncate(result_text, int(cfg.get("max_result_chars", 500))) if previews_enabled else "",
         }
         path = resolve_log_path(cfg)
         path.parent.mkdir(parents=True, exist_ok=True)
