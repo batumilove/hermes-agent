@@ -503,6 +503,11 @@ class TestManifestMatchesInRepoLists:
         assert "kimi-for-coding" not in providers
         assert "moonshot" not in providers
         assert providers["zai"]["models"][0]["id"] == "glm-5.1"
+        assert all(
+            model["id"] != "kimi-for-coding"
+            for block in providers.values()
+            for model in block.get("models", [])
+        )
         assert providers["zai"]["metadata"]["env_vars"] == [
             "GLM_API_KEY",
             "ZAI_API_KEY",
