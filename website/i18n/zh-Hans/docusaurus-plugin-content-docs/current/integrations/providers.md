@@ -211,7 +211,7 @@ hermes chat --provider zai --model glm-5
 # 需要：~/.hermes/.env 中的 GLM_API_KEY
 
 # Kimi / Moonshot AI（国际版：api.moonshot.ai）
-hermes chat --provider kimi-coding --model kimi-k2.6
+hermes chat --provider kimi-coding --model kimi-for-coding
 # 需要：~/.hermes/.env 中的 KIMI_API_KEY
 
 # Kimi / Moonshot AI（中国版：api.moonshot.cn）

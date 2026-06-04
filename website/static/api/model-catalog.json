@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-06-04T09:11:54Z",
+  "updated_at": "2026-06-04T09:32:01Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -502,7 +502,7 @@
       },
       "models": [
         {
-          "id": "kimi-k2.6"
+          "id": "kimi-for-coding"
         },
         {
           "id": "kimi-k2.5"
@@ -533,7 +533,7 @@
       },
       "models": [
         {
-          "id": "kimi-k2.6"
+          "id": "kimi-for-coding"
         },
         {
           "id": "kimi-k2.5"
