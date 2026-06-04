@@ -15,7 +15,7 @@ The canary must not:
 
 - change model selection, provider selection, tool schemas, enabled toolsets, system prompts, memory injection, compression behavior, or gateway routing;
 - block, reroute, retry, or auto-call tools based on advisor output;
-- write user prompt text, tool arguments, tool results, secrets, or raw memory/session contents beyond the configured bounded telemetry snippets;
+- write user prompt text, secrets, or raw memory/session contents; optional tool-argument/result previews are disabled by default and, when explicitly enabled in an isolated canary, must remain bounded and scrubbed;
 - tune itself online or update config from telemetry;
 - decide whether a response is correct by model judgment alone;
 - replace human review for privacy, gateway behavior, or live-profile promotion.
@@ -27,7 +27,9 @@ Acceptance criteria:
 1. Observational-only behavior is verified from code and tests: `record_tool_route(...)` must swallow telemetry failures and never affect tool execution.
 2. Telemetry writes only to the configured `context_efficiency.log_path` under the active `HERMES_HOME` unless an absolute canary path is explicitly configured.
 3. Logged fields are bounded and scrubbed enough for local analysis:
-   - `prompt_excerpt`, `args_excerpt`, and `result_excerpt` are length-limited by config.
+   - No prompt text is logged; there is no `prompt_excerpt`/`prompt_preview` field.
+   - Optional `arg_preview` and `result_preview` fields are empty strings by default because `context_efficiency.previews_enabled=false`.
+   - `arg_preview` and `result_preview` may contain bounded snippets only when `context_efficiency.previews_enabled=true` is set explicitly in an isolated canary profile, and their lengths are limited by `max_arg_chars` / `max_result_chars`.
    - no API keys, bearer tokens, cookies, authorization headers, private keys, or credential file contents appear in sampled events.
    - no full session transcript, full memory profile, or full tool result is logged.
 4. Telemetry can be deleted by removing the canary JSONL file; no other persistent state is required for the report.
@@ -41,7 +43,7 @@ python -m py_compile agent/context_efficiency.py agent/context_efficiency_report
 python -m pytest tests/agent/test_context_efficiency.py tests/agent/test_context_efficiency_report.py -q
 ```
 
-Manual privacy spot check after a canary run:
+Manual privacy spot check after a canary run. This reads only the canary profile log; do not point it at the default/live profile:
 
 ```bash
 CANARY_HOME="$HOME/.hermes/profiles/context-route-canary"
@@ -63,6 +65,28 @@ PY
 ```
 
 Pass condition: the tests pass, the sampled report is readable, and any secret-pattern hit is explained as field-name prose rather than a secret value. Any actual secret or sensitive full-content leak is an immediate rollback/fail.
+
+Optional preview spot check: only run this against an isolated canary profile after intentionally enabling previews there. The default expected behavior is empty `arg_preview`/`result_preview` fields.
+
+```bash
+CANARY_PROFILE=context-route-canary
+hermes --profile "$CANARY_PROFILE" config set context_efficiency.previews_enabled true
+hermes --profile "$CANARY_PROFILE" config set context_efficiency.max_arg_chars 500
+hermes --profile "$CANARY_PROFILE" config set context_efficiency.max_result_chars 500
+# Run a reviewed canary prompt that calls a context tool, then inspect only this profile-local log.
+export LOG="$HOME/.hermes/profiles/$CANARY_PROFILE/logs/context_efficiency.jsonl"
+python - <<'PY'
+import json, os
+from pathlib import Path
+log = Path(os.environ["LOG"])
+events = [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
+for event in events[-20:]:
+    assert "prompt_excerpt" not in event and "prompt_preview" not in event
+    assert "args_excerpt" not in event and "result_excerpt" not in event
+    assert "arg_preview" in event and "result_preview" in event
+print("preview fields verified in canary log")
+PY
+```
 
 ## Gate 2: 30-50 prompt outcome-eval set
 
@@ -153,9 +177,12 @@ CANARY_PROFILE=context-route-canary
 hermes profile create "$CANARY_PROFILE" --clone repo-pm
 hermes --profile "$CANARY_PROFILE" config set context_efficiency.enabled true
 hermes --profile "$CANARY_PROFILE" config set context_efficiency.log_path logs/context_efficiency.jsonl
+hermes --profile "$CANARY_PROFILE" config set context_efficiency.previews_enabled true
 hermes --profile "$CANARY_PROFILE" config set context_efficiency.max_arg_chars 500
 hermes --profile "$CANARY_PROFILE" config set context_efficiency.max_result_chars 500
 ```
+
+If `context_efficiency.previews_enabled` is omitted or set to false, telemetry should still be written but `arg_preview` and `result_preview` will be empty strings; do not interpret that as a broken report.
 
 Run representative prompts manually or through the eval harness:
 
@@ -179,6 +206,7 @@ CLI canary pass condition:
 
 - Hermes answers normally; no prompt is blocked or rerouted by the advisor.
 - Telemetry appears only in the canary profile log.
+- If previews are expected in the report, the canary profile explicitly sets `context_efficiency.previews_enabled=true`; otherwise preview fields remain empty by design.
 - Report commands produce both human-readable and JSON output.
 - No secret/privacy failure is found in the log spot check.
 - The fixed outcome-eval set meets Gate 2 and Gate 3 thresholds.
