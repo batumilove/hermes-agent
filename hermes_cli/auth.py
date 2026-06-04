@@ -518,11 +518,15 @@ KIMI_CODE_BASE_URL = "https://api.kimi.com/coding"
 def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) -> str:
     """Return the correct Kimi base URL based on the API key prefix.
 
-    If the user has explicitly set KIMI_BASE_URL, that always wins.
-    Otherwise, sk-kimi- prefixed keys route to api.kimi.com/coding/v1.
+    If the user has explicitly set KIMI_BASE_URL, that usually wins.
+    We still normalize the common footgun ``.../coding/v1`` → ``.../coding``
+    because the Anthropic SDK appends its own ``/v1/messages`` suffix.
     """
     if env_override:
-        return env_override
+        normalized = env_override.rstrip("/")
+        if normalized.endswith("/coding/v1"):
+            return normalized.removesuffix("/v1")
+        return normalized
     # No key → nothing to infer from.  Return default without inspecting.
     if not api_key:
         return default_url
