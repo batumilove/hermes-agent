@@ -16,6 +16,35 @@ def test_extract_session_id_from_stderr():
     assert canary.extract_session_id({"stderr": "no session"}) == ""
 
 
+def test_natural_cases_cover_required_families_and_controls():
+    natural = canary.select_cases(["all"], natural=True)
+    families = {case.family for case in natural}
+
+    assert len(natural) >= 30
+    assert {
+        "session_search",
+        "durable_memory",
+        "current_session_lcm",
+        "web",
+        "file",
+        "no_tool",
+    }.issubset(families)
+    assert any("ambiguous" in case.name and case.family == "session_search" for case in natural)
+    assert any("ambiguous" in case.name and case.family == "file" for case in natural)
+    assert any("ambiguous" in case.name and case.family == "web" for case in natural)
+
+
+def test_expand_repetitions_preserves_batch_order():
+    cases = [
+        canary.CanaryCase("web-case", "web", ("web",), "Find current docs URL"),
+        canary.CanaryCase("file-case", "file", ("file",), "Find source path"),
+    ]
+
+    repeated = canary.expand_repetitions(cases, 2)
+
+    assert [case.name for case in repeated] == ["web-case", "file-case", "web-case", "file-case"]
+
+
 def test_summarize_case_outcome_flags_route_family_and_mismatch_review():
     case = canary.CanaryCase("web-case", "web", ("web",), "Find current docs URL")
     result = {"returncode": 0, "stdout": "https://example.test", "stderr": "session_id: sess1"}
@@ -35,18 +64,36 @@ def test_summarize_case_outcome_flags_route_family_and_mismatch_review():
     assert summary["needs_review"] is True
 
 
-def test_summarize_batch_run_groups_appended_events_by_case_session():
+def test_summarize_case_outcome_allows_no_tool_controls_without_events():
+    case = canary.CanaryCase("plain", "no_tool", ("web", "file"), "Explain telemetry")
+    result = {"returncode": 0, "stdout": "observational only", "stderr": "session_id: sess1", "repetition": 2}
+
+    summary = canary.summarize_case_outcome(case, result, [])
+
+    assert summary["repetition"] == 2
+    assert summary["event_count"] == 0
+    assert summary["route_family_ok"] is True
+    assert summary["needs_review"] is False
+
+
+def test_summarize_batch_run_groups_appended_events_by_case_session_and_repeat():
     cases = [
+        canary.CanaryCase("web-case", "web", ("web",), "Find current docs URL"),
+        canary.CanaryCase("file-case", "file", ("file",), "Find source path"),
         canary.CanaryCase("web-case", "web", ("web",), "Find current docs URL"),
         canary.CanaryCase("file-case", "file", ("file",), "Find source path"),
     ]
     results = [
-        {"returncode": 0, "stdout": "url", "stderr": "session_id: s1"},
-        {"returncode": 0, "stdout": "path", "stderr": "session_id: s2"},
+        {"returncode": 0, "stdout": "url", "stderr": "session_id: s1", "repetition": 1},
+        {"returncode": 0, "stdout": "path", "stderr": "session_id: s2", "repetition": 1},
+        {"returncode": 0, "stdout": "url", "stderr": "session_id: s3", "repetition": 2},
+        {"returncode": 0, "stdout": "path", "stderr": "session_id: s4", "repetition": 2},
     ]
     appended = [
         {"session_id": "s1", "route": "web_search", "route_family": "web", "advisor_family": "web", "advisor_match": True},
         {"session_id": "s2", "route": "search_files", "route_family": "file", "advisor_family": "file", "advisor_match": True},
+        {"session_id": "s3", "route": "web_search", "route_family": "web", "advisor_family": "web", "advisor_match": True},
+        {"session_id": "s4", "route": "search_files", "route_family": "file", "advisor_family": "file", "advisor_match": True},
     ]
 
     summary = canary.summarize_batch_run(
@@ -56,12 +103,15 @@ def test_summarize_batch_run_groups_appended_events_by_case_session():
         appended=appended,
         log_path=Path("events.jsonl"),
         before=10,
-        after=12,
+        after=14,
         natural=True,
+        repeat=2,
     )
 
     assert summary["schema_version"] == 1
-    assert summary["case_count"] == 2
-    assert summary["event_count"] == 2
+    assert summary["repeat"] == 2
+    assert summary["case_count"] == 4
+    assert summary["event_count"] == 4
     assert summary["review_case_count"] == 0
-    assert [case["session_id"] for case in summary["cases"]] == ["s1", "s2"]
+    assert [case["session_id"] for case in summary["cases"]] == ["s1", "s2", "s3", "s4"]
+    assert [case["repetition"] for case in summary["cases"]] == [1, 1, 2, 2]

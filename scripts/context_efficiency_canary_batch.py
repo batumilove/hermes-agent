@@ -88,58 +88,74 @@ EXPERIMENTAL_CASES: tuple[CanaryCase, ...] = (
 NATURAL_TOOLSETS = ("session_search", "memory", "web", "file", "context_engine")
 
 NATURAL_CASES: tuple[CanaryCase, ...] = (
-    CanaryCase(
-        name="natural-past-decision",
-        family="session_search",
-        toolsets=NATURAL_TOOLSETS,
-        prompt="What did we decide in the previous session about context route advisor telemetry? Answer briefly.",
-    ),
-    CanaryCase(
-        name="natural-user-preference",
-        family="durable_memory",
-        toolsets=NATURAL_TOOLSETS,
-        prompt="What user preference should guide how you report infrastructure verification results? Answer briefly.",
-    ),
-    CanaryCase(
-        name="natural-current-lcm",
-        family="current_session_lcm",
-        toolsets=NATURAL_TOOLSETS,
-        prompt="Check the current session LCM state and summarize it in one sentence.",
-    ),
-    CanaryCase(
-        name="natural-current-docs",
-        family="web",
-        toolsets=NATURAL_TOOLSETS,
-        prompt="Find the current Hermes Agent configuration docs URL and answer with just the URL.",
-    ),
-    CanaryCase(
-        name="natural-repo-file",
-        family="file",
-        toolsets=NATURAL_TOOLSETS,
-        prompt="Where in this repo is the context efficiency report implemented? Answer with the path only.",
-    ),
-    CanaryCase(
-        name="natural-ambiguous-memory-session",
-        family="session_search",
-        toolsets=NATURAL_TOOLSETS,
-        prompt="Where did we leave the memory routing evaluation, and what should happen next? Answer briefly.",
-    ),
-    CanaryCase(
-        name="natural-ambiguous-current-repo-docs",
-        family="file",
-        toolsets=NATURAL_TOOLSETS,
-        prompt="Check the local repo docs for context efficiency telemetry and summarize the relevant instruction.",
-    ),
+    # session_search: prior decisions, recent work, and source-of-truth recall.
+    CanaryCase("natural-past-decision", "session_search", NATURAL_TOOLSETS, "What did we decide in the previous session about context route advisor telemetry? Answer briefly."),
+    CanaryCase("natural-session-next-step", "session_search", NATURAL_TOOLSETS, "Where did we leave the memory routing evaluation, and what should happen next? Answer briefly."),
+    CanaryCase("natural-session-update-flow", "session_search", NATURAL_TOOLSETS, "Find the past session about Hermes fork/live update flow and summarize the safe next action in one sentence."),
+    CanaryCase("natural-session-telegram-thread", "session_search", NATURAL_TOOLSETS, "What was the last known guidance about Telegram private topic routing? Answer in one sentence."),
+    CanaryCase("natural-session-backups", "session_search", NATURAL_TOOLSETS, "What distinction did the user make about backups versus snapshots? Answer briefly."),
+    
+    # durable_memory: stable user/environment preferences.
+    CanaryCase("natural-user-preference", "durable_memory", NATURAL_TOOLSETS, "What user preference should guide how you report infrastructure verification results? Answer briefly."),
+    CanaryCase("natural-memory-secrets", "durable_memory", NATURAL_TOOLSETS, "What stable secret-handling preference should guide this task? Answer briefly."),
+    CanaryCase("natural-memory-repos", "durable_memory", NATURAL_TOOLSETS, "Which local repo should Hermes Agent code changes use? Answer with the path only."),
+    CanaryCase("natural-memory-deploys", "durable_memory", NATURAL_TOOLSETS, "What is the user's preference for deploy verification? Answer in one short sentence."),
+    CanaryCase("natural-memory-canary", "durable_memory", NATURAL_TOOLSETS, "What profile/container policy should guide risky Hermes changes? Answer briefly."),
+
+    # current_session_lcm: current-turn/context-engine probes.
+    CanaryCase("natural-current-lcm", "current_session_lcm", NATURAL_TOOLSETS, "Check the current session LCM state and summarize it in one sentence."),
+    CanaryCase("natural-lcm-active-task", "current_session_lcm", NATURAL_TOOLSETS, "From current session context, identify the active kanban task id and title in one sentence."),
+    CanaryCase("natural-lcm-loaded-skills", "current_session_lcm", NATURAL_TOOLSETS, "Check current context for loaded skills and list the two most relevant ones for this task."),
+    CanaryCase("natural-lcm-constraints", "current_session_lcm", NATURAL_TOOLSETS, "Use current context to name one hard constraint for this run in one sentence."),
+
+    # web: current external information.
+    CanaryCase("natural-current-docs", "web", NATURAL_TOOLSETS, "Find the current Hermes Agent configuration docs URL and answer with just the URL."),
+    CanaryCase("natural-web-tool-docs", "web", NATURAL_TOOLSETS, "Find the current Hermes Agent tools reference page and answer with just the URL."),
+    CanaryCase("natural-web-github", "web", NATURAL_TOOLSETS, "Find the public GitHub repository for NousResearch Hermes Agent and answer with the repository URL."),
+    CanaryCase("natural-web-provider-docs", "web", NATURAL_TOOLSETS, "Find Hermes Agent provider integration docs and answer with the URL only."),
+
+    # file: local repository/source inspection.
+    CanaryCase("natural-repo-file", "file", NATURAL_TOOLSETS, "Where in this repo is the context efficiency report implemented? Answer with the path only."),
+    CanaryCase("natural-file-canary-script", "file", NATURAL_TOOLSETS, "Find the local canary batch script for context efficiency and answer with the path only."),
+    CanaryCase("natural-file-config-default", "file", NATURAL_TOOLSETS, "Find where the default context_efficiency config is defined locally and answer with the file path."),
+    CanaryCase("natural-file-tests", "file", NATURAL_TOOLSETS, "Find the tests for the context efficiency canary batch script and answer with the path only."),
+    CanaryCase("natural-file-report-cli", "file", NATURAL_TOOLSETS, "Find the module that prints context efficiency telemetry reports and answer with the path only."),
+
+    # ambiguous memory/session: should resolve between durable facts and transcript recall.
+    CanaryCase("natural-ambiguous-memory-session", "session_search", NATURAL_TOOLSETS, "Where did we leave the memory routing evaluation, and what should happen next? Answer briefly."),
+    CanaryCase("natural-ambiguous-user-policy-origin", "session_search", NATURAL_TOOLSETS, "When did the user clarify the backup-vs-snapshot rule, and what is the rule? Answer briefly."),
+    CanaryCase("natural-ambiguous-preference-current", "durable_memory", NATURAL_TOOLSETS, "What user preference applies to reporting current verification results, regardless of past session details? Answer briefly."),
+
+    # ambiguous docs/local repo: should choose file or web based on wording.
+    CanaryCase("natural-ambiguous-current-repo-docs", "file", NATURAL_TOOLSETS, "Check the local repo docs for context efficiency telemetry and summarize the relevant instruction."),
+    CanaryCase("natural-ambiguous-online-docs", "web", NATURAL_TOOLSETS, "Check the online Hermes docs for tool configuration and summarize the relevant instruction."),
+    CanaryCase("natural-ambiguous-local-config", "file", NATURAL_TOOLSETS, "Check this checkout for the context_efficiency config defaults and summarize the setting names."),
+
+    # no-tool controls: ordinary questions should ideally avoid route telemetry.
+    CanaryCase("natural-no-tool-plain", "no_tool", NATURAL_TOOLSETS, "In one sentence, explain why telemetry should stay observational only."),
+    CanaryCase("natural-no-tool-style", "no_tool", NATURAL_TOOLSETS, "Rewrite this in five words or fewer: adaptive routing is not enabled."),
+    CanaryCase("natural-no-tool-definition", "no_tool", NATURAL_TOOLSETS, "Define canary run in one short sentence without looking anything up."),
 )
 
 CASES: tuple[CanaryCase, ...] = STABLE_CASES + EXPERIMENTAL_CASES
 ALL_CASES: tuple[CanaryCase, ...] = CASES + NATURAL_CASES
 
 
+def hermes_base_home() -> Path:
+    hermes_home = os.environ.get("HERMES_HOME")
+    if hermes_home:
+        home = Path(hermes_home).expanduser()
+        if home.parent.name == "profiles":
+            return home.parent.parent
+        return home
+    return Path.home() / ".hermes"
+
+
 def profile_home(profile: str) -> Path:
+    base = hermes_base_home()
     if profile == "default":
-        return Path.home() / ".hermes"
-    return Path.home() / ".hermes" / "profiles" / profile
+        return base
+    return base / "profiles" / profile
 
 
 def resolve_log_path(profile: str, log_path: str | None) -> Path:
@@ -193,8 +209,14 @@ def summarize_case_outcome(case: CanaryCase, result: dict[str, object], events: 
         errors += 1 if event.get("is_error") else 0
         mismatches += 1 if event.get("advisor_match") is False else 0
 
-    expected_events = [event for event in events if event.get("route_family") == case.family]
-    unexpected_families = sorted(family for family in route_families if family != case.family)
+    if case.family == "no_tool":
+        expected_events = []
+        unexpected_families = sorted(route_families)
+        route_family_ok = not events
+    else:
+        expected_events = [event for event in events if event.get("route_family") == case.family]
+        unexpected_families = sorted(family for family in route_families if family != case.family)
+        route_family_ok = bool(expected_events) and not unexpected_families
     return {
         "case": case.name,
         "prompt": case.prompt,
@@ -211,13 +233,14 @@ def summarize_case_outcome(case: CanaryCase, result: dict[str, object], events: 
         "advisor_mismatches": mismatches,
         "expected_family_events": len(expected_events),
         "unexpected_families": unexpected_families,
-        "route_family_ok": bool(expected_events) and not unexpected_families,
-        "needs_review": bool(result.get("returncode") != 0 or errors or mismatches or not expected_events or unexpected_families),
+        "repetition": result.get("repetition", 1),
+        "route_family_ok": route_family_ok,
+        "needs_review": bool(result.get("returncode") != 0 or errors or mismatches or not route_family_ok),
         "review_note": "manual outcome review required before adaptive routing promotion",
     }
 
 
-def summarize_batch_run(*, profile: str, cases: list[CanaryCase], results: list[dict[str, object]], appended: list[dict[str, object]], log_path: Path, before: int, after: int, natural: bool) -> dict[str, object]:
+def summarize_batch_run(*, profile: str, cases: list[CanaryCase], results: list[dict[str, object]], appended: list[dict[str, object]], log_path: Path, before: int, after: int, natural: bool, repeat: int = 1) -> dict[str, object]:
     events_by_session: dict[str, list[dict[str, object]]] = {}
     for event in appended:
         events_by_session.setdefault(str(event.get("session_id") or ""), []).append(event)
@@ -229,6 +252,7 @@ def summarize_batch_run(*, profile: str, cases: list[CanaryCase], results: list[
         "created_at": datetime.now(timezone.utc).isoformat(),
         "profile": profile,
         "natural": natural,
+        "repeat": repeat,
         "log_path": str(log_path),
         "lines_before": before,
         "lines_after": after,
@@ -249,6 +273,12 @@ def default_run_summary_path(profile: str) -> Path:
 def write_json(path: Path, data: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def expand_repetitions(cases: list[CanaryCase], repeat: int) -> list[CanaryCase]:
+    if repeat < 1:
+        raise SystemExit("--repeat must be >= 1")
+    return [case for _ in range(repeat) for case in cases]
 
 
 def select_cases(names: Iterable[str], *, include_experimental: bool = False, natural: bool = False) -> list[CanaryCase]:
@@ -292,16 +322,27 @@ def run_case(case: CanaryCase, *, profile: str, timeout: int, dry_run: bool) -> 
         return {"case": case.name, "family": case.family, "command": cmd, "skipped": True}
     env = os.environ.copy()
     env["HERMES_PROFILE"] = profile
-    proc = subprocess.run(
-        cmd,
-        cwd=str(REPO_ROOT),
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=timeout,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(REPO_ROOT),
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "case": case.name,
+            "family": case.family,
+            "command": cmd,
+            "returncode": 124,
+            "stdout": str(exc.stdout or "").strip()[-1000:],
+            "stderr": f"timed out after {timeout}s\n{str(exc.stderr or '').strip()}"[-2000:],
+            "timed_out": True,
+        }
     return {
         "case": case.name,
         "family": case.family,
@@ -322,21 +363,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=int, default=180, help="Seconds per Hermes one-shot")
     parser.add_argument("--report-limit", type=int, default=20, help="Number of recent events for final report")
     parser.add_argument("--write-run-summary", nargs="?", const="auto", default=None, help="Write prompt-level outcome summary JSON; optional path or auto profile runs/context-route/<timestamp>.json")
+    parser.add_argument("--repeat", type=int, default=1, help="Repeat the selected case batch N times; default 1")
     parser.add_argument("--dry-run", action="store_true", help="Print selected commands without running Hermes")
     args = parser.parse_args(argv)
 
     log_path = resolve_log_path(args.profile, args.log_path)
-    cases = select_cases(args.case or ["all"], include_experimental=args.include_experimental, natural=args.natural)
+    selected_cases = select_cases(args.case or ["all"], include_experimental=args.include_experimental, natural=args.natural)
+    cases = expand_repetitions(selected_cases, args.repeat)
     before = count_lines(log_path)
     print(f"profile={args.profile}")
     print(f"log_path={log_path}")
     print(f"lines_before={before}")
+    print(f"selected_cases={','.join(case.name for case in selected_cases)}")
+    print(f"repeat={args.repeat}")
     print(f"cases={','.join(case.name for case in cases)}")
 
     results = []
-    for case in cases:
-        print(f"\n## case={case.name} family={case.family} toolsets={','.join(case.toolsets)}")
+    for idx, case in enumerate(cases):
+        repetition = (idx // len(selected_cases)) + 1 if selected_cases else 1
+        print(f"\n## case={case.name} repetition={repetition} family={case.family} toolsets={','.join(case.toolsets)}")
         result = run_case(case, profile=args.profile, timeout=args.timeout, dry_run=args.dry_run)
+        result["repetition"] = repetition
         results.append(result)
         print(json.dumps(result, ensure_ascii=False, indent=2))
 
@@ -370,6 +417,7 @@ def main(argv: list[str] | None = None) -> int:
             before=before,
             after=after,
             natural=args.natural,
+            repeat=args.repeat,
         )
         write_json(summary_path, run_summary)
         print("\n## run_summary")
