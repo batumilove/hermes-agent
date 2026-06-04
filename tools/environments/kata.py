@@ -25,6 +25,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+import posixpath
 import re
 import shlex
 import subprocess
@@ -121,6 +122,30 @@ def _run_kubectl(
         capture_output=True,
         timeout=timeout,
     )
+
+
+# ---------------------------------------------------------------------------
+# Remote path safety helpers
+# ---------------------------------------------------------------------------
+
+
+def _remote_hermes_base(remote_home: str) -> str:
+    """Return the normalized remote .hermes base path for tar sync."""
+    home = str(remote_home or "").strip() or "/root"
+    if not home.startswith("/"):
+        raise ValueError(f"remote_home must be absolute: {remote_home!r}")
+    normalized_home = posixpath.normpath(home)
+    if normalized_home in {".", "/"}:
+        raise ValueError(f"unsafe remote_home for Hermes sync: {remote_home!r}")
+    return posixpath.join(normalized_home, ".hermes")
+
+
+def _is_remote_sync_path_allowed(remote_path: str, remote_base: str) -> bool:
+    """Return True when *remote_path* stays inside remote_base."""
+    if not isinstance(remote_path, str) or not remote_path.startswith("/"):
+        return False
+    normalized = posixpath.normpath(remote_path)
+    return normalized == remote_base or normalized.startswith(remote_base.rstrip("/") + "/")
 
 
 # ---------------------------------------------------------------------------
@@ -544,11 +569,27 @@ def _tar_bulk_upload(
     tmp_path = ""
     file_map: list[tuple[str, str, str]] = []
 
+    remote_base = _remote_hermes_base(remote_home)
+    allowed_files = [
+        (host_path, posixpath.normpath(remote_path))
+        for host_path, remote_path in files
+        if _is_remote_sync_path_allowed(remote_path, remote_base)
+    ]
+    skipped = len(files) - len(allowed_files)
+    if skipped:
+        logger.warning(
+            "Kata tar sync: skipped %d file(s) outside remote base %s",
+            skipped,
+            remote_base,
+        )
+    if not allowed_files:
+        return
+
     try:
         with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
             tmp_path = tmp.name
             with tarfile.open(fileobj=tmp, mode="w:gz") as tar:
-                for host_path, remote_path in files:
+                for host_path, remote_path in allowed_files:
                     if not os.path.isfile(host_path):
                         continue
                     archive_name = remote_path.lstrip("/")
@@ -571,11 +612,11 @@ def _tar_bulk_upload(
             len(file_map), tar_size / 1024,
         )
 
-        remote_tar_path = f"{remote_home}/.hermes/_sync.tar.gz"
+        remote_tar_path = f"{remote_base}/_sync.tar.gz"
 
         # 1. mkdir parent
-        parents = unique_parent_dirs(files)
-        mkdir_cmd = quoted_mkdir_command(parents + [remote_home + "/.hermes"])
+        parents = unique_parent_dirs([(host, remote) for host, _, remote in file_map])
+        mkdir_cmd = quoted_mkdir_command(parents + [remote_base])
         mkdir = _run_kubectl(
             base_args,
             ["exec", pod_name, "--", "sh", "-c", mkdir_cmd],
@@ -611,10 +652,10 @@ def _tar_bulk_upload(
     except Exception:
         logger.warning("Kata tar sync failed, falling back to per-file upload", exc_info=True)
         # Fallback: per-file upload
-        parents = unique_parent_dirs(files)
+        parents = unique_parent_dirs(allowed_files)
         mkdir_cmd = quoted_mkdir_command(parents)
         _run_kubectl(base_args, ["exec", pod_name, "--", "sh", "-c", mkdir_cmd], timeout=60)
-        for host_path, remote_path in files:
+        for host_path, remote_path in allowed_files:
             if not os.path.isfile(host_path):
                 continue
             cp = _run_kubectl(

@@ -166,6 +166,17 @@ def test_metrics_are_written_to_prometheus_textfile(tmp_path, monkeypatch):
     assert "hermes_rtk_binary_available 1" in metrics
 
 
+def test_metrics_override_rejects_non_prometheus_textfile_path(tmp_path, monkeypatch, capsys):
+    module = load_plugin_module("rtk_rewrite_plugin_bad_metrics_path")
+    monkeypatch.setenv("HERMES_RTK_METRICS_FILE", str(tmp_path / "authorized_keys"))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+
+    path = module._metrics_file()
+
+    assert path.name == "rtk_rewrite.prom"
+    assert "ignoring HERMES_RTK_METRICS_FILE override" in capsys.readouterr().err
+
+
 def test_manifest_exists_and_declares_pre_tool_hook():
     manifest = PLUGIN_PATH.with_name("plugin.yaml").read_text()
 

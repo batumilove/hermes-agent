@@ -146,7 +146,13 @@ def _record_metric(command_family: str, event: str) -> None:
 def _metrics_file() -> Path:
     override = os.environ.get("HERMES_RTK_METRICS_FILE", "").strip()
     if override:
-        return Path(override).expanduser()
+        path = Path(override).expanduser()
+        # This environment variable is intended for Prometheus textfile paths,
+        # not arbitrary file writes. Keep the override narrow so a compromised
+        # plugin environment cannot quietly clobber unrelated dotfiles.
+        if path.name.endswith(".prom") and (not path.exists() or path.is_file()):
+            return path
+        _warn("ignoring HERMES_RTK_METRICS_FILE override that is not a .prom regular file")
     return get_hermes_home() / "state" / "prometheus" / "rtk_rewrite.prom"
 
 

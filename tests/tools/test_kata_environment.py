@@ -12,6 +12,8 @@ from tools.environments.kata import (
     KataPodPool,
     _sanitize_pod_name,
     _tar_bulk_upload,
+    _is_remote_sync_path_allowed,
+    _remote_hermes_base,
     cleanup_orphaned_pods,
 )
 
@@ -333,6 +335,33 @@ class TestTarBulkUpload:
         with patch("tools.environments.kata._run_kubectl", side_effect=fake_run):
             _tar_bulk_upload(["kubectl", "-n", "sandbox"], "pod", "sandbox", [], "/root")
         assert len(calls) == 0
+
+    def test_rejects_remote_paths_outside_remote_hermes_base(self, tmp_path):
+        """Tar sync must not archive or copy files outside remote .hermes."""
+        good = tmp_path / "good.txt"
+        good.write_text("safe")
+        bad = tmp_path / "bad.txt"
+        bad.write_text("unsafe")
+        files = [(str(good), "/root/.hermes/good.txt"), (str(bad), "/root/.ssh/authorized_keys")]
+
+        def fake_run(base_args, extra_args, *, input_text=None, timeout=120):
+            cmd = [*base_args, *extra_args]
+            joined = " ".join(cmd)
+            assert "/root/.ssh" not in joined
+            if "cp " in joined and ".tar.gz" in joined:
+                src = extra_args[extra_args.index("cp") + 1]
+                with tarfile.open(src, "r:gz") as tar:
+                    assert tar.getnames() == ["root/.hermes/good.txt"]
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with patch("tools.environments.kata._run_kubectl", side_effect=fake_run):
+            _tar_bulk_upload(["kubectl", "-n", "sandbox"], "pod", "sandbox", files, "/root")
+
+    def test_remote_path_safety_helpers_normalize_base(self):
+        assert _remote_hermes_base("/root/") == "/root/.hermes"
+        assert _is_remote_sync_path_allowed("/root/.hermes/config.yaml", "/root/.hermes")
+        assert not _is_remote_sync_path_allowed("/root/.hermes/../.ssh/id_rsa", "/root/.hermes")
+        assert not _is_remote_sync_path_allowed("relative/.hermes/config.yaml", "/root/.hermes")
 
 
 # ---------------------------------------------------------------------------

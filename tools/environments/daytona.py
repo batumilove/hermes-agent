@@ -206,7 +206,12 @@ class DaytonaEnvironment(BaseEnvironment):
         host = parsed_api.hostname
         if parsed_toolbox.port:
             host = f"{host}:{parsed_toolbox.port}"
-        rewritten = urlunparse(parsed_toolbox._replace(netloc=host))
+        # Preserve the operator-configured API scheme. Docker Compose may report
+        # an http://proxy.localhost URL, but remote clients should not downgrade
+        # a https://DAYTONA_API_URL deployment to plaintext while only swapping
+        # hosts.
+        scheme = parsed_api.scheme or parsed_toolbox.scheme
+        rewritten = urlunparse(parsed_toolbox._replace(scheme=scheme, netloc=host))
         self._sandbox.toolbox_proxy_url = rewritten
         toolbox_api = getattr(self._sandbox, "_toolbox_api", None)
         if toolbox_api is not None and hasattr(toolbox_api, "_toolbox_base_url"):
@@ -216,7 +221,7 @@ class DaytonaEnvironment(BaseEnvironment):
     def _daytona_upload(self, host_path: str, remote_path: str) -> None:
         """Upload a single file via Daytona SDK."""
         parent = str(Path(remote_path).parent)
-        self._sandbox.process.exec(f"mkdir -p {parent}")
+        self._sandbox.process.exec(quoted_mkdir_command([parent]))
         self._sandbox.fs.upload_file(host_path, remote_path)
 
     def _daytona_bulk_upload(self, files: list[tuple[str, str]]) -> None:

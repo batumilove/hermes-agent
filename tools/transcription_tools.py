@@ -30,6 +30,7 @@ Usage::
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -1635,6 +1636,12 @@ def _ensure_agent_vault_ca(cfg_or_base_url: Any) -> tuple[str, Optional[str]]:
     return https_proxy_origin, None
 
 
+def _redact_agent_vault_proxy_url(value: Any) -> str:
+    """Return text with Agent Vault proxy credentials redacted."""
+    text = str(value)
+    return re.sub(r"https://[^/@\s]+:@", "https://<agent-vault-token>:@", text)
+
+
 def _deepgram_params(model_name: str) -> Dict[str, str]:
     stt_config = _load_stt_config()
     dg_cfg = stt_config.get("deepgram", {}) if isinstance(stt_config, dict) else {}
@@ -1703,6 +1710,7 @@ def _transcribe_deepgram(file_path: str, model_name: str) -> Dict[str, Any]:
                 detail = err_body.get("err_msg") or err_body.get("message") or err_body.get("error") or response.text[:300]
             except Exception:
                 detail = response.text[:300]
+            detail = _redact_agent_vault_proxy_url(detail)
             return {
                 "success": False,
                 "transcript": "",
@@ -1719,8 +1727,9 @@ def _transcribe_deepgram(file_path: str, model_name: str) -> Dict[str, Any]:
     except PermissionError:
         return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
     except Exception as e:
-        logger.error("Deepgram transcription failed: %s", e, exc_info=True)
-        return {"success": False, "transcript": "", "error": f"Deepgram transcription failed: {e}"}
+        safe_error = _redact_agent_vault_proxy_url(e)
+        logger.error("Deepgram transcription failed: %s", safe_error)
+        return {"success": False, "transcript": "", "error": f"Deepgram transcription failed: {safe_error}"}
 
 
 # ---------------------------------------------------------------------------

@@ -212,6 +212,29 @@ class TestPersistence:
             api_key=None, api_url="http://daytona.local:3000/api"
         )
 
+    def test_toolbox_proxy_rewrite_preserves_api_scheme(self, make_env, monkeypatch):
+        monkeypatch.setenv("DAYTONA_API_URL", "https://daytona.example.com/api")
+        sandbox = _make_sandbox()
+        sandbox.toolbox_proxy_url = "http://proxy.localhost:4000/toolbox"
+        sandbox._toolbox_api = SimpleNamespace(_toolbox_base_url=sandbox.toolbox_proxy_url)
+
+        env = make_env(sandbox=sandbox, persistent=False)
+
+        assert env._sandbox.toolbox_proxy_url == "https://daytona.example.com:4000/toolbox"
+        assert env._sandbox._toolbox_api._toolbox_base_url == "https://daytona.example.com:4000/toolbox"
+
+    def test_single_upload_uses_quoted_mkdir(self, make_env):
+        env = make_env(persistent=False)
+        env._sandbox.process.exec.reset_mock()
+
+        env._daytona_upload("/tmp/source.txt", "/home/daytona/path with spaces/file.txt")
+
+        env._sandbox.process.exec.assert_called_once_with("mkdir -p '/home/daytona/path with spaces'")
+        env._sandbox.fs.upload_file.assert_called_once_with(
+            "/tmp/source.txt",
+            "/home/daytona/path with spaces/file.txt",
+        )
+
 
 # ---------------------------------------------------------------------------
 # Cleanup

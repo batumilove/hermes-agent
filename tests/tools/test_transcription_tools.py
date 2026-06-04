@@ -1369,6 +1369,19 @@ class TestTranscribeDeepgram:
         assert "Authorization" not in mock_post.call_args.kwargs["headers"]
         assert mock_post.call_args.kwargs["proxies"]["https"].startswith("https://av-test:@")
 
+    def test_agent_vault_proxy_token_redacted_from_errors(self, monkeypatch, sample_ogg):
+        monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("tools.transcription_tools._agent_vault_config", return_value={"base_url": "http://vault", "token": "av-secret-token"}), \
+             patch("tools.transcription_tools._ensure_agent_vault_ca", return_value=("https://vault:14322", "/tmp/ca.pem")), \
+             patch("requests.Session.post", side_effect=RuntimeError("proxy https://av-secret-token:@vault:14322 failed")):
+            from tools.transcription_tools import _transcribe_deepgram
+            result = _transcribe_deepgram(sample_ogg, "nova-3")
+
+        assert result["success"] is False
+        assert "av-secret-token" not in result["error"]
+        assert "<agent-vault-token>" in result["error"]
+
 
 # ============================================================================
 # _get_provider — Deepgram
