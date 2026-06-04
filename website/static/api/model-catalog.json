@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-06-04T07:52:55Z",
+  "updated_at": "2026-06-04T08:16:39Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -1172,25 +1172,13 @@
           "id": "grok-4.3"
         },
         {
-          "id": "grok-4.20-0309-non-reasoning"
-        },
-        {
           "id": "grok-4.20-0309-reasoning"
         },
         {
+          "id": "grok-4.20-0309-non-reasoning"
+        },
+        {
           "id": "grok-4.20-multi-agent-0309"
-        },
-        {
-          "id": "grok-build-0.1"
-        },
-        {
-          "id": "grok-imagine-image"
-        },
-        {
-          "id": "grok-imagine-image-quality"
-        },
-        {
-          "id": "grok-imagine-video"
         }
       ]
     },
@@ -1209,25 +1197,13 @@
           "id": "grok-4.3"
         },
         {
-          "id": "grok-4.20-0309-non-reasoning"
-        },
-        {
           "id": "grok-4.20-0309-reasoning"
         },
         {
+          "id": "grok-4.20-0309-non-reasoning"
+        },
+        {
           "id": "grok-4.20-multi-agent-0309"
-        },
-        {
-          "id": "grok-build-0.1"
-        },
-        {
-          "id": "grok-imagine-image"
-        },
-        {
-          "id": "grok-imagine-image-quality"
-        },
-        {
-          "id": "grok-imagine-video"
         }
       ]
     },

@@ -33,6 +33,7 @@ sys.path.insert(0, REPO_ROOT)
 
 # Ensure HERMES_HOME is set for imports that touch it at module level.
 os.environ.setdefault("HERMES_HOME", os.path.join(os.path.expanduser("~"), ".hermes"))
+os.environ["HERMES_MODEL_CATALOG_STATIC"] = "1"
 
 from hermes_cli.auth import PROVIDER_REGISTRY  # noqa: E402
 from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS  # noqa: E402

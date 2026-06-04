@@ -132,19 +132,22 @@ def _xai_curated_models() -> list[str]:
 
     Mirrors ``_codex_curated_models()``'s role for openai-codex.
     """
-    try:
-        from agent.models_dev import _load_disk_cache
-        data = _load_disk_cache()
-        xai = data.get("xai") if isinstance(data, dict) else None
-        models = xai.get("models") if isinstance(xai, dict) else None
-        if isinstance(models, dict) and models:
-            ids = [mid for mid in models.keys() if isinstance(mid, str)]
-            if ids:
-                return _xai_promote_top(sorted(ids))
-    except Exception:
-        # Any failure (missing file, malformed JSON, import error)
-        # falls through to the static list.
-        pass
+    # Model catalog generation and tests must be hermetic/reproducible: do not
+    # let a developer's refreshed models.dev cache change committed output.
+    if os.environ.get("HERMES_MODEL_CATALOG_STATIC") != "1":
+        try:
+            from agent.models_dev import _load_disk_cache
+            data = _load_disk_cache()
+            xai = data.get("xai") if isinstance(data, dict) else None
+            models = xai.get("models") if isinstance(xai, dict) else None
+            if isinstance(models, dict) and models:
+                ids = [mid for mid in models.keys() if isinstance(mid, str)]
+                if ids:
+                    return _xai_promote_top(sorted(ids))
+        except Exception:
+            # Any failure (missing file, malformed JSON, import error)
+            # falls through to the static list.
+            pass
     return list(_XAI_STATIC_FALLBACK)
 
 

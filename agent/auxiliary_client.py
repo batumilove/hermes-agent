@@ -1328,6 +1328,8 @@ def _read_nous_auth() -> Optional[dict]:
             "access_token": getattr(entry, "access_token", ""),
             "refresh_token": getattr(entry, "refresh_token", None),
             "agent_key": getattr(entry, "agent_key", None),
+            "agent_key_expires_at": getattr(entry, "agent_key_expires_at", None),
+            "expires_at": getattr(entry, "expires_at", None),
             "inference_base_url": _pool_runtime_base_url(entry, _NOUS_DEFAULT_BASE_URL),
             "portal_base_url": getattr(entry, "portal_base_url", None),
             "client_id": getattr(entry, "client_id", None),
@@ -1673,9 +1675,9 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
         )
         _mark_provider_unhealthy("nous", ttl=60)
         return None, None
-    if runtime is None and nous:
+    if runtime is None and nous and nous.get("source") != "pool":
         logger.debug(
-            "Auxiliary Nous: runtime JWT refresh failed; checking stored "
+            "Auxiliary Nous: runtime JWT refresh failed; refusing stale "
             "auth.json token."
         )
         _mark_provider_unhealthy("nous", ttl=60)
