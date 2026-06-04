@@ -1,54 +1,39 @@
 import { IconDownload, IconRefresh, IconUpload } from '@tabler/icons-react'
-import { useEffect, useRef, useState } from 'react'
+import { useRef } from 'react'
 
 import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { triggerHaptic } from '@/lib/haptics'
-import { Globe, Info, KeyRound, Package, Wrench } from '@/lib/icons'
+import { Archive, Globe, Info, KeyRound, Wrench } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayIconButton } from '../overlays/overlay-chrome'
-import { OverlaySearchInput } from '../overlays/overlay-search-input'
 import { OverlayMain, OverlayNavItem, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
 
 import { AboutSettings } from './about-settings'
 import { AppearanceSettings } from './appearance-settings'
 import { ConfigSettings } from './config-settings'
-import { SEARCH_PLACEHOLDER, SECTIONS } from './constants'
+import { SECTIONS } from './constants'
 import { GatewaySettings } from './gateway-settings'
 import { KeysSettings } from './keys-settings'
 import { McpSettings } from './mcp-settings'
-import { ToolsSettings } from './tools-settings'
-import type { SettingsPageProps, SettingsQueryKey, SettingsView as SettingsViewId } from './types'
+import { SessionsSettings } from './sessions-settings'
+import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
 
 const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   ...SECTIONS.map(s => `config:${s.id}` as SettingsViewId),
   'gateway',
   'keys',
   'mcp',
-  'tools',
+  'sessions',
   'about'
 ]
 
-export function SettingsView({ gateway, onClose, onConfigSaved }: SettingsPageProps) {
+export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
   const [activeView, setActiveView] = useRouteEnumParam('tab', SETTINGS_VIEWS, 'config:model' as SettingsViewId)
 
-  const [queries, setQueries] = useState<Record<SettingsQueryKey, string>>({
-    about: '',
-    config: '',
-    gateway: '',
-    keys: '',
-    mcp: '',
-    tools: ''
-  })
-
-  const searchInputRef = useRef<HTMLInputElement>(null)
   const importInputRef = useRef<HTMLInputElement | null>(null)
-
-  const queryKey: SettingsQueryKey = activeView.startsWith('config:') ? 'config' : (activeView as SettingsQueryKey)
-  const query = queries[queryKey]
-  const setQuery = (next: string) => setQueries(c => ({ ...c, [queryKey]: next }))
 
   const exportConfig = async () => {
     try {
@@ -80,35 +65,8 @@ export function SettingsView({ gateway, onClose, onConfigSaved }: SettingsPagePr
     }
   }
 
-  // OverlayView handles Esc; this just adds Cmd/Ctrl+P → focus search.
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'p') {
-        e.preventDefault()
-        searchInputRef.current?.focus()
-        searchInputRef.current?.select()
-      }
-    }
-
-    window.addEventListener('keydown', onKeyDown)
-
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
-
   return (
-    <OverlayView
-      closeLabel="Close settings"
-      headerContent={
-        <OverlaySearchInput
-          containerClassName="w-[min(36rem,calc(100vw-32rem))] min-w-80"
-          inputRef={searchInputRef}
-          onChange={setQuery}
-          placeholder={SEARCH_PLACEHOLDER[queryKey]}
-          value={query}
-        />
-      }
-      onClose={onClose}
-    >
+    <OverlayView closeLabel="Close settings" onClose={onClose}>
       <OverlaySplitLayout>
         <OverlaySidebar>
           {SECTIONS.map(s => {
@@ -116,7 +74,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved }: SettingsPagePr
 
             return (
               <OverlayNavItem
-                active={activeView === view && !queries.config.trim()}
+                active={activeView === view}
                 icon={s.icon}
                 key={s.id}
                 label={s.label}
@@ -138,16 +96,16 @@ export function SettingsView({ gateway, onClose, onConfigSaved }: SettingsPagePr
             onClick={() => setActiveView('keys')}
           />
           <OverlayNavItem
-            active={activeView === 'tools'}
-            icon={Package}
-            label="Skills & Tools"
-            onClick={() => setActiveView('tools')}
-          />
-          <OverlayNavItem
             active={activeView === 'mcp'}
             icon={Wrench}
             label="MCP"
             onClick={() => setActiveView('mcp')}
+          />
+          <OverlayNavItem
+            active={activeView === 'sessions'}
+            icon={Archive}
+            label="Archived Chats"
+            onClick={() => setActiveView('sessions')}
           />
           <div className="my-2 h-px bg-border/30" />
           <OverlayNavItem
@@ -182,7 +140,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved }: SettingsPagePr
           </div>
         </OverlaySidebar>
 
-        <OverlayMain className="p-0">
+        <OverlayMain className="px-0 pb-0 pt-[calc(var(--titlebar-height)+1rem)]">
           {activeView === 'config:appearance' ? (
             <AppearanceSettings />
           ) : activeView === 'about' ? (
@@ -194,14 +152,14 @@ export function SettingsView({ gateway, onClose, onConfigSaved }: SettingsPagePr
               activeSectionId={activeView.slice('config:'.length)}
               importInputRef={importInputRef}
               onConfigSaved={onConfigSaved}
-              query={queries.config}
+              onMainModelChanged={onMainModelChanged}
             />
           ) : activeView === 'keys' ? (
-            <KeysSettings query={queries.keys} />
+            <KeysSettings />
           ) : activeView === 'mcp' ? (
-            <McpSettings gateway={gateway} onConfigSaved={onConfigSaved} query={queries.mcp} />
+            <McpSettings gateway={gateway} onConfigSaved={onConfigSaved} />
           ) : (
-            <ToolsSettings query={queries.tools} />
+            <SessionsSettings />
           )}
         </OverlayMain>
       </OverlaySplitLayout>

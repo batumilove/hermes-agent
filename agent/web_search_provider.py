@@ -113,6 +113,10 @@ class WebSearchProvider(abc.ABC):
         """
         return False
 
+    def supports_crawl(self) -> bool:
+        """Return True if this provider implements a crawl capability."""
+        return False
+
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
         """Execute a web search.
 

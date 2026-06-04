@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { ModelPickerDialog } from '@/components/model-picker'
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import { Input } from '@/components/ui/input'
 import { getGlobalModelOptions } from '@/hermes'
 import {
@@ -56,8 +57,6 @@ interface ApiKeyOption {
   short?: string
 }
 
-const MIN_KEY_LENGTH = 8
-
 const API_KEY_OPTIONS: ApiKeyOption[] = [
   {
     id: 'openrouter',
@@ -104,11 +103,14 @@ const API_KEY_OPTIONS: ApiKeyOption[] = [
 
 const PROVIDER_DISPLAY: Record<string, { order: number; title: string }> = {
   nous: { order: 0, title: 'Nous Portal' },
-  anthropic: { order: 1, title: 'Anthropic Claude' },
-  'openai-codex': { order: 2, title: 'OpenAI Codex / ChatGPT' },
-  'minimax-oauth': { order: 3, title: 'MiniMax' },
-  'claude-code': { order: 4, title: 'Claude Code' },
-  'qwen-oauth': { order: 5, title: 'Qwen Code' }
+  'openai-codex': { order: 1, title: 'OpenAI OAuth (ChatGPT)' },
+  'minimax-oauth': { order: 2, title: 'MiniMax' },
+  'qwen-oauth': { order: 3, title: 'Qwen Code' },
+  'xai-oauth': { order: 4, title: 'xAI Grok' },
+  // Both Anthropic entries sit at the bottom: the API-key path first, then
+  // the subscription OAuth path (only works with extra usage credits).
+  anthropic: { order: 5, title: 'Anthropic API Key' },
+  'claude-code': { order: 6, title: 'Anthropic OAuth: Required Extra Usage Credits to Use Subscription' }
 }
 
 const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/^\/+/, '')}`
@@ -116,6 +118,7 @@ const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/
 const FLOW_SUBTITLES: Record<OAuthProvider['flow'], string> = {
   pkce: 'Opens your browser to sign in, then continues here',
   device_code: 'Opens a verification page in your browser — Hermes connects automatically',
+  loopback: 'Opens your browser to sign in — Hermes connects automatically',
   external: 'Sign in once in your terminal, then come back to chat'
 }
 
@@ -165,20 +168,20 @@ export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway 
 
   return (
     <div className="fixed inset-0 z-1300 flex items-center justify-center bg-(--ui-chat-surface-background) p-6">
-      <div className="w-full max-w-[45rem] overflow-hidden rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-bubble-background) shadow-sm">
+      <div className="relative w-full max-w-[45rem] overflow-hidden rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-bubble-background) shadow-sm">
         <Header />
+        {onboarding.manual ? (
+          <Button
+            aria-label="Close"
+            className="absolute right-3 top-3 z-10 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
+            onClick={() => closeManualOnboarding()}
+            size="icon-sm"
+            variant="ghost"
+          >
+            <Codicon name="close" size="1rem" />
+          </Button>
+        ) : null}
         <div className="grid gap-3 p-5">
-          {onboarding.manual ? (
-            <div className="flex justify-end">
-              <button
-                className="text-xs font-medium text-muted-foreground transition hover:text-foreground"
-                onClick={() => closeManualOnboarding()}
-                type="button"
-              >
-                Close
-              </button>
-            </div>
-          ) : null}
           {reason ? <ReasonNotice reason={reason} /> : null}
           {ready ? showPicker ? <Picker ctx={ctx} /> : <FlowPanel ctx={ctx} flow={flow} /> : <Preparing boot={boot} />}
         </div>
@@ -416,7 +419,9 @@ function ApiKeyForm({ canGoBack, ctx }: { canGoBack: boolean; ctx: OnboardingCon
   const [error, setError] = useState<null | string>(null)
 
   const isLocal = option.envKey === 'OPENAI_BASE_URL'
-  const canSave = value.trim().length >= (isLocal ? 1 : MIN_KEY_LENGTH)
+  // Only require a non-empty value — no length/format validation, so a short
+  // or unusual key can't block the user from continuing.
+  const canSave = value.trim().length >= 1
 
   const submit = async () => {
     if (!canSave || saving) {
@@ -565,6 +570,24 @@ function FlowPanel({ ctx, flow }: { ctx: OnboardingContext; flow: OnboardingFlow
     )
   }
 
+  if (flow.status === 'awaiting_browser') {
+    return (
+      <Step title={`Sign in with ${title}`}>
+        <p className="text-sm text-muted-foreground">
+          We opened {title} in your browser. Authorize Hermes there and you'll be connected
+          automatically — nothing to copy or paste.
+        </p>
+        <FlowFooter left={<DocsLink href={flow.start.auth_url}>Re-open sign-in page</DocsLink>}>
+          <span className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Loader2 className="size-3 animate-spin" />
+            Waiting for you to authorize...
+          </span>
+          <CancelBtn size="sm" />
+        </FlowFooter>
+      </Step>
+    )
+  }
+
   if (flow.status === 'external_pending') {
     return (
       <Step title={`Sign in with ${title}`}>
@@ -672,9 +695,11 @@ function ConfirmingModelPanel({
     queryKey: ['onboarding-model-options', flow.providerSlug],
     queryFn: () => getGlobalModelOptions()
   })
+
   const providerRow = options.data?.providers?.find(
     p => String(p.slug).toLowerCase() === flow.providerSlug.toLowerCase()
   )
+
   const price = providerRow?.pricing?.[flow.currentModel]
   const freeTier = providerRow?.free_tier
 
