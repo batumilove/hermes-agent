@@ -52,6 +52,9 @@ def test_build_outcome_report_aggregates_runs_cases_events_and_reviews(tmp_path)
                 "expected_family_events": 1,
                 "unexpected_families": ["web"],
                 "route_family_ok": False,
+                "acceptable_families": ["file", "web"],
+                "route_family_acceptable": True,
+                "outcome_ok": True,
                 "needs_review": True,
                 "route_families": {"file": 1, "web": 1},
                 "routes": {"search_files": 1, "web_search": 1},
@@ -87,17 +90,33 @@ def test_build_outcome_report_aggregates_runs_cases_events_and_reviews(tmp_path)
     assert summary["mismatch_event_count"] == 1
     assert summary["review_case_count"] == 1
     assert summary["route_family_ok_rate"] == 0.6667
-    assert summary["needs_review_cases"] == [{"case": "file-inspect", "source": str(first), "expected_family": "file", "session_id": "s2"}]
+    assert summary["route_family_acceptable_rate"] == 1.0
+    assert summary["outcome_ok_rate"] == 1.0
+    assert summary["timeout_count"] == 0
+    assert summary["failure_count"] == 0
+    assert summary["needs_review_cases"] == [{
+        "case": "file-inspect",
+        "source": str(first),
+        "expected_family": "file",
+        "session_id": "s2",
+        "acceptable_families": ["file", "web"],
+        "route_family_acceptable": True,
+        "outcome_ok": True,
+        "timed_out": False,
+    }]
     assert summary["unexpected_families"] == {"web": 1}
     assert summary["tool_errors"] == {"search_files": 1, "web_search": 1}
     assert summary["expected_family_stats"]["web"]["cases"] == 2
     assert summary["expected_family_stats"]["web"]["route_family_ok_rate"] == 1.0
+    assert summary["expected_family_stats"]["file"]["route_family_acceptable_rate"] == 1.0
     assert summary["expected_family_stats"]["file"]["needs_review_cases"] == 1
     assert summary["case_stability"]["web-docs"] == {
         "runs": 2,
         "route_family_ok_values": [True, True],
+        "outcome_ok_values": [True, True],
         "needs_review_values": [False, False],
         "stable_route_family_ok": True,
+        "stable_outcome_ok": True,
         "stable_needs_review": True,
     }
 

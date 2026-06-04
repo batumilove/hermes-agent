@@ -72,6 +72,10 @@ def summarize_runs(runs: list[tuple[Path, dict[str, Any]]]) -> dict[str, Any]:
 
     total_cases = len(cases)
     ok_count = sum(1 for _, case in cases if case.get("route_family_ok") is True)
+    acceptable_count = sum(1 for _, case in cases if case.get("route_family_acceptable", case.get("route_family_ok")) is True)
+    outcome_ok_count = sum(1 for _, case in cases if case.get("outcome_ok", case.get("route_family_ok")) is True)
+    timeout_count = sum(1 for _, case in cases if case.get("timed_out") is True or case.get("returncode") == 124)
+    failure_count = sum(1 for _, case in cases if case.get("returncode") not in (0, None, 124) and case.get("timed_out") is not True)
 
     unexpected_counter: Counter[str] = Counter()
     tool_error_counter: Counter[str] = Counter()
@@ -82,6 +86,10 @@ def summarize_runs(runs: list[tuple[Path, dict[str, Any]]]) -> dict[str, Any]:
             "mismatch_events": 0,
             "needs_review_cases": 0,
             "route_family_ok_cases": 0,
+            "route_family_acceptable_cases": 0,
+            "outcome_ok_cases": 0,
+            "timeout_cases": 0,
+            "failure_cases": 0,
             "unexpected_families": {},
             "tool_errors": {},
         }
@@ -97,6 +105,10 @@ def summarize_runs(runs: list[tuple[Path, dict[str, Any]]]) -> dict[str, Any]:
         errors = _as_int(case.get("errors"))
         needs_review = bool(case.get("needs_review"))
         route_family_ok = case.get("route_family_ok") is True
+        route_family_acceptable = case.get("route_family_acceptable", case.get("route_family_ok")) is True
+        outcome_ok = case.get("outcome_ok", case.get("route_family_ok")) is True
+        timed_out = case.get("timed_out") is True or case.get("returncode") == 124
+        failed = case.get("returncode") not in (0, None, 124) and case.get("timed_out") is not True
 
         stats = family_stats[expected]
         stats["cases"] += 1
@@ -104,6 +116,10 @@ def summarize_runs(runs: list[tuple[Path, dict[str, Any]]]) -> dict[str, Any]:
         stats["mismatch_events"] += mismatches
         stats["needs_review_cases"] += 1 if needs_review else 0
         stats["route_family_ok_cases"] += 1 if route_family_ok else 0
+        stats["route_family_acceptable_cases"] += 1 if route_family_acceptable else 0
+        stats["outcome_ok_cases"] += 1 if outcome_ok else 0
+        stats["timeout_cases"] += 1 if timed_out else 0
+        stats["failure_cases"] += 1 if failed else 0
 
         if needs_review:
             needs_review_cases.append(
@@ -112,6 +128,10 @@ def summarize_runs(runs: list[tuple[Path, dict[str, Any]]]) -> dict[str, Any]:
                     "source": str(source),
                     "expected_family": expected,
                     "session_id": str(case.get("session_id") or ""),
+                    "acceptable_families": list(case.get("acceptable_families") or [expected]),
+                    "route_family_acceptable": route_family_acceptable,
+                    "outcome_ok": outcome_ok,
+                    "timed_out": timed_out,
                 }
             )
 
@@ -128,6 +148,10 @@ def summarize_runs(runs: list[tuple[Path, dict[str, Any]]]) -> dict[str, Any]:
         repeated[name].append(
             {
                 "route_family_ok": route_family_ok,
+                "route_family_acceptable": route_family_acceptable,
+                "outcome_ok": outcome_ok,
+                "timed_out": timed_out,
+                "failed": failed,
                 "needs_review": needs_review,
             }
         )
@@ -138,6 +162,8 @@ def summarize_runs(runs: list[tuple[Path, dict[str, Any]]]) -> dict[str, Any]:
         expected_family_stats[family] = {
             **stats,
             "route_family_ok_rate": round(stats["route_family_ok_cases"] / case_count, 4) if case_count else 0.0,
+            "route_family_acceptable_rate": round(stats["route_family_acceptable_cases"] / case_count, 4) if case_count else 0.0,
+            "outcome_ok_rate": round(stats["outcome_ok_cases"] / case_count, 4) if case_count else 0.0,
         }
 
     case_stability: dict[str, dict[str, Any]] = {}
@@ -145,12 +171,15 @@ def summarize_runs(runs: list[tuple[Path, dict[str, Any]]]) -> dict[str, Any]:
         if len(items) < 2:
             continue
         ok_values = [bool(item["route_family_ok"]) for item in items]
+        outcome_values = [bool(item["outcome_ok"]) for item in items]
         review_values = [bool(item["needs_review"]) for item in items]
         case_stability[name] = {
             "runs": len(items),
             "route_family_ok_values": ok_values,
+            "outcome_ok_values": outcome_values,
             "needs_review_values": review_values,
             "stable_route_family_ok": len(set(ok_values)) == 1,
+            "stable_outcome_ok": len(set(outcome_values)) == 1,
             "stable_needs_review": len(set(review_values)) == 1,
         }
 
@@ -167,6 +196,12 @@ def summarize_runs(runs: list[tuple[Path, dict[str, Any]]]) -> dict[str, Any]:
         "mismatch_event_count": mismatch_event_count,
         "review_case_count": review_case_count,
         "route_family_ok_rate": round(ok_count / total_cases, 4) if total_cases else 0.0,
+        "route_family_acceptable_rate": round(acceptable_count / total_cases, 4) if total_cases else 0.0,
+        "outcome_ok_rate": round(outcome_ok_count / total_cases, 4) if total_cases else 0.0,
+        "route_family_acceptable_count": acceptable_count,
+        "outcome_ok_count": outcome_ok_count,
+        "timeout_count": timeout_count,
+        "failure_count": failure_count,
         "needs_review_cases": needs_review_cases,
         "unexpected_families": dict(sorted(unexpected_counter.items())),
         "tool_errors": dict(tool_error_counter.most_common()),
@@ -194,6 +229,9 @@ def format_text(summary: dict[str, Any]) -> str:
         )
     )
     lines.append(f"route_family_ok rate: {summary.get('route_family_ok_rate', 0.0)}")
+    lines.append(f"route_family_acceptable rate: {summary.get('route_family_acceptable_rate', 0.0)}")
+    lines.append(f"outcome_ok rate: {summary.get('outcome_ok_rate', 0.0)}")
+    lines.append(f"timeouts: {summary.get('timeout_count', 0)} | failures: {summary.get('failure_count', 0)}")
 
     needs_review = summary.get("needs_review_cases") or []
     lines.append(f"needs_review cases: {len(needs_review)}")
@@ -219,7 +257,7 @@ def format_text(summary: dict[str, Any]) -> str:
         lines.append("Per expected family:")
         for family, row in stats.items():
             lines.append(
-                "- expected_family={family}: cases={cases}, events={events}, ok_rate={route_family_ok_rate}, review_cases={needs_review_cases}, mismatches={mismatch_events}".format(
+                "- expected_family={family}: cases={cases}, events={events}, ok_rate={route_family_ok_rate}, acceptable_rate={route_family_acceptable_rate}, outcome_ok_rate={outcome_ok_rate}, review_cases={needs_review_cases}, timeouts={timeout_cases}, failures={failure_cases}, mismatches={mismatch_events}".format(
                     family=family, **row
                 )
             )
@@ -229,7 +267,7 @@ def format_text(summary: dict[str, Any]) -> str:
         lines.append("Repeated case stability:")
         for name, row in stability.items():
             lines.append(
-                f"- {name}: runs={row.get('runs')}, route_family_ok_stable={row.get('stable_route_family_ok')}, needs_review_stable={row.get('stable_needs_review')}"
+                f"- {name}: runs={row.get('runs')}, route_family_ok_stable={row.get('stable_route_family_ok')}, outcome_ok_stable={row.get('stable_outcome_ok')}, needs_review_stable={row.get('stable_needs_review')}"
             )
     return "\n".join(lines)
 

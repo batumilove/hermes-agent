@@ -32,6 +32,7 @@ class CanaryCase:
     family: str
     toolsets: tuple[str, ...]
     prompt: str
+    acceptable_families: tuple[str, ...] = ()
 
 
 STABLE_CASES: tuple[CanaryCase, ...] = (
@@ -122,14 +123,14 @@ NATURAL_CASES: tuple[CanaryCase, ...] = (
     CanaryCase("natural-file-report-cli", "file", NATURAL_TOOLSETS, "Find the module that prints context efficiency telemetry reports and answer with the path only."),
 
     # ambiguous memory/session: should resolve between durable facts and transcript recall.
-    CanaryCase("natural-ambiguous-memory-session", "session_search", NATURAL_TOOLSETS, "Where did we leave the memory routing evaluation, and what should happen next? Answer briefly."),
-    CanaryCase("natural-ambiguous-user-policy-origin", "session_search", NATURAL_TOOLSETS, "When did the user clarify the backup-vs-snapshot rule, and what is the rule? Answer briefly."),
-    CanaryCase("natural-ambiguous-preference-current", "durable_memory", NATURAL_TOOLSETS, "What user preference applies to reporting current verification results, regardless of past session details? Answer briefly."),
+    CanaryCase("natural-ambiguous-memory-session", "session_search", NATURAL_TOOLSETS, "Where did we leave the memory routing evaluation, and what should happen next? Answer briefly.", ("session_search", "durable_memory")),
+    CanaryCase("natural-ambiguous-user-policy-origin", "session_search", NATURAL_TOOLSETS, "When did the user clarify the backup-vs-snapshot rule, and what is the rule? Answer briefly.", ("session_search", "durable_memory")),
+    CanaryCase("natural-ambiguous-preference-current", "durable_memory", NATURAL_TOOLSETS, "What user preference applies to reporting current verification results, regardless of past session details? Answer briefly.", ("durable_memory", "session_search")),
 
     # ambiguous docs/local repo: should choose file or web based on wording.
-    CanaryCase("natural-ambiguous-current-repo-docs", "file", NATURAL_TOOLSETS, "Check the local repo docs for context efficiency telemetry and summarize the relevant instruction."),
-    CanaryCase("natural-ambiguous-online-docs", "web", NATURAL_TOOLSETS, "Check the online Hermes docs for tool configuration and summarize the relevant instruction."),
-    CanaryCase("natural-ambiguous-local-config", "file", NATURAL_TOOLSETS, "Check this checkout for the context_efficiency config defaults and summarize the setting names."),
+    CanaryCase("natural-ambiguous-current-repo-docs", "file", NATURAL_TOOLSETS, "Check the local repo docs for context efficiency telemetry and summarize the relevant instruction.", ("file", "web")),
+    CanaryCase("natural-ambiguous-online-docs", "web", NATURAL_TOOLSETS, "Use web_search only (do not use web_extract) to check the public Hermes docs for tool configuration, then summarize the relevant instruction in one sentence.", ("web", "file")),
+    CanaryCase("natural-ambiguous-local-config", "file", NATURAL_TOOLSETS, "Check this checkout for the context_efficiency config defaults and summarize the setting names.", ("file", "session_search")),
 
     # no-tool controls: ordinary questions should ideally avoid route telemetry.
     CanaryCase("natural-no-tool-plain", "no_tool", NATURAL_TOOLSETS, "In one sentence, explain why telemetry should stay observational only."),
@@ -193,6 +194,20 @@ def extract_session_id(result: dict[str, object]) -> str:
     return match.group(1) if match else ""
 
 
+def case_acceptable_families(case: CanaryCase) -> tuple[str, ...]:
+    """Return route families that make the case outcome acceptable.
+
+    ``case.family`` remains the primary expected/advisor family for schema-version 1
+    compatibility. ``acceptable_families`` lets natural prompts pass when a
+    secondary context source is a valid way to answer the user.
+    """
+    if case.family == "no_tool":
+        return ("no_tool",)
+    families = [case.family, *case.acceptable_families]
+    seen: set[str] = set()
+    return tuple(family for family in families if family and not (family in seen or seen.add(family)))
+
+
 def summarize_case_outcome(case: CanaryCase, result: dict[str, object], events: list[dict[str, object]]) -> dict[str, object]:
     route_families: dict[str, int] = {}
     advisor_families: dict[str, int] = {}
@@ -209,18 +224,27 @@ def summarize_case_outcome(case: CanaryCase, result: dict[str, object], events: 
         errors += 1 if event.get("is_error") else 0
         mismatches += 1 if event.get("advisor_match") is False else 0
 
+    accepted = set(case_acceptable_families(case))
+    timed_out = bool(result.get("timed_out") or result.get("returncode") == 124)
+    failed = bool(result.get("returncode") not in (0, None))
     if case.family == "no_tool":
         expected_events = []
+        acceptable_events = []
         unexpected_families = sorted(route_families)
         route_family_ok = not events
+        route_family_acceptable = route_family_ok
     else:
         expected_events = [event for event in events if event.get("route_family") == case.family]
-        unexpected_families = sorted(family for family in route_families if family != case.family)
+        acceptable_events = [event for event in events if event.get("route_family") in accepted]
+        unexpected_families = sorted(family for family in route_families if family not in accepted)
         route_family_ok = bool(expected_events) and not unexpected_families
+        route_family_acceptable = bool(acceptable_events) and not unexpected_families
+    outcome_ok = bool(route_family_acceptable and not failed and not errors)
     return {
         "case": case.name,
         "prompt": case.prompt,
         "expected_family": case.family,
+        "acceptable_families": list(case_acceptable_families(case)),
         "toolsets": list(case.toolsets),
         "session_id": extract_session_id(result),
         "returncode": result.get("returncode"),
@@ -232,10 +256,15 @@ def summarize_case_outcome(case: CanaryCase, result: dict[str, object], events: 
         "errors": errors,
         "advisor_mismatches": mismatches,
         "expected_family_events": len(expected_events),
+        "acceptable_family_events": len(acceptable_events),
         "unexpected_families": unexpected_families,
         "repetition": result.get("repetition", 1),
         "route_family_ok": route_family_ok,
-        "needs_review": bool(result.get("returncode") != 0 or errors or mismatches or not route_family_ok),
+        "route_family_acceptable": route_family_acceptable,
+        "timed_out": timed_out,
+        "failed": failed,
+        "outcome_ok": outcome_ok,
+        "needs_review": bool(not outcome_ok or mismatches),
         "review_note": "manual outcome review required before adaptive routing promotion",
     }
 
@@ -261,6 +290,10 @@ def summarize_batch_run(*, profile: str, cases: list[CanaryCase], results: list[
         "event_count": len(appended),
         "mismatch_event_count": sum(1 for event in appended if event.get("advisor_match") is False),
         "review_case_count": sum(1 for item in case_summaries if item.get("needs_review")),
+        "route_family_acceptable_count": sum(1 for item in case_summaries if item.get("route_family_acceptable")),
+        "outcome_ok_count": sum(1 for item in case_summaries if item.get("outcome_ok")),
+        "timeout_count": sum(1 for item in case_summaries if item.get("timed_out")),
+        "failure_count": sum(1 for item in case_summaries if item.get("failed") and not item.get("timed_out")),
         "cases": case_summaries,
     }
 

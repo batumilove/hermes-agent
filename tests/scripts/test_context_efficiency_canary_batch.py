@@ -34,6 +34,16 @@ def test_natural_cases_cover_required_families_and_controls():
     assert any("ambiguous" in case.name and case.family == "web" for case in natural)
 
 
+def test_natural_ambiguous_cases_declare_realistic_acceptable_families():
+    natural = {case.name: case for case in canary.select_cases(["all"], natural=True)}
+
+    assert canary.case_acceptable_families(natural["natural-ambiguous-memory-session"]) == ("session_search", "durable_memory")
+    assert canary.case_acceptable_families(natural["natural-ambiguous-preference-current"]) == ("durable_memory", "session_search")
+    assert canary.case_acceptable_families(natural["natural-ambiguous-online-docs"]) == ("web", "file")
+    assert "web_search only" in natural["natural-ambiguous-online-docs"].prompt
+    assert "do not use web_extract" in natural["natural-ambiguous-online-docs"].prompt
+
+
 def test_expand_repetitions_preserves_batch_order():
     cases = [
         canary.CanaryCase("web-case", "web", ("web",), "Find current docs URL"),
@@ -58,10 +68,75 @@ def test_summarize_case_outcome_flags_route_family_and_mismatch_review():
     assert summary["session_id"] == "sess1"
     assert summary["event_count"] == 2
     assert summary["expected_family_events"] == 1
+    assert summary["acceptable_family_events"] == 1
     assert summary["unexpected_families"] == ["file"]
     assert summary["advisor_mismatches"] == 1
     assert summary["route_family_ok"] is False
+    assert summary["route_family_acceptable"] is False
+    assert summary["outcome_ok"] is False
     assert summary["needs_review"] is True
+
+
+def test_summarize_case_outcome_allows_secondary_acceptable_family():
+    case = canary.CanaryCase("docs-case", "web", ("web", "file"), "Find docs", ("web", "file"))
+    result = {"returncode": 0, "stdout": "docs", "stderr": "session_id: sess1"}
+    events = [
+        {"session_id": "sess1", "route": "search_files", "route_family": "file", "advisor_family": "file", "advisor_match": True, "is_error": False},
+    ]
+
+    summary = canary.summarize_case_outcome(case, result, events)
+
+    assert summary["acceptable_families"] == ["web", "file"]
+    assert summary["expected_family_events"] == 0
+    assert summary["acceptable_family_events"] == 1
+    assert summary["unexpected_families"] == []
+    assert summary["route_family_ok"] is False
+    assert summary["route_family_acceptable"] is True
+    assert summary["outcome_ok"] is True
+    assert summary["needs_review"] is False
+
+
+def test_summarize_case_outcome_buckets_timeouts_and_failures():
+    case = canary.CanaryCase("web-case", "web", ("web",), "Find current docs URL")
+
+    timed = canary.summarize_case_outcome(case, {"returncode": 124, "timed_out": True, "stderr": "session_id: timeout"}, [])
+    failed = canary.summarize_case_outcome(case, {"returncode": 2, "stderr": "session_id: fail"}, [])
+
+    assert timed["timed_out"] is True
+    assert timed["failed"] is True
+    assert timed["outcome_ok"] is False
+    assert failed["timed_out"] is False
+    assert failed["failed"] is True
+
+
+def test_summarize_case_outcome_accepts_secondary_family_but_keeps_mismatch_separate():
+    case = canary.CanaryCase("natural-ambiguous-memory-session", "session_search", ("memory", "session_search"), "Where did we leave it?", ("durable_memory",))
+    result = {"returncode": 0, "stdout": "next step", "stderr": "session_id: sess2"}
+    events = [
+        {"session_id": "sess2", "route": "honcho_search", "route_family": "durable_memory", "advisor_family": "session_search", "advisor_match": False, "is_error": False},
+    ]
+
+    summary = canary.summarize_case_outcome(case, result, events)
+
+    assert summary["acceptable_families"] == ["session_search", "durable_memory"]
+    assert summary["route_family_ok"] is False
+    assert summary["route_family_acceptable"] is True
+    assert summary["outcome_ok"] is True
+    assert summary["advisor_mismatches"] == 1
+    assert summary["needs_review"] is True
+
+
+def test_summarize_case_outcome_buckets_timeouts_and_failures():
+    case = canary.CanaryCase("web-case", "web", ("web",), "Find current docs URL")
+
+    timed = canary.summarize_case_outcome(case, {"returncode": 124, "timed_out": True, "stderr": "session_id: timeout"}, [])
+    failed = canary.summarize_case_outcome(case, {"returncode": 2, "stderr": "session_id: fail"}, [])
+
+    assert timed["timed_out"] is True
+    assert timed["failed"] is True
+    assert timed["outcome_ok"] is False
+    assert failed["timed_out"] is False
+    assert failed["failed"] is True
 
 
 def test_summarize_case_outcome_allows_no_tool_controls_without_events():
@@ -73,6 +148,8 @@ def test_summarize_case_outcome_allows_no_tool_controls_without_events():
     assert summary["repetition"] == 2
     assert summary["event_count"] == 0
     assert summary["route_family_ok"] is True
+    assert summary["route_family_acceptable"] is True
+    assert summary["outcome_ok"] is True
     assert summary["needs_review"] is False
 
 
@@ -113,5 +190,9 @@ def test_summarize_batch_run_groups_appended_events_by_case_session_and_repeat()
     assert summary["case_count"] == 4
     assert summary["event_count"] == 4
     assert summary["review_case_count"] == 0
+    assert summary["route_family_acceptable_count"] == 4
+    assert summary["outcome_ok_count"] == 4
+    assert summary["timeout_count"] == 0
+    assert summary["failure_count"] == 0
     assert [case["session_id"] for case in summary["cases"]] == ["s1", "s2", "s3", "s4"]
     assert [case["repetition"] for case in summary["cases"]] == [1, 1, 2, 2]
