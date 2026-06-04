@@ -498,6 +498,10 @@ class TestManifestMatchesInRepoLists:
         assert "zai" in providers
         assert "qwen-oauth" in providers
         assert "lmstudio" in providers
+        assert "kimi-coding" in providers
+        assert "kimi-coding-cn" in providers
+        assert "kimi-for-coding" not in providers
+        assert "moonshot" not in providers
         assert providers["zai"]["models"][0]["id"] == "glm-5.1"
         assert providers["zai"]["metadata"]["env_vars"] == [
             "GLM_API_KEY",

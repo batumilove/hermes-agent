@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-06-04T07:42:57Z",
+  "updated_at": "2026-06-04T07:48:34Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -355,22 +355,6 @@
         }
       ]
     },
-    "github-copilot": {
-      "metadata": {
-        "display_name": "github-copilot",
-        "auth_type": "api_key",
-        "env_vars": [
-          "COPILOT_GITHUB_TOKEN",
-          "GH_TOKEN",
-          "GITHUB_TOKEN"
-        ],
-        "base_url": "https://api.githubcopilot.com",
-        "transport": "openai_chat",
-        "dynamic_models": true,
-        "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
-      },
-      "models": []
-    },
     "gmi": {
       "metadata": {
         "display_name": "GMI Cloud",
@@ -472,22 +456,6 @@
         }
       ]
     },
-    "kilo": {
-      "metadata": {
-        "display_name": "kilo",
-        "auth_type": "api_key",
-        "env_vars": [
-          "KILOCODE_API_KEY"
-        ],
-        "base_url": "https://api.kilo.ai/api/gateway",
-        "base_url_env_var": "KILOCODE_BASE_URL",
-        "transport": "openai_chat",
-        "aggregator": true,
-        "dynamic_models": true,
-        "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
-      },
-      "models": []
-    },
     "kilocode": {
       "metadata": {
         "display_name": "Kilo Code",
@@ -580,22 +548,6 @@
           "id": "kimi-k2-0905-preview"
         }
       ]
-    },
-    "kimi-for-coding": {
-      "metadata": {
-        "display_name": "kimi-for-coding",
-        "auth_type": "api_key",
-        "env_vars": [
-          "KIMI_API_KEY",
-          "KIMI_CODING_API_KEY"
-        ],
-        "base_url": "https://api.moonshot.ai/v1",
-        "base_url_env_var": "KIMI_BASE_URL",
-        "transport": "openai_chat",
-        "dynamic_models": true,
-        "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
-      },
-      "models": []
     },
     "lmstudio": {
       "metadata": {
@@ -692,35 +644,6 @@
         },
         {
           "id": "MiniMax-M2.7-highspeed"
-        }
-      ]
-    },
-    "moonshot": {
-      "metadata": {
-        "display_name": "moonshot",
-        "auth_type": "api_key",
-        "env_vars": [
-          "KIMI_API_KEY",
-          "KIMI_CODING_API_KEY"
-        ],
-        "base_url": "https://api.moonshot.ai/v1",
-        "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
-      },
-      "models": [
-        {
-          "id": "kimi-k2.6"
-        },
-        {
-          "id": "kimi-k2.5"
-        },
-        {
-          "id": "kimi-k2-thinking"
-        },
-        {
-          "id": "kimi-k2-turbo-preview"
-        },
-        {
-          "id": "kimi-k2-0905-preview"
         }
       ]
     },
@@ -1003,22 +926,6 @@
           "id": "gpt-5.3-codex-spark"
         }
       ]
-    },
-    "opencode": {
-      "metadata": {
-        "display_name": "opencode",
-        "auth_type": "api_key",
-        "env_vars": [
-          "OPENCODE_ZEN_API_KEY"
-        ],
-        "base_url": "https://opencode.ai/zen/v1",
-        "base_url_env_var": "OPENCODE_ZEN_BASE_URL",
-        "transport": "openai_chat",
-        "aggregator": true,
-        "dynamic_models": true,
-        "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
-      },
-      "models": []
     },
     "opencode-go": {
       "metadata": {

@@ -120,6 +120,18 @@ def build_catalog() -> dict:
     for provider in sorted(provider_names):
         if provider == "openrouter":
             continue
+        # Keep the public catalog to canonical Hermes provider rows.  Several
+        # sources expose alias/provider-family names (for example models.dev's
+        # ``kimi-for-coding`` or Hermes' legacy ``moonshot`` alias) that resolve
+        # to the same runtime provider.  Those remain accepted aliases in the
+        # CLI, but publishing them as provider blocks makes the catalog look
+        # like Hermes has duplicate providers.
+        profile = get_provider_profile(provider)
+        is_canonical_auth = provider in PROVIDER_REGISTRY and PROVIDER_REGISTRY[provider].id == provider
+        if profile and profile.name != provider and not is_canonical_auth:
+            continue
+        if provider in {"moonshot"}:
+            continue
         providers[provider] = {
             "metadata": _provider_metadata(
                 provider,
