@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from utils import is_truthy_value
 
@@ -159,6 +159,26 @@ def prefers_gateway(config_section: str) -> bool:
     except Exception:
         pass
     return False
+
+
+def load_tool_fallbacks(config_section: str) -> List[Dict[str, Any]]:
+    """Return configured fallback entries for a tool section.
+
+    Reads ``tool_fallbacks.<section>`` from config.yaml. Invalid/non-dict
+    entries are ignored so a bad fallback block cannot break tool startup.
+    Tool implementations decide which keys they understand (provider, backend,
+    model, use_gateway, etc.).
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        fallbacks = cfg.get("tool_fallbacks") if isinstance(cfg, dict) else None
+        entries = fallbacks.get(config_section) if isinstance(fallbacks, dict) else None
+        if not isinstance(entries, list):
+            return []
+        return [dict(entry) for entry in entries if isinstance(entry, dict)]
+    except Exception:
+        return []
 
 
 def fal_key_is_configured() -> bool:

@@ -129,6 +129,7 @@ class FalImageGenProvider(ImageGenProvider):
             raw = _it.image_generate_tool(
                 prompt=prompt,
                 aspect_ratio=aspect,
+                model=kwargs.get("model"),
                 **passthrough,
             )
         except Exception as exc:  # noqa: BLE001 — never raise out of generate

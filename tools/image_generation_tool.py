@@ -68,6 +68,7 @@ from tools.tool_backend_helpers import (
     managed_nous_tools_enabled,
     nous_tool_gateway_unavailable_message,
     prefers_gateway,
+    load_tool_fallbacks,
 )
 
 logger = logging.getLogger(__name__)
@@ -614,6 +615,7 @@ def image_generate_tool(
     num_images: Optional[int] = None,
     output_format: Optional[str] = None,
     seed: Optional[int] = None,
+    model: Optional[str] = None,
 ) -> str:
     """Generate an image from a text prompt using the configured FAL model.
 
@@ -626,6 +628,15 @@ def image_generate_tool(
     "error": str, "error_type": str}``.
     """
     model_id, meta = _resolve_fal_model()
+    if model:
+        requested_model = str(model).strip()
+        if requested_model in FAL_MODELS:
+            model_id, meta = requested_model, FAL_MODELS[requested_model]
+        elif requested_model:
+            logger.warning(
+                "Unknown FAL model override '%s'; using configured/default %s",
+                requested_model, model_id,
+            )
 
     debug_call_data = {
         "model": model_id,
@@ -1030,11 +1041,78 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
     return json.dumps(result)
 
 
+def _image_generate_with_fallbacks(prompt: str, aspect_ratio: str) -> Optional[str]:
+    """Try configured ``tool_fallbacks.image_gen`` entries in order."""
+    entries = load_tool_fallbacks("image_gen")
+    if not entries:
+        return None
+
+    attempts = []
+    try:
+        from agent.image_gen_registry import get_provider
+        from hermes_cli.plugins import _ensure_plugins_discovered
+        _ensure_plugins_discovered()
+    except Exception:
+        get_provider = None  # type: ignore[assignment]
+
+    for entry in entries:
+        provider_name = str(entry.get("provider") or "fal").strip().lower()
+        model = entry.get("model")
+        try:
+            if provider_name == "fal":
+                raw = image_generate_tool(
+                    prompt=prompt,
+                    aspect_ratio=aspect_ratio,
+                    model=str(model).strip() if model else None,
+                )
+                data = json.loads(raw)
+            elif get_provider is not None:
+                provider = get_provider(provider_name)
+                if provider is None:
+                    raise RuntimeError(f"image provider '{provider_name}' is not registered")
+                kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio}
+                if model:
+                    kwargs["model"] = str(model).strip()
+                data = provider.generate(**kwargs)
+            else:
+                raise RuntimeError("image provider registry is unavailable")
+
+            if isinstance(data, dict) and data.get("success"):
+                data.setdefault("provider", provider_name)
+                if model:
+                    data.setdefault("model", str(model).strip())
+                if attempts:
+                    data["fallback_attempts"] = attempts
+                    data["fallback_used"] = True
+                return json.dumps(data, indent=2, ensure_ascii=False)
+
+            err = data.get("error") if isinstance(data, dict) else "provider returned non-dict"
+            attempts.append({"provider": provider_name, "model": model, "error": str(err)})
+        except Exception as exc:
+            attempts.append({"provider": provider_name, "model": model, "error": str(exc)})
+            logger.warning(
+                "Image fallback %s/%s failed: %s", provider_name, model, exc,
+                exc_info=True,
+            )
+
+    return json.dumps({
+        "success": False,
+        "image": None,
+        "error": "All image generation fallbacks failed",
+        "error_type": "all_fallbacks_failed",
+        "fallback_attempts": attempts,
+    }, indent=2, ensure_ascii=False)
+
+
 def _handle_image_generate(args, **kw):
     prompt = args.get("prompt", "")
     if not prompt:
         return tool_error("prompt is required for image generation")
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
+
+    fallback_result = _image_generate_with_fallbacks(prompt, aspect_ratio)
+    if fallback_result is not None:
+        return fallback_result
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).

@@ -74,6 +74,7 @@ from tools.tool_backend_helpers import (
     nous_tool_gateway_unavailable_message,
     prefers_gateway,
     resolve_openai_audio_api_key,
+    load_tool_fallbacks,
 )
 from tools.xai_http import hermes_xai_user_agent
 
@@ -1834,7 +1835,7 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
 # ===========================================================================
 # Main tool function
 # ===========================================================================
-def text_to_speech_tool(
+def _text_to_speech_once(
     text: str,
     output_path: Optional[str] = None,
 ) -> str:
@@ -2537,6 +2538,62 @@ TTS_SCHEMA = {
         "required": ["text"]
     }
 }
+
+def text_to_speech_tool(
+    text: str,
+    output_path: Optional[str] = None,
+) -> str:
+    """Convert text to speech, trying configured ``tool_fallbacks.tts`` entries."""
+    entries = load_tool_fallbacks("tts")
+    if not entries:
+        return _text_to_speech_once(text, output_path)
+
+    base_config = _load_tts_config()
+    attempts = []
+    original_loader = _load_tts_config
+    for entry in entries:
+        provider = str(entry.get("provider") or "").strip().lower()
+        if not provider:
+            continue
+        candidate_config = dict(base_config)
+        candidate_config["provider"] = provider
+        if "use_gateway" in entry:
+            candidate_config["use_gateway"] = entry.get("use_gateway")
+        for key, value in entry.items():
+            if key in {"provider", "use_gateway"}:
+                continue
+            if isinstance(value, dict):
+                merged = dict(candidate_config.get(key) or {})
+                merged.update(value)
+                candidate_config[key] = merged
+            else:
+                # Model/voice style shorthand applies to the selected provider block.
+                section = dict(candidate_config.get(provider) or {})
+                section[key] = value
+                candidate_config[provider] = section
+        try:
+            globals()["_load_tts_config"] = lambda cfg=candidate_config: cfg
+            raw = _text_to_speech_once(text, output_path)
+            data = json.loads(raw)
+            if isinstance(data, dict) and data.get("success"):
+                data.setdefault("provider", provider)
+                if attempts:
+                    data["fallback_used"] = True
+                    data["fallback_attempts"] = attempts
+                return json.dumps(data, ensure_ascii=False)
+            attempts.append({"provider": provider, "error": str(data.get("error", "TTS failed"))})
+        except Exception as exc:
+            attempts.append({"provider": provider, "error": str(exc)})
+            logger.warning("TTS fallback %s failed: %s", provider, exc, exc_info=True)
+        finally:
+            globals()["_load_tts_config"] = original_loader
+
+    return json.dumps({
+        "success": False,
+        "error": "All TTS fallbacks failed",
+        "fallback_attempts": attempts,
+    }, ensure_ascii=False)
+
 
 registry.register(
     name="text_to_speech",

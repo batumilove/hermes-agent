@@ -101,6 +101,7 @@ from tools.tool_backend_helpers import (  # noqa: F401
     managed_nous_tools_enabled,
     nous_tool_gateway_unavailable_message,
     prefers_gateway,
+    load_tool_fallbacks,
 )
 from tools.url_safety import is_safe_url
 import sys
@@ -191,6 +192,42 @@ def _get_capability_backend(capability: str) -> str:
     if specific and _is_backend_available(specific):
         return specific
     return _get_backend()
+
+
+def _web_fallback_backends(capability: str) -> List[str]:
+    """Return configured backend fallback order for search/extract."""
+    seen = set()
+    backends: List[str] = []
+    for entry in load_tool_fallbacks("web"):
+        backend = str(
+            entry.get(f"{capability}_backend") or entry.get("backend") or ""
+        ).lower().strip()
+        if backend and backend not in seen:
+            seen.add(backend)
+            backends.append(backend)
+    primary = _get_capability_backend(capability)
+    if primary and primary not in seen:
+        backends.append(primary)
+    return backends
+
+
+def _is_fallbackable_web_error(error: Any) -> bool:
+    """Return True when a backend error should try the next fallback."""
+    text = str(error or "").lower()
+    non_retryable = (
+        "url contains what appears to be an api key",
+        "private or internal network",
+        "search-only backend",
+    )
+    return not any(marker in text for marker in non_retryable)
+
+
+def _annotate_web_fallback_success(data: Dict[str, Any], provider: str, attempts: List[Dict[str, str]]) -> Dict[str, Any]:
+    if attempts:
+        data.setdefault("provider", provider)
+        data["fallback_used"] = True
+        data["fallback_attempts"] = attempts
+    return data
 
 
 def _is_backend_available(backend: str) -> bool:
@@ -832,28 +869,74 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             get_provider as _wsp_get_provider,
         )
 
-        backend = _get_search_backend()
-        provider = _wsp_get_provider(backend) if backend else None
-        if provider is None or not provider.supports_search():
-            # Fall back to availability-walked active provider when the
-            # configured backend isn't a registered search provider (typo,
-            # uninstalled plugin, or capability mismatch).
-            provider = get_active_search_provider()
-
-        if provider is None:
-            response_data = {
-                "success": False,
-                "error": (
-                    "No web search provider configured. "
-                    "Run `hermes tools` to set one up."
-                ),
-            }
+        configured_fallbacks = bool(load_tool_fallbacks("web"))
+        if not configured_fallbacks:
+            backend = _get_search_backend()
+            provider = _wsp_get_provider(backend) if backend else None
+            if provider is None or not provider.supports_search():
+                provider = get_active_search_provider()
+            if provider is None:
+                response_data = {
+                    "success": False,
+                    "error": (
+                        "No web search provider configured. "
+                        "Run `hermes tools` to set one up."
+                    ),
+                }
+            else:
+                logger.info(
+                    "Web search via %s: '%s' (limit: %d)",
+                    provider.name, query, limit,
+                )
+                response_data = provider.search(query, limit)
         else:
-            logger.info(
-                "Web search via %s: '%s' (limit: %d)",
-                provider.name, query, limit,
-            )
-            response_data = provider.search(query, limit)
+            attempts = []
+            response_data = None
+            for backend in _web_fallback_backends("search"):
+                provider = _wsp_get_provider(backend) if backend else None
+                if provider is None or not provider.supports_search():
+                    attempts.append({"backend": backend, "error": "provider unavailable or search unsupported"})
+                    continue
+
+                logger.info(
+                    "Web search via %s: '%s' (limit: %d)",
+                    provider.name, query, limit,
+                )
+                try:
+                    candidate = provider.search(query, limit)
+                except Exception as exc:
+                    attempts.append({"backend": backend, "error": str(exc)})
+                    if not _is_fallbackable_web_error(exc):
+                        break
+                    continue
+                if isinstance(candidate, dict) and candidate.get("success") is False:
+                    err = candidate.get("error", "search failed")
+                    attempts.append({"backend": backend, "error": str(err)})
+                    if not _is_fallbackable_web_error(err):
+                        break
+                    continue
+                response_data = _annotate_web_fallback_success(candidate, provider.name, attempts)
+                break
+
+            if response_data is None:
+                provider = get_active_search_provider()
+                if provider is not None and provider.name not in {a.get("backend") for a in attempts}:
+                    try:
+                        candidate = provider.search(query, limit)
+                        if isinstance(candidate, dict) and candidate.get("success") is not False:
+                            response_data = _annotate_web_fallback_success(candidate, provider.name, attempts)
+                    except Exception as exc:
+                        attempts.append({"backend": provider.name, "error": str(exc)})
+
+            if response_data is None:
+                response_data = {
+                    "success": False,
+                    "error": (
+                        "No web search provider configured or all fallbacks failed. "
+                        "Run `hermes tools` to set one up."
+                    ),
+                    "fallback_attempts": attempts,
+                }
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
@@ -950,71 +1033,41 @@ async def web_extract_tool(
         if not safe_urls:
             results = []
         else:
-            backend = _get_extract_backend()
-
-            # All seven providers (brave-free, ddgs, searxng, exa, parallel,
-            # tavily, firecrawl) now live as plugins. The dispatcher is a
-            # registry lookup + delegation. Some providers' extract() is
-            # async (parallel, firecrawl), others sync (exa, tavily) — we
-            # detect coroutine functions and await; sync functions run
-            # inline (the policy gate, SSRF re-check, etc. live inside the
-            # provider itself for the firecrawl per-URL loop).
+            attempts = []
+            results = None
             _ensure_web_plugins_loaded()
-            from agent.web_search_registry import (
-                get_active_extract_provider,
-                get_provider as _wsp_get_provider,
-            )
-
-            provider = _wsp_get_provider(backend) if backend else None
-            if provider is None or not provider.supports_extract():
-                # When the configured name IS registered but doesn't support
-                # extract (search-only providers like brave-free / ddgs /
-                # searxng), surface that as a typed "search-only" error
-                # rather than silently switching backends. When the name
-                # isn't registered at all (typo / uninstalled plugin), fall
-                # through to the active-provider walk.
-                if provider is not None and not provider.supports_extract():
-                    return json.dumps(
-                        {
-                            "success": False,
-                            "error": (
-                                f"{provider.display_name} is a search-only "
-                                "backend and cannot extract URL content. "
-                                "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
-                            ),
-                        },
-                        ensure_ascii=False,
-                    )
-                provider = get_active_extract_provider()
-                if provider is None:
-                    return json.dumps(
-                        {
-                            "success": False,
-                            "error": (
-                                "No web extract provider configured. "
-                                "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
-                            ),
-                        },
-                        ensure_ascii=False,
-                    )
-
-            logger.info(
-                "Web extract via %s: %d URL(s)", provider.name, len(safe_urls)
-            )
-
-            # Async-or-sync dispatch: parallel + firecrawl have async
-            # extract(); exa + tavily are sync.
             import inspect
-            if inspect.iscoroutinefunction(provider.extract):
-                results = await provider.extract(safe_urls, format=format)
-            else:
-                # Run sync extract() in a thread so we don't block the
-                # event loop on network I/O.
-                results = await asyncio.to_thread(
-                    provider.extract, safe_urls, format=format
-                )
+            from agent.web_search_registry import get_provider as _wsp_get_provider
+            for backend in _web_fallback_backends("extract"):
+                provider = _wsp_get_provider(backend) if backend else None
+                if provider is None or not provider.supports_extract():
+                    attempts.append({"backend": backend, "error": "provider unavailable or extract unsupported"})
+                    continue
+                logger.info("Web extract via %s: %d URL(s)", provider.name, len(safe_urls))
+                try:
+                    if inspect.iscoroutinefunction(provider.extract):
+                        candidate = await provider.extract(safe_urls, format=format)
+                    else:
+                        candidate = await asyncio.to_thread(provider.extract, safe_urls, format=format)
+                    # Treat provider-level per-page errors as usable partial results.
+                    results = candidate
+                    if attempts and isinstance(results, list):
+                        for item in results:
+                            if isinstance(item, dict):
+                                item.setdefault("fallback_used", True)
+                                item.setdefault("fallback_attempts", attempts)
+                    break
+                except Exception as exc:
+                    attempts.append({"backend": backend, "error": str(exc)})
+                    if not _is_fallbackable_web_error(exc):
+                        break
+                    continue
+            if results is None:
+                return json.dumps({
+                    "success": False,
+                    "error": "No web extract provider configured or all fallbacks failed.",
+                    "fallback_attempts": attempts,
+                }, ensure_ascii=False)
 
         # Merge any SSRF-blocked results back in
         if ssrf_blocked:
