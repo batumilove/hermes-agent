@@ -12,15 +12,18 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PROFILE = "tdai-canary"
 DEFAULT_LOG_RELATIVE = "logs/context_efficiency-canary.jsonl"
+SESSION_RE = re.compile(r"session_id:\s*([A-Za-z0-9_.:-]+)")
 
 
 @dataclass(frozen=True)
@@ -168,6 +171,86 @@ def read_appended(path: Path, before_count: int) -> list[dict[str, object]]:
     return events
 
 
+def extract_session_id(result: dict[str, object]) -> str:
+    stderr = str(result.get("stderr") or "")
+    match = SESSION_RE.search(stderr)
+    return match.group(1) if match else ""
+
+
+def summarize_case_outcome(case: CanaryCase, result: dict[str, object], events: list[dict[str, object]]) -> dict[str, object]:
+    route_families: dict[str, int] = {}
+    advisor_families: dict[str, int] = {}
+    routes: dict[str, int] = {}
+    errors = 0
+    mismatches = 0
+    for event in events:
+        route_family = str(event.get("route_family") or "unknown")
+        advisor_family = str(event.get("advisor_family") or "unknown")
+        route = str(event.get("route") or "unknown")
+        route_families[route_family] = route_families.get(route_family, 0) + 1
+        advisor_families[advisor_family] = advisor_families.get(advisor_family, 0) + 1
+        routes[route] = routes.get(route, 0) + 1
+        errors += 1 if event.get("is_error") else 0
+        mismatches += 1 if event.get("advisor_match") is False else 0
+
+    expected_events = [event for event in events if event.get("route_family") == case.family]
+    unexpected_families = sorted(family for family in route_families if family != case.family)
+    return {
+        "case": case.name,
+        "prompt": case.prompt,
+        "expected_family": case.family,
+        "toolsets": list(case.toolsets),
+        "session_id": extract_session_id(result),
+        "returncode": result.get("returncode"),
+        "answer_excerpt": str(result.get("stdout") or "")[:1000],
+        "event_count": len(events),
+        "route_families": route_families,
+        "advisor_families": advisor_families,
+        "routes": routes,
+        "errors": errors,
+        "advisor_mismatches": mismatches,
+        "expected_family_events": len(expected_events),
+        "unexpected_families": unexpected_families,
+        "route_family_ok": bool(expected_events) and not unexpected_families,
+        "needs_review": bool(result.get("returncode") != 0 or errors or mismatches or not expected_events or unexpected_families),
+        "review_note": "manual outcome review required before adaptive routing promotion",
+    }
+
+
+def summarize_batch_run(*, profile: str, cases: list[CanaryCase], results: list[dict[str, object]], appended: list[dict[str, object]], log_path: Path, before: int, after: int, natural: bool) -> dict[str, object]:
+    events_by_session: dict[str, list[dict[str, object]]] = {}
+    for event in appended:
+        events_by_session.setdefault(str(event.get("session_id") or ""), []).append(event)
+    case_summaries = []
+    for case, result in zip(cases, results):
+        case_summaries.append(summarize_case_outcome(case, result, events_by_session.get(extract_session_id(result), [])))
+    return {
+        "schema_version": 1,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "profile": profile,
+        "natural": natural,
+        "log_path": str(log_path),
+        "lines_before": before,
+        "lines_after": after,
+        "lines_delta": after - before,
+        "case_count": len(case_summaries),
+        "event_count": len(appended),
+        "mismatch_event_count": sum(1 for event in appended if event.get("advisor_match") is False),
+        "review_case_count": sum(1 for item in case_summaries if item.get("needs_review")),
+        "cases": case_summaries,
+    }
+
+
+def default_run_summary_path(profile: str) -> Path:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return profile_home(profile) / "runs" / "context-route" / f"{stamp}.json"
+
+
+def write_json(path: Path, data: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def select_cases(names: Iterable[str], *, include_experimental: bool = False, natural: bool = False) -> list[CanaryCase]:
     wanted = [name.strip() for name in names if name.strip()]
     default_cases = NATURAL_CASES if natural else (CASES if include_experimental else STABLE_CASES)
@@ -238,6 +321,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--natural", action="store_true", help="Run representative unforced prompts with all context toolsets instead of forced-route smoke cases")
     parser.add_argument("--timeout", type=int, default=180, help="Seconds per Hermes one-shot")
     parser.add_argument("--report-limit", type=int, default=20, help="Number of recent events for final report")
+    parser.add_argument("--write-run-summary", nargs="?", const="auto", default=None, help="Write prompt-level outcome summary JSON; optional path or auto profile runs/context-route/<timestamp>.json")
     parser.add_argument("--dry-run", action="store_true", help="Print selected commands without running Hermes")
     args = parser.parse_args(argv)
 
@@ -272,6 +356,25 @@ def main(argv: list[str] | None = None) -> int:
             "session_id": event.get("session_id"),
         }
         print(json.dumps(compact, ensure_ascii=False, sort_keys=True))
+
+    if args.write_run_summary and not args.dry_run:
+        summary_path = default_run_summary_path(args.profile) if args.write_run_summary == "auto" else Path(args.write_run_summary).expanduser()
+        if not summary_path.is_absolute():
+            summary_path = Path.cwd() / summary_path
+        run_summary = summarize_batch_run(
+            profile=args.profile,
+            cases=cases,
+            results=results,
+            appended=appended,
+            log_path=log_path,
+            before=before,
+            after=after,
+            natural=args.natural,
+        )
+        write_json(summary_path, run_summary)
+        print("\n## run_summary")
+        print(f"path={summary_path}")
+        print(f"cases={run_summary['case_count']} events={run_summary['event_count']} review_cases={run_summary['review_case_count']} mismatches={run_summary['mismatch_event_count']}")
 
     if not args.dry_run:
         print("\n## report")
