@@ -1146,11 +1146,10 @@ def list_authenticated_providers(
     from agent.models_dev import (
         PROVIDER_TO_MODELS_DEV,
         fetch_models_dev,
-        get_provider_info as _mdev_pinfo,
     )
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.models import (
-        OPENROUTER_MODELS, _PROVIDER_MODELS,
+        OPENROUTER_MODELS, _PROVIDER_MODELS, _PROVIDER_LABELS,
         _MODELS_DEV_PREFERRED, _merge_with_models_dev, cached_provider_model_ids,
         get_curated_nous_model_ids,
     )
@@ -1289,23 +1288,16 @@ def list_authenticated_providers(
         curated["lmstudio"] = live
 
     # --- 1. Check Hermes-mapped providers ---
-    from hermes_cli.models import _AGGREGATOR_PROVIDERS as _AGG_PROVIDERS
     from hermes_cli.providers import ALIASES as _PROVIDER_ALIAS_TABLE
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
-        # Skip vendor names that are merely aliases routing through an
-        # aggregator (e.g. bare "openai" → "openrouter"). These are NOT
-        # directly-routable providers: emitting them as their own picker
-        # row produces a phantom entry that, when selected, resolves via
-        # resolve_provider_full() to the aggregator (OpenRouter) — silently
-        # switching a user off their real provider onto an endpoint they
-        # may have no key for (HTTP 401). The user's real provider (e.g.
-        # openai-api, or a providers.openai config row) covers this vendor.
+        # Skip vendor/provider-family names that are merely aliases routing
+        # through another Hermes provider. These are NOT directly-routable
+        # providers: emitting them as their own picker row produces duplicate
+        # or phantom entries (e.g. bare "kimi" / "moonshot" alongside the
+        # canonical "kimi-coding" row, or bare "openai" resolving through an
+        # aggregator). The canonical provider row covers the real target.
         _alias_target = _PROVIDER_ALIAS_TABLE.get(hermes_id)
-        if (
-            _alias_target
-            and _alias_target != hermes_id
-            and _alias_target in _AGG_PROVIDERS
-        ):
+        if _alias_target and _alias_target != hermes_id:
             continue
         # Skip aliases that map to the same models.dev provider (e.g.
         # kimi-coding and kimi-coding-cn both → kimi-for-coding).
@@ -1357,8 +1349,7 @@ def list_authenticated_providers(
         top = model_ids[:max_models]
 
         slug = hermes_id
-        pinfo = _mdev_pinfo(mdev_id)
-        display_name = pinfo.name if pinfo else mdev_id
+        display_name = _PROVIDER_LABELS.get(hermes_id, get_label(hermes_id))
 
         results.append({
             "slug": slug,
@@ -1521,7 +1512,7 @@ def list_authenticated_providers(
 
         results.append({
             "slug": hermes_slug,
-            "name": get_label(hermes_slug),
+            "name": _PROVIDER_LABELS.get(hermes_slug, get_label(hermes_slug)),
             "is_current": hermes_slug == current_provider or pid == current_provider,
             "is_user_defined": False,
             "models": top,

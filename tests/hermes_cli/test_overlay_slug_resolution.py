@@ -56,16 +56,23 @@ def test_kimi_for_coding_alias():
 
 @patch.dict(os.environ, {"KIMI_API_KEY": "fake-key"}, clear=False)
 def test_kimi_for_coding_overlay_uses_hermes_slug():
-    """kimi-for-coding overlay should resolve to slug='kimi-coding'."""
+    """Kimi aliases should collapse to the canonical kimi-coding picker row."""
     providers = list_authenticated_providers(current_provider="kimi-coding")
 
+    kimi_rows = [
+        p for p in providers
+        if "kimi" in p["slug"].lower() or "kimi" in p["name"].lower()
+    ]
     kimi = next((p for p in providers if p["slug"] == "kimi-coding"), None)
     assert kimi is not None, "kimi-coding should appear when KIMI_API_KEY is set"
+    assert kimi["name"] == "Kimi / Kimi Coding Plan"
     assert kimi["is_current"] is True
 
-    # Must NOT appear under the models.dev key
-    kimi_mdev = next((p for p in providers if p["slug"] == "kimi-for-coding"), None)
-    assert kimi_mdev is None, "kimi-for-coding slug should not appear (resolved to kimi-coding)"
+    # Must NOT appear under alias / models.dev labels.
+    assert next((p for p in providers if p["slug"] == "kimi"), None) is None
+    assert next((p for p in providers if p["slug"] == "moonshot"), None) is None
+    assert next((p for p in providers if p["slug"] == "kimi-for-coding"), None) is None
+    assert [p for p in kimi_rows if p["name"] == "Kimi For Coding"] == []
 
 
 @patch.dict(os.environ, {"KILOCODE_API_KEY": "fake-key"}, clear=False)
