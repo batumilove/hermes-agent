@@ -103,6 +103,74 @@ class TestTelegramModelPicker:
         assert "`model_1`" in edit_kwargs["text"]
 
     @pytest.mark.asyncio
+    async def test_model_picker_callback_denies_unauthorized_user(self, monkeypatch):
+        adapter = _make_adapter()
+        callback = AsyncMock()
+        adapter._model_picker_state["12345"] = {
+            "providers": [
+                {"slug": "openai", "name": "OpenAI", "total_models": 1, "is_current": True}
+            ],
+            "current_model": "model_1",
+            "current_provider": "openai",
+            "session_key": "s",
+            "on_model_selected": callback,
+            "selected_provider": "openai",
+            "model_list": ["gpt-5"],
+            "msg_id": 42,
+        }
+        monkeypatch.setattr(adapter, "_is_callback_user_authorized", MagicMock(return_value=False))
+        model_handler = AsyncMock()
+        monkeypatch.setattr(adapter, "_handle_model_picker_callback", model_handler)
+
+        query = AsyncMock()
+        query.data = "mm:0"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.message_id = 42
+        query.message.chat = SimpleNamespace(type="group")
+        query.message.message_thread_id = None
+        query.from_user = SimpleNamespace(id=999, first_name="Mallory")
+        query.answer = AsyncMock()
+        update = SimpleNamespace(callback_query=query)
+
+        await adapter._handle_callback_query(update, MagicMock())
+
+        query.answer.assert_awaited_once_with(text="⛔ You are not authorized to change models.")
+        model_handler.assert_not_awaited()
+        callback.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_model_picker_callback_rejects_stale_message_binding(self):
+        adapter = _make_adapter()
+        callback = AsyncMock()
+        adapter._model_picker_state["12345"] = {
+            "providers": [
+                {"slug": "openai", "name": "OpenAI", "total_models": 1, "is_current": True}
+            ],
+            "current_model": "model_1",
+            "current_provider": "openai",
+            "session_key": "s",
+            "on_model_selected": callback,
+            "selected_provider": "openai",
+            "model_list": ["gpt-5"],
+            "msg_id": 42,
+        }
+
+        query = AsyncMock()
+        query.data = "mm:0"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.message_id = 99
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        await adapter._handle_model_picker_callback(query, "mm:0", "12345")
+
+        query.answer.assert_awaited_once_with(text="Picker expired — use /model again.")
+        query.edit_message_text.assert_not_awaited()
+        callback.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_model_selected_edits_message_on_success(self):
         """Regression: the mm: (model selected → switch) success path must
         edit the picker message to show the confirmation and remove the

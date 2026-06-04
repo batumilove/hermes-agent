@@ -3311,6 +3311,13 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.answer(text="Picker expired — use /model again.")
             return
 
+        expected_msg_id = state.get("msg_id")
+        query_msg_id = getattr(getattr(query, "message", None), "message_id", None)
+        if expected_msg_id is not None and isinstance(query_msg_id, (int, str)):
+            if str(expected_msg_id) != str(query_msg_id):
+                await query.answer(text="Picker expired — use /model again.")
+                return
+
         try:
             from hermes_cli.providers import get_label
         except ImportError:
@@ -3545,6 +3552,16 @@ class TelegramAdapter(BasePlatformAdapter):
         if data.startswith(("mp:", "mpg:", "mm:", "mb", "mx", "mg:")):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
+                caller_id = str(getattr(query.from_user, "id", ""))
+                if not self._is_callback_user_authorized(
+                    caller_id,
+                    chat_id=query_chat_id,
+                    chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                    thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                    user_name=query_user_name,
+                ):
+                    await query.answer(text="⛔ You are not authorized to change models.")
+                    return
                 await self._handle_model_picker_callback(query, data, chat_id)
             return
 
