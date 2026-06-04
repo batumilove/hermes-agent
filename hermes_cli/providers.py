@@ -262,11 +262,11 @@ ALIASES: Dict[str, str] = {
     "build-nvidia": "nvidia",
     "nemotron": "nvidia",
 
-    # kimi-for-coding (models.dev ID)
-    "kimi": "kimi-for-coding",
-    "kimi-coding": "kimi-for-coding",
-    "kimi-coding-cn": "kimi-for-coding",
-    "moonshot": "kimi-for-coding",
+    # kimi / Moonshot
+    "kimi": "kimi-coding",
+    "kimi-coding": "kimi-coding",
+    "kimi-coding-cn": "kimi-coding-cn",
+    "moonshot": "kimi-coding",
 
     # stepfun
     "step": "stepfun",
