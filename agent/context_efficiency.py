@@ -28,6 +28,7 @@ CONTEXT_ROUTE_TOOLS = frozenset(
         "honcho_reasoning",
         "honcho_context",
         "honcho_conclude",
+        "lcm_status",
         "lcm_grep",
         "lcm_load_session",
         "lcm_describe",
@@ -44,7 +45,7 @@ DEFAULT_LOG_PATH = "logs/context_efficiency.jsonl"
 ROUTE_ADVISOR_FAMILIES: dict[str, tuple[str, ...]] = {
     "session_search": ("session_search",),
     "durable_memory": ("memory", "memory_*", "honcho_profile", "honcho_search", "honcho_reasoning", "honcho_context"),
-    "current_session_lcm": ("lcm_grep", "lcm_load_session", "lcm_describe", "lcm_expand", "lcm_expand_query"),
+    "current_session_lcm": ("lcm_status", "lcm_grep", "lcm_load_session", "lcm_describe", "lcm_expand", "lcm_expand_query"),
     "web": ("web_search", "web_extract"),
     "file": ("search_files", "read_file"),
 }

@@ -1530,7 +1530,7 @@ DEFAULT_CONFIG = {
         "routes": [
             "session_search", "memory", "memory_*",
             "honcho_profile", "honcho_search", "honcho_reasoning", "honcho_context", "honcho_conclude",
-            "lcm_grep", "lcm_load_session", "lcm_describe", "lcm_expand", "lcm_expand_query",
+            "lcm_status", "lcm_grep", "lcm_load_session", "lcm_describe", "lcm_expand", "lcm_expand_query",
             "web_search", "web_extract", "read_file", "search_files",
         ],
         "max_arg_chars": 500,

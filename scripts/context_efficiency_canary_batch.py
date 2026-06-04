@@ -74,7 +74,7 @@ EXPERIMENTAL_CASES: tuple[CanaryCase, ...] = (
     CanaryCase(
         name="current-session-lcm",
         family="current_session_lcm",
-        toolsets=("lcm",),
+        toolsets=("context_engine",),
         prompt=(
             "Use the lcm_status or lcm_grep tool to inspect current session LCM "
             "context, then answer with one short sentence."

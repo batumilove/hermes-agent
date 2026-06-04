@@ -10,7 +10,7 @@ from pathlib import Path
 from statistics import mean
 from typing import Any, Iterable
 
-from agent.context_efficiency import DEFAULT_LOG_PATH
+from agent.context_efficiency import DEFAULT_LOG_PATH, route_family as classify_route_family
 from hermes_constants import get_hermes_home
 
 
@@ -48,6 +48,13 @@ def _event_ts(event: dict[str, Any]) -> float:
         return 0.0
 
 
+def _route_family(event: dict[str, Any]) -> str:
+    family = str(event.get("route_family") or "")
+    if family:
+        return family
+    return classify_route_family(str(event.get("route") or ""))
+
+
 def filter_events(
     events: Iterable[dict[str, Any]],
     *,
@@ -63,7 +70,7 @@ def filter_events(
         if since_ts is not None and _event_ts(event) < since_ts:
             continue
         if family_filter and family_filter not in {
-            str(event.get("route_family") or ""),
+            _route_family(event),
             str(event.get("advisor_family") or ""),
         }:
             continue
@@ -108,7 +115,7 @@ def summarize_events(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
     for event in events:
         total += 1
         grouped[str(event.get("route") or "unknown")].append(event)
-        grouped_families[str(event.get("route_family") or "unknown")].append(event)
+        grouped_families[_route_family(event)].append(event)
         if event.get("advisor_family"):
             advisor_events.append(event)
 

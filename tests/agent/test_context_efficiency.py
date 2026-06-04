@@ -27,6 +27,7 @@ def test_default_config_disables_context_efficiency_canary():
     assert "session_search" in cfg["routes"]
     assert "memory_*" in cfg["routes"]
     assert "lcm_expand" in cfg["routes"]
+    assert "lcm_status" in cfg["routes"]
     assert cfg["log_path"] == "logs/context_efficiency.jsonl"
     assert cfg["advisor"]["enabled"] is True
 
@@ -43,6 +44,7 @@ def test_route_advisor_classifies_common_context_sources():
 def test_route_family_groups_provider_and_lcm_routes():
     assert route_family("memory_tencentdb_memory_search") == "durable_memory"
     assert route_family("lcm_grep") == "current_session_lcm"
+    assert route_family("lcm_status") == "current_session_lcm"
     assert route_family("web_search") == "web"
     assert route_family("search_files") == "file"
     assert route_family("terminal") == "other"

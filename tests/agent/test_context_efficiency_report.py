@@ -34,7 +34,8 @@ def test_summarize_events_groups_routes_and_error_rate():
     assert summary["advisor"]["mismatch_rate"] == 0.5
     assert summary["advisor"]["by_family"]["web"]["mismatches"] == 1
     by_family = {row["route_family"]: row for row in summary["families"]}
-    assert by_family["unknown"]["calls"] == 3
+    assert by_family["session_search"]["calls"] == 2
+    assert by_family["durable_memory"]["calls"] == 1
 
 
 def test_filter_events_supports_since_family_and_mismatches_only():
@@ -47,6 +48,19 @@ def test_filter_events_supports_since_family_and_mismatches_only():
     assert [e["route"] for e in filter_events(events, since=15)] == ["web_search", "read_file"]
     assert [e["route"] for e in filter_events(events, family="web")] == ["session_search", "web_search"]
     assert [e["route"] for e in filter_events(events, mismatches_only=True)] == ["session_search"]
+
+
+def test_filter_events_derives_family_for_older_events_without_route_family():
+    events = [
+        {"route": "lcm_grep", "advisor_family": "current_session_lcm", "advisor_match": True},
+        {"route": "session_search", "advisor_family": "web", "advisor_match": False},
+    ]
+
+    assert [e["route"] for e in filter_events(events, family="current_session_lcm")] == ["lcm_grep"]
+    summary = summarize_events(events)
+    by_family = {row["route_family"]: row for row in summary["families"]}
+    assert by_family["current_session_lcm"]["calls"] == 1
+    assert by_family["session_search"]["calls"] == 1
 
 
 def test_build_report_supports_json_and_filters(tmp_path):
