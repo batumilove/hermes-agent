@@ -40,6 +40,7 @@ def test_natural_ambiguous_cases_declare_realistic_acceptable_families():
     assert canary.case_acceptable_families(natural["natural-ambiguous-memory-session"]) == ("session_search", "durable_memory")
     assert canary.case_acceptable_families(natural["natural-ambiguous-preference-current"]) == ("durable_memory", "session_search")
     assert canary.case_acceptable_families(natural["natural-ambiguous-online-docs"]) == ("web", "file")
+    assert canary.case_non_blocking_extra_families(natural["natural-file-canary-script"]) == ("session_search",)
     assert "web_search only" in natural["natural-ambiguous-online-docs"].prompt
     assert "do not use web_extract" in natural["natural-ambiguous-online-docs"].prompt
 
@@ -151,6 +152,44 @@ def test_summarize_case_outcome_allows_no_tool_controls_without_events():
     assert summary["route_family_acceptable"] is True
     assert summary["outcome_ok"] is True
     assert summary["needs_review"] is False
+
+
+def test_summarize_case_outcome_keeps_non_blocking_extra_family_visible_without_failing():
+    case = canary.CanaryCase(
+        "file-case",
+        "file",
+        ("file", "session_search"),
+        "Find source path",
+        (),
+        ("session_search",),
+    )
+    result = {"returncode": 0, "stdout": "path", "stderr": "session_id: sess3"}
+    events = [
+        {"session_id": "sess3", "route": "search_files", "route_family": "file", "advisor_family": "file", "advisor_match": True, "is_error": False},
+        {"session_id": "sess3", "route": "session_search", "route_family": "session_search", "advisor_family": "file", "advisor_match": False, "is_error": False},
+    ]
+
+    summary = canary.summarize_case_outcome(case, result, events)
+
+    assert summary["unexpected_families"] == ["session_search"]
+    assert summary["blocking_unexpected_families"] == []
+    assert summary["advisor_mismatches"] == 1
+    assert summary["blocking_advisor_mismatches"] == 0
+    assert summary["route_family_ok"] is True
+    assert summary["outcome_ok"] is True
+    assert summary["needs_review"] is False
+
+
+def test_summarize_case_outcome_flags_expected_tool_with_zero_telemetry():
+    case = canary.CanaryCase("file-case", "file", ("file",), "Find source path")
+    result = {"returncode": 0, "stdout": "path", "stderr": "session_id: sess4"}
+
+    summary = canary.summarize_case_outcome(case, result, [])
+
+    assert summary["no_telemetry_expected_tool"] is True
+    assert summary["route_family_acceptable"] is False
+    assert summary["outcome_ok"] is False
+    assert summary["needs_review"] is True
 
 
 def test_summarize_batch_run_groups_appended_events_by_case_session_and_repeat():

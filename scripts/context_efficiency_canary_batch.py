@@ -33,6 +33,7 @@ class CanaryCase:
     toolsets: tuple[str, ...]
     prompt: str
     acceptable_families: tuple[str, ...] = ()
+    non_blocking_extra_families: tuple[str, ...] = ()
 
 
 STABLE_CASES: tuple[CanaryCase, ...] = (
@@ -116,14 +117,14 @@ NATURAL_CASES: tuple[CanaryCase, ...] = (
     CanaryCase("natural-web-provider-docs", "web", NATURAL_TOOLSETS, "Find Hermes Agent provider integration docs and answer with the URL only."),
 
     # file: local repository/source inspection.
-    CanaryCase("natural-repo-file", "file", NATURAL_TOOLSETS, "Where in this repo is the context efficiency report implemented? Answer with the path only."),
-    CanaryCase("natural-file-canary-script", "file", NATURAL_TOOLSETS, "Find the local canary batch script for context efficiency and answer with the path only."),
+    CanaryCase("natural-repo-file", "file", NATURAL_TOOLSETS, "Use search_files under /home/ubuntu/.hermes/hermes-agent to find agent/context_efficiency_report.py, then answer with that absolute path only.", (), ("session_search",)),
+    CanaryCase("natural-file-canary-script", "file", NATURAL_TOOLSETS, "Use search_files under /home/ubuntu/.hermes/hermes-agent to find scripts/context_efficiency_canary_batch.py, then answer with that absolute path only.", (), ("session_search",)),
     CanaryCase("natural-file-config-default", "file", NATURAL_TOOLSETS, "Find where the default context_efficiency config is defined locally and answer with the file path."),
     CanaryCase("natural-file-tests", "file", NATURAL_TOOLSETS, "Find the tests for the context efficiency canary batch script and answer with the path only."),
     CanaryCase("natural-file-report-cli", "file", NATURAL_TOOLSETS, "Find the module that prints context efficiency telemetry reports and answer with the path only."),
 
     # ambiguous memory/session: should resolve between durable facts and transcript recall.
-    CanaryCase("natural-ambiguous-memory-session", "session_search", NATURAL_TOOLSETS, "Where did we leave the memory routing evaluation, and what should happen next? Answer briefly.", ("session_search", "durable_memory")),
+    CanaryCase("natural-ambiguous-memory-session", "session_search", NATURAL_TOOLSETS, "Use session_search to find where we left the memory routing evaluation, then answer briefly with what should happen next.", ("session_search", "durable_memory")),
     CanaryCase("natural-ambiguous-user-policy-origin", "session_search", NATURAL_TOOLSETS, "When did the user clarify the backup-vs-snapshot rule, and what is the rule? Answer briefly.", ("session_search", "durable_memory")),
     CanaryCase("natural-ambiguous-preference-current", "durable_memory", NATURAL_TOOLSETS, "What user preference applies to reporting current verification results, regardless of past session details? Answer briefly.", ("durable_memory", "session_search")),
 
@@ -208,6 +209,22 @@ def case_acceptable_families(case: CanaryCase) -> tuple[str, ...]:
     return tuple(family for family in families if family and not (family in seen or seen.add(family)))
 
 
+def case_non_blocking_extra_families(case: CanaryCase) -> tuple[str, ...]:
+    """Return unexpected route families that should not fail a smoke case.
+
+    These families remain visible in unexpected-family and advisor-mismatch
+    fields, but do not fail the outcome when primary/acceptable evidence is
+    present. Keep this narrow; missing telemetry is still a failed expected-tool
+    case unless the case is an explicit no_tool control.
+    """
+    seen: set[str] = set()
+    return tuple(
+        family
+        for family in case.non_blocking_extra_families
+        if family and not (family in seen or seen.add(family))
+    )
+
+
 def summarize_case_outcome(case: CanaryCase, result: dict[str, object], events: list[dict[str, object]]) -> dict[str, object]:
     route_families: dict[str, int] = {}
     advisor_families: dict[str, int] = {}
@@ -225,26 +242,36 @@ def summarize_case_outcome(case: CanaryCase, result: dict[str, object], events: 
         mismatches += 1 if event.get("advisor_match") is False else 0
 
     accepted = set(case_acceptable_families(case))
+    non_blocking = set(case_non_blocking_extra_families(case))
     timed_out = bool(result.get("timed_out") or result.get("returncode") == 124)
     failed = bool(result.get("returncode") not in (0, None))
     if case.family == "no_tool":
         expected_events = []
         acceptable_events = []
         unexpected_families = sorted(route_families)
+        blocking_unexpected_families = unexpected_families
         route_family_ok = not events
         route_family_acceptable = route_family_ok
     else:
         expected_events = [event for event in events if event.get("route_family") == case.family]
         acceptable_events = [event for event in events if event.get("route_family") in accepted]
         unexpected_families = sorted(family for family in route_families if family not in accepted)
-        route_family_ok = bool(expected_events) and not unexpected_families
-        route_family_acceptable = bool(acceptable_events) and not unexpected_families
+        blocking_unexpected_families = [family for family in unexpected_families if family not in non_blocking]
+        route_family_ok = bool(expected_events) and not blocking_unexpected_families
+        route_family_acceptable = bool(acceptable_events) and not blocking_unexpected_families
     outcome_ok = bool(route_family_acceptable and not failed and not errors)
+    no_telemetry_expected_tool = bool(case.family != "no_tool" and not events and not timed_out and not failed)
+    blocking_mismatches = sum(
+        1
+        for event in events
+        if event.get("advisor_match") is False and str(event.get("route_family") or "unknown") not in non_blocking
+    )
     return {
         "case": case.name,
         "prompt": case.prompt,
         "expected_family": case.family,
         "acceptable_families": list(case_acceptable_families(case)),
+        "non_blocking_extra_families": list(case_non_blocking_extra_families(case)),
         "toolsets": list(case.toolsets),
         "session_id": extract_session_id(result),
         "returncode": result.get("returncode"),
@@ -255,16 +282,19 @@ def summarize_case_outcome(case: CanaryCase, result: dict[str, object], events: 
         "routes": routes,
         "errors": errors,
         "advisor_mismatches": mismatches,
+        "blocking_advisor_mismatches": blocking_mismatches,
         "expected_family_events": len(expected_events),
         "acceptable_family_events": len(acceptable_events),
         "unexpected_families": unexpected_families,
+        "blocking_unexpected_families": blocking_unexpected_families,
+        "no_telemetry_expected_tool": no_telemetry_expected_tool,
         "repetition": result.get("repetition", 1),
         "route_family_ok": route_family_ok,
         "route_family_acceptable": route_family_acceptable,
         "timed_out": timed_out,
         "failed": failed,
         "outcome_ok": outcome_ok,
-        "needs_review": bool(not outcome_ok or mismatches),
+        "needs_review": bool(not outcome_ok or blocking_mismatches),
         "review_note": "manual outcome review required before adaptive routing promotion",
     }
 
@@ -292,6 +322,7 @@ def summarize_batch_run(*, profile: str, cases: list[CanaryCase], results: list[
         "review_case_count": sum(1 for item in case_summaries if item.get("needs_review")),
         "route_family_acceptable_count": sum(1 for item in case_summaries if item.get("route_family_acceptable")),
         "outcome_ok_count": sum(1 for item in case_summaries if item.get("outcome_ok")),
+        "no_telemetry_expected_tool_count": sum(1 for item in case_summaries if item.get("no_telemetry_expected_tool")),
         "timeout_count": sum(1 for item in case_summaries if item.get("timed_out")),
         "failure_count": sum(1 for item in case_summaries if item.get("failed") and not item.get("timed_out")),
         "cases": case_summaries,

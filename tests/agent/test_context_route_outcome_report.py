@@ -55,6 +55,7 @@ def test_build_outcome_report_aggregates_runs_cases_events_and_reviews(tmp_path)
                 "acceptable_families": ["file", "web"],
                 "route_family_acceptable": True,
                 "outcome_ok": True,
+                "no_telemetry_expected_tool": True,
                 "needs_review": True,
                 "route_families": {"file": 1, "web": 1},
                 "routes": {"search_files": 1, "web_search": 1},
@@ -92,6 +93,7 @@ def test_build_outcome_report_aggregates_runs_cases_events_and_reviews(tmp_path)
     assert summary["route_family_ok_rate"] == 0.6667
     assert summary["route_family_acceptable_rate"] == 1.0
     assert summary["outcome_ok_rate"] == 1.0
+    assert summary["no_telemetry_expected_tool_count"] == 1
     assert summary["timeout_count"] == 0
     assert summary["failure_count"] == 0
     assert summary["needs_review_cases"] == [{
@@ -102,6 +104,7 @@ def test_build_outcome_report_aggregates_runs_cases_events_and_reviews(tmp_path)
         "acceptable_families": ["file", "web"],
         "route_family_acceptable": True,
         "outcome_ok": True,
+        "no_telemetry_expected_tool": True,
         "timed_out": False,
     }]
     assert summary["unexpected_families"] == {"web": 1}

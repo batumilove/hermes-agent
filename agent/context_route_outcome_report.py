@@ -74,6 +74,7 @@ def summarize_runs(runs: list[tuple[Path, dict[str, Any]]]) -> dict[str, Any]:
     ok_count = sum(1 for _, case in cases if case.get("route_family_ok") is True)
     acceptable_count = sum(1 for _, case in cases if case.get("route_family_acceptable", case.get("route_family_ok")) is True)
     outcome_ok_count = sum(1 for _, case in cases if case.get("outcome_ok", case.get("route_family_ok")) is True)
+    no_telemetry_expected_tool_count = sum(1 for _, case in cases if case.get("no_telemetry_expected_tool") is True)
     timeout_count = sum(1 for _, case in cases if case.get("timed_out") is True or case.get("returncode") == 124)
     failure_count = sum(1 for _, case in cases if case.get("returncode") not in (0, None, 124) and case.get("timed_out") is not True)
 
@@ -88,6 +89,7 @@ def summarize_runs(runs: list[tuple[Path, dict[str, Any]]]) -> dict[str, Any]:
             "route_family_ok_cases": 0,
             "route_family_acceptable_cases": 0,
             "outcome_ok_cases": 0,
+            "no_telemetry_expected_tool_cases": 0,
             "timeout_cases": 0,
             "failure_cases": 0,
             "unexpected_families": {},
@@ -95,7 +97,7 @@ def summarize_runs(runs: list[tuple[Path, dict[str, Any]]]) -> dict[str, Any]:
         }
     )
     repeated: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    needs_review_cases: list[dict[str, str]] = []
+    needs_review_cases: list[dict[str, Any]] = []
 
     for source, case in cases:
         name = _case_name(case)
@@ -107,6 +109,7 @@ def summarize_runs(runs: list[tuple[Path, dict[str, Any]]]) -> dict[str, Any]:
         route_family_ok = case.get("route_family_ok") is True
         route_family_acceptable = case.get("route_family_acceptable", case.get("route_family_ok")) is True
         outcome_ok = case.get("outcome_ok", case.get("route_family_ok")) is True
+        no_telemetry_expected_tool = case.get("no_telemetry_expected_tool") is True
         timed_out = case.get("timed_out") is True or case.get("returncode") == 124
         failed = case.get("returncode") not in (0, None, 124) and case.get("timed_out") is not True
 
@@ -118,6 +121,7 @@ def summarize_runs(runs: list[tuple[Path, dict[str, Any]]]) -> dict[str, Any]:
         stats["route_family_ok_cases"] += 1 if route_family_ok else 0
         stats["route_family_acceptable_cases"] += 1 if route_family_acceptable else 0
         stats["outcome_ok_cases"] += 1 if outcome_ok else 0
+        stats["no_telemetry_expected_tool_cases"] += 1 if no_telemetry_expected_tool else 0
         stats["timeout_cases"] += 1 if timed_out else 0
         stats["failure_cases"] += 1 if failed else 0
 
@@ -131,6 +135,7 @@ def summarize_runs(runs: list[tuple[Path, dict[str, Any]]]) -> dict[str, Any]:
                     "acceptable_families": list(case.get("acceptable_families") or [expected]),
                     "route_family_acceptable": route_family_acceptable,
                     "outcome_ok": outcome_ok,
+                    "no_telemetry_expected_tool": no_telemetry_expected_tool,
                     "timed_out": timed_out,
                 }
             )
@@ -200,6 +205,7 @@ def summarize_runs(runs: list[tuple[Path, dict[str, Any]]]) -> dict[str, Any]:
         "outcome_ok_rate": round(outcome_ok_count / total_cases, 4) if total_cases else 0.0,
         "route_family_acceptable_count": acceptable_count,
         "outcome_ok_count": outcome_ok_count,
+        "no_telemetry_expected_tool_count": no_telemetry_expected_tool_count,
         "timeout_count": timeout_count,
         "failure_count": failure_count,
         "needs_review_cases": needs_review_cases,
@@ -231,6 +237,7 @@ def format_text(summary: dict[str, Any]) -> str:
     lines.append(f"route_family_ok rate: {summary.get('route_family_ok_rate', 0.0)}")
     lines.append(f"route_family_acceptable rate: {summary.get('route_family_acceptable_rate', 0.0)}")
     lines.append(f"outcome_ok rate: {summary.get('outcome_ok_rate', 0.0)}")
+    lines.append(f"no-telemetry expected-tool cases: {summary.get('no_telemetry_expected_tool_count', 0)}")
     lines.append(f"timeouts: {summary.get('timeout_count', 0)} | failures: {summary.get('failure_count', 0)}")
 
     needs_review = summary.get("needs_review_cases") or []
