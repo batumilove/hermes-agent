@@ -177,6 +177,9 @@ def summarize_runs(runs: list[tuple[Path, dict[str, Any]]]) -> dict[str, Any]:
 
 def build_outcome_report(patterns: Iterable[str]) -> dict[str, Any]:
     paths = expand_inputs(patterns)
+    if not paths:
+        joined = ", ".join(str(pattern) for pattern in patterns)
+        raise ValueError(f"no input files matched: {joined}")
     runs = [(path, load_run_summary(path)) for path in paths]
     return summarize_runs(runs)
 
@@ -237,7 +240,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", dest="json_output", help="Emit machine-readable JSON")
     args = parser.parse_args(argv)
 
-    summary = build_outcome_report(args.paths)
+    try:
+        summary = build_outcome_report(args.paths)
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.json_output:
         print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
     else:

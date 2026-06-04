@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from agent import context_route_outcome_report as report
 
 
@@ -134,3 +136,18 @@ def test_json_and_text_output(tmp_path, capsys):
     assert "Runs: 1" in text
     assert "needs_review cases" in text
     assert "expected_family=lcm" in text
+
+
+def test_missing_input_files_fail_clearly(tmp_path, capsys):
+    pattern = str(tmp_path / "missing-*.json")
+
+    with pytest.raises(ValueError, match="no input files matched"):
+        report.build_outcome_report([pattern])
+
+    with pytest.raises(SystemExit) as exc_info:
+        report.main([pattern])
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert "no input files matched" in captured.err
+    assert pattern in captured.err
