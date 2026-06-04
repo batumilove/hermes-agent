@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import argparse
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from statistics import mean
 from typing import Any, Iterable
@@ -42,9 +43,12 @@ def load_events(path: str | Path, *, limit: int | None = None) -> list[dict[str,
 def summarize_events(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     total = 0
+    advisor_events: list[dict[str, Any]] = []
     for event in events:
         total += 1
         grouped[str(event.get("route") or "unknown")].append(event)
+        if event.get("advisor_family"):
+            advisor_events.append(event)
 
     routes: list[dict[str, Any]] = []
     for route, items in sorted(grouped.items(), key=lambda kv: (-len(kv[1]), kv[0])):
@@ -52,8 +56,8 @@ def summarize_events(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
         result_chars = [int(e.get("result_chars") or 0) for e in items]
         errors = sum(1 for e in items if e.get("is_error"))
         sessions = {str(e.get("session_id") or "") for e in items if e.get("session_id")}
-        advisor_events = [e for e in items if e.get("advisor_family")]
-        advisor_mismatches = sum(1 for e in advisor_events if e.get("advisor_match") is False)
+        route_advisor_events = [e for e in items if e.get("advisor_family")]
+        advisor_mismatches = sum(1 for e in route_advisor_events if e.get("advisor_match") is False)
         routes.append(
             {
                 "route": route,
@@ -64,14 +68,48 @@ def summarize_events(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
                 "avg_result_chars": round(mean(result_chars), 1) if result_chars else 0.0,
                 "sessions": len(sessions),
                 "advisor_mismatches": advisor_mismatches,
-                "advisor_mismatch_rate": round(advisor_mismatches / len(advisor_events), 4) if advisor_events else 0.0,
+                "advisor_mismatch_rate": round(advisor_mismatches / len(route_advisor_events), 4) if route_advisor_events else 0.0,
             }
         )
-    return {"events": total, "routes": routes}
+
+    family_items: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for event in advisor_events:
+        family_items[str(event.get("advisor_family"))].append(event)
+
+    advisor_by_family: dict[str, dict[str, Any]] = {}
+    for family, items in sorted(family_items.items()):
+        mismatches = [e for e in items if e.get("advisor_match") is False]
+        advisor_by_family[family] = {
+            "events": len(items),
+            "mismatches": len(mismatches),
+            "mismatch_rate": round(len(mismatches) / len(items), 4) if items else 0.0,
+            "routes": dict(Counter(str(e.get("route") or "unknown") for e in mismatches).most_common(5)),
+        }
+
+    total_mismatches = sum(1 for e in advisor_events if e.get("advisor_match") is False)
+    advisor = {
+        "events": len(advisor_events),
+        "mismatches": total_mismatches,
+        "mismatch_rate": round(total_mismatches / len(advisor_events), 4) if advisor_events else 0.0,
+        "by_family": advisor_by_family,
+    }
+    return {"events": total, "advisor": advisor, "routes": routes}
 
 
 def format_summary(summary: dict[str, Any]) -> str:
     lines = [f"Context efficiency telemetry: {summary.get('events', 0)} event(s)"]
+    advisor = summary.get("advisor") or {}
+    if advisor.get("events"):
+        lines.append(
+            "Advisor: events={events}, mismatches={mismatches} ({mismatch_rate})".format(**advisor)
+        )
+        for family, row in sorted((advisor.get("by_family") or {}).items()):
+            routes = row.get("routes") or {}
+            route_text = ",".join(f"{route}:{count}" for route, count in routes.items()) or "none"
+            lines.append(
+                f"  - advisor_family={family}: events={row.get('events', 0)}, "
+                f"mismatches={row.get('mismatches', 0)}, top_actual_routes={route_text}"
+            )
     routes = summary.get("routes") or []
     if not routes:
         lines.append("No route events found.")
@@ -92,3 +130,16 @@ def build_report(path: str | None = None, *, limit: int | None = None) -> str:
     events = load_events(p, limit=limit)
     header = f"Source: {p}"
     return header + "\n" + format_summary(summarize_events(events))
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Summarize Hermes context-efficiency telemetry JSONL logs.")
+    parser.add_argument("path", nargs="?", help="Telemetry JSONL path; defaults to HERMES_HOME/logs/context_efficiency.jsonl")
+    parser.add_argument("--limit", type=int, default=None, help="Only summarize the last N events")
+    args = parser.parse_args(argv)
+    print(build_report(args.path, limit=args.limit))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

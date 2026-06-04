@@ -1,6 +1,6 @@
 import json
 
-from agent.context_efficiency_report import build_report, load_events, summarize_events
+from agent.context_efficiency_report import build_report, load_events, summarize_events, format_summary
 
 
 def test_load_events_skips_invalid_lines(tmp_path):
@@ -29,6 +29,37 @@ def test_summarize_events_groups_routes_and_error_rate():
     assert by_route["session_search"]["advisor_mismatches"] == 1
     assert by_route["session_search"]["advisor_mismatch_rate"] == 0.5
     assert by_route["memory"]["sessions"] == 1
+    assert summary["advisor"]["events"] == 2
+    assert summary["advisor"]["mismatches"] == 1
+    assert summary["advisor"]["mismatch_rate"] == 0.5
+    assert summary["advisor"]["by_family"]["web"]["mismatches"] == 1
+
+
+def test_format_summary_includes_advisor_rollup_and_mismatch_families():
+    text = format_summary({
+        "events": 2,
+        "advisor": {
+            "events": 2,
+            "mismatches": 1,
+            "mismatch_rate": 0.5,
+            "by_family": {"web": {"events": 1, "mismatches": 1, "routes": {"session_search": 1}}},
+        },
+        "routes": [
+            {
+                "route": "session_search",
+                "calls": 2,
+                "errors": 0,
+                "avg_duration_s": 0.2,
+                "avg_result_chars": 100,
+                "sessions": 1,
+                "advisor_mismatches": 1,
+                "advisor_mismatch_rate": 0.5,
+            }
+        ],
+    })
+
+    assert "Advisor: events=2, mismatches=1 (0.5)" in text
+    assert "advisor_family=web: events=1, mismatches=1, top_actual_routes=session_search:1" in text
 
 
 def test_build_report_includes_source_and_route(tmp_path):
