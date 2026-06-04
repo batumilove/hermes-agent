@@ -40,6 +40,44 @@ CATALOG_VERSION = 1
 
 
 def build_catalog() -> dict:
+    providers = {
+        provider: {
+            "metadata": {
+                "display_name": provider,
+                "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS.",
+            },
+            "models": [{"id": mid} for mid in models],
+        }
+        for provider, models in sorted(_PROVIDER_MODELS.items())
+    }
+
+    providers["openrouter"] = {
+        "metadata": {
+            "display_name": "OpenRouter",
+            "note": (
+                "Descriptions drive picker badges. Live /api/v1/models "
+                "filters curated ids by tool-calling support and free pricing."
+            ),
+        },
+        "models": [
+            {"id": mid, "description": desc}
+            for mid, desc in OPENROUTER_MODELS
+        ],
+    }
+    providers["nous"] = {
+        "metadata": {
+            "display_name": "Nous Portal",
+            "note": (
+                "Free-tier gating is determined live via Portal pricing "
+                "(partition_nous_models_by_tier), not this manifest."
+            ),
+        },
+        "models": [
+            {"id": mid}
+            for mid in _PROVIDER_MODELS.get("nous", [])
+        ],
+    }
+
     return {
         "version": CATALOG_VERSION,
         "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -47,34 +85,7 @@ def build_catalog() -> dict:
             "source": "hermes-agent repo",
             "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog",
         },
-        "providers": {
-            "openrouter": {
-                "metadata": {
-                    "display_name": "OpenRouter",
-                    "note": (
-                        "Descriptions drive picker badges. Live /api/v1/models "
-                        "filters curated ids by tool-calling support and free pricing."
-                    ),
-                },
-                "models": [
-                    {"id": mid, "description": desc}
-                    for mid, desc in OPENROUTER_MODELS
-                ],
-            },
-            "nous": {
-                "metadata": {
-                    "display_name": "Nous Portal",
-                    "note": (
-                        "Free-tier gating is determined live via Portal pricing "
-                        "(partition_nous_models_by_tier), not this manifest."
-                    ),
-                },
-                "models": [
-                    {"id": mid}
-                    for mid in _PROVIDER_MODELS.get("nous", [])
-                ],
-            },
-        },
+        "providers": providers,
     }
 
 

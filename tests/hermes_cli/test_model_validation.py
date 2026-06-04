@@ -205,6 +205,15 @@ class TestProviderModelIds:
         ):
             assert provider_model_ids("stepfun") == ["step-3.5-flash", "step-3-agent-lite"]
 
+    def test_zai_offline_fallback_uses_curated_static_before_profile_fallback(self):
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            return_value={"api_key": "", "base_url": "https://api.z.ai/api/paas/v4"},
+        ):
+            ids = provider_model_ids("zai")
+        assert ids[:2] == ["glm-5.1", "glm-5"]
+        assert "glm-4-9b" not in ids
+
     def test_copilot_prefers_live_catalog(self):
         with patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "gh-token"}), \
              patch("hermes_cli.models._fetch_github_models", return_value=["gpt-5.4", "claude-sonnet-4.6"]):

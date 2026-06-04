@@ -340,12 +340,17 @@ def get_curated_openrouter_models() -> list[tuple[str, str]] | None:
     return out or None
 
 
-def get_curated_nous_models() -> list[str] | None:
-    """Return Nous Portal's curated list of model ids from the manifest.
+def get_curated_provider_models(provider: str) -> list[str] | None:
+    """Return a provider's curated model ids from the manifest.
 
-    Returns ``None`` when the manifest is unavailable.
+    Returns ``None`` when the manifest/provider is unavailable. This is the
+    generic accessor for providers whose manifest entries only carry model ids;
+    OpenRouter keeps its tuple accessor because it also exposes descriptions.
     """
-    block = _get_provider_block("nous")
+    provider = str(provider or "").strip()
+    if not provider:
+        return None
+    block = _get_provider_block(provider)
     if not block:
         return None
     out: list[str] = []
@@ -354,6 +359,14 @@ def get_curated_nous_models() -> list[str] | None:
         if mid:
             out.append(mid)
     return out or None
+
+
+def get_curated_nous_models() -> list[str] | None:
+    """Return Nous Portal's curated list of model ids from the manifest.
+
+    Returns ``None`` when the manifest is unavailable.
+    """
+    return get_curated_provider_models("nous")
 
 
 def reset_cache() -> None:

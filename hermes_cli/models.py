@@ -2171,7 +2171,13 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                 live = _p.fetch_models(api_key=api_key)
                 if live:
                     return live
-            # Use profile's fallback_models if defined
+            # Prefer Hermes' curated static/catalog fallback when present; it is
+            # the picker source of truth and tends to be updated faster than a
+            # provider profile's minimal runtime fallback list. The profile
+            # fallback remains useful for providers without _PROVIDER_MODELS.
+            curated_static = list(_PROVIDER_MODELS.get(normalized, []))
+            if curated_static:
+                return curated_static
             if _p.fallback_models:
                 return list(_p.fallback_models)
     except Exception:

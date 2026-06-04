@@ -1152,14 +1152,29 @@ def list_authenticated_providers(
 
     data = fetch_models_dev()
 
-    # Build curated model lists keyed by hermes provider ID
+    # Build curated model lists keyed by Hermes provider ID. Prefer the
+    # docs-hosted model catalog for every provider it contains so curated
+    # fallback updates can ship through the catalog instead of requiring a
+    # Hermes release. If the manifest/provider is unavailable, keep the
+    # in-repo snapshot.
     curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
+    try:
+        from hermes_cli.model_catalog import get_catalog, get_curated_provider_models
+        _manifest = get_catalog()
+        _manifest_providers = (_manifest.get("providers") or {}) if isinstance(_manifest, dict) else {}
+        if isinstance(_manifest_providers, dict):
+            for _provider in _manifest_providers:
+                if _provider == "openrouter":
+                    continue
+                _ids = get_curated_provider_models(_provider)
+                if _ids:
+                    curated[_provider] = _ids
+    except Exception:
+        pass
     curated["openrouter"] = [mid for mid, _ in OPENROUTER_MODELS]
-    # "nous" pulls from the remote model-catalog manifest published at
-    # https://hermes-agent.nousresearch.com/docs/api/model-catalog.json so
-    # newly added Portal models surface in the /model picker without
-    # requiring a Hermes release. Falls back to the in-repo
-    # _PROVIDER_MODELS["nous"] snapshot when the manifest is unreachable.
+    # "nous" is included in the generic remote-catalog merge above; keep the
+    # dedicated accessor as a compatibility fallback and to preserve its Portal
+    # free/paid recommendation behavior below.
     curated["nous"] = get_curated_nous_model_ids()
     # Ollama Cloud uses dynamic discovery (no static curated list)
     if "ollama-cloud" not in curated:

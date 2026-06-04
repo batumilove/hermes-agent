@@ -277,6 +277,16 @@ class TestCuratedAccessors:
             result = model_catalog.get_curated_nous_models()
         assert result == ["anthropic/claude-opus-4.7", "moonshotai/kimi-k2.6"]
 
+    def test_generic_provider_returns_ids(self, isolated_home):
+        from hermes_cli import model_catalog
+        manifest = _valid_manifest()
+        manifest["providers"]["zai"] = {
+            "models": [{"id": "glm-5.1"}, {"id": "glm-5"}]
+        }
+        with patch.object(model_catalog, "_fetch_manifest", return_value=manifest):
+            result = model_catalog.get_curated_provider_models("zai")
+        assert result == ["glm-5.1", "glm-5"]
+
     def test_openrouter_returns_none_when_catalog_empty(self, isolated_home):
         from hermes_cli import model_catalog
         with patch.object(model_catalog, "_fetch_manifest", return_value=None):

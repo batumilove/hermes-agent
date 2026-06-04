@@ -1,12 +1,12 @@
 ---
 sidebar_position: 11
 title: Model Catalog
-description: Remotely-hosted manifest driving curated model picker lists for OpenRouter and Nous Portal.
+description: Remotely-hosted manifest driving curated model picker lists for Hermes model providers.
 ---
 
 # Model Catalog
 
-Hermes fetches curated model lists for **OpenRouter** and **Nous Portal** from a JSON manifest hosted alongside the docs site. This lets maintainers update picker lists without shipping a new `hermes-agent` release.
+Hermes fetches curated model lists from a JSON manifest hosted alongside the docs site. This lets maintainers update picker fallback lists without shipping a new `hermes-agent` release. OpenRouter and Nous Portal have provider-specific runtime behavior layered on top of the manifest; the rest of the provider blocks are generated from `_PROVIDER_MODELS` and act as remotely-refreshable curated fallbacks.
 
 When the manifest is unreachable (offline, network blocked, hosting failure), Hermes silently falls back to the in-repo snapshot that ships with the CLI. The manifest never breaks the picker — worst case you see whatever list was bundled with your installed version.
 
@@ -33,6 +33,13 @@ Published on every merge to `main` via the existing `deploy-site.yml` GitHub Pag
         {"id": "openai/gpt-5.4",       "description": ""}
       ]
     },
+    "zai": {
+      "metadata": {},
+      "models": [
+        {"id": "glm-5.1"},
+        {"id": "glm-5"}
+      ]
+    },
     "nous": {
       "metadata": {},
       "models": [
@@ -48,7 +55,7 @@ Field notes:
 
 - **`version`** — integer schema version. Future schemas bump this; Hermes refuses manifests with versions it doesn't understand and falls back to the hardcoded snapshot.
 - **`metadata`** — free-form dict at the manifest, provider, and model level. Any keys. Hermes ignores unknown fields, so you can annotate entries (`"tier": "paid"`, `"tags": [...]`, etc.) without coordinating a schema change.
-- **`description`** — OpenRouter-only. Drives picker badge text (`"recommended"`, `"free"`, or empty). Nous Portal doesn't use this — free-tier gating is determined live from the Portal's pricing endpoint.
+- **`description`** — optional. OpenRouter uses it for picker badge text (`"recommended"`, `"free"`, or empty). Other provider blocks usually omit it. Nous Portal free-tier gating is determined live from the Portal's pricing endpoint.
 - **Pricing and context length** are NOT in the manifest. Those come from live provider APIs (`/v1/models` endpoints, models.dev) at fetch time.
 
 ## Fetch behavior
@@ -69,7 +76,7 @@ Cache location: `~/.hermes/cache/model_catalog.json`.
 model_catalog:
   enabled: true
   url: https://hermes-agent.nousresearch.com/docs/api/model-catalog.json
-  ttl_hours: 24
+  ttl_hours: 1
   providers: {}
 ```
 
@@ -94,7 +101,7 @@ Maintainers:
 
 ```bash
 # Re-generate from the in-repo hardcoded lists (keeps manifest in sync after
-# editing OPENROUTER_MODELS or _PROVIDER_MODELS["nous"] in hermes_cli/models.py).
+# editing OPENROUTER_MODELS or _PROVIDER_MODELS in hermes_cli/models.py).
 python scripts/build_model_catalog.py
 ```
 
