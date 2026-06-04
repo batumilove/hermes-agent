@@ -72,7 +72,7 @@ def test_kimi_for_coding_overlay_uses_hermes_slug():
     assert next((p for p in providers if p["slug"] == "kimi"), None) is None
     assert next((p for p in providers if p["slug"] == "moonshot"), None) is None
     assert next((p for p in providers if p["slug"] == "kimi-for-coding"), None) is None
-    assert [p for p in kimi_rows if p["name"] == "Kimi For Coding"] == []
+    assert all(p["name"] in {"Kimi / Kimi Coding Plan", "Kimi / Moonshot (China)"} for p in kimi_rows)
 
 
 @patch.dict(os.environ, {"KILOCODE_API_KEY": "fake-key"}, clear=False)

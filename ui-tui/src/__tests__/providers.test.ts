@@ -15,10 +15,10 @@ describe('providerDisplayNames', () => {
   it('appends slug to every collision so the disambiguation is symmetric', () => {
     expect(
       providerDisplayNames([
-        { name: 'Kimi For Coding', slug: 'kimi-coding' },
-        { name: 'Kimi For Coding', slug: 'kimi-coding-cn' }
+        { name: 'Example Provider', slug: 'example-global' },
+        { name: 'Example Provider', slug: 'example-cn' }
       ])
-    ).toEqual(['Kimi For Coding (kimi-coding)', 'Kimi For Coding (kimi-coding-cn)'])
+    ).toEqual(['Example Provider (example-global)', 'Example Provider (example-cn)'])
   })
 
   it('only disambiguates the colliding group', () => {
