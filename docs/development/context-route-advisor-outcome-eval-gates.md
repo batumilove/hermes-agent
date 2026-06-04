@@ -121,17 +121,62 @@ Minimum coverage:
 
 Outcome labels:
 
-- `expected_family`: primary target family.
-- `allowed_families`: acceptable alternatives for ambiguous prompts.
-- `must_not_use`: routes/families that indicate a bad recommendation or bad actual behavior.
+- `expected_family`: primary target family. This remains useful for finding drift, but it is not the only acceptable outcome for natural prompts.
+- `acceptable_secondary_families`: families that are acceptable in addition to `expected_family` for this specific case. These should be explicit and case-local, not broad defaults. Examples: `session_search` prompts about stable user policy may also allow `durable_memory`; local repo prompts may allow a small amount of `session_search` only when the response cites prior run context; public docs prompts may allow `file` only when committed docs or checked-in runbooks answer the question without stale information risk.
+- `required_any_family`: at least one of these families must appear for the case to count as context-backed. Use this when an answer can be correct using either primary or secondary context. For pure no-tool cases, set this to `[]` and require no tool events.
+- `must_not_use`: routes/families that indicate a bad recommendation or bad actual behavior. Privacy-sensitive local/past/user-memory prompts must list `web`; pure public-web prompts should list `durable_memory`; no-tool controls should list every context family.
 - `notes`: one-line rationale.
+
+Outcome scoring semantics:
+
+1. `expected_family` is the preferred route and still powers advisor mismatch telemetry.
+2. `allowed_families = [expected_family] + acceptable_secondary_families` is the outcome-acceptance set.
+3. A case is `outcome_acceptable=true` when:
+   - return code is 0;
+   - no tool event uses a `must_not_use` family;
+   - at least one `required_any_family` appears, unless `required_any_family=[]` for a no-tool case;
+   - every used family is either in `allowed_families` or has a written case-specific trace explanation; and
+   - the answer is non-empty and plausibly answers the prompt under manual spot review for smoke runs.
+4. A case with no telemetry events can still be acceptable only when the answer can be satisfied from current prompt/system context or durable injected profile context and `required_any_family=[]`. Otherwise it is `unbacked_answer_review`, not a route-family failure.
+5. Advisor mismatch telemetry remains separate from outcome scoring. `advisor_family != expected_family` or `advisor_family not in allowed_families` is a telemetry review item; it must not fail an outcome gate by itself when actual behavior and answer quality are acceptable.
+
+Timeout and failure buckets:
+
+- `timeout`: subprocess return code 124 or harness timeout. Always fails CLI smoke and must be rerun or diagnosed; do not hide it as a route mismatch.
+- `tool_error`: tool returned an error but the process completed. Outcome can pass only if the answer is correct and the error was non-critical/retried; otherwise fail as `tool_error_unrecovered`.
+- `empty_answer`: return code 0 with empty/whitespace answer. Fail unless the prompt explicitly asks for silence, which this eval set must not do.
+- `telemetry_parse_error`: report cannot parse valid JSONL events. Immediate gate failure.
+- `critical_misroute`: any `must_not_use` family used or recommended for a privacy-sensitive case. Immediate gate failure even if the answer looks correct.
 
 Pass condition on the fixed set:
 
-- At least 85% of advisor recommendations are in `allowed_families`.
-- 0 critical misroutes: no recommendation in `must_not_use` for privacy-sensitive prompts, no web recommendation for private/local-only prompts, and no durable-memory recommendation for pure public web prompts.
+- At least 85% of advisor recommendations are in `allowed_families`; this is a telemetry-quality threshold, not an outcome proxy.
+- At least 90% of cases are `outcome_acceptable` after applying `acceptable_secondary_families`, `required_any_family`, timeout/failure buckets, and written trace explanations.
+- 0 critical misroutes: no recommendation or actual tool use in `must_not_use` for privacy-sensitive prompts, no web recommendation or use for private/local-only prompts, and no durable-memory recommendation/use for pure public web prompts.
 - At least 90% of actual tool families are explainable by the prompt label or task execution trace.
-- Every mismatch in the report is triaged as: advisor bug, prompt ambiguity, tool execution choice, or label error.
+- Every mismatch in the report is triaged as: advisor bug, prompt ambiguity, tool execution choice, label error, acceptable secondary, timeout, tool error, empty answer, or telemetry parse error.
+
+### Latest natural CLI canary triage guidance
+
+The `tdai-canary` run at `/home/ubuntu/.hermes/profiles/tdai-canary/runs/context-route/cli-canary-20260604T111612Z.json` produced 32 cases, 81 events, 12 mismatch events, 22 review cases, and a strict primary-family `route_family_ok` rate of 0.4062. Under the outcome semantics above, the low primary-family rate is not by itself a promotion blocker; it is a signal that the labels/report need secondary-family and failure-bucket handling before any gateway canary.
+
+Likely acceptable secondary or unbacked-answer review cases from that run:
+
+- `natural-session-telegram-thread`: expected `session_search`; actual used `durable_memory` plus `session_search`. Treat `durable_memory` as acceptable secondary only if the answer cites stable remembered guidance; otherwise classify as mixed-source review.
+- `natural-session-backups`, `natural-user-preference`, `natural-memory-secrets`, `natural-memory-deploys`, `natural-memory-canary`, `natural-ambiguous-memory-session`, and `natural-ambiguous-preference-current`: no telemetry events but answers match stable injected profile/memory context. These should be labeled `required_any_family=[]` only when the prompt intentionally tests already-injected context; otherwise keep them as `unbacked_answer_review` because the harness did not prove a retrieval route.
+- `natural-lcm-loaded-skills`: expected current-session LCM but used local file tools to inspect skill material. `file` can be an acceptable secondary for loaded-skill questions when the answer is about skill contents rather than live current-session state.
+- `natural-file-canary-script`, `natural-file-tests`, and `natural-ambiguous-local-config`: expected `file`; extra `session_search` or `web` events are acceptable only with a written trace explanation showing they supplied canary/run context rather than replacing local source inspection.
+- `natural-web-github`: actual behavior used `web` and answered correctly while advisor telemetry mentioned `file`; score outcome acceptable and keep advisor mismatch as telemetry review.
+- `natural-current-docs`: answered a docs URL with no events. Mark `unbacked_answer_review`; it can pass only if the prompt explicitly permits known public URLs without live lookup.
+
+Likely true failures from that run:
+
+- `natural-ambiguous-online-docs`: return code 124 after 180 seconds, empty answer, no session id. Bucket as `timeout`; it fails CLI smoke until rerun successfully or removed from the smoke set with rationale.
+- `natural-lcm-active-task`: answer said no active kanban task even though the case asked for current task context. Bucket as `wrong_answer`/LCM prompt design failure; do not rescue by secondary-family allowance.
+- `natural-lcm-constraints`: answered a remembered backup rule rather than a hard constraint for the current run. Bucket as `wrong_context_scope` unless the case is relabeled as durable-memory policy.
+- `natural-memory-repos`: answered `~/hermes-agent`, which conflicts with the current repo path convention for this task (`/home/ubuntu/.hermes/hermes-agent`). Bucket as `wrong_answer`/stale-memory risk.
+
+Required report update before promotion: the JSON report should expose both `advisor_mismatch_count` and `outcome_acceptable_count`, plus counts for `timeout`, `critical_misroute`, `unbacked_answer_review`, `tool_error_unrecovered`, and `wrong_answer`. Gateway canary cannot start from a report that only exposes primary-family `route_family_ok`.
 
 ## Gate 3: repeated-run stability
 
@@ -209,7 +254,8 @@ CLI canary pass condition:
 - If previews are expected in the report, the canary profile explicitly sets `context_efficiency.previews_enabled=true`; otherwise preview fields remain empty by design.
 - Report commands produce both human-readable and JSON output.
 - No secret/privacy failure is found in the log spot check.
-- The fixed outcome-eval set meets Gate 2 and Gate 3 thresholds.
+- CLI smoke threshold: 8-12 targeted natural prompts covering at least one session, one durable-memory/profile, one file, one web, one current-session/LCM or injected-context, one ambiguous secondary, and one no-tool control. Pass requires 100% process success, 0 timeouts, 0 empty answers, 0 critical misroutes, default/live still disabled, and at least 90% `outcome_acceptable`. Advisor mismatches may remain as review items if outcomes pass and are bucketed.
+- Full CLI promotion threshold: the fixed outcome-eval set meets Gate 2 and Gate 3 thresholds across repeated runs. Do not advance to gateway canary from CLI smoke alone.
 
 ## Gate 5: gateway canary
 
@@ -236,10 +282,13 @@ hermes --profile "$CANARY_PROFILE" gateway status
 
 Gateway pass condition:
 
+- Gateway canary may start only after full CLI promotion threshold passes, not merely a targeted smoke rerun.
 - At least 24 hours or 50 canary turns, whichever comes first.
 - 0 delivery regressions: no missing final replies, duplicate replies, topic leakage, approval wedge, gateway crash, or platform routing change attributable to the canary.
 - 0 telemetry-induced exceptions in gateway logs.
-- Report mismatch rate remains within CLI-canary thresholds.
+- 0 timeouts or empty replies attributable to telemetry/reporting.
+- 0 critical misroutes and 0 privacy/logging failures.
+- Outcome-acceptable rate stays at or above the full CLI threshold (90%) and every remaining advisor mismatch is bucketed separately from outcome failures.
 - Operators confirm no canary logs were written under the default/live profile.
 
 ## Gate 6: rollback criteria
@@ -293,3 +342,4 @@ A promotion request must include:
 3. Add a stability report that compares multiple `context_efficiency_report --json` outputs and flags flips/must-not-use violations.
 4. Add privacy scanning for telemetry logs as a focused test/helper.
 5. Add canary profile/gateway runbook automation that refuses to target the default/live profile.
+
