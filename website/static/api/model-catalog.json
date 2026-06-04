@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-06-04T07:35:39Z",
+  "updated_at": "2026-06-04T07:42:57Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -8,7 +8,14 @@
   "providers": {
     "alibaba": {
       "metadata": {
-        "display_name": "alibaba",
+        "display_name": "Qwen Cloud",
+        "auth_type": "api_key",
+        "env_vars": [
+          "DASHSCOPE_API_KEY"
+        ],
+        "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        "base_url_env_var": "DASHSCOPE_BASE_URL",
+        "transport": "openai_chat",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -43,7 +50,17 @@
     },
     "alibaba-coding-plan": {
       "metadata": {
-        "display_name": "alibaba-coding-plan",
+        "display_name": "Alibaba Cloud (Coding Plan)",
+        "auth_type": "api_key",
+        "env_vars": [
+          "ALIBABA_CODING_PLAN_API_KEY",
+          "DASHSCOPE_API_KEY"
+        ],
+        "description": "Alibaba Cloud Coding Plan (Dedicated coding tier)",
+        "signup_url": "https://help.aliyun.com/zh/model-studio/",
+        "base_url": "https://coding-intl.dashscope.aliyuncs.com/v1",
+        "base_url_env_var": "ALIBABA_CODING_PLAN_BASE_URL",
+        "transport": "openai_chat",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -78,7 +95,16 @@
     },
     "anthropic": {
       "metadata": {
-        "display_name": "anthropic",
+        "display_name": "Anthropic",
+        "auth_type": "api_key",
+        "env_vars": [
+          "ANTHROPIC_API_KEY",
+          "ANTHROPIC_TOKEN",
+          "CLAUDE_CODE_OAUTH_TOKEN"
+        ],
+        "base_url": "https://api.anthropic.com",
+        "base_url_env_var": "ANTHROPIC_BASE_URL",
+        "transport": "anthropic_messages",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -113,7 +139,14 @@
     },
     "arcee": {
       "metadata": {
-        "display_name": "arcee",
+        "display_name": "Arcee AI",
+        "auth_type": "api_key",
+        "env_vars": [
+          "ARCEEAI_API_KEY"
+        ],
+        "base_url": "https://api.arcee.ai/api/v1",
+        "base_url_env_var": "ARCEE_BASE_URL",
+        "transport": "openai_chat",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -130,14 +163,27 @@
     },
     "azure-foundry": {
       "metadata": {
-        "display_name": "azure-foundry",
+        "display_name": "Azure Foundry",
+        "auth_type": "api_key",
+        "env_vars": [
+          "AZURE_FOUNDRY_API_KEY"
+        ],
+        "description": "Microsoft Foundry - OpenAI-compatible endpoint (user-supplied base URL)",
+        "signup_url": "https://ai.azure.com/",
+        "base_url_env_var": "AZURE_FOUNDRY_BASE_URL",
+        "transport": "openai_chat",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": []
     },
     "bedrock": {
       "metadata": {
-        "display_name": "bedrock",
+        "display_name": "AWS Bedrock",
+        "auth_type": "aws_sdk",
+        "env_vars": [],
+        "base_url": "https://bedrock-runtime.us-east-1.amazonaws.com",
+        "base_url_env_var": "BEDROCK_BASE_URL",
+        "transport": "bedrock_converse",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -175,7 +221,15 @@
     },
     "copilot": {
       "metadata": {
-        "display_name": "copilot",
+        "display_name": "GitHub Copilot",
+        "auth_type": "api_key",
+        "env_vars": [
+          "COPILOT_GITHUB_TOKEN",
+          "GH_TOKEN",
+          "GITHUB_TOKEN"
+        ],
+        "base_url": "https://api.githubcopilot.com",
+        "base_url_env_var": "COPILOT_API_BASE_URL",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -231,7 +285,12 @@
     },
     "copilot-acp": {
       "metadata": {
-        "display_name": "copilot-acp",
+        "display_name": "GitHub Copilot ACP",
+        "auth_type": "external_process",
+        "env_vars": [],
+        "base_url": "acp://copilot",
+        "base_url_env_var": "COPILOT_ACP_BASE_URL",
+        "transport": "codex_responses",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -242,7 +301,16 @@
     },
     "deepseek": {
       "metadata": {
-        "display_name": "deepseek",
+        "display_name": "DeepSeek",
+        "auth_type": "api_key",
+        "env_vars": [
+          "DEEPSEEK_API_KEY"
+        ],
+        "description": "DeepSeek \u2014 native DeepSeek API",
+        "signup_url": "https://platform.deepseek.com/",
+        "base_url": "https://api.deepseek.com/v1",
+        "base_url_env_var": "DEEPSEEK_BASE_URL",
+        "transport": "openai_chat",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -262,7 +330,14 @@
     },
     "gemini": {
       "metadata": {
-        "display_name": "gemini",
+        "display_name": "Google AI Studio",
+        "auth_type": "api_key",
+        "env_vars": [
+          "GEMINI_API_KEY",
+          "GOOGLE_API_KEY"
+        ],
+        "base_url": "https://generativelanguage.googleapis.com/v1beta",
+        "base_url_env_var": "GEMINI_BASE_URL",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -280,9 +355,34 @@
         }
       ]
     },
+    "github-copilot": {
+      "metadata": {
+        "display_name": "github-copilot",
+        "auth_type": "api_key",
+        "env_vars": [
+          "COPILOT_GITHUB_TOKEN",
+          "GH_TOKEN",
+          "GITHUB_TOKEN"
+        ],
+        "base_url": "https://api.githubcopilot.com",
+        "transport": "openai_chat",
+        "dynamic_models": true,
+        "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
+      },
+      "models": []
+    },
     "gmi": {
       "metadata": {
-        "display_name": "gmi",
+        "display_name": "GMI Cloud",
+        "auth_type": "api_key",
+        "env_vars": [
+          "GMI_API_KEY"
+        ],
+        "description": "GMI Cloud \u2014 multi-model direct API (slash-form model IDs)",
+        "signup_url": "https://www.gmicloud.ai/",
+        "base_url": "https://api.gmi-serving.com/v1",
+        "base_url_env_var": "GMI_BASE_URL",
+        "transport": "openai_chat",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -308,7 +408,11 @@
     },
     "google-gemini-cli": {
       "metadata": {
-        "display_name": "google-gemini-cli",
+        "display_name": "Google Gemini (OAuth)",
+        "auth_type": "oauth_external",
+        "env_vars": [],
+        "base_url": "cloudcode-pa://google",
+        "transport": "openai_chat",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -325,7 +429,17 @@
     },
     "huggingface": {
       "metadata": {
-        "display_name": "huggingface",
+        "display_name": "Hugging Face",
+        "auth_type": "api_key",
+        "env_vars": [
+          "HF_TOKEN"
+        ],
+        "description": "HuggingFace Inference API",
+        "signup_url": "https://huggingface.co/settings/tokens",
+        "base_url": "https://router.huggingface.co/v1",
+        "base_url_env_var": "HF_BASE_URL",
+        "transport": "openai_chat",
+        "aggregator": true,
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -358,9 +472,31 @@
         }
       ]
     },
+    "kilo": {
+      "metadata": {
+        "display_name": "kilo",
+        "auth_type": "api_key",
+        "env_vars": [
+          "KILOCODE_API_KEY"
+        ],
+        "base_url": "https://api.kilo.ai/api/gateway",
+        "base_url_env_var": "KILOCODE_BASE_URL",
+        "transport": "openai_chat",
+        "aggregator": true,
+        "dynamic_models": true,
+        "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
+      },
+      "models": []
+    },
     "kilocode": {
       "metadata": {
-        "display_name": "kilocode",
+        "display_name": "Kilo Code",
+        "auth_type": "api_key",
+        "env_vars": [
+          "KILOCODE_API_KEY"
+        ],
+        "base_url": "https://api.kilo.ai/api/gateway",
+        "base_url_env_var": "KILOCODE_BASE_URL",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -383,7 +519,14 @@
     },
     "kimi-coding": {
       "metadata": {
-        "display_name": "kimi-coding",
+        "display_name": "Kimi / Moonshot",
+        "auth_type": "api_key",
+        "env_vars": [
+          "KIMI_API_KEY",
+          "KIMI_CODING_API_KEY"
+        ],
+        "base_url": "https://api.moonshot.ai/v1",
+        "base_url_env_var": "KIMI_BASE_URL",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -412,7 +555,12 @@
     },
     "kimi-coding-cn": {
       "metadata": {
-        "display_name": "kimi-coding-cn",
+        "display_name": "Kimi / Moonshot (China)",
+        "auth_type": "api_key",
+        "env_vars": [
+          "KIMI_CN_API_KEY"
+        ],
+        "base_url": "https://api.moonshot.cn/v1",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -433,9 +581,47 @@
         }
       ]
     },
+    "kimi-for-coding": {
+      "metadata": {
+        "display_name": "kimi-for-coding",
+        "auth_type": "api_key",
+        "env_vars": [
+          "KIMI_API_KEY",
+          "KIMI_CODING_API_KEY"
+        ],
+        "base_url": "https://api.moonshot.ai/v1",
+        "base_url_env_var": "KIMI_BASE_URL",
+        "transport": "openai_chat",
+        "dynamic_models": true,
+        "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
+      },
+      "models": []
+    },
+    "lmstudio": {
+      "metadata": {
+        "display_name": "LM Studio",
+        "auth_type": "api_key",
+        "env_vars": [
+          "LM_API_KEY"
+        ],
+        "base_url": "http://127.0.0.1:1234/v1",
+        "base_url_env_var": "LM_BASE_URL",
+        "transport": "openai_chat",
+        "dynamic_models": true,
+        "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
+      },
+      "models": []
+    },
     "minimax": {
       "metadata": {
-        "display_name": "minimax",
+        "display_name": "MiniMax",
+        "auth_type": "api_key",
+        "env_vars": [
+          "MINIMAX_API_KEY"
+        ],
+        "base_url": "https://api.minimax.io/anthropic",
+        "base_url_env_var": "MINIMAX_BASE_URL",
+        "transport": "anthropic_messages",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -458,7 +644,14 @@
     },
     "minimax-cn": {
       "metadata": {
-        "display_name": "minimax-cn",
+        "display_name": "MiniMax (China)",
+        "auth_type": "api_key",
+        "env_vars": [
+          "MINIMAX_CN_API_KEY"
+        ],
+        "base_url": "https://api.minimaxi.com/anthropic",
+        "base_url_env_var": "MINIMAX_CN_BASE_URL",
+        "transport": "anthropic_messages",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -481,7 +674,13 @@
     },
     "minimax-oauth": {
       "metadata": {
-        "display_name": "minimax-oauth",
+        "display_name": "MiniMax (OAuth \u00b7 minimax.io)",
+        "auth_type": "oauth_minimax",
+        "env_vars": [],
+        "description": "MiniMax via OAuth browser flow \u2014 no API key required",
+        "signup_url": "https://api.minimax.io/",
+        "base_url": "https://api.minimax.io/anthropic",
+        "transport": "anthropic_messages",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -499,6 +698,12 @@
     "moonshot": {
       "metadata": {
         "display_name": "moonshot",
+        "auth_type": "api_key",
+        "env_vars": [
+          "KIMI_API_KEY",
+          "KIMI_CODING_API_KEY"
+        ],
+        "base_url": "https://api.moonshot.ai/v1",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -522,6 +727,14 @@
     "nous": {
       "metadata": {
         "display_name": "Nous Portal",
+        "auth_type": "oauth_device_code",
+        "env_vars": [
+          "NOUS_API_KEY"
+        ],
+        "description": "Nous Portal \u2014 curated multi-provider agentic models",
+        "signup_url": "https://nousresearch.com/",
+        "base_url": "https://inference-api.nousresearch.com/v1",
+        "transport": "openai_chat",
         "note": "Free-tier gating is determined live via Portal pricing (partition_nous_models_by_tier), not this manifest."
       },
       "models": [
@@ -592,7 +805,17 @@
     },
     "novita": {
       "metadata": {
-        "display_name": "novita",
+        "display_name": "NovitaAI",
+        "auth_type": "api_key",
+        "env_vars": [
+          "NOVITA_API_KEY"
+        ],
+        "description": "NovitaAI \u2014 AI-native cloud for builders and agents",
+        "signup_url": "https://novita.ai/settings/key-management",
+        "base_url": "https://api.novita.ai/openai/v1",
+        "base_url_env_var": "NOVITA_BASE_URL",
+        "transport": "openai_chat",
+        "aggregator": true,
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -618,7 +841,16 @@
     },
     "nvidia": {
       "metadata": {
-        "display_name": "nvidia",
+        "display_name": "NVIDIA NIM",
+        "auth_type": "api_key",
+        "env_vars": [
+          "NVIDIA_API_KEY"
+        ],
+        "description": "NVIDIA NIM \u2014 accelerated inference",
+        "signup_url": "https://build.nvidia.com/",
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "base_url_env_var": "NVIDIA_BASE_URL",
+        "transport": "openai_chat",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -651,9 +883,26 @@
         }
       ]
     },
+    "ollama-cloud": {
+      "metadata": {
+        "display_name": "Ollama Cloud",
+        "auth_type": "api_key",
+        "env_vars": [
+          "OLLAMA_API_KEY"
+        ],
+        "base_url": "https://ollama.com/v1",
+        "base_url_env_var": "OLLAMA_BASE_URL",
+        "transport": "openai_chat",
+        "dynamic_models": true,
+        "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
+      },
+      "models": []
+    },
     "openai": {
       "metadata": {
         "display_name": "openai",
+        "auth_type": "api_key",
+        "env_vars": [],
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -685,7 +934,14 @@
     },
     "openai-api": {
       "metadata": {
-        "display_name": "openai-api",
+        "display_name": "OpenAI API",
+        "auth_type": "api_key",
+        "env_vars": [
+          "OPENAI_API_KEY"
+        ],
+        "base_url": "https://api.openai.com/v1",
+        "base_url_env_var": "OPENAI_BASE_URL",
+        "transport": "codex_responses",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -723,7 +979,11 @@
     },
     "openai-codex": {
       "metadata": {
-        "display_name": "openai-codex",
+        "display_name": "OpenAI Codex",
+        "auth_type": "oauth_external",
+        "env_vars": [],
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "transport": "codex_responses",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -744,9 +1004,33 @@
         }
       ]
     },
+    "opencode": {
+      "metadata": {
+        "display_name": "opencode",
+        "auth_type": "api_key",
+        "env_vars": [
+          "OPENCODE_ZEN_API_KEY"
+        ],
+        "base_url": "https://opencode.ai/zen/v1",
+        "base_url_env_var": "OPENCODE_ZEN_BASE_URL",
+        "transport": "openai_chat",
+        "aggregator": true,
+        "dynamic_models": true,
+        "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
+      },
+      "models": []
+    },
     "opencode-go": {
       "metadata": {
-        "display_name": "opencode-go",
+        "display_name": "OpenCode Go",
+        "auth_type": "api_key",
+        "env_vars": [
+          "OPENCODE_GO_API_KEY"
+        ],
+        "base_url": "https://opencode.ai/zen/go/v1",
+        "base_url_env_var": "OPENCODE_GO_BASE_URL",
+        "transport": "openai_chat",
+        "aggregator": true,
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -793,7 +1077,13 @@
     },
     "opencode-zen": {
       "metadata": {
-        "display_name": "opencode-zen",
+        "display_name": "OpenCode Zen",
+        "auth_type": "api_key",
+        "env_vars": [
+          "OPENCODE_ZEN_API_KEY"
+        ],
+        "base_url": "https://opencode.ai/zen/v1",
+        "base_url_env_var": "OPENCODE_ZEN_BASE_URL",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -904,9 +1194,31 @@
         }
       ]
     },
+    "qwen-oauth": {
+      "metadata": {
+        "display_name": "Qwen OAuth",
+        "auth_type": "oauth_external",
+        "env_vars": [
+          "QWEN_API_KEY"
+        ],
+        "base_url": "https://portal.qwen.ai/v1",
+        "base_url_env_var": "HERMES_QWEN_BASE_URL",
+        "transport": "openai_chat",
+        "dynamic_models": true,
+        "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
+      },
+      "models": []
+    },
     "stepfun": {
       "metadata": {
-        "display_name": "stepfun",
+        "display_name": "StepFun Step Plan",
+        "auth_type": "api_key",
+        "env_vars": [
+          "STEPFUN_API_KEY"
+        ],
+        "base_url": "https://api.stepfun.ai/step_plan/v1",
+        "base_url_env_var": "STEPFUN_BASE_URL",
+        "transport": "openai_chat",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -920,7 +1232,14 @@
     },
     "tencent-tokenhub": {
       "metadata": {
-        "display_name": "tencent-tokenhub",
+        "display_name": "Tencent TokenHub",
+        "auth_type": "api_key",
+        "env_vars": [
+          "TOKENHUB_API_KEY"
+        ],
+        "base_url": "https://tokenhub.tencentmaas.com/v1",
+        "base_url_env_var": "TOKENHUB_BASE_URL",
+        "transport": "openai_chat",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -931,7 +1250,14 @@
     },
     "xai": {
       "metadata": {
-        "display_name": "xai",
+        "display_name": "xAI",
+        "auth_type": "api_key",
+        "env_vars": [
+          "XAI_API_KEY"
+        ],
+        "base_url": "https://api.x.ai/v1",
+        "base_url_env_var": "XAI_BASE_URL",
+        "transport": "codex_responses",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -963,7 +1289,12 @@
     },
     "xai-oauth": {
       "metadata": {
-        "display_name": "xai-oauth",
+        "display_name": "xAI Grok OAuth (SuperGrok / Premium+)",
+        "auth_type": "oauth_external",
+        "env_vars": [],
+        "base_url": "https://api.x.ai/v1",
+        "base_url_env_var": "XAI_BASE_URL",
+        "transport": "codex_responses",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -995,7 +1326,14 @@
     },
     "xiaomi": {
       "metadata": {
-        "display_name": "xiaomi",
+        "display_name": "Xiaomi MiMo",
+        "auth_type": "api_key",
+        "env_vars": [
+          "XIAOMI_API_KEY"
+        ],
+        "base_url": "https://api.xiaomimimo.com/v1",
+        "base_url_env_var": "XIAOMI_BASE_URL",
+        "transport": "openai_chat",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -1018,7 +1356,18 @@
     },
     "zai": {
       "metadata": {
-        "display_name": "zai",
+        "display_name": "Z.AI / GLM",
+        "auth_type": "api_key",
+        "env_vars": [
+          "GLM_API_KEY",
+          "ZAI_API_KEY",
+          "Z_AI_API_KEY"
+        ],
+        "description": "Z.AI / GLM \u2014 Zhipu AI models",
+        "signup_url": "https://z.ai/",
+        "base_url": "https://api.z.ai/api/paas/v4",
+        "base_url_env_var": "GLM_BASE_URL",
+        "transport": "openai_chat",
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
@@ -1048,6 +1397,16 @@
     "openrouter": {
       "metadata": {
         "display_name": "OpenRouter",
+        "auth_type": "api_key",
+        "env_vars": [
+          "OPENROUTER_API_KEY"
+        ],
+        "description": "OpenRouter \u2014 unified API for 200+ models",
+        "signup_url": "https://openrouter.ai/keys",
+        "base_url": "https://openrouter.ai/api/v1",
+        "base_url_env_var": "OPENROUTER_BASE_URL",
+        "transport": "openai_chat",
+        "aggregator": true,
         "note": "Descriptions drive picker badges. Live /api/v1/models filters curated ids by tool-calling support and free pricing."
       },
       "models": [

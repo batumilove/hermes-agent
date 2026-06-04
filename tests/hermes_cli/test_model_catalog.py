@@ -483,7 +483,32 @@ class TestManifestMatchesInRepoLists:
 
         assert self._strip_volatile(actual) == self._strip_volatile(expected), (
             "website/static/api/model-catalog.json is out of sync with "
-            "_PROVIDER_MODELS['nous'] / OPENROUTER_MODELS. "
+            "_PROVIDER_MODELS / OPENROUTER_MODELS / provider metadata. "
             "Run: python scripts/build_model_catalog.py && "
             "git add website/static/api/model-catalog.json"
         )
+
+    def test_manifest_has_provider_metadata_for_every_provider(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        manifest_path = repo_root / "website" / "static" / "api" / "model-catalog.json"
+        with open(manifest_path, encoding="utf-8") as fh:
+            actual = json.load(fh)
+
+        providers = actual["providers"]
+        assert "zai" in providers
+        assert "qwen-oauth" in providers
+        assert "lmstudio" in providers
+        assert providers["zai"]["models"][0]["id"] == "glm-5.1"
+        assert providers["zai"]["metadata"]["env_vars"] == [
+            "GLM_API_KEY",
+            "ZAI_API_KEY",
+            "Z_AI_API_KEY",
+        ]
+        assert providers["qwen-oauth"]["metadata"]["dynamic_models"] is True
+
+        for provider, block in providers.items():
+            metadata = block.get("metadata")
+            assert isinstance(metadata, dict), provider
+            assert metadata.get("display_name"), provider
+            assert metadata.get("auth_type"), provider
+            assert isinstance(block.get("models"), list), provider
