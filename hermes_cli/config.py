@@ -958,6 +958,20 @@ DEFAULT_CONFIG = {
         "kata_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "kata_namespace": "sandbox",
         "kata_kubeconfig": "",
+        # External SSH/CLI sandbox manager backend. Defaults keep untrusted jobs
+        # offline and send only the command/job spec, never Hermes profiles or
+        # host secret mounts.
+        "sandbox_ssh_host": "",
+        "sandbox_ssh_user": "",
+        "sandbox_ssh_port": 22,
+        "sandbox_ssh_key": "",
+        "sandbox_manager_dir": "/opt/agent-sandbox-manager",
+        "sandbox_config": "config/sandbox-manager.example.json",
+        "sandbox_runtime": "",
+        "sandbox_network": "offline",
+        "sandbox_output_bytes": 65536,
+        "sandbox_trusted": False,
+        "sandbox_env": {},
         # Container resource limits (docker, singularity, modal, daytona — ignored for local/ssh)
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
@@ -5773,6 +5787,11 @@ def show_config():
         print(f"  Namespace:    {terminal.get('kata_namespace', 'sandbox')}")
         kubeconfig = terminal.get('kata_kubeconfig', '')
         print(f"  Kubeconfig:   {kubeconfig or '(kubectl default context)'}")
+    elif terminal.get('backend') == 'sandbox_manager':
+        print(f"  Sandbox host: {terminal.get('sandbox_ssh_user', '')}@{terminal.get('sandbox_ssh_host', '') or '(not set)'}")
+        print(f"  Manager dir:  {terminal.get('sandbox_manager_dir', '/opt/agent-sandbox-manager')}")
+        print(f"  Runtime:      {terminal.get('sandbox_runtime', '') or '(manager default)'}")
+        print(f"  Network:      {terminal.get('sandbox_network', 'offline')}")
     elif terminal.get('backend') == 'ssh':
         ssh_host = get_env_value('TERMINAL_SSH_HOST')
         ssh_user = get_env_value('TERMINAL_SSH_USER')
@@ -5972,6 +5991,17 @@ def set_config_value(key: str, value: str):
         "terminal.kata_image": "TERMINAL_KATA_IMAGE",
         "terminal.kata_namespace": "TERMINAL_KATA_NAMESPACE",
         "terminal.kata_kubeconfig": "TERMINAL_KATA_KUBECONFIG",
+        "terminal.sandbox_ssh_host": "TERMINAL_SANDBOX_SSH_HOST",
+        "terminal.sandbox_ssh_user": "TERMINAL_SANDBOX_SSH_USER",
+        "terminal.sandbox_ssh_port": "TERMINAL_SANDBOX_SSH_PORT",
+        "terminal.sandbox_ssh_key": "TERMINAL_SANDBOX_SSH_KEY",
+        "terminal.sandbox_manager_dir": "TERMINAL_SANDBOX_MANAGER_DIR",
+        "terminal.sandbox_config": "TERMINAL_SANDBOX_CONFIG",
+        "terminal.sandbox_runtime": "TERMINAL_SANDBOX_RUNTIME",
+        "terminal.sandbox_network": "TERMINAL_SANDBOX_NETWORK",
+        "terminal.sandbox_output_bytes": "TERMINAL_SANDBOX_OUTPUT_BYTES",
+        "terminal.sandbox_trusted": "TERMINAL_SANDBOX_TRUSTED",
+        "terminal.sandbox_env": "TERMINAL_SANDBOX_ENV",
         "terminal.docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
         "terminal.docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
         "terminal.docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",

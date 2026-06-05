@@ -1115,6 +1115,14 @@ def execute_code(
             "duration_seconds": 0,
         }, ensure_ascii=False)
 
+    if env_type == "sandbox_manager":
+        return json.dumps({
+            "status": "error",
+            "error": "execute_code is not supported with terminal.backend=sandbox_manager because the SSH/CLI sandbox manager runs each job in an isolated one-shot workspace and does not provide the persistent remote filesystem required by execute_code's file-based RPC. Use terminal() with the sandbox_manager backend instead.",
+            "tool_calls_made": 0,
+            "duration_seconds": 0,
+        }, ensure_ascii=False)
+
     if env_type != "local":
         return _execute_remote(code, task_id, enabled_tools)
 

@@ -825,6 +825,7 @@ from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.modal import ModalEnvironment as _ModalEnvironment
 from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
 from tools.environments.kata import KataEnvironment as _KataEnvironment
+from tools.environments.sandbox_manager import SandboxManagerEnvironment as _SandboxManagerEnvironment
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 import sys
 
@@ -1132,6 +1133,19 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_orphan_reaper": os.getenv(
             "TERMINAL_DOCKER_ORPHAN_REAPER", "true"
         ).lower() in {"true", "1", "yes"},
+        "sandbox_manager": {
+            "ssh_host": os.getenv("TERMINAL_SANDBOX_SSH_HOST", ""),
+            "ssh_user": os.getenv("TERMINAL_SANDBOX_SSH_USER", ""),
+            "ssh_port": _parse_env_var("TERMINAL_SANDBOX_SSH_PORT", "22"),
+            "ssh_key": os.getenv("TERMINAL_SANDBOX_SSH_KEY", ""),
+            "manager_dir": os.getenv("TERMINAL_SANDBOX_MANAGER_DIR", "/opt/agent-sandbox-manager"),
+            "config_path": os.getenv("TERMINAL_SANDBOX_CONFIG", "config/sandbox-manager.example.json"),
+            "runtime": os.getenv("TERMINAL_SANDBOX_RUNTIME", ""),
+            "network_profile": os.getenv("TERMINAL_SANDBOX_NETWORK", "offline"),
+            "output_bytes": _parse_env_var("TERMINAL_SANDBOX_OUTPUT_BYTES", "65536"),
+            "trusted": os.getenv("TERMINAL_SANDBOX_TRUSTED", "false").lower() in {"true", "1", "yes"},
+            "env": _parse_env_var("TERMINAL_SANDBOX_ENV", "{}", json.loads, "valid JSON"),
+        },
     }
 
 
@@ -1284,6 +1298,12 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             kubeconfig=cc.get("kata_kubeconfig", ""),
         )
 
+    elif env_type == "sandbox_manager":
+        return _SandboxManagerEnvironment(
+            timeout=timeout,
+            **cc.get("sandbox_manager", {}),
+        )
+
     elif env_type == "ssh":
         if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
             raise ValueError("SSH environment requires ssh_host and ssh_user to be configured")
@@ -1299,7 +1319,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     else:
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', 'kata', or 'ssh'"
+            f"'singularity', 'modal', 'daytona', 'kata', 'sandbox_manager', or 'ssh'"
         )
 
 
@@ -1924,7 +1944,7 @@ def terminal_tool(
                             }
 
                         container_config = None
-                        if env_type in {"docker", "singularity", "modal", "daytona"}:
+                        if env_type in {"docker", "singularity", "modal", "daytona", "kata", "sandbox_manager"}:
                             container_config = {
                                 "container_cpu": config.get("container_cpu", 1),
                                 "container_memory": config.get("container_memory", 5120),
@@ -1939,6 +1959,9 @@ def terminal_tool(
                                 "docker_extra_args": config.get("docker_extra_args", []),
                                 "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
                                 "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
+                                "kata_namespace": config.get("kata_namespace", "sandbox"),
+                                "kata_kubeconfig": config.get("kata_kubeconfig", ""),
+                                "sandbox_manager": config.get("sandbox_manager", {}),
                             }
 
                         local_config = None
@@ -2359,6 +2382,8 @@ def terminal_tool(
                 "exit_code": returncode,
                 "error": None,
             }
+            if isinstance(result, dict) and "sandbox_result" in result:
+                result_dict["sandbox_result"] = result["sandbox_result"]
             if approval_note:
                 result_dict["approval"] = approval_note
             if exit_note:
