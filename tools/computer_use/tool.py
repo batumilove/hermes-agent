@@ -615,6 +615,12 @@ def _route_capture_through_aux_vision(
         # MIME sniffing returns the right content-type.
         ext = ".jpg" if cap.png_b64[:8].startswith("/9j/") else ".png"
         cache_dir = get_hermes_dir("cache/vision", "temp_vision_images")
+        # get_hermes_dir() only resolves the preferred/legacy location; it does
+        # not create the directory. A fresh install or a cleaned cache can leave
+        # ~/.hermes/cache/vision absent, which made computer_use captures fail
+        # aux-vision routing with FileNotFoundError and fall back to the native
+        # multimodal envelope.
+        cache_dir.mkdir(parents=True, exist_ok=True)
         temp_image_path = cache_dir / f"computer_use_{_uuid.uuid4().hex}{ext}"
         temp_image_path.write_bytes(raw)
 

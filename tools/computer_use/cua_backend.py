@@ -25,7 +25,9 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 import threading
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from tools.computer_use.backend import (
@@ -67,6 +69,10 @@ _WINDOW_LINE_RE = re.compile(
 _ELEMENT_LINE_RE = re.compile(
     r'^\s*(?:-\s+)?\[(\d+)\]\s+(\w+)(?:\s+"([^"]*)"|(?:\s+\(\d+\))?\s+id=([^\s\[\]]*))?' ,
     re.MULTILINE,
+)
+_SCREENSHOT_FILE_RE = re.compile(
+    r'^(?:screenshot_(?:file_)?path|screenshot_path|image_path|path)$',
+    re.IGNORECASE,
 )
 
 
@@ -132,6 +138,54 @@ def _split_tree_text(full_text: str) -> Tuple[str, str]:
     summary = lines[0]
     tree = lines[1] if len(lines) > 1 else ""
     return summary, tree
+
+
+def _find_screenshot_file_path(value: Any) -> Optional[str]:
+    """Return a screenshot file path from nested cua-driver structured output.
+
+    Newer cua-driver builds may avoid embedding large screenshot base64 blobs in
+    MCP responses and instead return a structured ``screenshot_file_path`` when
+    the caller provides ``screenshot_out_file``. Keep this recursive and
+    key-name based so small upstream shape changes (top-level vs nested metadata)
+    do not silently drop the captured image.
+    """
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if _SCREENSHOT_FILE_RE.match(str(key)) and isinstance(child, str):
+                return child
+        for child in value.values():
+            found = _find_screenshot_file_path(child)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _find_screenshot_file_path(child)
+            if found:
+                return found
+    return None
+
+
+def _read_b64_file_if_present(path: Optional[str]) -> Optional[str]:
+    if not path:
+        return None
+    try:
+        expanded = Path(path).expanduser()
+        if not expanded.is_file():
+            return None
+        return base64.b64encode(expanded.read_bytes()).decode("ascii")
+    except Exception as exc:
+        logger.debug("failed to read cua-driver screenshot file %r: %s", path, exc)
+        return None
+
+
+def _capture_dimensions_from_window(window: Dict[str, Any]) -> Tuple[int, int]:
+    bounds = window.get("bounds") if isinstance(window, dict) else None
+    if not isinstance(bounds, dict):
+        return 0, 0
+    try:
+        return int(round(float(bounds.get("width") or 0))), int(round(float(bounds.get("height") or 0)))
+    except (TypeError, ValueError):
+        return 0, 0
 
 
 def _parse_key_combo(keys: str) -> Tuple[Optional[str], List[str]]:
@@ -372,6 +426,7 @@ class CuaDriverBackend(ComputerUseBackend):
                     "off_screen": not w.get("is_on_screen", True),
                     "title": w.get("title", ""),
                     "z_index": w.get("z_index", 0),
+                    "bounds": w.get("bounds") or {},
                 }
                 for w in raw_windows
             ]
@@ -421,39 +476,78 @@ class CuaDriverBackend(ComputerUseBackend):
         # Step 2: capture.
         png_b64: Optional[str] = None
         elements: List[UIElement] = []
-        width = height = 0
-        window_title = ""
+        width, height = _capture_dimensions_from_window(target)
+        window_title = target.get("title", "")
 
         if mode == "vision":
-            # screenshot tool: just the PNG, no AX walk.
-            sc_out = self._session.call_tool(
-                "screenshot",
-                {"window_id": self._active_window_id, "format": "jpeg", "quality": 85},
-            )
-            if sc_out["images"]:
-                png_b64 = sc_out["images"][0]
+            # cua-driver 0.5.x removed the old standalone `screenshot` MCP tool;
+            # screenshot capture is now exposed through get_window_state with
+            # capture_mode=vision. Write to a temp file so we can support builds
+            # that avoid embedding large base64 image parts in MCP responses.
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                screenshot_path = tmp.name
+            try:
+                sc_out = self._session.call_tool(
+                    "get_window_state",
+                    {
+                        "pid": self._active_pid,
+                        "window_id": self._active_window_id,
+                        "capture_mode": "vision",
+                        "screenshot_out_file": screenshot_path,
+                    },
+                )
+                if sc_out["images"]:
+                    png_b64 = sc_out["images"][0]
+                else:
+                    png_b64 = _read_b64_file_if_present(
+                        _find_screenshot_file_path(sc_out.get("structuredContent"))
+                        or screenshot_path
+                    )
+            finally:
+                try:
+                    os.unlink(screenshot_path)
+                except OSError:
+                    pass
         else:
             # get_window_state: AX tree + optional screenshot.
-            gws_out = self._session.call_tool(
-                "get_window_state",
-                {"pid": self._active_pid, "window_id": self._active_window_id},
-            )
-            text = gws_out["data"] if isinstance(gws_out["data"], str) else ""
-            summary, tree = _split_tree_text(text)
+            args: Dict[str, Any] = {
+                "pid": self._active_pid,
+                "window_id": self._active_window_id,
+                "capture_mode": mode,
+            }
+            screenshot_path: Optional[str] = None
+            if mode == "som":
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                    screenshot_path = tmp.name
+                args["screenshot_out_file"] = screenshot_path
+            try:
+                gws_out = self._session.call_tool("get_window_state", args)
+                text = gws_out["data"] if isinstance(gws_out["data"], str) else ""
+                structured = gws_out.get("structuredContent") or {}
+                tree = ""
+                if isinstance(structured, dict):
+                    tree = structured.get("tree_markdown") or ""
+                if not tree:
+                    _summary, tree = _split_tree_text(text)
 
-            # Parse element count from summary e.g. "✅ AppName — 42 elements, turn 3..."
-            m = re.search(r'(\d+)\s+elements?', summary)
-            if tree and not gws_out["images"]:
-                # ax mode — no screenshot
                 elements = _parse_elements_from_tree(tree)
-            elif gws_out["images"]:
-                png_b64 = gws_out["images"][0]
-                elements = _parse_elements_from_tree(tree)
+                if gws_out["images"]:
+                    png_b64 = gws_out["images"][0]
+                elif screenshot_path:
+                    png_b64 = _read_b64_file_if_present(
+                        _find_screenshot_file_path(structured) or screenshot_path
+                    )
 
-            # Extract window title from the AX tree first AXWindow line.
-            wt = re.search(r'AXWindow\s+"([^"]+)"', tree)
-            if wt:
-                window_title = wt.group(1)
+                # Extract window title from the AX tree first AXWindow line.
+                wt = re.search(r'AXWindow\s+"([^"]+)"', tree)
+                if wt:
+                    window_title = wt.group(1)
+            finally:
+                if screenshot_path:
+                    try:
+                        os.unlink(screenshot_path)
+                    except OSError:
+                        pass
 
         png_bytes_len = 0
         if png_b64:

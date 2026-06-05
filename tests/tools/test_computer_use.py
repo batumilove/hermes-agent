@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sys
@@ -360,7 +361,8 @@ class TestCaptureResponse:
             def focus_app(self, app, raise_window=False): ...
 
         cu_tool.reset_backend_for_tests()
-        with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()):
+        with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()), \
+             patch.object(cu_tool, "_should_route_through_aux_vision", return_value=False):
             out = cu_tool.handle_computer_use({"action": "capture", "mode": "vision"})
 
         assert isinstance(out, dict)
@@ -398,7 +400,8 @@ class TestCaptureResponse:
             def focus_app(self, app, raise_window=False): ...
 
         cu_tool.reset_backend_for_tests()
-        with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()):
+        with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()), \
+             patch.object(cu_tool, "_should_route_through_aux_vision", return_value=False):
             out = cu_tool.handle_computer_use({"action": "capture", "mode": "som"})
         assert isinstance(out, dict)
         text_part = next(p for p in out["content"] if p.get("type") == "text")
@@ -582,7 +585,8 @@ class TestCaptureResponse:
             def focus_app(self, app, raise_window=False): ...
 
         cu_tool.reset_backend_for_tests()
-        with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()):
+        with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()), \
+             patch.object(cu_tool, "_should_route_through_aux_vision", return_value=False):
             out = cu_tool.handle_computer_use({"action": "capture", "mode": "som"})
 
         assert isinstance(out, dict) and out["_multimodal"] is True
@@ -1276,6 +1280,82 @@ class TestCaptureAppFilterNoMatch:
 
         assert backend._active_pid == 100
 
+
+class TestCuaDriverCaptureModes:
+    def test_som_capture_passes_capture_mode_and_reads_screenshot_out_file(self, tmp_path):
+        png_bytes = b"\x89PNG\r\n\x1a\nsmoke"
+        windows = [
+            {"app_name": "WinBox", "pid": 100, "window_id": 9,
+             "is_on_screen": True, "title": "WinBox 4.1", "z_index": 0,
+             "bounds": {"width": 1200.0, "height": 728.0}},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+
+        def _call_tool(name, args):
+            if name == "list_windows":
+                return {"data": "", "images": [], "isError": False,
+                        "structuredContent": {"windows": windows}}
+            assert name == "get_window_state"
+            assert args["capture_mode"] == "som"
+            assert args["pid"] == 100
+            assert args["window_id"] == 9
+            out_file = args["screenshot_out_file"]
+            with open(out_file, "wb") as fh:
+                fh.write(png_bytes)
+            return {
+                "data": "window_id=9 pid=100 elements=1\n- [0] AXButton \"Connect\"",
+                "images": [],
+                "isError": False,
+                "structuredContent": {
+                    "tree_markdown": "- AXWindow \"WinBox 4.1\"\n  - [0] AXButton \"Connect\"",
+                    "screenshot_file_path": out_file,
+                },
+            }
+
+        backend._session.call_tool.side_effect = _call_tool
+        cap = backend.capture(mode="som", app="WinBox")
+
+        assert cap.width == 1200
+        assert cap.height == 728
+        assert cap.window_title == "WinBox 4.1"
+        assert cap.png_b64 == base64.b64encode(png_bytes).decode("ascii")
+        assert cap.png_bytes_len == len(png_bytes)
+        assert [(e.index, e.role, e.label) for e in cap.elements] == [(0, "AXButton", "Connect")]
+
+    def test_vision_capture_uses_get_window_state_not_removed_screenshot_tool(self):
+        png_bytes = b"\x89PNG\r\n\x1a\nvision"
+        windows = [
+            {"app_name": "WinBox", "pid": 200, "window_id": 10,
+             "is_on_screen": True, "title": "WinBox 4.1", "z_index": 0,
+             "bounds": {"width": 640.0, "height": 480.0}},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+        calls = []
+
+        def _call_tool(name, args):
+            calls.append((name, dict(args)))
+            if name == "list_windows":
+                return {"data": "", "images": [], "isError": False,
+                        "structuredContent": {"windows": windows}}
+            assert name == "get_window_state"
+            assert args["capture_mode"] == "vision"
+            with open(args["screenshot_out_file"], "wb") as fh:
+                fh.write(png_bytes)
+            return {
+                "data": "",
+                "images": [],
+                "isError": False,
+                "structuredContent": {"screenshot_file_path": args["screenshot_out_file"]},
+            }
+
+        backend._session.call_tool.side_effect = _call_tool
+        cap = backend.capture(mode="vision", app="WinBox")
+
+        assert [name for name, _args in calls] == ["list_windows", "get_window_state"]
+        assert cap.png_b64 == base64.b64encode(png_bytes).decode("ascii")
+        assert cap.width == 640
+        assert cap.height == 480
+        assert cap.elements == []
 
 class TestFocusAppFilterNoMatch:
     """focus_app(app=X) must return ok=False when X matches nothing —
