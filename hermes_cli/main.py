@@ -10387,6 +10387,53 @@ def _discard_lockfile_churn(git_cmd, repo_root):
         pass
 
 
+def _restart_launchd_gateways_after_update() -> list[str]:
+    """Restart or reload macOS launchd gateway jobs after a source update.
+
+    ``hermes update`` can be invoked from the gateway itself. In that case the
+    old gateway may have already exited or been unloaded by the time the update
+    reaches the post-update restart phase. A plist on disk is not enough: if the
+    launchd job is unloaded, ``launchctl list <label>`` returns non-zero and a
+    restart-only path silently skips it, leaving Telegram dead until a manual
+    ``hermes gateway start``.
+    """
+    try:
+        from hermes_cli.gateway import (
+            is_macos,
+            launchd_restart,
+            launchd_start,
+            get_launchd_label,
+            get_launchd_plist_path,
+        )
+
+        if not is_macos():
+            return []
+        plist_path = get_launchd_plist_path()
+        if not plist_path.exists():
+            return []
+
+        label = get_launchd_label()
+        check = subprocess.run(
+            ["launchctl", "list", label],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        try:
+            if check.returncode == 0:
+                launchd_restart()
+            else:
+                print("  ↻ Gateway launchd job was unloaded; starting it...")
+                launchd_start()
+            return [label]
+        except subprocess.CalledProcessError as e:
+            stderr = (getattr(e, "stderr", "") or "").strip()
+            print(f"  ⚠ Gateway restart failed: {stderr}")
+            return []
+    except (FileNotFoundError, subprocess.TimeoutExpired, ImportError):
+        return []
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version.
 
@@ -11677,31 +11724,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         pass
 
             # --- Launchd services (macOS) ---
-            if is_macos():
-                try:
-                    from hermes_cli.gateway import (
-                        launchd_restart,
-                        get_launchd_label,
-                        get_launchd_plist_path,
-                    )
-
-                    plist_path = get_launchd_plist_path()
-                    if plist_path.exists():
-                        check = subprocess.run(
-                            ["launchctl", "list", get_launchd_label()],
-                            capture_output=True,
-                            text=True,
-                            timeout=5,
-                        )
-                        if check.returncode == 0:
-                            try:
-                                launchd_restart()
-                                restarted_services.append(get_launchd_label())
-                            except subprocess.CalledProcessError as e:
-                                stderr = (getattr(e, "stderr", "") or "").strip()
-                                print(f"  ⚠ Gateway restart failed: {stderr}")
-                except (FileNotFoundError, subprocess.TimeoutExpired, ImportError):
-                    pass
+            restarted_services.extend(_restart_launchd_gateways_after_update())
 
             # --- Manual (non-service) gateways ---
             # Kill any remaining gateway processes not managed by a service.

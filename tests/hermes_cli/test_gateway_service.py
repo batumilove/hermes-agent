@@ -11,6 +11,7 @@ pwd = pytest.importorskip("pwd")
 grp = pytest.importorskip("grp")
 
 import hermes_cli.gateway as gateway_cli
+import hermes_cli.main as cli_main
 from gateway import status
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
@@ -536,6 +537,50 @@ class TestLaunchdServiceRecovery:
             (["launchctl", "bootout", f"{domain}/{label}"], False),
             (["launchctl", "bootstrap", domain, str(plist_path)], True),
         ]
+
+    def test_update_launchd_restart_starts_unloaded_job(self, tmp_path, monkeypatch):
+        """Post-update recovery must start an installed-but-unloaded launchd job."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(gateway_cli, "launchd_restart", lambda: calls.append("restart"))
+        monkeypatch.setattr(gateway_cli, "launchd_start", lambda: calls.append("start"))
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd == ["launchctl", "list", "ai.hermes.gateway"]:
+                return SimpleNamespace(returncode=113, stdout="", stderr="Could not find service")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+
+        assert cli_main._restart_launchd_gateways_after_update() == ["ai.hermes.gateway"]
+        assert calls == [["launchctl", "list", "ai.hermes.gateway"], "start"]
+
+    def test_update_launchd_restart_restarts_loaded_job(self, tmp_path, monkeypatch):
+        """Loaded launchd jobs still use the normal restart path after update."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(gateway_cli, "launchd_restart", lambda: calls.append("restart"))
+        monkeypatch.setattr(gateway_cli, "launchd_start", lambda: calls.append("start"))
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+
+        assert cli_main._restart_launchd_gateways_after_update() == ["ai.hermes.gateway"]
+        assert calls == [["launchctl", "list", "ai.hermes.gateway"], "restart"]
 
     def test_launchd_start_reloads_unloaded_job_and_retries(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "ai.hermes.gateway.plist"
