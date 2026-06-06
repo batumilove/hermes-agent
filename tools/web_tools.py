@@ -103,7 +103,7 @@ from tools.tool_backend_helpers import (  # noqa: F401
     prefers_gateway,
     load_tool_fallbacks,
 )
-from tools.url_safety import is_safe_url
+from tools.url_safety import async_is_safe_url
 import sys
 
 logger = logging.getLogger(__name__)
@@ -1021,7 +1021,7 @@ async def web_extract_tool(
         safe_urls = []
         ssrf_blocked: List[Dict[str, Any]] = []
         for url in urls:
-            if not is_safe_url(url):
+            if not await async_is_safe_url(url):
                 ssrf_blocked.append({
                     "url": url, "title": "", "content": "",
                     "error": "Blocked: URL targets a private or internal network address",
