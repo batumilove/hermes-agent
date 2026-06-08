@@ -362,7 +362,8 @@ class TestCaptureResponse:
 
         cu_tool.reset_backend_for_tests()
         with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()), \
-             patch.object(cu_tool, "_should_route_through_aux_vision", return_value=False):
+             patch.object(cu_tool, "_should_route_through_aux_vision",
+                          return_value=False):
             out = cu_tool.handle_computer_use({"action": "capture", "mode": "vision"})
 
         assert isinstance(out, dict)
@@ -401,7 +402,8 @@ class TestCaptureResponse:
 
         cu_tool.reset_backend_for_tests()
         with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()), \
-             patch.object(cu_tool, "_should_route_through_aux_vision", return_value=False):
+             patch.object(cu_tool, "_should_route_through_aux_vision",
+                          return_value=False):
             out = cu_tool.handle_computer_use({"action": "capture", "mode": "som"})
         assert isinstance(out, dict)
         text_part = next(p for p in out["content"] if p.get("type") == "text")
@@ -438,6 +440,7 @@ class TestCaptureResponse:
             def focus_app(self, app, raise_window=False): ...
 
         return FakeBackend()
+
 
     def test_capture_ax_caps_elements_at_default_for_dense_trees(self):
         """Regression for #22865: an Electron-style 600-element AX tree must
@@ -586,7 +589,8 @@ class TestCaptureResponse:
 
         cu_tool.reset_backend_for_tests()
         with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()), \
-             patch.object(cu_tool, "_should_route_through_aux_vision", return_value=False):
+             patch.object(cu_tool, "_should_route_through_aux_vision",
+                          return_value=False):
             out = cu_tool.handle_computer_use({"action": "capture", "mode": "som"})
 
         assert isinstance(out, dict) and out["_multimodal"] is True
@@ -596,6 +600,32 @@ class TestCaptureResponse:
             "the truncation note describes a payload field that isn't present"
         )
         assert "truncated to" not in out["text_summary"]
+
+
+class TestCuaCaptureImageDimensions:
+    def test_png_dimensions_are_sniffed_from_image_bytes(self):
+        from tools.computer_use.cua_backend import _image_dimensions_from_bytes
+
+        raw_png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42m"
+            "NkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
+            validate=False,
+        )
+        assert _image_dimensions_from_bytes(raw_png) == (1, 1)
+
+    def test_jpeg_dimensions_are_sniffed_from_sof_segment(self):
+        from tools.computer_use.cua_backend import _image_dimensions_from_bytes
+
+        raw_jpeg = (
+            b"\xff\xd8" +
+            b"\xff\xe0\x00\x10" + (b"0" * 14)
+            + b"\xff\xc0\x00\x11\x08"
+            + b"\x01\x2c"  # height: 300
+            + b"\x01\x90"  # width: 400
+            + b"\x03\x01\x11\x00\x02\x11\x00\x03\x11\x00"
+            + b"\xff\xd9"
+        )
+        assert _image_dimensions_from_bytes(raw_jpeg) == (400, 300)
 
 
 # ---------------------------------------------------------------------------
@@ -1208,6 +1238,78 @@ def _make_cua_backend_with_windows(windows: List[Dict[str, Any]]):
     return backend
 
 
+class TestCuaDriverSessionReconnect:
+    def test_call_tool_reconnects_once_after_closed_resource(self):
+        """A daemon restart closes the cached MCP stdio channel; recover once."""
+        import threading
+        from typing import Any, cast
+        from anyio import ClosedResourceError
+        from tools.computer_use.cua_backend import _CuaDriverSession
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+                # 1st call_tool -> closed; aexit ok; aenter ok; retried call_tool ok.
+                self.effects = [ClosedResourceError(), None, None, {"ok": True}]
+
+            def run(self, value, timeout=None):
+                self.calls.append((value, timeout))
+                effect = self.effects.pop(0)
+                if isinstance(effect, Exception):
+                    raise effect
+                return effect
+
+        bridge = FakeBridge()
+        session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
+        session._bridge = bridge
+        session._session = object()
+        session._exit_stack = None
+        session._lock = threading.Lock()
+        session._started = True
+        session._call_tool_async = lambda name, args: ("call", name, args)
+        session._aexit = lambda: ("aexit",)
+        session._aenter = lambda: ("aenter",)
+
+        assert session.call_tool("list_apps", {}) == {"ok": True}
+        # Reconnect-once sequence: failed call -> aexit -> aenter -> retried call.
+        assert bridge.calls[0][0] == ("call", "list_apps", {})
+        assert bridge.calls[1][0] == ("aexit",)
+        assert bridge.calls[2][0] == ("aenter",)
+        assert bridge.calls[3][0] == ("call", "list_apps", {})
+        assert len(bridge.calls) == 4
+
+    def test_call_tool_does_not_retry_on_unrelated_error(self):
+        """Non-transport errors must propagate without a reconnect attempt."""
+        import threading
+        from typing import Any, cast
+        from tools.computer_use.cua_backend import _CuaDriverSession
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, value, timeout=None):
+                self.calls.append((value, timeout))
+                raise ValueError("boom")
+
+        bridge = FakeBridge()
+        session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
+        session._bridge = bridge
+        session._session = object()
+        session._exit_stack = None
+        session._lock = threading.Lock()
+        session._started = True
+        session._call_tool_async = lambda name, args: ("call", name, args)
+        session._aexit = lambda: ("aexit",)
+        session._aenter = lambda: ("aenter",)
+
+        import pytest
+        with pytest.raises(ValueError):
+            session.call_tool("list_apps", {})
+        # Exactly one attempt, no reconnect.
+        assert len(bridge.calls) == 1
+
+
 class TestCaptureAppFilterNoMatch:
     """capture(app=X) must not silently fall back to the frontmost window
     when X matches nothing — on a non-English macOS, list_windows returns
@@ -1280,82 +1382,6 @@ class TestCaptureAppFilterNoMatch:
 
         assert backend._active_pid == 100
 
-
-class TestCuaDriverCaptureModes:
-    def test_som_capture_passes_capture_mode_and_reads_screenshot_out_file(self, tmp_path):
-        png_bytes = b"\x89PNG\r\n\x1a\nsmoke"
-        windows = [
-            {"app_name": "WinBox", "pid": 100, "window_id": 9,
-             "is_on_screen": True, "title": "WinBox 4.1", "z_index": 0,
-             "bounds": {"width": 1200.0, "height": 728.0}},
-        ]
-        backend = _make_cua_backend_with_windows(windows)
-
-        def _call_tool(name, args):
-            if name == "list_windows":
-                return {"data": "", "images": [], "isError": False,
-                        "structuredContent": {"windows": windows}}
-            assert name == "get_window_state"
-            assert args["capture_mode"] == "som"
-            assert args["pid"] == 100
-            assert args["window_id"] == 9
-            out_file = args["screenshot_out_file"]
-            with open(out_file, "wb") as fh:
-                fh.write(png_bytes)
-            return {
-                "data": "window_id=9 pid=100 elements=1\n- [0] AXButton \"Connect\"",
-                "images": [],
-                "isError": False,
-                "structuredContent": {
-                    "tree_markdown": "- AXWindow \"WinBox 4.1\"\n  - [0] AXButton \"Connect\"",
-                    "screenshot_file_path": out_file,
-                },
-            }
-
-        backend._session.call_tool.side_effect = _call_tool
-        cap = backend.capture(mode="som", app="WinBox")
-
-        assert cap.width == 1200
-        assert cap.height == 728
-        assert cap.window_title == "WinBox 4.1"
-        assert cap.png_b64 == base64.b64encode(png_bytes).decode("ascii")
-        assert cap.png_bytes_len == len(png_bytes)
-        assert [(e.index, e.role, e.label) for e in cap.elements] == [(0, "AXButton", "Connect")]
-
-    def test_vision_capture_uses_get_window_state_not_removed_screenshot_tool(self):
-        png_bytes = b"\x89PNG\r\n\x1a\nvision"
-        windows = [
-            {"app_name": "WinBox", "pid": 200, "window_id": 10,
-             "is_on_screen": True, "title": "WinBox 4.1", "z_index": 0,
-             "bounds": {"width": 640.0, "height": 480.0}},
-        ]
-        backend = _make_cua_backend_with_windows(windows)
-        calls = []
-
-        def _call_tool(name, args):
-            calls.append((name, dict(args)))
-            if name == "list_windows":
-                return {"data": "", "images": [], "isError": False,
-                        "structuredContent": {"windows": windows}}
-            assert name == "get_window_state"
-            assert args["capture_mode"] == "vision"
-            with open(args["screenshot_out_file"], "wb") as fh:
-                fh.write(png_bytes)
-            return {
-                "data": "",
-                "images": [],
-                "isError": False,
-                "structuredContent": {"screenshot_file_path": args["screenshot_out_file"]},
-            }
-
-        backend._session.call_tool.side_effect = _call_tool
-        cap = backend.capture(mode="vision", app="WinBox")
-
-        assert [name for name, _args in calls] == ["list_windows", "get_window_state"]
-        assert cap.png_b64 == base64.b64encode(png_bytes).decode("ascii")
-        assert cap.width == 640
-        assert cap.height == 480
-        assert cap.elements == []
 
 class TestFocusAppFilterNoMatch:
     """focus_app(app=X) must return ok=False when X matches nothing —

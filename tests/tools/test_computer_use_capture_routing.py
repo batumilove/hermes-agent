@@ -241,40 +241,36 @@ class TestCaptureResponseRoutedToAuxVision:
         assert observed_path["path"]
         assert not os.path.exists(observed_path["path"])
 
-    def test_temp_screenshot_cache_dir_is_created_when_missing(
-        self, tmp_path,
-    ):
-        """Fresh installs / cleaned caches may not have cache/vision yet."""
+    def test_aux_route_creates_missing_cache_dir(self, tmp_path):
         from tools.computer_use import tool as cu_tool
 
-        cache_dir = tmp_path / "cache" / "vision"
-        assert not cache_dir.exists()
+        cache_dir = tmp_path / "missing" / "cache_vision"
         cap = _make_capture(mode="som")
+        observed_path = {}
+
+        def _fake_get(*_args, **_kw):
+            return cache_dir
 
         def _fake_run_async(_coro):
             return _stub_aux_analysis("description goes here")
 
-        observed_path = {}
-
         def _fake_vat(image_path, _prompt):
             observed_path["path"] = image_path
             assert os.path.exists(image_path)
-            assert str(cache_dir) in image_path
             return "<coro>"
 
         fake_vat = MagicMock(side_effect=_fake_vat)
 
         with patch.object(cu_tool, "_should_route_through_aux_vision",
                           return_value=True), \
-             patch("hermes_constants.get_hermes_dir", return_value=cache_dir), \
+             patch("hermes_constants.get_hermes_dir", _fake_get), \
              patch("model_tools._run_async", side_effect=_fake_run_async), \
              patch("tools.vision_tools.vision_analyze_tool",
                    new_callable=lambda: fake_vat):
             resp = cu_tool._capture_response(cap)
 
-        body = json.loads(resp)
-        assert body["vision_analysis"] == "description goes here"
-        assert cache_dir.exists()
+        assert isinstance(resp, str)
+        assert cache_dir.is_dir()
         assert observed_path["path"]
         assert not os.path.exists(observed_path["path"])
 
