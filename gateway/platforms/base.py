@@ -1443,6 +1443,11 @@ class MessageEvent:
     # Reply context
     reply_to_message_id: Optional[str] = None
     reply_to_text: Optional[str] = None  # Text of the replied-to message (for context injection)
+    # Full reply chain (list of dicts with 'text' and optional 'message_id'),
+    # ordered from immediate parent to root ancestor.  Platforms that walk the
+    # reply chain (e.g. Telegram) populate this; others leave it empty and
+    # fall back to the single-message reply_to_text field.
+    reply_chain: Optional[List[dict]] = None
     
     # Auto-loaded skill(s) for topic/channel bindings (e.g., Telegram DM Topics,
     # Discord channel_skill_bindings).  A single name or ordered list.

@@ -6306,8 +6306,13 @@ class TelegramAdapter(BasePlatformAdapter):
         # to act on unrelated actionable-looking text the user didn't
         # quote (#22619). Fall back to the full replied-to message text
         # / caption when no native quote is present.
+        #
+        # Chain walking: if the replied-to message was itself a reply,
+        # walk up the chain (up to 10 levels) so the model gets the full
+        # conversation context, not just the immediate parent.
         reply_to_id = None
         reply_to_text = None
+        reply_chain = None
         if message.reply_to_message:
             reply_to_id = str(message.reply_to_message.message_id)
             quote = getattr(message, "quote", None)
@@ -6320,6 +6325,23 @@ class TelegramAdapter(BasePlatformAdapter):
                     or message.reply_to_message.caption
                     or None
                 )
+
+            # Walk the reply chain: immediate parent → root ancestor
+            chain = []
+            current = message.reply_to_message
+            depth = 0
+            max_chain_depth = 10
+            while current is not None and depth < max_chain_depth:
+                cur_mid = str(current.message_id)
+                cur_quote = getattr(current, "quote", None)
+                cur_quote_text = getattr(cur_quote, "text", None) if cur_quote is not None else None
+                cur_text = cur_quote_text or current.text or current.caption or None
+                if cur_text:
+                    chain.append({"message_id": cur_mid, "text": cur_text})
+                current = getattr(current, "reply_to_message", None)
+                depth += 1
+            if chain:
+                reply_chain = chain
 
         # Per-channel/topic ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt
@@ -6339,6 +6361,7 @@ class TelegramAdapter(BasePlatformAdapter):
             platform_update_id=update_id,
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
+            reply_chain=reply_chain,
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
             timestamp=message.date,

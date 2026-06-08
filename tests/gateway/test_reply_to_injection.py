@@ -137,7 +137,8 @@ async def test_no_prefix_when_reply_to_text_is_empty():
 
 
 @pytest.mark.asyncio
-async def test_reply_snippet_truncated_to_500_chars():
+async def test_reply_full_text_no_truncation():
+    """Reply text is no longer truncated — the full text goes to context."""
     runner = _make_runner()
     source = _source()
     long_text = "x" * 800
@@ -155,5 +156,62 @@ async def test_reply_snippet_truncated_to_500_chars():
     )
 
     assert result is not None
-    assert result.startswith('[Replying to: "' + "x" * 500 + '"]')
-    assert "x" * 501 not in result
+    assert result.startswith('[Replying to: "' + "x" * 800 + '"]')
+    # The full 800 chars must be present
+    assert "x" * 800 in result
+
+
+@pytest.mark.asyncio
+async def test_reply_chain_multi_level():
+    """When reply_chain is populated, format as nested quotes."""
+    runner = _make_runner()
+    source = _source()
+    event = MessageEvent(
+        text="third reply",
+        source=source,
+        reply_to_message_id="30",
+        reply_to_text="second message",
+        reply_chain=[
+            {"message_id": "30", "text": "second message"},
+            {"message_id": "20", "text": "first message"},
+        ],
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    assert '[Replying to:' in result
+    assert '> "second message"' in result
+    assert '>> "first message"' in result
+    assert result.endswith("third reply")
+
+
+@pytest.mark.asyncio
+async def test_reply_chain_single_level():
+    """When reply_chain has one entry, still uses chain format."""
+    runner = _make_runner()
+    source = _source()
+    event = MessageEvent(
+        text="follow-up",
+        source=source,
+        reply_to_message_id="42",
+        reply_to_text="original text",
+        reply_chain=[
+            {"message_id": "42", "text": "original text"},
+        ],
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    assert '[Replying to:' in result
+    assert '> "original text"' in result
+    assert result.endswith("follow-up")
