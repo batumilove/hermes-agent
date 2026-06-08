@@ -2087,6 +2087,8 @@ export default class Ink {
     const next = Math.max(0, Math.min(max, current + this.selectionAutoScrollDir))
 
     if (next === current) {
+      this.stopSelectionAutoScroll()
+
       return
     }
 
