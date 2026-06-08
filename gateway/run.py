@@ -6946,8 +6946,25 @@ class GatewayRunner:
             # is referencing. History can contain the same or similar text
             # multiple times, and without an explicit pointer the agent has to
             # guess (or answer for both subjects). Token overhead is minimal.
-            reply_snippet = event.reply_to_text[:500]
-            message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+            #
+            # Chain support: if the platform populated reply_chain (list of
+            # dicts with 'text'), format the full chain from immediate parent
+            # to root ancestor so the model has complete conversational context.
+
+            reply_chain = getattr(event, "reply_chain", None)
+
+            if reply_chain and len(reply_chain) > 0:
+                # Build a multi-level reply context with the full chain
+                parts = []
+                for i, link in enumerate(reply_chain):
+                    link_text = link.get("text", "")
+                    prefix = ">" * (i + 1)
+                    parts.append(f'{prefix} "{link_text}"')
+                chain_block = "\n".join(parts)
+                message_text = f'[Replying to:\n{chain_block}]\n\n{message_text}'
+            else:
+                # Single-message reply — full text, no truncation
+                message_text = f'[Replying to: "{event.reply_to_text}"]\n\n{message_text}'
 
         if "@" in message_text:
             try:
