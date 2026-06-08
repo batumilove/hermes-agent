@@ -488,6 +488,7 @@ class TestLaunchdServiceRecovery:
         plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
 
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_launchd_preferred_domain", lambda label=None: gateway_cli._launchd_domain())
 
         calls = []
 
@@ -509,6 +510,31 @@ class TestLaunchdServiceRecovery:
         ]
 
 
+    def test_launchd_refresh_uses_loaded_gui_domain_before_rewriting_plist(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
+        label = gateway_cli.get_launchd_label()
+        domain = f"gui/{os.getuid()}"
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_launchd_preferred_domain", lambda loaded_label=None: domain)
+
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd and cmd[0] == "launchctl":
+                calls.append((cmd, check))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli.refresh_launchd_plist_if_needed() is True
+
+        assert calls == [
+            (["launchctl", "bootout", f"{domain}/{label}"], False),
+            (["launchctl", "bootstrap", domain, str(plist_path)], True),
+        ]
+
     def test_launchd_refresh_raises_when_bootstrap_fails_after_bootout(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
@@ -516,6 +542,7 @@ class TestLaunchdServiceRecovery:
         domain = gateway_cli._launchd_domain()
 
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_launchd_preferred_domain", lambda label=None: domain)
 
         calls = []
 
@@ -600,6 +627,7 @@ class TestLaunchdServiceRecovery:
 
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
         monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: True)
+        monkeypatch.setattr(gateway_cli, "_launchd_preferred_domain", lambda loaded_label=None: domain)
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         gateway_cli.launchd_start()
@@ -629,6 +657,7 @@ class TestLaunchdServiceRecovery:
 
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
         monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: True)
+        monkeypatch.setattr(gateway_cli, "_launchd_preferred_domain", lambda loaded_label=None: domain)
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         gateway_cli.launchd_start()
@@ -767,6 +796,28 @@ class TestLaunchdServiceRecovery:
         # The user/<uid> domain (not gui/<uid>) is the one reachable from
         # non-Aqua/background sessions on macOS 26+ (issue #23387).
         assert gateway_cli._launchd_domain() == f"user/{os.getuid()}"
+        assert gateway_cli._launchd_domain_candidates() == [
+            f"user/{os.getuid()}",
+            f"gui/{os.getuid()}",
+        ]
+
+    def test_launchd_preferred_domain_uses_loaded_gui_job(self, monkeypatch):
+        label = gateway_cli.get_launchd_label()
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd == ["launchctl", "print", f"gui/{os.getuid()}/{label}"]:
+                return SimpleNamespace(returncode=0, stdout="loaded", stderr="")
+            return SimpleNamespace(returncode=113, stdout="", stderr="Could not find service")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli._launchd_preferred_domain(label) == f"gui/{os.getuid()}"
+        assert calls == [
+            ["launchctl", "print", f"user/{os.getuid()}/{label}"],
+            ["launchctl", "print", f"gui/{os.getuid()}/{label}"],
+        ]
 
     def test_launchctl_domain_unsupported_recognizes_macos26_codes(self):
         # Codes that persist after a fresh bootstrap → launchd truly unavailable.
@@ -796,6 +847,7 @@ class TestLaunchdServiceRecovery:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_launchd_preferred_domain", lambda loaded_label=None: domain)
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         gateway_cli.launchd_start()

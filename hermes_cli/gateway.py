@@ -3060,12 +3060,43 @@ def get_launchd_label() -> str:
     return f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
 
 
+def _launchd_domain_candidates() -> list[str]:
+    """Return launchd domains to try for this user, most portable first.
+
+    `user/<uid>` is reachable from non-Aqua/background sessions and is required
+    on some macOS 26+ hosts, but existing LaunchAgents commonly live in
+    `gui/<uid>`. Try both so updates can repair or restart whichever domain is
+    actually managing the service.
+    """
+    uid = os.getuid()
+    return [f"user/{uid}", f"gui/{uid}"]  # windows-footgun: ok — POSIX launchd helper, never invoked on Windows
+
+
 def _launchd_domain() -> str:
-    # The `user/<uid>` domain (vs the older `gui/<uid>`) is reachable from
-    # non-Aqua/background sessions (SSH, headless, login items) and is the only
-    # one that supports service management on macOS 26+. `gui/<uid>` returns
-    # error 125 ("Domain does not support specified action") there. See #23387.
-    return f"user/{os.getuid()}"  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+    return _launchd_domain_candidates()[0]
+
+
+def _launchd_loaded_domain(label: str | None = None) -> str | None:
+    """Return the launchd domain currently containing the job, if any."""
+    label = label or get_launchd_label()
+    for domain in _launchd_domain_candidates():
+        try:
+            result = subprocess.run(
+                ["launchctl", "print", f"{domain}/{label}"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if result.returncode == 0:
+            return domain
+    return None
+
+
+def _launchd_preferred_domain(label: str | None = None) -> str:
+    return _launchd_loaded_domain(label) or _launchd_domain()
 
 
 # On macOS, exit code 125 ("Domain does not support specified action") and
@@ -3292,19 +3323,32 @@ def refresh_launchd_plist_if_needed() -> bool:
     if not plist_path.exists() or launchd_plist_is_current():
         return False
 
-    plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
     label = get_launchd_label()
+    domain = _launchd_preferred_domain(label)
+    plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
     # Bootout/bootstrap so launchd picks up the new definition
     subprocess.run(
-        ["launchctl", "bootout", f"{_launchd_domain()}/{label}"],
+        ["launchctl", "bootout", f"{domain}/{label}"],
         check=False,
         timeout=90,
     )
-    subprocess.run(
-        ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
-        check=True,
-        timeout=30,
-    )
+    try:
+        subprocess.run(
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+            check=True,
+            timeout=30,
+        )
+    except subprocess.CalledProcessError as e:
+        if domain == _launchd_domain() or not _launchctl_domain_unsupported(e.returncode):
+            raise
+        # Existing jobs may be loaded in gui/<uid> even when our default domain
+        # is user/<uid>.  If refreshing that loaded domain fails, retry the
+        # portable default domain before falling back to detached mode.
+        subprocess.run(
+            ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+            check=True,
+            timeout=30,
+        )
     print(
         "↻ Updated gateway launchd service definition to match the current Hermes install"
     )
@@ -3395,9 +3439,10 @@ def launchd_start():
         return
 
     refresh_launchd_plist_if_needed()
+    domain = _launchd_preferred_domain(label)
     try:
         subprocess.run(
-            ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
+            ["launchctl", "kickstart", f"{domain}/{label}"],
             check=True,
             timeout=30,
         )
