@@ -3111,6 +3111,52 @@ _LAUNCHD_JOB_UNLOADED_EXIT_CODES = frozenset({3, 113, 125})
 _LAUNCHCTL_DOMAIN_UNSUPPORTED_CODES = frozenset({5, 125})
 
 
+def _launchd_hermes_agent_app_executable() -> Path:
+    """Return the path to the Hermes Agent.app wrapper executable, if it exists."""
+    from hermes_constants import get_hermes_home
+    home = get_hermes_home()
+    # The app is typically at ~/Applications/Hermes Agent.app
+    # but could also be in the user's local Apps directory
+    candidates = [
+        Path.home() / "Applications" / "Hermes Agent.app" / "Contents" / "MacOS" / "Hermes Agent",
+        Path.home() / "Applications" / "Hermes Agent.app" / "Contents" / "MacOS" / "Hermes Agent.python-backup-*",
+        home / "Applications" / "Hermes Agent.app" / "Contents" / "MacOS" / "Hermes Agent",
+    ]
+    for candidate in candidates:
+        if "*" in str(candidate):
+            # Handle glob pattern for backup files
+            import glob
+            matches = glob.glob(str(candidate))
+            if matches:
+                return Path(matches[0])
+        elif candidate.exists() and candidate.is_file():
+            return candidate
+    return Path.home() / "Applications" / "Hermes Agent.app" / "Contents" / "MacOS" / "Hermes Agent"
+
+
+def _launchd_app_can_run_hermes(app_python_path: Path) -> bool:
+    """Check if the app wrapper can import Hermes gateway dependencies."""
+    if not app_python_path.exists():
+        return False
+    try:
+        import subprocess
+        import os
+        from pathlib import Path as _Path
+        PROJECT_ROOT = _Path(__file__).parent.parent.resolve()
+        result = subprocess.run(
+            [str(app_python_path), "-c", "import yaml; import hermes_cli.main"],
+            cwd=str(PROJECT_ROOT),
+            env={**os.environ, "PYTHONPATH": str(PROJECT_ROOT)},
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
+
+
 def _launchd_error_indicates_unloaded(exc: subprocess.CalledProcessError) -> bool:
     """True when launchctl failed because the job isn't loaded (retry bootstrap)."""
     return exc.returncode in _LAUNCHD_JOB_UNLOADED_EXIT_CODES
@@ -3202,9 +3248,14 @@ def _launchd_fallback_to_detached(reason: str, *, exit_on_failure: bool = True) 
 
 def generate_launchd_plist() -> str:
     python_path = get_python_path()
-    # Stable cwd anchor — never the volatile source checkout. See
-    # _stable_service_working_dir() for the rationale (same rot risk applies
-    # to launchd's WorkingDirectory as to systemd's).
+    # On macOS, use the Hermes Agent.app wrapper for TCC naming if it can
+    # run Hermes (imports yaml, hermes_cli.main). Otherwise fall back to venv Python.
+    if not is_windows() and is_macos():
+        app_executable = _launchd_hermes_agent_app_executable()
+        if _launchd_app_can_run_hermes(app_executable):
+            python_path = str(app_executable)
+    # Stable cwd anchor — use HERMES_HOME (stable, always exists) instead of the
+    # volatile source checkout. See _stable_service_working_dir() for rationale.
     working_dir = _stable_service_working_dir()
     hermes_home = str(get_hermes_home().resolve())
     log_dir = get_hermes_home() / "logs"
