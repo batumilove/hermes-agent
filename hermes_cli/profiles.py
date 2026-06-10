@@ -453,6 +453,13 @@ def find_alias_for_profile(profile_name: str) -> Optional[str]:
         if not is_windows and entry.suffix:
             continue
         try:
+            # ~/.local/bin may contain large extensionless binaries (uv, node
+            # shims, etc.). Reading every candidate on every profile-list call
+            # can monopolize the dashboard event loop or get the process killed.
+            # Hermes profile wrappers are tiny shell/bat scripts; skip anything
+            # larger than a small script before decoding it as text.
+            if entry.stat().st_size > 16384:
+                continue
             content = entry.read_text()
         except (OSError, UnicodeDecodeError):
             continue

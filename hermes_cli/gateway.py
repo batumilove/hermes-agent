@@ -2351,7 +2351,48 @@ def _stable_service_working_dir() -> str:
     return str(PROJECT_ROOT)
 
 
+def _systemd_required_env_prestart() -> str:
+    """Return an optional bounded pre-start guard for required env vars.
+
+    Operators can set ``HERMES_GATEWAY_REQUIRED_ENV`` in the systemd manager or
+    unit environment to a comma/space-separated list such as
+    ``TELEGRAM_BOT_TOKEN`` or ``TELEGRAM_BOT_TOKEN,DISCORD_BOT_TOKEN``.  Missing
+    vars fail startup for ``HERMES_GATEWAY_REQUIRED_ENV_MAX_ATTEMPTS`` attempts
+    (default: 3), then allow degraded startup so webhook/API-only deployments do
+    not remain down forever during a longer secret-store outage.  A successful
+    start clears the failure counter.
+    """
+    script = (
+        "req=\"${HERMES_GATEWAY_REQUIRED_ENV:-}\"; "
+        "[ -z \"$req\" ] && exit 0; "
+        "max=\"${HERMES_GATEWAY_REQUIRED_ENV_MAX_ATTEMPTS:-3}\"; "
+        "case \"$max\" in *[!0-9]*|0) max=3;; esac; "
+        "state=\"${HERMES_GATEWAY_REQUIRED_ENV_STATE:-$HOME/.hermes/run/gateway-required-env.failures}\"; "
+        "missing=; "
+        "for n in $(printf %s \"$req\" | tr , \" \" ); do "
+        "case \"$n\" in *[!A-Za-z0-9_]*) "
+        "echo \"Invalid HERMES_GATEWAY_REQUIRED_ENV entry: $n\" >&2; exit 1;; "
+        "esac; "
+        "v=$(printenv \"$n\" 2>/dev/null || true); "
+        "[ -z \"$v\" ] && missing=\"$missing $n\"; "
+        "done; "
+        "if [ -z \"$missing\" ]; then rm -f \"$state\"; exit 0; fi; "
+        "mkdir -p \"$(dirname \"$state\")\"; "
+        "count=$(cat \"$state\" 2>/dev/null || echo 0); "
+        "case \"$count\" in *[!0-9]*) count=0;; esac; "
+        "count=$((count + 1)); printf %s \"$count\" > \"$state\"; "
+        "if [ \"$count\" -lt \"$max\" ]; then "
+        "echo \"Required environment variable(s) missing for Hermes Gateway:$missing; retry $count/$max\" >&2; "
+        "exit 1; "
+        "fi; "
+        "echo \"Required environment variable(s) still missing for Hermes Gateway:$missing; allowing degraded startup after $count/$max attempts\" >&2; "
+        "exit 0"
+    )
+    return f"ExecStartPre=/bin/sh -lc '{script}'\n"
+
+
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
+    """Generate systemd service unit content."""
     python_path = get_python_path()
     working_dir = _stable_service_working_dir()
     detected_venv = _detect_venv_dir()
@@ -2380,6 +2421,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     # (#8202). 30s of headroom covers the worst case we've observed.
     _drain_timeout = int(_get_restart_drain_timeout() or 0)
     restart_timeout = max(60, _drain_timeout) + 30
+    required_env_guard = _systemd_required_env_prestart()
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
@@ -2417,7 +2459,7 @@ Environment="LOGNAME={username}"
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
-Restart=always
+{required_env_guard}Restart=always
 RestartSec=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
@@ -2450,7 +2492,7 @@ WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
-Restart=always
+{required_env_guard}Restart=always
 RestartSec=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
