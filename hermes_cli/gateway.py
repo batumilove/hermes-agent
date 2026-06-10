@@ -2351,7 +2351,33 @@ def _stable_service_working_dir() -> str:
     return str(PROJECT_ROOT)
 
 
+def _systemd_required_env_prestart() -> str:
+    """Return an optional systemd pre-start guard for required env vars.
+
+    Operators can set ``HERMES_GATEWAY_REQUIRED_ENV`` in the systemd manager or
+    unit environment to a comma/space-separated list such as
+    ``TELEGRAM_BOT_TOKEN`` or ``TELEGRAM_BOT_TOKEN,DISCORD_BOT_TOKEN``.  The
+    generated unit then fails before launching the gateway if any listed name is
+    absent/empty, letting Restart=always retry instead of starting a partial
+    gateway with only the platforms whose secrets happened to load.
+    """
+    script = (
+        "for n in $(printf %s \"${HERMES_GATEWAY_REQUIRED_ENV:-}\" | tr , \" \" ); do "
+        "case \"$n\" in ''|*[!A-Za-z0-9_]*) "
+        "echo \"Invalid HERMES_GATEWAY_REQUIRED_ENV entry: $n\" >&2; exit 1;; "
+        "esac; "
+        "eval \"v=\\${$n:-}\"; "
+        "if [ -z \"$v\" ]; then "
+        "echo \"Required environment variable $n is missing for Hermes Gateway\" >&2; "
+        "exit 1; "
+        "fi; "
+        "done"
+    )
+    return f"ExecStartPre=/bin/sh -lc '{script}'\n"
+
+
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
+    """Generate systemd service unit content."""
     python_path = get_python_path()
     working_dir = _stable_service_working_dir()
     detected_venv = _detect_venv_dir()
@@ -2380,6 +2406,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     # (#8202). 30s of headroom covers the worst case we've observed.
     _drain_timeout = int(_get_restart_drain_timeout() or 0)
     restart_timeout = max(60, _drain_timeout) + 30
+    required_env_guard = _systemd_required_env_prestart()
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
@@ -2417,7 +2444,7 @@ Environment="LOGNAME={username}"
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
-Restart=always
+{required_env_guard}Restart=always
 RestartSec=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
@@ -2450,7 +2477,7 @@ WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
-Restart=always
+{required_env_guard}Restart=always
 RestartSec=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
