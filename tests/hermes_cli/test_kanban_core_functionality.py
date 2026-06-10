@@ -3532,7 +3532,7 @@ def test_check_dispatcher_presence_silent_on_probe_error(monkeypatch):
 def _make_create_ns(**overrides):
     """Build a Namespace suitable for kb_cli._cmd_create()."""
     ns = argparse.Namespace(
-        title="x", body=None, assignee="worker",
+        title="x", body=None, assignee="worker", route=None,
         created_by="user", workspace="scratch", tenant=None,
         priority=0, parent=None, triage=False,
         idempotency_key=None, max_runtime=None, skills=None,
@@ -3598,6 +3598,83 @@ def test_cli_create_no_warn_unassigned(kanban_home, monkeypatch, capsys):
     assert kb_cli._cmd_create(ns) == 0
     err = capsys.readouterr().err
     assert "hermes gateway start" not in err
+
+
+def test_cli_create_route_resolves_assignee(kanban_home, monkeypatch, capsys):
+    """`--route coding` resolves through kanban.routes before insert."""
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 4242)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"dispatch_in_gateway": True, "routes": {"coding": "wg-builder"}}},
+    )
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda name: name == "wg-builder")
+
+    ns = _make_create_ns(title="via-route", assignee=None, route="coding")
+    assert kb_cli._cmd_create(ns) == 0
+    out = capsys.readouterr().out
+    assert "assignee=wg-builder" in out
+    with kb.connect_closing() as conn:
+        tasks = kb.list_tasks(conn)
+    assert tasks[0].assignee == "wg-builder"
+
+
+def test_cli_create_explicit_assignee_overrides_route(kanban_home, monkeypatch, capsys):
+    """Explicit --assignee wins over --route and does not read routes."""
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 4242)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"dispatch_in_gateway": True, "routes": {"coding": "wg-builder"}}},
+    )
+
+    ns = _make_create_ns(title="override", assignee="repo-builder", route="coding")
+    assert kb_cli._cmd_create(ns) == 0
+    capsys.readouterr()
+    with kb.connect_closing() as conn:
+        tasks = kb.list_tasks(conn)
+    assert tasks[0].assignee == "repo-builder"
+
+
+def test_cli_create_unknown_route_fails(kanban_home, monkeypatch, capsys):
+    """Unknown route names fail clearly instead of creating an unassigned card."""
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"routes": {"coding": "wg-builder"}}},
+    )
+
+    ns = _make_create_ns(title="bad-route", assignee=None, route="review")
+    assert kb_cli._cmd_create(ns) == 2
+    err = capsys.readouterr().err
+    assert "unknown --route 'review'" in err
+    with kb.connect_closing() as conn:
+        assert kb.list_tasks(conn) == []
+
+
+def test_cli_create_route_missing_profile_fails(kanban_home, monkeypatch, capsys):
+    """Routes must point at a profile that exists on disk."""
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"routes": {"coding": "missing-profile"}}},
+    )
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda name: False)
+
+    ns = _make_create_ns(title="missing-profile", assignee=None, route="coding")
+    assert kb_cli._cmd_create(ns) == 2
+    err = capsys.readouterr().err
+    assert "kanban.routes.coding points to missing profile 'missing-profile'" in err
+    with kb.connect_closing() as conn:
+        assert kb.list_tasks(conn) == []
 
 
 def test_cli_daemon_without_force_prints_deprecation_exits_2(kanban_home, capsys):

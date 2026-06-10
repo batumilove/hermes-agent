@@ -307,6 +307,9 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_create.add_argument("title", help="Task title")
     p_create.add_argument("--body", default=None, help="Optional opening post")
     p_create.add_argument("--assignee", default=None, help="Profile name to assign")
+    p_create.add_argument("--route", default=None,
+                          help="Resolve assignee from kanban.routes.<route>; "
+                               "ignored when --assignee is set")
     p_create.add_argument("--parent", action="append", default=[],
                           help="Parent task id (repeatable)")
     p_create.add_argument("--workspace", default="scratch",
@@ -1330,12 +1333,17 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    try:
+        assignee = _resolve_create_assignee(args)
+    except argparse.ArgumentTypeError as exc:
+        print(f"kanban: {exc}", file=sys.stderr)
+        return 2
     with kb.connect_closing() as conn:
         task_id = kb.create_task(
             conn,
             title=args.title,
             body=args.body,
-            assignee=args.assignee,
+            assignee=assignee,
             created_by=args.created_by or _profile_author(),
             workspace_kind=ws_kind,
             workspace_path=ws_path,
@@ -1370,6 +1378,61 @@ def _cmd_create(args: argparse.Namespace) -> int:
             if not running and message:
                 print(f"\n⚠  {message}", file=sys.stderr)
     return 0
+
+
+def _resolve_create_assignee(args: argparse.Namespace) -> Optional[str]:
+    """Resolve the assignee for `kanban create`.
+
+    Precedence is intentionally simple and local to task creation:
+
+    1. Explicit `--assignee` wins.
+    2. `--route NAME` resolves through `kanban.routes.NAME`.
+    3. No route/assignee leaves the card unassigned; the dispatcher may later
+       apply `kanban.default_assignee` if configured.
+    """
+    explicit = (getattr(args, "assignee", None) or "").strip()
+    if explicit:
+        return explicit
+
+    route = (getattr(args, "route", None) or "").strip()
+    if not route:
+        return None
+
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception as exc:  # pragma: no cover - defensive; config loads in normal CLI use
+        raise argparse.ArgumentTypeError(
+            f"--route {route!r} could not read config: {exc}"
+        ) from exc
+
+    kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+    routes = kanban_cfg.get("routes", {}) if isinstance(kanban_cfg, dict) else {}
+    if not isinstance(routes, dict) or not routes:
+        raise argparse.ArgumentTypeError(
+            f"--route {route!r} requested but kanban.routes is not configured"
+        )
+    if route not in routes:
+        known = ", ".join(sorted(str(k) for k in routes)) or "none"
+        raise argparse.ArgumentTypeError(
+            f"unknown --route {route!r}; configured routes: {known}"
+        )
+
+    assignee = str(routes.get(route) or "").strip()
+    if not assignee:
+        raise argparse.ArgumentTypeError(
+            f"kanban.routes.{route} is empty; set it to a Hermes profile name"
+        )
+    try:
+        from hermes_cli.profiles import profile_exists
+        exists = profile_exists(assignee)
+    except Exception:
+        exists = True
+    if not exists:
+        raise argparse.ArgumentTypeError(
+            f"kanban.routes.{route} points to missing profile {assignee!r}"
+        )
+    return assignee
 
 
 def _cmd_swarm(args: argparse.Namespace) -> int:
