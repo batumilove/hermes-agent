@@ -2373,7 +2373,7 @@ def _systemd_required_env_prestart() -> str:
         "case \"$n\" in *[!A-Za-z0-9_]*) "
         "echo \"Invalid HERMES_GATEWAY_REQUIRED_ENV entry: $n\" >&2; exit 1;; "
         "esac; "
-        "eval \"v=\\${$n:-}\"; "
+        "v=$(printenv \"$n\" 2>/dev/null || true); "
         "[ -z \"$v\" ] && missing=\"$missing $n\"; "
         "done; "
         "if [ -z \"$missing\" ]; then rm -f \"$state\"; exit 0; fi; "
