@@ -2589,6 +2589,51 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             session_key=session_entry.session_key,
             session_id=session_entry.session_id,
         )
+        # After binding, apply the session title to the topic if it exists
+        self._apply_session_title_to_telegram_topic(source, session_entry.session_id)
+
+    def _apply_session_title_to_telegram_topic(
+        self,
+        source: SessionSource,
+        session_id: str,
+    ) -> None:
+        """Apply the session's existing title to the Telegram DM topic thread.
+        
+        This runs when a session is bound to a new topic (first message in that
+        topic) or when a binding is refreshed. It ensures the Telegram thread
+        name matches the session title shown in the dashboard.
+        
+        Conditions:
+        - Must be a Telegram DM topic lane (user-created topic)
+        - Must not be an operator-declared dm_topic (those have fixed names)
+        - Session must have a non-empty title
+        """
+        if not self._is_telegram_topic_lane(source):
+            return
+        
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None:
+            return
+        
+        # Skip operator-declared dm_topics (they have fixed names from config)
+        adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
+        if adapter is not None:
+            get_info = getattr(type(adapter), "_get_dm_topic_info", None)
+            if callable(get_info):
+                try:
+                    operator_topic = get_info(adapter, str(source.chat_id), str(source.thread_id))
+                except Exception:
+                    operator_topic = None
+                if isinstance(operator_topic, dict):
+                    return
+        
+        # Get the session title from the DB
+        title = session_db.get_session_title(session_id)
+        if not title or not title.strip():
+            return
+        
+        # Schedule the rename
+        self._schedule_telegram_topic_title_rename(source, session_id, title)
 
     def _sync_telegram_topic_binding(
         self,
@@ -10664,6 +10709,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if "already linked" in str(exc):
                 return "That session is already linked to another Telegram topic."
             raise
+
+        # Apply the session title to the Telegram topic thread
+        self._apply_session_title_to_telegram_topic(source, session_id)
 
         title = self._session_db.get_session_title(session_id) or session_id
         last_assistant = None
