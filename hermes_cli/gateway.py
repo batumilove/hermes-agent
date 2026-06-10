@@ -2352,26 +2352,41 @@ def _stable_service_working_dir() -> str:
 
 
 def _systemd_required_env_prestart() -> str:
-    """Return an optional systemd pre-start guard for required env vars.
+    """Return an optional bounded pre-start guard for required env vars.
 
     Operators can set ``HERMES_GATEWAY_REQUIRED_ENV`` in the systemd manager or
     unit environment to a comma/space-separated list such as
-    ``TELEGRAM_BOT_TOKEN`` or ``TELEGRAM_BOT_TOKEN,DISCORD_BOT_TOKEN``.  The
-    generated unit then fails before launching the gateway if any listed name is
-    absent/empty, letting Restart=always retry instead of starting a partial
-    gateway with only the platforms whose secrets happened to load.
+    ``TELEGRAM_BOT_TOKEN`` or ``TELEGRAM_BOT_TOKEN,DISCORD_BOT_TOKEN``.  Missing
+    vars fail startup for ``HERMES_GATEWAY_REQUIRED_ENV_MAX_ATTEMPTS`` attempts
+    (default: 3), then allow degraded startup so webhook/API-only deployments do
+    not remain down forever during a longer secret-store outage.  A successful
+    start clears the failure counter.
     """
     script = (
-        "for n in $(printf %s \"${HERMES_GATEWAY_REQUIRED_ENV:-}\" | tr , \" \" ); do "
-        "case \"$n\" in ''|*[!A-Za-z0-9_]*) "
+        "req=\"${HERMES_GATEWAY_REQUIRED_ENV:-}\"; "
+        "[ -z \"$req\" ] && exit 0; "
+        "max=\"${HERMES_GATEWAY_REQUIRED_ENV_MAX_ATTEMPTS:-3}\"; "
+        "case \"$max\" in *[!0-9]*|0) max=3;; esac; "
+        "state=\"${HERMES_GATEWAY_REQUIRED_ENV_STATE:-$HOME/.hermes/run/gateway-required-env.failures}\"; "
+        "missing=; "
+        "for n in $(printf %s \"$req\" | tr , \" \" ); do "
+        "case \"$n\" in *[!A-Za-z0-9_]*) "
         "echo \"Invalid HERMES_GATEWAY_REQUIRED_ENV entry: $n\" >&2; exit 1;; "
         "esac; "
         "eval \"v=\\${$n:-}\"; "
-        "if [ -z \"$v\" ]; then "
-        "echo \"Required environment variable $n is missing for Hermes Gateway\" >&2; "
+        "[ -z \"$v\" ] && missing=\"$missing $n\"; "
+        "done; "
+        "if [ -z \"$missing\" ]; then rm -f \"$state\"; exit 0; fi; "
+        "mkdir -p \"$(dirname \"$state\")\"; "
+        "count=$(cat \"$state\" 2>/dev/null || echo 0); "
+        "case \"$count\" in *[!0-9]*) count=0;; esac; "
+        "count=$((count + 1)); printf %s \"$count\" > \"$state\"; "
+        "if [ \"$count\" -lt \"$max\" ]; then "
+        "echo \"Required environment variable(s) missing for Hermes Gateway:$missing; retry $count/$max\" >&2; "
         "exit 1; "
         "fi; "
-        "done"
+        "echo \"Required environment variable(s) still missing for Hermes Gateway:$missing; allowing degraded startup after $count/$max attempts\" >&2; "
+        "exit 0"
     )
     return f"ExecStartPre=/bin/sh -lc '{script}'\n"
 
