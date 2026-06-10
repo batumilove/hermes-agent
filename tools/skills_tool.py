@@ -1031,10 +1031,11 @@ def skill_view(
                 elif categorized_path.with_suffix(".md").exists():
                     _record(None, categorized_path.with_suffix(".md"))
 
-            # Strategy 2: recursive by directory name OR frontmatter name
-            # (catches nested skills like "foundations/runtime/explore-codebase"
-            # called by bare name, and skills whose directory slug differs from
-            # the YAML `name:` exposed by skills_list()).
+            # Strategy 2: recursive by directory name (catches nested skills
+            # like "foundations/runtime/explore-codebase" called by bare name),
+            # plus frontmatter `name:` lookup. `skills_list()` exposes the
+            # frontmatter name, so `skill_view(name)` must accept it too even
+            # when the on-disk directory is a shorter category/alias.
             for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
                 if found_skill_md.parent.name == name:
                     _record(found_skill_md.parent, found_skill_md)
