@@ -1,0 +1,107 @@
+name: Staging Daytona smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Smoke mode: auto uses Daytona when secrets exist, otherwise local fallback"
+        required: false
+        default: auto
+        type: choice
+        options:
+          - auto
+          - local
+          - daytona
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - ".github/workflows/staging-daytona-smoke.yml"
+      - "scripts/ci/staging_daytona_smoke.py"
+      - "scripts/ci/daytona_real_repo_smoke.py"
+      - "scripts/ci/verify_profile_isolation.py"
+      - "scripts/ci/skill_lab_smoke.py"
+      - "tools/environments/daytona.py"
+      - "tests/tools/test_daytona_environment.py"
+      - "tests/ci/test_daytona_real_repo_smoke.py"
+
+permissions:
+  contents: read
+
+jobs:
+  staging-daytona-smoke:
+    name: Staging sandbox smoke
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'staging-smoke')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      HERMES_STAGING_MODE: ${{ github.event.inputs.mode || 'auto' }}
+      TERMINAL_DAYTONA_IMAGE: ${{ vars.TERMINAL_DAYTONA_IMAGE || 'python:3.11-slim' }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install local package for CLI smoke
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+
+      - name: Syntax checks
+        run: |
+          python -m py_compile scripts/ci/staging_daytona_smoke.py scripts/ci/daytona_real_repo_smoke.py scripts/ci/verify_profile_isolation.py scripts/ci/skill_lab_smoke.py tools/environments/daytona.py
+          python - <<'PY'
+          import yaml
+          with open('.github/workflows/staging-daytona-smoke.yml', 'r', encoding='utf-8') as fh:
+              yaml.safe_load(fh)
+          print('workflow yaml ok')
+          PY
+
+      - name: Profile-isolation guard
+        run: python scripts/ci/verify_profile_isolation.py
+
+      - name: Skill-lab profile smoke
+        run: python scripts/ci/skill_lab_smoke.py
+
+      - name: Staging local/Daytona smoke
+        env:
+          # Keep secrets off pull_request jobs; PR-label smokes are local/temp-home only.
+          DAYTONA_API_KEY: ${{ github.event_name == 'workflow_dispatch' && secrets.DAYTONA_API_KEY || '' }}
+          DAYTONA_API_URL: ${{ github.event_name == 'workflow_dispatch' && secrets.DAYTONA_API_URL || '' }}
+        run: python scripts/ci/staging_daytona_smoke.py --mode "$HERMES_STAGING_MODE"
+
+      - name: Daytona real-repo runner unit tests
+        run: python -m pytest tests/ci/test_daytona_real_repo_smoke.py -q -o addopts=
+
+      - name: Daytona real-repo artifact dry-run
+        run: python scripts/ci/daytona_real_repo_smoke.py --mode dry-run --artifact-root /tmp/daytona-realrepo-smoke --run-id ci-dry-run
+
+      - name: Daytona real-repo smoke
+        if: github.event_name == 'workflow_dispatch' && env.HERMES_STAGING_MODE != 'local'
+        env:
+          DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+          DAYTONA_API_URL: ${{ secrets.DAYTONA_API_URL }}
+        run: |
+          if [ -z "$DAYTONA_API_KEY" ] || [ -z "$DAYTONA_API_URL" ]; then
+            echo "Daytona credentials absent; real-repo Daytona smoke skipped."
+            exit 0
+          fi
+          python scripts/ci/daytona_real_repo_smoke.py --mode daytona --artifact-root /tmp/daytona-realrepo-smoke --run-id ci-daytona
+
+      - name: Daytona secret status
+        if: always()
+        run: |
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            echo "Pull request smoke: Daytona secrets intentionally withheld; local temp-HERMES_HOME fallback is authoritative."
+          elif [ "${{ secrets.DAYTONA_API_KEY != '' && secrets.DAYTONA_API_URL != '' }}" = "true" ]; then
+            echo "Daytona credentials present for manual dispatch: Daytona smoke attempted."
+          else
+            echo "Daytona credentials absent: Daytona smoke explicitly skipped; local temp-HERMES_HOME fallback is authoritative."
+          fi
