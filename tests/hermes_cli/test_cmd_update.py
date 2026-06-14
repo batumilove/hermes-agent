@@ -883,3 +883,80 @@ termux = ["rich>=14"]
 
     assert hm._load_installable_optional_extras(group="all") == ["mcp"]
     assert hm._load_installable_optional_extras(group="termux-all") == ["termux", "mcp"]
+
+
+def test_gateway_update_starts_unloaded_launchd_service(monkeypatch, tmp_path, capsys):
+    """Gateway updates must not leave an installed launchd service unloaded."""
+    from hermes_cli import main as hm
+
+    plist = tmp_path / "ai.hermes.gateway.plist"
+    plist.write_text("<plist/>", encoding="utf-8")
+    started: list[bool] = []
+
+    def fake_run(cmd, **kwargs):
+        cmd = [str(part) for part in cmd]
+        joined = " ".join(cmd)
+        if "launchctl list" in joined:
+            return subprocess.CompletedProcess(cmd, 113, stdout="", stderr="Could not find service")
+        if "rev-parse --abbrev-ref HEAD" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="main\n", stderr="")
+        if "rev-list HEAD..origin/main --count" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="1\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(hm, "_run_pre_update_backup", lambda args: None)
+    monkeypatch.setattr(hm, "_pause_windows_gateways_for_update", lambda: None)
+    monkeypatch.setattr(hm, "_resume_windows_gateways_after_update", lambda resume: None)
+    monkeypatch.setattr(hm, "_is_windows", lambda: False)
+    monkeypatch.setattr(hm, "_resolve_update_branch", lambda args: "main")
+    monkeypatch.setattr(hm, "_get_origin_url", lambda git_cmd, cwd: "https://github.com/NousResearch/hermes-agent.git")
+    monkeypatch.setattr(hm, "_is_fork", lambda origin_url: False)
+    monkeypatch.setattr(hm, "_discard_lockfile_churn", lambda git_cmd, cwd: None)
+    monkeypatch.setattr(hm, "_stash_local_changes_if_needed", lambda git_cmd, cwd: None)
+    monkeypatch.setattr(hm, "_capture_head_sha", lambda git_cmd, cwd: "abc123")
+    monkeypatch.setattr(hm, "_validate_critical_files_syntax", lambda cwd: (True, None, None))
+    monkeypatch.setattr(hm, "_invalidate_update_cache", lambda: None)
+    monkeypatch.setattr(hm, "_clear_bytecode_cache", lambda cwd: 0)
+    monkeypatch.setattr(hm, "_write_update_incomplete_marker", lambda: None)
+    monkeypatch.setattr(hm, "_clear_update_incomplete_marker", lambda: None)
+    monkeypatch.setattr(hm, "_refresh_active_lazy_features", lambda: None)
+    monkeypatch.setattr(hm, "_update_node_dependencies", lambda: None)
+    monkeypatch.setattr(hm, "_build_web_ui", lambda path: None)
+    monkeypatch.setattr(hm, "_desktop_packaged_executable", lambda desktop_dir: None)
+    monkeypatch.setattr(hm, "_desktop_dist_exists", lambda desktop_dir: False)
+    monkeypatch.setattr(hm, "_install_python_dependencies_with_optional_fallback", lambda *a, **k: None)
+    monkeypatch.setattr(hm, "_maybe_run_post_update_migrations", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(hm, "_run_post_update_migrations", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(hm, "_maybe_prompt_config_migration", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(hm.shutil, "which", lambda name: None)
+
+    import hermes_cli.managed_uv as managed_uv
+
+    monkeypatch.setattr(managed_uv, "update_managed_uv", lambda: None)
+    monkeypatch.setattr(managed_uv, "ensure_uv", lambda: None)
+    monkeypatch.setattr(hm.subprocess, "run", fake_run)
+
+    import hermes_cli.gateway as gw
+
+    monkeypatch.setattr(gw, "is_macos", lambda: True)
+    monkeypatch.setattr(gw, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gw, "get_launchd_plist_path", lambda: plist)
+    monkeypatch.setattr(gw, "get_launchd_label", lambda: "ai.hermes.gateway")
+    monkeypatch.setattr(gw, "launchd_start", lambda: started.append(True))
+    monkeypatch.setattr(
+        gw,
+        "launchd_restart",
+        lambda: (_ for _ in ()).throw(AssertionError("restart should not run for unloaded job")),
+    )
+    monkeypatch.setattr(gw, "_get_service_pids", lambda: set())
+    monkeypatch.setattr(gw, "find_gateway_pids", lambda *a, **k: set())
+    monkeypatch.setattr(gw, "find_profile_gateway_processes", lambda *a, **k: [])
+    monkeypatch.setattr(gw, "has_legacy_hermes_units", lambda: False)
+
+    args = SimpleNamespace(gateway=True, yes=True, sync_fork=False, branch=None)
+    hm._cmd_update_impl(args, gateway_mode=True)
+
+    out = capsys.readouterr().out
+    assert started == [True]
+    assert "installed but unloaded" in out
+    assert "Restarted ai.hermes.gateway" in out

@@ -9834,6 +9834,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 try:
                     from hermes_cli.gateway import (
                         launchd_restart,
+                        launchd_start,
                         get_launchd_label,
                         get_launchd_plist_path,
                     )
@@ -9853,6 +9854,27 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             except subprocess.CalledProcessError as e:
                                 stderr = (getattr(e, "stderr", "") or "").strip()
                                 print(f"  ⚠ Gateway restart failed: {stderr}")
+                        else:
+                            # The update may have been launched from the
+                            # gateway itself. When that gateway exits after
+                            # sending its shutdown notice, launchd can be left
+                            # with a current plist on disk but no loaded job.
+                            # Previously this branch skipped restart entirely
+                            # because ``launchctl list <label>`` returned
+                            # non-zero, leaving Telegram silent until the user
+                            # manually ran ``hermes gateway start``. Treat an
+                            # installed-but-unloaded launchd service as a
+                            # self-healing start target so updates cannot leave
+                            # the Telegram gateway offline.
+                            print(
+                                "  ↻ Gateway launchd service is installed but unloaded; starting it"
+                            )
+                            try:
+                                launchd_start()
+                                restarted_services.append(get_launchd_label())
+                            except subprocess.CalledProcessError as e:
+                                stderr = (getattr(e, "stderr", "") or "").strip()
+                                print(f"  ⚠ Gateway start failed: {stderr}")
                 except (FileNotFoundError, subprocess.TimeoutExpired, ImportError):
                     pass
 
