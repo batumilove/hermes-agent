@@ -6644,6 +6644,51 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         await adapter.send(source.chat_id, content, metadata=metadata)
 
+    def _handle_telegram_topic_title_edit_event(self, event: MessageEvent) -> bool:
+        """Record user-owned Telegram topic names from forum-topic edit service messages.
+
+        Returns True when the inbound event is only a Telegram service event and
+        should not be sent to the agent.
+        """
+        source = getattr(event, "source", None)
+        if source is None or getattr(source, "platform", None) is not Platform.TELEGRAM:
+            return False
+        thread_id = getattr(source, "thread_id", None)
+        if not thread_id:
+            return False
+        message = getattr(event, "raw_message", None)
+        edited = getattr(message, "forum_topic_edited", None)
+        if not edited:
+            return False
+        new_name = str(getattr(edited, "name", "") or "").strip()
+        if not new_name:
+            return True
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None:
+            return True
+        try:
+            binding = session_db.get_telegram_topic_binding(
+                chat_id=str(source.chat_id),
+                thread_id=str(thread_id),
+            )
+            if not binding:
+                return True
+            old_auto_title = str(binding.get("auto_title") or "")
+            if new_name != old_auto_title:
+                session_db.mark_telegram_topic_title_manual(
+                    chat_id=str(source.chat_id),
+                    thread_id=str(thread_id),
+                )
+                logger.info(
+                    "Marked Telegram topic title as manual after user rename chat=%s thread=%s name=%r",
+                    source.chat_id,
+                    thread_id,
+                    new_name,
+                )
+        except Exception:
+            logger.debug("Failed to process Telegram topic title edit", exc_info=True)
+        return True
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -6658,6 +6703,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         7. Return response
         """
         source = event.source
+
+        if self._handle_telegram_topic_title_edit_event(event):
+            return None
 
         if (
             getattr(self, "_startup_restore_in_progress", False)
@@ -10976,6 +11024,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 if binding and str(binding.get("session_id") or "") != str(session_id):
                     return
+                if binding and str(binding.get("topic_title_mode") or "auto").lower() == "manual":
+                    logger.debug(
+                        "Skipping Telegram topic auto-rename for manually named topic chat=%s thread=%s",
+                        source.chat_id, source.thread_id,
+                    )
+                    return
             except Exception:
                 logger.debug("Failed to verify Telegram topic binding before rename", exc_info=True)
                 return
@@ -10991,6 +11045,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     thread_id=str(source.thread_id),
                     name=topic_name,
                 )
+                if session_db is not None:
+                    try:
+                        session_db.record_telegram_topic_auto_title(
+                            chat_id=str(source.chat_id),
+                            thread_id=str(source.thread_id),
+                            title=topic_name,
+                        )
+                    except Exception:
+                        logger.debug("Failed to record Telegram topic auto-title", exc_info=True)
                 return
 
             bot = getattr(adapter, "_bot", None)
@@ -11011,6 +11074,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     message_thread_id=source.thread_id,
                     name=topic_name,
                 )
+            if session_db is not None:
+                try:
+                    session_db.record_telegram_topic_auto_title(
+                        chat_id=str(source.chat_id),
+                        thread_id=str(source.thread_id),
+                        title=topic_name,
+                    )
+                except Exception:
+                    logger.debug("Failed to record Telegram topic auto-title", exc_info=True)
         except Exception:
             logger.debug("Failed to rename Telegram topic for auto-generated title", exc_info=True)
 
@@ -11103,6 +11175,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "  /topic             Enable topic mode, or show status if already on\n"
             "  /topic help        Show this message\n"
             "  /topic off         Disable topic mode and clear topic bindings\n"
+            "  /topic lock        Inside a topic: stop Hermes auto-renaming it\n"
+            "  /topic unlock      Inside a topic: allow Hermes auto-renaming again\n"
             "  /topic <id>        Inside a topic: restore a previous session by ID\n"
             "\n"
             "How it works:\n"

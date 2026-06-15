@@ -2585,6 +2585,24 @@ class GatewaySlashCommandsMixin:
         if args.lower() in {"off", "disable", "stop"}:
             return self._disable_telegram_topic_mode_for_chat(source)
 
+        # /topic lock|unlock — explicit title ownership escape hatch.
+        if args.lower() in {"lock", "manual"}:
+            if not source.thread_id:
+                return "Run /topic lock inside the topic whose title Hermes should leave alone."
+            self._session_db.mark_telegram_topic_title_manual(
+                chat_id=str(source.chat_id),
+                thread_id=str(source.thread_id),
+            )
+            return "This topic title is now locked. Hermes will not auto-rename it."
+        if args.lower() in {"unlock", "auto", "auto-title on"}:
+            if not source.thread_id:
+                return "Run /topic unlock inside the topic where Hermes may auto-rename again."
+            self._session_db.mark_telegram_topic_title_auto(
+                chat_id=str(source.chat_id),
+                thread_id=str(source.thread_id),
+            )
+            return "This topic title is back in auto mode. Hermes may rename it from future generated titles."
+
         if args:
             if not source.thread_id:
                 return t("gateway.topic.restore_needs_topic")

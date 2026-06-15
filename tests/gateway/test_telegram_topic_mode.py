@@ -549,7 +549,7 @@ async def test_topic_root_command_explicitly_migrates_and_enables_topic_mode(tmp
 
     assert "Telegram multi-session topics are enabled" in result
     assert "All Messages" in result
-    assert session_db.get_meta("telegram_dm_topic_schema_version") == "2"
+    assert session_db.get_meta("telegram_dm_topic_schema_version") == "3"
     assert session_db.is_telegram_topic_mode_enabled(chat_id="208214988", user_id="208214988")
     assert runner._telegram_topic_mode_enabled(_make_source()) is True
     runner._run_agent.assert_not_called()
@@ -858,6 +858,117 @@ async def test_auto_generated_title_renames_bound_telegram_topic(tmp_path):
         thread_id="42",
         name="Build Telegram Topic UX",
     )
+    binding = db.get_telegram_topic_binding(chat_id="208214988", thread_id="42")
+    assert binding["topic_title_mode"] == "auto"
+    assert binding["auto_title"] == "Build Telegram Topic UX"
+
+
+@pytest.mark.asyncio
+async def test_auto_generated_title_skips_manually_renamed_topic(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+    )
+    db.mark_telegram_topic_title_manual(chat_id="208214988", thread_id="42")
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="42"),
+        "sess-topic",
+        "New Generated Title",
+    )
+
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_forum_topic_edited_marks_title_manual(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+    )
+    db.record_telegram_topic_auto_title(
+        chat_id="208214988",
+        thread_id="42",
+        title="Generated Title",
+    )
+    runner = _make_runner(session_db=db)
+    event = _make_event("", thread_id="42")
+    event.raw_message = SimpleNamespace(
+        forum_topic_edited=SimpleNamespace(name="My Manual Name")
+    )
+
+    handled = runner._handle_telegram_topic_title_edit_event(event)
+
+    assert handled is True
+    binding = db.get_telegram_topic_binding(chat_id="208214988", thread_id="42")
+    assert binding["topic_title_mode"] == "manual"
+
+
+@pytest.mark.asyncio
+async def test_forum_topic_edited_matching_auto_title_stays_auto(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+    )
+    db.record_telegram_topic_auto_title(
+        chat_id="208214988",
+        thread_id="42",
+        title="Generated Title",
+    )
+    runner = _make_runner(session_db=db)
+    event = _make_event("", thread_id="42")
+    event.raw_message = SimpleNamespace(
+        forum_topic_edited=SimpleNamespace(name="Generated Title")
+    )
+
+    handled = runner._handle_telegram_topic_title_edit_event(event)
+
+    assert handled is True
+    binding = db.get_telegram_topic_binding(chat_id="208214988", thread_id="42")
+    assert binding["topic_title_mode"] == "auto"
+
+
+@pytest.mark.asyncio
+async def test_topic_unlock_command_reenables_auto_title(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+    )
+    db.mark_telegram_topic_title_manual(chat_id="208214988", thread_id="42")
+    runner = _make_runner(session_db=db)
+    runner._is_user_authorized = lambda source: True
+
+    result = await runner._handle_topic_command(_make_event("/topic unlock", thread_id="42"))
+
+    assert "auto mode" in result
+    binding = db.get_telegram_topic_binding(chat_id="208214988", thread_id="42")
+    assert binding["topic_title_mode"] == "auto"
 
 
 @pytest.mark.asyncio
@@ -1116,7 +1227,7 @@ def test_migration_rebuilds_v1_binding_table_with_cascade_fk(tmp_path):
     version = db._conn.execute(
         "SELECT value FROM state_meta WHERE key = 'telegram_dm_topic_schema_version'"
     ).fetchone()
-    assert version is not None and version[0] == "2"
+    assert version is not None and version[0] == "3"
 
 
 @pytest.mark.asyncio

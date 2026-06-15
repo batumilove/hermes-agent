@@ -2130,7 +2130,7 @@ class TestSchemaInit:
         }
         assert "telegram_dm_topic_mode" in tables
         assert "telegram_dm_topic_bindings" in tables
-        assert db.get_meta("telegram_dm_topic_schema_version") == "2"
+        assert db.get_meta("telegram_dm_topic_schema_version") == "3"
         db.close()
 
     def test_telegram_topic_binding_roundtrip_requires_explicit_schema(self, tmp_path):
@@ -2158,7 +2158,73 @@ class TestSchemaInit:
         assert binding["user_id"] == "208214988"
         assert binding["session_key"] == "telegram:dm:208214988:thread:17585"
         assert binding["session_id"] == "topic-session"
-        assert db.get_meta("telegram_dm_topic_schema_version") == "2"
+        assert binding["topic_title_mode"] == "auto"
+        assert binding["auto_title"] is None
+        assert db.get_meta("telegram_dm_topic_schema_version") == "3"
+        db.close()
+
+    def test_telegram_topic_title_ownership_roundtrip(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(
+            session_id="topic-session",
+            source="telegram",
+            user_id="208214988",
+        )
+        db.bind_telegram_topic(
+            chat_id="208214988",
+            thread_id="17585",
+            user_id="208214988",
+            session_key="key-17585",
+            session_id="topic-session",
+        )
+
+        db.record_telegram_topic_auto_title(
+            chat_id="208214988",
+            thread_id="17585",
+            title="Generated title",
+        )
+        binding = db.get_telegram_topic_binding(chat_id="208214988", thread_id="17585")
+        assert binding["topic_title_mode"] == "auto"
+        assert binding["auto_title"] == "Generated title"
+        assert binding["auto_title_updated_at"] is not None
+
+        db.mark_telegram_topic_title_manual(chat_id="208214988", thread_id="17585")
+        binding = db.get_telegram_topic_binding(chat_id="208214988", thread_id="17585")
+        assert binding["topic_title_mode"] == "manual"
+
+        db.mark_telegram_topic_title_auto(chat_id="208214988", thread_id="17585")
+        binding = db.get_telegram_topic_binding(chat_id="208214988", thread_id="17585")
+        assert binding["topic_title_mode"] == "auto"
+        db.close()
+
+    def test_telegram_topic_binding_rebind_preserves_title_ownership(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(
+            session_id="topic-session",
+            source="telegram",
+            user_id="208214988",
+        )
+        kwargs = dict(
+            chat_id="208214988",
+            thread_id="17585",
+            user_id="208214988",
+            session_key="key-17585",
+            session_id="topic-session",
+        )
+        db.bind_telegram_topic(**kwargs)
+        db.record_telegram_topic_auto_title(
+            chat_id="208214988",
+            thread_id="17585",
+            title="Generated title",
+        )
+        db.mark_telegram_topic_title_manual(chat_id="208214988", thread_id="17585")
+
+        db.bind_telegram_topic(**kwargs)
+
+        binding = db.get_telegram_topic_binding(chat_id="208214988", thread_id="17585")
+        assert binding["topic_title_mode"] == "manual"
+        assert binding["auto_title"] == "Generated title"
+        assert binding["auto_title_updated_at"] is not None
         db.close()
 
     def test_telegram_topic_binding_refuses_to_relink_session_to_another_topic(self, tmp_path):

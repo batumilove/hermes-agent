@@ -4120,6 +4120,9 @@ class SessionDB:
                     session_key TEXT NOT NULL,
                     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
                     managed_mode TEXT NOT NULL DEFAULT 'auto',
+                    topic_title_mode TEXT NOT NULL DEFAULT 'auto',
+                    auto_title TEXT,
+                    auto_title_updated_at REAL,
                     linked_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
                     PRIMARY KEY (chat_id, thread_id)
@@ -4177,10 +4180,32 @@ class SessionDB:
                         """
                     )
 
+            # v2 → v3: record whether Hermes still owns a Telegram topic title.
+            # Existing DBs need additive columns; fresh CREATE TABLE above already
+            # includes them, so duplicate-column errors are harmless.
+            if current_version < 3:
+                existing_cols = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info('telegram_dm_topic_bindings')").fetchall()
+                }
+                if "topic_title_mode" not in existing_cols:
+                    conn.execute(
+                        "ALTER TABLE telegram_dm_topic_bindings "
+                        "ADD COLUMN topic_title_mode TEXT NOT NULL DEFAULT 'auto'"
+                    )
+                if "auto_title" not in existing_cols:
+                    conn.execute(
+                        "ALTER TABLE telegram_dm_topic_bindings ADD COLUMN auto_title TEXT"
+                    )
+                if "auto_title_updated_at" not in existing_cols:
+                    conn.execute(
+                        "ALTER TABLE telegram_dm_topic_bindings ADD COLUMN auto_title_updated_at REAL"
+                    )
+
             conn.execute(
                 "INSERT INTO state_meta (key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                ("telegram_dm_topic_schema_version", "2"),
+                ("telegram_dm_topic_schema_version", "3"),
             )
         self._execute_write(_do)
 
@@ -4398,6 +4423,9 @@ class SessionDB:
                     session_key = excluded.session_key,
                     session_id = excluded.session_id,
                     managed_mode = excluded.managed_mode,
+                    topic_title_mode = COALESCE(telegram_dm_topic_bindings.topic_title_mode, 'auto'),
+                    auto_title = telegram_dm_topic_bindings.auto_title,
+                    auto_title_updated_at = telegram_dm_topic_bindings.auto_title_updated_at,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -4410,6 +4438,80 @@ class SessionDB:
                     now,
                     now,
                 ),
+            )
+        self._execute_write(_do)
+
+    def record_telegram_topic_auto_title(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+        title: str,
+    ) -> None:
+        """Record the last Telegram topic title set by Hermes.
+
+        This keeps title ownership in ``auto`` mode. If the user later edits the
+        topic to a different name, the gateway can compare against this value
+        and stop future auto-renames for that topic.
+        """
+        self.apply_telegram_topic_migration()
+        now = time.time()
+
+        def _do(conn):
+            conn.execute(
+                """
+                UPDATE telegram_dm_topic_bindings
+                SET topic_title_mode = 'auto',
+                    auto_title = ?,
+                    auto_title_updated_at = ?,
+                    updated_at = ?
+                WHERE chat_id = ? AND thread_id = ?
+                """,
+                (str(title), now, now, str(chat_id), str(thread_id)),
+            )
+        self._execute_write(_do)
+
+    def mark_telegram_topic_title_manual(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+    ) -> None:
+        """Mark a Telegram topic title as user-owned/manual."""
+        self.apply_telegram_topic_migration()
+        now = time.time()
+
+        def _do(conn):
+            conn.execute(
+                """
+                UPDATE telegram_dm_topic_bindings
+                SET topic_title_mode = 'manual',
+                    updated_at = ?
+                WHERE chat_id = ? AND thread_id = ?
+                """,
+                (now, str(chat_id), str(thread_id)),
+            )
+        self._execute_write(_do)
+
+    def mark_telegram_topic_title_auto(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+    ) -> None:
+        """Re-enable Hermes auto-title ownership for a Telegram topic."""
+        self.apply_telegram_topic_migration()
+        now = time.time()
+
+        def _do(conn):
+            conn.execute(
+                """
+                UPDATE telegram_dm_topic_bindings
+                SET topic_title_mode = 'auto',
+                    updated_at = ?
+                WHERE chat_id = ? AND thread_id = ?
+                """,
+                (now, str(chat_id), str(thread_id)),
             )
         self._execute_write(_do)
 
