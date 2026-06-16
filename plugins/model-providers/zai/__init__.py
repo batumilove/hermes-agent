@@ -11,6 +11,7 @@ zai = ProviderProfile(
     description="Z.AI / GLM — Zhipu AI models",
     signup_url="https://z.ai/",
     fallback_models=(
+        "glm-5.2",
         "glm-5.1",
         "glm-5",
         "glm-5v-turbo",

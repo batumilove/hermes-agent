@@ -260,6 +260,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-3.5-flash",
     ],
     "zai": [
+        "glm-5.2",
         "glm-5.1",
         "glm-5",
         "glm-5v-turbo",
@@ -284,8 +285,10 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai/gpt-oss-120b",
     ],
     "kimi-coding": [
-        "kimi-for-coding",
+        "kimi-k2.7-code",
+        "kimi-k2.6",
         "kimi-k2.5",
+        "kimi-for-coding",
         "kimi-k2-thinking",
         "kimi-k2-thinking-turbo",
         "kimi-k2-turbo-preview",
@@ -2370,6 +2373,15 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             if api_key:
                 live = _p.fetch_models(api_key=api_key)
                 if live:
+                    if normalized in {"kimi-coding", "kimi-coding-cn"}:
+                        curated = list(_PROVIDER_MODELS.get(normalized, []))
+                        merged = list(curated)
+                        merged_lower = {m.lower() for m in curated}
+                        for m in live:
+                            if m.lower() not in merged_lower:
+                                merged.append(m)
+                                merged_lower.add(m.lower())
+                        return merged
                     return live
             # Prefer Hermes' curated static/catalog fallback when present; it is
             # the picker source of truth and tends to be updated faster than a
