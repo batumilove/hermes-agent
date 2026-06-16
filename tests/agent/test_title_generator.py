@@ -220,6 +220,7 @@ class TestMaybeAutoTitle:
                 failure_callback=None,
                 main_runtime=None,
                 title_callback=None,
+                update_existing=False,
             )
 
     def test_forwards_failure_callback_to_worker(self):
@@ -246,7 +247,50 @@ class TestMaybeAutoTitle:
                 failure_callback=_cb,
                 main_runtime=None,
                 title_callback=None,
+                update_existing=False,
             )
+
+    def test_fires_refresh_on_tenth_user_message(self):
+        """Should refresh existing title every 10 user messages."""
+        db = MagicMock()
+        history = []
+        for i in range(10):
+            history.append({"role": "user", "content": f"u{i}"})
+            history.append({"role": "assistant", "content": f"a{i}"})
+
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(db, "sess-1", "u9", "a9", history)
+            import time
+            time.sleep(0.3)
+            mock_auto.assert_called_once_with(
+                db,
+                "sess-1",
+                "u9",
+                "a9",
+                failure_callback=None,
+                main_runtime=None,
+                title_callback=None,
+                update_existing=True,
+            )
+
+    def test_update_existing_replaces_title_and_invokes_callback(self):
+        db = MagicMock()
+        db.set_session_title.return_value = True
+        seen = []
+
+        with patch("agent.title_generator.generate_title", return_value="Telegram Topic Naming"):
+            auto_title_session(
+                db,
+                "sess-1",
+                "latest",
+                "reply",
+                title_callback=seen.append,
+                update_existing=True,
+            )
+
+        db.get_session_title.assert_not_called()
+        db.set_session_title.assert_called_once_with("sess-1", "Telegram Topic Naming")
+        assert seen == ["Telegram Topic Naming"]
 
     def test_skips_if_no_response(self):
         db = MagicMock()

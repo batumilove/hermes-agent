@@ -19,9 +19,15 @@ logger = logging.getLogger(__name__)
 FailureCallback = Callable[[str, BaseException], None]
 TitleCallback = Callable[[str], None]
 
+_RETITLE_EVERY_USER_MESSAGES = 10
+
 _TITLE_PROMPT = (
-    "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
-    "following exchange. The title should capture the main topic or intent. "
+    "Generate a short, descriptive subject title (3-7 words) for this conversation. "
+    "Use noun phrases centered on the main subject/domain, not actions. "
+    "Avoid verbs and gerunds such as applying, investigating, verifying, fixing, creating, "
+    "updating, troubleshooting, implementing, checking, or planning unless they are part of "
+    "a proper noun. Prefer titles like 'Telegram Topic Naming Flow', 'COLD-006 Batch Status', "
+    "or 'Agent Vault Credentials' over 'Investigating Topic Renames' or 'Applying Fixes'. "
     "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
 )
 
@@ -92,25 +98,26 @@ def auto_title_session(
     failure_callback: Optional[FailureCallback] = None,
     main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
+    update_existing: bool = False,
 ) -> None:
-    """Generate and set a session title if one doesn't already exist.
+    """Generate and set/update a session title in the background.
 
-    Called in a background thread after the first exchange completes.
-    Silently skips if:
-    - session_db is None
-    - session already has a title (user-set or previously auto-generated)
-    - title generation fails
+    The first exchange uses an empty-title conditional write to avoid delayed
+    workers overwriting a user title. Periodic refreshes (``update_existing``)
+    intentionally replace the session title so Telegram topic names can stay
+    current while the topic binding remains in auto mode.
     """
     if not session_db or not session_id:
         return
 
-    # Check if title already exists (user may have set one via /title before first response)
-    try:
-        existing = session_db.get_session_title(session_id)
-        if existing:
+    if not update_existing:
+        # Check if title already exists (user may have set one via /title before first response)
+        try:
+            existing = session_db.get_session_title(session_id)
+            if existing:
+                return
+        except Exception:
             return
-    except Exception:
-        return
 
     title = generate_title(
         user_message, assistant_response, failure_callback=failure_callback, main_runtime=main_runtime
@@ -119,16 +126,19 @@ def auto_title_session(
         return
 
     try:
-        setter = getattr(session_db, "set_session_title_if_empty", None)
-        if callable(setter):
-            title_was_set = setter(session_id, title)
+        if update_existing:
+            title_was_set = session_db.set_session_title(session_id, title)
         else:
-            # Compatibility fallback for older SessionDB-like test doubles.
-            existing = session_db.get_session_title(session_id)
-            title_was_set = False if existing else session_db.set_session_title(session_id, title)
+            setter = getattr(session_db, "set_session_title_if_empty", None)
+            if callable(setter):
+                title_was_set = setter(session_id, title)
+            else:
+                # Compatibility fallback for older SessionDB-like test doubles.
+                existing = session_db.get_session_title(session_id)
+                title_was_set = False if existing else session_db.set_session_title(session_id, title)
         if not title_was_set:
             return
-        logger.debug("Auto-generated session title: %s", title)
+        logger.debug("Auto-%s session title: %s", "updated" if update_existing else "generated", title)
         if title_callback is not None:
             try:
                 title_callback(title)
@@ -148,22 +158,23 @@ def maybe_auto_title(
     main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
 ) -> None:
-    """Fire-and-forget title generation after the first exchange.
+    """Fire-and-forget title generation/refresh after replies.
 
-    Only generates a title when:
-    - This appears to be the first user→assistant exchange
-    - No title is already set
+    Generates a first title after the first user→assistant exchange, then
+    refreshes the title every 10 user messages so long-running Telegram topic
+    names can stay current. Telegram manual-title ownership is enforced by the
+    gateway rename callback, not by this generic title generator.
     """
     if not session_db or not session_id or not user_message or not assistant_response:
         return
 
-    # Count user messages in history to detect the first exchange.
-    # conversation_history includes the exchange that just happened, so for a
-    # first exchange we expect exactly 1 user message. Later replies must not
-    # spawn competing delayed title workers: they can finish out of order and
-    # rename Telegram topics minutes after the user's latest message.
     user_msg_count = sum(1 for m in (conversation_history or []) if m.get("role") == "user")
-    if user_msg_count != 1:
+    update_existing = False
+    if user_msg_count == 1:
+        update_existing = False
+    elif user_msg_count > 1 and user_msg_count % _RETITLE_EVERY_USER_MESSAGES == 0:
+        update_existing = True
+    else:
         return
 
     thread = threading.Thread(
@@ -173,8 +184,9 @@ def maybe_auto_title(
             "failure_callback": failure_callback,
             "main_runtime": main_runtime,
             "title_callback": title_callback,
+            "update_existing": update_existing,
         },
         daemon=True,
-        name="auto-title",
+        name="auto-title-refresh" if update_existing else "auto-title",
     )
     thread.start()
