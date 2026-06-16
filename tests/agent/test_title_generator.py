@@ -132,7 +132,26 @@ class TestAutoTitleSession:
 
         with patch("agent.title_generator.generate_title", return_value="New Title"):
             auto_title_session(db, "sess-1", "hi", "hello")
-            db.set_session_title.assert_called_once_with("sess-1", "New Title")
+            db.set_session_title_if_empty.assert_called_once_with("sess-1", "New Title")
+            db.set_session_title.assert_not_called()
+
+    def test_does_not_callback_when_title_lost_race(self):
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        db.set_session_title_if_empty.return_value = False
+        seen = []
+
+        with patch("agent.title_generator.generate_title", return_value="Late Title"):
+            auto_title_session(
+                db,
+                "sess-1",
+                "hi",
+                "hello",
+                title_callback=seen.append,
+            )
+
+        db.set_session_title_if_empty.assert_called_once_with("sess-1", "Late Title")
+        assert seen == []
 
     def test_invokes_title_callback_after_setting_title(self):
         db = MagicMock()
@@ -146,7 +165,8 @@ class TestAutoTitleSession:
                 "hi there",
                 title_callback=seen.append,
             )
-        db.set_session_title.assert_called_once_with("sess-1", "Readable Session")
+        db.set_session_title_if_empty.assert_called_once_with("sess-1", "Readable Session")
+        db.set_session_title.assert_not_called()
         assert seen == ["Readable Session"]
 
     def test_skips_if_generation_fails(self):
@@ -162,19 +182,17 @@ class TestMaybeAutoTitle:
     """Tests for maybe_auto_title() — the fire-and-forget entry point."""
 
     def test_skips_if_not_first_exchange(self):
-        """Should not fire for conversations with more than 2 user messages."""
+        """Should not fire after the first user message."""
         db = MagicMock()
         history = [
             {"role": "user", "content": "first"},
             {"role": "assistant", "content": "response 1"},
             {"role": "user", "content": "second"},
             {"role": "assistant", "content": "response 2"},
-            {"role": "user", "content": "third"},
-            {"role": "assistant", "content": "response 3"},
         ]
 
         with patch("agent.title_generator.auto_title_session") as mock_auto:
-            maybe_auto_title(db, "sess-1", "third", "response 3", history)
+            maybe_auto_title(db, "sess-1", "second", "response 2", history)
             # Wait briefly for any thread to start
             import time
             time.sleep(0.1)

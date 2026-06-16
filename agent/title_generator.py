@@ -119,7 +119,15 @@ def auto_title_session(
         return
 
     try:
-        session_db.set_session_title(session_id, title)
+        setter = getattr(session_db, "set_session_title_if_empty", None)
+        if callable(setter):
+            title_was_set = setter(session_id, title)
+        else:
+            # Compatibility fallback for older SessionDB-like test doubles.
+            existing = session_db.get_session_title(session_id)
+            title_was_set = False if existing else session_db.set_session_title(session_id, title)
+        if not title_was_set:
+            return
         logger.debug("Auto-generated session title: %s", title)
         if title_callback is not None:
             try:
@@ -149,12 +157,13 @@ def maybe_auto_title(
     if not session_db or not session_id or not user_message or not assistant_response:
         return
 
-    # Count user messages in history to detect first exchange.
-    # conversation_history includes the exchange that just happened,
-    # so for a first exchange we expect exactly 1 user message
-    # (or 2 counting system). Be generous: generate on first 2 exchanges.
+    # Count user messages in history to detect the first exchange.
+    # conversation_history includes the exchange that just happened, so for a
+    # first exchange we expect exactly 1 user message. Later replies must not
+    # spawn competing delayed title workers: they can finish out of order and
+    # rename Telegram topics minutes after the user's latest message.
     user_msg_count = sum(1 for m in (conversation_history or []) if m.get("role") == "user")
-    if user_msg_count > 2:
+    if user_msg_count != 1:
         return
 
     thread = threading.Thread(
