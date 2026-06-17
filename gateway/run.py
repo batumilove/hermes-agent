@@ -11113,6 +11113,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if adapter is None:
             return
         topic_name = self._sanitize_telegram_topic_title(title)
+        if session_db is not None:
+            try:
+                binding = session_db.get_telegram_topic_binding(
+                    chat_id=str(source.chat_id),
+                    thread_id=str(source.thread_id),
+                )
+                if binding and str(binding.get("auto_title") or "") == topic_name:
+                    logger.debug(
+                        "Skipping Telegram topic auto-rename; title already recorded chat=%s thread=%s title=%r",
+                        source.chat_id, source.thread_id, topic_name,
+                    )
+                    return
+            except Exception:
+                logger.debug("Failed to check existing Telegram topic auto-title", exc_info=True)
+                return
         try:
             rename_topic = getattr(adapter, "rename_dm_topic", None)
             if rename_topic is not None:

@@ -4241,10 +4241,33 @@ class SessionDB:
                         "ALTER TABLE telegram_dm_topic_bindings ADD COLUMN auto_title_updated_at REAL"
                     )
 
+            # v3 → v4: seed auto_title for topics Hermes had already renamed
+            # before ownership tracking existed. Without this, any later binding
+            # refresh re-applies the same session title and creates a visible
+            # Telegram service-message wave even though the name is unchanged.
+            if current_version < 4:
+                conn.execute(
+                    """
+                    UPDATE telegram_dm_topic_bindings AS b
+                    SET auto_title = (
+                            SELECT s.title FROM sessions AS s WHERE s.id = b.session_id
+                        ),
+                        auto_title_updated_at = COALESCE(b.updated_at, b.linked_at)
+                    WHERE COALESCE(b.topic_title_mode, 'auto') = 'auto'
+                      AND (b.auto_title IS NULL OR TRIM(b.auto_title) = '')
+                      AND EXISTS (
+                          SELECT 1 FROM sessions AS s
+                          WHERE s.id = b.session_id
+                            AND s.title IS NOT NULL
+                            AND TRIM(s.title) != ''
+                      )
+                    """
+                )
+
             conn.execute(
                 "INSERT INTO state_meta (key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                ("telegram_dm_topic_schema_version", "3"),
+                ("telegram_dm_topic_schema_version", "4"),
             )
         self._execute_write(_do)
 

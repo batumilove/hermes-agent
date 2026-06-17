@@ -549,7 +549,7 @@ async def test_topic_root_command_explicitly_migrates_and_enables_topic_mode(tmp
 
     assert "Telegram multi-session topics are enabled" in result
     assert "All Messages" in result
-    assert session_db.get_meta("telegram_dm_topic_schema_version") == "3"
+    assert session_db.get_meta("telegram_dm_topic_schema_version") == "4"
     assert session_db.is_telegram_topic_mode_enabled(chat_id="208214988", user_id="208214988")
     assert runner._telegram_topic_mode_enabled(_make_source()) is True
     runner._run_agent.assert_not_called()
@@ -861,6 +861,35 @@ async def test_auto_generated_title_renames_bound_telegram_topic(tmp_path):
     binding = db.get_telegram_topic_binding(chat_id="208214988", thread_id="42")
     assert binding["topic_title_mode"] == "auto"
     assert binding["auto_title"] == "Build Telegram Topic UX"
+
+
+@pytest.mark.asyncio
+async def test_auto_generated_title_skips_when_auto_title_already_matches(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+    )
+    db.record_telegram_topic_auto_title(
+        chat_id="208214988",
+        thread_id="42",
+        title="Build Telegram Topic UX",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="42"),
+        "sess-topic",
+        "  Build   Telegram Topic UX  ",
+    )
+
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1227,7 +1256,7 @@ def test_migration_rebuilds_v1_binding_table_with_cascade_fk(tmp_path):
     version = db._conn.execute(
         "SELECT value FROM state_meta WHERE key = 'telegram_dm_topic_schema_version'"
     ).fetchone()
-    assert version is not None and version[0] == "3"
+    assert version is not None and version[0] == "4"
 
 
 @pytest.mark.asyncio

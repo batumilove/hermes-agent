@@ -2130,7 +2130,7 @@ class TestSchemaInit:
         }
         assert "telegram_dm_topic_mode" in tables
         assert "telegram_dm_topic_bindings" in tables
-        assert db.get_meta("telegram_dm_topic_schema_version") == "3"
+        assert db.get_meta("telegram_dm_topic_schema_version") == "4"
         db.close()
 
     def test_telegram_topic_binding_roundtrip_requires_explicit_schema(self, tmp_path):
@@ -2160,7 +2160,38 @@ class TestSchemaInit:
         assert binding["session_id"] == "topic-session"
         assert binding["topic_title_mode"] == "auto"
         assert binding["auto_title"] is None
-        assert db.get_meta("telegram_dm_topic_schema_version") == "3"
+        assert db.get_meta("telegram_dm_topic_schema_version") == "4"
+        db.close()
+
+    def test_telegram_topic_schema_v4_backfills_existing_auto_titles(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(
+            session_id="topic-session",
+            source="telegram",
+            user_id="208214988",
+        )
+        db.set_session_title("topic-session", "Existing Topic Title")
+        db.bind_telegram_topic(
+            chat_id="208214988",
+            thread_id="17585",
+            user_id="208214988",
+            session_key="telegram:dm:208214988:thread:17585",
+            session_id="topic-session",
+        )
+        db._conn.execute(
+            "UPDATE state_meta SET value = '3' WHERE key = 'telegram_dm_topic_schema_version'"
+        )
+        db._conn.execute(
+            "UPDATE telegram_dm_topic_bindings SET auto_title = NULL, auto_title_updated_at = NULL"
+        )
+        db._conn.commit()
+
+        db.apply_telegram_topic_migration()
+
+        binding = db.get_telegram_topic_binding(chat_id="208214988", thread_id="17585")
+        assert binding["auto_title"] == "Existing Topic Title"
+        assert binding["auto_title_updated_at"] is not None
+        assert db.get_meta("telegram_dm_topic_schema_version") == "4"
         db.close()
 
     def test_telegram_topic_title_ownership_roundtrip(self, tmp_path):
