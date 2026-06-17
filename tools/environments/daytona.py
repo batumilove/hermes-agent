@@ -5,6 +5,7 @@ Supports persistent sandboxes: when enabled, sandboxes are stopped on cleanup
 and resumed on next creation, preserving the filesystem across sessions.
 """
 
+import ipaddress
 import logging
 import math
 import os
@@ -181,36 +182,55 @@ class DaytonaEnvironment(BaseEnvironment):
             return DaytonaConfig(api_key=api_key, api_url=api_url)
         return DaytonaConfig()
 
+    @staticmethod
+    def _is_private_or_loopback_host(hostname: str | None) -> bool:
+        if not hostname:
+            return False
+        if hostname in {"localhost", "proxy.localhost"}:
+            return True
+        try:
+            addr = ipaddress.ip_address(hostname)
+            return addr.is_loopback or addr.is_private
+        except ValueError:
+            return False
+
     def _normalize_toolbox_proxy_url(self) -> None:
         """Rewrite self-hosted Docker Compose toolbox URLs for remote clients.
 
         Daytona's Docker Compose defaults can return ``proxy.localhost:4000``
-        in sandbox DTOs. That works only from the Daytona VM itself; Hermes often
-        runs on a different host and reaches Daytona via ``DAYTONA_API_URL``.
-        When the toolbox proxy points at localhost, rewrite it to the API host
-        while preserving the proxy port/path.
+        in sandbox DTOs. Self-hosted installs can also keep returning an old
+        private LAN IP after the Daytona VM has moved. Those addresses only work
+        from the Daytona VM or old LAN path; Hermes often runs on a different
+        host and reaches Daytona via ``DAYTONA_API_URL``. Rewrite loopback/private
+        toolbox hosts to the API host (or ``DAYTONA_TOOLBOX_HOST``) while
+        preserving the proxy port/path.
         """
         toolbox_url = getattr(self._sandbox, "toolbox_proxy_url", None)
         api_url = os.getenv("DAYTONA_API_URL")
+        override_host = os.getenv("DAYTONA_TOOLBOX_HOST")
         if not isinstance(toolbox_url, str) or not toolbox_url or not api_url:
             return
 
         parsed_toolbox = urlparse(toolbox_url)
-        if parsed_toolbox.hostname not in {"localhost", "127.0.0.1", "proxy.localhost"}:
-            return
-
         parsed_api = urlparse(api_url)
-        if not parsed_api.hostname:
+        target_host = override_host or parsed_api.hostname
+        if not target_host:
             return
 
-        host = parsed_api.hostname
+        # Only rewrite addresses that are known to be environment-local/stale,
+        # or when the operator explicitly requested a toolbox host override.
+        if not override_host and not self._is_private_or_loopback_host(parsed_toolbox.hostname):
+            return
+
+        host = target_host
         if parsed_toolbox.port:
             host = f"{host}:{parsed_toolbox.port}"
         # Preserve the operator-configured API scheme. Docker Compose may report
         # an http://proxy.localhost URL, but remote clients should not downgrade
         # a https://DAYTONA_API_URL deployment to plaintext while only swapping
-        # hosts.
-        scheme = parsed_api.scheme or parsed_toolbox.scheme
+        # hosts. If DAYTONA_TOOLBOX_HOST is set, preserve the original toolbox
+        # scheme because operators commonly use a direct tailnet/LAN HTTP port.
+        scheme = parsed_toolbox.scheme if override_host else (parsed_api.scheme or parsed_toolbox.scheme)
         rewritten = urlunparse(parsed_toolbox._replace(scheme=scheme, netloc=host))
         self._sandbox.toolbox_proxy_url = rewritten
         toolbox_api = getattr(self._sandbox, "_toolbox_api", None)

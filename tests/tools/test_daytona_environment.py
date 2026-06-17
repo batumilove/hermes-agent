@@ -213,6 +213,7 @@ class TestPersistence:
         )
 
     def test_toolbox_proxy_rewrite_preserves_api_scheme(self, make_env, monkeypatch):
+        monkeypatch.delenv("DAYTONA_TOOLBOX_HOST", raising=False)
         monkeypatch.setenv("DAYTONA_API_URL", "https://daytona.example.com/api")
         sandbox = _make_sandbox()
         sandbox.toolbox_proxy_url = "http://proxy.localhost:4000/toolbox"
@@ -222,6 +223,30 @@ class TestPersistence:
 
         assert env._sandbox.toolbox_proxy_url == "https://daytona.example.com:4000/toolbox"
         assert env._sandbox._toolbox_api._toolbox_base_url == "https://daytona.example.com:4000/toolbox"
+
+    def test_toolbox_proxy_rewrites_private_stale_host_to_api_host(self, make_env, monkeypatch):
+        monkeypatch.delenv("DAYTONA_TOOLBOX_HOST", raising=False)
+        monkeypatch.setenv("DAYTONA_API_URL", "http://100.115.48.37:3000/api")
+        sandbox = _make_sandbox()
+        sandbox.toolbox_proxy_url = "http://192.168.10.224:4000/toolbox"
+        sandbox._toolbox_api = SimpleNamespace(_toolbox_base_url=sandbox.toolbox_proxy_url)
+
+        env = make_env(sandbox=sandbox, persistent=False)
+
+        assert env._sandbox.toolbox_proxy_url == "http://100.115.48.37:4000/toolbox"
+        assert env._sandbox._toolbox_api._toolbox_base_url == "http://100.115.48.37:4000/toolbox"
+
+    def test_toolbox_proxy_host_override_preserves_toolbox_scheme(self, make_env, monkeypatch):
+        monkeypatch.setenv("DAYTONA_API_URL", "https://daytona.example.com/api")
+        monkeypatch.setenv("DAYTONA_TOOLBOX_HOST", "100.115.48.37")
+        sandbox = _make_sandbox()
+        sandbox.toolbox_proxy_url = "http://registry.internal:4000/toolbox"
+        sandbox._toolbox_api = SimpleNamespace(_toolbox_base_url=sandbox.toolbox_proxy_url)
+
+        env = make_env(sandbox=sandbox, persistent=False)
+
+        assert env._sandbox.toolbox_proxy_url == "http://100.115.48.37:4000/toolbox"
+        assert env._sandbox._toolbox_api._toolbox_base_url == "http://100.115.48.37:4000/toolbox"
 
     def test_single_upload_uses_quoted_mkdir(self, make_env):
         env = make_env(persistent=False)
