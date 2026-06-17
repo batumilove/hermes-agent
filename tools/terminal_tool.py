@@ -2598,7 +2598,14 @@ def check_terminal_requirements() -> bool:
             return True
 
         elif env_type == "daytona":
-            from daytona import Daytona  # noqa: F401 — SDK presence check
+            # The current SDK package exposes ``daytona_sdk``. Older setup code
+            # referenced ``daytona``; accepting only that name makes a correctly
+            # installed Daytona backend look unavailable.
+            if importlib.util.find_spec("daytona_sdk") is None:
+                logger.error(
+                    "daytona_sdk is required for Daytona terminal backend: pip install daytona-sdk"
+                )
+                return False
             return os.getenv("DAYTONA_API_KEY") is not None
 
         elif env_type == "kata":
