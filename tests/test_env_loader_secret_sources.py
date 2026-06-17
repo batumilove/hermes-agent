@@ -104,14 +104,61 @@ def test_apply_external_secret_sources_records_bitwarden_origin(tmp_path, monkey
     )
 
 
+def test_apply_external_secret_sources_records_systemd_origin(tmp_path, monkeypatch):
+    """Enabled systemd source imports only allowlisted user-manager vars."""
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "secrets:\n"
+        "  systemd:\n"
+        "    enabled: true\n"
+        "    allowlist: ANTHROPIC_API_KEY,GLM_API_KEY\n"
+        "    override_existing: true\n",
+        encoding="utf-8",
+    )
+
+    def _fake_run(*_args, **kwargs):
+        assert kwargs["env"]["XDG_RUNTIME_DIR"].startswith("/run/user/")
+        assert kwargs["env"]["DBUS_SESSION_BUS_ADDRESS"].startswith("unix:path=")
+        return type(
+            "Proc",
+            (),
+            {
+                "returncode": 0,
+                "stdout": (
+                    "ANTHROPIC_API_KEY=sk-ant-test\n"
+                    "GLM_API_KEY=glm-test\n"
+                    "NOT_ALLOWED=ignored\n"
+                ),
+                "stderr": "",
+            },
+        )()
+
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("GLM_API_KEY", raising=False)
+    monkeypatch.delenv("NOT_ALLOWED", raising=False)
+
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    assert env_loader.get_secret_source("ANTHROPIC_API_KEY") == "systemd"
+    assert env_loader.get_secret_source("GLM_API_KEY") == "systemd"
+    assert env_loader.get_secret_source("NOT_ALLOWED") is None
+
+
 def test_apply_external_secret_sources_noop_when_disabled(tmp_path, monkeypatch):
-    """Disabled Bitwarden config must not touch the source map."""
+    """Disabled secret-source config must not touch the source map."""
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         "secrets:\n"
         "  bitwarden:\n"
+        "    enabled: false\n"
+        "  systemd:\n"
         "    enabled: false\n",
         encoding="utf-8",
     )
