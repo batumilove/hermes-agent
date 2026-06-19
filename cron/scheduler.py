@@ -1886,6 +1886,49 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # Use a separate variable for log display; keep final_response clean
         # for delivery logic (empty response = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
+
+        include_llm_stats = False
+        try:
+            cron_cfg = (load_config() or {}).get("cron", {})
+            if isinstance(cron_cfg, dict):
+                include_llm_stats = bool(cron_cfg.get("include_llm_stats", False))
+        except Exception:
+            include_llm_stats = False
+
+        if include_llm_stats:
+            def _fmt_int(value) -> str:
+                try:
+                    return f"{int(value):,}"
+                except (TypeError, ValueError):
+                    return "0"
+
+            _llm_stats_lines = [
+                "## LLM Stats",
+                "",
+                "Source: Hermes runtime counters from provider-reported usage; no estimates.",
+                "",
+                f"- Provider: `{getattr(agent, 'provider', None) or runtime.get('provider') or 'unknown'}`",
+                f"- Model: `{getattr(agent, 'model', None) or model or 'unknown'}`",
+                f"- API calls: {_fmt_int(getattr(agent, 'session_api_calls', 0))}",
+                f"- Input tokens: {_fmt_int(getattr(agent, 'session_input_tokens', 0))}",
+                f"- Output tokens: {_fmt_int(getattr(agent, 'session_output_tokens', 0))}",
+                f"- Cache read tokens: {_fmt_int(getattr(agent, 'session_cache_read_tokens', 0))}",
+                f"- Cache write tokens: {_fmt_int(getattr(agent, 'session_cache_write_tokens', 0))}",
+                f"- Reasoning tokens: {_fmt_int(getattr(agent, 'session_reasoning_tokens', 0))}",
+                f"- Total tokens: {_fmt_int(getattr(agent, 'session_total_tokens', 0))}",
+            ]
+            _cost_status = getattr(agent, 'session_cost_status', 'unknown') or 'unknown'
+            _cost_source = getattr(agent, 'session_cost_source', 'none') or 'none'
+            _llm_stats_lines.append(f"- Cost status: `{_cost_status}`")
+            _llm_stats_lines.append(f"- Cost source: `{_cost_source}`")
+            if getattr(agent, 'session_estimated_cost_usd', 0.0):
+                _llm_stats_lines.append(
+                    f"- Priced cost: ${float(getattr(agent, 'session_estimated_cost_usd', 0.0)):.6f}"
+                )
+            _llm_stats = "\n".join(_llm_stats_lines)
+            logged_response_for_output = f"{logged_response.rstrip()}\n\n{_llm_stats}"
+        else:
+            logged_response_for_output = logged_response
         
         output = f"""# Cron Job: {job_name}
 
@@ -1899,7 +1942,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
 ## Response
 
-{logged_response}
+{logged_response_for_output}
 """
         
         logger.info("Job '%s' completed successfully", job_name)
@@ -2090,6 +2133,9 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                 # If the agent responded with [SILENT], skip delivery (but
                 # output is already saved above).  Failed jobs always deliver.
                 deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+                # Keep delivery user-facing: chat delivery contains only the agent's
+                # final response. Optional runtime LLM stats are persisted only when
+                # cron.include_llm_stats is explicitly enabled.
                 # Treat whitespace-only final responses the same as empty
                 # responses: do not deliver a blank message, and let the
                 # empty-response guard below mark the run as a soft failure.
