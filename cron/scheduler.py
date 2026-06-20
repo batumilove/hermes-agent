@@ -1887,13 +1887,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # for delivery logic (empty response = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
 
-        include_llm_stats = False
+        include_llm_stats = True
         try:
             cron_cfg = (load_config() or {}).get("cron", {})
             if isinstance(cron_cfg, dict):
-                include_llm_stats = bool(cron_cfg.get("include_llm_stats", False))
+                include_llm_stats = bool(cron_cfg.get("include_llm_stats", True))
         except Exception:
-            include_llm_stats = False
+            include_llm_stats = True
 
         if include_llm_stats:
             def _fmt_int(value) -> str:
@@ -2134,8 +2134,8 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                 # output is already saved above).  Failed jobs always deliver.
                 deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
                 # Keep delivery user-facing: chat delivery contains only the agent's
-                # final response. Optional runtime LLM stats are persisted only when
-                # cron.include_llm_stats is explicitly enabled.
+                # final response. Runtime LLM stats are persisted in saved cron
+                # output by default; set cron.include_llm_stats=false to opt out.
                 # Treat whitespace-only final responses the same as empty
                 # responses: do not deliver a blank message, and let the
                 # empty-response guard below mark the run as a soft failure.
