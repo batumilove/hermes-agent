@@ -7,6 +7,8 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 import asyncio
 import logging
 import os
+import re
+import tempfile
 import shlex
 import shutil
 import signal
@@ -2593,6 +2595,37 @@ def systemd_unit_is_current(system: bool = False) -> bool:
     return norm_installed == norm_expected
 
 
+def _path_is_under(path: str, root: str) -> bool:
+    try:
+        p = Path(path).expanduser().resolve(strict=False)
+        r = Path(root).expanduser().resolve(strict=False)
+        return p == r or r in p.parents
+    except Exception:
+        norm_p = os.path.normpath(path)
+        norm_r = os.path.normpath(root)
+        return norm_p == norm_r or norm_p.startswith(norm_r + os.sep)
+
+
+def _temp_home_in_service_definition(definition: str) -> str | None:
+    """Return a temp-dir HERMES_HOME baked into a service definition, if any."""
+    candidates: list[str] = []
+    patterns = [
+        r'HERMES_HOME=([^"\n<]+)',
+        r'<key>HERMES_HOME</key>\s*<string>([^<]+)</string>',
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, definition):
+            value = match.group(1).strip().strip('"')
+            if value:
+                candidates.append(value)
+
+    temp_roots = {"/tmp", "/var/tmp", tempfile.gettempdir()}
+    for value in candidates:
+        if any(_path_is_under(value, root) for root in temp_roots if root):
+            return value
+    return None
+
+
 def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
     """Rewrite the installed systemd unit when the generated definition has changed."""
     unit_path = get_systemd_unit_path(system=system)
@@ -2616,11 +2649,7 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
     # refresh flow patch ``generate_systemd_unit`` to return synthetic
     # content (``"new unit\n"``) which doesn't contain these markers and
     # still works.
-    if not system and (
-        "/pytest-of-" in new_unit
-        or '/hermes_test"' in new_unit
-        or "/hermes_test/" in new_unit
-    ):
+    if not system and _temp_home_in_service_definition(new_unit):
         return False
 
     unit_path.write_text(new_unit, encoding="utf-8")
@@ -3134,8 +3163,54 @@ def _launchd_domain_candidates() -> list[str]:
     return [f"user/{uid}", f"gui/{uid}"]  # windows-footgun: ok — POSIX launchd helper, never invoked on Windows
 
 
+_resolved_launchd_domain: str | None = None
+
+
 def _launchd_domain() -> str:
-    return _launchd_domain_candidates()[0]
+    """Return the preferred launchd domain for this session.
+
+    Prefer an already-loaded gui/<uid> job when present, fall back to user/<uid>
+    for background/SSH sessions, and cache the detected domain.
+    """
+    global _resolved_launchd_domain
+    if _resolved_launchd_domain:
+        return _resolved_launchd_domain
+
+    uid = os.getuid()
+    gui = f"gui/{uid}"
+    user = f"user/{uid}"
+    label = get_launchd_label()
+
+    for domain in (gui, user):
+        try:
+            subprocess.run(
+                ["launchctl", "print", f"{domain}/{label}"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=True,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        _resolved_launchd_domain = domain
+        return domain
+
+    try:
+        result = subprocess.run(
+            ["launchctl", "managername"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if result.returncode == 0 and "aqua" in (result.stdout or "").strip().lower():
+            _resolved_launchd_domain = gui
+            return gui
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    _resolved_launchd_domain = user
+    return user
 
 
 def _launchd_loaded_domain(label: str | None = None) -> str | None:
@@ -3437,7 +3512,7 @@ def refresh_launchd_plist_if_needed() -> bool:
         return False
 
     label = get_launchd_label()
-    domain = _launchd_preferred_domain(label)
+    domain = _launchd_domain()
     target = f"{domain}/{label}"
     plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
 
@@ -3532,10 +3607,11 @@ def launchd_install(force: bool = False):
     plist_path.parent.mkdir(parents=True, exist_ok=True)
     print(f"Installing launchd service to: {plist_path}")
     plist_path.write_text(generate_launchd_plist())
+    domain = _launchd_domain()
 
     try:
         subprocess.run(
-            ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
             check=True,
             timeout=30,
         )
@@ -3574,6 +3650,7 @@ def launchd_uninstall():
 def launchd_start():
     plist_path = get_launchd_plist_path()
     label = get_launchd_label()
+    domain = _launchd_domain()
 
     # Self-heal if the plist is missing entirely (e.g., manual cleanup, failed upgrade)
     if not plist_path.exists():
@@ -3582,12 +3659,12 @@ def launchd_start():
         plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
         try:
             subprocess.run(
-                ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+                ["launchctl", "bootstrap", domain, str(plist_path)],
                 check=True,
                 timeout=30,
             )
             subprocess.run(
-                ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
+                ["launchctl", "kickstart", f"{domain}/{label}"],
                 check=True,
                 timeout=30,
             )
@@ -3600,7 +3677,6 @@ def launchd_start():
         return
 
     refresh_launchd_plist_if_needed()
-    domain = _launchd_preferred_domain(label)
     try:
         subprocess.run(
             ["launchctl", "kickstart", f"{domain}/{label}"],
@@ -3614,12 +3690,12 @@ def launchd_start():
         print("↻ launchd job was unloaded; reloading service definition")
         try:
             subprocess.run(
-                ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+                ["launchctl", "bootstrap", domain, str(plist_path)],
                 check=True,
                 timeout=30,
             )
             subprocess.run(
-                ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
+                ["launchctl", "kickstart", f"{domain}/{label}"],
                 check=True,
                 timeout=30,
             )
@@ -3754,7 +3830,7 @@ def launchd_restart():
         plist_path = get_launchd_plist_path()
         try:
             subprocess.run(
-                ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+                ["launchctl", "bootstrap", domain, str(plist_path)],
                 check=True,
                 timeout=30,
             )
