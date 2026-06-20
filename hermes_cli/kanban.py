@@ -304,7 +304,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
 
     # --- create ---
     p_create = sub.add_parser("create", help="Create a new task")
-    p_create.add_argument("title", help="Task title")
+    p_create.add_argument("title", nargs="?", help="Task title")
+    p_create.add_argument(
+        "--title",
+        dest="title_flag",
+        default=None,
+        help=(
+            "Task title (compatibility alias; prefer the positional "
+            "title argument)"
+        ),
+    )
     p_create.add_argument("--body", default=None, help="Optional opening post")
     p_create.add_argument("--assignee", default=None, help="Profile name to assign")
     p_create.add_argument("--route", default=None,
@@ -1311,6 +1320,19 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
 
 
 def _cmd_create(args: argparse.Namespace) -> int:
+    title = (getattr(args, "title", None) or "").strip()
+    title_flag = (getattr(args, "title_flag", None) or "").strip()
+    if title and title_flag:
+        print(
+            "kanban: pass the task title either positionally or with --title, not both",
+            file=sys.stderr,
+        )
+        return 2
+    if not title:
+        title = title_flag
+    if not title:
+        print("kanban error: create requires a task title", file=sys.stderr)
+        return 2
     try:
         ws_kind, ws_path = _parse_workspace_flag(args.workspace)
         branch_name = _parse_branch_flag(getattr(args, "branch", None))
@@ -1341,7 +1363,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
     with kb.connect_closing() as conn:
         task_id = kb.create_task(
             conn,
-            title=args.title,
+            title=title,
             body=args.body,
             assignee=assignee,
             created_by=args.created_by or _profile_author(),
