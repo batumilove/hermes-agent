@@ -3437,7 +3437,7 @@ def refresh_launchd_plist_if_needed() -> bool:
         return False
 
     label = get_launchd_label()
-domain = _launchd_preferred_domain(label)
+    domain = _launchd_preferred_domain(label)
     target = f"{domain}/{label}"
     plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
 
