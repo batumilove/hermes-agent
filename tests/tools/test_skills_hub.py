@@ -198,6 +198,67 @@ class TestSkillsShGroupings:
         assert len(skills) == 1
         assert "category" not in skills[0].extra
 
+    def test_list_skills_recurses_one_level_for_category_layout(self):
+        auth = MagicMock()
+        src = GitHubSource(auth=auth)
+
+        root_resp = MagicMock()
+        root_resp.status_code = 200
+        root_resp.json.return_value = [
+            {"type": "dir", "name": "devops"},
+            {"type": "dir", "name": "research"},
+        ]
+        devops_resp = MagicMock()
+        devops_resp.status_code = 200
+        devops_resp.json.return_value = [
+            {"type": "dir", "name": "cloud-vps-vpn-kuma-operations"},
+        ]
+        research_resp = MagicMock()
+        research_resp.status_code = 200
+        research_resp.json.return_value = [
+            {"type": "dir", "name": "web-research-operations"},
+        ]
+
+        def fake_get(url, *args, **kwargs):
+            if url.endswith("/contents/devops"):
+                return devops_resp
+            if url.endswith("/contents/research"):
+                return research_resp
+            if url.rstrip("/").endswith("/contents"):
+                return root_resp
+            raise AssertionError(f"unexpected URL: {url}")
+
+        def fake_inspect(identifier):
+            if identifier == "batumilove/hermes-skills/devops/cloud-vps-vpn-kuma-operations":
+                return SkillMeta(
+                    name="cloud-vps-vpn-kuma-operations",
+                    description="Cloud VPS ops",
+                    source="github",
+                    identifier=identifier,
+                    trust_level="community",
+                )
+            if identifier == "batumilove/hermes-skills/research/web-research-operations":
+                return SkillMeta(
+                    name="web-research-operations",
+                    description="Web research",
+                    source="github",
+                    identifier=identifier,
+                    trust_level="community",
+                )
+            return None
+
+        with patch.object(src, "_read_cache", return_value=None), \
+             patch.object(src, "_write_cache"), \
+             patch.object(src, "_get_skillsh_groupings", return_value=None), \
+             patch.object(src, "inspect", side_effect=fake_inspect), \
+             patch("tools.skills_hub.httpx.get", side_effect=fake_get):
+            skills = src._list_skills_in_repo("batumilove/hermes-skills", "")
+
+        assert [s.identifier for s in skills] == [
+            "batumilove/hermes-skills/devops/cloud-vps-vpn-kuma-operations",
+            "batumilove/hermes-skills/research/web-research-operations",
+        ]
+
     def test_meta_to_dict_roundtrip_preserves_extra(self):
         meta = SkillMeta(
             name="x", description="d", source="github",
@@ -1433,6 +1494,11 @@ class TestTapsManager:
         assert len(taps) == 1
         assert taps[0]["repo"] == "owner/repo"
 
+    def test_add_defaults_to_repo_root_for_flat_or_category_layouts(self, tmp_path):
+        mgr = TapsManager(path=tmp_path / "taps.json")
+        assert mgr.add("owner/repo") is True
+        assert mgr.load() == [{"repo": "owner/repo", "path": ""}]
+
     def test_add_duplicate_tap(self, tmp_path):
         mgr = TapsManager(path=tmp_path / "taps.json")
         mgr.add("owner/repo")
@@ -1583,6 +1649,20 @@ class TestUnifiedSearchDedup:
         results = unified_search("query", [src_a, src_b], source_filter="a")
         assert len(results) == 1
         assert results[0].name == "s1"
+
+    def test_custom_github_taps_are_searched_even_when_index_available(self):
+        index = self._make_source("hermes-index", [])
+        index.is_available = True
+        custom_skill = SkillMeta(
+            name="custom-skill", description="from custom tap", source="github",
+            identifier="owner/repo/devops/custom-skill", trust_level="community",
+        )
+        github = self._make_source("github", [custom_skill])
+        github.has_custom_taps = True
+
+        results = unified_search("custom", [index, github], source_filter="all")
+
+        assert [r.identifier for r in results] == ["owner/repo/devops/custom-skill"]
 
     def test_limit_respected(self):
         skills = [

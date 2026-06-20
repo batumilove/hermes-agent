@@ -91,6 +91,19 @@ def test_run_slash_create_and_list(kanban_home):
     assert "alice" in out
 
 
+def test_run_slash_create_accepts_title_flag_compat_alias(kanban_home):
+    out = kc.run_slash("create --title 'ship feature' --assignee alice --body 'do it'")
+    assert "Created" in out
+    out = kc.run_slash("list")
+    assert "ship feature" in out
+    assert "alice" in out
+
+
+def test_run_slash_create_rejects_positional_and_title_flag(kanban_home):
+    out = kc.run_slash("create 'positional' --title 'flag'")
+    assert "either positionally or with --title" in out
+
+
 def test_run_slash_create_worktree_path_and_branch(kanban_home, tmp_path):
     target = tmp_path / ".worktrees" / "t6-wire"
     target_arg = target.as_posix()

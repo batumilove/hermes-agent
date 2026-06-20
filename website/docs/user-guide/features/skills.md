@@ -689,42 +689,50 @@ If you want to share a curated set of skills — for your team, your org, or pub
 
 #### Repo layout
 
-A tap is any GitHub repo (public or private — private needs `GITHUB_TOKEN`) laid out like this:
+A tap is any GitHub repo (public or private — private needs `GITHUB_TOKEN`) laid out in either a flat or category-based structure:
 
 ```
 owner/repo
-├── skills/                       # default path; configurable per-tap
-│   ├── my-workflow/
-│   │   ├── SKILL.md              # required
-│   │   ├── references/           # optional supporting files
-│   │   ├── templates/
-│   │   └── scripts/
-│   ├── another-skill/
-│   │   └── SKILL.md
-│   └── third-skill/
-│       └── SKILL.md
+├── my-workflow/
+│   ├── SKILL.md                  # required
+│   ├── references/               # optional supporting files
+│   ├── templates/
+│   └── scripts/
+├── another-skill/
+│   └── SKILL.md
 └── README.md                     # optional but helpful
 ```
 
+Category layout is also supported:
+
+```
+owner/repo
+├── devops/
+│   └── deploy-runbook/
+│       └── SKILL.md
+└── research/
+    └── market-scan/
+        └── SKILL.md
+```
+
 Rules:
-- Each skill lives in its own directory under the tap's root path (default `skills/`).
+- Each skill lives in its own directory under the tap path, or one category directory below it.
 - The directory name becomes the skill's install slug.
 - Each skill directory must contain a `SKILL.md` with standard [SKILL.md frontmatter](#skillmd-format) (`name`, `description`, plus optional `metadata.hermes.tags`, `version`, `author`, `platforms`, `metadata.hermes.config`).
 - Subdirectories like `references/`, `templates/`, `scripts/`, `assets/` are downloaded alongside `SKILL.md` at install time.
 - Skills whose directory name starts with `.` or `_` are ignored.
 
-Hermes discovers skills by listing every subdirectory of the tap path and probing each for `SKILL.md`.
+Hermes discovers skills by listing every subdirectory of the tap path, probing each for `SKILL.md`, and then probing one category level deeper when an immediate child is not itself a skill.
 
 #### Minimal tap example
 
 ```
 my-org/hermes-skills
-└── skills/
-    └── deploy-runbook/
-        └── SKILL.md
+└── deploy-runbook/
+    └── SKILL.md
 ```
 
-`skills/deploy-runbook/SKILL.md`:
+`deploy-runbook/SKILL.md`:
 
 ```markdown
 ---
@@ -752,7 +760,7 @@ hermes skills install my-org/hermes-skills/deploy-runbook
 
 #### Non-default paths
 
-If your skills don't live under `skills/` (common when you're adding a `skills/` subtree to an existing project), edit the tap entry in `~/.hermes/.hub/taps.json`:
+If your skills live deeper than the repository root or one category level (common when you're adding a `skills/` subtree to an existing project), edit the tap entry in `~/.hermes/skills/.hub/taps.json`:
 
 ```json
 {
@@ -762,7 +770,7 @@ If your skills don't live under `skills/` (common when you're adding a `skills/`
 }
 ```
 
-The `hermes skills tap add` CLI defaults new taps to `path: "skills/"`; edit the file directly if you need a different path. `hermes skills tap list` shows the effective path per tap.
+The `hermes skills tap add` CLI defaults new taps to the repository root (`path: ""`), which supports flat and one-level category layouts. Edit the file directly if you need a deeper path such as `"internal/skills/"`. `hermes skills tap list` shows the effective path per tap.
 
 #### Installing individual skills directly (without adding a tap)
 
@@ -782,7 +790,7 @@ New taps are assigned `community` trust by default. Skills installed from them r
 
 ```bash
 hermes skills tap list                                # show all configured taps
-hermes skills tap add myorg/skills-repo               # add (default path: skills/)
+hermes skills tap add myorg/skills-repo               # add (default path: repo root)
 hermes skills tap remove myorg/skills-repo            # remove
 ```
 

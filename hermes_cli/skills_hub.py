@@ -1376,7 +1376,7 @@ def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> No
         table.add_column("Path", style="dim")
         for t in taps:
             label = t.get("repo") or t.get("name") or t.get("path", "unknown")
-            table.add_row(label, t.get("path", "skills/"))
+            table.add_row(label, t.get("path", ""))
         c.print(table)
         c.print()
 

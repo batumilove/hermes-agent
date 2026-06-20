@@ -416,6 +416,7 @@ class GitHubSource(SkillSource):
     def __init__(self, auth: GitHubAuth, extra_taps: Optional[List[Dict]] = None):
         self.auth = auth
         self.taps = list(self.DEFAULT_TAPS)
+        self.has_custom_taps = bool(extra_taps)
         if extra_taps:
             self.taps.extend(extra_taps)
         # Per-instance cache: repo -> (default_branch, tree_entries)
@@ -543,9 +544,16 @@ class GitHubSource(SkillSource):
 
     # -- Internal helpers --
 
-    def _list_skills_in_repo(self, repo: str, path: str) -> List[SkillMeta]:
-        """List skill directories in a GitHub repo path, using cached index."""
-        cache_key = f"{repo}_{path}".replace("/", "_").replace(" ", "_")
+    def _list_skills_in_repo(self, repo: str, path: str, _depth: int = 0) -> List[SkillMeta]:
+        """List skill directories in a GitHub repo path, using cached index.
+
+        Custom taps historically supported a flat layout where each immediate
+        child of ``path`` is a skill directory. Shared/team skill repos often
+        use a category layout instead (``devops/foo/SKILL.md``), so when an
+        immediate child is not itself a skill, probe one level deeper for skill
+        directories.
+        """
+        cache_key = f"{repo}_{path}_{_depth}".replace("/", "_").replace(" ", "_")
         cached = self._read_cache(cache_key)
         if cached is not None:
             return [SkillMeta(**s) for s in cached]
@@ -570,7 +578,8 @@ class GitHubSource(SkillSource):
                 continue
 
             prefix = path.rstrip("/")
-            skill_identifier = f"{repo}/{prefix}/{dir_name}" if prefix else f"{repo}/{dir_name}"
+            skill_path = f"{prefix}/{dir_name}" if prefix else dir_name
+            skill_identifier = f"{repo}/{skill_path}"
             meta = self.inspect(skill_identifier)
             if meta:
                 if groupings:
@@ -578,6 +587,10 @@ class GitHubSource(SkillSource):
                     if category:
                         meta.extra["category"] = category
                 skills.append(meta)
+                continue
+
+            if _depth == 0:
+                skills.extend(self._list_skills_in_repo(repo, skill_path, _depth=1))
 
         # Cache the results
         self._write_cache(cache_key, [self._meta_to_dict(s) for s in skills])
@@ -3238,7 +3251,7 @@ class TapsManager:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps({"taps": taps}, indent=2) + "\n")
 
-    def add(self, repo: str, path: str = "skills/") -> bool:
+    def add(self, repo: str, path: str = "") -> bool:
         """Add a tap. Returns False if already exists."""
         taps = self.load()
         if any(t["repo"] == repo for t in taps):
@@ -3809,8 +3822,11 @@ def parallel_search_sources(
         sid = src.source_id()
         if source_filter != "all" and sid != source_filter and sid != "official":
             continue
-        # Skip external API sources when the index covers them
-        if _index_available and sid in _api_source_ids:
+        # Skip external API sources when the index covers them, but keep a
+        # GitHubSource with custom taps active: the central index cannot know
+        # about private/team taps configured in this profile.
+        if (_index_available and sid in _api_source_ids
+                and not (sid == "github" and getattr(src, "has_custom_taps", False))):
             continue
         active.append(src)
 

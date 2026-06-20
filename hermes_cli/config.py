@@ -2749,7 +2749,10 @@ DEFAULT_CONFIG = {
             "access_token_env": "BWS_ACCESS_TOKEN",
             # UUID of the BSM project to sync from.
             "project_id": "",
-            # Seconds to cache fetched secrets in-process.  0 disables.
+            # How long a successful fetch is reused in-process.  New
+            # Hermes invocations always start fresh, but repeated calls
+            # inside one process (e.g. gateway hot-reload) reuse the
+            # cached result.  0 = disable caching.
             "cache_ttl_seconds": 300,
             # When True, BSM values overwrite existing env vars.  Default
             # True because the point of using BSM is centralized rotation —
@@ -2768,6 +2771,24 @@ DEFAULT_CONFIG = {
             # as BWS_SERVER_URL.  Prompted for during
             # `hermes secrets bitwarden setup`.
             "server_url": "",
+        },
+        # systemd user environment — import selected env vars from the
+        # systemd user manager (e.g. secrets previously pushed by
+        # hermes-infisical-env).  This makes raw Hermes CLI invocations
+        # and gateway subprocesses see the same credentials as an
+        # interactive shell that sources them via .bashrc, without
+        # writing provider secrets into ~/.hermes/.env.
+        "systemd": {
+            # Master switch.  When false, Hermes never reads from the
+            # systemd user manager environment.
+            "enabled": False,
+            # Comma-separated list of env var names to import.  If empty,
+            # all env vars from the systemd user manager are imported.
+            # Recommended: list only the secret names you push from Infisical.
+            "allowlist": "",
+            # When True, systemd values overwrite existing env vars.  Default
+            # True so that Infisical-rotated secrets take effect immediately.
+            "override_existing": True,
         },
     },
 
@@ -2791,7 +2812,6 @@ DEFAULT_CONFIG = {
     "paste_collapse_threshold": 5,
     "paste_collapse_threshold_fallback": 5,
     "paste_collapse_char_threshold": 2000,
-
 
     # Config schema version - bump this when adding new required fields
     "_config_version": 30,
