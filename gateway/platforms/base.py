@@ -1459,6 +1459,9 @@ class MessageEvent:
     # reply chain (e.g. Telegram) populate this; others leave it empty and
     # fall back to the single-message reply_to_text field.
     reply_chain: Optional[List[dict]] = None
+    reply_to_author_id: Optional[str] = None
+    reply_to_author_name: Optional[str] = None
+    reply_to_is_own_message: bool = False  # True when the user replied to this bot/assistant's message
     
     # Auto-loaded skill(s) for topic/channel bindings (e.g., Telegram DM Topics,
     # Discord channel_skill_bindings).  A single name or ordered list.
