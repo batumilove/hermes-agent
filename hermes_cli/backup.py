@@ -52,6 +52,8 @@ _EXCLUDED_DIRS = {
     ".git",             # nested git dirs (profiles shouldn't have these, but safety)
     "node_modules",     # js deps — reinstalled on demand
     "backups",          # prior auto-backups — don't nest backups exponentially
+    "offhost-backups",  # scheduled/off-host backup artifacts/logs — never nest them
+    "proxmox-intel-backups",  # mounted remote backup/export tree — avoid recursive backup
     "checkpoints",      # session-local trajectory caches — regenerated per-session,
                         # session-hash-keyed so they don't port to another machine anyway
     # Python dependency trees (plugin / MCP-server venvs under HERMES_HOME) —
