@@ -6714,6 +6714,8 @@ def dispatch_once(
             failure_limit=failure_limit,
             stale_timeout_seconds=stale_timeout_seconds,
             board=board,
+            auto_retry_iteration_exhausted=auto_retry_iteration_exhausted,
+            iteration_exhausted_retry_limit=iteration_exhausted_retry_limit,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
         )
@@ -6730,6 +6732,8 @@ def dispatch_once(
             failure_limit=failure_limit,
             stale_timeout_seconds=stale_timeout_seconds,
             board=board,
+            auto_retry_iteration_exhausted=auto_retry_iteration_exhausted,
+            iteration_exhausted_retry_limit=iteration_exhausted_retry_limit,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
         )
@@ -6746,6 +6750,8 @@ def _dispatch_once_locked(
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     stale_timeout_seconds: int = 0,
     board: Optional[str] = None,
+    auto_retry_iteration_exhausted: bool = False,
+    iteration_exhausted_retry_limit: int = DEFAULT_ITERATION_EXHAUSTED_RETRY_LIMIT,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
 ) -> DispatchResult:
