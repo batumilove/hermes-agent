@@ -14,7 +14,9 @@ from agent.credential_pool import (
     CUSTOM_POOL_PREFIX,
     SOURCE_MANUAL,
     SOURCE_MANUAL_DEVICE_CODE,
+    STATUS_DEAD,
     STATUS_EXHAUSTED,
+    STATUS_OK,
     STRATEGY_FILL_FIRST,
     STRATEGY_ROUND_ROBIN,
     STRATEGY_RANDOM,
@@ -133,12 +135,22 @@ def _classify_exhausted_status(entry) -> tuple[str, bool]:
 
 
 def _format_exhausted_status(entry) -> str:
-    if entry.last_status != STATUS_EXHAUSTED:
+    """Return a human-readable status label for a credential that is not healthy.
+
+    Shows nothing for healthy credentials (STATUS_OK / None).
+    Shows "dead" with error details for permanently-failed credentials (STATUS_DEAD).
+    Shows "rate-limited" / "exhausted" with retry window for quota-exhausted credentials (STATUS_EXHAUSTED).
+    """
+    if entry.last_status == STATUS_OK or entry.last_status is None:
         return ""
     label, show_retry_window = _classify_exhausted_status(entry)
     reason = getattr(entry, "last_error_reason", None)
     reason_text = f" {reason}" if isinstance(reason, str) and reason.strip() else ""
     code = f" ({entry.last_error_code})" if entry.last_error_code else ""
+    if entry.last_status == STATUS_DEAD:
+        return f" dead{reason_text}{code} (re-auth required)"
+    if entry.last_status != STATUS_EXHAUSTED:
+        return ""
     if not show_retry_window:
         return f" {label}{reason_text}{code} (re-auth may be required)"
     exhausted_until = _exhausted_until(entry)

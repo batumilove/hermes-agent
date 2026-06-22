@@ -1936,3 +1936,88 @@ def test_auth_remove_codex_manual_device_code_suppresses_canonical(tmp_path, mon
 
     auth_remove_command(SimpleNamespace(provider="openai-codex", target="1"))
     assert is_source_suppressed("openai-codex", "device_code")
+
+
+# ---------------------------------------------------------------------------
+# _format_exhausted_status — credential health display
+# ---------------------------------------------------------------------------
+
+def _cred(**kwargs):
+    """Build a minimal PooledCredential-like object for status formatting tests."""
+    from types import SimpleNamespace
+
+    defaults = dict(
+        provider="openai-codex",
+        id="test",
+        label="test@example.com",
+        auth_type="oauth",
+        priority=0,
+        source="manual:device_code",
+        access_token="tok",
+        last_status=None,
+        last_status_at=None,
+        last_error_code=None,
+        last_error_reason=None,
+        last_error_message=None,
+        last_error_reset_at=None,
+    )
+    defaults.update(kwargs)
+    return SimpleNamespace(**defaults)
+
+
+def test_format_status_dead_shows_reason_code_and_reauth():
+    """STATUS_DEAD must show 'dead', the error reason, the error code, and a
+    re-auth hint — previously it showed nothing because the guard returned
+    early on any status that wasn't STATUS_EXHAUSTED."""
+    from hermes_cli.auth_commands import _format_exhausted_status
+
+    entry = _cred(
+        last_status="dead",
+        last_error_code=401,
+        last_error_reason="token_invalidated",
+        last_error_message="The token has been invalidated",
+    )
+    result = _format_exhausted_status(entry)
+    assert "dead" in result
+    assert "token_invalidated" in result
+    assert "(401)" in result
+    assert "re-auth required" in result
+
+
+def test_format_status_dead_without_code_still_labels():
+    """A dead credential with no error code still gets the 'dead' label and
+    re-auth hint, so the user isn't left guessing why it's skipped."""
+    from hermes_cli.auth_commands import _format_exhausted_status
+
+    entry = _cred(last_status="dead", last_error_reason="token_revoked")
+    result = _format_exhausted_status(entry)
+    assert "dead" in result
+    assert "token_revoked" in result
+    assert "re-auth required" in result
+
+
+def test_format_status_exhausted_shows_retry_window():
+    """STATUS_EXHAUSTED with a future reset timestamp shows the rate-limited
+    label and a countdown — the pre-existing behavior must be preserved."""
+    from hermes_cli.auth_commands import _format_exhausted_status
+
+    entry = _cred(
+        last_status="exhausted",
+        last_error_code=429,
+        last_error_reason="usage_limit_reached",
+        last_error_message="The usage limit has been reached",
+        last_status_at=time.time(),
+        last_error_reset_at=time.time() + 1800,
+    )
+    result = _format_exhausted_status(entry)
+    assert "rate-limited" in result
+    assert "usage_limit_reached" in result
+    assert "left" in result  # countdown present
+
+
+def test_format_status_healthy_is_empty():
+    """Healthy credentials (STATUS_OK or None) produce no status noise."""
+    from hermes_cli.auth_commands import _format_exhausted_status
+
+    assert _format_exhausted_status(_cred(last_status="ok")) == ""
+    assert _format_exhausted_status(_cred(last_status=None)) == ""
