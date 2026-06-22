@@ -472,6 +472,41 @@ class TestQwenProfile:
         assert "metadata" not in eb
 
 
+class TestZAIProfile:
+    def test_fallback_models_include_expected_catalog_entries(self):
+        p = get_provider_profile("zai")
+        assert p is not None
+        assert p.fallback_models == (
+            "glm-5.2",
+            "glm-5.1",
+            "glm-5",
+            "glm-5-turbo",
+            "glm-4.7-flash",
+            "glm-4.7-flashx",
+            "glm-4.7",
+            "glm-4.5-air",
+            "glm-4.5",
+            "glm-4.5-flash",
+        )
+
+    def test_reasoning_disabled_maps_to_thinking_disabled(self):
+        p = get_provider_profile("zai")
+        assert p is not None
+        extra_body, top_level = p.build_api_kwargs_extras(reasoning_config={"enabled": False})
+        assert extra_body == {"thinking": {"type": "disabled"}}
+        assert top_level == {}
+
+    def test_reasoning_enabled_or_unspecified_leaves_thinking_unset(self):
+        p = get_provider_profile("zai")
+        assert p is not None
+        extra_body, top_level = p.build_api_kwargs_extras(reasoning_config={"enabled": True})
+        assert extra_body == {}
+        assert top_level == {}
+        extra_body, top_level = p.build_api_kwargs_extras()
+        assert extra_body == {}
+        assert top_level == {}
+
+
 class TestBaseProfile:
     def test_prepare_messages_passthrough(self):
         p = ProviderProfile(name="test")

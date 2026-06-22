@@ -3215,14 +3215,59 @@ class TestHandleMaxIterations:
         assert len(result) > 0
         assert "summary" in result.lower()
 
-    def test_api_failure_returns_error(self, agent):
-        agent.client.chat.completions.create.side_effect = Exception("API down")
+    def test_api_failure_returns_deterministic_local_fallback_not_raw_error(self, agent):
+        agent.client.chat.completions.create.side_effect = Exception(
+            "Error code: 429 - {'code': 'usage_limit_reached', 'message': 'Usage limit reached'}"
+        )
         agent._cached_system_prompt = "You are helpful."
-        messages = [{"role": "user", "content": "do stuff"}]
+        messages = [
+            {"role": "user", "content": "Find the rate limiter bug"},
+            {"role": "tool", "tool_name": "search_files", "content": "agent/chat_completion_helpers.py:1305 handle_max_iterations"},
+            {"role": "assistant", "content": "I found the summary path."},
+        ]
+
         result = agent._handle_max_iterations(messages, 60)
+
         assert isinstance(result, str)
-        assert "error" in result.lower()
-        assert "API down" in result
+        assert "usage_limit_reached" not in result
+        assert "Error code: 429" not in result
+        assert "Find the rate limiter bug" in result
+        assert "agent/chat_completion_helpers.py:1305" in result
+        assert result.startswith("I reached the maximum iterations")
+
+    def test_api_failure_tries_auxiliary_with_compact_recent_context(self, agent):
+        agent.client.chat.completions.create.side_effect = Exception("primary down")
+        agent._cached_system_prompt = "You are helpful."
+        huge_old_tool = "old-output " * 5000
+        messages = [
+            {"role": "user", "content": "Old request"},
+            {"role": "tool", "tool_name": "terminal", "content": huge_old_tool},
+            {"role": "user", "content": "Recent task: fix max-iteration fallback"},
+            {"role": "tool", "tool_name": "search_files", "content": "Found handle_max_iterations"},
+        ]
+        aux_client = MagicMock()
+        aux_client.chat.completions.create.return_value = _mock_response(content="Auxiliary compact summary")
+        captured = {}
+
+        def capture_aux_create(**kwargs):
+            captured.update(kwargs)
+            return _mock_response(content="Auxiliary compact summary")
+
+        aux_client.chat.completions.create.side_effect = capture_aux_create
+
+        with patch(
+            "agent.auxiliary_client.get_text_auxiliary_client",
+            return_value=(aux_client, "compact-model"),
+        ):
+            result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Auxiliary compact summary"
+        sent_messages = captured["messages"]
+        serialized = json.dumps(sent_messages)
+        assert "Recent task: fix max-iteration fallback" in serialized
+        assert "Found handle_max_iterations" in serialized
+        assert "old-output old-output old-output" not in serialized
+        assert len(serialized) < 8000
 
     def test_summary_skips_reasoning_for_unsupported_openrouter_model(self, agent):
         agent.base_url = "https://openrouter.ai/api/v1"

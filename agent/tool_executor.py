@@ -19,6 +19,7 @@ import os
 import random
 import threading
 import time
+from collections import deque
 from typing import Any, Optional
 
 from agent.display import (
@@ -45,6 +46,7 @@ from tools.tool_result_storage import (
     enforce_turn_budget,
 )
 from agent.context_efficiency import record_tool_route
+from agent.chat_completion_helpers import browser_tool_loop_detected
 
 logger = logging.getLogger(__name__)
 
@@ -1444,6 +1446,35 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     num_tools_seq = len(assistant_message.tool_calls)
     if num_tools_seq > 0:
         enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id))
+
+        # Track repeated browser-tool patterns across API iterations.  If the
+        # model is cycling through the same small set of browser actions, nudge
+        # it to stop and summarize before the hard max-iteration handler has to
+        # fire.  The nudge is appended only after all tool results for the
+        # assistant message are present, preserving tool-call/result adjacency.
+        recent_tool_names = getattr(agent, "_recent_tool_names", None)
+        if recent_tool_names is None:
+            recent_tool_names = deque(maxlen=12)
+            setattr(agent, "_recent_tool_names", recent_tool_names)
+        for completed_tc in assistant_message.tool_calls[:num_tools_seq]:
+            try:
+                recent_tool_names.append(completed_tc.function.name)
+            except Exception:
+                continue
+        if (
+            browser_tool_loop_detected(recent_tool_names)
+            and not getattr(agent, "_browser_tool_loop_nudged", False)
+        ):
+            setattr(agent, "_browser_tool_loop_nudged", True)
+            messages.append({
+                "role": "user",
+                "content": (
+                    "You appear to be stuck in a repeated browser-action loop. "
+                    "Stop calling browser tools unless one more action is absolutely required. "
+                    "Summarize the current page/dialog state, what has already been tried, "
+                    "and the next decisive action or blocker."
+                ),
+            })
 
     # ── /steer injection ──────────────────────────────────────────────
     # See _execute_tool_calls_parallel for the rationale. Same hook,

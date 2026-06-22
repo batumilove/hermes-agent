@@ -1302,6 +1302,170 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
 
 
+def _is_summary_fallback_worthy_error(exc: Exception) -> bool:
+    """Return True when a max-iteration summary failure should use fallback text.
+
+    The max-iteration path is already a reliability backstop. If the model used
+    for the backstop is rate-limited, exhausted, or otherwise unavailable, do
+    not surface the raw provider body as the entire user-facing response.
+    """
+    text = str(exc).lower()
+    return any(
+        needle in text
+        for needle in (
+            "usage_limit_reached",
+            "usage limit has been reached",
+            "rate limit",
+            "429",
+            "quota",
+            "insufficient_quota",
+            "billing",
+            "authentication",
+            "unauthorized",
+            "forbidden",
+            "401",
+            "403",
+        )
+    )
+
+
+def _clip_summary_fragment(value: object, limit: int = 800) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _local_iteration_limit_summary(agent, messages: list, exc: Exception | None = None) -> str:
+    """Build a deterministic, no-LLM summary for iteration-limit failures."""
+    last_user = ""
+    recent_tools: list[str] = []
+    recent_observations: list[str] = []
+
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "user" and msg.get("content"):
+            content = str(msg.get("content") or "").strip()
+            # Ignore the synthetic max-iteration prompt appended by this handler.
+            if "maximum number of tool-calling iterations" not in content.lower():
+                last_user = _clip_summary_fragment(content, 500)
+
+    for msg in messages[-30:]:
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
+        name = str(msg.get("tool_name") or "").strip()
+        if name and name not in recent_tools:
+            recent_tools.append(name)
+        content = _clip_summary_fragment(msg.get("content"), 800)
+        if content:
+            recent_observations.append(content)
+
+    lines = [
+        f"I reached the maximum iterations ({agent.max_iterations}), the maximum tool-calling iteration limit.",
+        "",
+        "What I can report from the available context:",
+    ]
+    if last_user:
+        lines.append(f"- Latest user goal: {last_user}")
+    if recent_tools:
+        lines.append(f"- Recent tools used: {', '.join(recent_tools[-10:])}")
+    if recent_observations:
+        lines.append(f"- Last observed tool result: {recent_observations[-1]}")
+    if not last_user and not recent_tools and not recent_observations:
+        lines.append("- No compact tool/status details were available in the retained context.")
+
+    if exc is not None:
+        lines.extend([
+            "",
+            "I also could not generate a model-written final summary because the summary model/provider failed.",
+            f"Summary failure class: {type(exc).__name__}",
+        ])
+    lines.extend([
+        "",
+        "Recommended next step: continue in a fresh turn/session from this checkpoint rather than repeating the same tool loop.",
+    ])
+    return "\n".join(lines)
+
+
+def _compact_iteration_limit_messages(messages: list) -> list[dict]:
+    """Build a small auxiliary-summary prompt from recent retained context."""
+    compact_lines: list[str] = []
+    for msg in messages[-20:]:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "unknown")
+        content = str(msg.get("content") or "").strip()
+        if not content:
+            continue
+        if "maximum number of tool-calling iterations" in content.lower():
+            continue
+        tool_name = msg.get("tool_name")
+        prefix = f"tool:{tool_name}" if tool_name else role
+        if len(content) > 4000:
+            fragment = f"[large {prefix} output omitted: {len(content)} chars]"
+        else:
+            fragment = _clip_summary_fragment(content, 1200)
+        compact_lines.append(f"[{prefix}] {fragment}")
+
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are summarizing an agent run that hit its tool-call iteration limit. "
+                "Do not call tools. Produce a concise status summary with what was attempted, "
+                "current state, blockers, and next steps."
+            ),
+        },
+        {"role": "user", "content": "\n\n".join(compact_lines) or "No retained context."},
+    ]
+
+
+def _extract_chat_completion_text(response: object) -> str:
+    try:
+        choice = (getattr(response, "choices", None) or [])[0]
+        message = getattr(choice, "message", None)
+        return str(getattr(message, "content", "") or "").strip()
+    except Exception:
+        return ""
+
+
+def _try_auxiliary_iteration_limit_summary(agent, messages: list) -> str | None:
+    """Try configured auxiliary compression model with compact recent context."""
+    try:
+        from agent.auxiliary_client import get_text_auxiliary_client
+
+        client, model = get_text_auxiliary_client("compression")
+        if client is None or not model:
+            return None
+        response = client.chat.completions.create(
+            model=model,
+            messages=_compact_iteration_limit_messages(messages),
+            temperature=0,
+        )
+        text = _extract_chat_completion_text(response)
+        return text or None
+    except Exception as aux_exc:
+        logger.warning("Auxiliary max-iteration summary failed: %s", aux_exc)
+        return None
+
+
+def browser_tool_loop_detected(recent_tool_names, *, min_browser_calls: int = 10, max_unique_tools: int = 3) -> bool:
+    """Detect low-diversity browser tool loops before the hard iteration limit.
+
+    This deliberately keys on *low diversity* rather than all browser-heavy
+    tasks: a real browser workflow may navigate, snapshot, click, type, inspect
+    console, and use vision. A loop tends to repeat the same two or three tools.
+    """
+    recent = [str(name or "") for name in (recent_tool_names or [])]
+    if len(recent) < min_browser_calls:
+        return False
+    browser = [name for name in recent if name.startswith("browser_")]
+    if len(browser) < min_browser_calls:
+        return False
+    return len(set(browser)) <= max_unique_tools
+
+
 def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
     agent._safe_print(f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary...")
@@ -1525,8 +1689,18 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 final_response = "I reached the iteration limit and couldn't generate a summary."
 
     except Exception as e:
-        logger.warning(f"Failed to get summary response: {e}")
-        final_response = f"I reached the maximum iterations ({agent.max_iterations}) but couldn't summarize. Error: {str(e)}"
+        logger.warning("Failed to get summary response: %s", e)
+        aux_summary = _try_auxiliary_iteration_limit_summary(agent, messages)
+        if aux_summary:
+            final_response = aux_summary
+        elif _is_summary_fallback_worthy_error(e):
+            final_response = _local_iteration_limit_summary(agent, messages, e)
+        else:
+            final_response = (
+                f"I reached the maximum iterations ({agent.max_iterations}) "
+                "and could not generate a model-written summary. "
+                f"Summary failure: {type(e).__name__}: {e}"
+            )
 
     return final_response
 
@@ -2449,6 +2623,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             "stream" in _err_lower
                             and "not supported" in _err_lower
                         )
+                        _is_zai_glm52_stream_overload = (
+                            getattr(agent, "provider", None) == "zai"
+                            and "glm-5.2" in str(getattr(agent, "model", "")).lower()
+                            and re.search(r"['\"]code['\"]\s*:\s*['\"]1305['\"]", _err_lower)
+                            and "temporarily overloaded" in _err_lower
+                        )
                         # AWS Bedrock (AnthropicBedrock SDK path): IAM policies
                         # with bedrock:InvokeModel but not
                         # InvokeModelWithResponseStream reject messages.stream()
@@ -2470,18 +2650,30 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             _is_bedrock_stream_denied = (
                                 is_streaming_access_denied_error(e)
                             )
-                        if _is_stream_unsupported or _is_bedrock_stream_denied:
+                        if (
+                            _is_stream_unsupported
+                            or _is_bedrock_stream_denied
+                            or _is_zai_glm52_stream_overload
+                        ):
                             agent._disable_streaming = True
-                            agent._safe_print(
-                                "\n⚠  AWS IAM denied bedrock:InvokeModelWithResponseStream. "
-                                "Switching to non-streaming.\n"
-                                "   Grant that action to restore streaming output.\n"
-                                if _is_bedrock_stream_denied else
-                                "\n⚠  Streaming is not supported for this "
-                                "model/provider. Switching to non-streaming.\n"
-                                "   To avoid this delay, set display.streaming: false "
-                                "in config.yaml\n"
-                            )
+                            if _is_bedrock_stream_denied:
+                                agent._safe_print(
+                                    "\n⚠  AWS IAM denied bedrock:InvokeModelWithResponseStream. "
+                                    "Switching to non-streaming.\n"
+                                    "   Grant that action to restore streaming output.\n"
+                                )
+                            elif _is_zai_glm52_stream_overload:
+                                agent._safe_print(
+                                    "\n⚠  Z.AI GLM-5.2 streaming returned overload code 1305. "
+                                    "Switching to non-streaming.\n"
+                                )
+                            else:
+                                agent._safe_print(
+                                    "\n⚠  Streaming is not supported for this "
+                                    "model/provider. Switching to non-streaming.\n"
+                                    "   To avoid this delay, set display.streaming: false "
+                                    "in config.yaml\n"
+                                )
                         logger.info(
                             "Streaming failed before delivery: %s",
                             e,
