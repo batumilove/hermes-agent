@@ -13,6 +13,7 @@ This module provides:
 """
 
 import copy
+import json
 import logging
 import os
 import platform
@@ -272,7 +273,6 @@ _EXTRA_ENV_KEYS = frozenset({
     "IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL",
     "IRC_USE_TLS", "IRC_SERVER_PASSWORD", "IRC_NICKSERV_PASSWORD",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
-    "TERMINAL_KATA_IMAGE", "TERMINAL_KATA_NAMESPACE", "TERMINAL_KATA_KUBECONFIG",
     # Deprecated tool-progress env vars — replaced by display.tool_progress in
     # config.yaml. Kept known here so .env sanitization/reload still handle
     # them for existing users (gateway reads them as a back-compat fallback),
@@ -893,6 +893,9 @@ DEFAULT_CONFIG = {
         "config_path": "config/mcporter.json",
         "timeout": 60,
     },
+    # Global active chat session cap across CLI, TUI/dashboard, and messaging.
+    # None/0 = unbounded.
+    "max_concurrent_sessions": None,
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).
@@ -1079,23 +1082,6 @@ DEFAULT_CONFIG = {
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        "kata_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        "kata_namespace": "sandbox",
-        "kata_kubeconfig": "",
-        # External SSH/CLI sandbox manager backend. Defaults keep untrusted jobs
-        # offline and send only the command/job spec, never Hermes profiles or
-        # host secret mounts.
-        "sandbox_ssh_host": "",
-        "sandbox_ssh_user": "",
-        "sandbox_ssh_port": 22,
-        "sandbox_ssh_key": "",
-        "sandbox_manager_dir": "/opt/agent-sandbox-manager",
-        "sandbox_config": "config/sandbox-manager.example.json",
-        "sandbox_runtime": "",
-        "sandbox_network": "offline",
-        "sandbox_output_bytes": 65536,
-        "sandbox_trusted": False,
-        "sandbox_env": {},
         # Container resource limits (docker, singularity, modal, daytona — ignored for local/ssh)
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
@@ -1910,26 +1896,6 @@ DEFAULT_CONFIG = {
         "engine": "compressor",
     },
 
-    # Canary telemetry for learning a deployment-specific context Efficiency
-    # Frontier. Disabled by default and observational only: it logs selected
-    # context-route tool calls without changing routing decisions.
-    "context_efficiency": {
-        "enabled": False,
-        "log_path": "logs/context_efficiency.jsonl",
-        "routes": [
-            "session_search", "memory", "memory_*",
-            "honcho_profile", "honcho_search", "honcho_reasoning", "honcho_context", "honcho_conclude",
-            "lcm_status", "lcm_grep", "lcm_load_session", "lcm_describe", "lcm_expand", "lcm_expand_query",
-            "web_search", "web_extract", "read_file", "search_files",
-        ],
-        "max_arg_chars": 500,
-        "max_result_chars": 500,
-        "previews_enabled": False,
-        "advisor": {
-            "enabled": True,
-        },
-    },
-
     # Persistent memory -- bounded curated memory injected into system prompt
     "memory": {
         "memory_enabled": True,
@@ -2386,11 +2352,6 @@ DEFAULT_CONFIG = {
         # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
         # resets the streak for the new profile.
         "failure_limit": 2,
-        # Automatically reopen tasks blocked only because a Kanban worker hit
-        # its tool-call iteration budget. The retry is bounded so genuinely
-        # too-large/looping tasks still surface for human review.
-        "auto_retry_iteration_exhausted": True,
-        "iteration_exhausted_retry_limit": 1,
         # Worker stdout/stderr logs rotate at spawn time. Defaults preserve
         # the historical 2 MiB + one-backup behavior; long-running workers can
         # raise these to keep more early failure evidence.
@@ -2406,12 +2367,6 @@ DEFAULT_CONFIG = {
         # assignee to any installed profile. When unset, falls back to the
         # default profile. A task never ends up with assignee=None.
         "default_assignee": "",
-        # Named route aliases for Kanban task creation. The CLI resolves
-        # `hermes kanban create --route coding ...` through this mapping
-        # before the card is inserted, so operators can talk in stable work
-        # lanes while swapping the backing profile later. Explicit
-        # `--assignee` still wins over `--route`.
-        "routes": {},
         # Per-profile concurrency cap (#21582). When set to a positive int,
         # no single profile can have more than N workers running at once,
         # even if the global max_in_progress / max_spawn caps would allow
@@ -2803,10 +2758,7 @@ DEFAULT_CONFIG = {
             "access_token_env": "BWS_ACCESS_TOKEN",
             # UUID of the BSM project to sync from.
             "project_id": "",
-            # How long a successful fetch is reused in-process.  New
-            # Hermes invocations always start fresh, but repeated calls
-            # inside one process (e.g. gateway hot-reload) reuse the
-            # cached result.  0 = disable caching.
+            # Seconds to cache fetched secrets in-process.  0 disables.
             "cache_ttl_seconds": 300,
             # When True, BSM values overwrite existing env vars.  Default
             # True because the point of using BSM is centralized rotation —
@@ -2825,24 +2777,6 @@ DEFAULT_CONFIG = {
             # as BWS_SERVER_URL.  Prompted for during
             # `hermes secrets bitwarden setup`.
             "server_url": "",
-        },
-        # systemd user environment — import selected env vars from the
-        # systemd user manager (e.g. secrets previously pushed by
-        # hermes-infisical-env).  This makes raw Hermes CLI invocations
-        # and gateway subprocesses see the same credentials as an
-        # interactive shell that sources them via .bashrc, without
-        # writing provider secrets into ~/.hermes/.env.
-        "systemd": {
-            # Master switch.  When false, Hermes never reads from the
-            # systemd user manager environment.
-            "enabled": False,
-            # Comma-separated list of env var names to import.  If empty,
-            # all env vars from the systemd user manager are imported.
-            # Recommended: list only the secret names you push from Infisical.
-            "allowlist": "",
-            # When True, systemd values overwrite existing env vars.  Default
-            # True so that Infisical-rotated secrets take effect immediately.
-            "override_existing": True,
         },
     },
 
@@ -2867,6 +2801,7 @@ DEFAULT_CONFIG = {
     "paste_collapse_threshold_fallback": 5,
     "paste_collapse_char_threshold": 2000,
 
+
     # Config schema version - bump this when adding new required fields
     "_config_version": 30,
 }
@@ -2884,7 +2819,6 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
     11: ["TERMINAL_MODAL_MODE"],
-    12: ["TINYFISH_API_KEY"],
 }
 
 # Required environment variables with metadata for migration prompts.
@@ -3337,14 +3271,6 @@ OPTIONAL_ENV_VARS = {
         "description": "Tavily API key for AI-native web search and extract",
         "prompt": "Tavily API key",
         "url": "https://app.tavily.com/home",
-        "tools": ["web_search", "web_extract"],
-        "password": True,
-        "category": "tool",
-    },
-    "TINYFISH_API_KEY": {
-        "description": "TinyFish API key for free web Search and Fetch APIs",
-        "prompt": "TinyFish API key",
-        "url": "https://agent.tinyfish.ai/api-keys",
         "tools": ["web_search", "web_extract"],
         "password": True,
         "category": "tool",
@@ -6632,7 +6558,6 @@ def show_config():
         ("PARALLEL_API_KEY", "Parallel"),
         ("FIRECRAWL_API_KEY", "Firecrawl"),
         ("TAVILY_API_KEY", "Tavily"),
-        ("TINYFISH_API_KEY", "TinyFish"),
         ("BROWSERBASE_API_KEY", "Browserbase"),
         ("BROWSER_USE_API_KEY", "Browser Use"),
         ("FAL_KEY", "FAL"),
@@ -6697,16 +6622,6 @@ def show_config():
         print(f"  Daytona image: {terminal.get('daytona_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
         daytona_key = get_env_value('DAYTONA_API_KEY')
         print(f"  API key:      {'configured' if daytona_key else '(not set)'}")
-    elif terminal.get('backend') == 'kata':
-        print(f"  Kata image:   {terminal.get('kata_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
-        print(f"  Namespace:    {terminal.get('kata_namespace', 'sandbox')}")
-        kubeconfig = terminal.get('kata_kubeconfig', '')
-        print(f"  Kubeconfig:   {kubeconfig or '(kubectl default context)'}")
-    elif terminal.get('backend') == 'sandbox_manager':
-        print(f"  Sandbox host: {terminal.get('sandbox_ssh_user', '')}@{terminal.get('sandbox_ssh_host', '') or '(not set)'}")
-        print(f"  Manager dir:  {terminal.get('sandbox_manager_dir', '/opt/agent-sandbox-manager')}")
-        print(f"  Runtime:      {terminal.get('sandbox_runtime', '') or '(manager default)'}")
-        print(f"  Network:      {terminal.get('sandbox_network', 'offline')}")
     elif terminal.get('backend') == 'ssh':
         ssh_host = get_env_value('TERMINAL_SSH_HOST')
         ssh_user = get_env_value('TERMINAL_SSH_USER')
@@ -6863,7 +6778,7 @@ def set_config_value(key: str, value: str):
         'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
         'EXA_API_KEY', 'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL',
         'FIRECRAWL_GATEWAY_URL', 'TOOL_GATEWAY_DOMAIN', 'TOOL_GATEWAY_SCHEME',
-        'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY', 'TINYFISH_API_KEY',
+        'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY',
         'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSER_USE_API_KEY',
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
@@ -6920,50 +6835,9 @@ def set_config_value(key: str, value: str):
     
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
     # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.
-    _config_to_env_sync = {
-        "terminal.backend": "TERMINAL_ENV",
-        "terminal.modal_mode": "TERMINAL_MODAL_MODE",
-        "terminal.docker_image": "TERMINAL_DOCKER_IMAGE",
-        "terminal.singularity_image": "TERMINAL_SINGULARITY_IMAGE",
-        "terminal.modal_image": "TERMINAL_MODAL_IMAGE",
-        "terminal.daytona_image": "TERMINAL_DAYTONA_IMAGE",
-        "terminal.kata_image": "TERMINAL_KATA_IMAGE",
-        "terminal.kata_namespace": "TERMINAL_KATA_NAMESPACE",
-        "terminal.kata_kubeconfig": "TERMINAL_KATA_KUBECONFIG",
-        "terminal.sandbox_ssh_host": "TERMINAL_SANDBOX_SSH_HOST",
-        "terminal.sandbox_ssh_user": "TERMINAL_SANDBOX_SSH_USER",
-        "terminal.sandbox_ssh_port": "TERMINAL_SANDBOX_SSH_PORT",
-        "terminal.sandbox_ssh_key": "TERMINAL_SANDBOX_SSH_KEY",
-        "terminal.sandbox_manager_dir": "TERMINAL_SANDBOX_MANAGER_DIR",
-        "terminal.sandbox_config": "TERMINAL_SANDBOX_CONFIG",
-        "terminal.sandbox_runtime": "TERMINAL_SANDBOX_RUNTIME",
-        "terminal.sandbox_network": "TERMINAL_SANDBOX_NETWORK",
-        "terminal.sandbox_output_bytes": "TERMINAL_SANDBOX_OUTPUT_BYTES",
-        "terminal.sandbox_trusted": "TERMINAL_SANDBOX_TRUSTED",
-        "terminal.sandbox_env": "TERMINAL_SANDBOX_ENV",
-        "terminal.docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
-        "terminal.docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
-        "terminal.docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
-        "terminal.docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
-        "terminal.docker_env": "TERMINAL_DOCKER_ENV",
-        # JSON-valued keys (terminal_tool parses these via json.loads). The user
-        # passes JSON on the CLI, so str(value) below already yields valid JSON —
-        # same as terminal.docker_env. cli.py and gateway/run.py bridge these too.
-        "terminal.docker_volumes": "TERMINAL_DOCKER_VOLUMES",
-        "terminal.docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
-        # terminal.cwd intentionally excluded — CLI resolves at runtime,
-        # gateway bridges it in gateway/run.py. Persisting to .env causes
-        # stale values to poison child processes.
-        "terminal.timeout": "TERMINAL_TIMEOUT",
-        "terminal.sandbox_dir": "TERMINAL_SANDBOX_DIR",
-        "terminal.persistent_shell": "TERMINAL_PERSISTENT_SHELL",
-        "terminal.container_cpu": "TERMINAL_CONTAINER_CPU",
-        "terminal.container_memory": "TERMINAL_CONTAINER_MEMORY",
-        "terminal.container_disk": "TERMINAL_CONTAINER_DISK",
-        "terminal.container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
-    }
-    if key in _config_to_env_sync:
-        save_env_value(_config_to_env_sync[key], str(value))
+    env_var = terminal_config_env_var_for_key(key)
+    if env_var and key != "terminal.cwd":
+        save_env_value(env_var, _terminal_env_value(value))
 
     # Mask the echoed value when the (possibly nested) key is credential-shaped
     # — e.g. `hermes config set model.api_key cfut_...` routes to config.yaml
