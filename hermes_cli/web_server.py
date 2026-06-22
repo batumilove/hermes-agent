@@ -7659,6 +7659,9 @@ def _find_cron_job_profile(job_id: str) -> Optional[str]:
 # the uvicorn event loop while the desktop polls cron state.
 @app.get("/api/cron/jobs")
 def list_cron_jobs(profile: str = "all"):
+    # This endpoint performs filesystem/YAML/JSON work across every profile.
+    # Keep it synchronous so FastAPI runs it in the AnyIO threadpool instead
+    # of blocking the uvicorn event loop while the desktop polls cron state.
     requested = (profile or "all").strip()
     if requested.lower() != "all":
         return _call_cron_for_profile(requested, "list_jobs", True)
@@ -7825,7 +7828,7 @@ def trigger_cron_job(job_id: str, profile: Optional[str] = None):
 
 
 @app.delete("/api/cron/jobs/{job_id}")
-async def delete_cron_job(job_id: str, profile: Optional[str] = None):
+def delete_cron_job(job_id: str, profile: Optional[str] = None):
     selected = profile or _find_cron_job_profile(job_id)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -9792,16 +9795,13 @@ def _disable_unselected_skills(profile_dir: Path, keep: List[str]) -> int:
 
 
 @app.get("/api/profiles")
-async def list_profiles_endpoint():
-    def _run():
-        from hermes_cli import profiles as profiles_mod
-        try:
-            return {"profiles": [_profile_to_dict(p) for p in profiles_mod.list_profiles()]}
-        except Exception:
-            _log.exception("GET /api/profiles failed; falling back to profile directory scan")
-            return {"profiles": _fallback_profile_dicts(profiles_mod)}
-
-    return await asyncio.to_thread(_run)
+def list_profiles_endpoint():
+    from hermes_cli import profiles as profiles_mod
+    try:
+        return {"profiles": [_profile_to_dict(p) for p in profiles_mod.list_profiles()]}
+    except Exception:
+        _log.exception("GET /api/profiles failed; falling back to profile directory scan")
+        return {"profiles": _fallback_profile_dicts(profiles_mod)}
 
 
 @app.post("/api/profiles")
