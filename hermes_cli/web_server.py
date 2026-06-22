@@ -7654,8 +7654,11 @@ def _find_cron_job_profile(job_id: str) -> Optional[str]:
     return None
 
 
+# NOTE: These cron endpoints are intentionally synchronous (def, not async def).
+# FastAPI runs sync endpoints in the AnyIO threadpool, which prevents blocking
+# the uvicorn event loop while the desktop polls cron state.
 @app.get("/api/cron/jobs")
-async def list_cron_jobs(profile: str = "all"):
+def list_cron_jobs(profile: str = "all"):
     requested = (profile or "all").strip()
     if requested.lower() != "all":
         return _call_cron_for_profile(requested, "list_jobs", True)
@@ -7673,7 +7676,7 @@ async def list_cron_jobs(profile: str = "all"):
 
 
 @app.get("/api/cron/jobs/{job_id}")
-async def get_cron_job(job_id: str, profile: Optional[str] = None):
+def get_cron_job(job_id: str, profile: Optional[str] = None):
     selected = profile or _find_cron_job_profile(job_id)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -7684,7 +7687,7 @@ async def get_cron_job(job_id: str, profile: Optional[str] = None):
 
 
 @app.get("/api/cron/jobs/{job_id}/runs")
-async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: int = 20):
+def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: int = 20):
     """Run sessions produced by a cron job, newest first.
 
     Cron runs are stored as ordinary sessions whose id is
@@ -7730,7 +7733,7 @@ async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: 
 
 
 @app.post("/api/cron/jobs")
-async def create_cron_job(body: CronJobCreate, profile: str = "default"):
+def create_cron_job(body: CronJobCreate, profile: str = "default"):
     try:
         return _call_cron_for_profile(
             profile,
@@ -7775,7 +7778,7 @@ async def get_cron_delivery_targets():
 
 
 @app.put("/api/cron/jobs/{job_id}")
-async def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[str] = None):
+def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[str] = None):
     selected = profile or _find_cron_job_profile(job_id)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -7789,7 +7792,7 @@ async def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[st
 
 
 @app.post("/api/cron/jobs/{job_id}/pause")
-async def pause_cron_job(job_id: str, profile: Optional[str] = None):
+def pause_cron_job(job_id: str, profile: Optional[str] = None):
     selected = profile or _find_cron_job_profile(job_id)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -7800,7 +7803,7 @@ async def pause_cron_job(job_id: str, profile: Optional[str] = None):
 
 
 @app.post("/api/cron/jobs/{job_id}/resume")
-async def resume_cron_job(job_id: str, profile: Optional[str] = None):
+def resume_cron_job(job_id: str, profile: Optional[str] = None):
     selected = profile or _find_cron_job_profile(job_id)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -7811,7 +7814,7 @@ async def resume_cron_job(job_id: str, profile: Optional[str] = None):
 
 
 @app.post("/api/cron/jobs/{job_id}/trigger")
-async def trigger_cron_job(job_id: str, profile: Optional[str] = None):
+def trigger_cron_job(job_id: str, profile: Optional[str] = None):
     selected = profile or _find_cron_job_profile(job_id)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
