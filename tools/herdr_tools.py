@@ -8,34 +8,188 @@ approval menu by keys. The command shapes are based on the Herdr 0.6.6 eval.
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import socket
 import subprocess
 import time
+import uuid
+from pathlib import Path
 from typing import Any
 
+from hermes_cli.config import load_config_readonly
 from tools.registry import registry
 
 
 DEFAULT_TIMEOUT_SECONDS = 60
+DEFAULT_SOCKET_PATH = "~/.config/herdr/herdr.sock"
 
 
 def check_herdr_requirements() -> bool:
-    """Return True when the Herdr CLI is available on PATH."""
-    return shutil.which("herdr") is not None
+    """Return True when either direct Herdr socket or CLI fallback is available."""
+    return HerdrSocketTransport().is_available() or shutil.which("herdr") is not None
 
 
 def _json_result(**payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-def _run_herdr(args: list[str], timeout: int = DEFAULT_TIMEOUT_SECONDS) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["herdr", *args],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
+def _resolve_socket_path(socket_path: str | None = None) -> str:
+    """Resolve the Herdr Unix socket path from explicit arg, config, or default.
+
+    User-facing non-secret configuration belongs in ``config.yaml``. Supported
+    keys are ``tools.herdr.socket_path`` (preferred) and ``herdr.socket_path``
+    (short form for early adopters). The default mirrors Herdr 0.6.6 on Linux.
+    """
+    if socket_path:
+        return os.path.expanduser(os.path.expandvars(socket_path))
+    try:
+        config = load_config_readonly()
+    except Exception:
+        config = {}
+    configured = (
+        ((config.get("tools") or {}).get("herdr") or {}).get("socket_path")
+        or (config.get("herdr") or {}).get("socket_path")
     )
+    return os.path.expanduser(os.path.expandvars(configured or DEFAULT_SOCKET_PATH))
+
+
+class HerdrTransportError(Exception):
+    """Base exception for normalized Herdr transport failures."""
+
+    error_type = "transport_error"
+    message = "herdr socket request failed"
+
+
+class HerdrTransportTimeout(HerdrTransportError):
+    error_type = "timeout"
+    message = "herdr socket request timed out"
+
+
+class HerdrTransportProtocolError(HerdrTransportError):
+    error_type = "protocol_error"
+    message = "herdr socket protocol error"
+
+
+class HerdrSocketTransport:
+    """Direct JSON-over-Unix-socket transport for Herdr daemon requests.
+
+    Herdr 0.6.6 protocol 12 accepts newline-delimited JSON request objects:
+    ``{"id": str, "method": str, "params": object}``, and replies with a
+    matching JSON object containing either ``result`` or ``error``.
+    """
+
+    def __init__(self, socket_path: str | None = None) -> None:
+        self.socket_path = _resolve_socket_path(socket_path)
+
+    def is_available(self) -> bool:
+        return Path(self.socket_path).is_socket()
+
+    def request(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        timeout: int | float = DEFAULT_TIMEOUT_SECONDS,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        if not method:
+            raise HerdrTransportProtocolError("method is required")
+        request_id = request_id or f"hermes:{uuid.uuid4().hex}"
+        request = {"id": request_id, "method": method, "params": params or {}}
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            client.settimeout(timeout)
+            client.connect(self.socket_path)
+            client.sendall(json.dumps(request, ensure_ascii=False).encode("utf-8") + b"\n")
+            chunks: list[bytes] = []
+            while True:
+                chunk = client.recv(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                if b"\n" in chunk:
+                    break
+        except socket.timeout as exc:
+            raise HerdrTransportTimeout(str(exc)) from exc
+        except OSError as exc:
+            raise HerdrTransportError(str(exc)) from exc
+        finally:
+            client.close()
+
+        raw = b"".join(chunks).split(b"\n", 1)[0]
+        if not raw:
+            raise HerdrTransportProtocolError("empty response")
+        try:
+            response = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise HerdrTransportProtocolError(str(exc)) from exc
+        if not isinstance(response, dict):
+            raise HerdrTransportProtocolError("response is not a JSON object")
+        return response
+
+    def request_envelope(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        timeout: int | float = DEFAULT_TIMEOUT_SECONDS,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            response = self.request(method, params=params, timeout=timeout, request_id=request_id)
+        except HerdrTransportError as exc:
+            return {
+                "success": False,
+                "transport": "socket",
+                "method": method,
+                "socket_path": self.socket_path,
+                "error": exc.message,
+                "error_type": exc.error_type,
+                "detail": str(exc),
+            }
+        return {
+            "success": "error" not in response,
+            "transport": "socket",
+            "method": method,
+            "socket_path": self.socket_path,
+            "response": response,
+            "error": response.get("error"),
+        }
+
+
+def _socket_transport_if_available() -> HerdrSocketTransport | None:
+    transport = HerdrSocketTransport()
+    return transport if transport.is_available() else None
+
+
+def _parse_socket_result(response: dict[str, Any]) -> Any:
+    return response.get("result") if isinstance(response, dict) else None
+
+
+def _run_herdr(args: list[str], timeout: int = DEFAULT_TIMEOUT_SECONDS) -> subprocess.CompletedProcess[str]:
+    command = ["herdr", *args]
+    try:
+        return subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        return subprocess.CompletedProcess(command, 127, stdout="", stderr=str(exc))
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout
+        stderr = exc.stderr
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        return subprocess.CompletedProcess(
+            command,
+            124,
+            stdout=stdout or "",
+            stderr=stderr or f"timed out after {timeout} seconds",
+        )
 
 
 def _parse_json_stdout(proc: subprocess.CompletedProcess[str]) -> Any:
@@ -121,6 +275,23 @@ def herdr_pane_read(
     """Read pane output; defaults to recent-unwrapped to avoid false negatives."""
     if not pane_id:
         return _json_result(success=False, error="pane_id is required")
+    transport = _socket_transport_if_available()
+    if transport is not None:
+        response = transport.request_envelope(
+            "pane.read",
+            {"pane_id": pane_id, "source": source, "lines": lines},
+            timeout=timeout,
+        )
+        if response.get("success"):
+            result = _parse_socket_result(response["response"]) or {}
+            output = result.get("output", result.get("text", "")) if isinstance(result, dict) else ""
+            return _json_result(
+                success=True,
+                transport="socket",
+                pane_id=pane_id,
+                output=output,
+                raw=result,
+            )
     proc = _run_herdr(
         ["pane", "read", pane_id, "--source", source, "--lines", str(lines)],
         timeout=timeout,
@@ -134,7 +305,7 @@ def herdr_pane_read(
             stdout=proc.stdout,
             stderr=proc.stderr,
         )
-    return _json_result(success=True, pane_id=pane_id, output=proc.stdout)
+    return _json_result(success=True, transport="cli", pane_id=pane_id, output=proc.stdout)
 
 
 def herdr_pane_send_text(
@@ -146,6 +317,21 @@ def herdr_pane_send_text(
     """Send text to a Herdr pane, optionally pressing Enter afterwards."""
     if not pane_id:
         return _json_result(success=False, error="pane_id is required")
+    transport = _socket_transport_if_available()
+    if transport is not None:
+        response = transport.request_envelope(
+            "pane.send_input",
+            {"pane_id": pane_id, "text": (text or "") + ("\n" if submit else "")},
+            timeout=timeout,
+        )
+        if response.get("success"):
+            return _json_result(
+                success=True,
+                transport="socket",
+                pane_id=pane_id,
+                submitted=submit,
+                result=_parse_socket_result(response["response"]),
+            )
     proc = _run_herdr(["pane", "send-text", pane_id, text or ""], timeout=timeout)
     enter_proc = None
     if proc.returncode == 0 and submit:
@@ -153,6 +339,7 @@ def herdr_pane_send_text(
     success = proc.returncode == 0 and (enter_proc is None or enter_proc.returncode == 0)
     return _json_result(
         success=success,
+        transport="cli",
         pane_id=pane_id,
         submitted=submit,
         stdout=proc.stdout,
@@ -257,6 +444,141 @@ def herdr_run_prompt(
     )
 
 
+def _parse_tool_result(payload: str, stage: str) -> dict[str, Any]:
+    try:
+        result = json.loads(payload)
+    except (TypeError, json.JSONDecodeError) as exc:
+        return {
+            "success": False,
+            "stage": stage,
+            "status": "error",
+            "error": f"invalid JSON result from {stage}: {exc}",
+            "error_type": "protocol_error",
+            "raw": payload,
+        }
+    if not isinstance(result, dict):
+        return {
+            "success": False,
+            "stage": stage,
+            "status": "error",
+            "error": f"non-object result from {stage}",
+            "error_type": "protocol_error",
+            "raw": result,
+        }
+    return result
+
+
+def _output_excerpt(output: Any, limit: int = 4000) -> str:
+    text = output if isinstance(output, str) else ""
+    if len(text) <= limit:
+        return text
+    return text[-limit:]
+
+
+def herdr_spawn_and_run(
+    name: str,
+    prompt: str,
+    expect: str | None = None,
+    cwd: str | None = None,
+    workspace_id: str | None = None,
+    argv: list[str] | None = None,
+    no_focus: bool = True,
+    ready_timeout_seconds: float = 30.0,
+    wait_working_ms: int = 30000,
+    wait_idle_ms: int = 60000,
+    settle_seconds: float = 2.0,
+    lines: int = 400,
+) -> str:
+    """Start a Herdr agent, wait for readiness, run one prompt, and summarize the result."""
+    if not name:
+        return _json_result(success=False, stage="validate", error="name is required")
+    if not prompt:
+        return _json_result(success=False, stage="validate", error="prompt is required")
+    if not expect:
+        return _json_result(success=False, stage="validate", error="expect is required")
+
+    try:
+        start = _parse_tool_result(
+            herdr_agent_start(
+                name=name,
+                cwd=cwd,
+                workspace_id=workspace_id,
+                argv=argv,
+                no_focus=no_focus,
+                wait_ready=True,
+                ready_timeout_seconds=ready_timeout_seconds,
+            ),
+            "start",
+        )
+    except TimeoutError as exc:
+        return _json_result(success=False, stage="start", status="error", error=str(exc), error_type="timeout")
+    except Exception as exc:
+        return _json_result(success=False, stage="start", status="error", error=str(exc), error_type=type(exc).__name__)
+
+    pane_id = start.get("pane_id")
+    workspace_id = start.get("workspace_id")
+    if not start.get("success") or not pane_id:
+        return _json_result(
+            success=False,
+            stage="start",
+            status="failed_start",
+            pane_id=pane_id,
+            workspace_id=workspace_id,
+            start=start,
+        )
+
+    try:
+        run = _parse_tool_result(
+            herdr_run_prompt(
+                pane_id,
+                prompt,
+                wait_working_ms=wait_working_ms,
+                wait_idle_ms=wait_idle_ms,
+                wait_ready=False,
+                settle_seconds=settle_seconds,
+                lines=lines,
+                expect=expect,
+            ),
+            "run",
+        )
+    except TimeoutError as exc:
+        return _json_result(
+            success=False,
+            stage="run",
+            status="error",
+            pane_id=pane_id,
+            workspace_id=workspace_id,
+            error=str(exc),
+            error_type="timeout",
+            start=start,
+        )
+    except Exception as exc:
+        return _json_result(
+            success=False,
+            stage="run",
+            status="error",
+            pane_id=pane_id,
+            workspace_id=workspace_id,
+            error=str(exc),
+            error_type=type(exc).__name__,
+            start=start,
+        )
+
+    success = bool(run.get("success"))
+    return _json_result(
+        success=success,
+        stage=run.get("stage", "complete" if success else "run"),
+        status="succeeded" if success else "failed_run",
+        pane_id=pane_id,
+        workspace_id=workspace_id,
+        matched_expect=run.get("matched_expect"),
+        expect=expect,
+        output_excerpt=_output_excerpt(run.get("output")),
+        start=start,
+        run=run,
+    )
+
+
 def herdr_wait_status(
     pane_id: str,
     status: str,
@@ -279,6 +601,68 @@ def herdr_wait_status(
         status=status,
         class_=classify_agent_status(status),
         event=parsed,
+        stdout=proc.stdout,
+        stderr=proc.stderr,
+        exit_code=proc.returncode,
+    )
+
+
+def herdr_workspace_list(timeout: int = DEFAULT_TIMEOUT_SECONDS) -> str:
+    """List Herdr workspaces."""
+    transport = _socket_transport_if_available()
+    if transport is not None:
+        response = transport.request_envelope("workspace.list", {}, timeout=timeout)
+        if response.get("success"):
+            result = _parse_socket_result(response["response"]) or {}
+            workspaces = result.get("workspaces") if isinstance(result, dict) else []
+            return _json_result(
+                success=True,
+                transport="socket",
+                workspaces=workspaces or [],
+                raw=result,
+            )
+    proc = _run_herdr(["workspace", "list"], timeout=timeout)
+    parsed = _parse_json_stdout(proc)
+    workspaces = []
+    if parsed and isinstance(parsed, dict):
+        result = parsed.get("result") or {}
+        workspaces = result.get("workspaces") or []
+    return _json_result(
+        success=proc.returncode == 0,
+        transport="cli",
+        workspaces=workspaces,
+        stdout=proc.stdout,
+        stderr=proc.stderr,
+        exit_code=proc.returncode,
+    )
+
+
+def herdr_workspace_close(workspace_id: str, timeout: int = DEFAULT_TIMEOUT_SECONDS) -> str:
+    """Close a Herdr workspace."""
+    if not workspace_id:
+        return _json_result(success=False, error="workspace_id is required")
+    proc = _run_herdr(["workspace", "close", workspace_id], timeout=timeout)
+    parsed = _parse_json_stdout(proc)
+    return _json_result(
+        success=proc.returncode == 0,
+        workspace_id=workspace_id,
+        result=parsed,
+        stdout=proc.stdout,
+        stderr=proc.stderr,
+        exit_code=proc.returncode,
+    )
+
+
+def herdr_pane_close(pane_id: str, timeout: int = DEFAULT_TIMEOUT_SECONDS) -> str:
+    """Close a Herdr pane."""
+    if not pane_id:
+        return _json_result(success=False, error="pane_id is required")
+    proc = _run_herdr(["pane", "close", pane_id], timeout=timeout)
+    parsed = _parse_json_stdout(proc)
+    return _json_result(
+        success=proc.returncode == 0,
+        pane_id=pane_id,
+        result=parsed,
         stdout=proc.stdout,
         stderr=proc.stderr,
         exit_code=proc.returncode,
@@ -477,6 +861,48 @@ registry.register(
 )
 
 registry.register(
+    name="herdr_spawn_and_run",
+    toolset="herdr",
+    schema={
+        "name": "herdr_spawn_and_run",
+        "description": "Start a Herdr agent, wait for readiness, run one prompt, and return a bounded orchestration result.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Human label for the Herdr agent pane."},
+                "cwd": {"type": "string", "description": "Working directory for the agent."},
+                "workspace_id": {"type": "string", "description": "Optional Herdr workspace id to attach to."},
+                "argv": {"type": "array", "items": {"type": "string"}, "description": "Command argv after --, default ['hermes']."},
+                "prompt": {"type": "string", "description": "Prompt to submit once the pane is ready."},
+                "expect": {"type": "string", "description": "Token expected in final output; required for success."},
+                "ready_timeout_seconds": {"type": "number", "default": 30.0},
+                "wait_working_ms": {"type": "integer", "default": 30000},
+                "wait_idle_ms": {"type": "integer", "default": 60000},
+                "settle_seconds": {"type": "number", "default": 2.0},
+                "lines": {"type": "integer", "default": 400},
+            },
+            "required": ["name", "prompt", "expect"],
+        },
+    },
+    handler=lambda args, **kw: herdr_spawn_and_run(
+        name=args.get("name", ""),
+        cwd=args.get("cwd"),
+        workspace_id=args.get("workspace_id"),
+        argv=args.get("argv"),
+        prompt=args.get("prompt", ""),
+        expect=args.get("expect"),
+        ready_timeout_seconds=args.get("ready_timeout_seconds", 30.0),
+        wait_working_ms=args.get("wait_working_ms", 30000),
+        wait_idle_ms=args.get("wait_idle_ms", 60000),
+        settle_seconds=args.get("settle_seconds", 2.0),
+        lines=args.get("lines", 400),
+    ),
+    check_fn=check_herdr_requirements,
+    description="Spawn Herdr agent and run prompt",
+    emoji="🚀",
+)
+
+registry.register(
     name="herdr_wait_status",
     toolset="herdr",
     schema={
@@ -500,6 +926,67 @@ registry.register(
     check_fn=check_herdr_requirements,
     description="Wait Herdr status",
     emoji="⏳",
+)
+
+registry.register(
+    name="herdr_workspace_list",
+    toolset="herdr",
+    schema={
+        "name": "herdr_workspace_list",
+        "description": "List Herdr workspaces with metadata (pane counts, labels, active tabs).",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    handler=lambda args, **kw: herdr_workspace_list(),
+    check_fn=check_herdr_requirements,
+    description="List Herdr workspaces",
+    emoji="📋",
+)
+
+registry.register(
+    name="herdr_workspace_close",
+    toolset="herdr",
+    schema={
+        "name": "herdr_workspace_close",
+        "description": "Close a Herdr workspace by ID.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "workspace_id": {"type": "string", "description": "Herdr workspace ID to close."},
+            },
+            "required": ["workspace_id"],
+        },
+    },
+    handler=lambda args, **kw: herdr_workspace_close(
+        workspace_id=args.get("workspace_id", ""),
+    ),
+    check_fn=check_herdr_requirements,
+    description="Close Herdr workspace",
+    emoji="🗑️",
+)
+
+registry.register(
+    name="herdr_pane_close",
+    toolset="herdr",
+    schema={
+        "name": "herdr_pane_close",
+        "description": "Close a Herdr pane by ID.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pane_id": {"type": "string", "description": "Herdr pane ID to close."},
+            },
+            "required": ["pane_id"],
+        },
+    },
+    handler=lambda args, **kw: herdr_pane_close(
+        pane_id=args.get("pane_id", ""),
+    ),
+    check_fn=check_herdr_requirements,
+    description="Close Herdr pane",
+    emoji="🗑️",
 )
 
 registry.register(

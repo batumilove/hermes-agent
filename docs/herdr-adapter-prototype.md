@@ -9,9 +9,40 @@ Use Herdr as the durable PTY/session substrate for spawned Hermes agents. Hermes
 - Herdr: `0.6.6`, protocol `12`
 - Server host: `herdr-test`, Tailscale `100.96.90.117`
 - Remote client host: `herdr-client`, Tailscale `100.74.176.127`
+- Socket path on eval VM: `/home/ubuntu/.config/herdr/herdr.sock`
 - Socket API verified: `ping`, `workspace.list`, `pane.list`, `pane.read`, `pane.send_input`
+- Socket protocol verified: newline-delimited JSON request `{"id":"req-1","method":"ping","params":{}}` → response `{"id":"req-1","result":{"type":"pong","protocol":12}}`
 - CLI verified: `agent start`, `pane read`, `wait agent-status`, `pane send-keys`
 - Remote TUI verified: `herdr --remote ubuntu@100.96.90.117`
+
+## Adapter transport
+
+`tools/herdr_tools.py` now uses a small transport abstraction instead of scattering socket logic through handlers:
+
+- `HerdrSocketTransport` for direct Unix-socket calls.
+- subprocess CLI fallback for operations without proven socket coverage, or when the socket is absent/fails.
+- Tool handlers return the same JSON success/error envelopes and include `transport: "socket"` or `transport: "cli"` for diagnostics.
+
+Socket path resolution is profile-safe/configurable:
+
+1. explicit constructor argument for tests/internal callers
+2. `tools.herdr.socket_path` in the active profile's `config.yaml`
+3. legacy short form `herdr.socket_path`
+4. default `~/.config/herdr/herdr.sock`
+
+The socket wire format is one newline-delimited JSON object per request:
+
+```json
+{"id":"req-1","method":"workspace.list","params":{}}
+```
+
+and one JSON object response, usually:
+
+```json
+{"id":"req-1","result":{"type":"workspace_list","workspaces":[]}}
+```
+
+Timeouts, connection errors, malformed responses, and Herdr `error` responses are normalized into JSON envelopes with `success: false`, `transport: "socket"`, `method`, `socket_path`, `error`, and `error_type` where available.
 
 ## Adapter primitives
 
@@ -62,6 +93,68 @@ Use this to feed prompts/follow-ups into spawned interactive agents.
 
 This avoids both observed races: sending before a fresh child is ready, and reading before the final answer is visible in `pane read`.
 
+### Spawn and run helper
+
+`herdr_spawn_and_run` is the high-level orchestration helper for one-shot child work. It composes:
+
+1. `herdr_agent_start(..., wait_ready=True)`
+2. `herdr_run_prompt(pane_id=..., text=prompt, expect=expect)`
+3. a bounded result envelope with `success`, `stage`, `status`, `pane_id`, `workspace_id`, `matched_expect`, `expect`, `output_excerpt`, `start`, and `run`
+
+Schema:
+
+```json
+{
+  "name": "herdr_spawn_and_run",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "name": {"type": "string"},
+      "cwd": {"type": "string"},
+      "workspace_id": {"type": "string"},
+      "argv": {"type": "array", "items": {"type": "string"}},
+      "prompt": {"type": "string"},
+      "expect": {"type": "string"},
+      "ready_timeout_seconds": {"type": "number", "default": 30.0},
+      "wait_working_ms": {"type": "integer", "default": 30000},
+      "wait_idle_ms": {"type": "integer", "default": 60000},
+      "settle_seconds": {"type": "number", "default": 2.0},
+      "lines": {"type": "integer", "default": 400}
+    },
+    "required": ["name", "prompt", "expect"]
+  }
+}
+```
+
+Example call:
+
+```json
+{
+  "name": "worker",
+  "cwd": "/repo",
+  "argv": ["hermes", "-w"],
+  "prompt": "Do task...",
+  "expect": "DONE"
+}
+```
+
+Example result:
+
+```json
+{
+  "success": true,
+  "stage": "complete",
+  "status": "succeeded",
+  "pane_id": "pane1",
+  "workspace_id": "ws1",
+  "matched_expect": true,
+  "expect": "DONE",
+  "output_excerpt": "...DONE",
+  "start": {"success": true, "pane_id": "pane1", "workspace_id": "ws1"},
+  "run": {"success": true, "stage": "complete", "matched_expect": true}
+}
+```
+
 ### Wait
 
 ```bash
@@ -96,10 +189,38 @@ The first in-repo prototype is `tools/herdr_tools.py`, exposed as an opt-in `her
 - `herdr_pane_send_text`
 - `herdr_wait_ready`
 - `herdr_run_prompt`
+- `herdr_spawn_and_run`
 - `herdr_wait_status`
 - `herdr_approval`
+- `herdr_workspace_list`
+- `herdr_workspace_close`
+- `herdr_pane_close`
 
-This is intentionally CLI-backed for the first pass. The next hardening step is to add a socket transport, which avoids parsing CLI JSON and can support remote socket forwarding more directly.
+### List workspaces
+
+```bash
+herdr workspace list
+```
+
+Returns workspace metadata including `workspace_id`, `label`, `pane_count`, `tab_count`, and `active_tab_id`. The adapter extracts the `workspaces` array from the JSON envelope.
+
+### Close workspace
+
+```bash
+herdr workspace close <workspace_id>
+```
+
+Closes the workspace and all contained panes/tabs. Returns `success: true` with the raw CLI response, or an error envelope on failure (e.g. workspace not found).
+
+### Close pane
+
+```bash
+herdr pane close <pane_id>
+```
+
+Closes a single pane. Returns `success: true` with the raw CLI response, or an error envelope on failure (e.g. pane not found).
+
+Socket-backed operations are preferred when `/home/ubuntu/.config/herdr/herdr.sock` (or the configured socket path) is present. CLI fallback remains in place for spawn/wait/approval and for lifecycle calls without verified socket coverage.
 
 ## Recovery policy
 
