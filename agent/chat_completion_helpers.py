@@ -1430,6 +1430,11 @@ def _extract_chat_completion_text(response: object) -> str:
         return ""
 
 
+def _safe_exception_label(exc: Exception) -> str:
+    """Return a log-safe exception label without provider body/request text."""
+    return type(exc).__name__
+
+
 def _try_auxiliary_iteration_limit_summary(agent, messages: list) -> str | None:
     """Try configured auxiliary compression model with compact recent context."""
     try:
@@ -1446,7 +1451,10 @@ def _try_auxiliary_iteration_limit_summary(agent, messages: list) -> str | None:
         text = _extract_chat_completion_text(response)
         return text or None
     except Exception as aux_exc:
-        logger.warning("Auxiliary max-iteration summary failed: %s", aux_exc)
+        logger.warning(
+            "Auxiliary max-iteration summary failed: %s",
+            _safe_exception_label(aux_exc),
+        )
         return None
 
 
@@ -1689,18 +1697,16 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 final_response = "I reached the iteration limit and couldn't generate a summary."
 
     except Exception as e:
-        logger.warning("Failed to get summary response: %s", e)
+        logger.warning("Failed to get summary response: %s", _safe_exception_label(e))
         aux_summary = _try_auxiliary_iteration_limit_summary(agent, messages)
         if aux_summary:
             final_response = aux_summary
         elif _is_summary_fallback_worthy_error(e):
             final_response = _local_iteration_limit_summary(agent, messages, e)
         else:
-            final_response = (
-                f"I reached the maximum iterations ({agent.max_iterations}) "
-                "and could not generate a model-written summary. "
-                f"Summary failure: {type(e).__name__}: {e}"
-            )
+            final_response = _local_iteration_limit_summary(agent, messages, e)
+        if final_response:
+            messages.append({"role": "assistant", "content": final_response})
 
     return final_response
 

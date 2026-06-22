@@ -1,4 +1,5 @@
 from collections import deque
+import logging
 
 import pytest
 
@@ -88,6 +89,70 @@ def test_max_iterations_summary_never_raises_on_provider_failure():
     assert isinstance(out, str)
     assert out.strip()
     assert "maximum tool-calling iteration limit" in out
+    assert messages[-1]["role"] == "assistant"
+    assert messages[-1]["content"] == out
+
+
+def test_max_iterations_generic_failure_does_not_leak_raw_provider_body(caplog):
+    agent = _FakeAgent()
+
+    def provider_body_error(_kwargs):
+        raise RuntimeError(
+            "Error code: 422 - {'error': {'message': 'bad request', "
+            "'Authorization': 'Bearer SECRET_TOKEN', 'body': 'private prompt'}}"
+        )
+
+    agent._run_codex_stream = provider_body_error
+    messages = [{"role": "user", "content": "Do a long browser task"}]
+
+    with caplog.at_level(logging.WARNING):
+        out = handle_max_iterations(agent, messages, 80)
+
+    assert "Bearer" not in out
+    assert "SECRET_TOKEN" not in out
+    assert "private prompt" not in out
+    assert "Error code" not in out
+    assert "summary model/provider failed" in out
+    assert messages[-1]["role"] == "assistant"
+    assert messages[-1]["content"] == out
+    logs = caplog.text
+    assert "Bearer" not in logs
+    assert "SECRET_TOKEN" not in logs
+    assert "private prompt" not in logs
+
+
+def test_max_iterations_auxiliary_failure_logs_are_sanitized(monkeypatch, caplog):
+    agent = _FakeAgent()
+
+    def primary_down(_kwargs):
+        raise RuntimeError("primary down")
+
+    class _BadAuxCompletions:
+        def create(self, **_kwargs):
+            raise RuntimeError("Authorization: Bearer AUX_SECRET; body=private prompt")
+
+    class _BadAuxChat:
+        completions = _BadAuxCompletions()
+
+    class _BadAuxClient:
+        chat = _BadAuxChat()
+
+    agent._run_codex_stream = primary_down
+    monkeypatch.setattr(
+        "agent.auxiliary_client.get_text_auxiliary_client",
+        lambda _task: (_BadAuxClient(), "compact-model"),
+    )
+    messages = [{"role": "user", "content": "Do a long browser task"}]
+
+    with caplog.at_level(logging.WARNING):
+        out = handle_max_iterations(agent, messages, 80)
+
+    assert out
+    logs = caplog.text
+    assert "Bearer" not in logs
+    assert "AUX_SECRET" not in logs
+    assert "private prompt" not in logs
+    assert "RuntimeError" in logs
 
 
 def test_browser_loop_detector_flags_low_diversity_browser_loop():
