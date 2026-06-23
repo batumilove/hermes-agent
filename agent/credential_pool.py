@@ -107,10 +107,12 @@ SUPPORTED_POOL_STRATEGIES = {
 
 # Cooldown before retrying an exhausted credential.
 # Transient 401 auth failures cool down briefly so single-key setups can recover.
-# 429 (rate-limited), 402 (billing/quota), and other failures cool down after 1 hour.
-# Provider-supplied reset_at timestamps override these defaults.
+# 429 (rate-limited) should be short: some coding APIs report long window
+# reset hints even though retrying after a brief pause is desirable for key
+# rotation/probing. 402 (billing/quota) and other failures retain the longer
+# default cooldown.
 EXHAUSTED_TTL_401_SECONDS = 5 * 60           # 5 minutes
-EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
+EXHAUSTED_TTL_429_SECONDS = 60               # 1 minute
 EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
 
 # Pool key prefix for custom OpenAI-compatible endpoints.
@@ -515,6 +517,20 @@ class CredentialPool:
         error_context: Optional[Dict[str, Any]] = None,
     ) -> PooledCredential:
         normalized_error = _normalize_error_context(error_context)
+        if (
+            status_code == 429
+            and normalized_error.get("reset_at") is not None
+            and self.provider in {"zai", "glm"}
+        ):
+            # Z.AI / GLM coding APIs can return long hourly-window reset hints
+            # (for example "resets in 34 min"). Keep those credentials in a
+            # short probing cooldown instead of sidelining them for the full
+            # provider window. Other OAuth providers keep their explicit reset
+            # timestamps because those may represent hard subscription quotas.
+            normalized_error["reset_at"] = min(
+                float(normalized_error["reset_at"]),
+                time.time() + EXHAUSTED_TTL_429_SECONDS,
+            )
         # Permanent OAuth failures (token_invalidated, token_revoked, etc.)
         # transition to STATUS_DEAD instead of STATUS_EXHAUSTED.  Without this,
         # a revoked credential gets a 1-hour TTL cooldown and then re-enters

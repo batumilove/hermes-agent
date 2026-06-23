@@ -447,7 +447,7 @@ def test_token_invalidated_marks_credential_dead(tmp_path, monkeypatch):
 def test_dead_credential_never_re_enters_rotation_after_ttl(tmp_path, monkeypatch):
     """A DEAD credential must stay excluded regardless of how much time passes.
 
-    The exhausted TTL clears entries after 5 min (401) / 1 hour (429).
+    The exhausted TTL clears entries after 5 min (401) / 1 min (429).
     A DEAD credential has no recovery TTL — it stays dead until either
     (a) an explicit re-auth write-side sync rewrites the tokens, or
     (b) the manual-prune TTL elapses (covered by separate tests below).
@@ -510,8 +510,8 @@ def test_dead_credential_never_re_enters_rotation_after_ttl(tmp_path, monkeypatc
 def test_429_rate_limit_still_uses_exhausted_not_dead(tmp_path, monkeypatch):
     """429 rate limits must NOT be treated as terminal.
 
-    They should keep the existing 1-hour TTL cooldown semantics so the
-    credential re-enters rotation once the rate window resets.
+    They should keep short TTL cooldown semantics so the credential
+    re-enters rotation soon after transient provider throttles.
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(
@@ -560,6 +560,89 @@ def test_429_rate_limit_still_uses_exhausted_not_dead(tmp_path, monkeypatch):
     # 429 stays exhausted (transient) — NOT dead.
     assert persisted["last_status"] == STATUS_EXHAUSTED
     assert persisted["last_error_code"] == 429
+
+
+def test_429_default_cooldown_is_one_minute(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    now = time.time()
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "zai": [
+                    {
+                        "id": "cred-1",
+                        "label": "glm",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "***",
+                        "last_status": "exhausted",
+                        "last_status_at": now - 61,
+                        "last_error_code": 429,
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("zai")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.id == "cred-1"
+    assert entry.last_status == "ok"
+
+
+def test_zai_429_reset_hint_is_capped_to_one_minute(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "zai": [
+                    {
+                        "id": "cred-1",
+                        "label": "glm",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "***",
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "backup",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual:backup",
+                        "access_token": "***",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("zai")
+    assert pool.select().id == "cred-1"
+    before = time.time()
+
+    pool.mark_exhausted_and_rotate(
+        status_code=429,
+        error_context={
+            "reason": "rate_limit_exceeded",
+            "message": "Requests exhausted, resets in 34 min",
+        },
+    )
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    persisted = auth_payload["credential_pool"]["zai"][0]
+    assert before <= persisted["last_error_reset_at"] <= before + 61
 
 
 def test_generic_401_without_terminal_reason_still_uses_exhausted(tmp_path, monkeypatch):
