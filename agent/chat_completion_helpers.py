@@ -24,6 +24,7 @@ import time
 import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
@@ -1071,6 +1072,27 @@ def rewrite_prompt_model_identity(agent, model: str, provider: str) -> None:
     agent._cached_system_prompt = sp
 
 
+def _fallback_endpoint_uses_anthropic_messages(provider: str, base_url: str) -> bool:
+    """Return True when a fallback target speaks Anthropic Messages.
+
+    Most fallback providers use OpenAI-compatible chat completions, but a few
+    endpoints are Anthropic-wire even when the provider name is not literally
+    ``anthropic``.  In particular, Kimi Coding Plan keys route to
+    ``https://api.kimi.com/coding`` which returns 404 for chat.completions and
+    expects the Anthropic Messages API instead.
+    """
+    normalized = (base_url or "").strip().lower().rstrip("/")
+    if (provider or "").strip().lower() == "anthropic":
+        return True
+    path = urlparse(normalized).path.rstrip("/")
+    if path.endswith("/anthropic") or path.endswith("/anthropic/v1"):
+        return True
+    hostname = base_url_hostname(normalized)
+    if hostname == "api.anthropic.com":
+        return True
+    return hostname == "api.kimi.com" and "/coding" in normalized
+
+
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
     """Switch to the next fallback model/provider in the chain.
 
@@ -1174,7 +1196,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
         if fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
-        elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
+        elif _fallback_endpoint_uses_anthropic_messages(fb_provider, fb_base_url):
             fb_api_mode = "anthropic_messages"
         elif _fb_is_azure:
             # Azure OpenAI serves gpt-5.x on /chat/completions — does NOT
