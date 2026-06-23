@@ -7661,17 +7661,30 @@ def run_daemon(
 
     while not stop_event.is_set():
         try:
-            with contextlib.closing(connect()) as conn:
-                res = dispatch_once(
-                    conn,
-                    max_spawn=max_spawn,
-                    failure_limit=failure_limit,
-                )
-            if on_tick is not None:
+            try:
+                boards = list_boards(include_archived=False)
+            except Exception:
+                boards = [read_board_metadata(DEFAULT_BOARD)]
+            for board_meta in boards:
+                slug = board_meta.get("slug") or DEFAULT_BOARD
                 try:
-                    on_tick(res)
+                    with contextlib.closing(connect(board=slug)) as conn:
+                        res = dispatch_once(
+                            conn,
+                            board=slug,
+                            max_spawn=max_spawn,
+                            failure_limit=failure_limit,
+                        )
+                    if on_tick is not None:
+                        try:
+                            on_tick(res)
+                        except Exception:
+                            pass
                 except Exception:
-                    pass
+                    # One bad/corrupt board must not kill the whole daemon or
+                    # prevent other boards from dispatching.
+                    import traceback
+                    traceback.print_exc()
         except Exception:
             # Don't let any single tick kill the daemon.
             import traceback
