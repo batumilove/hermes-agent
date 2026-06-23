@@ -129,18 +129,20 @@ class GatewayKanbanWatchersMixin:
         cross boards, so delivery semantics are unchanged — this is
         purely a fan-out of the single-DB poll.
         """
-        # Gate: only the dispatch-owning gateway opens kanban DBs for notifier polling.
-        # Non-dispatch gateways have no subscriptions to deliver — all kanban state lives
-        # in the dispatch owner's per-board DBs. This prevents N-gateway -shm contention.
-        # TODO: gate per-board when per-board dispatcher_owner tracking lands.
+        # Gate notification delivery independently from dispatcher ownership.
+        # External-dispatcher mode sets kanban.dispatch_in_gateway=false so the
+        # Telegram gateway does not spawn workers, but the gateway should still
+        # poll subscriptions and deliver completed/blocked/crashed events. Use
+        # kanban.notify_in_gateway (default true) and a notifier-specific env
+        # override for the rare case where this gateway should not own delivery.
         try:
             from hermes_cli.config import load_config as _load_config
         except Exception:
             logger.warning("kanban notifier: config loader unavailable; disabled")
             return
-        env_override = os.environ.get("HERMES_KANBAN_DISPATCH_IN_GATEWAY", "").strip().lower()
+        env_override = os.environ.get("HERMES_KANBAN_NOTIFY_IN_GATEWAY", "").strip().lower()
         if env_override in {"0", "false", "no", "off"}:
-            logger.info("kanban notifier: disabled via HERMES_KANBAN_DISPATCH_IN_GATEWAY env")
+            logger.info("kanban notifier: disabled via HERMES_KANBAN_NOTIFY_IN_GATEWAY env")
             return
         try:
             cfg = _load_config()
@@ -148,9 +150,9 @@ class GatewayKanbanWatchersMixin:
             logger.warning("kanban notifier: cannot load config (%s); disabled", exc)
             return
         kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-        if not kanban_cfg.get("dispatch_in_gateway", True):
+        if not kanban_cfg.get("notify_in_gateway", True):
             logger.info(
-                "kanban notifier: disabled via config kanban.dispatch_in_gateway=false"
+                "kanban notifier: disabled via config kanban.notify_in_gateway=false"
             )
             return
         from gateway.config import Platform as _Platform

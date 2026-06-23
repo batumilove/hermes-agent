@@ -2287,43 +2287,51 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
 
 
 def _cmd_daemon(args: argparse.Namespace) -> int:
-    """Deprecated — the dispatcher now runs inside the gateway.
+    """Run the standalone Kanban dispatcher loop.
 
-    Left in as a stub so users with the old command in scripts/systemd
-    units get a clear migration message instead of a cryptic
-    "no such command" error. A ``--force`` escape hatch keeps the old
-    standalone daemon alive for the rare edge case where someone truly
-    cannot run the gateway (e.g. running on a host that forbids
-    long-lived background services), but the default path exits 2
-    with guidance so nobody accidentally keeps running two dispatchers
-    against the same kanban.db.
+    The safe modern default is still gateway-owned dispatch. However, when the
+    operator explicitly sets ``kanban.dispatch_in_gateway=false`` the standalone
+    daemon becomes the intended dispatcher host (for example a separate worker
+    VM/service so Telegram gateway does not spawn workers). In that mode the
+    daemon runs without ``--force``. If gateway dispatch may still be active, the
+    command keeps the historical guard and requires ``--force`` to avoid two
+    dispatchers racing the same board.
     """
-    # --force lets power users keep the standalone loop for one more
-    # release cycle. Undocumented in `--help` so nobody discovers it
-    # casually — intentional.
-    if not getattr(args, "force", False):
+    force = bool(getattr(args, "force", False))
+    dispatch_in_gateway = True
+    if not force:
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            kcfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+            dispatch_in_gateway = bool(kcfg.get("dispatch_in_gateway", True))
+        except Exception:
+            dispatch_in_gateway = True
+
+    if not force and dispatch_in_gateway:
         print(
-            "hermes kanban daemon: DEPRECATED — the dispatcher now runs\n"
-            "inside the gateway. To use kanban:\n"
+            "hermes kanban daemon: gateway dispatch may already be active.\n"
             "\n"
-            "    hermes gateway start       # starts the gateway + embedded dispatcher\n"
+            "For the safe external-dispatcher mode, first set\n"
+            "kanban.dispatch_in_gateway=false so the gateway does not spawn\n"
+            "workers, then run this daemon:\n"
             "\n"
-            "Ready tasks will be picked up on the next dispatcher tick\n"
-            "(default: every 60 seconds). Configure via config.yaml:\n"
+            "    hermes config set kanban.dispatch_in_gateway false\n"
+            "    hermes kanban daemon\n"
             "\n"
-            "    kanban:\n"
-            "      dispatch_in_gateway: true      # default\n"
-            "      dispatch_interval_seconds: 60\n"
-            "      failure_limit: 2              # consecutive non-success attempts before auto-block\n"
+            "The gateway can still deliver Kanban notifications via:\n"
             "\n"
-            "Running both the gateway AND this standalone daemon will\n"
-            "race for claims. If you truly need the old standalone\n"
-            "daemon (no gateway available), rerun with --force.",
+            "    kanban.notify_in_gateway: true      # default\n"
+            "\n"
+            "Running both the gateway dispatcher and this standalone daemon can\n"
+            "race for claims. If you intentionally need the legacy escape hatch,\n"
+            "rerun with --force.",
             file=sys.stderr,
         )
         return 2
 
-    # Legacy path — same logic as before, kept behind --force.
+    # Standalone path. Explicit external-dispatch mode (dispatch_in_gateway=false)
+    # reaches here without --force; --force preserves the legacy escape hatch.
     # Make sure the DB exists before printing "started" so the user sees the
     # correct DB path and any init error surfaces immediately.
     kb.init_db()
@@ -2337,12 +2345,17 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             print(f"warning: could not write pidfile {pidfile}: {exc}", file=sys.stderr)
 
     verbose = bool(getattr(args, "verbose", False))
+    mode = "via --force" if force else "external-dispatcher mode"
+    warning = (
+        " NOTE: if a gateway is also running with dispatch_in_gateway=true "
+        "(default), you have two dispatchers racing for claims."
+        if force
+        else ""
+    )
     print(
-        f"Kanban dispatcher running STANDALONE via --force "
-        f"(interval={args.interval}s, pid={os.getpid()}). "
-        f"Ctrl-C to stop. NOTE: if a gateway is also running with "
-        f"dispatch_in_gateway=true (default), you have two dispatchers "
-        f"racing for claims.",
+        f"Kanban dispatcher running STANDALONE ({mode}) "
+        f"(interval={args.interval}s, pid={os.getpid()}). Ctrl-C to stop."
+        f"{warning}",
         file=sys.stderr,
     )
 

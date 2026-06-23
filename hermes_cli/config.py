@@ -2364,6 +2364,10 @@ DEFAULT_CONFIG = {
         # only if you run the dispatcher as a separate systemd unit or
         # don't want the gateway to spawn workers.
         "dispatch_in_gateway": True,
+        # Keep Kanban notifications live even when worker spawning is moved to
+        # an external dispatcher. Set false only for a gateway that should not
+        # poll/send Kanban task events.
+        "notify_in_gateway": True,
         # Seconds between dispatcher ticks (idle or not). Lower = snappier
         # pickup of newly-ready tasks; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,
