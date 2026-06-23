@@ -1165,6 +1165,17 @@ def run_conversation(
                 # session instead of re-failing every retry.
                 if getattr(agent, "_disable_streaming", False):
                     _use_streaming = False
+                elif (
+                    getattr(agent, "provider", None) == "zai"
+                    and "glm-5.2" in str(getattr(agent, "model", "")).lower()
+                ):
+                    # Z.AI currently rate-limits/overloads the GLM-5.2 SSE
+                    # path (business code 1305) while the regular
+                    # non-streaming chat completion path succeeds.  Start this
+                    # model on the regular API directly instead of spending the
+                    # first attempt rediscovering the streaming failure every
+                    # new worker session.
+                    _use_streaming = False
                 # CopilotACPClient communicates via subprocess stdio and
                 # returns a plain SimpleNamespace — not an iterable
                 # stream.  Mirror the ACP exclusion used for Responses
