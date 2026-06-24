@@ -111,7 +111,7 @@ Five bidirectional tools. All accept an optional `peer` parameter (`"user"` or `
 | `honcho_reasoning` | Yes | LLM-synthesized answer via dialectic `.chat()` |
 | `honcho_conclude` | No | Write a persistent fact/conclusion about the user; accepts optional JSON-object `metadata` for provenance on new conclusions |
 
-`honcho_conclude` metadata is only valid with `conclusion`, not `delete_id`. Hermes posts metadata directly to Honcho v3 when the server accepts it. If an older Honcho SDK/API rejects metadata, Hermes preserves the JSON metadata in a content marker (`[honcho_conclusion_metadata: ...]`) so provenance is not silently dropped.
+`honcho_conclude` metadata is only valid with `conclusion`, not `delete_id`. Honcho v3 currently exposes metadata for sessions/messages, but the live conclusion API schema does not return a metadata field and may silently discard unknown create fields. Hermes therefore preserves conclusion metadata in a deterministic content marker (`[honcho_conclusion_metadata: ...]`) until the upstream conclusion API/SDK exposes native metadata round-tripping.
 
 Tool visibility depends on `recallMode`: hidden in `context` mode, always present in `tools` and `hybrid`.
 

@@ -1447,7 +1447,7 @@ class HonchoMemoryProvider(MemoryProvider):
                 has_conclusion = bool(conclusion)
                 if has_delete_id == has_conclusion:
                     return tool_error("Exactly one of conclusion or delete_id must be provided.")
-                if has_delete_id and metadata:
+                if has_delete_id and metadata is not None:
                     return tool_error("metadata can only be provided when creating a conclusion, not when deleting one.")
                 if metadata is not None and not isinstance(metadata, dict):
                     return tool_error("metadata must be a JSON object.")

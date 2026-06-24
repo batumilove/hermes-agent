@@ -70,24 +70,27 @@ def test_honcho_conclude_rejects_metadata_on_delete():
     assert "metadata can only be provided" in result["error"]
 
 
+def test_honcho_conclude_rejects_empty_metadata_object_on_delete():
+    provider = HonchoMemoryProvider()
+    provider._session_initialized = True
+    provider._session_key = "session-key"
+    provider._cron_skipped = False
+    provider._manager = SimpleNamespace()
+
+    result = json.loads(provider.handle_tool_call(
+        "honcho_conclude",
+        {"delete_id": "conc_1", "metadata": {}},
+    ))
+
+    assert "metadata can only be provided" in result["error"]
+
+
 class _RecordingConclusionsScope:
-    def __init__(self, *, fail_http: bool = False):
+    def __init__(self):
         self.observer = "hermes"
         self.observed = "user-peer"
         self.workspace_id = "workspace"
         self.created = []
-        self._honcho = SimpleNamespace(
-            _ensure_workspace=lambda: None,
-            _http=SimpleNamespace(post=self._post),
-        )
-        self.http_posts = []
-        self.fail_http = fail_http
-
-    def _post(self, route, body):
-        self.http_posts.append({"route": route, "body": body})
-        if self.fail_http:
-            raise RuntimeError("metadata unsupported")
-        return []
 
     def create(self, conclusions):
         self.created.append(conclusions)
@@ -127,7 +130,7 @@ def _manager_for_scope(scope):
     return manager
 
 
-def test_create_conclusion_posts_metadata_wire_payload():
+def test_create_conclusion_preserves_metadata_in_content_marker():
     scope = _RecordingConclusionsScope()
     manager = _manager_for_scope(scope)
 
@@ -137,34 +140,10 @@ def test_create_conclusion_posts_metadata_wire_payload():
         metadata={"source": "direct-api-test", "confidence": 0.9},
     ) is True
 
-    assert scope.created == []
-    assert scope.http_posts == [{
-        "route": "/v3/workspaces/workspace/conclusions",
-        "body": {
-            "conclusions": [{
-                "observer_id": "hermes",
-                "observed_id": "user-peer",
-                "content": "User prefers sourced conclusions",
-                "session_id": "honcho-session",
-                "metadata": {"source": "direct-api-test", "confidence": 0.9},
-            }]
-        },
-    }]
-
-
-def test_create_conclusion_falls_back_to_content_marker_when_metadata_unsupported():
-    scope = _RecordingConclusionsScope(fail_http=True)
-    manager = _manager_for_scope(scope)
-
-    assert manager.create_conclusion(
-        "session-key",
-        "User prefers sourced conclusions",
-        metadata={"source": "direct-api-test"},
-    ) is True
-
     assert len(scope.created) == 1
-    fallback_payload = scope.created[0][0]
-    assert fallback_payload["session_id"] == "honcho-session"
-    assert fallback_payload["content"].startswith("User prefers sourced conclusions")
-    assert "[honcho_conclusion_metadata:" in fallback_payload["content"]
-    assert '"source": "direct-api-test"' in fallback_payload["content"]
+    payload = scope.created[0][0]
+    assert payload["session_id"] == "honcho-session"
+    assert payload["content"].startswith("User prefers sourced conclusions")
+    assert "[honcho_conclusion_metadata:" in payload["content"]
+    assert '"confidence": 0.9' in payload["content"]
+    assert '"source": "direct-api-test"' in payload["content"]
