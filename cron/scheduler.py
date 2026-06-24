@@ -726,6 +726,14 @@ def _looks_like_telegram_private_chat_id(chat_id: object) -> bool:
         return False
 
 
+def _looks_like_int(value: object) -> bool:
+    try:
+        int(str(value))
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
 def _cron_output_topic_name(job: dict) -> str:
     """Build a unique Telegram topic name for one cron delivery.
 
@@ -744,7 +752,13 @@ def _cron_output_topic_name(job: dict) -> str:
     return f"{prefix}{base}{suffix}"
 
 
-def _maybe_assign_fresh_telegram_cron_thread(job: dict, target: dict, cfg: dict | None = None) -> dict:
+def _maybe_assign_fresh_telegram_cron_thread(
+    job: dict,
+    target: dict,
+    cfg: dict | None = None,
+    *,
+    can_create_named_dm_topic: bool = True,
+) -> dict:
     """Return a delivery target adjusted to create a fresh Telegram DM topic.
 
     The gateway DeliveryRouter already knows how to interpret a non-numeric
@@ -753,6 +767,12 @@ def _maybe_assign_fresh_telegram_cron_thread(job: dict, target: dict, cfg: dict 
     request a fresh thread by substituting a unique topic name at fire time.
     """
     if not _telegram_cron_new_thread_enabled(cfg):
+        return target
+    if not can_create_named_dm_topic:
+        # Fresh Telegram DM topics require the live gateway adapter because it
+        # can create/resolve named private topics. Standalone cron delivery only
+        # knows Bot API chat_id + numeric thread_id; passing a topic name there
+        # crashes while coercing to int. Keep the original target instead.
         return target
     if str(target.get("platform", "")).lower() != "telegram":
         return target
@@ -927,8 +947,19 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     delivery_errors = []
 
+    live_adapter_delivery_available = (
+        adapters is not None
+        and loop is not None
+        and getattr(loop, "is_running", lambda: False)()
+    )
+
     for target in targets:
-        target = _maybe_assign_fresh_telegram_cron_thread(job, target, user_cfg)
+        target = _maybe_assign_fresh_telegram_cron_thread(
+            job,
+            target,
+            user_cfg,
+            can_create_named_dm_topic=live_adapter_delivery_available,
+        )
         platform_name = target["platform"]
         chat_id = target["chat_id"]
         thread_id = target.get("thread_id")
@@ -982,8 +1013,6 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             from gateway.delivery import (
                 DeliveryRouter,
                 DeliveryTarget,
-                _looks_like_int,
-                _looks_like_telegram_private_chat_id,
             )
 
             is_private_dm_topic = (
@@ -1193,7 +1222,20 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
         if not delivered:
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
-            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+            standalone_thread_id = thread_id
+            if (
+                platform == Platform.TELEGRAM
+                and thread_id is not None
+                and _looks_like_telegram_private_chat_id(str(chat_id))
+                and not _looks_like_int(str(thread_id))
+            ):
+                logger.warning(
+                    "Job '%s': cannot deliver named Telegram DM topic %r via standalone path; "
+                    "sending to bare chat instead",
+                    job["id"], thread_id,
+                )
+                standalone_thread_id = None
+            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=standalone_thread_id, media_files=media_files)
             try:
                 result = asyncio.run(coro)
             except RuntimeError:
@@ -1203,7 +1245,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # fresh thread that has no running loop.
                 coro.close()
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
+                    future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=standalone_thread_id, media_files=media_files))
                     result = future.result(timeout=30)
             except Exception as e:
                 msg = f"delivery to {platform_name}:{chat_id} failed: {e}"

@@ -284,6 +284,75 @@ class TestResolveDeliveryTarget:
 
         assert adjusted["thread_id"].startswith("Cron: Report · job1 · ")
 
+    def test_new_thread_per_output_skipped_without_live_adapter(self, monkeypatch):
+        """Named Telegram DM topics require the live gateway adapter; standalone sends cannot create them."""
+        from cron.scheduler import _maybe_assign_fresh_telegram_cron_thread
+
+        monkeypatch.delenv("HERMES_TELEGRAM_CRON_NEW_THREAD_PER_OUTPUT", raising=False)
+        target = {"platform": "telegram", "chat_id": "722341991", "thread_id": "104564"}
+
+        adjusted = _maybe_assign_fresh_telegram_cron_thread(
+            {"id": "job1", "name": "Report"},
+            target,
+            {"cron": {"telegram_new_thread_per_output": True}},
+            can_create_named_dm_topic=False,
+        )
+
+        assert adjusted == target
+
+    def test_deliver_result_does_not_generate_named_dm_topic_for_standalone_path(self, monkeypatch):
+        """Standalone cron delivery must not pass a generated topic name to Telegram's int(thread_id) path."""
+        from cron import scheduler
+        from gateway.config import Platform
+
+        send_mock = AsyncMock(return_value={"success": True})
+        pconfig = MagicMock(enabled=True)
+        gateway_config = MagicMock()
+        gateway_config.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=gateway_config), \
+             patch.object(scheduler, "load_config", return_value={"cron": {"wrap_response": False, "telegram_new_thread_per_output": True}}), \
+             patch("tools.send_message_tool._send_to_platform", new=send_mock):
+            err = scheduler._deliver_result(
+                {
+                    "id": "job1",
+                    "name": "Report",
+                    "deliver": "origin",
+                    "origin": {"platform": "telegram", "chat_id": "722341991", "thread_id": "104564"},
+                },
+                "hello",
+                adapters=None,
+                loop=None,
+            )
+
+        assert err is None
+        send_mock.assert_awaited_once()
+        assert send_mock.await_args.kwargs["thread_id"] == "104564"
+
+    def test_deliver_result_drops_named_private_thread_on_standalone_fallback(self):
+        """If a named private Telegram topic reaches standalone fallback, drop it instead of int() crashing."""
+        from cron import scheduler
+        from gateway.config import Platform
+
+        send_mock = AsyncMock(return_value={"success": True})
+        pconfig = MagicMock(enabled=True)
+        gateway_config = MagicMock()
+        gateway_config.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=gateway_config), \
+             patch.object(scheduler, "load_config", return_value={"cron": {"wrap_response": False, "telegram_new_thread_per_output": False}}), \
+             patch("tools.send_message_tool._send_to_platform", new=send_mock):
+            err = scheduler._deliver_result(
+                {"id": "job1", "name": "Report", "deliver": "telegram:722341991:Cron: Report · job1"},
+                "hello",
+                adapters=None,
+                loop=None,
+            )
+
+        assert err is None
+        send_mock.assert_awaited_once()
+        assert send_mock.await_args.kwargs["thread_id"] is None
+
     def test_telegram_cron_thread_id_does_not_leak_to_other_platforms(self, monkeypatch):
         """TELEGRAM_CRON_THREAD_ID is Telegram-only; other platforms keep their own thread resolution."""
         monkeypatch.setenv("DISCORD_HOME_CHANNEL", "parent-42")
