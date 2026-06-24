@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import queue
 import re
 import logging
@@ -1148,7 +1149,49 @@ class HonchoSessionManager:
             logger.debug("Honcho search_context failed: %s", e)
             return ""
 
-    def create_conclusion(self, session_key: str, content: str, peer: str = "user") -> bool:
+    @staticmethod
+    def _content_with_metadata_fallback(content: str, metadata: dict[str, Any] | None) -> str:
+        """Preserve conclusion metadata in content when the API cannot store it."""
+        if not metadata:
+            return content.strip()
+        metadata_json = json.dumps(metadata, sort_keys=True, ensure_ascii=False, default=str)
+        return f"{content.strip()}\n\n[honcho_conclusion_metadata: {metadata_json}]"
+
+    def _create_conclusion_payload(self, conclusions_scope: Any, payload: dict[str, Any]) -> None:
+        """Create a conclusion, preserving metadata when the Honcho API accepts it.
+
+        The current honcho-ai SDK's ``ConclusionScope.create`` normalizes input
+        down to ``content`` and ``session_id``. Honcho v3 API deployments can
+        preserve arbitrary metadata, so when metadata is present we post the
+        wire payload directly. If that fails (older server/schema), callers can
+        fall back to a content-level metadata marker without breaking existing
+        conclusion creation.
+        """
+        metadata = payload.get("metadata")
+        if not metadata:
+            conclusions_scope.create([payload])
+            return
+
+        from honcho.http import routes
+
+        conclusions_scope._honcho._ensure_workspace()
+        wire_payload = {
+            "observer_id": conclusions_scope.observer,
+            "observed_id": conclusions_scope.observed,
+            **payload,
+        }
+        conclusions_scope._honcho._http.post(
+            routes.conclusions(conclusions_scope.workspace_id),
+            body={"conclusions": [wire_payload]},
+        )
+
+    def create_conclusion(
+        self,
+        session_key: str,
+        content: str,
+        peer: str = "user",
+        metadata: dict[str, Any] | None = None,
+    ) -> bool:
         """Write a conclusion about a target peer back to Honcho.
 
         Conclusions are facts a peer observes about another peer or itself —
@@ -1159,6 +1202,7 @@ class HonchoSessionManager:
             session_key: Session to associate the conclusion with.
             content: The conclusion text.
             peer: Peer alias or explicit peer ID. "user" is the default alias.
+            metadata: Optional structured provenance to store with the conclusion.
 
         Returns:
             True on success, False on failure.
@@ -1187,10 +1231,26 @@ class HonchoSessionManager:
                 target_peer = self._get_or_create_peer(target_peer_id)
                 conclusions_scope = target_peer.conclusions_of(target_peer_id)
 
-            conclusions_scope.create([{
+            payload: dict[str, Any] = {
                 "content": content.strip(),
                 "session_id": session.honcho_session_id,
-            }])
+            }
+            if metadata:
+                payload["metadata"] = metadata
+
+            try:
+                self._create_conclusion_payload(conclusions_scope, payload)
+            except Exception as metadata_error:
+                if not metadata:
+                    raise
+                logger.warning(
+                    "Honcho conclusion metadata payload failed; preserving metadata in content fallback: %s",
+                    metadata_error,
+                )
+                conclusions_scope.create([{
+                    "content": self._content_with_metadata_fallback(content, metadata),
+                    "session_id": session.honcho_session_id,
+                }])
             logger.info("Created conclusion about %s for %s: %s", target_peer_id, session_key, content[:80])
             return True
         except Exception as e:

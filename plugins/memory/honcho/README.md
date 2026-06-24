@@ -109,7 +109,9 @@ Five bidirectional tools. All accept an optional `peer` parameter (`"user"` or `
 | `honcho_search` | No | Semantic search over stored context (800 tok default, 2000 max) |
 | `honcho_context` | No | Full session context: summary, representation, card, messages |
 | `honcho_reasoning` | Yes | LLM-synthesized answer via dialectic `.chat()` |
-| `honcho_conclude` | No | Write a persistent fact/conclusion about the user |
+| `honcho_conclude` | No | Write a persistent fact/conclusion about the user; accepts optional JSON-object `metadata` for provenance on new conclusions |
+
+`honcho_conclude` metadata is only valid with `conclusion`, not `delete_id`. Hermes posts metadata directly to Honcho v3 when the server accepts it. If an older Honcho SDK/API rejects metadata, Hermes preserves the JSON metadata in a content marker (`[honcho_conclusion_metadata: ...]`) so provenance is not silently dropped.
 
 Tool visibility depends on `recallMode`: hidden in `context` mode, always present in `tools` and `hybrid`.
 

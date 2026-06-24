@@ -195,6 +195,11 @@ CONCLUDE_SCHEMA = {
                 "type": "string",
                 "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
             },
+            "metadata": {
+                "type": "object",
+                "description": "Optional structured provenance to store with a new conclusion. Only use with conclusion, not delete_id. Values must be JSON-serializable.",
+                "additionalProperties": True,
+            },
         },
         "required": [],
     },
@@ -1297,10 +1302,9 @@ class HonchoMemoryProvider(MemoryProvider):
     ) -> None:
         """Mirror built-in user profile writes as Honcho conclusions.
 
-        ``metadata`` is accepted for compatibility with the write-origin
-        work landed in main (commit 6a957a74); it's not yet threaded into
-        the Honcho conclusion payload.  Left as a follow-up so this PR
-        stays focused on the 7-PR consolidation and its review follow-ups.
+        ``metadata`` is threaded into the Honcho conclusion payload when the
+        server supports conclusion metadata, with a content-level fallback in
+        the session manager for older SDK/API combinations.
         """
         if action != "add" or target != "user" or not content:
             return
@@ -1321,7 +1325,7 @@ class HonchoMemoryProvider(MemoryProvider):
 
         def _write():
             try:
-                self._manager.create_conclusion(self._session_key, content)
+                self._manager.create_conclusion(self._session_key, content, metadata=metadata)
             except Exception as e:
                 logger.debug("Honcho memory mirror failed: %s", e)
 
@@ -1437,18 +1441,28 @@ class HonchoMemoryProvider(MemoryProvider):
                 delete_id = (args.get("delete_id") or "").strip()
                 conclusion = args.get("conclusion", "").strip()
                 peer = args.get("peer", "user")
+                metadata = args.get("metadata")
 
                 has_delete_id = bool(delete_id)
                 has_conclusion = bool(conclusion)
                 if has_delete_id == has_conclusion:
                     return tool_error("Exactly one of conclusion or delete_id must be provided.")
+                if has_delete_id and metadata:
+                    return tool_error("metadata can only be provided when creating a conclusion, not when deleting one.")
+                if metadata is not None and not isinstance(metadata, dict):
+                    return tool_error("metadata must be a JSON object.")
 
                 if has_delete_id:
                     ok = self._manager.delete_conclusion(self._session_key, delete_id, peer=peer)
                     if ok:
                         return json.dumps({"result": f"Conclusion {delete_id} deleted."})
                     return tool_error(f"Failed to delete conclusion {delete_id}.")
-                ok = self._manager.create_conclusion(self._session_key, conclusion, peer=peer)
+                ok = self._manager.create_conclusion(
+                    self._session_key,
+                    conclusion,
+                    peer=peer,
+                    metadata=metadata,
+                )
                 if ok:
                     return json.dumps({"result": f"Conclusion saved for {peer}: {conclusion}"})
                 return tool_error("Failed to save conclusion.")
