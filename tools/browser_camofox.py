@@ -86,6 +86,23 @@ def get_camofox_url() -> str:
     return ""
 
 
+def get_camofox_auth_headers() -> Optional[Dict[str, str]]:
+    """Return Authorization headers for protected Camofox REST endpoints.
+
+    Camofox accepts either ``CAMOFOX_ACCESS_KEY`` or ``CAMOFOX_API_KEY`` as a
+    Bearer token for routes protected by its auth middleware.  Prefer the
+    access key because it is the server's global route key; fall back to the API
+    key for older/single-key deployments.  When neither key is configured,
+    return ``None`` so loopback/no-auth setups keep their existing request
+    shape.
+    """
+    token = (os.getenv("CAMOFOX_ACCESS_KEY", "").strip() or
+             os.getenv("CAMOFOX_API_KEY", "").strip())
+    if not token:
+        return None
+    return {"Authorization": f"Bearer {token}"}
+
+
 def is_camofox_mode() -> bool:
     """True when Camofox backend is configured and no CDP override is active.
 
@@ -372,12 +389,14 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
     base = get_camofox_url()
     resp = requests.post(
         f"{base}/tabs",
-        json={
-            "userId": session["user_id"],
-            "sessionKey": session["session_key"],
-            "url": url,
-        },
-        timeout=_DEFAULT_TIMEOUT,
+        **_request_kwargs_with_auth(
+            json={
+                "userId": session["user_id"],
+                "sessionKey": session["session_key"],
+                "url": url,
+            },
+            timeout=_DEFAULT_TIMEOUT,
+        ),
     )
     resp.raise_for_status()
     data = resp.json()
@@ -409,6 +428,16 @@ def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
     return False
 
 
+def _request_kwargs_with_auth(**kwargs) -> dict:
+    """Add Camofox auth headers to requests kwargs when configured."""
+    headers = get_camofox_auth_headers()
+    if headers:
+        existing = dict(kwargs.pop("headers", {}) or {})
+        existing.update(headers)
+        kwargs["headers"] = existing
+    return kwargs
+
+
 # ---------------------------------------------------------------------------
 # HTTP helpers
 # ---------------------------------------------------------------------------
@@ -416,7 +445,7 @@ def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
 def _post(path: str, body: dict, timeout: int = _DEFAULT_TIMEOUT) -> dict:
     """POST JSON to camofox and return parsed response."""
     url = f"{get_camofox_url()}{path}"
-    resp = requests.post(url, json=body, timeout=timeout)
+    resp = requests.post(url, **_request_kwargs_with_auth(json=body, timeout=timeout))
     resp.raise_for_status()
     return resp.json()
 
@@ -424,7 +453,7 @@ def _post(path: str, body: dict, timeout: int = _DEFAULT_TIMEOUT) -> dict:
 def _get(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> dict:
     """GET from camofox and return parsed response."""
     url = f"{get_camofox_url()}{path}"
-    resp = requests.get(url, params=params, timeout=timeout)
+    resp = requests.get(url, **_request_kwargs_with_auth(params=params, timeout=timeout))
     resp.raise_for_status()
     return resp.json()
 
@@ -432,7 +461,7 @@ def _get(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> dic
 def _get_raw(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> requests.Response:
     """GET from camofox and return raw response (for binary data)."""
     url = f"{get_camofox_url()}{path}"
-    resp = requests.get(url, params=params, timeout=timeout)
+    resp = requests.get(url, **_request_kwargs_with_auth(params=params, timeout=timeout))
     resp.raise_for_status()
     return resp
 
@@ -440,7 +469,7 @@ def _get_raw(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) ->
 def _delete(path: str, body: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> dict:
     """DELETE to camofox and return parsed response."""
     url = f"{get_camofox_url()}{path}"
-    resp = requests.delete(url, json=body, timeout=timeout)
+    resp = requests.delete(url, **_request_kwargs_with_auth(json=body, timeout=timeout))
     resp.raise_for_status()
     return resp.json()
 

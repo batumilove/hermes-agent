@@ -329,6 +329,59 @@ class TestMaybeAutoTitle:
         db.set_session_title.assert_called_once_with("sess-1", "Telegram Topic Naming")
         assert seen == ["Telegram Topic Naming"]
 
+    def test_generates_numbered_title_on_collision(self):
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        db.set_session_title_if_empty.side_effect = [
+            ValueError("Title 'Cronjob Response Summary' is already in use by session old"),
+            True,
+        ]
+        db.get_next_title_in_lineage.return_value = "Cronjob Response Summary #2"
+        seen = []
+
+        with patch("agent.title_generator.generate_title", return_value="Cronjob Response Summary"):
+            auto_title_session(
+                db,
+                "sess-1",
+                "cron failed",
+                "fixed",
+                title_callback=seen.append,
+            )
+
+        assert db.set_session_title_if_empty.call_args_list[0].args == (
+            "sess-1",
+            "Cronjob Response Summary",
+        )
+        assert db.set_session_title_if_empty.call_args_list[1].args == (
+            "sess-1",
+            "Cronjob Response Summary #2",
+        )
+        db.get_next_title_in_lineage.assert_called_once_with("Cronjob Response Summary")
+        assert seen == ["Cronjob Response Summary #2"]
+
+    def test_update_existing_uses_numbered_title_on_collision(self):
+        db = MagicMock()
+        db.set_session_title.side_effect = [
+            ValueError("Title 'Telegram Topic Naming' is already in use by session old"),
+            True,
+        ]
+        db.get_next_title_in_lineage.return_value = "Telegram Topic Naming #2"
+        seen = []
+
+        with patch("agent.title_generator.generate_title", return_value="Telegram Topic Naming"):
+            auto_title_session(
+                db,
+                "sess-1",
+                "latest",
+                "reply",
+                title_callback=seen.append,
+                update_existing=True,
+            )
+
+        assert db.set_session_title.call_args_list[0].args == ("sess-1", "Telegram Topic Naming")
+        assert db.set_session_title.call_args_list[1].args == ("sess-1", "Telegram Topic Naming #2")
+        assert seen == ["Telegram Topic Naming #2"]
+
     def test_skips_if_no_response(self):
         db = MagicMock()
         maybe_auto_title(db, "sess-1", "hello", "", [])  # empty response

@@ -150,27 +150,65 @@ def auto_title_session(
     if not title:
         return
 
+    def _lineage_title(base: str) -> str:
+        next_title = getattr(session_db, "get_next_title_in_lineage", None)
+        if callable(next_title):
+            try:
+                candidate = next_title(base)
+                if candidate and candidate != base:
+                    return candidate
+            except Exception:
+                logger.debug("Could not derive auto-title lineage variant", exc_info=True)
+        return base
+
+    def _set_first_title(candidate: str) -> bool:
+        setter = getattr(session_db, "set_session_title_if_empty", None)
+        if callable(setter):
+            return setter(session_id, candidate)
+        # Compatibility fallback for older SessionDB-like test doubles.
+        existing = session_db.get_session_title(session_id)
+        return False if existing else session_db.set_session_title(session_id, candidate)
+
     try:
-        if update_existing:
-            title_was_set = session_db.set_session_title(session_id, title)
-        else:
-            setter = getattr(session_db, "set_session_title_if_empty", None)
-            if callable(setter):
-                title_was_set = setter(session_id, title)
+        try:
+            if update_existing:
+                title_was_set = session_db.set_session_title(session_id, title)
+                title_to_report = title
             else:
-                # Compatibility fallback for older SessionDB-like test doubles.
-                existing = session_db.get_session_title(session_id)
-                title_was_set = False if existing else session_db.set_session_title(session_id, title)
+                title_was_set = _set_first_title(title)
+                title_to_report = title
+        except ValueError as exc:
+            # Auto-generated titles often collide in gateway/topic workflows
+            # (e.g. repeated cron-output repair threads all summarize to the
+            # same title). A collision used to be swallowed below, leaving the
+            # session permanently NULL-titled and therefore preventing Telegram
+            # topic renames. For generated titles, auto-number into the existing
+            # title lineage instead of treating the collision as fatal. Manual
+            # /title still keeps strict uniqueness in SessionDB.
+            logger.debug("Auto-title collision for %s: %s", title, exc)
+            fallback_title = _lineage_title(title)
+            if fallback_title == title:
+                raise
+            if update_existing:
+                title_was_set = session_db.set_session_title(session_id, fallback_title)
+            else:
+                title_was_set = _set_first_title(fallback_title)
+            title_to_report = fallback_title
         if not title_was_set:
             return
-        logger.debug("Auto-%s session title: %s", "updated" if update_existing else "generated", title)
+        logger.debug(
+            "Auto-%s session title: %s",
+            "updated" if update_existing else "generated",
+            title_to_report,
+        )
         if title_callback is not None:
             try:
-                title_callback(title)
+                title_callback(title_to_report)
             except Exception:
                 logger.debug("Auto-title callback failed", exc_info=True)
     except Exception as e:
-        logger.debug("Failed to set auto-generated title: %s", e)
+        logger.warning("Failed to set auto-generated title: %s", e)
+        logger.debug("Auto-title set traceback", exc_info=True)
 
 
 def maybe_auto_title(

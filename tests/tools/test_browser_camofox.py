@@ -140,6 +140,29 @@ class TestCamofoxNavigate:
         assert result["success"] is True
         assert result["url"] == "https://example.com"
 
+    @patch("tools.browser_camofox.requests.post")
+    def test_sends_bearer_token_when_access_key_is_configured(self, mock_post, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.setenv("CAMOFOX_ACCESS_KEY", "secret-token")
+        mock_post.return_value = _mock_response(json_data={"tabId": "tab_auth", "url": "https://example.com"})
+
+        result = json.loads(camofox_navigate("https://example.com", task_id="t_auth"))
+
+        assert result["success"] is True
+        assert mock_post.call_args.kwargs["headers"] == {"Authorization": "Bearer secret-token"}
+
+    @patch("tools.browser_camofox.requests.post")
+    def test_omits_auth_header_when_no_camofox_key_is_configured(self, mock_post, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.delenv("CAMOFOX_ACCESS_KEY", raising=False)
+        monkeypatch.delenv("CAMOFOX_API_KEY", raising=False)
+        mock_post.return_value = _mock_response(json_data={"tabId": "tab_no_auth", "url": "https://example.com"})
+
+        result = json.loads(camofox_navigate("https://example.com", task_id="t_no_auth"))
+
+        assert result["success"] is True
+        assert "headers" not in mock_post.call_args.kwargs
+
     @patch("tools.browser_camofox.load_config")
     @patch("tools.browser_camofox.requests.post")
     def test_navigate_uses_rewritten_loopback_url(self, mock_post, mock_config, monkeypatch):
