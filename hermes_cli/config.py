@@ -2342,8 +2342,12 @@ DEFAULT_CONFIG = {
             "nas_jwks_url": "",
         },
         # Wrap delivered cron responses with a header (task name) and footer
-        # ("The agent cannot see this message").  Set to false for clean output.
+        # ("The agent cannot see this message"). Set to false for clean output.
         "wrap_response": True,
+        # Telegram-only: when true, each cron delivery to a private Telegram chat
+        # creates a fresh DM topic/thread named after the job and run timestamp.
+        # Also overridable via HERMES_TELEGRAM_CRON_NEW_THREAD_PER_OUTPUT.
+        "telegram_new_thread_per_output": False,
         # Maximum number of due jobs to run in parallel per tick.
         # null/0 = unbounded (limited only by thread count).
         # 1 = serial (pre-v0.9 behaviour).

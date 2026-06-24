@@ -695,6 +695,77 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
     return targets[0] if targets else None
 
 
+def _truthy_env(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _telegram_cron_new_thread_enabled(cfg: dict | None = None) -> bool:
+    """Return True when Telegram cron deliveries should create a fresh topic.
+
+    This is intentionally Telegram-specific: private Telegram chats can have
+    per-delivery topics, while most other platforms either do not support topic
+    creation or use very different primitives. The env var is a convenient
+    emergency override for gateway deployments; config.yaml is the durable UX.
+    """
+    env_value = os.getenv("HERMES_TELEGRAM_CRON_NEW_THREAD_PER_OUTPUT")
+    if env_value is not None:
+        return _truthy_env(env_value)
+    try:
+        if cfg is None:
+            cfg = load_config() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        return bool(cron_cfg.get("telegram_new_thread_per_output", False))
+    except Exception:
+        return False
+
+
+def _looks_like_telegram_private_chat_id(chat_id: object) -> bool:
+    try:
+        return int(str(chat_id)) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _cron_output_topic_name(job: dict) -> str:
+    """Build a unique Telegram topic name for one cron delivery.
+
+    Telegram topic names are capped at 128 chars. Include the job id and a
+    timestamp so repeated runs of the same job do not collide.
+    """
+    raw_name = str(job.get("name") or job.get("id") or "cron job")
+    base = re.sub(r"\s+", " ", raw_name).strip() or "cron job"
+    job_id = str(job.get("id") or "")[:8]
+    suffix = _hermes_now().strftime("%m-%d %H:%M:%S UTC")
+    suffix = f" · {job_id} · {suffix}" if job_id else f" · {suffix}"
+    prefix = "Cron: "
+    max_base = max(1, 128 - len(prefix) - len(suffix))
+    if len(base) > max_base:
+        base = base[: max(1, max_base - 1)].rstrip() + "…"
+    return f"{prefix}{base}{suffix}"
+
+
+def _maybe_assign_fresh_telegram_cron_thread(job: dict, target: dict, cfg: dict | None = None) -> dict:
+    """Return a delivery target adjusted to create a fresh Telegram DM topic.
+
+    The gateway DeliveryRouter already knows how to interpret a non-numeric
+    ``thread_id`` for a private Telegram chat as a topic name: it creates the
+    topic via Bot API and sends the message there. Cron delivery can therefore
+    request a fresh thread by substituting a unique topic name at fire time.
+    """
+    if not _telegram_cron_new_thread_enabled(cfg):
+        return target
+    if str(target.get("platform", "")).lower() != "telegram":
+        return target
+    # Keep the rollout conservative: Telegram private-chat topics work in this
+    # deployment and do not require forum admin rights. Supergroup/forum topic
+    # auto-creation can be added separately with explicit admin-permission UX.
+    if not _looks_like_telegram_private_chat_id(target.get("chat_id")):
+        return target
+    adjusted = dict(target)
+    adjusted["thread_id"] = _cron_output_topic_name(job)
+    return adjusted
+
+
 # Media extension sets — audio routing is centralized in gateway.platforms.base
 # via should_send_media_as_audio() so Telegram-specific rules stay in one place.
 _VIDEO_EXTS = frozenset({'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'})
@@ -849,9 +920,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         logger.error("Job '%s': %s", job["id"], msg)
         return msg
 
+    try:
+        user_cfg = load_config() or {}
+    except Exception:
+        user_cfg = {}
+
     delivery_errors = []
 
     for target in targets:
+        target = _maybe_assign_fresh_telegram_cron_thread(job, target, user_cfg)
         platform_name = target["platform"]
         chat_id = target["chat_id"]
         thread_id = target.get("thread_id")

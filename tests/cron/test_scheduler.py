@@ -239,6 +239,51 @@ class TestResolveDeliveryTarget:
             "thread_id": "42",
         }
 
+    def test_new_thread_per_output_replaces_private_telegram_thread_with_topic_name(self, monkeypatch):
+        """Opt-in Telegram cron delivery creates a fresh private DM topic name per run."""
+        from cron.scheduler import _maybe_assign_fresh_telegram_cron_thread
+
+        monkeypatch.delenv("HERMES_TELEGRAM_CRON_NEW_THREAD_PER_OUTPUT", raising=False)
+        target = {"platform": "telegram", "chat_id": "722341991", "thread_id": "old"}
+        adjusted = _maybe_assign_fresh_telegram_cron_thread(
+            {"id": "abcdef123456", "name": "Nightly report"},
+            target,
+            {"cron": {"telegram_new_thread_per_output": True}},
+        )
+
+        assert adjusted is not target
+        assert adjusted["chat_id"] == "722341991"
+        assert adjusted["thread_id"].startswith("Cron: Nightly report · abcdef12 · ")
+        assert len(adjusted["thread_id"]) <= 128
+
+    def test_new_thread_per_output_does_not_modify_group_targets(self, monkeypatch):
+        """Automatic per-output topics are private-Telegram-chat only."""
+        from cron.scheduler import _maybe_assign_fresh_telegram_cron_thread
+
+        monkeypatch.delenv("HERMES_TELEGRAM_CRON_NEW_THREAD_PER_OUTPUT", raising=False)
+        target = {"platform": "telegram", "chat_id": "-1001234567890", "thread_id": "17"}
+
+        assert _maybe_assign_fresh_telegram_cron_thread(
+            {"id": "job1", "name": "Nightly report"},
+            target,
+            {"cron": {"telegram_new_thread_per_output": True}},
+        ) == target
+
+    def test_new_thread_per_output_env_override_enables_feature(self, monkeypatch):
+        """Gateway operators can enable the feature without editing config.yaml."""
+        from cron.scheduler import _maybe_assign_fresh_telegram_cron_thread
+
+        monkeypatch.setenv("HERMES_TELEGRAM_CRON_NEW_THREAD_PER_OUTPUT", "1")
+        target = {"platform": "telegram", "chat_id": "722341991", "thread_id": None}
+
+        adjusted = _maybe_assign_fresh_telegram_cron_thread(
+            {"id": "job1", "name": "Report"},
+            target,
+            {"cron": {"telegram_new_thread_per_output": False}},
+        )
+
+        assert adjusted["thread_id"].startswith("Cron: Report · job1 · ")
+
     def test_telegram_cron_thread_id_does_not_leak_to_other_platforms(self, monkeypatch):
         """TELEGRAM_CRON_THREAD_ID is Telegram-only; other platforms keep their own thread resolution."""
         monkeypatch.setenv("DISCORD_HOME_CHANNEL", "parent-42")
