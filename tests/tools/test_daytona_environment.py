@@ -38,7 +38,9 @@ def _patch_daytona_imports(monkeypatch):
     daytona_mod = _types.ModuleType("daytona_sdk")
     daytona_mod.Daytona = MagicMock
     daytona_mod.DaytonaConfig = MagicMock(name="DaytonaConfig")
-    daytona_mod.CreateSandboxFromImageParams = MagicMock
+    daytona_mod.CreateSandboxFromImageParams = MagicMock(
+        name="CreateSandboxFromImageParams"
+    )
     daytona_mod.DaytonaError = type("DaytonaError", (Exception,), {})
     daytona_mod.ListSandboxesQuery = MagicMock(name="ListSandboxesQuery")
     daytona_mod.Resources = MagicMock(name="Resources")
@@ -189,6 +191,28 @@ class TestPersistence:
         query = env._mock_client.list.call_args.args[0]
         assert query.labels == {"hermes_task_id": "mytask"}
         assert query.limit == 1
+
+    def test_new_sandbox_uses_bounded_auto_delete_default(self, make_env, daytona_sdk):
+        make_env(persistent=False)
+
+        daytona_sdk.CreateSandboxFromImageParams.assert_called_once()
+        assert (
+            daytona_sdk.CreateSandboxFromImageParams.call_args.kwargs[
+                "auto_delete_interval"
+            ]
+            == 60
+        )
+
+    def test_new_sandbox_respects_auto_delete_override(self, make_env, daytona_sdk):
+        make_env(persistent=False, auto_delete_interval_minutes=15)
+
+        daytona_sdk.CreateSandboxFromImageParams.assert_called_once()
+        assert (
+            daytona_sdk.CreateSandboxFromImageParams.call_args.kwargs[
+                "auto_delete_interval"
+            ]
+            == 15
+        )
 
     def test_non_persistent_skips_lookup(self, make_env):
         env = make_env(persistent=False)

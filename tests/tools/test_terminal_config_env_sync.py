@@ -322,3 +322,17 @@ def test_docker_forward_env_is_bridged_everywhere():
     assert "docker_forward_env" in _gateway_env_map_keys()
     assert "docker_forward_env" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_FORWARD_ENV" in _terminal_tool_env_var_names()
+
+
+def test_daytona_auto_delete_interval_is_bridged_everywhere():
+    """Regression pin for Daytona sandbox lifetime hardening.
+
+    ``terminal.daytona_auto_delete_interval_minutes`` bounds newly-created
+    Daytona sandboxes. If this key is missing from any config/env bridge,
+    users cannot override the safe default consistently across CLI, gateway,
+    and ``hermes config set`` entry points.
+    """
+    assert "daytona_auto_delete_interval_minutes" in _cli_env_map_keys()
+    assert "daytona_auto_delete_interval_minutes" in _gateway_env_map_keys()
+    assert "daytona_auto_delete_interval_minutes" in _save_config_env_sync_keys()
+    assert "TERMINAL_DAYTONA_AUTO_DELETE_INTERVAL_MINUTES" in _terminal_tool_env_var_names()

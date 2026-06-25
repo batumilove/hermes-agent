@@ -38,6 +38,7 @@ class DaytonaEnvironment(BaseEnvironment):
     """
 
     _stdin_mode = "heredoc"
+    DEFAULT_AUTO_DELETE_INTERVAL_MINUTES = 60
 
     def __init__(
         self,
@@ -49,6 +50,7 @@ class DaytonaEnvironment(BaseEnvironment):
         disk: int = 10240,
         persistent_filesystem: bool = True,
         task_id: str = "default",
+        auto_delete_interval_minutes: int | None = None,
     ):
         requested_cwd = cwd
         super().__init__(cwd=cwd, timeout=timeout)
@@ -87,6 +89,8 @@ class DaytonaEnvironment(BaseEnvironment):
             )
             disk_gib = 10
         resources = Resources(cpu=cpu, memory=memory_gib, disk=disk_gib)
+        if auto_delete_interval_minutes is None:
+            auto_delete_interval_minutes = self.DEFAULT_AUTO_DELETE_INTERVAL_MINUTES
 
         labels = {"hermes_task_id": task_id}
         sandbox_name = f"hermes-{task_id}"
@@ -130,6 +134,7 @@ class DaytonaEnvironment(BaseEnvironment):
                     name=sandbox_name,
                     labels=labels,
                     auto_stop_interval=0,
+                    auto_delete_interval=auto_delete_interval_minutes,
                     env_vars={"LANG": "C", "LC_ALL": "C"},
                     resources=resources,
                 )

@@ -39,6 +39,32 @@ class TestParseEnvVar:
             config = _tt_mod._get_env_config()
             assert config["docker_forward_env"] == ["GITHUB_TOKEN", "NPM_TOKEN"]
 
+    def test_get_env_config_parses_daytona_auto_delete_interval(self):
+        with patch.dict("os.environ", {
+            "TERMINAL_ENV": "daytona",
+            "TERMINAL_DAYTONA_AUTO_DELETE_INTERVAL_MINUTES": "30",
+        }, clear=False):
+            config = _tt_mod._get_env_config()
+            assert config["daytona_auto_delete_interval_minutes"] == 30
+
+    def test_create_environment_passes_daytona_auto_delete_interval(self):
+        fake_env = object()
+        with patch(
+            "tools.environments.daytona.DaytonaEnvironment", return_value=fake_env
+        ) as mock_daytona:
+            result = _tt_mod._create_environment(
+                "daytona",
+                image="python:3.11",
+                cwd="/root",
+                timeout=180,
+                container_config={"daytona_auto_delete_interval_minutes": 30},
+            )
+
+        assert result is fake_env
+        assert mock_daytona.call_args.kwargs[
+            "auto_delete_interval_minutes"
+        ] == 30
+
     def test_create_environment_passes_docker_forward_env(self):
         fake_env = object()
         with patch.object(_tt_mod, "_DockerEnvironment", return_value=fake_env) as mock_docker:

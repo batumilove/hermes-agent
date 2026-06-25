@@ -1168,6 +1168,9 @@ def _get_env_config() -> Dict[str, Any]:
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
+        "daytona_auto_delete_interval_minutes": _parse_env_var(
+            "TERMINAL_DAYTONA_AUTO_DELETE_INTERVAL_MINUTES", "60"
+        ),
         "kata_image": os.getenv("TERMINAL_KATA_IMAGE", default_image),
         "kata_namespace": os.getenv("TERMINAL_KATA_NAMESPACE", "sandbox"),
         "kata_kubeconfig": os.getenv("TERMINAL_KATA_KUBECONFIG", ""),
@@ -1369,6 +1372,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             image=image, cwd=cwd, timeout=timeout,
             cpu=int(cpu), memory=memory, disk=disk,
             persistent_filesystem=persistent, task_id=task_id,
+            auto_delete_interval_minutes=cc.get("daytona_auto_delete_interval_minutes"),
         )
 
     elif env_type == "kata":
@@ -2050,6 +2054,9 @@ def terminal_tool(
                                 "container_disk": config.get("container_disk", 51200),
                                 "container_persistent": config.get("container_persistent", True),
                                 "modal_mode": config.get("modal_mode", "auto"),
+                                "daytona_auto_delete_interval_minutes": config.get(
+                                    "daytona_auto_delete_interval_minutes", 60
+                                ),
                                 "docker_volumes": config.get("docker_volumes", []),
                                 "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                                 "docker_forward_env": config.get("docker_forward_env", []),
