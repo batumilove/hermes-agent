@@ -85,6 +85,14 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
         )
 
     if "readtimeout" in lower or "timed out" in lower or "timeout" in lower:
+        # no_agent/script jobs do not call a model. Their timeout failures are
+        # local script or child-command timeouts, not provider/fallback-chain
+        # failures. Avoid sending misleading chat alerts for watchdogs.
+        if job.get("no_agent") or "script timed out" in lower or "script exited" in lower:
+            return (
+                f"⚠️ Cron '{job_name}' failed: script/command timeout. "
+                "Full details saved in cron output."
+            )
         return (
             f"⚠️ Cron '{job_name}' failed: provider timeout. "
             "Fallback chain was exhausted or unavailable. "

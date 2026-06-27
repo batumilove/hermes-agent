@@ -280,6 +280,32 @@ def test_run_job_no_agent_never_invokes_aiagent(hermes_env):
     ai_mock.assert_not_called()
 
 
+def test_no_agent_timeout_failure_summary_is_not_provider_timeout(hermes_env):
+    """no_agent/script timeout alerts should not blame provider fallback."""
+    from cron.scheduler import _summarize_cron_failure_for_delivery
+
+    job = {"id": "j1", "name": "disk watchdog", "no_agent": True}
+    summary = _summarize_cron_failure_for_delivery(
+        job,
+        "Script timed out after 2700s: /home/ubuntu/.hermes/scripts/disk_watchdog.sh",
+    )
+
+    assert "script/command timeout" in summary
+    assert "provider timeout" not in summary
+    assert "Fallback chain" not in summary
+
+
+def test_agent_timeout_failure_summary_still_mentions_provider(hermes_env):
+    """Agent cron provider/API timeouts keep the provider-oriented summary."""
+    from cron.scheduler import _summarize_cron_failure_for_delivery
+
+    job = {"id": "j2", "name": "research digest", "no_agent": False}
+    summary = _summarize_cron_failure_for_delivery(job, "ReadTimeout: provider timed out")
+
+    assert "provider timeout" in summary
+    assert "Fallback chain" in summary
+
+
 # ---------------------------------------------------------------------------
 # _run_job_script: shell-script support
 # ---------------------------------------------------------------------------

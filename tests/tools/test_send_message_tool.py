@@ -1126,6 +1126,24 @@ class TestSendTelegramThreadIdMapping:
         kwargs = bot.send_message.await_args.kwargs
         assert "message_thread_id" not in kwargs
 
+    def test_non_numeric_thread_id_is_dropped_for_standalone_send(self, monkeypatch):
+        """Named DM-topic targets are live-router only; standalone send must not int() crash."""
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_telegram(
+                "tok",
+                "407304892",
+                "hello",
+                thread_id="Cron: cold-archive-flush-dry-run · 81857458",
+            )
+        )
+
+        assert result["success"] is True
+        kwargs = bot.send_message.await_args.kwargs
+        assert "message_thread_id" not in kwargs
+
     def test_thread_not_found_retries_without_message_thread_id(self, monkeypatch):
         """When send_message raises "thread not found", retry without thread_id (#27012)."""
         bot = self._make_bot()

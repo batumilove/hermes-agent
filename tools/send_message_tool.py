@@ -1051,12 +1051,32 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 effective_thread_id = TelegramAdapter._message_thread_id_for_send(
                     str(thread_id)
                 )
+            except (TypeError, ValueError):
+                # Non-numeric thread_id values are used by the live gateway
+                # DeliveryRouter as *names* for private DM topics. The standalone
+                # Bot API path cannot create/resolve those names; do not crash
+                # with ``invalid literal for int()``. Deliver to the bare chat
+                # instead and let the caller log the degraded routing.
+                logger.warning(
+                    "Standalone Telegram send cannot resolve non-numeric thread_id %r; "
+                    "sending without message_thread_id",
+                    thread_id,
+                )
+                effective_thread_id = None
             except Exception:
                 # Fallback: explicit mapping in case the adapter import
                 # fails (e.g. python-telegram-bot missing in this venv).
-                effective_thread_id = (
-                    None if str(thread_id) == "1" else int(thread_id)
-                )
+                try:
+                    effective_thread_id = (
+                        None if str(thread_id) == "1" else int(thread_id)
+                    )
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "Standalone Telegram send cannot resolve non-numeric thread_id %r; "
+                        "sending without message_thread_id",
+                        thread_id,
+                    )
+                    effective_thread_id = None
             if effective_thread_id is not None:
                 thread_kwargs["message_thread_id"] = effective_thread_id
         # disable_web_page_preview is only valid for send_message, not
