@@ -392,6 +392,16 @@ def build_turn_context(
 
     # Per-turn file-mutation verifier state.
     agent._turn_failed_file_mutations = {}
+    try:
+        from agent.workspace_diff_sentinel import _sentinel_enabled, compute_workspace_diff_snapshot
+        if _sentinel_enabled():
+            agent._workspace_diff_snapshot_before = compute_workspace_diff_snapshot(
+                getattr(agent, "cwd", None) or getattr(agent, "workdir", None) or "."
+            )
+        else:
+            agent._workspace_diff_snapshot_before = None
+    except Exception:
+        agent._workspace_diff_snapshot_before = None
 
     # Record the execution thread so interrupt()/clear_interrupt() can scope
     # the tool-level interrupt signal to THIS agent's thread only.
