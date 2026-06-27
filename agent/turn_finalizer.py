@@ -215,6 +215,20 @@ def finalize_turn(
     else:
         logger.info(_diag_msg, *_diag_args)
 
+    # Workspace diff sentinel footer.
+    try:
+        from agent.workspace_diff_sentinel import _sentinel_enabled, build_workspace_diff_footer, compute_workspace_diff_snapshot
+        if _sentinel_enabled():
+            before = getattr(agent, "_workspace_diff_snapshot_before", None)
+            after = compute_workspace_diff_snapshot(
+                getattr(agent, "cwd", None) or getattr(agent, "workdir", None) or "."
+            )
+            footer = build_workspace_diff_footer(before, after)
+            if footer and final_response:
+                final_response = final_response.rstrip() + "\n\n" + footer
+    except Exception as _ws_err:
+        logger.debug("workspace diff sentinel failed: %s", _ws_err)
+
     # File-mutation verifier footer.
     # If one or more ``write_file`` / ``patch`` calls failed during this
     # turn and were never superseded by a successful write to the same

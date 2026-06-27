@@ -1631,6 +1631,18 @@ DEFAULT_CONFIG = {
         # class of over-claim that otherwise forces users to run
         # `git status` to verify edits landed.  Set false to suppress.
         "file_mutation_verifier": True,
+        # Workspace diff sentinel.  Advisory-only broad-mutation detector that
+        # snapshots repo dirt before/after each turn and appends a compact footer
+        # only when the new delta exceeds thresholds.  Preexisting dirt is ignored
+        # by comparing snapshots.
+        "workspace_diff_sentinel": {
+            "enabled": True,
+            "max_changed_files": 5,
+            "max_insertions": 500,
+            "max_deletions": 500,
+            "max_total_lines": 800,
+            "include_stat_lines": 20,
+        },
         # Nous credits status-bar notices (usage bands, grant-spent, depleted /
         # restored).  When false, no credits notices are emitted — balance data
         # is still captured and /usage keeps working.  Off switch for sub +
