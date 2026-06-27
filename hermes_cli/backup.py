@@ -61,6 +61,9 @@ _EXCLUDED_NAMES = {
     "cron.pid",
 }
 
+# zipfile.open() drops Unix mode bits on extract; restore tightens these to 0600.
+_SECRET_FILE_NAMES = {".env", "auth.json", "state.db"}
+
 
 def _should_exclude(rel_path: Path) -> bool:
     """Return True if *rel_path* (relative to hermes root) should be skipped."""

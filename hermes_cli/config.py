@@ -2691,7 +2691,7 @@ DEFAULT_CONFIG = {
         # go.  The cost of a few minutes of zip time per update is
         # negligible compared to the alternative.  Set to false to opt
         # out, or pass ``--no-backup`` for a single update run.
-        "pre_update_backup": True,
+        "pre_update_backup": False,
         # How many pre-update backup zips to retain.  Older ones are pruned
         # automatically after each successful backup.  Values below 1 are
         # floored to 1 — the backup just created is always preserved.  To

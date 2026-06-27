@@ -1417,6 +1417,102 @@ def _dispatch_to_plugin_provider(
     return json.dumps(result)
 
 
+# ---------------------------------------------------------------------------
+# Managed-mode Krea routing
+# ---------------------------------------------------------------------------
+#
+# Native ``krea-2-*`` plugin model ids are served by the dedicated Krea managed
+# gateway. ``fal-ai/krea/v2/*`` FAL catalog ids stay on the FAL path (BYO key
+# or FAL managed gateway). Routing only fires in managed mode; direct/BYO users
+# keep their unchanged pipeline.
+
+_KREA_NATIVE_MODELS = {"krea-2-medium", "krea-2-large", "krea-2-medium-turbo"}
+
+
+def _normalize_krea_model(model_id: Optional[str]) -> Optional[str]:
+    """Return the native Krea plugin model id when ``model_id`` is ``krea-2-*``."""
+    if not isinstance(model_id, str):
+        return None
+    candidate = model_id.strip()
+    if candidate in _KREA_NATIVE_MODELS:
+        return candidate
+    return None
+
+
+def is_krea_model(model_id: Optional[str]) -> bool:
+    """True when ``model_id`` is a native Krea plugin id (``krea-2-*``)."""
+    return _normalize_krea_model(model_id) is not None
+
+
+def _maybe_route_managed_krea(
+    prompt: str,
+    aspect_ratio: str,
+    image_url: Optional[str] = None,
+    reference_image_urls: Optional[list] = None,
+) -> Optional[str]:
+    """Route a native ``krea-2-*`` model to the managed Krea gateway, in managed mode."""
+    if _read_configured_image_provider() == "krea":
+        return None
+
+    normalized = _normalize_krea_model(_read_configured_image_model())
+    if normalized is None:
+        return None
+
+    try:
+        from plugins.image_gen.krea import _resolve_managed_krea_gateway
+
+        if _resolve_managed_krea_gateway() is None:
+            return None
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Managed Krea routing probe failed: %s", exc)
+        return None
+
+    try:
+        from agent.image_gen_registry import get_provider
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        provider = get_provider("krea")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Managed Krea routing: provider unavailable: %s", exc)
+        return None
+    if provider is None:
+        return None
+
+    kwargs: Dict[str, Any] = {
+        "prompt": prompt,
+        "aspect_ratio": aspect_ratio,
+        "model": normalized,
+    }
+    try:
+        if isinstance(image_url, str) and image_url.strip():
+            kwargs["image_url"] = image_url.strip()
+        norm_refs = None
+        if reference_image_urls is not None:
+            from agent.image_gen_provider import normalize_reference_images
+
+            norm_refs = normalize_reference_images(reference_image_urls)
+        if norm_refs:
+            kwargs["reference_image_urls"] = norm_refs
+        result = provider.generate(**kwargs)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Managed Krea routing failed: %s", exc)
+        return json.dumps({
+            "success": False,
+            "image": None,
+            "error": f"Managed Krea generation error: {exc}",
+            "error_type": "provider_exception",
+        })
+    if not isinstance(result, dict):
+        return json.dumps({
+            "success": False,
+            "image": None,
+            "error": "Krea provider returned a non-dict result",
+            "error_type": "provider_contract",
+        })
+    return json.dumps(result)
+
+
 def _image_generate_with_fallbacks(prompt: str, aspect_ratio: str) -> Optional[str]:
     """Try configured ``tool_fallbacks.image_gen`` entries in order."""
     entries = load_tool_fallbacks("image_gen")
@@ -1494,7 +1590,8 @@ def _handle_image_generate(args, **kw):
         return fallback_result
 
     # Route to a plugin-registered provider if one is active (and it's
-    # not the in-tree FAL path).
+    # not the in-tree FAL path). When ``image_gen.provider == "krea"`` this
+    # already reaches the Krea plugin's managed gateway path.
     dispatched = _dispatch_to_plugin_provider(
         prompt, aspect_ratio,
         image_url=image_url,
@@ -1502,6 +1599,19 @@ def _handle_image_generate(args, **kw):
     )
     if dispatched is not None:
         return _postprocess_image_generate_result(dispatched, task_id=task_id)
+
+    # Managed-mode Krea routing: when no explicit plugin provider is configured
+    # but the selected model is a native ``krea-2-*`` id, a portal user routes to
+    # the dedicated Krea managed gateway. ``fal-ai/krea/v2/*`` models stay on the
+    # FAL path below. Runs after plugin dispatch (which returns None when no
+    # provider is set) so the BYO/direct FAL path stays untouched.
+    krea_routed = _maybe_route_managed_krea(
+        prompt, aspect_ratio,
+        image_url=image_url,
+        reference_image_urls=reference_image_urls,
+    )
+    if krea_routed is not None:
+        return _postprocess_image_generate_result(krea_routed, task_id=task_id)
 
     raw = image_generate_tool(
         prompt=prompt,
