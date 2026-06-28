@@ -160,6 +160,7 @@ from hermes_cli.cli_output import (  # noqa: E402
     print_warning,
 )
 from hermes_cli.secret_prompt import masked_secret_prompt  # noqa: E402
+from hermes_cli._subprocess_compat import windows_hide_flags
 
 
 def is_interactive_stdin() -> bool:
@@ -272,8 +273,35 @@ def prompt_choice(question: str, choices: list, default: int = 0, description: s
             sys.exit(1)
 
 
+def is_noninteractive() -> bool:
+    """True when no human is available to answer a prompt.
+
+    The dashboard/desktop spawn CLI actions with ``stdin=DEVNULL`` and
+    ``HERMES_NONINTERACTIVE=1`` (see ``hermes_cli/web_server.py``). In that
+    context an ``input()`` raises ``EOFError`` immediately, so a prompt that
+    aborts on EOF kills the spawned action — this is what made the desktop
+    "restart gateway" fail when the Windows gateway service was not yet
+    installed (the start path asks "Install it now?" with no one to answer).
+    Honour the explicit env flag here so callers fall back to their default.
+    """
+    return os.environ.get("HERMES_NONINTERACTIVE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def prompt_yes_no(question: str, default: bool = True) -> bool:
-    """Prompt for yes/no. Ctrl+C exits, empty input returns default."""
+    """Prompt for yes/no. Ctrl+C exits, empty input returns default.
+
+    Non-interactive callers (``HERMES_NONINTERACTIVE=1`` or a closed/redirected
+    stdin) have no one to answer, so fall back to ``default`` instead of
+    aborting the whole process.
+    """
+    if is_noninteractive():
+        return default
+
     default_str = "Y/n" if default else "y/N"
 
     while True:
@@ -283,9 +311,15 @@ def prompt_yes_no(question: str, default: bool = True) -> bool:
                 .strip()
                 .lower()
             )
-        except (KeyboardInterrupt, EOFError):
+        except KeyboardInterrupt:
             print()
             sys.exit(1)
+        except EOFError:
+            # No stdin to read (closed/redirected, e.g. a spawned action with
+            # stdin=DEVNULL). Accept the default rather than exit so the caller
+            # can proceed unattended instead of failing the whole command.
+            print()
+            return default
 
         if not value:
             return default
@@ -375,11 +409,6 @@ def _print_setup_summary(config: dict, hermes_home):
     else:
         tool_status.append(("Vision (image analysis)", False, "run 'hermes setup' to configure"))
 
-    # Mixture of Agents — requires OpenRouter specifically (calls multiple models)
-    if get_env_value("OPENROUTER_API_KEY"):
-        tool_status.append(("Mixture of Agents", True, None))
-    else:
-        tool_status.append(("Mixture of Agents", False, "OPENROUTER_API_KEY"))
 
     # Web tools (Exa, Parallel, Firecrawl, or Tavily)
     if subscription_features.web.managed_by_nous:
@@ -777,11 +806,11 @@ def _install_neutts_deps() -> bool:
         if prompt_yes_no("Install espeak-ng now?", True):
             try:
                 if sys.platform == "darwin":
-                    subprocess.run(["brew", "install", "espeak-ng"], check=True)
+                    subprocess.run(["brew", "install", "espeak-ng"], check=True, creationflags=windows_hide_flags())
                 elif sys.platform == "win32":
-                    subprocess.run(["choco", "install", "espeak-ng", "-y"], check=True)
+                    subprocess.run(["choco", "install", "espeak-ng", "-y"], check=True, creationflags=windows_hide_flags())
                 else:
-                    subprocess.run(["sudo", "apt", "install", "-y", "espeak-ng"], check=True)
+                    subprocess.run(["sudo", "apt", "install", "-y", "espeak-ng"], check=True, creationflags=windows_hide_flags())
                 print_success("espeak-ng installed")
             except (subprocess.CalledProcessError, FileNotFoundError) as e:
                 print_warning(f"Could not install espeak-ng automatically: {e}")
@@ -799,6 +828,7 @@ def _install_neutts_deps() -> bool:
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "-U", "neutts[all]", "--quiet"],
             check=True, timeout=300,
+            creationflags=windows_hide_flags(),
         )
         print_success("neutts installed successfully")
         return True
@@ -824,6 +854,7 @@ def _install_kittentts_deps() -> bool:
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "-U", wheel_url, "soundfile", "--quiet"],
             check=True, timeout=300,
+            creationflags=windows_hide_flags(),
         )
         print_success("kittentts installed successfully")
         return True

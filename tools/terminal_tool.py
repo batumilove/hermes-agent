@@ -497,13 +497,13 @@ def _read_shell_token(command: str, start: int) -> tuple[str, int]:
     return command[start:i], i
 
 
-def _rewrite_real_sudo_invocations(command: str) -> tuple[str, bool]:
+def _rewrite_real_sudo_invocations(command: str) -> tuple[str, int]:
     """Rewrite only real unquoted sudo command words, not plain text mentions."""
     out: list[str] = []
     i = 0
     n = len(command)
     command_start = True
-    found = False
+    sudo_count = 0
 
     while i < n:
         ch = command[i]
@@ -545,7 +545,7 @@ def _rewrite_real_sudo_invocations(command: str) -> tuple[str, bool]:
         token, next_i = _read_shell_token(command, i)
         if command_start and token == "sudo":
             out.append("sudo -S -p ''")
-            found = True
+            sudo_count += 1
         else:
             out.append(token)
 
@@ -555,7 +555,46 @@ def _rewrite_real_sudo_invocations(command: str) -> tuple[str, bool]:
             command_start = False
         i = next_i
 
-    return "".join(out), found
+    return "".join(out), sudo_count
+
+
+# sudo -S rejects a bad cached/interactive password with these messages.
+_SUDO_WRONG_PASSWORD_MARKERS = (
+    "sudo: authentication failed",
+    "sudo: incorrect password attempt",
+    "sudo: maximum 3 incorrect authentication attempts",
+    "sudo: 3 incorrect password attempts",
+)
+
+
+def _sudo_wrong_password_failure(output: str) -> bool:
+    """Return True when sudo rejected a piped password."""
+    if not output:
+        return False
+    lowered = output.lower()
+    return any(marker in lowered for marker in _SUDO_WRONG_PASSWORD_MARKERS)
+
+
+def _count_real_sudo_invocations(command: str) -> int:
+    """Return how many real sudo command words appear in *command*."""
+    _transformed, sudo_count = _rewrite_real_sudo_invocations(command)
+    return sudo_count
+
+
+def _invalidate_cached_sudo_on_auth_failure(
+    command: str | None, output: str
+) -> bool:
+    """Drop a session-cached sudo password after sudo rejects it."""
+    if "SUDO_PASSWORD" in os.environ:
+        return False
+    if not _sudo_wrong_password_failure(output):
+        return False
+    if _count_real_sudo_invocations(command or "") == 0:
+        return False
+    if not _get_cached_sudo_password():
+        return False
+    _set_cached_sudo_password("")
+    return True
 
 
 def _sudo_nopasswd_works() -> bool:
@@ -786,8 +825,8 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     """
     if command is None:
         return None, None
-    transformed, has_real_sudo = _rewrite_real_sudo_invocations(command)
-    if not has_real_sudo:
+    transformed, sudo_count = _rewrite_real_sudo_invocations(command)
+    if sudo_count == 0:
         return command, None
 
     has_configured_password = "SUDO_PASSWORD" in os.environ
@@ -816,8 +855,10 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
             _set_cached_sudo_password(sudo_password)
 
     if has_configured_password or sudo_password:
-        # Trailing newline is required: sudo -S reads one line for the password.
-        return transformed, sudo_password + "\n"
+        # Trailing newline is required: sudo -S reads one line per invocation.
+        # Compound commands (`sudo a && sudo b`) need one password line each.
+        password_line = sudo_password + "\n"
+        return transformed, password_line * sudo_count
 
     return command, None
 

@@ -20,6 +20,7 @@ import re
 import secrets
 import shutil
 import subprocess
+from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 import threading
 import time
 import uuid
@@ -468,7 +469,7 @@ class RaftAdapter(BasePlatformAdapter):
     def runtime_session(self) -> str:
         return self._runtime_session
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not self._bridge_token:
             self._bridge_token = secrets.token_hex(32)
             logger.info("[raft] Auto-generated bridge token")
@@ -542,7 +543,7 @@ class RaftAdapter(BasePlatformAdapter):
         env = {**os.environ, "RAFT_CHANNEL_TOKEN": self._bridge_token}
         try:
             self._bridge_process = subprocess.Popen(
-                cmd, env=env, stdin=subprocess.DEVNULL
+                cmd, env=env, stdin=subprocess.DEVNULL, **windows_detach_popen_kwargs()
             )
             logger.info("[raft] Spawned bridge pid=%d profile=%s endpoint=%s", self._bridge_process.pid, profile, endpoint)
         except Exception:
