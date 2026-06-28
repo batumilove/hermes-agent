@@ -597,6 +597,13 @@ def run_conversation(
     # over-claim success while the file is actually unchanged on disk.
     agent._turn_failed_file_mutations: Dict[str, Dict[str, Any]] = {}
 
+    # Per-turn tally of consecutive successful credential-pool token refreshes,
+    # keyed by (provider, pool-entry-id). A persistent upstream 401 lets
+    # ``try_refresh_current()`` "succeed" forever on a single-entry OAuth pool,
+    # so this tally caps same-entry refreshes and lets the fallback chain take
+    # over instead of spinning. Reset here so each turn starts fresh. See #26080.
+    agent._auth_pool_refresh_counts = {}
+
     # Record the execution thread so interrupt()/clear_interrupt() can
     # scope the tool-level interrupt signal to THIS agent's thread only.
     # Must be set before any thread-scoped interrupt syncing.
@@ -2303,6 +2310,15 @@ def run_conversation(
                     # "unknown variant `image_url`, expected `text`".
                     "unknown variant `image_url`, expected `text`",
                     "unknown variant image_url, expected text",
+                    # OpenRouter routes a request to upstream endpoints and,
+                    # when none of the candidate endpoints for the model accept
+                    # image input, returns HTTP 404 "No endpoints found that
+                    # support image input". Without this phrase the agent never
+                    # strips the images, the retry loop re-sends the same
+                    # rejected request until exhaustion, and the gateway leaves
+                    # every subsequent message queued behind the stuck turn —
+                    # the P1 in issue #21160. The 404 passes the 4xx gate below.
+                    "no endpoints found that support image input",
                 )
                 _err_lower = _err_body.lower()
                 _looks_like_image_rejection = any(
@@ -2888,12 +2904,11 @@ def run_conversation(
                     # Fall through to normal error handling if compression
                     # is exhausted or didn't help.
 
-                # Eager fallback for capacity failures where retries against the
-                # same primary are unlikely to recover within the current turn.
-                # ``silent_hang`` is the Codex no-first-byte watchdog: the
-                # backend accepted the stream but emitted zero events, which is
-                # a known backend-side reject pattern for some model/account
-                # combinations (for example gpt-5.5 on chatgpt.com Codex).
+                # Eager fallback for rate-limit errors (429 or quota exhaustion),
+                # silent no-first-byte hangs, and transport errors (connection
+                # failure / timeout / provider overloaded). Rate limits, billing,
+                # and silent hangs switch immediately; transport errors allow 1
+                # retry first before falling back.
                 is_rate_limited = classified.reason in {
                     FailoverReason.rate_limit,
                     FailoverReason.billing,
@@ -2901,7 +2916,16 @@ def run_conversation(
                 is_eager_failover = classified.reason in {
                     FailoverReason.silent_hang,
                 }
-                if (is_rate_limited or is_eager_failover) and agent._fallback_index < len(agent._fallback_chain):
+                _is_transport_failure = classified.reason in {
+                    FailoverReason.timeout,
+                    FailoverReason.overloaded,
+                }
+                _should_fallback = (
+                    is_rate_limited
+                    or is_eager_failover
+                    or (_is_transport_failure and retry_count >= 2)
+                )
+                if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
                     # Don't eagerly fallback if credential pool rotation may
                     # still recover.  See _pool_may_recover_from_rate_limit
                     # for the single-credential-pool and CloudCode-quota
@@ -2919,6 +2943,10 @@ def run_conversation(
                         elif classified.reason == FailoverReason.billing:
                             agent._buffer_status(
                                 "⚠️ Billing or credits exhausted — switching to fallback provider..."
+                            )
+                        elif _is_transport_failure:
+                            agent._buffer_status(
+                                "⚠️ Provider unreachable — switching to fallback provider..."
                             )
                         else:
                             agent._buffer_status("⚠️ Rate limited — switching to fallback provider...")
@@ -3648,7 +3676,12 @@ def run_conversation(
                         _ra_raw = _resp_headers.get("retry-after") or _resp_headers.get("Retry-After")
                         if _ra_raw:
                             try:
-                                _retry_after = min(float(_ra_raw), 120)  # Cap at 2 minutes
+                                # Cap at 10 minutes. Anthropic Tier 1 input-token
+                                # buckets reset in ~171s, so a 120s cap caused us to
+                                # retry before the actual reset window and re-trip the
+                                # limit. 600s covers all realistic provider reset
+                                # windows while still rejecting pathological values. (#26293)
+                                _retry_after = min(float(_ra_raw), 600)
                             except (TypeError, ValueError):
                                 pass
                 wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
@@ -4311,7 +4344,11 @@ def run_conversation(
                             "as final response"
                         )
                         final_response = _recovered
-                        agent._response_was_previewed = True
+                        # Streaming delivered a fragment, not a confirmed
+                        # final preview. Leave response_previewed false so
+                        # gateway fallback delivery can send the recovered
+                        # text plus the abnormal-turn explanation.
+                        agent._response_was_previewed = False
                         break
 
                     # If the previous turn already delivered real content alongside
@@ -4556,14 +4593,20 @@ def run_conversation(
                 # status from earlier failed attempts in this turn.
                 agent._clear_status_buffer()
 
+                from agent.agent_runtime_helpers import (
+                    intent_ack_continuation_mode,
+                )
+
+                _ack_mode = intent_ack_continuation_mode(agent)
                 if (
-                    agent.api_mode == "codex_responses"
+                    _ack_mode != "off"
                     and agent.valid_tool_names
                     and codex_ack_continuations < 2
                     and agent._looks_like_codex_intermediate_ack(
                         user_message=user_message,
                         assistant_content=final_response,
                         messages=messages,
+                        require_workspace=(_ack_mode == "codex_only"),
                     )
                 ):
                     codex_ack_continuations += 1
