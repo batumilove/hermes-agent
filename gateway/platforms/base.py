@@ -3221,7 +3221,12 @@ class BasePlatformAdapter(ABC):
             raw = str(media_path)
             safe_path = validate_media_delivery_path(raw)
             if safe_path:
-                safe_media.append((safe_path, bool(is_voice)))
+                # Validation resolves symlinks for safety, but delivery should
+                # preserve the caller's lexical absolute path when possible.
+                # On macOS, tempfile returns /var/... while Path.resolve() yields
+                # /private/var/...; preserving the original keeps adapter call
+                # metadata stable without weakening the validation decision.
+                safe_media.append((raw if os.path.isabs(raw) else safe_path, bool(is_voice)))
             else:
                 logger.warning("Skipping unsafe MEDIA directive path: %s", _log_safe_path(raw))
         return safe_media

@@ -16,6 +16,7 @@ from tools.registry import registry
 
 _TOOLSET = "mcporter"
 _DEFAULT_TIMEOUT = 60
+_PINNED_NPX_MCPORTER = "mcporter@1.0.1"
 _SECRET_PATTERNS = [
     re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE),
     re.compile(r"(Authorization\s*[:=]\s*)[^\s,;}]+", re.IGNORECASE),
@@ -117,13 +118,28 @@ def _load_mcporter_config() -> dict[str, Any]:
 
     config_path = os.environ.get("MCPORTER_CONFIG") or cfg.get("config_path")
     resolved_config = _resolve_config_path(config_path)
+    args = [str(a) for a in (cfg.get("args") or ["-y", _PINNED_NPX_MCPORTER])]
     return {
         "enabled": cfg.get("enabled", "auto"),
         "command": cfg.get("command") or os.environ.get("MCPORTER_COMMAND") or "npx",
-        "args": [str(a) for a in (cfg.get("args") or ["-y", "mcporter"])],
+        "args": args,
         "timeout": int(cfg.get("timeout", os.environ.get("MCPORTER_TIMEOUT", _DEFAULT_TIMEOUT)) or _DEFAULT_TIMEOUT),
         "config_path": str(resolved_config) if resolved_config else "",
     }
+
+
+def _validate_runtime_command(cfg: dict[str, Any]) -> str | None:
+    command = Path(str(cfg.get("command") or "")).name
+    args = [str(arg) for arg in (cfg.get("args") or [])]
+    if command in {"npx", "pnpm", "yarn"}:
+        package_args = [arg for arg in args if not arg.startswith("-")]
+        if any(arg == "mcporter" for arg in package_args):
+            return (
+                "Refusing unpinned runtime mcporter package execution; configure "
+                f"mcporter args with an explicit package version such as {_PINNED_NPX_MCPORTER} "
+                "or set mcporter.command/MCPORTER_COMMAND to a pinned binary path."
+            )
+    return None
 
 
 def _resolve_config_path(config_path: str | None) -> Path | None:
@@ -161,6 +177,9 @@ def _run_mcporter(extra_args: list[str], timeout: int | None = None) -> dict[str
         return {"error": "mcporter bridge is disabled"}
     if not cfg.get("config_path"):
         return {"error": "mcporter config not found; set mcporter.config_path or MCPORTER_CONFIG"}
+    validation_error = _validate_runtime_command(cfg)
+    if validation_error:
+        return {"error": validation_error}
     if not shutil.which(cfg["command"]):
         return {"error": f"mcporter command not found: {cfg['command']}"}
 

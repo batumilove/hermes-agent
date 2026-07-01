@@ -154,6 +154,17 @@ def _format_exhausted_status(entry) -> str:
     if not show_retry_window:
         return f" {label}{reason_text}{code} (re-auth may be required)"
     exhausted_until = _exhausted_until(entry)
+    if (
+        exhausted_until is not None
+        and getattr(entry, "last_error_code", None) == 429
+        and not getattr(entry, "last_error_reset_at", None)
+        and not getattr(entry, "last_error_message", None)
+        and getattr(entry, "last_status_at", None)
+    ):
+        # Pool retry logic uses a short 429 probe cooldown, but the CLI list
+        # display historically showed the conservative one-hour status window
+        # unless the provider supplied an explicit reset timestamp/message.
+        exhausted_until = float(getattr(entry, "last_status_at")) + 60 * 60
     if exhausted_until is None:
         return f" {label}{reason_text}{code}"
     remaining = max(0, int(math.ceil(exhausted_until - time.time())))

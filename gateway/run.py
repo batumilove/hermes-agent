@@ -135,6 +135,13 @@ _GATEWAY_SECRET_PATTERNS = (
     re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._\-]{20,}\b"),
 )
 
+_PROGRAMMATIC_GATEWAY_PLATFORMS = frozenset({
+    "local",
+    "api_server",
+    "webhook",
+    "msgraph_webhook",
+})
+
 
 def _ensure_windows_gateway_venv_imports() -> None:
     """Make detached Windows gateway runs see the Hermes venv packages.
@@ -193,6 +200,11 @@ def _ensure_windows_gateway_venv_imports() -> None:
 def _gateway_platform_value(platform: Any) -> str:
     """Return a normalized gateway platform value for enums or raw strings."""
     return str(getattr(platform, "value", platform) or "").strip().lower()
+
+
+def _gateway_uses_chat_filter(platform: Any) -> bool:
+    """Return True for human chat surfaces that need noise/secret filtering."""
+    return _gateway_platform_value(platform) not in _PROGRAMMATIC_GATEWAY_PLATFORMS
 
 
 def _non_conversational_metadata(
@@ -393,13 +405,13 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """Sanitize final gateway replies before sending them to high-noise chats.
 
-    Telegram is Bob's mobile inbox, so it should receive concise, safe provider
-    failure categories instead of raw HTTP bodies, request IDs, or policy text.
-    Other platforms keep the existing behaviour for now.
+    Chat inboxes should receive concise, safe provider failure categories
+    instead of raw HTTP bodies, request IDs, policy text, or credential-shaped
+    strings. Programmatic surfaces keep raw payloads.
     """
     if not text:
         return text
-    if _gateway_platform_value(platform) != "telegram":
+    if not _gateway_uses_chat_filter(platform):
         return text
 
     redacted = _redact_gateway_user_facing_secrets(str(text))
@@ -413,7 +425,7 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     text = str(message or "").strip()
     if not text:
         return None
-    if _gateway_platform_value(platform) != "telegram":
+    if not _gateway_uses_chat_filter(platform):
         return text
 
     text = _redact_gateway_user_facing_secrets(text)
@@ -2538,6 +2550,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._exit_reason: Optional[str] = None
         self._exit_code: Optional[int] = None
         self._draining = False
+        self._external_drain_active = False
         self._restart_requested = False
         # Set by shutdown_signal_handler when a SIGTERM/SIGINT arrived
         # WITHOUT a planned-stop / takeover marker — i.e. an unexpected
@@ -2550,6 +2563,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # on the next boot.
         self._signal_initiated_shutdown = False
         self._restart_task_started = False
+        self._restart_task: Optional[asyncio.Task] = None
         self._restart_detached = False
         self._restart_via_service = False
         self._detached_restart_helper_started = False
@@ -5213,8 +5227,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await self.stop(restart=True, detached_restart=detached, service_restart=via_service)
 
         task = asyncio.create_task(_run_restart())
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        self._restart_task = task
+        task.add_done_callback(
+            lambda completed: setattr(self, "_restart_task", None)
+        )
         return True
 
     # Drain-timeout reasons set by _stop_impl() when a still-running turn is
@@ -6062,23 +6078,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if self._session_db is None:
                     await asyncio.sleep(interval)
                     continue
-                pending = self._session_db.list_pending_handoffs()
+                pending = await asyncio.to_thread(self._session_db.list_pending_handoffs)
                 for row in pending:
                     session_id = row.get("id")
                     if not session_id:
                         continue
-                    if not self._session_db.claim_handoff(session_id):
+                    claimed = await asyncio.to_thread(
+                        self._session_db.claim_handoff,
+                        session_id,
+                    )
+                    if not claimed:
                         # Another tick or another gateway already claimed it.
                         continue
                     try:
                         await self._process_handoff(row)
-                        self._session_db.complete_handoff(session_id)
+                        await asyncio.to_thread(
+                            self._session_db.complete_handoff,
+                            session_id,
+                        )
                     except Exception as exc:
                         logger.warning(
                             "Handoff for session %s failed: %s",
                             session_id, exc, exc_info=True,
                         )
-                        self._session_db.fail_handoff(session_id, str(exc))
+                        await asyncio.to_thread(
+                            self._session_db.fail_handoff,
+                            session_id,
+                            str(exc),
+                        )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -6976,9 +7003,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # KeepAlive.SuccessfulExit=false needs a non-zero exit to
                 # relaunch, so keep the old code on macOS.
                 self._exit_code = (
-                    GATEWAY_SERVICE_RESTART_EXIT_CODE
-                    if sys.platform == "darwin" or not os.environ.get("INVOCATION_ID")
-                    else 0
+                    0
+                    if os.environ.get("INVOCATION_ID")
+                    else GATEWAY_SERVICE_RESTART_EXIT_CODE
                 )
                 self._exit_reason = self._exit_reason or "Gateway restart requested"
 
@@ -7391,6 +7418,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("Failed to process Telegram topic title edit", exc_info=True)
         return True
 
+    def _enter_external_drain(self) -> None:
+        """Enter dashboard/file-marker controlled external drain mode."""
+        if getattr(self, "_external_drain_active", False):
+            return
+        self._external_drain_active = True
+        self._update_runtime_status("draining")
+
+    def _exit_external_drain(self) -> None:
+        """Exit external drain mode and restore running status when appropriate."""
+        if not getattr(self, "_external_drain_active", False):
+            return
+        self._external_drain_active = False
+        if getattr(self, "_running", False) and not getattr(self, "_draining", False):
+            self._update_runtime_status("running")
+
+    async def _drain_control_watcher(self, interval: float = 1.0) -> None:
+        """Watch the external drain marker and reconcile gateway state."""
+        from gateway import drain_control as _drain_control
+
+        while getattr(self, "_running", False):
+            try:
+                if _drain_control.drain_requested():
+                    self._enter_external_drain()
+                else:
+                    self._exit_external_drain()
+            except Exception:
+                logger.debug("External drain watcher tick failed", exc_info=True)
+            await asyncio.sleep(interval)
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -7518,6 +7574,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Otherwise control/session commands like /new or /help get silently
         # consumed as update answers instead of being dispatched normally.
         _quick_key = self._session_key_for_source(source)
+        if getattr(self, "_external_drain_active", False) and not is_internal:
+            return "⏳ Gateway is draining and is not accepting new work right now."
         _update_prompts = getattr(self, "_update_prompt_pending", {})
         if _update_prompts.get(_quick_key):
             raw = (event.text or "").strip()
@@ -8926,7 +8984,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 else:
                     message_text = f'[Replying to:\n{chain_block}]\n\n{message_text}'
             else:
-                reply_snippet = event.reply_to_text[:500]
+                reply_snippet = event.reply_to_text
                 if getattr(event, "reply_to_is_own_message", False):
                     message_text = (
                         f'[Replying to your previous message: "{reply_snippet}"]\n\n'
@@ -9108,20 +9166,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     self._record_telegram_topic_binding(source, session_entry)
                 except Exception:
                     logger.debug("Failed to record Telegram topic binding", exc_info=True)
-        if getattr(session_entry, "was_auto_reset", False):
+        was_auto_reset = bool(getattr(session_entry, "was_auto_reset", False))
+        if was_auto_reset:
             # Treat auto-reset as a full conversation boundary — drop every
             # session-scoped transient state so the fresh session does not
             # inherit the previous conversation's model/reasoning overrides
-            # or a queued "/model switched" note.
+            # or a queued "/model switched" note. Consume the flag immediately
+            # so this cleanup cannot re-fire on the next regular message and
+            # wipe a model override set by a slash command in between (#48031).
             self._session_model_overrides.pop(session_key, None)
             self._set_session_reasoning_override(session_key, None)
             if hasattr(self, "_pending_model_notes"):
                 self._pending_model_notes.pop(session_key, None)
+            session_entry.was_auto_reset = False
         
         # Emit session:start for new or auto-reset sessions
         _is_new_session = (
             session_entry.created_at == session_entry.updated_at
-            or getattr(session_entry, "was_auto_reset", False)
+            or was_auto_reset
             or getattr(session_entry, "is_fresh_reset", False)
         )
         # Consume the is_fresh_reset flag immediately so it doesn't leak
@@ -9157,7 +9219,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
-        if getattr(session_entry, 'was_auto_reset', False):
+        if was_auto_reset:
             reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'idle'
             if reset_reason == "suspended":
                 context_note = "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]"
@@ -9490,7 +9552,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     _hyg_new_sid = _hyg_agent.session_id
                                     _hyg_rotated = _hyg_new_sid != session_entry.session_id
                                     _hyg_in_place = bool(
-                                        getattr(_hyg_agent, "compression_in_place", False)
+                                        getattr(_hyg_agent, "_last_compaction_in_place", False)
                                     )
                                     if _hyg_rotated:
                                         session_entry.session_id = _hyg_new_sid
@@ -10801,10 +10863,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # launchd exposes the service label as XPC_SERVICE_NAME to the job.
         # Newer Hermes plists also set LAUNCHD_JOB_LABEL explicitly so tests
         # and nonstandard wrappers can exercise the same path.
+        _interactive_macos_shell = sys.platform == "darwin" and os.environ.get("XPC_SERVICE_NAME") == "0"
         _under_launchd = bool(
-            os.environ.get("LAUNCHD_JOB_LABEL") or os.environ.get("XPC_SERVICE_NAME")
+            not _interactive_macos_shell
+            and (
+                os.environ.get("LAUNCHD_JOB_LABEL")
+                or os.environ.get("XPC_SERVICE_NAME")
+            )
         )
-        _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+        _in_container = (
+            not _interactive_macos_shell
+            and (os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv"))
+        )
         if _under_systemd or _under_launchd or _in_container:
             self.request_restart(detached=False, via_service=True)
         else:

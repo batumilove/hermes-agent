@@ -121,6 +121,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
 
     # Configuration
     CommandDef("sessions", "Browse and resume previous sessions", "Session"),
+    CommandDef("prompt", "Compose the next prompt in $EDITOR", "Session",
+               cli_only=True, aliases=("compose",), args_hint="[initial text]"),
 
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
@@ -1156,7 +1158,10 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug"})
+#   - version: informational and always available through /hermes version;
+#     routing it through the catch-all preserves the 50-command Slack cap for
+#     higher-value interactive commands while keeping Telegram parity explicit.
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug", "version"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

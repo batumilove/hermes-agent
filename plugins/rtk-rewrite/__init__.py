@@ -38,7 +38,11 @@ _METRICS: dict[str, Any] = {
 
 
 def register(ctx: Any) -> None:
-    """Register the Hermes pre-tool callback when RTK is available."""
+    """Register the Hermes pre-tool callback when RTK is explicitly enabled and available."""
+    if not _rtk_rewrite_enabled():
+        _warn("rtk rewrite plugin disabled; set rtk_rewrite.enabled=true and rtk_rewrite.command to enable")
+        _write_metrics(available=False)
+        return
     available = _check_rtk()
     _write_metrics(available=available)
     if not available:
@@ -46,15 +50,49 @@ def register(ctx: Any) -> None:
     ctx.register_hook("pre_tool_call", _pre_tool_call)
 
 
+def _rtk_config() -> dict[str, Any]:
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        raw = config.get("rtk_rewrite") if isinstance(config, dict) else {}
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def _rtk_rewrite_enabled() -> bool:
+    value = _rtk_config().get("enabled", False)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _rtk_command() -> str | None:
+    configured = str(_rtk_config().get("command") or os.environ.get("HERMES_RTK_COMMAND") or "").strip()
+    if not configured:
+        return None
+    path = Path(configured).expanduser()
+    if path.is_absolute():
+        return str(path) if path.exists() and os.access(path, os.X_OK) else None
+    return shutil.which(configured)
+
+
+def _rtk_timeout() -> float:
+    try:
+        return float(_rtk_config().get("timeout", 2) or 2)
+    except Exception:
+        return 2.0
+
+
 def _check_rtk() -> bool:
-    """Return whether the ``rtk`` binary is in PATH, warning once when missing."""
+    """Return whether the configured ``rtk`` binary exists, warning once when missing."""
     global _rtk_available, _rtk_missing_warned
 
     if _rtk_available is None:
-        _rtk_available = shutil.which("rtk") is not None
+        _rtk_available = _rtk_command() is not None
 
     if not _rtk_available and not _rtk_missing_warned:
-        _warn("rtk binary not found in PATH; Hermes hook not registered")
+        _warn("rtk binary not configured/found; Hermes hook not registered")
         _rtk_missing_warned = True
 
     return _rtk_available
@@ -77,10 +115,15 @@ def _pre_tool_call(tool_name: str | None = None, args: dict[str, Any] | None = N
         command_family = _command_family(command)
         _record_metric(command_family, "attempt")
         try:
+            rtk = _rtk_command()
+            if not rtk:
+                _record_metric(command_family, "failure")
+                _warn("rtk binary unavailable during rewrite")
+                return
             result = subprocess.run(
-                ["rtk", "rewrite", command],
+                [rtk, "rewrite", command],
                 shell=False,
-                timeout=2,
+                timeout=_rtk_timeout(),
                 capture_output=True,
                 text=True,
             )
@@ -103,6 +146,7 @@ def _pre_tool_call(tool_name: str | None = None, args: dict[str, Any] | None = N
 
         rewritten = result.stdout.strip()
         if rewritten and rewritten != command:
+            args["rtk_rewrite_original_command"] = command
             args["command"] = rewritten
             _record_metric(command_family, "rewrite")
         else:

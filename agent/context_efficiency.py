@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from agent.redact import redact_sensitive_text
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
@@ -189,9 +190,9 @@ def record_tool_route(agent: Any, tool_name: str, args: Mapping[str, Any] | None
             "is_error": bool(is_error),
             "arg_hash": _stable_hash(args or {}),
             "result_hash": _stable_hash(result_text),
-            "arg_preview": _truncate(args or {}, int(cfg.get("max_arg_chars", 500))) if previews_enabled else "",
+            "arg_preview": redact_sensitive_text(_truncate(args or {}, int(cfg.get("max_arg_chars", 500))), force=True, redact_urls=True) if previews_enabled else "",
             "result_chars": len(result_text),
-            "result_preview": _truncate(result_text, int(cfg.get("max_result_chars", 500))) if previews_enabled else "",
+            "result_preview": redact_sensitive_text(_truncate(result_text, int(cfg.get("max_result_chars", 500))), force=True, redact_urls=True) if previews_enabled else "",
         }
         path = resolve_log_path(cfg)
         path.parent.mkdir(parents=True, exist_ok=True)

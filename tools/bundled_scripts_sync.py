@@ -55,7 +55,7 @@ def _write_manifest(entries: dict[str, str]) -> None:
     tmp.replace(SCRIPTS_MANIFEST)
 
 
-def sync_bundled_scripts(quiet: bool = False) -> dict:
+def sync_bundled_scripts(quiet: bool = False, force: bool = False) -> dict:
     root = _project_root()
     dest_dir = _command_link_dir()
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -63,6 +63,7 @@ def sync_bundled_scripts(quiet: bool = False) -> dict:
 
     linked: List[str] = []
     updated: List[str] = []
+    skipped: List[str] = []
     missing: List[str] = []
 
     for rel_src, dest_name in BUNDLED_SCRIPTS:
@@ -76,6 +77,7 @@ def sync_bundled_scripts(quiet: bool = False) -> dict:
 
         src.chmod(src.stat().st_mode | 0o111)
 
+        manifest_owned = manifest.get(dest_name) == str(dest)
         changed = True
         if dest.is_symlink():
             try:
@@ -86,6 +88,9 @@ def sync_bundled_scripts(quiet: bool = False) -> dict:
             changed = True
 
         if dest.exists() or dest.is_symlink():
+            if changed and not force and not manifest_owned:
+                skipped.append(dest_name)
+                continue
             if changed:
                 dest.unlink()
                 dest.symlink_to(src)
@@ -100,6 +105,7 @@ def sync_bundled_scripts(quiet: bool = False) -> dict:
     return {
         "linked": linked,
         "updated": updated,
+        "skipped": skipped,
         "missing": missing,
         "destination_dir": str(dest_dir),
     }

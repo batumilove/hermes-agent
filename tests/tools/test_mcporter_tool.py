@@ -42,7 +42,7 @@ def test_mcporter_call_uses_subprocess_argv_no_shell(monkeypatch, tmp_path):
     parsed = json.loads(raw)
     assert parsed["result"] == {"ok": True}
     command, kwargs = calls[0]
-    assert command[:3] == ["npx", "-y", "mcporter"]
+    assert command[:3] == ["npx", "-y", "mcporter@1.0.1"]
     assert "--config" in command
     assert command[command.index("--config") + 1] == str(cfg_path)
     assert command[command.index("call") + 1] == "web-reader.webReader"
@@ -177,3 +177,29 @@ def test_mcporter_unresolved_secret_blocks_call_without_leaking(monkeypatch, tmp
     assert "Unresolved mcporter secret placeholder" in err
     assert "MISSING_MCP_TOKEN" in err
     assert "${env:MISSING_MCP_TOKEN}" not in err
+
+
+def test_mcporter_default_command_is_not_unpinned_npx_runtime_execution(monkeypatch, tmp_path):
+    cfg_path = _write_config(tmp_path)
+    monkeypatch.setenv("MCPORTER_CONFIG", str(cfg_path))
+    monkeypatch.delenv("MCPORTER_COMMAND", raising=False)
+    monkeypatch.setattr(mcporter_tool.shutil, "which", lambda cmd: "/usr/bin/npx")
+
+    cfg = mcporter_tool._load_mcporter_config()
+
+    assert not (cfg["command"] == "npx" and cfg["args"][:2] == ["-y", "mcporter"])
+
+
+def test_mcporter_rejects_unpinned_npx_package_execution(monkeypatch, tmp_path):
+    cfg_path = _write_config(tmp_path)
+    monkeypatch.setenv("MCPORTER_CONFIG", str(cfg_path))
+    monkeypatch.setenv("MCPORTER_COMMAND", "npx")
+    monkeypatch.setattr(mcporter_tool, "_load_mcporter_config", lambda: {"enabled": True, "command": "npx", "args": ["-y", "mcporter"], "timeout": 60, "config_path": str(cfg_path)})
+    monkeypatch.setattr(mcporter_tool.shutil, "which", lambda cmd: "/usr/bin/npx")
+    monkeypatch.setattr(mcporter_tool.subprocess, "run", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not run unpinned npx")))
+
+    raw = mcporter_tool._list_handler({})
+    err = json.loads(raw)["error"]
+
+    assert "unpinned" in err
+    assert "mcporter@" in err

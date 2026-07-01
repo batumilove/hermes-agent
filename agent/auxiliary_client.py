@@ -1039,11 +1039,50 @@ class _CodexCompletionsAdapter:
 
             event_stream = self._client.responses.create(**stream_kwargs)
             try:
-                final = _consume_codex_event_stream(
-                    event_stream,
-                    model=resp_kwargs.get("model"),
-                    on_event=_on_each_event,
-                )
+                if total_timeout:
+                    # `for event in stream` can block inside the SDK/socket (or a
+                    # slow test iterator) longer than the total timeout before
+                    # yielding the next event where `_check_cancelled()` would run.
+                    # Consume in a daemon worker and join only until the deadline
+                    # so the adapter enforces a true wall-clock total timeout.
+                    result_box: Dict[str, Any] = {}
+
+                    def _consume_stream() -> None:
+                        try:
+                            result_box["final"] = _consume_codex_event_stream(
+                                event_stream,
+                                model=resp_kwargs.get("model"),
+                                on_event=_on_each_event,
+                            )
+                        except BaseException as exc:  # propagate after join
+                            result_box["exc"] = exc
+
+                    consumer = threading.Thread(
+                        target=_consume_stream,
+                        name="codex-aux-stream-timeout",
+                        daemon=True,
+                    )
+                    consumer.start()
+                    remaining = max(0.0, deadline - time.monotonic()) if deadline is not None else float(total_timeout)
+                    consumer.join(remaining)
+                    if consumer.is_alive():
+                        _close_client_on_timeout()
+                        close_fn = getattr(event_stream, "close", None)
+                        if callable(close_fn):
+                            try:
+                                close_fn()
+                            except Exception:
+                                pass
+                        raise TimeoutError(_timeout_message())
+                    if "exc" in result_box:
+                        raise result_box["exc"]
+                    final = result_box.get("final")
+                else:
+                    final = _consume_codex_event_stream(
+                        event_stream,
+                        model=resp_kwargs.get("model"),
+                        on_event=_on_each_event,
+                    )
             finally:
                 close_fn = getattr(event_stream, "close", None)
                 if callable(close_fn):

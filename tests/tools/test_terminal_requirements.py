@@ -208,7 +208,7 @@ def test_kata_backend_with_kubectl_returns_true(monkeypatch):
     monkeypatch.setenv("TERMINAL_ENV", "kata")
     monkeypatch.setattr(terminal_tool_module.shutil, "which", lambda _name: "/usr/bin/kubectl")
 
-    def fake_run(cmd, capture_output=True, timeout=10):
+    def fake_run(cmd, capture_output=True, timeout=10, stdin=None):
         assert cmd[0] == "/usr/bin/kubectl"
         return type("R", (), {"returncode": 0})()
 

@@ -37,9 +37,10 @@ def registered_callback():
     module._rtk_available = None
     module._rtk_missing_warned = False
     ctx = FakeContext()
-    with mock.patch.object(module.shutil, "which", return_value="/usr/bin/rtk"):
+    with mock.patch.object(module, "_rtk_rewrite_enabled", return_value=True), mock.patch.object(module, "_rtk_command", return_value="/opt/rtk/bin/rtk"):
         module.register(ctx)
     assert "pre_tool_call" in ctx.hooks
+    setattr(module, "_rtk_command", lambda: "/opt/rtk/bin/rtk")
     return module, ctx.hooks["pre_tool_call"]
 
 
@@ -49,13 +50,13 @@ def test_missing_rtk_skips_hook_registration_and_warns_once(capsys):
     module._rtk_missing_warned = False
     ctx = FakeContext()
 
-    with mock.patch.object(module.shutil, "which", return_value=None):
+    with mock.patch.object(module, "_rtk_rewrite_enabled", return_value=True), mock.patch.object(module, "_rtk_command", return_value=None):
         module.register(ctx)
         module.register(ctx)
 
     assert "pre_tool_call" not in ctx.hooks
     stderr = capsys.readouterr().err
-    assert stderr.count("rtk binary not found in PATH") == 1
+    assert stderr.count("rtk binary not configured/found") == 1
 
 
 def test_terminal_command_is_rewritten_in_place():
@@ -69,12 +70,12 @@ def test_terminal_command_is_rewritten_in_place():
     ) as run:
         callback(tool_name="terminal", args=args)
 
-    assert args == {"command": "rtk git status"}
+    assert args == {"command": "rtk git status", "rtk_rewrite_original_command": "git status"}
     assert module._METRICS["attempts"] == 1
     assert module._METRICS["rewrites"] == 1
     assert module._METRICS["events_by_command"][("git", "rewrite")] == 1
     run.assert_called_once_with(
-        ["rtk", "rewrite", "git status"],
+        ["/opt/rtk/bin/rtk", "rewrite", "git status"],
         shell=False,
         timeout=2,
         capture_output=True,
@@ -182,3 +183,30 @@ def test_manifest_exists_and_declares_pre_tool_hook():
 
     assert "name: rtk-rewrite" in manifest
     assert "pre_tool_call" in manifest
+    assert "default_enabled: false" in manifest
+
+
+def test_register_is_config_gated_by_default(capsys):
+    module = load_plugin_module("rtk_rewrite_plugin_config_gate")
+    ctx = FakeContext()
+
+    with mock.patch.object(module, "_rtk_rewrite_enabled", return_value=False), mock.patch.object(module, "_rtk_command", return_value="/opt/rtk/bin/rtk"):
+        module.register(ctx)
+
+    assert "pre_tool_call" not in ctx.hooks
+    assert "disabled" in capsys.readouterr().err
+
+
+def test_rewrite_records_original_command_trace():
+    module, callback = registered_callback()
+    args = {"command": "git status"}
+
+    with mock.patch.object(
+        module.subprocess,
+        "run",
+        return_value=FakeCompletedProcess(returncode=0, stdout="rtk git status\n"),
+    ):
+        callback(tool_name="terminal", args=args)
+
+    assert args["command"] == "rtk git status"
+    assert args["rtk_rewrite_original_command"] == "git status"

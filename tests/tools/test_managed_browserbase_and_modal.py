@@ -140,8 +140,11 @@ def _install_fake_tools_package():
         _vendor_pkg.__path__ = []  # type: ignore[attr-defined]
         sys.modules[f"plugins.browser.{_name}"] = _vendor_pkg
         _provider_stub_cls = type(_classname, (_StubBrowserProvider,), {})
+        _exports = {_classname: _provider_stub_cls}
+        if _name == "browser_use":
+            _exports["BrowserProvider"] = _StubBrowserProvider
         sys.modules[f"plugins.browser.{_name}.provider"] = types.SimpleNamespace(
-            **{_classname: _provider_stub_cls},
+            **_exports,
         )
 
     sys.modules["tools.managed_tool_gateway"] = _load_tool_module(
@@ -181,7 +184,11 @@ def _install_fake_tools_package():
         def cleanup(self):
             return None
 
-    sys.modules["tools.environments.base"] = types.SimpleNamespace(BaseEnvironment=_DummyEnvironment)
+    sys.modules["tools.environments.base"] = types.SimpleNamespace(
+        BaseEnvironment=_DummyEnvironment,
+        _popen_bash=lambda *args, **kwargs: None,
+        _file_mtime_key=lambda _path: None,
+    )
     sys.modules["tools.environments.local"] = types.SimpleNamespace(LocalEnvironment=_DummyEnvironment)
     sys.modules["tools.environments.singularity"] = types.SimpleNamespace(
         _get_scratch_dir=lambda: Path(tempfile.gettempdir()),

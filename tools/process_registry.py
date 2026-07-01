@@ -750,7 +750,11 @@ class ProcessRegistry:
             errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
+            # Plain background commands are detached from stdin to avoid
+            # terminal keyboard lockout. If PTY mode was explicitly requested
+            # but ptyprocess/pywinpty is unavailable, keep a pipe so
+            # process.write/submit/close still work in the degraded fallback.
+            stdin=subprocess.PIPE if use_pty else subprocess.DEVNULL,
             start_new_session=True,
             **_popen_kwargs,
         )

@@ -9,8 +9,13 @@ from __future__ import annotations
 from typing import Callable
 
 
-def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
-    """Attach the ``update`` subcommand to ``subparsers``."""
+def build_update_parser(
+    subparsers,
+    *,
+    cmd_update: Callable,
+    cmd_update_sources: Callable | None = None,
+) -> None:
+    """Attach the ``update`` and ``update-sources`` subcommands to ``subparsers``."""
     # =========================================================================
     # update command
     # =========================================================================
@@ -80,3 +85,62 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         help="Windows: proceed with the update even when another hermes.exe is detected. The concurrent process will likely cause WinError 32 warnings and may leave a reboot-deferred .exe replacement.",
     )
     update_parser.set_defaults(func=cmd_update)
+
+    # =========================================================================
+    # update-sources command
+    # =========================================================================
+    update_sources_parser = subparsers.add_parser(
+        "update-sources",
+        help="Audit and update git-backed external plugins/dashboards",
+        description=(
+            "Discover external git-backed components such as user plugins and "
+            "dashboard dist checkouts, audit pending diffs, and optionally "
+            "apply audit-passed fast-forward updates."
+        ),
+    )
+    update_sources_sub = update_sources_parser.add_subparsers(
+        dest="update_sources_command",
+    )
+
+    update_sources_check = update_sources_sub.add_parser(
+        "check",
+        help="Audit external sources without mutating their working trees",
+    )
+    update_sources_check.add_argument(
+        "--project-path",
+        default=None,
+        help="Also inspect .hermes/plugins under this project path",
+    )
+    update_sources_check.set_defaults(func=cmd_update_sources)
+
+    update_sources_apply = update_sources_sub.add_parser(
+        "apply",
+        help="Apply audit-passed fast-forward updates to external sources",
+    )
+    update_sources_apply.add_argument(
+        "--project-path",
+        default=None,
+        help="Also inspect .hermes/plugins under this project path",
+    )
+    update_sources_apply.add_argument(
+        "--source",
+        dest="source_name",
+        default=None,
+        help="Only apply the named source",
+    )
+    update_sources_apply.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        default=False,
+        help="Skip interactive confirmation prompts where supported",
+    )
+    update_sources_apply.add_argument(
+        "--approve-review",
+        action="store_true",
+        default=False,
+        help="Allow apply for sources with review-level audit findings",
+    )
+    update_sources_apply.set_defaults(func=cmd_update_sources)
+
+    update_sources_parser.set_defaults(func=cmd_update_sources)

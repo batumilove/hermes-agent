@@ -144,3 +144,34 @@ def test_login_subparser_help_is_suppressed():
     assert "Authenticate with an inference provider" not in help_text
     # And no leaked SUPPRESS placeholder row.
     assert "==SUPPRESS==" not in help_text
+
+
+def test_update_sources_parser_routes_check_and_apply():
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    update_handler = _h("update")
+    sources_handler = _h("update_sources")
+    build_update_parser(
+        sub,
+        cmd_update=update_handler,
+        cmd_update_sources=sources_handler,
+    )
+
+    check = parser.parse_args(["update-sources", "check", "--project-path", "/tmp/project"])
+    assert check.func is sources_handler
+    assert check.update_sources_command == "check"
+    assert check.project_path == "/tmp/project"
+
+    apply = parser.parse_args([
+        "update-sources",
+        "apply",
+        "--source",
+        "demo",
+        "--yes",
+        "--approve-review",
+    ])
+    assert apply.func is sources_handler
+    assert apply.update_sources_command == "apply"
+    assert apply.source_name == "demo"
+    assert apply.yes is True
+    assert apply.approve_review is True

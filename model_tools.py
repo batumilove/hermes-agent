@@ -503,10 +503,18 @@ def _compute_tool_definitions(
             for i, td in enumerate(filtered_tools):
                 if td.get("function", {}).get("name") == "browser_navigate":
                     desc = td["function"].get("description", "")
-                    desc = desc.replace(
-                        "prefer available lightweight text retrieval tools first.",
-                        f"prefer lightweight text retrieval first, such as {', '.join(retrieval_methods)}.",
+                    guidance = (
+                        f"For primarily textual web pages, prefer lightweight text retrieval first, "
+                        f"such as {', '.join(retrieval_methods)}."
                     )
+                    desc = re.sub(
+                        r"For primarily textual web pages[^.]*\.",
+                        guidance,
+                        desc,
+                        count=1,
+                    )
+                    if guidance not in desc:
+                        desc = f"{desc.rstrip()} {guidance}" if desc else guidance
                     filtered_tools[i] = {
                         "type": "function",
                         "function": {**td["function"], "description": desc},

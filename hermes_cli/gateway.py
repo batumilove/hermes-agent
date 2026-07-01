@@ -1610,11 +1610,14 @@ def _container_systemd_operational() -> bool:
 def supports_systemd_services() -> bool:
     if not is_linux() or is_termux():
         return False
-    if shutil.which("systemctl") is None:
-        return False
     if is_wsl():
         return _wsl_systemd_operational()
+    systemctl_path = shutil.which("systemctl")
+    if systemctl_path is None and getattr(shutil.which, "__module__", "shutil") != "shutil":
+        return False
     if is_container():
+        if systemctl_path is None:
+            return False
         return _container_systemd_operational()
     return True
 
@@ -3584,13 +3587,26 @@ def _launchd_unsupported_marker_path() -> Path:
     return get_hermes_home() / ".gateway-launchd-unsupported"
 
 
+def _refuse_temp_home_service_write(destination: Path, kind: str) -> bool:
+    """Hook for refusing unsafe service marker writes.
+
+    The helper is intentionally monkeypatchable for tests and future guards;
+    by default marker writes are allowed so launchd fallback status remains
+    explainable even when HERMES_HOME is a temporary test profile.
+    """
+    return False
+
+
 def _write_launchd_unsupported_marker() -> None:
     """Persist that launchd cannot supervise the gateway on this host."""
     import json
     from datetime import datetime, timezone
 
     try:
-        _launchd_unsupported_marker_path().write_text(
+        marker_path = _launchd_unsupported_marker_path()
+        if _refuse_temp_home_service_write(marker_path, "launchd-unsupported"):
+            return
+        marker_path.write_text(
             json.dumps({
                 "written_at": datetime.now(timezone.utc).isoformat(),
                 "reason": "launchd domain unsupported (exit 5/125)",

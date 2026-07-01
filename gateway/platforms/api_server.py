@@ -42,6 +42,7 @@ import re
 import sqlite3
 import time
 import uuid
+import weakref
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -369,6 +370,8 @@ def check_api_server_requirements() -> bool:
 
 
 class ResponseStore:
+    _instances: "weakref.WeakSet[ResponseStore]" = weakref.WeakSet()
+
     """
     SQLite-backed LRU store for Responses API state.
 
@@ -420,6 +423,13 @@ class ResponseStore:
         # rather than after every commit — chmod-on-every-write is wasted
         # syscalls on a hot path.
         self._tighten_file_permissions()
+        self.__class__._instances.add(self)
+
+    @classmethod
+    def close_all(cls) -> None:
+        """Best-effort cleanup for tests and app cleanup contexts."""
+        for store in list(cls._instances):
+            store.close()
 
     def _tighten_file_permissions(self) -> None:
         """Force owner-only permissions on the DB and SQLite sidecars."""
@@ -528,6 +538,10 @@ class ResponseStore:
         """Close the database connection."""
         try:
             self._conn.close()
+        except Exception:
+            pass
+        try:
+            self.__class__._instances.discard(self)
         except Exception:
             pass
 

@@ -145,7 +145,14 @@ def main() -> int:
         if not dirpath.exists():
             continue
 
-        for py_file in dirpath.rglob("*.py"):
+        try:
+            py_files = list(dirpath.rglob("*.py"))
+        except FileNotFoundError:
+            py_files = [
+                p for p in dirpath.glob("**/*.py")
+                if p.exists()
+            ]
+        for py_file in py_files:
             rel = str(py_file.relative_to(repo_root))
 
             # Skip known-safe files.

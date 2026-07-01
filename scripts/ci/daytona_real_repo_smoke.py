@@ -31,6 +31,7 @@ import tarfile
 import time
 from pathlib import Path
 from typing import Sequence
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ARTIFACT_ROOT = Path.home() / ".hermes" / "artifacts" / "daytona-eval"
@@ -38,9 +39,14 @@ DEFAULT_DAYTONA_IMAGE = "nikolaik/python-nodejs:python3.11-nodejs20"
 DEFAULT_TESTS = [".venv/bin/python -m pytest tests/tools/test_daytona_environment.py -q -o addopts="]
 _SECRET_PATTERNS = [
     re.compile(r"(?i)(DAYTONA_API_KEY\s*=\s*)([^\s'\"]+)"),
-    re.compile(r"(?i)(Authorization:\s*Bearer\s+)([^\s'\"]+)"),
+    re.compile(r"(?i)((?:Proxy-)?Authorization:\s*\S*\s*)([^\s'\"]+)"),
     re.compile(r"(?i)(Bearer\s+)([A-Za-z0-9._~+\-/=]{8,})"),
+    re.compile(r"(?i)((?:x-api-key|api-key|x-auth-token)\s*:\s*)([^\s'\"]+)"),
 ]
+_SENSITIVE_QUERY_PARAMS = {"access_token", "auth", "api_key", "apikey", "code", "key", "password", "secret", "signature", "token"}
+_URL_RE = re.compile(r"\b(https?|wss?|ftp)://[^\s'\"]+")
+_SECRET_ARCHIVE_NAMES = {"auth.json", "credentials.json", "credential.json", "secrets.json", "secret.json"}
+_SECRET_ARCHIVE_SUFFIXES = {".pem", ".p12", ".pfx"}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -69,14 +75,48 @@ def utc_run_id() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
+def _redact_url(match: re.Match[str]) -> str:
+    raw = match.group(0)
+    try:
+        parts = urlsplit(raw)
+        hostname = parts.hostname or ""
+        netloc = hostname
+        if parts.port:
+            netloc = f"{netloc}:{parts.port}"
+        if parts.username:
+            netloc = f"{parts.username}:<redacted>@{netloc}"
+        query = urlencode(
+            [(key, "<redacted>" if key.lower() in _SENSITIVE_QUERY_PARAMS else value) for key, value in parse_qsl(parts.query, keep_blank_values=True)],
+            doseq=True,
+        )
+        return urlunsplit((parts.scheme, netloc, parts.path, query, parts.fragment))
+    except Exception:
+        return raw
+
+
 def redact(text: object) -> str:
-    redacted = str(text)
+    from agent.redact import redact_sensitive_text
+
+    redacted = redact_sensitive_text(str(text), force=True, redact_urls=True)
     for pattern in _SECRET_PATTERNS:
         redacted = pattern.sub(lambda match: match.group(1) + "<redacted>", redacted)
+    redacted = _URL_RE.sub(_redact_url, redacted)
     api_key = os.environ.get("DAYTONA_API_KEY")
     if api_key:
         redacted = redacted.replace(api_key, "<redacted>")
     return redacted
+
+
+def _archive_secret_excluded(rel: Path) -> bool:
+    parts = set(rel.parts)
+    name = rel.name.lower()
+    if any(part in {".git", ".hermes", "__pycache__", ".pytest_cache", ".mypy_cache"} for part in parts):
+        return True
+    if name == ".env" or name.startswith(".env."):
+        return True
+    if name in _SECRET_ARCHIVE_NAMES or rel.suffix.lower() in _SECRET_ARCHIVE_SUFFIXES:
+        return True
+    return any(token in name for token in ("credential", "credentials", "secret", "secrets"))
 
 
 class ArtifactWriter:
@@ -147,13 +187,14 @@ def create_repo_archive(repo_root: Path, archive_path: Path, writer: ArtifactWri
             writer.record_command(result)
         if result.returncode == 0:
             return
-        if writer:
-            writer.log("git archive failed; falling back to filesystem tar")
+        if archive_path.exists():
+            archive_path.unlink()
+        raise RuntimeError(f"git archive failed in git repository: {redact(result.output)}")
 
     with tarfile.open(archive_path, "w") as tf:
         for path in sorted(repo_root.rglob("*")):
             rel = path.relative_to(repo_root)
-            if any(part in {".git", "__pycache__", ".pytest_cache", ".mypy_cache"} for part in rel.parts):
+            if _archive_secret_excluded(rel):
                 continue
             if path == archive_path or archive_path in path.parents:
                 continue

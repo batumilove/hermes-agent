@@ -299,7 +299,7 @@ _EXTRA_ENV_KEYS = frozenset({
 import yaml
 
 from hermes_cli.colors import Colors, color
-from hermes_cli.default_soul import DEFAULT_SOUL_MD
+from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
 
 
 # =============================================================================
@@ -819,10 +819,15 @@ def _secure_file(path):
 
 
 def _ensure_default_soul_md(home: Path) -> None:
-    """Seed a default SOUL.md into HERMES_HOME if the user doesn't have one yet."""
+    """Seed a default SOUL.md into HERMES_HOME, upgrading old empty scaffolds."""
     soul_path = home / "SOUL.md"
     if soul_path.exists():
-        return
+        try:
+            existing = soul_path.read_text(encoding="utf-8")
+        except OSError:
+            return
+        if not is_legacy_template_soul(existing):
+            return
     soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
     _secure_file(soul_path)
 
@@ -889,13 +894,50 @@ DEFAULT_CONFIG = {
     "mcporter": {
         "enabled": "auto",
         "command": "npx",
-        "args": ["-y", "mcporter"],
+        "args": ["-y", "mcporter@1.0.1"],
         "config_path": "config/mcporter.json",
         "timeout": 60,
+    },
+    "rtk_rewrite": {
+        "enabled": False,
+        "command": "",
+        "timeout": 2,
+    },
+    "context_efficiency": {
+        "enabled": False,
+        "routes": [
+            "session_search",
+            "memory",
+            "memory_*",
+            "honcho_profile",
+            "honcho_search",
+            "honcho_reasoning",
+            "honcho_context",
+            "honcho_conclude",
+            "lcm_status",
+            "lcm_grep",
+            "lcm_load_session",
+            "lcm_describe",
+            "lcm_expand",
+            "lcm_expand_query",
+            "web_search",
+            "web_extract",
+            "read_file",
+            "search_files",
+        ],
+        "log_path": "logs/context_efficiency.jsonl",
+        "max_arg_chars": 500,
+        "max_result_chars": 500,
+        "previews_enabled": False,
+        "advisor": {"enabled": True},
     },
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.
     "max_concurrent_sessions": None,
+    # TUI/dashboard detached-session soft cap. Root-level legacy alias retained
+    # so older configs regain the default even before the gateway namespace is
+    # consulted.
+    "max_live_sessions": 6,
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).
@@ -953,6 +995,7 @@ DEFAULT_CONFIG = {
         # batch — cutting round-trips and the resent-context cost that
         # compounds over a long conversation.  Costs ~70 tokens in the cached
         # system prompt.  Set False to disable globally.
+        "verify_on_stop": False,
         "parallel_tool_call_guidance": True,
         # Local-environment toolchain probe — surfaces Python/pip/uv/PEP-668
         # state in the system prompt when something non-default is detected
@@ -2217,6 +2260,7 @@ DEFAULT_CONFIG = {
         "allowed_chats": "",           # If set, bot ONLY responds in these group/supergroup chat IDs (whitelist)
         "extra": {
             "rich_messages": False,     # Bot API 10.1 rich messages (tables/task lists/details/math) render natively; set True to opt in. Default stays legacy MarkdownV2 because rich messages can be hard to copy as plain text in Telegram clients.
+            "rich_drafts": False,       # Draft Bot API rich message rendering remains opt-in and separate from final rich messages.
         },
     },
 
@@ -2539,6 +2583,11 @@ DEFAULT_CONFIG = {
         "message_timestamps": {
             "enabled": False,
         },
+
+        # TUI/dashboard detached-session soft cap. Kept under gateway because
+        # the dashboard is served by the gateway/web stack; root max_live_sessions
+        # remains a backwards-compatible alias.
+        "max_live_sessions": 6,
 
         # Maximum bytes for an inbound image / audio / video payload the
         # gateway will buffer into memory and cache to disk. Inbound media is
@@ -2882,7 +2931,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 30,
+    "_config_version": 31,
 }
 
 # =============================================================================
@@ -2898,6 +2947,7 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
     11: ["TERMINAL_MODAL_MODE"],
+    31: ["TINYFISH_API_KEY"],
 }
 
 # Required environment variables with metadata for migration prompts.
@@ -3351,6 +3401,14 @@ OPTIONAL_ENV_VARS = {
         "prompt": "Tavily API key",
         "url": "https://app.tavily.com/home",
         "tools": ["web_search", "web_extract"],
+        "password": True,
+        "category": "tool",
+    },
+    "TINYFISH_API_KEY": {
+        "description": "TinyFish API key for web search",
+        "prompt": "TinyFish API key",
+        "url": "https://agent.tinyfish.ai/api-keys",
+        "tools": ["web_search"],
         "password": True,
         "category": "tool",
     },
@@ -4175,6 +4233,12 @@ def _normalize_custom_provider_entry(
 
     from urllib.parse import urlparse
 
+    _ENV_PLACEHOLDER_RE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}")
+
+    def _looks_like_env_placeholder_url(value: str) -> bool:
+        """Return True for config URLs intentionally deferred to env expansion."""
+        return bool(_ENV_PLACEHOLDER_RE.search(value))
+
     base_url = ""
     for url_key in ("base_url", "url", "api"):
         raw_url = entry.get(url_key)
@@ -4182,6 +4246,9 @@ def _normalize_custom_provider_entry(
             candidate = raw_url.strip()
             parsed = urlparse(candidate)
             if parsed.scheme and parsed.netloc:
+                base_url = candidate
+                break
+            elif _looks_like_env_placeholder_url(candidate):
                 base_url = candidate
                 break
             else:
@@ -4738,7 +4805,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     
     # ── Version 3 → 4: migrate tool progress from .env to config.yaml ──
     if current_ver < 4:
-        config = load_config()
+        config = read_raw_config()
         display = config.get("display", {})
         if not isinstance(display, dict):
             display = {}
@@ -4761,7 +4828,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     
     # ── Version 4 → 5: add timezone field ──
     if current_ver < 5:
-        config = load_config()
+        config = read_raw_config()
         if "timezone" not in config:
             old_tz = os.getenv("HERMES_TIMEZONE", "")
             if old_tz and old_tz.strip():
@@ -4789,7 +4856,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
     # ── Version 11 → 12: migrate custom_providers list → providers dict ──
     if current_ver < 12:
-        config = load_config()
+        config = read_raw_config()
         custom_list = config.get("custom_providers")
         if isinstance(custom_list, list) and custom_list:
             providers_dict = config.get("providers", {})
@@ -5353,8 +5420,8 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     
     # Check for missing config fields
     missing_config = get_missing_config_fields()
-    
-    if missing_config:
+
+    if missing_config and interactive:
         config = load_config()
         
         for field in missing_config:
@@ -5371,7 +5438,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         save_config(config, strip_defaults=False)
     elif current_ver < latest_ver:
         # Just update version
-        config = load_config()
+        config = read_raw_config()
         config["_config_version"] = latest_ver
         save_config(config, strip_defaults=False)
 
@@ -6281,7 +6348,13 @@ def load_env() -> Dict[str, str]:
             line = line.strip()
             if line and not line.startswith('#') and '=' in line:
                 key, _, value = line.partition('=')
-                env_vars[key.strip()] = value.strip().strip('"\'')
+                value = value.strip()
+                if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+                    value = value[1:-1]
+                    value = value.replace('\\\\', '\\').replace('\\"', '"')
+                elif len(value) >= 2 and value[0] == "'" and value[-1] == "'":
+                    value = value[1:-1]
+                env_vars[key.strip()] = value
 
     if cache_key is not None:
         _env_cache = (cache_key, dict(env_vars))
@@ -6479,6 +6552,13 @@ def save_env_value(key: str, value: str):
     value = value.replace("\n", "").replace("\r", "")
     # API keys / tokens must be ASCII — strip non-ASCII with a warning.
     value = _check_non_ascii_credential(key, value)
+
+    def _format_env_assignment(env_key: str, env_value: str) -> str:
+        if any(ch in env_value for ch in ('#', ' ', '\t', '"', "'", '\\')):
+            escaped = env_value.replace('\\', '\\\\').replace('"', '\\"')
+            return f'{env_key}="{escaped}"\n'
+        return f"{env_key}={env_value}\n"
+
     ensure_hermes_home()
     env_path = get_env_path()
 
@@ -6498,7 +6578,7 @@ def save_env_value(key: str, value: str):
     found = False
     for i, line in enumerate(lines):
         if line.strip().startswith(f"{key}="):
-            lines[i] = f"{key}={value}\n"
+            lines[i] = _format_env_assignment(key, value)
             found = True
             break
 
@@ -6506,7 +6586,7 @@ def save_env_value(key: str, value: str):
         # Ensure there's a newline at the end of the file before appending
         if lines and not lines[-1].endswith("\n"):
             lines[-1] += "\n"
-        lines.append(f"{key}={value}\n")
+        lines.append(_format_env_assignment(key, value))
     
     fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
     # Preserve original permissions so Docker volume mounts aren't clobbered.

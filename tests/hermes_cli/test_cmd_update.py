@@ -20,6 +20,18 @@ def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0", track
             rc = 0 if tracking_ref else 128
             return subprocess.CompletedProcess(cmd, rc, stdout=f"{tracking_ref or ''}\n", stderr="")
 
+        # git remote get-url <remote>
+        if "remote get-url" in joined:
+            remote = str(cmd[-1])
+            urls = {
+                "origin": "https://github.com/NousResearch/hermes-agent.git",
+                "myfork": "https://github.com/batumilove/hermes-agent.git",
+                "upstream": "https://github.com/NousResearch/hermes-agent.git",
+            }
+            url = urls.get(remote)
+            rc = 0 if url else 2
+            return subprocess.CompletedProcess(cmd, rc, stdout=f"{url or ''}\n", stderr="")
+
         # git rev-parse --abbrev-ref HEAD  (get current branch)
         if "rev-parse" in joined and "--abbrev-ref" in joined:
             return subprocess.CompletedProcess(cmd, 0, stdout=f"{branch}\n", stderr="")
@@ -230,9 +242,96 @@ class TestCmdUpdateBranchFallback:
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
         assert any("fetch upstream main" in c for c in commands)
         assert any("fetch myfork batumi/live" in c for c in commands)
+        assert any("branch backup/pre-sync-fork-" in c for c in commands)
         assert any("merge --no-edit upstream/main" in c for c in commands)
-        assert any("push myfork HEAD:batumi/live" in c for c in commands)
+        assert any("push myfork batumi/live:batumi/live" in c for c in commands)
         assert not any("checkout main" in c for c in commands)
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_sync_fork_rejects_official_upstream_tracking_branch(
+        self, mock_run, _mock_which, mock_args, capsys
+    ):
+        mock_args.sync_fork = True
+        mock_args.yes = True
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main",
+            tracking_ref="upstream/main",
+            verify_ok=True,
+            commit_count="0",
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_update(mock_args)
+        assert exc_info.value.code == 1
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert not any("merge --no-edit upstream/main" in c for c in commands)
+        assert not any("push upstream" in c for c in commands)
+        assert "requires a fork/deploy tracking branch" in capsys.readouterr().out
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_sync_fork_rejects_missing_tracking_branch(
+        self, mock_run, _mock_which, mock_args, capsys
+    ):
+        mock_args.sync_fork = True
+        mock_args.yes = True
+        mock_run.side_effect = _make_run_side_effect(
+            branch="feature/local-only",
+            tracking_ref=None,
+            verify_ok=True,
+            commit_count="0",
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_update(mock_args)
+        assert exc_info.value.code == 1
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert not any("fetch upstream main" in c for c in commands)
+        assert not any("merge --no-edit upstream/main" in c for c in commands)
+        assert "requires a configured tracking branch" in capsys.readouterr().out
+
+    @patch("hermes_cli.config.detect_install_method", return_value="git")
+    @patch("subprocess.run")
+    def test_check_default_follows_configured_tracking_branch(
+        self, mock_run, _mock_method, mock_args
+    ):
+        mock_args.check = True
+        mock_run.side_effect = _make_run_side_effect(
+            branch="batumi/live-deploy",
+            tracking_ref="myfork/batumi/live",
+            verify_ok=True,
+            commit_count="2",
+        )
+
+        cmd_update(mock_args)
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert any("fetch myfork batumi/live" in c for c in commands), commands
+        assert any("rev-list HEAD..myfork/batumi/live --count" in c for c in commands), commands
+        assert not any("fetch upstream main" in c for c in commands), commands
+
+    @patch("hermes_cli.config.detect_install_method", return_value="git")
+    @patch("subprocess.run")
+    def test_check_upstream_flag_checks_official_upstream_main(
+        self, mock_run, _mock_method, mock_args
+    ):
+        mock_args.check = True
+        mock_args.upstream = True
+        mock_run.side_effect = _make_run_side_effect(
+            branch="batumi/live-deploy",
+            tracking_ref="myfork/batumi/live",
+            verify_ok=True,
+            commit_count="2",
+        )
+
+        cmd_update(mock_args)
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert any("fetch upstream main" in c for c in commands), commands
+        assert any("rev-list HEAD..upstream/main --count" in c for c in commands), commands
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
@@ -839,10 +938,10 @@ class TestCmdUpdateCheckBranchFlag:
 
     @patch("hermes_cli.config.detect_install_method", return_value="git")
     @patch("subprocess.run")
-    def test_check_default_main_still_prefers_upstream(
+    def test_check_default_main_without_tracking_checks_origin_main(
         self, mock_run, _mock_method, capsys
     ):
-        """No --branch (or --branch=None) preserves the upstream-then-origin probe."""
+        """No --branch follows normal update target resolution, falling back to origin/main."""
         mock_run.side_effect = self._check_side_effect(
             target_branch="main", verify_ok=True, commit_count="0"
         )
@@ -851,11 +950,9 @@ class TestCmdUpdateCheckBranchFlag:
         cmd_update(args)
 
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
-        # Should have tried upstream first.
-        assert any("fetch" in c and "upstream" in c for c in commands), commands
-        # Compare ref is upstream/main (upstream fetch succeeded).
+        assert not any("fetch" in c and "upstream" in c for c in commands), commands
         rev_list_cmds = [c for c in commands if "rev-list" in c]
-        assert any("upstream/main" in c for c in rev_list_cmds), rev_list_cmds
+        assert any("origin/main" in c for c in rev_list_cmds), rev_list_cmds
 
     @patch("hermes_cli.config.detect_install_method", return_value="pip")
     @patch("hermes_cli.banner.check_via_pypi", return_value=0)
@@ -932,8 +1029,8 @@ termux = ["rich>=14"]
     assert hm._load_installable_optional_extras(group="termux-all") == ["termux", "mcp"]
 
 
-def test_gateway_update_starts_unloaded_launchd_service(monkeypatch, tmp_path, capsys):
-    """Gateway updates must not leave an installed launchd service unloaded."""
+def test_gateway_update_starts_unloaded_launchd_service_when_update_ran_from_gateway(monkeypatch, tmp_path, capsys):
+    """Gateway-launched updates may self-heal an installed but unloaded launchd service."""
     from hermes_cli import main as hm
 
     plist = tmp_path / "ai.hermes.gateway.plist"
@@ -1007,3 +1104,72 @@ def test_gateway_update_starts_unloaded_launchd_service(monkeypatch, tmp_path, c
     assert started == [True]
     assert "installed but unloaded" in out
     assert "Restarted ai.hermes.gateway" in out
+
+
+def test_cli_update_does_not_start_intentionally_stopped_launchd(monkeypatch, tmp_path):
+    """A plain CLI update must not start an installed launchd service the user stopped."""
+    from hermes_cli import main as hm
+
+    plist = tmp_path / "ai.hermes.gateway.plist"
+    plist.write_text("<plist/>", encoding="utf-8")
+    started: list[bool] = []
+
+    def fake_run(cmd, **kwargs):
+        cmd = [str(part) for part in cmd]
+        joined = " ".join(cmd)
+        if "launchctl list" in joined:
+            return subprocess.CompletedProcess(cmd, 113, stdout="", stderr="Could not find service")
+        if "rev-parse --abbrev-ref HEAD" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="main\n", stderr="")
+        if "rev-list HEAD..origin/main --count" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="1\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(hm, "_run_pre_update_backup", lambda args: None)
+    monkeypatch.setattr(hm, "_pause_windows_gateways_for_update", lambda: None)
+    monkeypatch.setattr(hm, "_resume_windows_gateways_after_update", lambda resume: None)
+    monkeypatch.setattr(hm, "_is_windows", lambda: False)
+    monkeypatch.setattr(hm, "_resolve_update_branch", lambda args: "main")
+    monkeypatch.setattr(hm, "_get_origin_url", lambda git_cmd, cwd: "https://github.com/NousResearch/hermes-agent.git")
+    monkeypatch.setattr(hm, "_is_fork", lambda origin_url: False)
+    monkeypatch.setattr(hm, "_discard_lockfile_churn", lambda git_cmd, cwd: None)
+    monkeypatch.setattr(hm, "_stash_local_changes_if_needed", lambda git_cmd, cwd: None)
+    monkeypatch.setattr(hm, "_capture_head_sha", lambda git_cmd, cwd: "abc123")
+    monkeypatch.setattr(hm, "_validate_critical_files_syntax", lambda cwd: (True, None, None))
+    monkeypatch.setattr(hm, "_invalidate_update_cache", lambda: None)
+    monkeypatch.setattr(hm, "_clear_bytecode_cache", lambda cwd: 0)
+    monkeypatch.setattr(hm, "_write_update_incomplete_marker", lambda: None)
+    monkeypatch.setattr(hm, "_clear_update_incomplete_marker", lambda: None)
+    monkeypatch.setattr(hm, "_refresh_active_lazy_features", lambda: None)
+    monkeypatch.setattr(hm, "_update_node_dependencies", lambda: None)
+    monkeypatch.setattr(hm, "_build_web_ui", lambda path: None)
+    monkeypatch.setattr(hm, "_desktop_packaged_executable", lambda desktop_dir: None)
+    monkeypatch.setattr(hm, "_desktop_dist_exists", lambda desktop_dir: False)
+    monkeypatch.setattr(hm, "_install_python_dependencies_with_optional_fallback", lambda *a, **k: None)
+    monkeypatch.setattr(hm, "_maybe_run_post_update_migrations", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(hm, "_run_post_update_migrations", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(hm, "_maybe_prompt_config_migration", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(hm.shutil, "which", lambda name: None)
+
+    import hermes_cli.managed_uv as managed_uv
+
+    monkeypatch.setattr(managed_uv, "update_managed_uv", lambda: None)
+    monkeypatch.setattr(managed_uv, "ensure_uv", lambda: None)
+    monkeypatch.setattr(hm.subprocess, "run", fake_run)
+
+    import hermes_cli.gateway as gw
+
+    monkeypatch.setattr(gw, "is_macos", lambda: True)
+    monkeypatch.setattr(gw, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gw, "get_launchd_plist_path", lambda: plist)
+    monkeypatch.setattr(gw, "get_launchd_label", lambda: "ai.hermes.gateway")
+    monkeypatch.setattr(gw, "launchd_start", lambda: started.append(True))
+    monkeypatch.setattr(gw, "_get_service_pids", lambda: set())
+    monkeypatch.setattr(gw, "find_gateway_pids", lambda *a, **k: set())
+    monkeypatch.setattr(gw, "find_profile_gateway_processes", lambda *a, **k: [])
+    monkeypatch.setattr(gw, "has_legacy_hermes_units", lambda: False)
+
+    args = SimpleNamespace(gateway=False, yes=True, sync_fork=False, branch=None)
+    hm._cmd_update_impl(args, gateway_mode=False)
+
+    assert started == []

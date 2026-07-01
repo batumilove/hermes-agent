@@ -50,6 +50,21 @@ from utils import env_var_enabled
 logger = logging.getLogger(__name__)
 
 
+
+# Host-only cwd prefixes that must not be reused as container/sandbox cwd values.
+_HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
+_CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona"})
+
+
+def _is_unusable_container_cwd(cwd: str | None) -> bool:
+    """Return True when *cwd* looks like a host path unusable inside containers."""
+    if not cwd:
+        return False
+    text = str(cwd)
+    if not os.path.isabs(text):
+        return True
+    return any(text.startswith(prefix) for prefix in _HOST_CWD_PREFIXES)
+
 # ---------------------------------------------------------------------------
 # Global interrupt event: set by the agent when a user interrupt arrives.
 # The terminal tool polls this during command execution so it can kill
@@ -1136,7 +1151,7 @@ def _get_env_config() -> Dict[str, Any]:
     env_type = os.getenv("TERMINAL_ENV", "local")
     
     mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
-    container_backend = env_type in {"docker", "singularity", "modal", "daytona"}
+    container_backend = env_type in _CONTAINER_BACKENDS
     docker_backend = env_type == "docker"
 
     # Docker/container-only env vars may be bridged from config.yaml even when
@@ -1191,7 +1206,7 @@ def _get_env_config() -> Dict[str, Any]:
         ):
             host_cwd = candidate
             cwd = "/workspace"
-    elif env_type in {"modal", "docker", "singularity", "daytona", "kata"} and cwd:
+    elif env_type in (_CONTAINER_BACKENDS | {"kata"}) and cwd:
         # Host paths and relative paths that won't work inside containers
         is_host_path = any(cwd.startswith(p) for p in host_prefixes)
         is_relative = not os.path.isabs(cwd)  # e.g. "." or "src/"
@@ -2002,7 +2017,11 @@ def terminal_tool(
         else:
             image = ""
 
-        cwd = overrides.get("cwd") or config["cwd"]
+        override_cwd = overrides.get("cwd")
+        if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(override_cwd):
+            logger.info("Ignoring cwd override %r for %s backend (host/relative path won't work in sandbox). Using %r instead.", override_cwd, env_type, config["cwd"])
+            override_cwd = None
+        cwd = override_cwd or config["cwd"]
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
 
@@ -2235,7 +2254,7 @@ def terminal_tool(
             from tools.approval import get_current_session_key
             from tools.process_registry import process_registry
 
-            session_key = get_current_session_key(default="")
+            session_key = get_current_session_key(default="") or effective_task_id
             effective_cwd = _resolve_command_cwd(
                 workdir=workdir,
                 env=env,
@@ -2715,7 +2734,7 @@ def check_terminal_requirements() -> bool:
             if config.get("kata_kubeconfig"):
                 cmd += ["--kubeconfig", config["kata_kubeconfig"]]
             cmd += ["version", "--client"]
-            result = subprocess.run(cmd, capture_output=True, timeout=10)
+            result = subprocess.run(cmd, capture_output=True, timeout=10, stdin=subprocess.DEVNULL)
             return result.returncode == 0
 
         else:

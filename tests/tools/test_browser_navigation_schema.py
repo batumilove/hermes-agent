@@ -81,3 +81,38 @@ def test_browser_navigate_mentions_all_available_retrieval_tools():
     assert "curl via the terminal tool" in desc
     assert "web_extract" in desc
     assert "mcporter_call when a configured mcporter retrieval tool" in desc
+
+
+def test_browser_navigate_appends_guidance_when_base_phrase_drifts():
+    model_tools._clear_tool_defs_cache()
+    schemas = [
+        {
+            "type": "function",
+            "function": {
+                "name": "browser_navigate",
+                "description": "Navigate to a URL in the browser.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "web_extract",
+                "description": "web_extract description",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+    ]
+
+    with patch.object(model_tools.registry, "get_definitions", return_value=schemas), patch(
+        "model_tools.sanitize_tool_schemas", side_effect=lambda tools: tools, create=True
+    ):
+        tools = model_tools.get_tool_definitions(enabled_toolsets=["browser"], quiet_mode=True)
+
+    desc = next(
+        tool["function"]["description"]
+        for tool in tools
+        if tool["function"]["name"] == "browser_navigate"
+    )
+    assert desc.startswith("Navigate to a URL in the browser.")
+    assert "web_extract" in desc

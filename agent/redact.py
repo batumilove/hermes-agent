@@ -388,7 +388,7 @@ def _redact_form_body(text: str) -> str:
     return _redact_query_string(text.strip())
 
 
-def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = False) -> str:
+def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = False, redact_urls: bool = False) -> str:
     """Apply all redaction patterns to a block of text.
 
     Safe to call on any string -- non-matching text passes through unchanged.
@@ -486,6 +486,9 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     # Database connection string passwords
     if "://" in text:
         text = _DB_CONNSTR_RE.sub(lambda m: f"{m.group(1)}***{m.group(3)}", text)
+        if redact_urls:
+            text = _redact_url_userinfo(text)
+            text = _redact_url_query_params(text)
 
     # JWT tokens (eyJ... — base64-encoded JSON headers)
     if "eyJ" in text:
@@ -499,6 +502,10 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     # Known credential shapes (sk-, ghp_, JWTs, etc.) inside URLs are still
     # caught by _PREFIX_RE and _JWT_RE above. DB connection-string passwords
     # are still caught by _DB_CONNSTR_RE.
+
+    # HTTP access-log request targets.
+    if redact_urls and _has_http_method_substring(text):
+        text = _redact_http_request_target_query_params(text)
 
     # Form-urlencoded bodies (only triggers on clean k=v&k=v inputs).
     if "&" in text and "=" in text:

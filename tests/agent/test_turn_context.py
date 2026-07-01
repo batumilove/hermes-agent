@@ -40,7 +40,7 @@ class _FakeAgent:
         self.model = "test/model"
         self.provider = "openrouter"
         self.base_url = "https://openrouter.ai/api/v1"
-        self.api_key = "sk-x"
+        self.api_key = "test-key"
         self.api_mode = "chat_completions"
         self.platform = "cli"
         self.quiet_mode = True
@@ -52,7 +52,14 @@ class _FakeAgent:
         self._skip_mcp_refresh = False
         self.compression_enabled = False
         self.context_compressor = types.SimpleNamespace(
-            protect_first_n=2, protect_last_n=2
+            protect_first_n=2,
+            protect_last_n=2,
+            threshold_tokens=100_000,
+            context_length=200_000,
+            last_prompt_tokens=0,
+            last_real_prompt_tokens=0,
+            should_defer_preflight_to_real_usage=lambda _tokens: False,
+            should_compress=lambda _tokens: False,
         )
         self._cached_system_prompt = "SYSTEM"
         self._memory_store = None
@@ -71,6 +78,11 @@ class _FakeAgent:
         self._invalid_tool_retries = -1
         self._vision_supported = None
         self._persist_calls = 0
+        self._compress_calls = 0
+        self._last_compaction_in_place = False
+        self._turn_failed_file_mutations = {}
+        self._turn_file_mutation_paths = set()
+        self._verification_stop_nudges = 0
         # Records _cached_system_prompt at the moment _ensure_db_session()
         # is called (regression guard for #45499 turn-setup ordering).
         self._ensure_db_prompt_at_call = "<unset>"
@@ -99,6 +111,10 @@ class _FakeAgent:
 
     def _persist_session(self, *_a, **_k):
         self._persist_calls += 1
+
+    def _compress_context(self, messages, *_a, **_k):
+        self._compress_calls += 1
+        return messages, self._cached_system_prompt
 
 
 @pytest.fixture(autouse=True)
@@ -214,6 +230,53 @@ def test_ensure_db_session_runs_after_system_prompt_restore():
     # The prompt was populated before the DB row was created.
     assert agent._ensure_db_prompt_at_call == "REBUILT-SYSTEM"
     assert agent._cached_system_prompt == "REBUILT-SYSTEM"
+
+
+def test_preflight_compression_uses_history_handoff_helper_for_in_place_compaction():
+    """Preflight must preserve in-place compaction's flush baseline.
+
+    ``conversation_history_after_compression`` returns a shallow copy of the
+    compacted messages when compression rewrote rows in-place. Resetting the
+    baseline to ``None`` would make the DB flusher append those rows again.
+    """
+    agent = _FakeAgent()
+    agent.compression_enabled = True
+    should_calls = {"n": 0}
+
+    def _should_compress(_tokens):
+        should_calls["n"] += 1
+        return should_calls["n"] == 1
+
+    agent.context_compressor.should_compress = _should_compress
+    agent._last_compaction_in_place = True
+
+    compacted = [{"role": "user", "content": "summary"}]
+
+    def _compress(messages, *_a, **_k):
+        agent._compress_calls += 1
+        return compacted, agent._cached_system_prompt
+
+    agent._compress_context = _compress
+    history = [{"role": "user", "content": "x" * 400_000}]
+
+    ctx = _build(agent, conversation_history=history)
+
+    assert agent._compress_calls == 1
+    assert ctx.conversation_history == compacted
+    assert ctx.conversation_history is not compacted
+
+
+def test_per_turn_file_mutation_and_verification_stop_state_is_reset():
+    agent = _FakeAgent()
+    agent._turn_failed_file_mutations = {"/tmp/old.py": {"tool": "patch"}}
+    agent._turn_file_mutation_paths = {"/tmp/old.py"}
+    agent._verification_stop_nudges = 2
+
+    _build(agent)
+
+    assert agent._turn_failed_file_mutations == {}
+    assert agent._turn_file_mutation_paths == set()
+    assert agent._verification_stop_nudges == 0
 
 
 # ── Between-turns MCP refresh (cache-safe late-binding) ──────────────────────

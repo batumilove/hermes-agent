@@ -152,3 +152,62 @@ def test_dry_run_remains_available_without_daytona_api_key(tmp_path, monkeypatch
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["mode"] == "dry-run"
     assert manifest["status"] == "passed"
+
+
+def test_git_archive_failure_in_git_repo_fails_closed(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    archive = tmp_path / "out.tar"
+
+    def fake_result(cmd, *, cwd, timeout=120):
+        return smoke.CommandResult("host", "git archive", str(cwd), timeout, 0.01, 1, "fatal: bad object HEAD")
+
+    monkeypatch.setattr(smoke, "_subprocess_result", fake_result)
+
+    with pytest.raises(RuntimeError, match="git archive failed"):
+        smoke.create_repo_archive(repo, archive)
+
+    assert not archive.exists()
+
+
+def test_non_git_archive_fallback_excludes_secret_files(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "module.py").write_text("print('ok')\n", encoding="utf-8")
+    (repo / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+    (repo / "prod.pem").write_text("PRIVATE KEY\n", encoding="utf-8")
+    (repo / "auth.json").write_text('{"token":"secret"}\n', encoding="utf-8")
+    (repo / ".hermes").mkdir()
+    (repo / ".hermes" / "config.yaml").write_text("secret: value\n", encoding="utf-8")
+
+    archive = tmp_path / "out.tar"
+    smoke.create_repo_archive(repo, archive)
+
+    with tarfile.open(archive) as tf:
+        names = set(tf.getnames())
+
+    assert "module.py" in names
+    assert ".env" not in names
+    assert "prod.pem" not in names
+    assert "auth.json" not in names
+    assert ".hermes/config.yaml" not in names
+
+
+def test_redact_masks_url_credentials_and_query_tokens(monkeypatch):
+    monkeypatch.setenv("DAYTONA_API_KEY", "daytona-env-secret")
+    text = (
+        "fetch https://user:pass123@example.test/cb?token=query-secret&ok=1 "
+        "Authorization: Basic dXNlcjpwYXNzMTIz "
+        "X-Api-Key: opaque-key-123 "
+        "DAYTONA_API_KEY=daytona-env-secret"
+    )
+
+    redacted = smoke.redact(text)
+
+    assert "pass123" not in redacted
+    assert "query-secret" not in redacted
+    assert "dXNlcjpwYXNzMTIz" not in redacted
+    assert "opaque-key-123" not in redacted
+    assert "daytona-env-secret" not in redacted
+    assert "token=%3Credacted%3E" in redacted

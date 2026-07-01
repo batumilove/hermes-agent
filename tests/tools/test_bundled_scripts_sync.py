@@ -47,6 +47,8 @@ class TestSyncBundledScripts:
         dest = local_bin / "telegram-healthcheck-stateful"
         dest.symlink_to(old_src)
         manifest = home / ".hermes" / ".bundled_scripts_manifest"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(f"telegram-healthcheck-stateful:{dest}\n", encoding="utf-8")
 
         with patch.object(bss, "_project_root", return_value=repo), patch.object(
             bss, "SCRIPTS_MANIFEST", manifest
@@ -101,4 +103,58 @@ class TestSyncBundledScripts:
 
         assert result["missing"] == ["missing-helper"]
         assert result["linked"] == []
+        assert result["updated"] == []
+
+    def test_does_not_overwrite_preexisting_regular_file(self, tmp_path):
+        repo = tmp_path / "repo"
+        src = repo / "scripts" / "telegram-healthcheck-stateful.sh"
+        src.parent.mkdir(parents=True)
+        src.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+        home = tmp_path / "home"
+        local_bin = home / ".local" / "bin"
+        local_bin.mkdir(parents=True)
+        dest = local_bin / "telegram-healthcheck-stateful"
+        dest.write_text("#!/bin/sh\necho mine\n", encoding="utf-8")
+        manifest = home / ".hermes" / ".bundled_scripts_manifest"
+
+        with patch.object(bss, "_project_root", return_value=repo), patch.object(
+            bss, "SCRIPTS_MANIFEST", manifest
+        ), patch.object(bss.Path, "home", return_value=home), patch.object(
+            bss,
+            "BUNDLED_SCRIPTS",
+            [("scripts/telegram-healthcheck-stateful.sh", "telegram-healthcheck-stateful")],
+        ):
+            result = bss.sync_bundled_scripts(quiet=True)
+
+        assert dest.is_file()
+        assert dest.read_text(encoding="utf-8") == "#!/bin/sh\necho mine\n"
+        assert result["skipped"] == ["telegram-healthcheck-stateful"]
+        assert result["updated"] == []
+
+    def test_does_not_repoint_foreign_symlink_without_manifest_ownership(self, tmp_path):
+        repo = tmp_path / "repo"
+        src = repo / "scripts" / "telegram-healthcheck-stateful.sh"
+        src.parent.mkdir(parents=True)
+        src.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+        foreign = tmp_path / "foreign.sh"
+        foreign.write_text("#!/bin/sh\necho foreign\n", encoding="utf-8")
+        home = tmp_path / "home"
+        local_bin = home / ".local" / "bin"
+        local_bin.mkdir(parents=True)
+        dest = local_bin / "telegram-healthcheck-stateful"
+        dest.symlink_to(foreign)
+        manifest = home / ".hermes" / ".bundled_scripts_manifest"
+
+        with patch.object(bss, "_project_root", return_value=repo), patch.object(
+            bss, "SCRIPTS_MANIFEST", manifest
+        ), patch.object(bss.Path, "home", return_value=home), patch.object(
+            bss,
+            "BUNDLED_SCRIPTS",
+            [("scripts/telegram-healthcheck-stateful.sh", "telegram-healthcheck-stateful")],
+        ):
+            result = bss.sync_bundled_scripts(quiet=True)
+
+        assert dest.is_symlink()
+        assert dest.resolve() == foreign.resolve()
+        assert result["skipped"] == ["telegram-healthcheck-stateful"]
         assert result["updated"] == []

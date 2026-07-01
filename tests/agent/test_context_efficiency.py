@@ -191,3 +191,31 @@ def test_record_tool_route_ignores_unlisted_routes(tmp_path):
     record_tool_route(agent, "terminal", {"command": "date"}, "ok", 1.0)
 
     assert not Path(tmp_path / "frontier.jsonl").exists()
+
+
+def test_record_tool_route_redacts_sensitive_previews_when_enabled(tmp_path):
+    agent = DummyAgent()
+    agent._context_efficiency_config = normalize_config({
+        "enabled": True,
+        "routes": ["web_extract"],
+        "log_path": str(tmp_path / "frontier.jsonl"),
+        "max_arg_chars": 500,
+        "max_result_chars": 500,
+        "previews_enabled": True,
+    })
+
+    record_tool_route(
+        agent,
+        "web_extract",
+        {"url": "https://user:pass123@example.test/?token=query-secret"},
+        "Authorization: Basic dXNlcjpwYXNzMTIz and x-api-key: opaque-key-123",
+        0.2,
+    )
+
+    event = json.loads((tmp_path / "frontier.jsonl").read_text(encoding="utf-8"))
+    payload = json.dumps(event)
+    assert "pass123" not in payload
+    assert "query-secret" not in payload
+    assert "dXNlcjpwYXNzMTIz" not in payload
+    assert "opaque-key-123" not in payload
+    assert "token=***" in payload

@@ -451,11 +451,6 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
-    for prefix in _SENSITIVE_PATH_PREFIXES:
-        if resolved.startswith(prefix) or normalized.startswith(prefix):
-            return _err
-    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
-        return _err
     # Prevent agents from modifying the Hermes config file directly.
     # approvals.mode and other security settings live here; a malicious or
     # prompt-injected agent could silently disable exec approval by writing to
@@ -467,6 +462,11 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             "Agent cannot modify security-sensitive configuration. "
             "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead."
         )
+    for prefix in _SENSITIVE_PATH_PREFIXES:
+        if resolved.startswith(prefix) or normalized.startswith(prefix):
+            return _err
+    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
+        return _err
     return None
 
 
@@ -1448,7 +1448,8 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             # terminal's cwd (the worktree-cwd bug). Lowest priority of the three.
             cwd_warning = _path_resolution_warning(path, Path(_resolved), task_id)
             file_ops = _get_file_ops(task_id)
-            result = file_ops.write_file(_resolved, content)
+            write_path = path if os.path.isabs(path) else _resolved
+            result = file_ops.write_file(write_path, content)
             result_dict = result.to_dict()
             effective_warning = cross_warning or stale_warning or cwd_warning
             if effective_warning:
@@ -1571,7 +1572,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 # shell's own cwd may differ (worktree-cwd bug), and a relative
                 # path would let the two layers disagree about which file is
                 # being edited.
-                _replace_target = _path_to_resolved.get(path) or path
+                _replace_target = path if path and os.path.isabs(path) else (_path_to_resolved.get(path) or path)
                 result = file_ops.patch_replace(_replace_target, old_string, new_string, replace_all)
             elif mode == "patch":
                 if not patch:

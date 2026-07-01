@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from agent.iteration_budget import IterationBudget
-from agent.model_metadata import estimate_request_tokens_rough
+from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,24 @@ def _compression_made_progress(
     if new_len < orig_len:
         return True
     return orig_tokens > 0 and new_tokens < orig_tokens * 0.95
+
+
+def _should_run_preflight_estimate(
+    messages: List[Dict[str, Any]],
+    protect_first_n: int,
+    protect_last_n: int,
+    threshold_tokens: int,
+) -> bool:
+    """Return whether the turn should pay for a preflight token estimate.
+
+    The row-count gate is cheap and keeps tiny turns fast, but it misses a
+    small number of enormous messages. Use the shared rough message estimator
+    as the second gate so few/huge-message turns can trigger compression before
+    the provider rejects them for context length.
+    """
+    if len(messages) > protect_first_n + protect_last_n + 1:
+        return True
+    return estimate_messages_tokens_rough(messages) >= threshold_tokens
 
 
 @dataclass
@@ -110,8 +128,6 @@ def build_turn_context(
     """
     # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
     install_safe_stdio()
-
-    agent._ensure_db_session()
 
     # Tell auxiliary_client what the live main provider/model are for this turn.
     try:
@@ -278,6 +294,11 @@ def build_turn_context(
 
     active_system_prompt = agent._cached_system_prompt
 
+    # The session row stores the prompt snapshot used for prefix caching. On a
+    # fresh agent, create that row only after the prompt has been restored or
+    # built; otherwise the first turn can persist ``system_prompt=NULL``.
+    agent._ensure_db_session()
+
     # Crash-resilience: persist the inbound user turn as soon as the session row exists.
     try:
         agent._persist_session(messages, conversation_history)
@@ -291,8 +312,12 @@ def build_turn_context(
     # ── Preflight context compression ──
     if (
         agent.compression_enabled
-        and len(messages) > agent.context_compressor.protect_first_n
-                            + agent.context_compressor.protect_last_n + 1
+        and _should_run_preflight_estimate(
+            messages,
+            agent.context_compressor.protect_first_n,
+            agent.context_compressor.protect_last_n,
+            agent.context_compressor.threshold_tokens,
+        )
     ):
         _preflight_tokens = estimate_request_tokens_rough(
             messages,
@@ -354,7 +379,12 @@ def build_turn_context(
                     _orig_len, len(messages), _orig_tokens, _preflight_tokens
                 ):
                     break  # Cannot compress further: neither rows nor tokens moved
-                conversation_history = None
+                try:
+                    from agent.conversation_compression import conversation_history_after_compression
+
+                    conversation_history = conversation_history_after_compression(agent, messages)
+                except Exception:
+                    conversation_history = None
                 agent._empty_content_retries = 0
                 agent._thinking_prefill_retries = 0
                 agent._last_content_with_tools = None
@@ -392,6 +422,8 @@ def build_turn_context(
 
     # Per-turn file-mutation verifier state.
     agent._turn_failed_file_mutations = {}
+    agent._turn_file_mutation_paths = set()
+    agent._verification_stop_nudges = 0
     try:
         from agent.workspace_diff_sentinel import _sentinel_enabled, compute_workspace_diff_snapshot
         if _sentinel_enabled():

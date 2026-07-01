@@ -98,13 +98,28 @@ def get_safe_write_roots() -> set[str]:
 def is_write_denied(path: str) -> bool:
     """Return True if path is blocked by the write denylist or safe root."""
     home = os.path.realpath(os.path.expanduser("~"))
-    resolved = os.path.realpath(os.path.expanduser(str(path)))
+    expanded = os.path.abspath(os.path.expanduser(str(path)))
+    resolved = os.path.realpath(expanded)
+
+    lexical_denied_prefixes = (
+        os.path.join(os.path.expanduser("~"), ".ssh") + os.sep,
+        os.path.join(os.path.expanduser("~"), ".aws") + os.sep,
+        os.path.join(os.path.expanduser("~"), ".gnupg") + os.sep,
+        os.path.join(os.path.expanduser("~"), ".kube") + os.sep,
+        os.path.join(os.path.expanduser("~"), ".docker") + os.sep,
+        os.path.join(os.path.expanduser("~"), ".azure") + os.sep,
+    )
+    if any(expanded.startswith(prefix) for prefix in lexical_denied_prefixes):
+        return True
 
     if resolved in build_write_denied_paths(home):
         return True
     for prefix in build_write_denied_prefixes(home):
         if resolved.startswith(prefix):
             return True
+    sensitive_dir_parts = {".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure"}
+    if any(part in sensitive_dir_parts for part in Path(resolved).parts):
+        return True
 
     mcp_tokens_dir_name = "mcp-tokens"
 

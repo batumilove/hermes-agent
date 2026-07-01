@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 
 
 from agent.context_compressor import SUMMARY_PREFIX
+from hermes_state import SessionDB
 from run_agent import AIAgent
 import run_agent
 
@@ -139,6 +140,42 @@ def test_current_user_turn_is_persisted_before_provider_call(agent):
         "role": "user",
         "content": "new message that must survive a crash",
     }
+
+
+def test_first_turn_persists_non_null_system_prompt(tmp_path):
+    """Fresh agents must build/restore the prompt before creating the DB row."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    with (
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        fresh = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            session_db=db,
+            session_id="first-turn-system-prompt",
+        )
+
+    fresh.client = MagicMock()
+    fresh.client.chat.completions.create.side_effect = [
+        _mock_response(content="ok", finish_reason="stop")
+    ]
+    assert getattr(fresh, "_cached_system_prompt") is None
+
+    with (
+        patch.object(fresh, "_save_trajectory"),
+        patch.object(fresh, "_cleanup_task_resources"),
+    ):
+        result = fresh.run_conversation("hello")
+
+    session = db.get_session("first-turn-system-prompt")
+    assert result["completed"] is True
+    assert session is not None
+    assert session["system_prompt"]
 
 
 class TestHTTP413Compression:
