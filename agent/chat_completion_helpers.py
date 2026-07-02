@@ -24,11 +24,11 @@ import time
 import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
-from urllib.parse import urlparse
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
+from agent.gemini_native_adapter import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
 from agent.message_sanitization import (
     _sanitize_surrogates,
@@ -632,7 +632,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         _ct = agent._get_transport()
         is_github_responses = (
             base_url_host_matches(agent.base_url, "models.github.ai")
-            or base_url_host_matches(agent.base_url, "api.githubcopilot.com")
+            or base_url_host_matches(agent.base_url, "githubcopilot.com")
         )
         is_codex_backend = (
             agent.provider == "openai-codex"
@@ -702,7 +702,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     _is_or = agent._is_openrouter_url()
     _is_gh = (
         base_url_host_matches(agent._base_url_lower, "models.github.ai")
-        or base_url_host_matches(agent._base_url_lower, "api.githubcopilot.com")
+        or base_url_host_matches(agent._base_url_lower, "githubcopilot.com")
     )
     _is_nous = "nousresearch" in agent._base_url_lower
     _is_nvidia = "integrate.api.nvidia.com" in agent._base_url_lower
@@ -741,14 +741,26 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     if agent.provider_data_collection:
         _prefs["data_collection"] = agent.provider_data_collection
 
-    # Claude max-output override on aggregators
+    # Anthropic-compatible max-output fallback (last resort only — applied in
+    # build_kwargs *after* ephemeral/user/profile max_tokens, never overriding
+    # an explicit value).  Model-gated, not URL-gated: any chat-completions
+    # proxy serving a Claude/MiniMax/Qwen3 model needs max_tokens, because the
+    # Anthropic Messages API treats it as mandatory and proxies that omit it
+    # (AWS Bedrock, NVIDIA, LiteLLM, vLLM, corporate gateways) default as low
+    # as 4096 output tokens — easily exhausted by thinking + large tool calls
+    # like write_file/patch.  OpenRouter/Nous were the only routes covered
+    # before; gating on _ANTHROPIC_OUTPUT_LIMITS membership covers them all.
     _ant_max = None
-    if (_is_or or _is_nous) and "claude" in (agent.model or "").lower():
-        try:
-            from agent.anthropic_adapter import _get_anthropic_max_output
+    try:
+        from agent.anthropic_adapter import (
+            _get_anthropic_max_output,
+            _ANTHROPIC_OUTPUT_LIMITS,
+        )
+        _model_norm = (agent.model or "").lower().replace(".", "-")
+        if any(key in _model_norm for key in _ANTHROPIC_OUTPUT_LIMITS):
             _ant_max = _get_anthropic_max_output(agent.model)
-        except Exception:
-            pass
+    except Exception:
+        pass
 
     # Qwen session metadata
     _qwen_meta = None
@@ -1051,18 +1063,23 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
                     "arguments": tool_call.function.arguments
                 },
             }
-            # Defence-in-depth: redact credentials from tool call arguments
-            # before they enter conversation history. Tool execution uses the
-            # raw API response object, not this dict, so redacting the
-            # persisted shape is safe and only affects storage. Catches the
-            # case where a model accidentally inlines a secret into a tool
-            # call (e.g. `terminal(command="curl -H 'Authorization: Bearer
-            # sk-...'")`). (#19798)
-            if isinstance(tc_dict["function"]["arguments"], str):
-                from agent.redact import redact_sensitive_text
-                tc_dict["function"]["arguments"] = redact_sensitive_text(
-                    tc_dict["function"]["arguments"]
-                )
+            # Tool-call arguments are intentionally NOT redacted here. This
+            # dict enters the in-memory conversation history that is replayed
+            # to the model on every subsequent turn AND persisted to state.db,
+            # which is itself replayed verbatim on session resume
+            # (get_messages_as_conversation). Masking a credential to `***`
+            # here poisons that replay: the model reads back its own
+            # `PGPASSWORD='***' psql ...` call and copies the placeholder into
+            # the next tool call, breaking every credential-dependent command
+            # on the second turn (#43083). The masking also provided no real
+            # protection — the same secret still leaks verbatim through tool
+            # OUTPUT (file contents, command output, diffs, the compaction
+            # block), none of which this pass ever touched. Keeping secrets
+            # out of the replayable store is a separate tokenization/vault
+            # concern, not something arg-redaction can deliver without
+            # breaking replay. Storage-time redaction remains governed by the
+            # `security.redact_secrets` toggle. (#19798 introduced this;
+            # #43083 removed it.)
             # Preserve extra_content (e.g. Gemini thought_signature) so it
             # is sent back on subsequent API calls.  Without this, Gemini 3
             # thinking models reject the request with a 400 error.
@@ -1107,25 +1124,33 @@ def rewrite_prompt_model_identity(agent, model: str, provider: str) -> None:
     agent._cached_system_prompt = sp
 
 
-def _fallback_endpoint_uses_anthropic_messages(provider: str, base_url: str) -> bool:
-    """Return True when a fallback target speaks Anthropic Messages.
+def _fallback_entry_key(fb: dict) -> tuple[str, str, str]:
+    return (
+        str(fb.get("provider") or "").strip().lower(),
+        str(fb.get("model") or "").strip(),
+        str(fb.get("base_url") or "").strip().rstrip("/"),
+    )
 
-    Most fallback providers use OpenAI-compatible chat completions, but a few
-    endpoints are Anthropic-wire even when the provider name is not literally
-    ``anthropic``.  In particular, Kimi Coding Plan keys route to
-    ``https://api.kimi.com/coding`` which returns 404 for chat.completions and
-    expects the Anthropic Messages API instead.
-    """
-    normalized = (base_url or "").strip().lower().rstrip("/")
-    if (provider or "").strip().lower() == "anthropic":
-        return True
-    path = urlparse(normalized).path.rstrip("/")
-    if path.endswith("/anthropic") or path.endswith("/anthropic/v1"):
-        return True
-    hostname = base_url_hostname(normalized)
-    if hostname == "api.anthropic.com":
-        return True
-    return hostname == "api.kimi.com" and "/coding" in normalized
+
+def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str]:
+    """Return a skip reason for fallback entries known to be unusable locally."""
+    fb_provider = (fb.get("provider") or "").strip().lower()
+    if fb_provider != "nous":
+        return None
+    try:
+        from hermes_cli.auth import get_provider_auth_state
+
+        state = get_provider_auth_state("nous") or {}
+    except Exception as exc:
+        return f"nous_auth_unreadable:{type(exc).__name__}"
+    access_value = state.get("access_token")
+    refresh_value = state.get("refresh_token")
+    has_access = isinstance(access_value, str) and bool(access_value.strip())
+    has_refresh = isinstance(refresh_value, str) and bool(refresh_value.strip())
+    if not (has_access or has_refresh):
+        return "nous_token_missing"
+    return None
+
 
 
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
@@ -1140,7 +1165,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     auth resolution and client construction — no duplicated provider→key
     mappings.
     """
-    if reason in {FailoverReason.rate_limit, FailoverReason.billing}:
+    if reason in {FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit}:
         # Only start cooldown when leaving the primary provider.  If we're
         # already on a fallback and chain-switching, the primary wasn't the
         # source of the 429 so the cooldown should not be reset/extended.
@@ -1158,7 +1183,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # provider again.  Guards the cross-turn replay storm in #24996.
         if (
             len(agent._fallback_chain) > 0
-            and reason not in {FailoverReason.rate_limit, FailoverReason.billing}
+            and reason not in {FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit}
         ):
             _existing_cooldown = getattr(agent, "_rate_limited_until", 0) or 0
             agent._rate_limited_until = max(
@@ -1168,10 +1193,29 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         return False
     fb = agent._fallback_chain[agent._fallback_index]
     agent._fallback_index += 1
+    fb_key = _fallback_entry_key(fb)
+    unavailable = getattr(agent, "_unavailable_fallback_keys", None)
+    if unavailable is None:
+        unavailable = set()
+        agent._unavailable_fallback_keys = unavailable
+    if fb_key in unavailable:
+        logger.debug("Fallback skip: %s previously marked unavailable", fb_key)
+        return agent._try_activate_fallback(reason)
     fb_provider = (fb.get("provider") or "").strip().lower()
     fb_model = (fb.get("model") or "").strip()
     if not fb_provider or not fb_model:
-        return agent._try_activate_fallback()  # skip invalid, try next
+        return agent._try_activate_fallback(reason)  # skip invalid, try next
+
+    local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
+    if local_skip_reason:
+        unavailable.add(fb_key)
+        logger.warning(
+            "Fallback skip: %s/%s is not locally usable (%s); suppressing for this session",
+            fb_provider,
+            fb_model,
+            local_skip_reason,
+        )
+        return agent._try_activate_fallback(reason)
 
     # Skip entries that resolve to the current (provider, model) — falling
     # back to the same backend that just failed loops the failure. Compare
@@ -1186,7 +1230,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             "Fallback skip: chain entry %s/%s matches current provider/model",
             fb_provider, fb_model,
         )
-        return agent._try_activate_fallback()
+        return agent._try_activate_fallback(reason)
     if (
         fb_base_url_for_dedup
         and current_base_url
@@ -1197,7 +1241,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             "Fallback skip: chain entry base_url %s matches current backend",
             fb_base_url_for_dedup,
         )
-        return agent._try_activate_fallback()
+        return agent._try_activate_fallback(reason)
 
     # Use centralized router for client construction.
     # raw_codex=True because the main agent needs direct responses.stream()
@@ -1228,7 +1272,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             logger.warning(
                 "Fallback to %s failed: provider not configured",
                 fb_provider)
-            return agent._try_activate_fallback()  # try next in chain
+            unavailable.add(fb_key)
+            return agent._try_activate_fallback(reason)  # try next in chain
         try:
             from hermes_cli.model_normalize import normalize_model_for_provider
 
@@ -1245,7 +1290,17 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
         if fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
-        elif _fallback_endpoint_uses_anthropic_messages(fb_provider, fb_base_url):
+        elif (
+            fb_provider == "anthropic"
+            or fb_base_url.rstrip("/").lower().endswith("/anthropic")
+            or base_url_hostname(fb_base_url) == "api.anthropic.com"
+        ):
+            # Custom providers (e.g. cron-anthropic) point at the native
+            # api.anthropic.com host with no "/anthropic" path suffix, so the
+            # name/suffix checks above miss them and they default to
+            # chat_completions → POST /v1/chat/completions → 404. Match the
+            # host the same way determine_api_mode() and _detect_api_mode_for_url()
+            # do on the primary path. (#32243, #49247)
             fb_api_mode = "anthropic_messages"
         elif _fb_is_azure:
             # Azure OpenAI serves gpt-5.x on /chat/completions — does NOT
@@ -1419,186 +1474,16 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         )
         return True
     except Exception as e:
+        if fb_provider == "nous":
+            unavailable.add(fb_key)
         logger.error("Failed to activate fallback %s: %s", fb_model, e)
-        return agent._try_activate_fallback()  # try next in chain
+        return agent._try_activate_fallback(reason)  # try next in chain
 
-
-
-def _is_summary_fallback_worthy_error(exc: Exception) -> bool:
-    """Return True when a max-iteration summary failure should use fallback text.
-
-    The max-iteration path is already a reliability backstop. If the model used
-    for the backstop is rate-limited, exhausted, or otherwise unavailable, do
-    not surface the raw provider body as the entire user-facing response.
-    """
-    text = str(exc).lower()
-    return any(
-        needle in text
-        for needle in (
-            "usage_limit_reached",
-            "usage limit has been reached",
-            "rate limit",
-            "429",
-            "quota",
-            "insufficient_quota",
-            "billing",
-            "authentication",
-            "unauthorized",
-            "forbidden",
-            "401",
-            "403",
-        )
-    )
-
-
-def _clip_summary_fragment(value: object, limit: int = 800) -> str:
-    text = str(value or "").strip()
-    if len(text) <= limit:
-        return text
-    return text[: limit - 1].rstrip() + "…"
-
-
-def _local_iteration_limit_summary(agent, messages: list, exc: Exception | None = None) -> str:
-    """Build a deterministic, no-LLM summary for iteration-limit failures."""
-    last_user = ""
-    recent_tools: list[str] = []
-    recent_observations: list[str] = []
-
-    for msg in messages:
-        if not isinstance(msg, dict):
-            continue
-        if msg.get("role") == "user" and msg.get("content"):
-            content = str(msg.get("content") or "").strip()
-            # Ignore the synthetic max-iteration prompt appended by this handler.
-            if "maximum number of tool-calling iterations" not in content.lower():
-                last_user = _clip_summary_fragment(content, 500)
-
-    for msg in messages[-30:]:
-        if not isinstance(msg, dict) or msg.get("role") != "tool":
-            continue
-        name = str(msg.get("tool_name") or "").strip()
-        if name and name not in recent_tools:
-            recent_tools.append(name)
-        content = _clip_summary_fragment(msg.get("content"), 800)
-        if content:
-            recent_observations.append(content)
-
-    lines = [
-        f"I reached the maximum iterations ({agent.max_iterations}), the maximum tool-calling iteration limit.",
-        "",
-        "What I can report from the available context:",
-    ]
-    if last_user:
-        lines.append(f"- Latest user goal: {last_user}")
-    if recent_tools:
-        lines.append(f"- Recent tools used: {', '.join(recent_tools[-10:])}")
-    if recent_observations:
-        lines.append(f"- Last observed tool result: {recent_observations[-1]}")
-    if not last_user and not recent_tools and not recent_observations:
-        lines.append("- No compact tool/status details were available in the retained context.")
-
-    if exc is not None:
-        lines.extend([
-            "",
-            "I also could not generate a model-written final summary because the summary model/provider failed.",
-            f"Summary failure class: {type(exc).__name__}",
-        ])
-    lines.extend([
-        "",
-        "Recommended next step: continue in a fresh turn/session from this checkpoint rather than repeating the same tool loop.",
-    ])
-    return "\n".join(lines)
-
-
-def _compact_iteration_limit_messages(messages: list) -> list[dict]:
-    """Build a small auxiliary-summary prompt from recent retained context."""
-    compact_lines: list[str] = []
-    for msg in messages[-20:]:
-        if not isinstance(msg, dict):
-            continue
-        role = str(msg.get("role") or "unknown")
-        content = str(msg.get("content") or "").strip()
-        if not content:
-            continue
-        if "maximum number of tool-calling iterations" in content.lower():
-            continue
-        tool_name = msg.get("tool_name")
-        prefix = f"tool:{tool_name}" if tool_name else role
-        if len(content) > 4000:
-            fragment = f"[large {prefix} output omitted: {len(content)} chars]"
-        else:
-            fragment = _clip_summary_fragment(content, 1200)
-        compact_lines.append(f"[{prefix}] {fragment}")
-
-    return [
-        {
-            "role": "system",
-            "content": (
-                "You are summarizing an agent run that hit its tool-call iteration limit. "
-                "Do not call tools. Produce a concise status summary with what was attempted, "
-                "current state, blockers, and next steps."
-            ),
-        },
-        {"role": "user", "content": "\n\n".join(compact_lines) or "No retained context."},
-    ]
-
-
-def _extract_chat_completion_text(response: object) -> str:
-    try:
-        choice = (getattr(response, "choices", None) or [])[0]
-        message = getattr(choice, "message", None)
-        return str(getattr(message, "content", "") or "").strip()
-    except Exception:
-        return ""
-
-
-def _safe_exception_label(exc: Exception) -> str:
-    """Return a log-safe exception label without provider body/request text."""
-    return type(exc).__name__
-
-
-def _try_auxiliary_iteration_limit_summary(agent, messages: list) -> str | None:
-    """Try configured auxiliary compression model with compact recent context."""
-    try:
-        from agent.auxiliary_client import get_text_auxiliary_client
-
-        client, model = get_text_auxiliary_client("compression")
-        if client is None or not model:
-            return None
-        response = client.chat.completions.create(
-            model=model,
-            messages=_compact_iteration_limit_messages(messages),
-            temperature=0,
-        )
-        text = _extract_chat_completion_text(response)
-        return text or None
-    except Exception as aux_exc:
-        logger.warning(
-            "Auxiliary max-iteration summary failed: %s",
-            _safe_exception_label(aux_exc),
-        )
-        return None
-
-
-def browser_tool_loop_detected(recent_tool_names, *, min_browser_calls: int = 10, max_unique_tools: int = 3) -> bool:
-    """Detect low-diversity browser tool loops before the hard iteration limit.
-
-    This deliberately keys on *low diversity* rather than all browser-heavy
-    tasks: a real browser workflow may navigate, snapshot, click, type, inspect
-    console, and use vision. A loop tends to repeat the same two or three tools.
-    """
-    recent = [str(name or "") for name in (recent_tool_names or [])]
-    if len(recent) < min_browser_calls:
-        return False
-    browser = [name for name in recent if name.startswith("browser_")]
-    if len(browser) < min_browser_calls:
-        return False
-    return len(set(browser)) <= max_unique_tools
 
 
 def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
-    agent._safe_print(f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary...")
+    print(f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary...")
 
     summary_request = (
         "You've reached the maximum number of tool-calling iterations allowed. "
@@ -1820,16 +1705,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 final_response = "I reached the iteration limit and couldn't generate a summary."
 
     except Exception as e:
-        logger.warning("Failed to get summary response: %s", _safe_exception_label(e))
-        aux_summary = _try_auxiliary_iteration_limit_summary(agent, messages)
-        if aux_summary:
-            final_response = aux_summary
-        elif _is_summary_fallback_worthy_error(e):
-            final_response = _local_iteration_limit_summary(agent, messages, e)
-        else:
-            final_response = _local_iteration_limit_summary(agent, messages, e)
-        if final_response:
-            messages.append({"role": "assistant", "content": final_response})
+        logger.warning(f"Failed to get summary response: {e}")
+        final_response = f"I reached the maximum iterations ({agent.max_iterations}) but couldn't summarize. Error: {str(e)}"
 
     return final_response
 
@@ -2108,7 +1985,6 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         stream_kwargs = {
             **api_kwargs,
             "stream": True,
-            "stream_options": {"include_usage": True},
             "timeout": _httpx.Timeout(
                 connect=_conn_cap,
                 read=_stream_read_timeout,
@@ -2116,6 +1992,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 pool=_conn_cap,
             ),
         }
+        # OpenAI's `stream_options={"include_usage": True}` drives usage
+        # accounting on OpenAI-compatible endpoints (incl. the Gemini OpenAI
+        # compat shim and aggregators like OpenRouter).  Google's *native*
+        # Gemini REST endpoint rejects the keyword outright
+        # (`Completions.create() got an unexpected keyword argument
+        # 'stream_options'`), so omit it only for that endpoint.
+        if not is_native_gemini_base_url(agent.base_url):
+            stream_kwargs["stream_options"] = {"include_usage": True}
         request_client = _set_request_client(
             agent._create_request_openai_client(
                 reason="chat_completion_stream_request",
@@ -2132,6 +2016,49 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
         stream = request_client.chat.completions.create(**stream_kwargs)
+
+        # Some OpenAI-compatible adapters (for example copilot-acp, and the MoA
+        # openai-codex aggregator) accept stream=True but still return a
+        # completed response object rather than an iterator of chunks.  Treat
+        # that as "streaming unsupported" for the rest of this session instead
+        # of crashing on ``for chunk in stream`` with ``'types.SimpleNamespace'
+        # object is not iterable`` (#11732, #55933).
+        #
+        # Discriminate on the mere PRESENCE of a ``choices`` attribute, not on
+        # it being a non-empty list: an adapter may hand back a completed
+        # response whose ``choices`` is ``None`` or empty (an error /
+        # content-filter / terminal frame), and every such shape is still a
+        # whole response — not a token stream — that would crash iteration just
+        # the same.  A genuine provider stream (SDK ``Stream`` object,
+        # generator) exposes no ``choices`` attribute, so it is left untouched.
+        if hasattr(stream, "choices"):
+            logger.info(
+                "Streaming request returned a final response object instead of "
+                "an iterator; switching %s/%s to non-streaming for this session.",
+                agent.provider or "unknown",
+                agent.model or "unknown",
+            )
+            agent._disable_streaming = True
+            # An empty/None ``choices`` carries no message to surface; return the
+            # completed object as-is so the outer loop's normal invalid-response
+            # validation (conversation_loop.py) handles it via the retry path,
+            # never ``for chunk in stream``.
+            choices = stream.choices
+            first_choice = choices[0] if isinstance(choices, (list, tuple)) and choices else None
+            message = getattr(first_choice, "message", None)
+            if message is not None:
+                reasoning_text = (
+                    getattr(message, "reasoning_content", None)
+                    or getattr(message, "reasoning", None)
+                )
+                if isinstance(reasoning_text, str) and reasoning_text:
+                    _fire_first_delta()
+                    agent._fire_reasoning_delta(reasoning_text)
+                content = getattr(message, "content", None)
+                if isinstance(content, str) and content:
+                    _fire_first_delta()
+                    agent._fire_stream_delta(content)
+            return stream
 
         # Capture rate limit headers from the initial HTTP response.
         # The OpenAI SDK Stream object exposes the underlying httpx
@@ -2275,7 +2202,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             entry["function"]["arguments"] += tc_delta.function.arguments
                     extra = getattr(tc_delta, "extra_content", None)
                     if extra is None and hasattr(tc_delta, "model_extra"):
-                        extra = (tc_delta.model_extra or {}).get("extra_content")
+                        extra = (tc_delta.model_extra if isinstance(tc_delta.model_extra, dict) else {}).get("extra_content")
                     if extra is not None:
                         if hasattr(extra, "model_dump"):
                             extra = extra.model_dump()
@@ -2516,7 +2443,15 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                                 _fire_first_delta()
                                 agent._fire_reasoning_delta(thinking_text)
 
-            # Return the native Anthropic Message for downstream processing
+            # Return the native Anthropic Message for downstream processing.
+            # If the stream was interrupted (the event loop broke out above on
+            # agent._interrupt_requested), do NOT call get_final_message() — on
+            # a partially-consumed stream the SDK may hang draining remaining
+            # events or return a Message with incomplete tool_use blocks (partial
+            # JSON in `input`). The outer poll loop raises InterruptedError, so
+            # this return value is discarded anyway.
+            if agent._interrupt_requested:
+                return None
             return stream.get_final_message()
 
     def _call():
@@ -2766,12 +2701,6 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             "stream" in _err_lower
                             and "not supported" in _err_lower
                         )
-                        _is_zai_glm52_stream_overload = (
-                            getattr(agent, "provider", None) == "zai"
-                            and "glm-5.2" in str(getattr(agent, "model", "")).lower()
-                            and re.search(r"['\"]code['\"]\s*:\s*['\"]1305['\"]", _err_lower)
-                            and "temporarily overloaded" in _err_lower
-                        )
                         # AWS Bedrock (AnthropicBedrock SDK path): IAM policies
                         # with bedrock:InvokeModel but not
                         # InvokeModelWithResponseStream reject messages.stream()
@@ -2793,30 +2722,18 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             _is_bedrock_stream_denied = (
                                 is_streaming_access_denied_error(e)
                             )
-                        if (
-                            _is_stream_unsupported
-                            or _is_bedrock_stream_denied
-                            or _is_zai_glm52_stream_overload
-                        ):
+                        if _is_stream_unsupported or _is_bedrock_stream_denied:
                             agent._disable_streaming = True
-                            if _is_bedrock_stream_denied:
-                                agent._safe_print(
-                                    "\n⚠  AWS IAM denied bedrock:InvokeModelWithResponseStream. "
-                                    "Switching to non-streaming.\n"
-                                    "   Grant that action to restore streaming output.\n"
-                                )
-                            elif _is_zai_glm52_stream_overload:
-                                agent._safe_print(
-                                    "\n⚠  Z.AI GLM-5.2 streaming returned overload code 1305. "
-                                    "Switching to non-streaming.\n"
-                                )
-                            else:
-                                agent._safe_print(
-                                    "\n⚠  Streaming is not supported for this "
-                                    "model/provider. Switching to non-streaming.\n"
-                                    "   To avoid this delay, set display.streaming: false "
-                                    "in config.yaml\n"
-                                )
+                            agent._safe_print(
+                                "\n⚠  AWS IAM denied bedrock:InvokeModelWithResponseStream. "
+                                "Switching to non-streaming.\n"
+                                "   Grant that action to restore streaming output.\n"
+                                if _is_bedrock_stream_denied else
+                                "\n⚠  Streaming is not supported for this "
+                                "model/provider. Switching to non-streaming.\n"
+                                "   To avoid this delay, set display.streaming: false "
+                                "in config.yaml\n"
+                            )
                         logger.info(
                             "Streaming failed before delivery: %s",
                             e,
@@ -3008,7 +2925,30 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 role="assistant", content=_partial_text, tool_calls=None,
                 reasoning_content=None,
             )
-            return SimpleNamespace(
+            # Detect provider output-layer content filtering (e.g. MiniMax
+            # "output new_sensitive (1027)", Azure/OpenAI content_filter,
+            # Anthropic safety refusal).  The raw error is about to be
+            # swallowed into a finish_reason=length stub, so classify it HERE
+            # while we still have it and stamp the stub.  Retrying such a
+            # content-deterministic filter on the same primary just re-hits
+            # the filter — the conversation loop reads this tag and activates
+            # the fallback chain instead of burning continuation retries.
+            # error_classifier is the single source of truth for "what counts
+            # as a content filter" (#32421).
+            _content_filter_terminated = False
+            try:
+                from agent.error_classifier import classify_api_error, FailoverReason
+                _cls = classify_api_error(
+                    result["error"],
+                    provider=str(getattr(agent, "provider", "") or ""),
+                    model=str(getattr(agent, "model", "") or ""),
+                )
+                _content_filter_terminated = (
+                    _cls.reason == FailoverReason.content_policy_blocked
+                )
+            except Exception:
+                _content_filter_terminated = False
+            _stub = SimpleNamespace(
                 id=PARTIAL_STREAM_STUB_ID,
                 model=getattr(agent, "model", "unknown"),
                 choices=[SimpleNamespace(
@@ -3017,6 +2957,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 usage=None,
                 _dropped_tool_names=_partial_names or None,
             )
+            if _content_filter_terminated:
+                _stub._content_filter_terminated = True
+            return _stub
         raise result["error"]
     return result["response"]
 

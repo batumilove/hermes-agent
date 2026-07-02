@@ -2,7 +2,6 @@
 
 import asyncio
 import importlib
-import threading
 import sys
 import time
 import types
@@ -246,27 +245,6 @@ class DelayedInterimAgent:
         }
 
 
-class SessionEchoAgent:
-    def __init__(self, **kwargs):
-        self.session_id = kwargs.get("session_id")
-        self.tools = []
-        self.tool_progress_callback = kwargs.get("tool_progress_callback")
-        self.step_callback = None
-        self.stream_delta_callback = None
-        self.interim_assistant_callback = None
-        self.status_callback = None
-        self.reasoning_config = None
-        self.service_tier = None
-        self.request_overrides = {}
-
-    def run_conversation(self, message, conversation_history=None, task_id=None):
-        return {
-            "final_response": f"session:{self.session_id}",
-            "messages": [],
-            "api_calls": 1,
-        }
-
-
 def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
@@ -282,10 +260,6 @@ def _make_runner(adapter):
     runner._session_db = None
     runner._running_agents = {}
     runner._session_run_generation = {}
-    runner._agent_cache = {}
-    runner._agent_cache_lock = threading.Lock()
-    runner._session_sources = {}
-    runner._session_sources_max = 512
     runner.session_store = SimpleNamespace(_entries={}, _save=lambda: None)
     runner.hooks = SimpleNamespace(loaded_hooks=False)
     runner.config = SimpleNamespace(
@@ -294,52 +268,6 @@ def _make_runner(adapter):
         stt_enabled=False,
     )
     return runner
-
-
-@pytest.mark.asyncio
-async def test_cached_agent_is_not_reused_when_session_id_changes(monkeypatch, tmp_path):
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
-
-    fake_run_agent = types.ModuleType("run_agent")
-    fake_run_agent.AIAgent = SessionEchoAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-
-    adapter = ProgressCaptureAdapter(platform=Platform.TELEGRAM)
-    runner = _make_runner(adapter)
-    gateway_run = importlib.import_module("gateway.run")
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {"display": {"tool_progress": "off"}})
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
-
-    source = SessionSource(
-        platform=Platform.TELEGRAM,
-        chat_id="12345",
-        chat_type="dm",
-        thread_id="63063",
-    )
-    session_key = "agent:main:telegram:dm:12345:63063"
-
-    first = await runner._run_agent(
-        message="first",
-        context_prompt="",
-        history=[],
-        source=source,
-        session_id="old-session",
-        session_key=session_key,
-    )
-    second = await runner._run_agent(
-        message="second",
-        context_prompt="",
-        history=[],
-        source=source,
-        session_id="new-session",
-        session_key=session_key,
-    )
-
-    assert first["final_response"] == "session:old-session"
-    assert second["final_response"] == "session:new-session"
 
 
 @pytest.mark.asyncio
@@ -380,7 +308,7 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
     assert adapter.sent == [
         {
             "chat_id": "-1001",
-            "content": '💻 terminal: "pwd"',
+            "content": '💻 Running pwd',
             "reply_to": None,
             "metadata": {"thread_id": "17585"},
         }
@@ -568,6 +496,27 @@ async def test_run_agent_feishu_progress_replies_inside_existing_thread(monkeypa
 # ---------------------------------------------------------------------------
 
 
+def _extract_progress_preview(content: str) -> str | None:
+    """Extract the argument-preview portion from a tool-progress message.
+
+    Handles both render styles:
+    - Legacy / custom tools:  ``🔧 tool_name: "<preview>"`` (quoted)
+    - Friendly built-in verb: ``💻 Running <preview>`` (verb prefix, no quotes)
+    """
+    import re
+
+    # Legacy quoted form takes precedence when present.
+    match = re.search(r'"(.+)"', content)
+    if match:
+        return match.group(1)
+    # Friendly form: "<emoji> <verb> <preview>". The terminal verb is "Running".
+    marker = " Running "
+    idx = content.find(marker)
+    if idx != -1:
+        return content[idx + len(marker):].strip()
+    return None
+
+
 def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
     """Shared setup for long-preview truncation tests.
 
@@ -624,13 +573,10 @@ def test_all_mode_default_truncation_40_chars(monkeypatch, tmp_path):
     assert result["final_response"] == "done"
     assert adapter.sent
     content = adapter.sent[0]["content"]
-    # The long command should be truncated — total preview <= 40 chars
+    # The long command should be truncated — the preview portion <= 40 chars.
     assert "..." in content
-    # Extract the preview part between quotes
-    import re
-    match = re.search(r'"(.+)"', content)
-    assert match, f"No quoted preview found in: {content}"
-    preview_text = match.group(1)
+    preview_text = _extract_progress_preview(content)
+    assert preview_text is not None, f"No preview found in: {content}"
     assert len(preview_text) <= 40, f"Preview too long ({len(preview_text)}): {preview_text}"
 
 
@@ -640,11 +586,9 @@ def test_all_mode_respects_custom_preview_length(monkeypatch, tmp_path):
     assert result["final_response"] == "done"
     assert adapter.sent
     content = adapter.sent[0]["content"]
-    # With 120-char cap, the command (165 chars) should still be truncated but longer
-    import re
-    match = re.search(r'"(.+)"', content)
-    assert match, f"No quoted preview found in: {content}"
-    preview_text = match.group(1)
+    # With 120-char cap, the command (165 chars) should still be truncated but longer.
+    preview_text = _extract_progress_preview(content)
+    assert preview_text is not None, f"No preview found in: {content}"
     # Should be longer than the 40-char default
     assert len(preview_text) > 40, f"Preview suspiciously short ({len(preview_text)}): {preview_text}"
     # But still capped at 120
@@ -692,6 +636,24 @@ class PreviewedResponseAgent:
             self.interim_assistant_callback("You're welcome.", already_streamed=False)
         return {
             "final_response": "You're welcome.",
+            "response_previewed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class PreviewedSplitAfterCommentaryAgent:
+    def __init__(self, **kwargs):
+        self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
+        self.session_id = kwargs.get("session_id")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.interim_assistant_callback:
+            self.interim_assistant_callback("I'll inspect the repo first.", already_streamed=False)
+        self.session_id = f"{self.session_id}-child"
+        return {
+            "final_response": "Final answer after compression.",
             "response_previewed": True,
             "messages": [],
             "api_calls": 1,
@@ -1013,6 +975,21 @@ async def test_run_agent_previewed_final_marks_already_sent(monkeypatch, tmp_pat
 
     assert result.get("already_sent") is True
     assert [call["content"] for call in adapter.sent] == ["You're welcome."]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_previewed_split_keeps_final_delivery_pending(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        PreviewedSplitAfterCommentaryAgent,
+        session_id="sess-split",
+        config_data={"display": {"interim_assistant_messages": True}},
+    )
+
+    assert result["session_id"] == "sess-split-child"
+    assert result.get("already_sent") is not True
+    assert [call["content"] for call in adapter.sent] == ["I'll inspect the repo first."]
 
 
 @pytest.mark.asyncio
