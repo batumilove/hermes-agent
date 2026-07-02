@@ -52,6 +52,26 @@ _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
 _FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
 
 
+def browser_tool_loop_detected(recent_tool_names: Any) -> bool:
+    """Return True for low-diversity repeated browser tool loops.
+
+    The detector is intentionally conservative: it only fires when the recent
+    tool window is dominated by browser actions and the distinct browser action
+    count is very low.  This lets the executor nudge out of repeated
+    snapshot/press/click loops without warning on normal browser progress.
+    """
+    try:
+        names = [str(name or "") for name in recent_tool_names]
+    except Exception:
+        return False
+    browser_names = [name for name in names if name.startswith("browser_")]
+    if len(browser_names) < 8:
+        return False
+    if len(browser_names) < max(8, int(len(names) * 0.8)):
+        return False
+    return len(set(browser_names)) <= 3
+
+
 def _ra():
     """Lazy ``run_agent`` reference.
 
