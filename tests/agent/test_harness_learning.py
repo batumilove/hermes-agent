@@ -111,3 +111,38 @@ def test_side_effect_evidence_regulator_requires_handles_before_success_claims()
     assert claimed.requires_evidence is True
     assert "send_message" in claimed.missing_evidence_for
     assert "github" in claimed.missing_evidence_for
+
+
+def test_side_effect_evidence_regulator_flags_cron_upload_deploy_and_delete_claims():
+    regulator = SideEffectEvidenceRegulator()
+
+    claimed = regulator.evaluate_final_response(
+        "I scheduled the cron, uploaded the artifact, deployed the service, and deleted the old job."
+    )
+
+    assert claimed.requires_evidence is True
+    assert claimed.missing_evidence_for == ["cronjob", "upload", "deploy", "delete"]
+
+
+def test_side_effect_evidence_footer_scans_current_turn_tool_messages_only():
+    from agent.harness_learning import build_side_effect_evidence_footer
+
+    messages = [
+        {"role": "user", "content": "old turn"},
+        {"role": "tool", "name": "send_message", "content": '{"message_id":1}'},
+        {"role": "assistant", "content": "Sent."},
+        {"role": "user", "content": "new turn"},
+    ]
+
+    footer = build_side_effect_evidence_footer(
+        messages,
+        "I sent the message and created the GitHub issue.",
+    )
+
+    assert "Side-effect evidence regulator" in footer
+    assert "send_message" in footer
+    assert "github" in footer
+
+    messages.append({"role": "tool", "name": "send_message", "content": '{"message_id":2}'})
+    messages.append({"role": "tool", "name": "github_issue", "content": '{"url":"https://github.com/o/r/issues/1"}'})
+    assert build_side_effect_evidence_footer(messages, "I sent the message and created the GitHub issue.") == ""

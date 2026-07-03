@@ -292,6 +292,22 @@ def finalize_turn(
         except Exception as _ver_err:
             logger.debug("file-mutation verifier footer failed: %s", _ver_err)
 
+    # Side-effect evidence verifier footer.
+    # Unlike the file-mutation verifier (which tracks failed edits), this
+    # catches success claims about external/state-changing actions when the
+    # current turn has no matching tool-result handle/status/readback.  It
+    # is observational only: append a warning to the delivered/persisted
+    # response without changing the tool loop or rebuilding prompts.
+    if final_response and not interrupted:
+        try:
+            if agent._side_effect_evidence_verifier_enabled():
+                from agent.harness_learning import build_side_effect_evidence_footer
+                footer = build_side_effect_evidence_footer(messages, final_response)
+                if footer:
+                    final_response = final_response.rstrip() + "\n\n" + footer
+        except Exception as _side_effect_err:
+            logger.debug("side-effect evidence verifier footer failed: %s", _side_effect_err)
+
     # Turn-completion explainer.
     # When a turn ends abnormally after substantive work — empty content
     # after retries, a partial/truncated stream, a still-pending tool

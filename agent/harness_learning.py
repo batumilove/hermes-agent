@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import Any, Iterable
+from typing import Any
 
 
 class FailureType(str, Enum):
@@ -125,14 +125,6 @@ class SideEffectEvidenceRegulator:
     tool handle in the trajectory.
     """
 
-    _EVIDENCE_TOOLS = {
-        "write_file": ("file", "updated", "wrote", "written"),
-        "patch": ("file", "patched", "updated"),
-        "send_message": ("sent", "message"),
-        "cronjob": ("cron", "scheduled", "paused", "resumed", "removed"),
-        "github": ("github", "issue", "pr", "pull request"),
-    }
-
     def __init__(self) -> None:
         self._evidence: set[str] = set()
 
@@ -148,6 +140,12 @@ class SideEffectEvidenceRegulator:
             self._evidence.add("cronjob")
         if tool.startswith("github") and not _looks_like_error(text):
             self._evidence.add("github")
+        if tool in {"browser_click", "browser_type", "browser_press"} and not _looks_like_error(text):
+            self._evidence.add("browser")
+        if tool in {"image_generate", "text_to_speech"} and not _looks_like_error(text):
+            self._evidence.add("media")
+        if tool in {"terminal", "process", "mcp_executor_execute"} and _looks_like_positive_handle(text):
+            self._evidence.add("generic_side_effect")
 
     def evaluate_final_response(self, text: str) -> EvidenceDecision:
         lower = str(text or "").lower()
@@ -158,13 +156,62 @@ class SideEffectEvidenceRegulator:
             "created" in lower or "opened" in lower or "submitted" in lower
         ) and "github" not in self._evidence:
             missing.append("github")
+        if (
+            any(word in lower for word in ("scheduled", "paused", "resumed"))
+            and "cron" in lower
+            and "cronjob" not in self._evidence
+        ):
+            missing.append("cronjob")
+        if "uploaded" in lower and "media" not in self._evidence and "browser" not in self._evidence and "generic_side_effect" not in self._evidence:
+            missing.append("upload")
+        if "deployed" in lower and "generic_side_effect" not in self._evidence:
+            missing.append("deploy")
+        if ("deleted" in lower or "removed" in lower) and not ({"cronjob", "github", "browser", "generic_side_effect"} & self._evidence):
+            missing.append("delete")
         if missing:
             return EvidenceDecision(
                 requires_evidence=True,
-                missing_evidence_for=missing,
+                missing_evidence_for=_dedupe(missing),
                 message="Side-effect success claim needs a tool result handle/status before finalizing.",
             )
         return EvidenceDecision(requires_evidence=False)
+
+
+def build_side_effect_evidence_footer(messages: list[dict[str, Any]], final_response: str) -> str:
+    """Return a warning footer when final response claims side effects without evidence.
+
+    Only tool results from the current turn are considered. The current turn is
+    the suffix after the latest user message, matching finalizer reasoning
+    extraction and avoiding stale evidence from prior turns.
+    """
+
+    regulator = SideEffectEvidenceRegulator()
+    for msg in _current_turn_tool_messages(messages):
+        regulator.observe_tool_result(
+            str(msg.get("name") or ""),
+            {},
+            msg.get("content"),
+        )
+    decision = regulator.evaluate_final_response(final_response)
+    if not decision.requires_evidence:
+        return ""
+    missing = ", ".join(decision.missing_evidence_for)
+    return (
+        "⚠️ Side-effect evidence regulator: this response claims external or "
+        f"state-changing action(s) without current-turn evidence for: {missing}. "
+        "Require a tool result handle/status/readback before treating the claim as complete."
+    )
+
+
+def _current_turn_tool_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    start = 0
+    for idx, msg in enumerate(messages or []):
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            start = idx + 1
+    return [
+        msg for msg in (messages or [])[start:]
+        if isinstance(msg, dict) and msg.get("role") == "tool"
+    ]
 
 
 def _compact_text(value: Any) -> str:
@@ -179,6 +226,31 @@ def _compact_text(value: Any) -> str:
 def _looks_like_error(text: str) -> bool:
     lower = str(text or "").lower()
     return '"error"' in lower or "error:" in lower or "failed" in lower
+
+
+def _looks_like_positive_handle(text: str) -> bool:
+    lower = str(text or "").lower()
+    if _looks_like_error(lower):
+        return False
+    return any(
+        marker in lower
+        for marker in (
+            "http://",
+            "https://",
+            "status",
+            "exit_code",
+        )
+    )
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        if value not in seen:
+            seen.add(value)
+            out.append(value)
+    return out
 
 
 def _slug(value: str) -> str:
