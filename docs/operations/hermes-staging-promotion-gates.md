@@ -202,4 +202,4 @@ No production action is approved by this document or by the proposal. The propos
 - Audit trail/documentation: **corrected by this file**
 - Current staging VM identity/SSH trust: **PASS on 2026-07-03 after approved VM start and host-key reconciliation**
 - Fresh staging canary: **PASS on 2026-07-03 for gateway and cron smokes; Telegram E2E not tested**
-- Production action: **BLOCKED pending separate proposal and explicit human approval**
+- Production action: **BLOCKED pending explicit human approval of the written production proposal**

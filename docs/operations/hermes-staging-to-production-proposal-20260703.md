@@ -38,7 +38,8 @@ Production Hermes checkout:
 ```text
 /home/ubuntu/.hermes/hermes-agent
 branch: batumi/live
-current observed head: c41867cb8 docs: record fresh staging smoke pass
+current observed head at proposal preflight: c41867cb8 docs: record fresh staging smoke pass
+proposal commit after writing this document: 2c0627ab2 docs: add Hermes staging production proposal
 ```
 
 Production gateway service:
