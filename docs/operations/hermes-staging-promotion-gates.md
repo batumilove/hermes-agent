@@ -151,25 +151,38 @@ Required evidence:
 
 ### Gate 2 — Staging VM identity re-verified
 
-Status: **BLOCKED**
+Status: **PASS on 2026-07-03 after approved VM start**
 
-Required before continuing:
+Evidence:
 
-- Confirm current VMID/name/host for `hermes-staging-01`.
-- Confirm VM is intentionally started or stopped.
-- Reconcile SSH host key from trusted source.
-- Confirm Tailscale identity/IP.
+- Fresh evidence artifact: `/home/ubuntu/infra-ops/docs/operations/staging-gateway-cron-smoke-evidence-20260703.md`
+- VM `429` / `hermes-staging-01` was started on `proxmox-dell` after explicit user approval (`start vm`).
+- Proxmox config and guest identity matched:
+  - host: `proxmox-dell` / `192.168.10.10`
+  - VMID/name: `429` / `hermes-staging-01`
+  - MAC: `62:9A:27:D7:56:86`
+  - DMI/product UUID: `34fed008-76f3-4719-9d03-c95bd6e6eaa6`
+  - Tailscale IP: `100.112.103.69`
+  - LAN IP after start: `192.168.10.238`
+  - `qemu-guest-agent` active
+  - `tailscaled` active
+- SSH host key was reconciled only after Proxmox config, guest DMI UUID, MAC, hostname, and Tailscale IP matched.
+- Current ED25519 fingerprint for `hermes-staging-01`:
+  - `SHA256:8e196QDWSEVV7lAi3VZFFzjFSMcYDZZWI4pBI1Em+Bo`
 
 ### Gate 3 — Fresh staging smokes
 
-Status: **BLOCKED**
+Status: **PASS on 2026-07-03**
 
-Required after Gate 2:
+Evidence:
 
-- Rerun gateway smoke.
-- Rerun cron smoke.
-- Keep Telegram E2E disabled unless staging bot/chat are explicitly provided and approved.
-- Record fresh evidence path and timestamps.
+- Fresh evidence artifact: `/home/ubuntu/infra-ops/docs/operations/staging-gateway-cron-smoke-evidence-20260703.md`
+- Gateway smoke: PASS
+- Cron smoke: PASS
+- Cron marker verified at `/home/hermes-staging/.hermes-staging/staging-smoke/staging-cron-smoke-20260703143416.txt`
+- Telegram E2E remained disabled because staging bot/chat were not provided or approved.
+- No production Telegram token/chat was used.
+- No production gateway/profile/live-feed action was performed.
 
 ### Gate 4 — Production proposal
 
@@ -189,6 +202,6 @@ No production action is approved by this document.
 
 - Staging canary historical evidence: **PASS, evidence exists**
 - Audit trail/documentation: **corrected by this file**
-- Current staging VM identity/SSH trust: **BLOCKED pending live re-verification**
-- Fresh staging canary: **BLOCKED pending VM identity/host-key reconciliation**
+- Current staging VM identity/SSH trust: **PASS on 2026-07-03 after approved VM start and host-key reconciliation**
+- Fresh staging canary: **PASS on 2026-07-03 for gateway and cron smokes; Telegram E2E not tested**
 - Production action: **BLOCKED pending separate proposal and explicit human approval**
