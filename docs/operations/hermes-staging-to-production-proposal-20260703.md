@@ -1,11 +1,11 @@
 # Hermes staging to production proposal
 
 Date: 2026-07-03T14:44:58Z
-Status: **PROPOSAL ONLY — NOT APPROVED**
+Status: **APPROVED SCOPE EXECUTED — RECOVERED WITH TRANSIENT TELEGRAM DEGRADATION OBSERVED**
 
 This document is the required separate production proposal after the `hermes-staging-daytona` staging canary passed fresh gateway and cron smokes on 2026-07-03.
 
-No production action is approved by this document. Production action requires an explicit human approval that names the approved scope.
+This document began as the required separate production proposal after the `hermes-staging-daytona` staging canary passed fresh gateway and cron smokes on 2026-07-03. The user later approved the narrow restart scope. That approved scope has now been executed and audited below.
 
 ## Source evidence
 
@@ -173,7 +173,7 @@ Rollback boundaries:
 
 ## Approval gate
 
-Production action is blocked until the user explicitly approves this exact scope.
+Production action was blocked until the user explicitly approved this exact scope.
 
 Suggested approval phrase:
 
@@ -182,3 +182,56 @@ Approved: restart default production hermes-gateway.service only, using the 2026
 ```
 
 Anything broader requires a new proposal or a revised approval scope.
+
+## Approved production restart outcome
+
+Approval:
+
+```text
+User approved the proposed narrow production action on 2026-07-03 by replying: "Approved".
+Approved interpreted scope: restart default production `hermes-gateway.service` only; no config/env/token/profile/model changes; no restart of other profile gateways; verify status/logs/Kanban/Telegram afterward.
+```
+
+Execution evidence:
+
+```text
+Restart runner: /home/ubuntu/.hermes/tmp/approved_gateway_restart_20260703.sh
+Pre-restart PID: 1066434
+Post-restart PID: 1530593
+Post-restart service start: Fri 2026-07-03 22:03:30 UTC
+Post-restart state: active/running
+NRestarts: 0
+```
+
+Post-restart read-only audit:
+
+```text
+systemctl --user show hermes-gateway.service:
+  MainPID=1530593
+  ExecMainStartTimestamp=Fri 2026-07-03 22:03:30 UTC
+  ActiveState=active
+  SubState=running
+  NRestarts=0
+
+hermes-staging-daytona Kanban board:
+  done=10
+  running=0
+  ready=0
+  todo=0
+  blocked=0
+```
+
+Log verdict:
+
+- The default gateway did restart and recover under systemd.
+- Telegram delivery path recovered enough to continue this DM/topic after restart.
+- The restart was **not clean-green**: post-restart logs showed transient Telegram polling/send degradation, including `getUpdates consumer appears wedged`, automatic polling restart, `send_path_degraded`, and one `Failed to deliver response after 2 retries: send_path_degraded` line.
+- No additional restart or production mutation was performed during the post-restart audit.
+
+Final production verdict for this proposal:
+
+- Approved narrow restart scope: **EXECUTED**
+- Gateway service health after audit: **ACTIVE/RUNNING**
+- Telegram user-visible continuity: **RECOVERED**
+- Log quality: **WARN — transient Telegram degradation observed**
+- Further production action: **BLOCKED pending separate explicit approval**

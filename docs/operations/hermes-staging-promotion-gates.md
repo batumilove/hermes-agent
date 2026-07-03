@@ -184,9 +184,9 @@ Evidence:
 - No production Telegram token/chat was used.
 - No production gateway/profile/live-feed action was performed.
 
-### Gate 4 — Production proposal
+### Gate 4 — Production proposal and approved narrow restart
 
-Status: **PROPOSAL WRITTEN; PRODUCTION ACTION STILL BLOCKED**
+Status: **APPROVED NARROW RESTART EXECUTED; RECOVERED WITH TRANSIENT TELEGRAM DEGRADATION OBSERVED**
 
 Proposal:
 
@@ -194,7 +194,18 @@ Proposal:
 /home/ubuntu/.hermes/hermes-agent/docs/operations/hermes-staging-to-production-proposal-20260703.md
 ```
 
-No production action is approved by this document or by the proposal. The proposal requires a separate explicit human approval naming the exact production scope.
+The user explicitly approved the narrow proposed scope by replying `Approved` on 2026-07-03. The executed scope was limited to restarting the default production `hermes-gateway.service` only, with no config/env/token/profile/model changes and no restart of other profile gateways.
+
+Execution/post-restart evidence:
+
+- Pre-restart PID: `1066434`
+- Post-restart PID: `1530593`
+- Post-restart service start: `Fri 2026-07-03 22:03:30 UTC`
+- Post-restart state: `active/running`
+- `NRestarts=0`
+- Kanban `hermes-staging-daytona`: still 10 `done`, 0 `running`, 0 `ready`, 0 `todo`, 0 `blocked`
+- Telegram reply path recovered, but logs showed transient `getUpdates` polling wedge recovery, `send_path_degraded`, and one failed-send-after-retries line.
+- No additional restart or production mutation was performed during the post-restart audit.
 
 ## Current verdict
 
@@ -202,4 +213,6 @@ No production action is approved by this document or by the proposal. The propos
 - Audit trail/documentation: **corrected by this file**
 - Current staging VM identity/SSH trust: **PASS on 2026-07-03 after approved VM start and host-key reconciliation**
 - Fresh staging canary: **PASS on 2026-07-03 for gateway and cron smokes; Telegram E2E not tested**
-- Production action: **BLOCKED pending explicit human approval of the written production proposal**
+- Approved narrow production restart: **EXECUTED; service active/running afterward**
+- Telegram after restart: **RECOVERED, but not clean-green because transient polling/send degradation was observed**
+- Further production action: **BLOCKED pending separate explicit human approval**
