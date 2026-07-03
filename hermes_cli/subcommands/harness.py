@@ -38,6 +38,11 @@ def build_harness_parser(
         default=False,
         help="Emit a JSON report instead of plain text",
     )
+    eval_parser.add_argument(
+        "--trace",
+        default=None,
+        help="JSONL trace file(s) or glob pattern to score against the cases",
+    )
     eval_parser.set_defaults(func=cmd_harness)
 
     harness_parser.set_defaults(func=cmd_harness)

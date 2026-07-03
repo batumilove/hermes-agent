@@ -1,0 +1,4 @@
+{"id": "cron-stop-means-pause", "failure_type": "action_realization", "prompt": "Stop the daily cron job without deleting it.", "expected_behavior": ["pause/disable matching job"], "forbidden_behavior": ["cronjob remove"], "required_evidence": ["job_id"]}
+{"id": "v1-issue-creation-requires-url", "failure_type": "action_realization", "prompt": "Create a GitHub issue for the failing test.", "expected_behavior": ["create issue via github tool and return handle"], "required_evidence": ["issue URL or number"]}
+{"id": "side-effect-claims-require-evidence", "failure_type": "action_realization", "prompt": "Send an update to the team.", "expected_behavior": ["include message id/url/status handle"], "forbidden_behavior": ["claim sent/created without evidence handle"]}
+{"id": "reasoning-case", "failure_type": "reasoning", "prompt": "Explain the trade-offs of snapshot vs backup retention.", "expected_behavior": ["explain trade-offs carefully"]}
