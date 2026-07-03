@@ -58,14 +58,28 @@ Owner: ubuntu:ubuntu
 
 ## Staging VM facts
 
-Recorded/verified facts:
+Historical evidence proves the VM existed during the 2026-06-11 canary run:
 
 - VMID/name from task evidence: `429` / `hermes-staging-01`
-- Host from earlier live verification: Proxmox Intel / `server`
+- Host from historical evidence: Proxmox Intel / node `server`
 - Tailscale IP recorded during successful smoke: `100.112.103.69`
-- The VM was observed stopped during corrective verification.
+- LAN IP recorded during provisioning handoff: `192.168.10.225`
+- Historical VM config was captured in `/home/ubuntu/infra-ops/docs/operations/hermes-staging-vm-logs-20260611-123020/02-create-vm.txt`, including:
+  - `name: hermes-staging-01`
+  - `description: Dedicated persistent Hermes staging VM; task t_6221bb4c; Ubuntu 24.04; Tailscale-only target; no production Telegram credentials.`
+  - `net0: virtio=62:9A:27:D7:56:86,bridge=vmbr0`
+  - `smbios1: uuid=34fed008-76f3-4719-9d03-c95bd6e6eaa6`
+  - `tags: hermes;kanban-t_6221bb4c;staging;ubuntu2404`
 
-Caveat: current live Proxmox enumeration should be repeated before any further staging or production action. Some quick probes did not re-list the VM in later checks, so the current placement/state must not be assumed from the old smoke evidence alone.
+Current corrective inventory on 2026-07-03 found drift from that historical state:
+
+- Reachable Proxmox hosts checked: `server` / `100.111.166.31`, `proxmox02` / `100.84.169.101`, and `proxmox01` / `100.90.255.19`.
+- On all three reachable hosts, `qm status 429` and `pct status 429` reported no config for VMID/CTID `429`.
+- `qm list`, `pct list`, and `/etc/pve/qemu-server`/`/etc/pve/lxc` greps found no current `hermes-staging-01` or `429` config on the reachable hosts.
+- A grep hit in `/etc/pve/qemu-server/501.conf` on `server` was checked and is unrelated: VM `501` is `pbs`, not staging.
+- SSH to `hermes-staging-01` currently times out.
+
+Therefore the current staging VM placement/state is **not verified**. The historical canary evidence remains valid as a record of what ran in June, but the VM must be treated as missing from reachable Proxmox inventory until a broader inventory or disposal record explains where VMID `429` went.
 
 ## Production isolation state
 
