@@ -186,17 +186,15 @@ Evidence:
 
 ### Gate 4 — Production proposal
 
-Status: **BLOCKED**
+Status: **PROPOSAL WRITTEN; PRODUCTION ACTION STILL BLOCKED**
 
-A production proposal may be drafted only after Gates 2 and 3 pass. It must include:
+Proposal:
 
-- Exact production actions.
-- Rollback plan.
-- Telegram impact statement.
-- Expected restart/downtime behavior.
-- Explicit human approval gate.
+```text
+/home/ubuntu/.hermes/hermes-agent/docs/operations/hermes-staging-to-production-proposal-20260703.md
+```
 
-No production action is approved by this document.
+No production action is approved by this document or by the proposal. The proposal requires a separate explicit human approval naming the exact production scope.
 
 ## Current verdict
 
