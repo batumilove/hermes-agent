@@ -298,6 +298,7 @@ from hermes_cli.subcommands.memory import build_memory_parser
 from hermes_cli.subcommands.acp import build_acp_parser
 from hermes_cli.subcommands.tools import build_tools_parser
 from hermes_cli.subcommands.insights import build_insights_parser
+from hermes_cli.subcommands.harness import build_harness_parser
 from hermes_cli.subcommands.skills import build_skills_parser
 from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
@@ -12117,6 +12118,15 @@ def cmd_prompt_size(args):
     _impl(args)
 
 
+def cmd_harness(args):
+    """Evaluate Harness Learning failure-case fixtures."""
+    from hermes_cli.harness_eval import cmd_harness as _impl
+
+    rc = _impl(args)
+    if isinstance(rc, int) and rc != 0:
+        raise SystemExit(rc)
+
+
 def cmd_logs(args):
     """View and filter Hermes log files."""
     from hermes_cli.logs import tail_log, list_logs
@@ -12168,7 +12178,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "cron", "curator", "dashboard", "serve", "debug", "doctor",
-        "dump", "fallback", "gateway", "hooks", "import", "insights",
+        "dump", "fallback", "gateway", "harness", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
         "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile",
@@ -13686,6 +13696,11 @@ def main():
     # insights command  (parser built in hermes_cli/subcommands/insights.py)
     # =========================================================================
     build_insights_parser(subparsers, cmd_insights=cmd_insights)
+
+    # =========================================================================
+    # harness command  (parser built in hermes_cli/subcommands/harness.py)
+    # =========================================================================
+    build_harness_parser(subparsers, cmd_harness=cmd_harness)
 
     # =========================================================================
     # claw command  (parser built in hermes_cli/subcommands/claw.py)
