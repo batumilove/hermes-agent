@@ -309,6 +309,15 @@ hermes = "hermes_cli.main:main"
 hermes-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"
 
+[tool.uv]
+# Global supply-chain cooldown: ignore distributions uploaded less than
+# six days ago when resolving/locking dependencies. uv evaluates this
+# relative duration at command runtime, so the gate does not decay into
+# a stale fixed timestamp freeze. Keep this in sync with uv.lock: when
+# intentionally bumping deps, wait for the cooldown window or explicitly
+# document the emergency/security exception in the dependency PR.
+exclude-newer = "6 days"
+
 [tool.setuptools]
 py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "utils", "mcp_serve"]
 
