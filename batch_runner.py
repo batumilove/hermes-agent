@@ -321,10 +321,16 @@ def _process_single_prompt(
             print(f"   Prompt {prompt_index}: Using toolsets {selected_toolsets}")
         
         # Initialize agent with sampled toolsets and log prefix for identification
+        # If no explicit api_key was supplied, let AIAgent resolve provider/base_url/auth
+        # from Hermes config. Passing the batch-runner default OpenRouter base_url with
+        # api_key=None can otherwise override the configured provider and produce
+        # confusing auth failures for subscription-backed/default providers.
         log_prefix = f"[B{batch_num}:P{prompt_index}]"
+        explicit_api_key = config.get("api_key")
+        agent_base_url = config.get("base_url") if explicit_api_key else None
         agent = AIAgent(
-            base_url=config.get("base_url"),
-            api_key=config.get("api_key"),
+            base_url=agent_base_url,
+            api_key=explicit_api_key,
             model=config["model"],
             max_iterations=config["max_iterations"],
             enabled_toolsets=selected_toolsets,
