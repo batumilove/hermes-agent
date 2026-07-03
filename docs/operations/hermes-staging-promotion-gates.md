@@ -71,15 +71,21 @@ Historical evidence proves the VM existed during the 2026-06-11 canary run:
   - `smbios1: uuid=34fed008-76f3-4719-9d03-c95bd6e6eaa6`
   - `tags: hermes;kanban-t_6221bb4c;staging;ubuntu2404`
 
-Current corrective inventory on 2026-07-03 found drift from that historical state:
+Expanded corrective inventory on 2026-07-03 found the VM on an additional Proxmox host that was missing from the first scan:
 
-- Reachable Proxmox hosts checked: `server` / `100.111.166.31`, `proxmox02` / `100.84.169.101`, and `proxmox01` / `100.90.255.19`.
-- On all three reachable hosts, `qm status 429` and `pct status 429` reported no config for VMID/CTID `429`.
-- `qm list`, `pct list`, and `/etc/pve/qemu-server`/`/etc/pve/lxc` greps found no current `hermes-staging-01` or `429` config on the reachable hosts.
-- A grep hit in `/etc/pve/qemu-server/501.conf` on `server` was checked and is unrelated: VM `501` is `pbs`, not staging.
-- SSH to `hermes-staging-01` currently times out.
+- Current host: `proxmox-dell` / `192.168.10.10`
+- Current VMID/name: `429` / `hermes-staging-01`
+- Current status: `stopped`
+- Current config path: `/etc/pve/qemu-server/429.conf` on `proxmox-dell`
+- Current config still matches the historical staging identity:
+  - `description: Dedicated persistent Hermes staging VM; task t_6221bb4c; Ubuntu 24.04; Tailscale-only target; no production Telegram credentials.`
+  - `net0: virtio=62:9A:27:D7:56:86,bridge=vmbr0`
+  - `smbios1: uuid=34fed008-76f3-4719-9d03-c95bd6e6eaa6`
+  - `tags: hermes;kanban-t_6221bb4c;staging;ubuntu2404`
+- Other checked Proxmox hosts (`server` / `100.111.166.31`, `proxmox02` / `100.84.169.101`, and `proxmox01` / `100.90.255.19`) did not have VMID/CTID `429` or `hermes-staging-01`.
+- SSH to `hermes-staging-01` currently times out because the VM is stopped.
 
-Therefore the current staging VM placement/state is **not verified**. The historical canary evidence remains valid as a record of what ran in June, but the VM must be treated as missing from reachable Proxmox inventory until a broader inventory or disposal record explains where VMID `429` went.
+Therefore the current staging VM placement/state is **verified as stopped on proxmox-dell**. The earlier "missing from reachable Proxmox inventory" conclusion was incomplete because `proxmox-dell` had not been included in the first focused scan.
 
 ## Production isolation state
 
