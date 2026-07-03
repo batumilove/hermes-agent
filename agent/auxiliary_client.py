@@ -2000,10 +2000,11 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
         )
         _mark_provider_unhealthy("nous", ttl=60)
         return None, None
-    if runtime is None and nous and nous.get("source") != "pool":
-        logger.debug(
-            "Auxiliary Nous: runtime JWT refresh failed; refusing stale "
-            "auth.json token."
+    if runtime is None and nous:
+        logger.warning(
+            "Auxiliary Nous client unavailable: stored Nous authentication is "
+            "present but fresh runtime credentials could not be resolved "
+            "(run: hermes auth add nous --type oauth)."
         )
         _mark_provider_unhealthy("nous", ttl=60)
         return None, None

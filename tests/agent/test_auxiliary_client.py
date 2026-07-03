@@ -1303,6 +1303,41 @@ class TestAuxiliaryPoolAwareness:
 
         assert runtime is None
 
+    def test_try_nous_refuses_raw_stored_auth_when_runtime_resolution_fails(self, caplog):
+        """Stored Nous auth is not enough if fresh runtime credentials cannot be resolved."""
+        stored_token = _jwt_with_claims({
+            "scope": "inference:invoke",
+            "exp": int(time.time() + 3600),
+        })
+
+        with (
+            patch(
+                "agent.auxiliary_client._read_nous_auth",
+                return_value={
+                    "agent_key": stored_token,
+                    "agent_key_expires_at": "2099-01-01T00:00:00+00:00",
+                    "scope": "inference:invoke",
+                    "inference_base_url": "https://inference.pool.example/v1",
+                    "source": "pool",
+                },
+            ),
+            patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=None),
+            patch("agent.auxiliary_client._mark_provider_unhealthy") as mock_unhealthy,
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+            caplog.at_level("WARNING"),
+        ):
+            from agent.auxiliary_client import _try_nous
+
+            client, model = _try_nous()
+
+        assert client is None
+        assert model is None
+        mock_openai.assert_not_called()
+        mock_unhealthy.assert_called_once_with("nous", ttl=60)
+        assert "stored Nous authentication is present" in caplog.text
+        assert "fresh runtime credentials could not be resolved" in caplog.text
+        assert "hermes auth add nous --type oauth" in caplog.text
+
     def test_try_nous_uses_portal_recommendation_for_text(self):
         """When the Portal recommends a compaction model, _try_nous honors it."""
         fresh_base = "https://inference-api.nousresearch.com/v1"
