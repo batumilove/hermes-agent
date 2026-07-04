@@ -151,8 +151,10 @@ jobs:
       - name: Regenerate per-skill docs pages + catalogs
         run: python3 website/scripts/generate-skill-docs.py
 
+      # Website docs build does not need dependency install lifecycle scripts;
+      # keep scripts enabled only for native/Desktop paths that prove they need them.
       - name: Install dependencies
-        run: npm exec --package=npm@11.18.0 -- npm ci --min-release-age=7
+        run: npm exec --package=npm@11.18.0 -- npm ci --ignore-scripts --min-release-age=7
         working-directory: website
 
       - name: Build Docusaurus
