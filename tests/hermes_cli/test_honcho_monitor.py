@@ -160,7 +160,42 @@ def test_spark_goat_failure_is_blocking_alert():
     assert "✅ All nominal" not in report
 
 
-def test_missing_vector_dimensions_raises_alert():
+def test_missing_vector_dimensions_raises_alert_when_db_dims_are_unavailable():
+    snapshot = {
+        "services": {"api_ok": True, "deriver_up": True, "db_ok": True, "redis_ok": True},
+        "pipeline": {
+            "embedding": {
+                "model": "qwen3-embedding-8b-1536",
+                "base_url": "http://100.69.54.37:11435/v1",
+                "dimensions_mode": "never",
+                "vector_dimensions": "",
+            },
+            "deriver": {"model": "aeon-ultimate", "base_url": "http://100.69.54.37:8001/v1"},
+            "summary": {"model": "qwen3.5-397b", "base_url": "http://100.110.104.77:8087/v1"},
+            "dream": {"model": "aeon-ultimate", "base_url": "http://100.69.54.37:8001/v1"},
+            "dialectic": {"model": "aeon-ultimate", "base_url": "http://100.69.54.37:8001/v1"},
+        },
+        "db": {
+            "documents_total": 100,
+            "documents_with_embeddings": 95,
+            "documents_dims": 0,
+            "messages_total": 80,
+            "messages_with_embeddings": 80,
+            "messages_dims": 0,
+        },
+        "queue": {"pending": 0, "done": 128},
+        "queue_by_type": {"representation": {"pending": 0, "done": 128}},
+        "errors": {"save_representation": 0, "four_oh_one": 0},
+        "spark_goat": {"ok": True, "latency_s": 1.2, "thinking": False, "model": "aeon-ultimate"},
+        "deriver": {"runs_15m": 6, "last_duration_s": 39, "conclusions": 2602},
+    }
+
+    alerts = hm.build_alerts(hm.HonchoSnapshot(**snapshot))
+
+    assert "Embedding vector dimensions missing from env" in alerts
+
+
+def test_missing_vector_dimensions_is_not_alert_when_db_dims_match():
     snapshot = {
         "services": {"api_ok": True, "deriver_up": True, "db_ok": True, "redis_ok": True},
         "pipeline": {
@@ -192,7 +227,7 @@ def test_missing_vector_dimensions_raises_alert():
 
     alerts = hm.build_alerts(hm.HonchoSnapshot(**snapshot))
 
-    assert "Embedding vector dimensions missing from env" in alerts
+    assert "Embedding vector dimensions missing from env" not in alerts
 
 
 def test_parse_queue_by_type_aggregates_per_task_type_counts():

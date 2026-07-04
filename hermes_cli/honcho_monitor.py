@@ -178,15 +178,20 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
     embed_model = embed.get("model", "")
     embed_url = embed.get("base_url", "")
     vector_dims = (embed.get("vector_dimensions") or "").strip()
+    doc_dims = snapshot.db.get("documents_dims")
+    msg_dims = snapshot.db.get("messages_dims")
+    db_dims_consistent = (
+        doc_dims not in (None, "", 0, "0")
+        and msg_dims not in (None, "", 0, "0")
+        and str(doc_dims) == str(msg_dims)
+    )
     if not embed_model or not embed_url:
         alerts.append("Embedding config missing")
     elif "api.openai.com" in embed_url or embed_model == "text-embedding-3-small":
         alerts.append("Embedding config looks like OpenAI fallback")
-    elif not vector_dims:
+    elif not vector_dims and not db_dims_consistent:
         alerts.append("Embedding vector dimensions missing from env")
 
-    doc_dims = snapshot.db.get("documents_dims")
-    msg_dims = snapshot.db.get("messages_dims")
     if vector_dims and doc_dims not in (None, "", 0, "0") and str(doc_dims) != vector_dims:
         alerts.append("Document embedding dims mismatch")
     if vector_dims and msg_dims not in (None, "", 0, "0") and str(msg_dims) != vector_dims:
