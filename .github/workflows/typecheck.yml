@@ -19,13 +19,14 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: package-lock.json
       # --ignore-scripts: typecheck only needs the TS sources + type defs, not
       # native builds. Skipping install scripts drops node-pty's node-gyp
       # header fetch — the transient flake that killed this job pre-`tsc` — and
       # is faster. retry covers the remaining registry blips.
       - uses: ./.github/actions/retry
         with:
-          command: npm ci --ignore-scripts
+          command: npm exec --package=npm@11.18.0 -- npm ci --ignore-scripts --min-release-age=7
       - run: npm run --prefix ${{ matrix.package }} typecheck
 
   # Production build of the desktop renderer. `typecheck` runs `tsc` only,
@@ -47,5 +48,5 @@ jobs:
       # native binary. retry handles the transient install-time fetch flakes.
       - uses: ./.github/actions/retry
         with:
-          command: npm ci
+          command: npm exec --package=npm@11.18.0 -- npm ci --min-release-age=7
       - run: npm run --prefix apps/desktop build

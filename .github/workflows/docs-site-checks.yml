@@ -22,7 +22,7 @@ jobs:
       - name: Install website dependencies
         uses: ./.github/actions/retry
         with:
-          command: npm ci
+          command: npm exec --package=npm@11.18.0 -- npm ci --min-release-age=7
           working-directory: website
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
