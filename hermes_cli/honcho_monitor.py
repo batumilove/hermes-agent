@@ -316,7 +316,7 @@ def ssh(command: str, timeout: int = 20) -> str:
             "-o",
             "BatchMode=yes",
             "-o",
-            "StrictHostKeyChecking=no",
+            "StrictHostKeyChecking=accept-new",
             HONCHO_TARGET,
             command,
         ],

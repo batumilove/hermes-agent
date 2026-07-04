@@ -50,6 +50,28 @@ def test_constructor_preserves_overridden_container_name():
     assert diagnostic.deriver_container == "honcho-deriver-2"
 
 
+def test_ssh_uses_accept_new_instead_of_disabling_host_key_checks(monkeypatch):
+    calls: list[list[str]] = []
+
+    class Result:
+        returncode = 0
+        stdout = "ok\n"
+        stderr = ""
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return Result()
+
+    monkeypatch.setattr(hqd.subprocess, "run", fake_run)
+
+    diagnostic = hqd.HonchoQueueDiagnostic(host="honcho.example")
+    assert diagnostic._ssh("true") == "ok"
+
+    ssh_args = calls[0]
+    assert "StrictHostKeyChecking=accept-new" in ssh_args
+    assert "StrictHostKeyChecking=no" not in ssh_args
+
+
 # ---------------------------------------------------------------------------
 # Helpers for constructing expected psql commands in tests.
 # ---------------------------------------------------------------------------

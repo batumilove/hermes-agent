@@ -95,6 +95,28 @@ def test_state_round_trip(tmp_path: Path):
     assert hm.load_state(state_path) == state
 
 
+def test_ssh_uses_accept_new_instead_of_disabling_host_key_checks(monkeypatch):
+    calls: list[list[str]] = []
+
+    class Result:
+        returncode = 0
+        stdout = "ok\n"
+        stderr = ""
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return Result()
+
+    monkeypatch.setattr(hm.subprocess, "run", fake_run)
+    monkeypatch.setattr(hm, "HONCHO_TARGET", "honcho.example")
+
+    assert hm.ssh("true") == "ok"
+
+    ssh_args = calls[0]
+    assert "StrictHostKeyChecking=accept-new" in ssh_args
+    assert "StrictHostKeyChecking=no" not in ssh_args
+
+
 def test_queue_parse_handles_postgresql_boolean_text():
     # Reproduce the live failure: PostgreSQL returns 'true'/'false' text
     queue_raw = "false|15\ntrue|128\n"

@@ -136,7 +136,7 @@ class HonchoQueueDiagnostic:
                 "-o",
                 "BatchMode=yes",
                 "-o",
-                "StrictHostKeyChecking=no",
+                "StrictHostKeyChecking=accept-new",
                 self.host,
                 command,
             ],
