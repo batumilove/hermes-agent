@@ -2989,6 +2989,74 @@ def test_default_spawn_preserves_longer_terminal_timeout(kanban_home, monkeypatc
     assert captured["env"]["TERMINAL_MAX_FOREGROUND_TIMEOUT"] == "7200"
 
 
+
+
+def test_default_spawn_injects_configured_kanban_worker_env(kanban_home, monkeypatch):
+    """kanban.worker_env should become worker process env only."""
+    cfg = kanban_home / "config.yaml"
+    cfg.write_text(
+        "kanban:\n"
+        "  worker_env:\n"
+        "    HERMES_SHARED_CACHE: /tmp/hermes-shared-cache\n"
+        "    npm_config_cache: /tmp/hermes-shared-cache/npm\n"
+        "    EMPTY_VALUE: ''\n"
+        "    NULL_VALUE:\n"
+    )
+    captured = {}
+
+    class FakeProc:
+        pid = 126
+
+    def fake_popen(cmd, **kwargs):
+        captured["env"] = kwargs.get("env", {})
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    monkeypatch.delenv("HERMES_SHARED_CACHE", raising=False)
+    monkeypatch.delenv("npm_config_cache", raising=False)
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="worker env", assignee="ops")
+        task = kb.get_task(conn, tid)
+        workspace = kb.resolve_workspace(task)
+        kb._default_spawn(task, str(workspace))
+    finally:
+        conn.close()
+
+    env = captured["env"]
+    assert env["HERMES_SHARED_CACHE"] == "/tmp/hermes-shared-cache"
+    assert env["npm_config_cache"] == "/tmp/hermes-shared-cache/npm"
+    assert env["EMPTY_VALUE"] == ""
+    assert "NULL_VALUE" not in env
+    assert "HERMES_SHARED_CACHE" not in os.environ
+
+
+def test_default_spawn_rejects_non_mapping_kanban_worker_env(kanban_home, monkeypatch):
+    """Malformed kanban.worker_env config should be ignored safely."""
+    (kanban_home / "config.yaml").write_text("kanban:\n  worker_env: not-a-map\n")
+    captured = {}
+
+    class FakeProc:
+        pid = 127
+
+    def fake_popen(cmd, **kwargs):
+        captured["env"] = kwargs.get("env", {})
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="bad worker env", assignee="ops")
+        task = kb.get_task(conn, tid)
+        workspace = kb.resolve_workspace(task)
+        kb._default_spawn(task, str(workspace))
+    finally:
+        conn.close()
+
+    assert captured["env"].get("HERMES_SHARED_CACHE") is None
+
+
 def test_default_spawn_leaves_terminal_timeout_without_runtime_cap(kanban_home, monkeypatch):
     """Uncapped tasks keep the existing terminal timeout behavior."""
     captured = {}
