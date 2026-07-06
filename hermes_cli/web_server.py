@@ -11119,7 +11119,7 @@ def _disable_unselected_skills(profile_dir: Path, keep: List[str]) -> int:
 
 
 @app.get("/api/profiles")
-def list_profiles_endpoint():
+async def list_profiles_endpoint():
     from hermes_cli import profiles as profiles_mod
     try:
         loop = asyncio.get_running_loop()
