@@ -2965,6 +2965,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             "stream" in _err_lower
                             and "not supported" in _err_lower
                         )
+                        _is_zai_glm52_overload = (
+                            getattr(agent, "provider", None) == "zai"
+                            and "glm-5.2" in str(getattr(agent, "model", "")).lower()
+                            and "1305" in _err_lower
+                        )
                         # AWS Bedrock (AnthropicBedrock SDK path): IAM policies
                         # with bedrock:InvokeModel but not
                         # InvokeModelWithResponseStream reject messages.stream()

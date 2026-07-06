@@ -334,8 +334,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         cfg = _load_secrets_config(home_path)
     except Exception:  # noqa: BLE001 — config errors must not block startup
         return
-    if not cfg:
-        return
+    cfg = cfg or {}
 
     try:
         from agent.secret_sources.registry import apply_all

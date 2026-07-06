@@ -69,6 +69,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("reset",), args_hint="[name]"),
     CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
                gateway_only=True, args_hint="[off|help|session-id]"),
+    CommandDef("topicicon", "Set/list the current Telegram topic icon", "Session",
+               gateway_only=True, args_hint="[custom_emoji_id|list|remove]"),
     CommandDef("clear", "Clear screen and start a new session", "Session",
                cli_only=True),
     CommandDef("redraw", "Force a full UI repaint (recovers from terminal drift)", "Session",
@@ -1169,7 +1171,7 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - version: informational and always available through /hermes version;
 #     routing it through the catch-all preserves the 50-command Slack cap for
 #     higher-value interactive commands while keeping Telegram parity explicit.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug", "version"})
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug", "update", "version"})
 
 
 def _sanitize_slack_name(raw: str) -> str:
