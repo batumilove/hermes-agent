@@ -100,11 +100,15 @@ jobs:
           PY
 
       - name: Report status
+        env:
+          STATUS: ${{ steps.probe.outputs.status }}
+          DETAIL: ${{ steps.probe.outputs.detail }}
+          SUMMARY: ${{ steps.probe.outputs.summary }}
         run: |
-          echo "Probe status: ${{ steps.probe.outputs.status }}"
-          echo "Detail:       ${{ steps.probe.outputs.detail }}"
-          if [ -n "${{ steps.probe.outputs.summary }}" ]; then
-            echo "Summary:      ${{ steps.probe.outputs.summary }}"
+          echo "Probe status: $STATUS"
+          echo "Detail:       $DETAIL"
+          if [ -n "$SUMMARY" ]; then
+            echo "Summary:      $SUMMARY"
           fi
 
       - name: Open issue on degraded / failed probe
@@ -113,12 +117,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           STATUS: ${{ steps.probe.outputs.status }}
           DETAIL: ${{ steps.probe.outputs.detail }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           # Find existing open issue by title prefix so we don't spam — we
           # append a comment instead of opening a new one each tick.
           TITLE_PREFIX="[skills-index-watchdog]"
           existing=$(gh issue list \
-            --repo "${{ github.repository }}" \
+            --repo "$REPOSITORY" \
             --state open \
             --search "in:title \"$TITLE_PREFIX\"" \
             --json number,title \
@@ -134,16 +139,16 @@ jobs:
           and \`.github/workflows/deploy-site.yml\` (on every push affecting website/skills).
           If this issue keeps reopening, check the latest runs:
 
-          - https://github.com/${{ github.repository }}/actions/workflows/skills-index.yml
-          - https://github.com/${{ github.repository }}/actions/workflows/deploy-site.yml
+          - https://github.com/${REPOSITORY}/actions/workflows/skills-index.yml
+          - https://github.com/${REPOSITORY}/actions/workflows/deploy-site.yml
 
           This issue was opened by \`.github/workflows/skills-index-freshness.yml\`. Close it once the underlying problem is fixed; the next probe will reopen if it's still broken."
           if [ -n "$existing" ]; then
             echo "Appending to existing issue #$existing"
-            gh issue comment "$existing" --repo "${{ github.repository }}" --body "Probe still failing at $(date -u +%FT%TZ): \`$STATUS\` — $DETAIL"
+            gh issue comment "$existing" --repo "$REPOSITORY" --body "Probe still failing at $(date -u +%FT%TZ): \`$STATUS\` — $DETAIL"
           else
             echo "Opening new watchdog issue"
-            gh issue create --repo "${{ github.repository }}" \
+            gh issue create --repo "$REPOSITORY" \
               --title "$TITLE_PREFIX Skills index is stale or degraded ($STATUS)" \
               --body "$BODY"
           fi
