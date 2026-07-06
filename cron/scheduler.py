@@ -1427,6 +1427,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # live Telegram adapter is available.  The named-topic route relies on
         # DeliveryRouter -> adapter.ensure_dm_topic(); standalone senders cannot
         # create a topic and would otherwise misroute/fail.
+        fresh_telegram_topic_assigned = False
         adjusted_target = _maybe_assign_fresh_telegram_cron_thread(
             job,
             target,
@@ -1437,6 +1438,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             target = adjusted_target
             chat_id = target["chat_id"]
             thread_id = target.get("thread_id")
+            fresh_telegram_topic_assigned = True
             logger.info(
                 "Job '%s': using fresh Telegram cron topic %r for %s:%s",
                 job.get("id", "?"), thread_id, platform_name, chat_id,
@@ -1772,6 +1774,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     "Job '%s': %s, falling back to standalone",
                     job["id"], err_msg,
                 )
+
+        if not delivered and fresh_telegram_topic_assigned:
+            msg = (
+                f"live adapter delivery to fresh Telegram cron topic failed for "
+                f"{platform_name}:{chat_id}; refusing standalone fallback because "
+                "standalone cannot create/address named DM topics safely"
+            )
+            logger.error("Job '%s': %s", job["id"], msg)
+            delivery_errors.extend(target_errors + [msg])
+            continue
 
         if not delivered:
             # Standalone path: run the async send in a fresh event loop (safe from any thread)

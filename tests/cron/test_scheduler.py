@@ -389,6 +389,55 @@ class TestResolveDeliveryTarget:
         assert adapter.sent[2]["thread_id"] == "38049"
         assert adapter.sent[2]["telegram_dm_topic_created_for_send"] is True
 
+    def test_deliver_result_fresh_private_topic_does_not_fallback_to_standalone(self):
+        """If fresh-topic live delivery fails, do not leak the message into the root DM."""
+        from cron import scheduler
+        from gateway.config import Platform
+
+        send_mock = AsyncMock(return_value={"success": True})
+        pconfig = MagicMock(enabled=True)
+        gateway_config = MagicMock()
+        gateway_config.platforms = {Platform.TELEGRAM: pconfig}
+
+        class FakeLoop:
+            def is_running(self):
+                return True
+
+        class FailingFuture:
+            def __init__(self, coro):
+                self.coro = coro
+
+            def result(self, timeout=None):
+                self.coro.close()
+                raise RuntimeError("gateway loop backlogged")
+
+            def cancel(self):
+                return True
+
+        class FakeAdapter:
+            async def ensure_dm_topic(self, chat_id, topic_name, force_create=False):
+                return "38049"
+
+        with patch("gateway.config.load_gateway_config", return_value=gateway_config), \
+             patch.object(scheduler, "load_config", return_value={"cron": {"wrap_response": False, "telegram_new_thread_per_output": True}}), \
+             patch("agent.async_utils.safe_schedule_threadsafe", side_effect=lambda coro, loop: FailingFuture(coro)), \
+             patch("tools.send_message_tool._send_to_platform", new=send_mock):
+            err = scheduler._deliver_result(
+                {
+                    "id": "job1",
+                    "name": "Report",
+                    "deliver": "origin",
+                    "origin": {"platform": "telegram", "chat_id": "722341991", "thread_id": "104564"},
+                },
+                "hello",
+                adapters={Platform.TELEGRAM: FakeAdapter()},
+                loop=FakeLoop(),
+            )
+
+        assert err is not None
+        assert "refusing standalone fallback" in err
+        send_mock.assert_not_awaited()
+
     def test_deliver_result_drops_named_private_thread_on_standalone_fallback(self):
         """If a named private Telegram topic reaches standalone fallback, drop it instead of int() crashing."""
         from cron import scheduler
