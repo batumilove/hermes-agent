@@ -46,12 +46,15 @@ jobs:
 
       - name: Determine base ref
         id: base
+        env:
+          BASE_BRANCH: ${{ github.base_ref }}
+          EVENT_NAME: ${{ inputs.event_name }}
         run: |
           # For PRs, diff against the merge base with the target branch.
           # For pushes to main, diff against the previous commit on main.
-          if [ "${{ inputs.event_name }}" = "pull_request" ]; then
-            BASE_SHA=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
-            BASE_REF="origin/${{ github.base_ref }}"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            BASE_SHA=$(git merge-base "origin/${BASE_BRANCH}" HEAD)
+            BASE_REF="origin/${BASE_BRANCH}"
           else
             BASE_SHA=$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)
             BASE_REF="HEAD~1"
@@ -72,13 +75,14 @@ jobs:
           echo "HEAD ty:   $(wc -c < .lint-reports/head/ty.json) bytes"
 
       - name: Run ruff + ty on base (via git worktree)
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
         run: |
           mkdir -p .lint-reports/base
           # Use a worktree so we don't clobber the main checkout. If the basex
           # SHA is identical to HEAD (e.g. first commit), skip and leave the
           # base reports empty — the diff script handles missing files.
           HEAD_SHA=$(git rev-parse HEAD)
-          BASE_SHA="${{ steps.base.outputs.sha }}"
           if [ "$BASE_SHA" = "$HEAD_SHA" ]; then
             echo "Base SHA == HEAD SHA, skipping base scan."
             echo '[]' > .lint-reports/base/ruff.json
@@ -99,6 +103,7 @@ jobs:
 
       - name: Generate diff summary
         env:
+          BASE_REF: ${{ steps.base.outputs.ref }}
           HEAD_REF: ${{ inputs.event_name == 'pull_request' && github.head_ref || github.ref_name }}
         run: |
           python scripts/lint_diff.py \
@@ -106,7 +111,7 @@ jobs:
             --head-ruff .lint-reports/head/ruff.json \
             --base-ty   .lint-reports/base/ty.json \
             --head-ty   .lint-reports/head/ty.json \
-            --base-ref  "${{ steps.base.outputs.ref }}" \
+            --base-ref  "$BASE_REF" \
             --head-ref  "$HEAD_REF" \
             --output    .lint-reports/summary.md
           cat .lint-reports/summary.md >> "$GITHUB_STEP_SUMMARY"
