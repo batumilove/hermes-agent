@@ -50,21 +50,6 @@ from utils import env_var_enabled
 logger = logging.getLogger(__name__)
 
 
-
-# Host-only cwd prefixes that must not be reused as container/sandbox cwd values.
-_HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
-_CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona"})
-
-
-def _is_unusable_container_cwd(cwd: str | None) -> bool:
-    """Return True when *cwd* looks like a host path unusable inside containers."""
-    if not cwd:
-        return False
-    text = str(cwd)
-    if not os.path.isabs(text):
-        return True
-    return any(text.startswith(prefix) for prefix in _HOST_CWD_PREFIXES)
-
 # ---------------------------------------------------------------------------
 # Global interrupt event: set by the agent when a user interrupt arrives.
 # The terminal tool polls this during command execution so it can kill
@@ -356,6 +341,43 @@ def _handle_sudo_failure(output: str, env_type: str) -> str:
     return output
 
 
+# sudo -S rejects a bad cached/interactive password with these messages.
+_SUDO_WRONG_PASSWORD_MARKERS = (
+    "sudo: authentication failed",
+    "sudo: incorrect password attempt",
+    "sudo: maximum 3 incorrect authentication attempts",
+    "sudo: 3 incorrect password attempts",
+)
+
+
+def _sudo_wrong_password_failure(output: str) -> bool:
+    """Return True when sudo rejected a piped password."""
+    if not output:
+        return False
+    lowered = output.lower()
+    return any(marker in lowered for marker in _SUDO_WRONG_PASSWORD_MARKERS)
+
+
+def _invalidate_cached_sudo_on_auth_failure(
+    command: str | None, output: str
+) -> bool:
+    """Drop a session-cached sudo password after sudo rejects it.
+
+    Env-configured ``SUDO_PASSWORD`` is left alone — that is an explicit
+    operator choice, not an interactive cache entry.
+    """
+    if "SUDO_PASSWORD" in os.environ:
+        return False
+    if not _sudo_wrong_password_failure(output):
+        return False
+    if _count_real_sudo_invocations(command or "") == 0:
+        return False
+    if not _get_cached_sudo_password():
+        return False
+    _set_cached_sudo_password("")
+    return True
+
+
 def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     """
     Prompt user for sudo password with timeout.
@@ -536,7 +558,10 @@ def _read_shell_token(command: str, start: int) -> tuple[str, int]:
 
 
 def _rewrite_real_sudo_invocations(command: str) -> tuple[str, int]:
-    """Rewrite only real unquoted sudo command words, not plain text mentions."""
+    """Rewrite only real unquoted sudo command words, not plain text mentions.
+
+    Returns the rewritten command and the number of sudo invocations rewritten.
+    """
     out: list[str] = []
     i = 0
     n = len(command)
@@ -596,43 +621,60 @@ def _rewrite_real_sudo_invocations(command: str) -> tuple[str, int]:
     return "".join(out), sudo_count
 
 
-# sudo -S rejects a bad cached/interactive password with these messages.
-_SUDO_WRONG_PASSWORD_MARKERS = (
-    "sudo: authentication failed",
-    "sudo: incorrect password attempt",
-    "sudo: maximum 3 incorrect authentication attempts",
-    "sudo: 3 incorrect password attempts",
-)
-
-
-def _sudo_wrong_password_failure(output: str) -> bool:
-    """Return True when sudo rejected a piped password."""
-    if not output:
-        return False
-    lowered = output.lower()
-    return any(marker in lowered for marker in _SUDO_WRONG_PASSWORD_MARKERS)
-
-
 def _count_real_sudo_invocations(command: str) -> int:
-    """Return how many real sudo command words appear in *command*."""
-    _transformed, sudo_count = _rewrite_real_sudo_invocations(command)
-    return sudo_count
+    """Return how many real sudo command words appear in *command*.
 
+    Lightweight scan that reuses the same tokeniser as
+    ``_rewrite_real_sudo_invocations`` but skips the string-building, so it
+    is cheap to call from the result-processing path.
+    """
+    count = 0
+    i = 0
+    n = len(command)
+    command_start = True
 
-def _invalidate_cached_sudo_on_auth_failure(
-    command: str | None, output: str
-) -> bool:
-    """Drop a session-cached sudo password after sudo rejects it."""
-    if "SUDO_PASSWORD" in os.environ:
-        return False
-    if not _sudo_wrong_password_failure(output):
-        return False
-    if _count_real_sudo_invocations(command or "") == 0:
-        return False
-    if not _get_cached_sudo_password():
-        return False
-    _set_cached_sudo_password("")
-    return True
+    while i < n:
+        ch = command[i]
+
+        if ch.isspace():
+            if ch == "\n":
+                command_start = True
+            i += 1
+            continue
+
+        if ch == "#" and command_start:
+            comment_end = command.find("\n", i)
+            if comment_end == -1:
+                break
+            i = comment_end
+            continue
+
+        if command.startswith("&&", i) or command.startswith("||", i) or command.startswith(";;", i):
+            i += 2
+            command_start = True
+            continue
+
+        if ch in ";|&(":
+            i += 1
+            command_start = True
+            continue
+
+        if ch == ")":
+            i += 1
+            command_start = False
+            continue
+
+        token, next_i = _read_shell_token(command, i)
+        if command_start and token == "sudo":
+            count += 1
+
+        if command_start and _looks_like_env_assignment(token):
+            command_start = True
+        else:
+            command_start = False
+        i = next_i
+
+    return count
 
 
 def _sudo_nopasswd_works() -> bool:
@@ -908,8 +950,6 @@ from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
 from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.modal import ModalEnvironment as _ModalEnvironment
 from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
-from tools.environments.kata import KataEnvironment as _KataEnvironment
-from tools.environments.sandbox_manager import SandboxManagerEnvironment as _SandboxManagerEnvironment
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 import sys
 
@@ -1167,6 +1207,52 @@ def _safe_getcwd() -> str:
         return os.getenv("TERMINAL_CWD") or os.path.expanduser("~")
 
 
+# Path prefixes that identify a *host* working directory which cannot exist
+# inside a container sandbox. Covers POSIX user dirs and Windows drive paths
+# (``C:\Users\...`` / ``C:/Users/...``) — the latter is how a Windows host's
+# cwd looks when it leaks toward a Linux container's ``-w`` flag.
+_HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
+
+_CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona"})
+
+
+def _is_ssh_remote_tilde_cwd(backend: str, cwd: str) -> bool:
+    """Return True when *cwd* is a tilde path that the remote SSH shell must
+    expand itself, so the Hermes host/container must NOT ``expanduser`` it.
+
+    SSH ``cwd`` is interpreted by the *remote* shell (``cd ~`` / ``cd ~/x``
+    over ``ssh ... bash -c``). Expanding ``~`` locally would rewrite it to the
+    Hermes host HOME (often ``/opt/data`` under Docker) and inject a
+    nonexistent path into the remote session. Only ``~`` / ``~/...`` on the
+    ``ssh`` backend qualify; absolute remote paths still pass through
+    unchanged, and every other backend keeps expanding locally.
+    """
+    if (backend or "").strip().lower() != "ssh":
+        return False
+    return cwd == "~" or cwd.startswith("~/")
+
+
+def _is_unusable_container_cwd(cwd: str) -> bool:
+    """Return True if *cwd* is a host/relative path that won't work as the
+    working directory inside a container sandbox.
+
+    A container's cwd must be an absolute path that exists *inside* the
+    sandbox (e.g. ``/workspace`` or ``/root``). A host path (``/home/user``,
+    ``C:\\Users\\me``) or a relative path (``.``, ``src/``) is meaningless to
+    ``docker run -w`` and makes the container fail to start (exit 125).
+    """
+    if not cwd:
+        return False
+    if any(cwd.startswith(p) for p in _HOST_CWD_PREFIXES):
+        return True
+    # Relative paths (".", "src/") can't be a container workdir either. Windows
+    # drive paths are absolute on Windows but os.path.isabs() is False on a
+    # POSIX host, so they're already caught by the prefix check above.
+    if not os.path.isabs(cwd):
+        return True
+    return False
+
+
 def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
     # Default image with Python and Node.js for maximum compatibility
@@ -1174,7 +1260,7 @@ def _get_env_config() -> Dict[str, Any]:
     env_type = os.getenv("TERMINAL_ENV", "local")
     
     mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
-    container_backend = env_type in _CONTAINER_BACKENDS
+    container_backend = env_type in {"docker", "singularity", "modal", "daytona"}
     docker_backend = env_type == "docker"
 
     # Docker/container-only env vars may be bridged from config.yaml even when
@@ -1216,24 +1302,21 @@ def _get_env_config() -> Dict[str, Any]:
     # /workspace and track the original host path separately. Otherwise keep the
     # normal sandbox behavior and discard host paths.
     cwd = os.getenv("TERMINAL_CWD", default_cwd)
-    if cwd:
+    if cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
         cwd = os.path.expanduser(cwd)
     host_cwd = None
-    host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
     if env_type == "docker" and mount_docker_cwd:
         docker_cwd_source = os.getenv("TERMINAL_CWD") or _safe_getcwd()
         candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
         if (
-            any(candidate.startswith(p) for p in host_prefixes)
+            any(candidate.startswith(p) for p in _HOST_CWD_PREFIXES)
             or (os.path.isabs(candidate) and os.path.isdir(candidate) and not candidate.startswith(("/workspace", "/root")))
         ):
             host_cwd = candidate
             cwd = "/workspace"
-    elif env_type in (_CONTAINER_BACKENDS | {"kata"}) and cwd:
+    elif env_type in _CONTAINER_BACKENDS and cwd:
         # Host paths and relative paths that won't work inside containers
-        is_host_path = any(cwd.startswith(p) for p in host_prefixes)
-        is_relative = not os.path.isabs(cwd)  # e.g. "." or "src/"
-        if (is_host_path or is_relative) and cwd != default_cwd:
+        if _is_unusable_container_cwd(cwd) and cwd != default_cwd:
             logger.info("Ignoring TERMINAL_CWD=%r for %s backend "
                         "(host/relative path won't work in sandbox). Using %r instead.",
                         cwd, env_type, default_cwd)
@@ -1247,12 +1330,6 @@ def _get_env_config() -> Dict[str, Any]:
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
-        "daytona_auto_delete_interval_minutes": _parse_env_var(
-            "TERMINAL_DAYTONA_AUTO_DELETE_INTERVAL_MINUTES", "60"
-        ),
-        "kata_image": os.getenv("TERMINAL_KATA_IMAGE", default_image),
-        "kata_namespace": os.getenv("TERMINAL_KATA_NAMESPACE", "sandbox"),
-        "kata_kubeconfig": os.getenv("TERMINAL_KATA_KUBECONFIG", ""),
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
@@ -1280,6 +1357,7 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_volumes": docker_volumes,
         "docker_env": docker_env,
         "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
+        "docker_network": os.getenv("TERMINAL_DOCKER_NETWORK", "true").lower() in {"true", "1", "yes"},
         "docker_extra_args": docker_extra_args,
         # Cross-process container reuse (issue #20561).  The docs claim
         # "ONE long-lived container shared across sessions" — this toggle
@@ -1297,19 +1375,6 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_orphan_reaper": os.getenv(
             "TERMINAL_DOCKER_ORPHAN_REAPER", "true"
         ).lower() in {"true", "1", "yes"},
-        "sandbox_manager": {
-            "ssh_host": os.getenv("TERMINAL_SANDBOX_SSH_HOST", ""),
-            "ssh_user": os.getenv("TERMINAL_SANDBOX_SSH_USER", ""),
-            "ssh_port": _parse_env_var("TERMINAL_SANDBOX_SSH_PORT", "22"),
-            "ssh_key": os.getenv("TERMINAL_SANDBOX_SSH_KEY", ""),
-            "manager_dir": os.getenv("TERMINAL_SANDBOX_MANAGER_DIR", "/opt/agent-sandbox-manager"),
-            "config_path": os.getenv("TERMINAL_SANDBOX_CONFIG", "config/sandbox-manager.example.json"),
-            "runtime": os.getenv("TERMINAL_SANDBOX_RUNTIME", ""),
-            "network_profile": os.getenv("TERMINAL_SANDBOX_NETWORK", "offline"),
-            "output_bytes": _parse_env_var("TERMINAL_SANDBOX_OUTPUT_BYTES", "65536"),
-            "trusted": os.getenv("TERMINAL_SANDBOX_TRUSTED", "false").lower() in {"true", "1", "yes"},
-            "env": _parse_env_var("TERMINAL_SANDBOX_ENV", "{}", json.loads, "valid JSON"),
-        },
     }
 
 
@@ -1332,7 +1397,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     
     Args:
         env_type: One of "local", "docker", "singularity", "modal",
-            "daytona", "kata", "ssh"
+            "daytona", "ssh"
         image: Docker/Singularity/Modal image name (ignored for local/ssh)
         cwd: Working directory
         timeout: Default command timeout
@@ -1353,6 +1418,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     docker_forward_env = cc.get("docker_forward_env", [])
     docker_env = cc.get("docker_env", {})
     docker_extra_args = cc.get("docker_extra_args", [])
+    docker_network = cc.get("docker_network", True)
 
     if env_type == "local":
         return _LocalEnvironment(cwd=cwd, timeout=timeout)
@@ -1375,6 +1441,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             forward_env=docker_forward_env,
             env=docker_env,
             run_as_host_user=cc.get("docker_run_as_host_user", False),
+            network=docker_network,
             extra_args=docker_extra_args,
             persist_across_processes=cc.get("docker_persist_across_processes", True),
         )
@@ -1451,22 +1518,6 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             image=image, cwd=cwd, timeout=timeout,
             cpu=int(cpu), memory=memory, disk=disk,
             persistent_filesystem=persistent, task_id=task_id,
-            auto_delete_interval_minutes=cc.get("daytona_auto_delete_interval_minutes"),
-        )
-
-    elif env_type == "kata":
-        return _KataEnvironment(
-            image=image, cwd=cwd, timeout=timeout,
-            cpu=int(cpu), memory=memory, disk=disk,
-            persistent_filesystem=persistent, task_id=task_id,
-            namespace=cc.get("kata_namespace", "sandbox"),
-            kubeconfig=cc.get("kata_kubeconfig", ""),
-        )
-
-    elif env_type == "sandbox_manager":
-        return _SandboxManagerEnvironment(
-            timeout=timeout,
-            **cc.get("sandbox_manager", {}),
         )
 
     elif env_type == "ssh":
@@ -1484,7 +1535,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     else:
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', 'kata', 'sandbox_manager', or 'ssh'"
+            f"'singularity', 'modal', 'daytona', or 'ssh'"
         )
 
 
@@ -1961,6 +2012,7 @@ def terminal_tool(
     background: bool = False,
     timeout: Optional[int] = None,
     task_id: Optional[str] = None,
+    session_id: Optional[str] = None,
     force: bool = False,
     workdir: Optional[str] = None,
     pty: bool = False,
@@ -1975,6 +2027,7 @@ def terminal_tool(
         background: Whether to run in background (default: False)
         timeout: Command timeout in seconds (default: from config)
         task_id: Unique identifier for environment isolation (optional)
+        session_id: Conversation/session identifier for durable observability
         force: If True, skip dangerous command check (use after user confirms)
         workdir: Working directory for this command (optional, uses session cwd if not set)
         pty: If True, use pseudo-terminal for interactive CLI tools (local backend only)
@@ -2040,11 +2093,26 @@ def terminal_tool(
         else:
             image = ""
 
-        override_cwd = overrides.get("cwd")
-        if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(override_cwd):
-            logger.info("Ignoring cwd override %r for %s backend (host/relative path won't work in sandbox). Using %r instead.", override_cwd, env_type, config["cwd"])
-            override_cwd = None
-        cwd = override_cwd or config["cwd"]
+        cwd = overrides.get("cwd") or config["cwd"]
+        # A per-task cwd override (registered by the gateway/TUI for workspace
+        # tracking, or by RL/benchmark envs) wins over config["cwd"] — but
+        # config["cwd"] was already sanitized for container backends in
+        # _get_env_config() while the override is raw. On a container backend a
+        # raw host path (e.g. a Windows desktop session's C:\Users\<user>, or a
+        # POSIX /home/<user>) reaches `docker run -w <host-path>` and the
+        # container fails to start (exit 125). Re-apply the same host/relative
+        # path guard to the *resolved* cwd so the override can't bypass it.
+        # Valid in-container override paths (RL/benchmark sandboxes that set
+        # cwd to /workspace, /root, etc.) are absolute non-host paths and pass
+        # through untouched.
+        if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
+            if cwd != config["cwd"]:
+                logger.info(
+                    "Ignoring host/relative cwd override %r for %s backend "
+                    "(won't exist in sandbox). Using %r instead.",
+                    cwd, env_type, config["cwd"],
+                )
+            cwd = config["cwd"]
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
 
@@ -2130,27 +2198,22 @@ def terminal_tool(
                             }
 
                         container_config = None
-                        if env_type in {"docker", "singularity", "modal", "daytona", "kata", "sandbox_manager"}:
+                        if env_type in {"docker", "singularity", "modal", "daytona"}:
                             container_config = {
                                 "container_cpu": config.get("container_cpu", 1),
                                 "container_memory": config.get("container_memory", 5120),
                                 "container_disk": config.get("container_disk", 51200),
                                 "container_persistent": config.get("container_persistent", True),
                                 "modal_mode": config.get("modal_mode", "auto"),
-                                "daytona_auto_delete_interval_minutes": config.get(
-                                    "daytona_auto_delete_interval_minutes", 60
-                                ),
                                 "docker_volumes": config.get("docker_volumes", []),
                                 "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                                 "docker_forward_env": config.get("docker_forward_env", []),
                                 "docker_env": config.get("docker_env", {}),
                                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
                                 "docker_extra_args": config.get("docker_extra_args", []),
+                                "docker_network": config.get("docker_network", True),
                                 "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
                                 "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
-                                "kata_namespace": config.get("kata_namespace", "sandbox"),
-                                "kata_kubeconfig": config.get("kata_kubeconfig", ""),
-                                "sandbox_manager": config.get("sandbox_manager", {}),
                             }
 
                         local_config = None
@@ -2210,6 +2273,11 @@ def terminal_tool(
         # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)
         approval_note = None
+        # True when the user explicitly approved this run (or pre-confirmed via
+        # force).  Drives the clean-interrupt-slate clear before env.execute so
+        # an approved command can't be SIGINT-killed by a bit that landed during
+        # the approval-wait (see clear_current_thread_interrupt).
+        _approved_run = bool(force)
         if not force:
             approval = _check_all_guards(
                 command, env_type,
@@ -2244,6 +2312,7 @@ def terminal_tool(
             if approval.get("user_approved"):
                 desc = approval.get("description", "flagged as dangerous")
                 approval_note = f"Command required approval ({desc}) and was approved by the user."
+                _approved_run = True
             elif approval.get("smart_approved"):
                 desc = approval.get("description", "flagged as dangerous")
                 approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
@@ -2273,14 +2342,27 @@ def terminal_tool(
                 "EOF."
             )
 
+        # Claim the (shared "default") terminal env for the session driving this
+        # command. File tools read env.cwd_owner to decide whether the env's live
+        # cwd is THIS session's `cd` or a different worktree session's — without
+        # it, two open worktree sessions sharing the env route each other's edits
+        # to the wrong checkout. get_current_session_key()'s contextvar doesn't
+        # cross tool-worker threads, so fall back to the raw task_id (which IS the
+        # session_key for the top-level agent) — a stable, thread-safe anchor.
+        from tools.approval import get_current_session_key
+
+        session_key = get_current_session_key(default="") or (task_id or "")
+        try:
+            env.cwd_owner = session_key
+        except Exception:
+            pass
+
         if background:
             # Spawn a tracked background process via the process registry.
             # For local backends: uses subprocess.Popen with output buffering.
             # For non-local backends: runs inside the sandbox via env.execute().
-            from tools.approval import get_current_session_key
             from tools.process_registry import process_registry
 
-            session_key = get_current_session_key(default="") or effective_task_id
             effective_cwd = _resolve_command_cwd(
                 workdir=workdir,
                 env=env,
@@ -2312,6 +2394,9 @@ def terminal_tool(
                     "exit_code": 0,
                     "error": None,
                 }
+                # Background spawns detached and returns exit_code 0 immediately;
+                # it never inline-polls is_interrupted(), so the stale-bit kill
+                # cannot occur here and this note never co-occurs with rc=130.
                 if approval_note:
                     result_data["approval"] = approval_note
                 if pty_disabled_reason:
@@ -2524,16 +2609,28 @@ def terminal_tool(
             max_retries = 3
             retry_count = 0
             result = None
-            
+            command_cwd = None
+
+            # Clean interrupt slate for an approved command, ONCE before the
+            # retry loop: drop a stale bit that landed on this thread during the
+            # approval-wait so it can't SIGINT the just-approved run.  Do NOT
+            # re-clear inside the loop -- a genuine interrupt arriving during the
+            # backoff sleep between retries must survive and abort the command
+            # (caught by the next attempt's _wait_for_process poll loop -> 130).
+            if _approved_run:
+                from tools.interrupt import clear_current_thread_interrupt
+                clear_current_thread_interrupt()
+
             while retry_count <= max_retries:
                 try:
+                    command_cwd = _resolve_command_cwd(
+                        workdir=workdir,
+                        env=env,
+                        default_cwd=cwd,
+                    )
                     execute_kwargs = {
                         "timeout": effective_timeout,
-                        "cwd": _resolve_command_cwd(
-                            workdir=workdir,
-                            env=env,
-                            default_cwd=cwd,
-                        ),
+                        "cwd": command_cwd,
                     }
                     result = env.execute(command, **execute_kwargs)
                 except Exception as e:
@@ -2571,6 +2668,19 @@ def terminal_tool(
 
             # Add helpful message for sudo failures in messaging context
             output = _handle_sudo_failure(output, env_type)
+
+            sudo_auth_failed = _sudo_wrong_password_failure(output)
+            sudo_cache_cleared = _invalidate_cached_sudo_on_auth_failure(
+                command, output
+            )
+            if sudo_cache_cleared:
+                has_sudo_prompt_callback = _get_sudo_password_callback() is not None
+                if has_sudo_prompt_callback or env_var_enabled("HERMES_INTERACTIVE"):
+                    output += (
+                        "\n\n⚠️ Sudo authentication failed — cached password "
+                        "cleared. You will be prompted again on the next sudo "
+                        "command."
+                    )
 
             # Foreground terminal output canonicalization seam: plugins receive
             # the full output string before default truncation and may only
@@ -2632,12 +2742,45 @@ def terminal_tool(
                 "exit_code": returncode,
                 "error": None,
             }
-            if isinstance(result, dict) and "sandbox_result" in result:
-                result_dict["sandbox_result"] = result["sandbox_result"]
+            try:
+                from agent.verification_evidence import record_terminal_result
+
+                evidence = record_terminal_result(
+                    command=command,
+                    cwd=command_cwd,
+                    session_id=session_id or task_id or effective_task_id or "default",
+                    exit_code=returncode,
+                    output=output,
+                )
+                if evidence:
+                    result_dict["verification_evidence"] = {
+                        "status": evidence.get("status"),
+                        "kind": evidence.get("kind"),
+                        "scope": evidence.get("scope"),
+                        "canonical_command": evidence.get("canonical_command"),
+                    }
+            except Exception:
+                logger.debug("verification evidence recording failed", exc_info=True)
             if approval_note:
-                result_dict["approval"] = approval_note
+                # Treat rc=130 as an interrupt only when the executor's marker is
+                # present.  A command can legitimately exit 130 on its own
+                # (e.g. `bash -c 'exit 130'`); _wait_for_process returns the
+                # child's natural returncode there with no marker, and that must
+                # NOT be relabelled as a user interrupt in the audit note.
+                if returncode == 130 and "[Command interrupted]" in output:
+                    # Approved command was interrupted mid-run by a genuine Stop.
+                    # Keep the audit trail but never imply success: the bare
+                    # "...approved by the user." note must not co-occur with the
+                    # interrupt exit code (satisfies the 3-part-signature DONE).
+                    result_dict["approval"] = approval_note.rstrip(".") + ", then interrupted."
+                else:
+                    result_dict["approval"] = approval_note
             if exit_note:
                 result_dict["exit_code_meaning"] = exit_note
+            if sudo_auth_failed:
+                result_dict["sudo_auth_failed"] = True
+            if sudo_cache_cleared:
+                result_dict["sudo_cache_cleared"] = True
 
             return json.dumps(result_dict, ensure_ascii=False)
 
@@ -2749,32 +2892,13 @@ def check_terminal_requirements() -> bool:
             return True
 
         elif env_type == "daytona":
-            # The current SDK package exposes ``daytona_sdk``. Older setup code
-            # referenced ``daytona``; accepting only that name makes a correctly
-            # installed Daytona backend look unavailable.
-            if importlib.util.find_spec("daytona_sdk") is None:
-                logger.error(
-                    "daytona_sdk is required for Daytona terminal backend: pip install daytona-sdk"
-                )
-                return False
+            from daytona import Daytona  # noqa: F401 — SDK presence check
             return os.getenv("DAYTONA_API_KEY") is not None
-
-        elif env_type == "kata":
-            kubectl = shutil.which("kubectl")
-            if not kubectl:
-                logger.error("Kata backend selected but kubectl was not found in PATH.")
-                return False
-            cmd = [kubectl]
-            if config.get("kata_kubeconfig"):
-                cmd += ["--kubeconfig", config["kata_kubeconfig"]]
-            cmd += ["version", "--client"]
-            result = subprocess.run(cmd, capture_output=True, timeout=10, stdin=subprocess.DEVNULL)
-            return result.returncode == 0
 
         else:
             logger.error(
                 "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, kata, ssh.",
+                "modal, daytona, ssh.",
                 env_type,
             )
             return False
@@ -2886,6 +3010,7 @@ def _handle_terminal(args, **kw):
         background=args.get("background", False),
         timeout=args.get("timeout"),
         task_id=kw.get("task_id"),
+        session_id=kw.get("session_id"),
         workdir=args.get("workdir"),
         pty=args.get("pty", False),
         notify_on_complete=args.get("notify_on_complete", False),

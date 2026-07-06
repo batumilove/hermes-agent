@@ -41,7 +41,11 @@ class FailoverReason(enum.Enum):
 
     # Transport
     timeout = "timeout"                  # Connection/read timeout — rebuild client + retry
-    silent_hang = "silent_hang"          # Connected but never produced first byte/event — fail over eagerly
+    # TLS certificate verification failure — deterministic for the host
+    # (TLS-inspecting proxy, missing/expired CA bundle, self-signed cert).
+    # Retrying reproduces the identical handshake failure, so fail fast
+    # with actionable guidance instead of burning retries.
+    ssl_cert_verification = "ssl_cert_verification"
 
     # Context / payload
     context_overflow = "context_overflow"  # Context too large — compress, not failover
@@ -280,6 +284,15 @@ _MODEL_NOT_FOUND_PATTERNS = [
     "no such model",
     "unknown model",
     "unsupported model",
+    # OpenRouter returns 404 with this message when none of the candidate
+    # endpoints for the selected model support tool/function calling.
+    # Classifying this as model_not_found triggers fallback to a different
+    # model or provider that does support tools.  Without this entry the
+    # pattern falls through to ``unknown`` with ``retryable=True``, the
+    # retry loop burns all attempts on the same deterministic rejection,
+    # and the error surfaces as a confusing "model not found" message
+    # instead of automatically failing over.  See PR #58446.
+    "no endpoints found that support tool use",
 ]
 
 # Request-validation patterns — the request is malformed and will fail
@@ -437,6 +450,29 @@ _SERVER_DISCONNECT_PATTERNS = [
     "network connection lost",
     "unexpected eof",
     "incomplete chunked read",
+]
+
+# SSL certificate verification failures — deterministic, NOT transient.
+#
+# A failed certificate chain (TLS-inspecting corporate proxy, missing
+# custom CA in the trust store, expired certificate, self-signed cert)
+# fails identically on every retry. Burning the retry budget before
+# surfacing the error hides the actionable fix from the user for minutes.
+# Inspired by Claude Code v2.1.199 (July 2026), which made SSL certificate
+# errors fail immediately with a fix hint instead of retrying.
+#
+# Must be checked BEFORE _SSL_TRANSIENT_PATTERNS — "certificate verify
+# failed" messages usually also contain "[SSL:" which would otherwise
+# match the transient list and retry forever.
+_SSL_CERT_VERIFY_PATTERNS = [
+    "certificate verify failed",       # Python ssl module canonical text
+    "certificate_verify_failed",       # OpenSSL error token
+    "unable to get local issuer certificate",
+    "self-signed certificate",
+    "self signed certificate",
+    "certificate has expired",
+    "hostname mismatch, certificate is not valid",
+    "unable to verify the first certificate",  # Node/undici phrasing (MCP bridges)
 ]
 
 # SSL/TLS transient failure patterns — intentionally distinct from
@@ -736,7 +772,22 @@ def classify_api_error(
     if classified is not None:
         return classified
 
-    # ── 5. SSL/TLS transient errors → retry as timeout (not compression) ──
+    # ── 5. SSL certificate verification failures → fail fast ────────
+    # A broken certificate chain (TLS-inspecting proxy, missing custom CA,
+    # expired/self-signed cert) is deterministic for the host — every retry
+    # reproduces the identical handshake failure. Fail immediately with
+    # actionable guidance instead of burning the retry budget first.
+    # Checked BEFORE the transient-SSL patterns: cert-verify messages also
+    # contain "[ssl:" which would otherwise match the transient list.
+    # Inspired by Claude Code v2.1.199 (July 2026).
+    if any(p in error_msg for p in _SSL_CERT_VERIFY_PATTERNS):
+        return _result(
+            FailoverReason.ssl_cert_verification,
+            retryable=False,
+            should_fallback=False,
+        )
+
+    # ── 5b. SSL/TLS transient errors → retry as timeout (not compression) ──
     # SSL alerts mid-stream are transport hiccups, not server-side context
     # overflow signals.  Classify before the disconnect check so a large
     # session doesn't incorrectly trigger context compression when the real
@@ -789,33 +840,7 @@ def classify_api_error(
             )
         return _result(FailoverReason.timeout, retryable=True)
 
-    # ── 6b. OpenAI Responses SDK response.output=None bug ─────────────
-    # The OpenAI SDK raises TypeError("'NoneType' object is not iterable")
-    # when the Responses API returns a terminal response with output=None.
-    # This is a transient upstream issue — the same request usually succeeds
-    # on the next attempt.  Classified as server_error so the retry loop
-    # treats it as retryable instead of falling to the generic unknown bucket.
-    if (
-        error_type == "TypeError"
-        and "nonetype" in error_msg
-        and "not iterable" in error_msg
-    ):
-        return _result(FailoverReason.server_error, retryable=True)
-
     # ── 7. Transport / timeout heuristics ───────────────────────────
-
-    # Codex silent-hang watchdog intentionally raises a TimeoutError with a
-    # distinctive message when the backend accepts the socket but never emits
-    # a single stream event.  This is materially different from a generic
-    # timeout: reconnecting the same model often re-hangs, while switching to
-    # the next fallback model/provider succeeds immediately.  Classify before
-    # the generic transport bucket so the retry loop can eager-failover.
-    if "no bytes within" in error_msg and "ttfb threshold" in error_msg:
-        return _result(
-            FailoverReason.silent_hang,
-            retryable=True,
-            should_fallback=True,
-        )
 
     if error_type in _TRANSPORT_ERROR_TYPES or isinstance(error, (TimeoutError, ConnectionError, OSError)):
         return _result(FailoverReason.timeout, retryable=True)
@@ -1017,6 +1042,17 @@ def _classify_by_status(
                 should_compress=True,
             )
         return result_fn(FailoverReason.overloaded, retryable=True)
+
+    # 408 Request Timeout — a transient timing failure the server itself flags
+    # as safe to retry (RFC 9110 §15.5.9), not a malformed request. Commonly
+    # emitted by reverse proxies sitting in front of self-hosted backends
+    # (llama.cpp / Ollama / vLLM) when a long generation outruns the proxy's
+    # request-read window. Route to the dedicated ``timeout`` reason (rebuild
+    # client + retry) instead of falling through to the generic 4xx bucket
+    # below, which would abort the turn on a retry-safe error the same way it
+    # aborts a 400 Bad Request.
+    if status_code == 408:
+        return result_fn(FailoverReason.timeout, retryable=True)
 
     # Other 4xx — non-retryable
     if 400 <= status_code < 500:

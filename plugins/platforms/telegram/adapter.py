@@ -15,11 +15,142 @@ import logging
 import os
 import html as _html
 import re
-import shutil
+import threading
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
 
 logger = logging.getLogger(__name__)
+
+
+def _redact_telegram_error_text(error: object) -> str:
+    """Redact secrets from Telegram transport errors before logging or returning them."""
+    text = "" if error is None else str(error)
+    if not text:
+        return text
+    try:
+        from agent.redact import redact_sensitive_text
+
+        return redact_sensitive_text(text, force=True)
+    except Exception:
+        return "<telegram error redacted>"
+
+
+def _consume_abandoned_task(task: asyncio.Task) -> None:
+    """Observe a detached task's terminal exception to avoid noisy loop logs."""
+    try:
+        task.exception()
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logger.debug("Abandoned Telegram init task failed after timeout", exc_info=True)
+
+
+async def _await_with_thread_deadline(awaitable, timeout: float, *, on_abandon=None):
+    """Await with a wall-clock deadline that does not depend on loop timers.
+
+    ``asyncio.wait_for`` schedules its timeout on the event loop and then waits
+    for cancellation to propagate.  PTB/httpcore initialization can sit inside
+    cancellation-shielded anyio scopes, so a timed-out initialize() may never
+    hand control back to the retry ladder under some supervisors.  This helper
+    lets a daemon ``threading.Timer`` wake the loop and, on timeout, abandons
+    the shielded task instead of awaiting cancellation completion.
+
+    ``on_abandon`` (optional) is a zero-arg callable returning an awaitable that
+    is scheduled as a detached best-effort cleanup when the task is abandoned on
+    timeout.  The abandoned initialize() may leave a half-built httpx client /
+    connection pool open (it never completed and we do not await its
+    cancellation), so the caller uses this to shut that state down and avoid
+    leaking a pool per retry attempt.  Cleanup runs detached and its own errors
+    are swallowed, so it can never re-block the retry ladder.
+    """
+    task = asyncio.ensure_future(awaitable)
+    loop = asyncio.get_running_loop()
+    deadline = loop.create_future()
+
+    def _mark_expired() -> None:
+        if not deadline.done():
+            deadline.set_result(None)
+
+    def _expire_from_thread() -> None:
+        loop.call_soon_threadsafe(_mark_expired)
+
+    timer = threading.Timer(max(timeout, 0.0), _expire_from_thread)
+    timer.daemon = True
+    timer.start()
+    try:
+        done, _ = await asyncio.wait(
+            {task, deadline},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if task in done:
+            if not deadline.done():
+                deadline.cancel()
+            return await task
+
+        task.cancel()
+        task.add_done_callback(_consume_abandoned_task)
+        if on_abandon is not None:
+            # Detached best-effort cleanup: close the half-built app's httpx
+            # client/pool so an abandoned attempt can't leak sockets across the
+            # retry ladder. Detached + exception-observed so it never re-blocks
+            # or re-hangs the ladder we are trying to advance.
+            cleanup = asyncio.ensure_future(_run_abandon_cleanup(on_abandon))
+            cleanup.add_done_callback(_consume_abandoned_task)
+        raise asyncio.TimeoutError()
+    finally:
+        timer.cancel()
+
+
+async def _run_abandon_cleanup(on_abandon) -> None:
+    """Run the abandonment cleanup coroutine, swallowing any failure.
+
+    Wrapped so a cleanup that itself hangs or raises cannot surface as an
+    unhandled task error or block anything — it is fully fire-and-forget.
+    """
+    try:
+        result = on_abandon()
+        if asyncio.iscoroutine(result) or asyncio.isfuture(result):
+            await result
+    except Exception:
+        logger.debug("Abandoned Telegram init cleanup failed", exc_info=True)
+
+
+async def _shutdown_abandoned_app(app) -> None:
+    """Release a half-built PTB app's httpx transports after init was abandoned.
+
+    ``Application.shutdown()`` / ``Bot.shutdown()`` are gated on the app's
+    ``_initialized`` / ``_requests_initialized`` flags, which a wedged
+    ``initialize()`` (the case this whole path exists for) may never have set —
+    so calling only ``app.shutdown()`` no-ops and leaks the connection pool it
+    was meant to close.  ``HTTPXRequest`` builds its ``httpx.AsyncClient``
+    eagerly in its constructor and its ``shutdown()`` gates only on
+    ``client.is_closed``, so closing the request transports directly releases
+    the pool regardless of PTB init state.  We try the clean path first, then
+    fall back to the transports.  All best-effort and swallowed.
+    """
+    if app is None:
+        return
+    try:
+        await app.shutdown()
+    except Exception:
+        logger.debug("Abandoned Telegram app.shutdown() failed", exc_info=True)
+    # Directly close the underlying request transports (bypasses PTB's
+    # init-gated shutdown so the eagerly-built httpx pool is released even when
+    # the abandoned initialize() never flipped _initialized).
+    bot = getattr(app, "bot", None)
+    requests = getattr(bot, "_request", None) if bot is not None else None
+    if not requests:
+        return
+    for request in requests:
+        shutdown = getattr(request, "shutdown", None)
+        if shutdown is None:
+            continue
+        try:
+            result = shutdown()
+            if asyncio.iscoroutine(result) or asyncio.isfuture(result):
+                await result
+        except Exception:
+            logger.debug("Abandoned Telegram request shutdown failed", exc_info=True)
 
 try:
     from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
@@ -279,6 +410,14 @@ def _rich_normalize_linebreaks(text: str) -> str:
     return ''.join(out)
 
 
+# Watchdog bound for `await updater.stop()`. When the underlying TCP socket is
+# in CLOSE-WAIT the PTB polling task is blocked on epoll on the dead socket and
+# never wakes, so an unguarded stop() hangs indefinitely and wedges the whole
+# reconnect/teardown ladder. This is an internal safety bound (not a user knob),
+# applied identically at every stop() site so no path can hang on a dead socket.
+_UPDATER_STOP_TIMEOUT = 15.0
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
@@ -479,8 +618,6 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         # Interactive model picker state per chat
         self._model_picker_state: Dict[str, dict] = {}
-        # Droid routing picker state per chat (Telegram inline keyboard)
-        self._droid_model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
@@ -502,6 +639,14 @@ class TelegramAdapter(BasePlatformAdapter):
         # Tracks status bubbles owned by this adapter so subsequent calls with the
         # same key edit the same message instead of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
+        # Last truncated mid-stream preview delivered per (chat_id, message_id).
+        # Once an oversized streaming edit saturates at the 4096 preview cap,
+        # every subsequent progressive edit truncates to the SAME text; sending
+        # it again is a no-op that still burns Telegram's flood budget (~1
+        # edit/0.8s × the rest of the stream ⇒ flood control with 200s+
+        # penalties, hanging final delivery). Dedup here so a saturated preview
+        # goes quiet until finalize. Bounded: entries are dropped on finalize.
+        self._last_overflow_preview: Dict[tuple, str] = {}
         # Background task that runs post-connect housekeeping (command-menu
         # registration + DM-topic setup) off the connect path so a slow Bot
         # API call (e.g. a set_my_commands stall for certain tokens) cannot
@@ -757,13 +902,6 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_to = metadata.get("telegram_reply_to_message_id")
         return int(reply_to) if reply_to is not None else None
 
-    @staticmethod
-    def _looks_like_private_chat_id(chat_id: str) -> bool:
-        try:
-            return int(chat_id) > 0
-        except (TypeError, ValueError):
-            return False
-
     @classmethod
     def _is_private_dm_topic_send(
         cls,
@@ -781,10 +919,8 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         return bool(
             thread_id
-            and (
-                metadata and metadata.get("telegram_dm_topic_reply_fallback")
-                or cls._looks_like_private_chat_id(chat_id)
-            )
+            and metadata
+            and metadata.get("telegram_dm_topic_reply_fallback")
         )
 
     @staticmethod
@@ -1485,13 +1621,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 _m = _re.search(r"retry\s+(?:in\s+)?(\d+)", err_str, _re.IGNORECASE)
                 if _m:
                     _retry_after = float(_m.group(1))
+            safe_error = _redact_telegram_error_text(exc)
             logger.warning(
                 "[%s] sendRichMessage transient failure (no legacy resend): %s",
-                self.name, exc,
+                self.name, safe_error,
             )
             return SendResult(
                 success=False,
-                error=str(exc),
+                error=safe_error,
                 retryable=(is_connect_timeout or not is_timeout),
                 retry_after=_retry_after,
             )
@@ -1580,13 +1717,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 _TimedOut = None
             is_timeout = (_TimedOut and isinstance(exc, _TimedOut)) or "timed out" in err_str
             is_connect_timeout = self._looks_like_connect_timeout(exc)
+            safe_error = _redact_telegram_error_text(exc)
             logger.warning(
                 "[%s] rich editMessageText transient failure (no legacy resend): %s",
-                self.name, exc,
+                self.name, safe_error,
             )
             return SendResult(
                 success=False,
-                error=str(exc),
+                error=safe_error,
                 retryable=(is_connect_timeout or not is_timeout),
             )
         # Telegram won't echo rich content for messages that predate the bot's
@@ -1854,15 +1992,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 "Telegram polling could not reconnect after %d network error retries. "
                 "Restarting gateway." % MAX_NETWORK_RETRIES
             )
-            logger.error("[%s] %s Last error: %s", self.name, message, error)
+            logger.error("[%s] %s Last error: %s", self.name, message, _redact_telegram_error_text(error))
             self._set_fatal_error("telegram_network_error", message, retryable=True)
             await self._notify_fatal_error()
             return
 
         delay = min(BASE_DELAY * (2 ** (attempt - 1)), MAX_DELAY)
+        safe_error = _redact_telegram_error_text(error)
         logger.warning(
             "[%s] Telegram network error (attempt %d/%d), reconnecting in %ds. Error: %s",
-            self.name, attempt, MAX_NETWORK_RETRIES, delay, error,
+            self.name, attempt, MAX_NETWORK_RETRIES, delay, safe_error,
         )
         await asyncio.sleep(delay)
 
@@ -1874,7 +2013,25 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             if app and app.updater and app.updater.running:
-                await app.updater.stop()
+                try:
+                    # Guard stop() with a timeout: when the underlying TCP
+                    # connection is in CLOSE-WAIT the PTB polling task is
+                    # blocked on epoll on the dead socket and never wakes up,
+                    # so an unguarded stop() hangs indefinitely.  The result
+                    # is that _polling_error_task stays alive-but-blocked
+                    # forever, every subsequent heartbeat probe sees it as
+                    # "in-flight" and skips triggering a new reconnect, and
+                    # the gateway silently drops messages for hours.
+                    # Bounding stop() lets the reconnect ladder always advance.
+                    # Refs: NousResearch/hermes-agent#58270
+                    await asyncio.wait_for(app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "[%s] updater.stop() timed out during network-error "
+                        "reconnect (likely CLOSE-WAIT socket); forcing drain "
+                        "and restart without clean stop",
+                        self.name,
+                    )
         except Exception:
             pass
 
@@ -1916,7 +2073,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._background_tasks.add(probe)
                 probe.add_done_callback(self._background_tasks.discard)
         except Exception as retry_err:
-            logger.warning("[%s] Telegram polling reconnect failed: %s", self.name, retry_err)
+            safe_retry_error = _redact_telegram_error_text(retry_err)
+            logger.warning("[%s] Telegram polling reconnect failed: %s", self.name, safe_retry_error)
             # start_polling failed — polling is dead and no further error
             # callbacks will fire, so schedule the next retry ourselves.
             if not self.has_fatal_error:
@@ -2248,10 +2406,19 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             # Stop the local updater cleanly before sleeping.  If it's already
             # stopped (e.g. PTB raised before updater.running was set) this is
-            # a no-op.
+            # a no-op.  Bounded with a timeout for the same reason as the
+            # network-error path: a CLOSE-WAIT socket can wedge stop() on epoll
+            # forever, which would stall the conflict-retry ladder.
             try:
                 if self._app and self._app.updater and self._app.updater.running:
-                    await self._app.updater.stop()
+                    try:
+                        await asyncio.wait_for(self._app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT)
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "[%s] updater.stop() timed out during conflict "
+                            "retry (likely CLOSE-WAIT socket); continuing",
+                            self.name,
+                        )
             except Exception:
                 pass
 
@@ -2319,16 +2486,33 @@ class TelegramAdapter(BasePlatformAdapter):
             "[%s] %s Original error: %s",
             self.name, message, error,
         )
+        # Snapshot whether we are the call that actually transitions to fatal.
+        # A concurrent retry task scheduled by an earlier conflict may already
+        # be suspended past the entry guard; once _set_fatal_error flips the
+        # flag, adding an await below (the bounded stop()) yields the loop and
+        # lets that task reach this branch too — double-notifying the fatal
+        # handler.  Only the first transition notifies.
+        _already_fatal = (
+            self.has_fatal_error
+            and self.fatal_error_code == "telegram_polling_conflict"
+        )
         self._set_fatal_error("telegram_polling_conflict", message, retryable=False)
         try:
             if self._app and self._app.updater:
-                await self._app.updater.stop()
+                await asyncio.wait_for(self._app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[%s] updater.stop() timed out after exhausting conflict "
+                "retries (likely CLOSE-WAIT socket); proceeding to fatal notify",
+                self.name,
+            )
         except Exception as stop_error:
             logger.warning(
                 "[%s] Failed stopping Telegram updater after exhausting conflict retries: %s",
                 self.name, stop_error, exc_info=True,
             )
-        await self._notify_fatal_error()
+        if not _already_fatal:
+            await self._notify_fatal_error()
 
     async def _create_dm_topic(
         self,
@@ -2534,9 +2718,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 changed = True
 
             if changed:
-                from utils import atomic_yaml_write
+                from hermes_cli.config import atomic_config_write
 
-                atomic_yaml_write(
+                atomic_config_write(
                     config_path,
                     config,
                     default_flow_style=False,
@@ -2832,8 +3016,11 @@ class TelegramAdapter(BasePlatformAdapter):
             def _with_limits(httpx_kwargs: Optional[dict] = None) -> dict:
                 """Merge tuned keepalive limits into httpx client kwargs.
 
-                A caller-supplied ``limits`` (none today) is left untouched;
-                otherwise the CLOSE_WAIT-safe limits are injected.
+                Used by the proxy and direct-DNS branches, where httpx honours
+                the client-level ``limits`` kwarg. A caller-supplied ``limits``
+                is left untouched; otherwise the CLOSE_WAIT-safe limits are
+                injected. The fallback-IP branch does NOT use this helper — see
+                the ``_transport_kwargs`` note below for why.
                 """
                 kwargs = dict(httpx_kwargs or {})
                 if _pool_limits is not None and "limits" not in kwargs:
@@ -2861,17 +3048,31 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 # Keep request/update pools separate to reduce contention during
                 # polling reconnect + bot API bootstrap/delete_webhook calls.
+                # httpx ignores the client-level `limits` kwarg when a custom
+                # `transport` is supplied (#58790).  Unlike the proxy/direct
+                # branches (which inject limits at the client level via
+                # `_with_limits`), this branch MUST pass the tuned limits
+                # directly into TelegramFallbackTransport so its inner
+                # AsyncHTTPTransport instances honour keepalive_expiry — do not
+                # route this through `_with_limits`, httpx would discard it.
+                _transport_kwargs: dict = {}
+                if _pool_limits is not None:
+                    _transport_kwargs["limits"] = _pool_limits
                 request = HTTPXRequest(
                     **request_kwargs,
-                    httpx_kwargs=_with_limits(
-                        {"transport": TelegramFallbackTransport(fallback_ips)}
-                    ),
+                    httpx_kwargs={
+                        "transport": TelegramFallbackTransport(
+                            fallback_ips, **_transport_kwargs
+                        )
+                    },
                 )
                 get_updates_request = HTTPXRequest(
                     **request_kwargs,
-                    httpx_kwargs=_with_limits(
-                        {"transport": TelegramFallbackTransport(fallback_ips)}
-                    ),
+                    httpx_kwargs={
+                        "transport": TelegramFallbackTransport(
+                            fallback_ips, **_transport_kwargs
+                        )
+                    },
                 )
             elif proxy_url:
                 logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)
@@ -2928,7 +3129,17 @@ class TelegramAdapter(BasePlatformAdapter):
                         "[%s] Connecting to Telegram (attempt %d/%d)…",
                         self.name, _attempt + 1, _max_connect,
                     )
-                    await asyncio.wait_for(self._app.initialize(), timeout=_init_timeout)
+                    await _await_with_thread_deadline(
+                        self._app.initialize(),
+                        timeout=_init_timeout,
+                        # On timeout the initialize() task is abandoned without
+                        # awaiting its cancellation (it may be wedged in a
+                        # shielded scope). Best-effort release the half-built
+                        # app's httpx client/connection pool so it isn't leaked
+                        # across the retry ladder (mirrors the client-close-on-
+                        # timeout pattern in agent/auxiliary_client.py).
+                        on_abandon=lambda app=self._app: _shutdown_abandoned_app(app),
+                    )
                     break
                 except asyncio.TimeoutError:
                     if _attempt < _max_connect - 1:
@@ -3086,9 +3297,10 @@ class TelegramAdapter(BasePlatformAdapter):
             
         except Exception as e:
             self._release_platform_lock()
-            message = f"Telegram startup failed: {e}"
+            safe_error = _redact_telegram_error_text(e)
+            message = f"Telegram startup failed: {safe_error}"
             self._set_fatal_error("telegram_connect_error", message, retryable=True)
-            logger.error("[%s] Failed to connect to Telegram: %s", self.name, e, exc_info=True)
+            logger.error("[%s] Failed to connect to Telegram: %s", self.name, safe_error)
             return False
 
     async def _set_status_indicator(self, online: bool) -> None:
@@ -3208,14 +3420,28 @@ class TelegramAdapter(BasePlatformAdapter):
 
         if self._app:
             try:
-                # Only stop the updater if it's running
+                # Only stop the updater if it's running.  Bounded with a
+                # timeout: a CLOSE-WAIT socket can wedge stop() on epoll
+                # indefinitely, which would hang disconnect() (and any
+                # gateway shutdown/restart waiting on it) forever.  On timeout
+                # we fall through to app.stop()/shutdown() to force teardown.
                 if self._app.updater and self._app.updater.running:
-                    await self._app.updater.stop()
+                    try:
+                        await asyncio.wait_for(self._app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT)
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "[%s] updater.stop() timed out during disconnect "
+                            "(likely CLOSE-WAIT socket); forcing app shutdown",
+                            self.name,
+                        )
                 if self._app.running:
                     await self._app.stop()
                 await self._app.shutdown()
             except Exception as e:
-                logger.warning("[%s] Error during Telegram disconnect: %s", self.name, e, exc_info=True)
+                logger.warning(
+                    "[%s] Error during Telegram disconnect: %s",
+                    self.name, _redact_telegram_error_text(e),
+                )
         self._release_platform_lock()
 
         self._app = None
@@ -3440,18 +3666,20 @@ class TelegramAdapter(BasePlatformAdapter):
                             err_lower = str(send_err).lower()
                             if "message to be replied not found" in err_lower and reply_to_id is not None:
                                 if private_dm_topic_send:
+                                    safe_send_error = _redact_telegram_error_text(send_err)
                                     return SendResult(
                                         success=False,
-                                        error=str(send_err),
+                                        error=safe_send_error,
                                         retryable=False,
                                     )
                                 # Original message was deleted before we
                                 # could reply. For private-topic fallback
                                 # sends, message_thread_id is only valid with
                                 # the reply anchor, so drop both together.
+                                safe_send_error = _redact_telegram_error_text(send_err)
                                 logger.warning(
                                     "[%s] Reply target deleted, retrying without reply_to: %s",
-                                    self.name, send_err,
+                                    self.name, safe_send_error,
                                 )
                                 reply_to_id = None
                                 if metadata and metadata.get("telegram_dm_topic_reply_fallback"):
@@ -3488,8 +3716,9 @@ class TelegramAdapter(BasePlatformAdapter):
                             await self._drain_general_connections_after_pool_timeout()
                         if _send_attempt < 2:
                             wait = 2 ** _send_attempt
+                            safe_send_error = _redact_telegram_error_text(send_err)
                             logger.warning("[%s] Network error on send (attempt %d/3), retrying in %ds: %s",
-                                           self.name, _send_attempt + 1, wait, send_err)
+                                           self.name, _send_attempt + 1, wait, safe_send_error)
                             await asyncio.sleep(wait)
                         else:
                             raise
@@ -3498,12 +3727,13 @@ class TelegramAdapter(BasePlatformAdapter):
                         if retry_after is not None or "retry after" in str(send_err).lower():
                             if _send_attempt < 2:
                                 wait = float(retry_after) if retry_after is not None else 1.0
+                                safe_send_error = _redact_telegram_error_text(send_err)
                                 logger.warning(
                                     "[%s] Telegram flood control on send (attempt %d/3), retrying in %.1fs: %s",
                                     self.name,
                                     _send_attempt + 1,
                                     wait,
-                                    send_err,
+                                    safe_send_error,
                                 )
                                 await asyncio.sleep(wait)
                                 continue
@@ -3537,7 +3767,8 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             
         except Exception as e:
-            logger.error("[%s] Failed to send Telegram message: %s", self.name, e, exc_info=True)
+            safe_error = _redact_telegram_error_text(e)
+            logger.error("[%s] Failed to send Telegram message: %s", self.name, safe_error)
             err_str = str(e).lower()
             error_kind = classify_send_error(e)
             # Message too long — content exceeded 4096 chars. Return failure so
@@ -3559,7 +3790,7 @@ class TelegramAdapter(BasePlatformAdapter):
             is_pool_timeout = self._looks_like_pool_timeout(e)
             return SendResult(
                 success=False,
-                error=str(e),
+                error=safe_error,
                 retryable=(is_connect_timeout or is_pool_timeout or not is_timeout),
                 error_kind=error_kind,
             )
@@ -3644,12 +3875,32 @@ class TelegramAdapter(BasePlatformAdapter):
         # the next token chunk the full accumulated text is re-edited into the
         # continuation, triggering another split → infinite duplication loop
         # (#48648).  The full content is delivered when finalize=True.
+        _preview_key = (str(chat_id), str(message_id))
+        _saturated_preview = False
+        if finalize:
+            # Any saturation state for this message is finished with — the
+            # final edit always delivers real (full) content.
+            self._last_overflow_preview.pop(_preview_key, None)
         if utf16_len(content) > self.MAX_MESSAGE_LENGTH:
             if finalize:
                 return await self._edit_overflow_split(
                     chat_id, message_id, content, finalize=finalize, metadata=metadata,
                 )
             content = self._truncate_stream_overflow_preview(content)
+            _saturated_preview = True
+            # Saturated-preview dedup: past the cap, every progressive edit
+            # truncates to the same text. Re-sending it is a visual no-op that
+            # still burns flood budget (Telegram counts the request and answers
+            # "message is not modified"). ~1 edit/0.8s for the rest of a long
+            # stream trips flood control (200s+ penalties) and hangs the final
+            # delivery. Skip silently until finalize.
+            if self._last_overflow_preview.get(_preview_key) == content:
+                return SendResult(success=True, message_id=message_id)
+        elif not finalize:
+            # Content shrank back under the cap (segment break / new message
+            # id) — clear stale saturation state so dedup can't mask a real
+            # edit later.
+            self._last_overflow_preview.pop(_preview_key, None)
 
         try:
             if not finalize:
@@ -3658,6 +3909,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     message_id=int(message_id),
                     text=content,
                 )
+                if _saturated_preview:
+                    self._last_overflow_preview[_preview_key] = content
                 return SendResult(success=True, message_id=message_id)
 
             formatted = self.format_message(content)
@@ -3673,10 +3926,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 if "not modified" in str(fmt_err).lower():
                     return SendResult(success=True, message_id=message_id)
                 # Fallback: strip MarkdownV2 escapes and retry as clean plain text
+                safe_format_error = _redact_telegram_error_text(fmt_err)
                 logger.warning(
                     "[%s] MarkdownV2 edit failed, falling back to plain text: %s",
                     self.name,
-                    fmt_err,
+                    safe_format_error,
                 )
                 _plain = _strip_mdv2(content) if content else content
                 await self._bot.edit_message_text(
@@ -3704,11 +3958,15 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 # Mid-stream: truncate and retry instead of splitting (#48648).
                 truncated = self._truncate_stream_overflow_preview(content)
+                if self._last_overflow_preview.get(_preview_key) == truncated:
+                    # Saturated-preview dedup (see pre-flight path above).
+                    return SendResult(success=True, message_id=message_id)
                 await self._bot.edit_message_text(
                     chat_id=normalize_telegram_chat_id(chat_id),
                     message_id=int(message_id),
                     text=truncated,
                 )
+                self._last_overflow_preview[_preview_key] = truncated
                 return SendResult(success=True, message_id=message_id)
             # Flood control / RetryAfter — short waits are retried inline,
             # long waits return a failure immediately so streaming can fall back
@@ -3731,11 +3989,12 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                     return SendResult(success=True, message_id=message_id)
                 except Exception as retry_err:
+                    safe_retry_error = _redact_telegram_error_text(retry_err)
                     logger.error(
                         "[%s] Edit retry failed after flood wait: %s",
-                        self.name, retry_err,
+                        self.name, safe_retry_error,
                     )
-                    return SendResult(success=False, error=str(retry_err))
+                    return SendResult(success=False, error=safe_retry_error)
             # Transient network errors (ConnectError, timeouts, server
             # disconnects) should not permanently disable progress-message
             # editing.  Mark the result retryable so the caller knows it
@@ -3756,21 +4015,22 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             _is_transient = any(m in err_str for m in _transient_markers)
             if _is_transient:
+                safe_error = _redact_telegram_error_text(e)
                 logger.warning(
                     "[%s] Transient network error editing message %s (will retry): %s",
                     self.name,
                     message_id,
-                    e,
+                    safe_error,
                 )
-                return SendResult(success=False, error=str(e), retryable=True)
+                return SendResult(success=False, error=safe_error, retryable=True)
+            safe_error = _redact_telegram_error_text(e)
             logger.error(
                 "[%s] Failed to edit Telegram message %s: %s",
                 self.name,
                 message_id,
-                e,
-                exc_info=True,
+                safe_error,
             )
-            return SendResult(success=False, error=str(e))
+            return SendResult(success=False, error=safe_error)
 
     def _truncate_stream_overflow_preview(self, content: str) -> str:
         """Return a one-message preview for oversized streaming edits.
@@ -4141,6 +4401,7 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as send_err:
             if (
                 message_thread_id is not None
+                and self._is_bad_request_error(send_err)
                 and self._is_thread_not_found_error(send_err)
             ):
                 logger.warning(
@@ -4405,294 +4666,6 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_clarify failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
-    async def send_droid_model_picker(
-        self,
-        chat_id: str,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> SendResult:
-        """Send Stanislav's Factory Droid routing picker as Telegram buttons."""
-        if not self._bot:
-            return SendResult(success=False, error="Not connected")
-
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔒 Strict BYOK", callback_data="dm:p:byok")],
-            [InlineKeyboardButton("🧠 Inherit /model", callback_data="dm:p:inherit")],
-            [InlineKeyboardButton("✗ Cancel", callback_data="dm:x")],
-        ])
-        text = (
-            "🤖 *Factory Droid model routing*\n\n"
-            "Choose the top-level mode:\n\n"
-            "• *Strict BYOK* — then pick BYOK models per Droid role.\n"
-            "• *Inherit /model* — set all role droids to `model: inherit`, so Droid TUI `/model` controls them."
-        )
-        try:
-            thread_id = self._metadata_thread_id(metadata)
-            msg = await self._bot.send_message(
-                chat_id=int(chat_id),
-                text=text,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=keyboard,
-                message_thread_id=self._message_thread_id_for_send(thread_id),
-                **self._link_preview_kwargs(),
-            )
-            self._droid_model_picker_state[str(chat_id)] = {"msg_id": msg.message_id, "stage": "mode"}
-            return SendResult(success=True, message_id=str(msg.message_id))
-        except Exception as e:
-            logger.warning("[%s] send_droid_model_picker failed: %s", self.name, e)
-            return SendResult(success=False, error=str(e))
-
-    # Keep this aligned with Droid TUI's model settings roles.
-    # Current Droid exposes three configurable role droids:
-    # worker, user-testing-flow-validator, and scrutiny-feature-reviewer.
-    _DROID_ROLE_FILES = {
-        "worker": "worker.md",
-        "user_testing": "user-testing-flow-validator.md",
-        "scrutiny": "scrutiny-feature-reviewer.md",
-    }
-    _DROID_ROLE_LABELS = {
-        "worker": "Worker",
-        "user_testing": "User testing",
-        "scrutiny": "Scrutiny review",
-    }
-    _DROID_BYOK_FALLBACK_MODELS = [
-        {
-            "id": "custom:AEON-Qwen3.6-DFlash-[Local-BYOK]-0",
-            "displayName": "AEON Qwen3.6 DFlash [Local BYOK]",
-        },
-        {
-            "id": "custom:Step3.5-Flash-GGUF-[Local-BYOK]-1",
-            "displayName": "Step3.5 Flash GGUF [Local BYOK]",
-        },
-        {
-            "id": "custom:GLM-5.1-[Z.AI-BYOK]-2",
-            "displayName": "GLM 5.1 [Z.AI BYOK]",
-        },
-    ]
-
-    def _droid_droid_dir(self) -> _Path:
-        return _Path.home() / ".factory" / "droids"
-
-    def _load_droid_byok_models(self) -> List[Dict[str, str]]:
-        """Read BYOK/custom models configured in Droid settings."""
-        settings = _Path.home() / ".factory" / "settings.json"
-        models: List[Dict[str, str]] = []
-        if settings.exists():
-            try:
-                data = json.loads(settings.read_text())
-                for item in data.get("customModels", []) or []:
-                    if not isinstance(item, dict):
-                        continue
-                    model_id = str(item.get("id") or "").strip()
-                    if not model_id.startswith("custom:"):
-                        continue
-                    display = str(item.get("displayName") or model_id).strip()
-                    models.append({"id": model_id, "displayName": display})
-            except Exception:
-                logger.debug("Could not read Droid custom models from %s", settings, exc_info=True)
-        return models or list(self._DROID_BYOK_FALLBACK_MODELS)
-
-    def _get_droid_role_model(self, role: str) -> str:
-        path = self._droid_droid_dir() / self._DROID_ROLE_FILES[role]
-        if not path.exists():
-            return "missing"
-        for line in path.read_text(errors="ignore").splitlines()[:30]:
-            if line.startswith("model:"):
-                return line.split(":", 1)[1].strip() or "unset"
-        return "unset"
-
-    def _set_droid_frontmatter_model(self, path: _Path, model: str) -> None:
-        text = path.read_text()
-        lines = text.splitlines()
-        end = None
-        if lines and lines[0].strip() == "---":
-            for i in range(1, len(lines)):
-                if lines[i].strip() == "---":
-                    end = i
-                    break
-        search_end = end if end is not None else min(len(lines), 20)
-        for i in range(1 if end is not None else 0, search_end):
-            if lines[i].startswith("model:"):
-                lines[i] = f"model: {model}"
-                path.write_text("\n".join(lines) + "\n")
-                return
-        insert_at = 1 if end is not None else 0
-        for i in range(1 if end is not None else 0, search_end):
-            if lines[i].startswith("name:"):
-                insert_at = i + 1
-                break
-        lines.insert(insert_at, f"model: {model}")
-        path.write_text("\n".join(lines) + "\n")
-
-    def _write_droid_models(self, updates: Dict[str, str]) -> str:
-        """Apply file->model updates with per-file backup."""
-        droid_dir = self._droid_droid_dir()
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        changed = []
-        for filename, model in updates.items():
-            path = droid_dir / filename
-            if not path.exists():
-                raise FileNotFoundError(str(path))
-            backup = path.with_name(f"{path.name}.bak-{stamp}")
-            shutil.copy2(path, backup)
-            self._set_droid_frontmatter_model(path, model)
-            changed.append((path.name, model, backup.name))
-        lines = ["Updated Droid routing:"]
-        lines.extend(f"• `{name}` → `{model}` (backup `{backup}`)" for name, model, backup in changed)
-        return "\n".join(lines)
-
-    def _apply_droid_inherit(self) -> str:
-        return "✅ *Inherit mode applied*\n" + self._write_droid_models({
-            "worker.md": "inherit",
-            "user-testing-flow-validator.md": "inherit",
-            "scrutiny-feature-reviewer.md": "inherit",
-        })
-
-    def _build_droid_role_keyboard(self) -> InlineKeyboardMarkup:
-        rows = [
-            [InlineKeyboardButton(
-                f"🛠 Worker: {self._short_droid_model(self._get_droid_role_model('worker'))}",
-                callback_data="dm:r:worker",
-            )],
-            [InlineKeyboardButton(
-                f"🧪 User testing: {self._short_droid_model(self._get_droid_role_model('user_testing'))}",
-                callback_data="dm:r:user_testing",
-            )],
-            [InlineKeyboardButton(
-                f"🔎 Scrutiny review: {self._short_droid_model(self._get_droid_role_model('scrutiny'))}",
-                callback_data="dm:r:scrutiny",
-            )],
-            [InlineKeyboardButton("◀ Back", callback_data="dm:b"), InlineKeyboardButton("Done", callback_data="dm:done")],
-        ]
-        return InlineKeyboardMarkup(rows)
-
-    def _build_droid_byok_model_keyboard(self, role: str) -> InlineKeyboardMarkup:
-        rows = []
-        for idx, model in enumerate(self._load_droid_byok_models()):
-            label = model.get("displayName") or model.get("id") or f"model {idx + 1}"
-            if len(label) > 42:
-                label = label[:39] + "..."
-            rows.append([InlineKeyboardButton(label, callback_data=f"dm:m:{role}:{idx}")])
-        rows.append([InlineKeyboardButton("◀ Roles", callback_data="dm:p:byok"), InlineKeyboardButton("✗ Cancel", callback_data="dm:x")])
-        return InlineKeyboardMarkup(rows)
-
-    @staticmethod
-    def _short_droid_model(model: str) -> str:
-        if model == "inherit":
-            return "inherit"
-        if model == "missing":
-            return "missing"
-        cleaned = model.replace("custom:", "")
-        return cleaned if len(cleaned) <= 26 else cleaned[:23] + "..."
-
-    async def _handle_droid_model_picker_callback(self, query, data: str, chat_id: str) -> None:
-        caller_id = str(getattr(query.from_user, "id", ""))
-        if not self._is_callback_user_authorized(caller_id):
-            await query.answer(text="⛔ Not authorized.")
-            return
-
-        if data == "dm:x":
-            self._droid_model_picker_state.pop(chat_id, None)
-            await query.edit_message_text(text="Droid routing selection cancelled.", reply_markup=None)
-            await query.answer()
-            return
-
-        if data == "dm:b":
-            self._droid_model_picker_state.pop(chat_id, None)
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔒 Strict BYOK", callback_data="dm:p:byok")],
-                [InlineKeyboardButton("🧠 Inherit /model", callback_data="dm:p:inherit")],
-                [InlineKeyboardButton("✗ Cancel", callback_data="dm:x")],
-            ])
-            await query.edit_message_text(
-                text=(
-                    "🤖 *Factory Droid model routing*\n\n"
-                    "Choose the top-level mode:\n\n"
-                    "• *Strict BYOK* — then pick BYOK models per Droid role.\n"
-                    "• *Inherit /model* — all role droids become `model: inherit`."
-                ),
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=keyboard,
-            )
-            await query.answer()
-            return
-
-        if data == "dm:done":
-            self._droid_model_picker_state.pop(chat_id, None)
-            await query.edit_message_text(text="✅ Droid BYOK routing picker closed.", reply_markup=None)
-            await query.answer()
-            return
-
-        if data == "dm:p:inherit":
-            try:
-                result_text = self._apply_droid_inherit()
-            except Exception as exc:
-                logger.error("Droid inherit update failed: %s", exc, exc_info=True)
-                result_text = f"❌ Droid routing update failed: `{exc}`"
-            self._droid_model_picker_state.pop(chat_id, None)
-            try:
-                await query.edit_message_text(text=result_text, parse_mode=ParseMode.MARKDOWN, reply_markup=None)
-            except Exception:
-                await query.edit_message_text(text=result_text, reply_markup=None)
-            await query.answer(text="Inherit applied")
-            return
-
-        if data == "dm:p:byok":
-            self._droid_model_picker_state[chat_id] = {"stage": "roles"}
-            await query.edit_message_text(
-                text=(
-                    "🔒 *Strict BYOK routing*\n\n"
-                    "Choose which Droid role to configure. These match Droid TUI's model settings roles:\n\n"
-                    "• `worker.md`\n"
-                    "• `user-testing-flow-validator.md`\n"
-                    "• `scrutiny-feature-reviewer.md`"
-                ),
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=self._build_droid_role_keyboard(),
-            )
-            await query.answer()
-            return
-
-        if data.startswith("dm:r:"):
-            role = data.split(":", 2)[2]
-            if role not in self._DROID_ROLE_FILES:
-                await query.answer(text="Unknown role")
-                return
-            self._droid_model_picker_state[chat_id] = {"stage": "models", "role": role}
-            await query.edit_message_text(
-                text=f"Select BYOK model for *{self._DROID_ROLE_LABELS[role]}*:",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=self._build_droid_byok_model_keyboard(role),
-            )
-            await query.answer()
-            return
-
-        if data.startswith("dm:m:"):
-            try:
-                _, _, role, idx_s = data.split(":", 3)
-                idx = int(idx_s)
-                models = self._load_droid_byok_models()
-                model_id = models[idx]["id"]
-                filename = self._DROID_ROLE_FILES[role]
-                result_text = f"✅ *{self._DROID_ROLE_LABELS[role]} updated*\n" + self._write_droid_models({filename: model_id})
-            except Exception as exc:
-                logger.error("Droid BYOK role update failed: %s", exc, exc_info=True)
-                result_text = f"❌ Droid routing update failed: `{exc}`"
-                try:
-                    await query.edit_message_text(text=result_text, parse_mode=ParseMode.MARKDOWN, reply_markup=None)
-                except Exception:
-                    await query.edit_message_text(text=result_text, reply_markup=None)
-                await query.answer(text="Update failed")
-                return
-            await query.edit_message_text(
-                text=result_text + "\n\nChoose another role or tap Done.",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=self._build_droid_role_keyboard(),
-            )
-            await query.answer(text="Role updated")
-            return
-
-        await query.answer()
-
     async def send_model_picker(
         self,
         chat_id: str,
@@ -4719,7 +4692,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             # Build provider buttons — folds provider groups (display only).
-            keyboard = self._build_provider_keyboard(providers)
+            keyboard, provider_page_info = self._build_provider_keyboard(providers, 0)
 
             provider_label = get_label(current_provider)
             text = self.format_message(
@@ -4727,7 +4700,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     f"⚙ *Model Configuration*\n\n"
                     f"Current model: `{current_model or 'unknown'}`\n"
                     f"Provider: {provider_label}\n\n"
-                    f"Select a provider:"
+                    f"Select a provider:{provider_page_info}"
                 )
             )
 
@@ -4757,6 +4730,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 "on_model_selected": on_model_selected,
                 "current_model": current_model,
                 "current_provider": current_provider,
+                "provider_page": 0,
             }
 
             return SendResult(success=True, message_id=str(msg.message_id))
@@ -4764,10 +4738,11 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_model_picker failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    _PROVIDER_PAGE_SIZE = 10
     _MODEL_PAGE_SIZE = 8
 
-    def _build_provider_keyboard(self, providers: list):
-        """Build the top-level provider keyboard, folding provider groups.
+    def _build_provider_keyboard(self, providers: list, page: int = 0) -> tuple:
+        """Build the paginated top-level provider keyboard, folding groups.
 
         Provider families (Kimi/Moonshot, MiniMax, xAI Grok, ...) collapse to
         a single ``mpg:<gid>`` button; tapping it drills into a member
@@ -4812,9 +4787,30 @@ class TelegramAdapter(BasePlatformAdapter):
             for p in providers:
                 buttons.append(_provider_button(p))
 
-        rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+        page_size = self._PROVIDER_PAGE_SIZE
+        total = len(buttons)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = max(0, min(page, total_pages - 1))
+
+        start = page * page_size
+        end = min(start + page_size, total)
+        page_buttons = buttons[start:end]
+
+        rows = [page_buttons[i : i + 2] for i in range(0, len(page_buttons), 2)]
+
+        if total_pages > 1:
+            nav: list = []
+            if page > 0:
+                nav.append(InlineKeyboardButton("◀ Prev", callback_data=f"mpv:{page - 1}"))
+            nav.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="mx:noop"))
+            if page < total_pages - 1:
+                nav.append(InlineKeyboardButton("Next ▶", callback_data=f"mpv:{page + 1}"))
+            rows.append(nav)
+
         rows.append([InlineKeyboardButton("✗ Cancel", callback_data="mx")])
-        return InlineKeyboardMarkup(rows)
+
+        page_info = f" ({start + 1}–{end} of {total})" if total_pages > 1 else ""
+        return InlineKeyboardMarkup(rows), page_info
 
     def _build_model_keyboard(self, models: list, page: int) -> tuple:
         """Build paginated model buttons. Returns (keyboard, page_info_text)."""
@@ -4865,13 +4861,6 @@ class TelegramAdapter(BasePlatformAdapter):
         if not state:
             await query.answer(text="Picker expired — use /model again.")
             return
-
-        expected_msg_id = state.get("msg_id")
-        query_msg_id = getattr(getattr(query, "message", None), "message_id", None)
-        if expected_msg_id is not None and isinstance(query_msg_id, (int, str)):
-            if str(expected_msg_id) != str(query_msg_id):
-                await query.answer(text="Picker expired — use /model again.")
-                return
 
         try:
             from hermes_cli.providers import get_label
@@ -4945,6 +4934,38 @@ class TelegramAdapter(BasePlatformAdapter):
                         f"⚙ *Model Configuration*\n\n"
                         f"Provider: *{pname}*{page_info}\n"
                         f"Select a model:{extra}"
+                    )
+                ),
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=keyboard,
+            )
+            await query.answer()
+
+        elif data.startswith("mpv:"):
+            # --- Provider page navigation ---
+            try:
+                page = int(data[4:])
+            except ValueError:
+                await query.answer(text="Invalid page.")
+                return
+
+            state["provider_page"] = page
+            keyboard, provider_page_info = self._build_provider_keyboard(
+                state["providers"], page
+            )
+
+            try:
+                provider_label = get_label(state["current_provider"])
+            except Exception:
+                provider_label = state["current_provider"]
+
+            await query.edit_message_text(
+                text=self.format_message(
+                    (
+                        f"⚙ *Model Configuration*\n\n"
+                        f"Current model: `{state['current_model'] or 'unknown'}`\n"
+                        f"Provider: {provider_label}\n\n"
+                        f"Select a provider:{provider_page_info}"
                     )
                 ),
                 parse_mode=ParseMode.MARKDOWN_V2,
@@ -5130,7 +5151,10 @@ class TelegramAdapter(BasePlatformAdapter):
 
         elif data == "mb":
             # --- Back to provider list (folds groups) ---
-            keyboard = self._build_provider_keyboard(state["providers"])
+            page = int(state.get("provider_page", 0) or 0)
+            keyboard, provider_page_info = self._build_provider_keyboard(
+                state["providers"], page
+            )
 
             try:
                 provider_label = get_label(state["current_provider"])
@@ -5143,7 +5167,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         f"⚙ *Model Configuration*\n\n"
                         f"Current model: `{state['current_model'] or 'unknown'}`\n"
                         f"Provider: {provider_label}\n\n"
-                        f"Select a provider:"
+                        f"Select a provider:{provider_page_info}"
                     )
                 ),
                 parse_mode=ParseMode.MARKDOWN_V2,
@@ -5204,27 +5228,10 @@ class TelegramAdapter(BasePlatformAdapter):
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
 
-        # --- Droid model routing picker callbacks ---
-        if data.startswith("dm:"):
-            chat_id = str(query.message.chat_id) if query.message else None
-            if chat_id:
-                await self._handle_droid_model_picker_callback(query, data, chat_id)
-            return
-
         # --- Model picker callbacks ---
-        if data.startswith(("mp:", "mpg:", "mm:", "mc:", "mb", "mx", "mg:")):
+        if data.startswith(("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:")):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
-                caller_id = str(getattr(query.from_user, "id", ""))
-                if not self._is_callback_user_authorized(
-                    caller_id,
-                    chat_id=query_chat_id,
-                    chat_type=str(query_chat_type) if query_chat_type is not None else None,
-                    thread_id=str(query_thread_id) if query_thread_id is not None else None,
-                    user_name=query_user_name,
-                ):
-                    await query.answer(text="⛔ You are not authorized to change models.")
-                    return
                 await self._handle_model_picker_callback(query, data, chat_id)
             return
 
@@ -6087,7 +6094,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            logger.warning("[%s] Failed to send document: %s", self.name, e, exc_info=True)
+            logger.warning(
+                "[%s] Failed to send document: %s",
+                self.name, _redact_telegram_error_text(e),
+            )
             return await super().send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata)
 
     async def send_video(
@@ -6134,7 +6144,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            logger.warning("[%s] Failed to send video: %s", self.name, e, exc_info=True)
+            logger.warning(
+                "[%s] Failed to send video: %s",
+                self.name, _redact_telegram_error_text(e),
+            )
             return await super().send_video(chat_id, video_path, caption, reply_to, metadata=metadata)
 
     async def send_image(
@@ -7390,19 +7403,6 @@ class TelegramAdapter(BasePlatformAdapter):
         event.text = self._clean_bot_trigger_text(event.text)
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
-        command = event.get_command()
-        if command in ("droidmodels", "droid_models", "droid-models"):
-            result = await self.send_droid_model_picker(
-                event.source.chat_id,
-                metadata={"thread_id": event.source.thread_id} if event.source.thread_id else None,
-            )
-            if not result.success:
-                await self.send_message(
-                    event.source.chat_id,
-                    f"Could not open Droid model picker: {result.error or 'unknown error'}",
-                    metadata={"thread_id": event.source.thread_id} if event.source.thread_id else None,
-                )
-            return
         await self.handle_message(event)
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -7471,28 +7471,6 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
 
-    @staticmethod
-    def _merge_batched_telegram_events(existing: MessageEvent, incoming: MessageEvent) -> MessageEvent:
-        """Merge a rapid Telegram update into a pending text batch safely.
-
-        Text batching is meant for Telegram client-side split messages, but a
-        user can send short text and then a voice note inside the debounce
-        window.  Preserve audio media and promote the aggregate away from TEXT
-        so the gateway STT enrichment path still runs.
-        """
-        if incoming.text:
-            existing.text = f"{existing.text}\n{incoming.text}" if existing.text else incoming.text
-        if incoming.media_urls:
-            existing.media_urls.extend(incoming.media_urls)
-            existing.media_types.extend(incoming.media_types)
-            if incoming.message_type in {MessageType.VOICE, MessageType.AUDIO}:
-                existing.message_type = incoming.message_type
-            elif existing.message_type == MessageType.TEXT:
-                existing.message_type = incoming.message_type
-        if incoming.message_id:
-            existing.message_id = incoming.message_id
-        return existing
-
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text event and reset the flush timer.
 
@@ -7512,8 +7490,14 @@ class TelegramAdapter(BasePlatformAdapter):
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
             self._pending_text_batches[key] = event
         else:
-            self._merge_batched_telegram_events(existing, event)
+            # Append text from the follow-up chunk
+            if event.text:
+                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
             existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            # Merge any media that might be attached
+            if event.media_urls:
+                existing.media_urls.extend(event.media_urls)
+                existing.media_types.extend(event.media_types)
 
         # Cancel any pending flush and restart the timer
         prior_task = self._pending_text_batch_tasks.get(key)
@@ -8305,13 +8289,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # to act on unrelated actionable-looking text the user didn't
         # quote (#22619). Fall back to the full replied-to message text
         # / caption when no native quote is present.
-        #
-        # Chain walking: if the replied-to message was itself a reply,
-        # walk up the chain (up to 10 levels) so the model gets the full
-        # conversation context, not just the immediate parent.
         reply_to_id = None
         reply_to_text = None
-        reply_chain = None
         if message.reply_to_message:
             reply_to_id = str(message.reply_to_message.message_id)
             quote = getattr(message, "quote", None)
@@ -8338,23 +8317,6 @@ class TelegramAdapter(BasePlatformAdapter):
                     except Exception:
                         reply_to_text = None
 
-            # Walk the reply chain: immediate parent → root ancestor
-            chain = []
-            current = message.reply_to_message
-            depth = 0
-            max_chain_depth = 10
-            while current is not None and depth < max_chain_depth:
-                cur_mid = str(current.message_id)
-                cur_quote = getattr(current, "quote", None)
-                cur_quote_text = getattr(cur_quote, "text", None) if cur_quote is not None else None
-                cur_text = cur_quote_text or current.text or current.caption or None
-                if cur_text:
-                    chain.append({"message_id": cur_mid, "text": cur_text})
-                current = getattr(current, "reply_to_message", None)
-                depth += 1
-            if chain:
-                reply_chain = chain
-
         # Per-channel/topic ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt
         _chat_id_str = str(chat.id)
@@ -8373,7 +8335,6 @@ class TelegramAdapter(BasePlatformAdapter):
             platform_update_id=update_id,
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
-            reply_chain=reply_chain,
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
             timestamp=message.date,
