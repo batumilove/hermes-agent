@@ -2657,6 +2657,12 @@ DEFAULT_CONFIG = {
         # raise these to keep more early failure evidence.
         "worker_log_rotate_bytes": 2 * 1024 * 1024,
         "worker_log_backup_count": 1,
+        # Extra non-secret environment variables injected into Kanban worker
+        # processes only. Useful for shared package/browser cache roots across
+        # isolated worker profiles, e.g. npm_config_cache, UV_CACHE_DIR,
+        # BUN_INSTALL_CACHE_DIR, PLAYWRIGHT_BROWSERS_PATH. Values are strings;
+        # secrets belong in .env / auth providers, not here.
+        "worker_env": {},
         # Profile assigned to the root/orchestration task after Triage
         # decomposition. When unset, falls back to the default profile (the
         # one `hermes` launches with no -p flag). This does not control the

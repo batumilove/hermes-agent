@@ -7569,6 +7569,37 @@ def _positive_int(value: Any, default: int, *, minimum: int = 1) -> int:
     return parsed if parsed >= minimum else default
 
 
+def _configured_worker_env(kanban_cfg: Optional[dict] = None) -> dict[str, str]:
+    """Return sanitized env vars from ``kanban.worker_env``.
+
+    This is intentionally dispatcher-scoped and applied only to spawned Kanban
+    worker processes. It gives operators a central place to set non-secret
+    runtime hints such as shared package/browser cache paths without editing
+    every profile's shell files or leaking the settings into the parent
+    gateway process. Non-mapping config is ignored; ``None`` values are skipped
+    so YAML ``KEY:`` does not accidentally become the literal string "None".
+    """
+    if kanban_cfg is None:
+        try:
+            from hermes_cli.config import load_config
+
+            kanban_cfg = (load_config().get("kanban") or {})
+        except Exception:
+            kanban_cfg = {}
+    worker_env = (kanban_cfg or {}).get("worker_env")
+    if not isinstance(worker_env, dict):
+        return {}
+    env: dict[str, str] = {}
+    for key, value in worker_env.items():
+        if value is None:
+            continue
+        key_s = str(key).strip()
+        if not key_s:
+            continue
+        env[key_s] = str(value)
+    return env
+
+
 def worker_log_rotation_config(kanban_cfg: Optional[dict] = None) -> tuple[int, int]:
     """Return ``(rotate_bytes, backup_count)`` for worker log rotation.
 
@@ -7894,6 +7925,11 @@ def _default_spawn(
         env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
     if task.claim_lock:
         env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
+    # Operator-configured worker env (e.g. shared package/browser caches).
+    # Apply after profile/task pins so intentional config can override generic
+    # inherited values, but before timeout/board pins below so scheduler safety
+    # env stays authoritative.
+    env.update(_configured_worker_env())
     # Goal-loop mode: the worker reads these and wraps its run in the
     # Ralph-style /goal judge loop (see cli.py quiet-mode path). Only set
     # when enabled so non-goal tasks keep a clean env.
