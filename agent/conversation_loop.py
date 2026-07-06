@@ -587,6 +587,10 @@ def run_conversation(
     )
     user_message = _ctx.user_message
     original_user_message = _ctx.original_user_message
+    agent._context_efficiency_user_message = _summarize_user_message_for_log(
+        original_user_message,
+        sep="\n",
+    )
     messages = _ctx.messages
     conversation_history = _ctx.conversation_history
     active_system_prompt = _ctx.active_system_prompt

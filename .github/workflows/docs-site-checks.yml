@@ -19,10 +19,12 @@ jobs:
           cache: npm
           cache-dependency-path: website/package-lock.json
 
+      # Website docs build does not need dependency install lifecycle scripts;
+      # keep scripts enabled only for native/Desktop paths that prove they need them.
       - name: Install website dependencies
         uses: ./.github/actions/retry
         with:
-          command: npm ci
+          command: npm exec --package=npm@11.18.0 -- npm ci --ignore-scripts --min-release-age=7
           working-directory: website
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0

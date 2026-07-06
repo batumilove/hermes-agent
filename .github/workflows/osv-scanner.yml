@@ -16,8 +16,9 @@ name: OSV-Scanner
 #
 # Uses Google's officially-recommended reusable workflow, pinned by SHA.
 # Findings land in the repo's Security tab (Code Scanning > OSV-Scanner).
-# fail-on-vuln is disabled so the job does not block merges on pre-existing
-# vulnerabilities in pinned deps that we may need to patch deliberately.
+# fail-on-vuln remains disabled so OSV can report advisory findings without
+# blocking deliberate patch scheduling; the npm-audit-high job below is the
+# blocking gate for high/critical npm registry advisories.
 
 on:
   workflow_call:
@@ -40,10 +41,31 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Check npm lockfile resolved URLs and integrity hashes
         run: python3 scripts/validate_npm_lockfiles.py
+
+  npm-audit-high:
+    name: Block high npm advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Audit npm lockfiles for high/critical advisories
+        env:
+          # Force the public registry for audit metadata. Some cache registries
+          # proxy tarballs but do not implement /-/npm/v1/security/audits/quick.
+          NPM_CONFIG_REGISTRY: https://registry.npmjs.org
+        run: |
+          set -euo pipefail
+          for dir in . website plugins/platforms/photon/sidecar scripts/whatsapp-bridge; do
+            echo "::group::npm audit ${dir}"
+            (cd "$dir" && npm audit --package-lock-only --audit-level=high --omit=dev)
+            echo "::endgroup::"
+          done
 
   scan:
     name: Scan lockfiles

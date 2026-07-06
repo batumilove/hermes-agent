@@ -1174,6 +1174,40 @@ def handle_function_call(
             logger.debug("tool_request middleware error: %s", _mw_err)
 
     try:
+        try:
+            from agent.action_realization import RealizationAction, realize_tool_action, rejection_result
+
+            _realization = realize_tool_action(
+                function_name,
+                function_args,
+                user_task=user_task,
+            )
+            if not _realization.allows_execution:
+                result = rejection_result(_realization)
+                _emit_post_tool_call_hook(
+                    function_name=function_name,
+                    function_args=function_args,
+                    result=result,
+                    task_id=task_id,
+                    session_id=session_id,
+                    tool_call_id=tool_call_id,
+                    turn_id=turn_id,
+                    api_request_id=api_request_id,
+                    status="blocked",
+                    error_type="action_realization_reject",
+                    error_message=_realization.message,
+                    middleware_trace=list(_tool_middleware_trace),
+                )
+                return result
+            if _realization.action is RealizationAction.REPAIR:
+                function_args = dict(_realization.args)
+                _tool_middleware_trace.append({
+                    "source": "action_realization",
+                    "reason": _realization.message,
+                })
+        except Exception as _realization_err:
+            logger.debug("action realization error: %s", _realization_err)
+
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
 

@@ -56,6 +56,9 @@ class FakeAgent:
     def _file_mutation_verifier_enabled(self):
         return False
 
+    def _side_effect_evidence_verifier_enabled(self):
+        return True
+
     def _turn_completion_explainer_enabled(self):
         return False
 

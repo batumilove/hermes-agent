@@ -54,11 +54,13 @@ jobs:
         id: scan
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
 
-          BASE="${{ github.event.pull_request.base.sha }}"
-          HEAD="${{ github.event.pull_request.head.sha }}"
+          BASE="$BASE_SHA"
+          HEAD="$HEAD_SHA"
 
           # Added lines only, excluding lockfiles.
           # Three-dot diff (base...head) diffs from the merge base to HEAD,
@@ -143,6 +145,7 @@ jobs:
         if: steps.scan.outputs.found == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           BODY="## 🚨 CRITICAL Supply Chain Risk Detected
 
@@ -153,7 +156,7 @@ jobs:
           ---
           *Scanner only fires on high-signal indicators: .pth files, base64+exec/eval combos, subprocess with encoded commands, or install-hook files. Low-signal warnings were removed intentionally — if you're seeing this comment, the finding is worth inspecting.*"
 
-          gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY" || echo "::warning::Could not post PR comment (expected for fork PRs — GITHUB_TOKEN is read-only)"
+          gh pr comment "$PR_NUMBER" --body "$BODY" || echo "::warning::Could not post PR comment (expected for fork PRs — GITHUB_TOKEN is read-only)"
 
       - name: Fail on critical findings
         if: steps.scan.outputs.found == 'true'
@@ -173,11 +176,14 @@ jobs:
 
       - name: Check for unbounded PyPI deps
         id: bounds
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
 
-          BASE="${{ github.event.pull_request.base.sha }}"
-          HEAD="${{ github.event.pull_request.head.sha }}"
+          BASE="$BASE_SHA"
+          HEAD="$HEAD_SHA"
 
           # Only check added lines in pyproject.toml
           ADDED=$(git diff "$BASE"..."$HEAD" -- pyproject.toml | grep '^+' | grep -v '^+++' || true)
@@ -203,6 +209,7 @@ jobs:
         if: steps.bounds.outputs.found == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           BODY="## ⚠️ Unbounded PyPI Dependency Detected
 
@@ -218,7 +225,7 @@ jobs:
           ---
           *See PR #2810 and CONTRIBUTING.md for the full policy rationale.*"
 
-          gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY" || echo "::warning::Could not post PR comment (expected for fork PRs)"
+          gh pr comment "$PR_NUMBER" --body "$BODY" || echo "::warning::Could not post PR comment (expected for fork PRs)"
 
       - name: Fail on unbounded deps
         if: steps.bounds.outputs.found == 'true'
@@ -239,9 +246,10 @@ jobs:
       - name: Require explicit MCP catalog review label
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          PR="${{ github.event.pull_request.number }}"
+          PR="$PR_NUMBER"
           LABELS=$(gh pr view "$PR" --json labels --jq '.labels[].name' || true)
           if echo "$LABELS" | grep -Fxq 'mcp-catalog-reviewed'; then
             echo "MCP catalog review label present."

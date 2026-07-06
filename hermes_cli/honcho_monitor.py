@@ -42,6 +42,8 @@ HOST_MAP = {
     "openrouter.ai/api/v1": "openrouter",
 }
 
+SPARK_CHAT_BASE = "http://100.69.54.37:8001"
+
 
 @dataclass(frozen=True)
 class HonchoSnapshot:
@@ -49,6 +51,7 @@ class HonchoSnapshot:
     pipeline: dict[str, dict[str, str]]
     db: dict[str, Any]
     queue: dict[str, int]
+    queue_by_type: dict[str, dict[str, int]]
     errors: dict[str, int]
     spark_goat: dict[str, Any]
     deriver: dict[str, Any]
@@ -175,13 +178,20 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
     embed_model = embed.get("model", "")
     embed_url = embed.get("base_url", "")
     vector_dims = (embed.get("vector_dimensions") or "").strip()
+    doc_dims = snapshot.db.get("documents_dims")
+    msg_dims = snapshot.db.get("messages_dims")
+    db_dims_consistent = (
+        doc_dims not in (None, "", 0, "0")
+        and msg_dims not in (None, "", 0, "0")
+        and str(doc_dims) == str(msg_dims)
+    )
     if not embed_model or not embed_url:
         alerts.append("Embedding config missing")
     elif "api.openai.com" in embed_url or embed_model == "text-embedding-3-small":
         alerts.append("Embedding config looks like OpenAI fallback")
+    elif not vector_dims and not db_dims_consistent:
+        alerts.append("Embedding vector dimensions missing from env")
 
-    doc_dims = snapshot.db.get("documents_dims")
-    msg_dims = snapshot.db.get("messages_dims")
     if vector_dims and doc_dims not in (None, "", 0, "0") and str(doc_dims) != vector_dims:
         alerts.append("Document embedding dims mismatch")
     if vector_dims and msg_dims not in (None, "", 0, "0") and str(msg_dims) != vector_dims:
@@ -191,20 +201,38 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
         alerts.append("Recent representation save / 401 errors")
 
     spark = snapshot.spark_goat
-    if spark.get("thinking"):
+    if not spark.get("ok"):
+        alerts.append("spark-goat chat failed")
+    elif spark.get("thinking"):
         alerts.append("spark-goat thinking still enabled")
-    if spark.get("ok") and float(spark.get("latency_s", 0.0) or 0.0) > 5.0:
+    elif float(spark.get("latency_s", 0.0) or 0.0) > 5.0:
         alerts.append("spark-goat chat latency degraded")
 
     if previous_state:
-        prev_queue = int(previous_state.get("queue_done", snapshot.queue.get("done", 0)))
-        prev_docs = int(previous_state.get("documents_total", snapshot.db.get("documents_total", 0)))
-        queue_delta = max(0, int(snapshot.queue.get("done", 0)) - prev_queue)
-        docs_delta = max(0, int(snapshot.db.get("documents_total", 0)) - prev_docs)
-        if queue_delta > docs_delta:
-            alerts.append("Queue advancing faster than documents")
+        prev_rep_state = previous_state.get("queue_by_type", {}).get("representation")
+        if prev_rep_state is not None:
+            prev_rep_done = int(prev_rep_state.get("done", 0))
+            rep_done = int(snapshot.queue_by_type.get("representation", {}).get("done", 0))
+            prev_docs = int(previous_state.get("documents_total", snapshot.db.get("documents_total", 0)))
+            docs_delta = max(0, snapshot.db.get("documents_total", 0) - prev_docs)
+            rep_delta = max(0, rep_done - prev_rep_done)
+            if rep_delta > docs_delta:
+                alerts.append("Queue advancing faster than documents")
 
     return alerts
+
+
+def _normalize_queue_by_type(raw: Any) -> dict[str, dict[str, int]]:
+    result: dict[str, dict[str, int]] = {}
+    if not isinstance(raw, dict):
+        return result
+    for task_type, counts in raw.items():
+        if isinstance(counts, dict):
+            result[task_type] = {
+                "pending": int(counts.get("pending", 0)),
+                "done": int(counts.get("done", 0)),
+            }
+    return result
 
 
 def format_report(snapshot: dict[str, Any] | HonchoSnapshot, previous_state: dict[str, Any] | None = None, now: datetime | None = None) -> str:
@@ -214,6 +242,7 @@ def format_report(snapshot: dict[str, Any] | HonchoSnapshot, previous_state: dic
             pipeline={k: dict(v) for k, v in snapshot.get("pipeline", {}).items()},
             db=dict(snapshot.get("db", {})),
             queue={k: int(v) for k, v in snapshot.get("queue", {}).items()},
+            queue_by_type=_normalize_queue_by_type(snapshot.get("queue_by_type")),
             errors={k: int(v) for k, v in snapshot.get("errors", {}).items()},
             spark_goat=dict(snapshot.get("spark_goat", {})),
             deriver=dict(snapshot.get("deriver", {})),
@@ -260,7 +289,8 @@ def format_report(snapshot: dict[str, Any] | HonchoSnapshot, previous_state: dic
 
     spark = snapshot.spark_goat
     spark_tag = " ⚠️thinking" if spark.get("thinking") else ""
-    lines.append(f"{ '🟢' if spark.get('ok') else '🔴' } spark-goat chat: {_fmt_s(spark.get('latency_s'))}{spark_tag}")
+    spark_detail = f" (model={spark.get('model', '?')})" if spark.get("model") else ""
+    lines.append(f"{ '🟢' if spark.get('ok') else '🔴' } spark-goat chat: {_fmt_s(spark.get('latency_s'))}{spark_tag}{spark_detail}")
 
     deriver = snapshot.deriver
     if deriver:
@@ -286,7 +316,7 @@ def ssh(command: str, timeout: int = 20) -> str:
             "-o",
             "BatchMode=yes",
             "-o",
-            "StrictHostKeyChecking=no",
+            "StrictHostKeyChecking=accept-new",
             HONCHO_TARGET,
             command,
         ],
@@ -393,6 +423,66 @@ def _int_or_zero(value: str | None) -> int:
         return 0
 
 
+def parse_queue_raw(queue_raw: str) -> dict[str, int]:
+    """Parse PostgreSQL boolean text output for queue processed counts.
+
+    Handles both legacy 2-column rows ``processed|count`` and the current
+    3-column per-task-type rows ``task_type|processed|count``.
+    """
+    pending = done = 0
+    for row in queue_raw.splitlines():
+        parts = row.split("|")
+        if len(parts) < 2:
+            continue
+        if len(parts) >= 3:
+            # task_type|processed|count
+            state, count = parts[1], parts[2]
+        else:
+            state, count = parts[0], parts[1]
+        state = state.strip().lower()
+        if state in ("f", "false"):
+            pending += _int_or_zero(count)
+        elif state in ("t", "true"):
+            done += _int_or_zero(count)
+    return {"pending": pending, "done": done}
+
+
+def parse_queue_by_type_raw(queue_raw: str) -> dict[str, dict[str, int]]:
+    """Parse per-task-type queue counts from PostgreSQL boolean text output.
+
+    Expected rows: ``task_type|processed|count``. Returns a dict keyed by
+    task_type with ``pending`` and ``done`` totals. Unknown task types are
+    still preserved so the report stays truthful about queue composition.
+    """
+    by_type: dict[str, dict[str, int]] = {}
+    for row in queue_raw.splitlines():
+        parts = row.split("|")
+        if len(parts) < 3:
+            continue
+        task_type, processed, count = parts[0], parts[1].strip().lower(), parts[2]
+        bucket = by_type.setdefault(task_type, {"pending": 0, "done": 0})
+        if processed in ("f", "false"):
+            bucket["pending"] += _int_or_zero(count)
+        elif processed in ("t", "true"):
+            bucket["done"] += _int_or_zero(count)
+    return by_type
+
+
+def select_spark_model(pipeline: dict[str, dict[str, str]]) -> str:
+    """Return the model name that should be used for the spark-goat chat smoke.
+
+    If the pipeline's deriver base_url is on the spark-goat chat host, use its
+    model; otherwise fall back to aeon-ultimate, which is known to be hosted on
+    spark-goat. This prevents using a model routed elsewhere (e.g. mac-studio)
+    against the spark-goat endpoint.
+    """
+    deriver = pipeline.get("deriver", {})
+    deriver_base = deriver.get("base_url", "")
+    if deriver_base and deriver_base.startswith(SPARK_CHAT_BASE):
+        return deriver.get("model") or "aeon-ultimate"
+    return "aeon-ultimate"
+
+
 def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
     services_raw = ssh("cd /opt/honcho/honcho && sudo docker compose ps --format '{{.Name}} {{.Status}}'", timeout=30)
     services = _parse_service_status(services_raw)
@@ -426,16 +516,14 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
 
     queue_raw = ssh(
         "docker exec honcho-database-1 psql -U postgres -t -A -F '|' -c \""
-        "SELECT processed::text, count(*)::text FROM queue GROUP BY processed ORDER BY processed;\"",
+        "SELECT task_type, processed::text, count(*)::text FROM queue "
+        "GROUP BY task_type, processed ORDER BY task_type, processed;\"",
         timeout=20,
     )
-    pending = done = 0
-    for row in queue_raw.splitlines():
-        state, count = (row.split("|", 1) + ["0"])[:2]
-        if state == "f":
-            pending = _int_or_zero(count)
-        elif state == "t":
-            done = _int_or_zero(count)
+    queue_counts = parse_queue_raw(queue_raw)
+    queue_by_type = parse_queue_by_type_raw(queue_raw)
+    pending = queue_counts["pending"]
+    done = queue_counts["done"]
 
     errors_raw = ssh(
         "docker logs honcho-deriver-1 --since 15m > /tmp/honcho-deriver-monitor.log 2>&1; "
@@ -445,10 +533,15 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
     )
     error_counts = _parse_kv_lines(errors_raw)
 
+    # Pick a model actually served by the spark-goat chat stage (port 8001).
+    # If the loaded pipeline routes the deriver elsewhere, fall back to the
+    # aeon-ultimate model known to be hosted on spark-goat.
+    spark_model = select_spark_model(pipeline)
+
     spark_ok, spark_data, spark_dt = curl_post_json(
-        "http://100.69.54.37:8001/v1/chat/completions",
+        f"{SPARK_CHAT_BASE}/v1/chat/completions",
         {
-            "model": pipeline.get("deriver", {}).get("model") or "aeon-ultimate",
+            "model": spark_model,
             "messages": [{"role": "user", "content": "hi"}],
             "max_tokens": 20,
             "chat_template_kwargs": {"enable_thinking": False},
@@ -456,10 +549,16 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
         timeout=30,
     )
     thinking = False
+    spark_http_ok = spark_ok
+    spark_model_ok = False
     if spark_data:
         msg = (spark_data.get("choices") or [{}])[0].get("message", {})
         thinking = bool(msg.get("reasoning_content"))
-        spark_ok = spark_ok and bool(msg.get("content"))
+        spark_model_ok = bool(msg.get("content"))
+        spark_ok = spark_ok and spark_model_ok
+    elif spark_ok:
+        # HTTP succeeded but body wasn't JSON / no choices -> treat as failure
+        spark_ok = False
 
     logs_raw = ssh(
         "docker logs honcho-deriver-1 --since 15m > /tmp/honcho-deriver-monitor.log 2>&1; "
@@ -487,12 +586,27 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
         pipeline=pipeline,
         db=db,
         queue={"pending": pending, "done": done},
+        queue_by_type=queue_by_type,
         errors={"save_representation": _int_or_zero(error_counts.get("save", "0")), "four_oh_one": _int_or_zero(error_counts.get("401", "0"))},
-        spark_goat={"ok": spark_ok, "latency_s": spark_dt, "thinking": thinking},
+        spark_goat={
+            "ok": spark_ok,
+            "latency_s": spark_dt,
+            "thinking": thinking,
+            "model": spark_model,
+            "http_ok": spark_http_ok,
+            "model_ok": spark_model_ok,
+        },
         deriver={"runs_15m": runs_15m, "last_duration_s": last_duration_s, "conclusions": conclusions},
     )
 
-    return snapshot, {"queue_done": done, "documents_total": db.get("documents_total", 0), "messages_total": db.get("messages_total", 0)}
+    current_state = {
+        "queue_done": done,
+        "queue_by_type": queue_by_type,
+        "documents_total": db.get("documents_total", 0),
+        "messages_total": db.get("messages_total", 0),
+    }
+
+    return snapshot, current_state
 
 
 def main() -> int:

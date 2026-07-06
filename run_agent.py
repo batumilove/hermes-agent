@@ -2839,6 +2839,29 @@ class AIAgent:
             pass
         return True  # safe default: verifier on
 
+    def _side_effect_evidence_verifier_enabled(self) -> bool:
+        """Check whether side-effect evidence warnings are on.
+
+        Config path: ``display.side_effect_evidence_verifier`` (bool, default
+        True). ``HERMES_SIDE_EFFECT_EVIDENCE_VERIFIER`` overrides config.
+        """
+        try:
+            import os as _os
+            env = _os.environ.get("HERMES_SIDE_EFFECT_EVIDENCE_VERIFIER")
+            if env is not None:
+                return env.strip().lower() not in {"0", "false", "no", "off"}
+            try:
+                from hermes_cli.config import load_config as _load_config
+                _cfg = _load_config() or {}
+            except Exception:
+                _cfg = {}
+            _display = _cfg.get("display") if isinstance(_cfg, dict) else None
+            if isinstance(_display, dict) and "side_effect_evidence_verifier" in _display:
+                return bool(_display.get("side_effect_evidence_verifier"))
+        except Exception:
+            pass
+        return True
+
     # Bare absolute / home / Windows-drive file paths in a footer line.
     # Anchors mirror the gateway's ``extract_local_files`` bare-path
     # detector so that anything the gateway WOULD auto-attach is wrapped

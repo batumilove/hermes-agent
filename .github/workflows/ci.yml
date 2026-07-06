@@ -20,7 +20,6 @@ permissions:
   pull-requests: write # needed by lint (PR comment) + supply-chain (PR comment)
   actions: read # needed by osv-scanner (SARIF upload)
   security-events: write # needed by osv-scanner (SARIF upload)
-  packages: write # needed by docker build
 
 concurrency:
   group: ci-${{ github.ref }}

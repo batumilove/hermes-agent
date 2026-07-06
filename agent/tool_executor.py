@@ -864,6 +864,16 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 result_preview = _err_text[:200] if len(_err_text) > 200 else _err_text
                 logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
 
+            if not blocked:
+                record_tool_route(
+                    agent,
+                    function_name,
+                    function_args,
+                    function_result,
+                    tool_duration,
+                    is_error=is_error,
+                )
+
             # Track file-mutation outcome for the turn-end verifier.
             # `blocked` calls never actually ran — don't let a guardrail
             # block count as either a failure or a success.
@@ -1494,6 +1504,15 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Log tool errors to the persistent error log so [error] tags
         # in the UI always have a corresponding detailed entry on disk.
         _is_error_result, _ = _detect_tool_failure(function_name, function_result)
+        if not _execution_blocked:
+            record_tool_route(
+                agent,
+                function_name,
+                function_args,
+                function_result,
+                tool_duration,
+                is_error=_is_error_result,
+            )
         # The agent-runtime tools above (todo, session_search, memory,
         # context-engine, memory-manager, clarify, delegate_task) are
         # dispatched inline — they never reach handle_function_call, so the

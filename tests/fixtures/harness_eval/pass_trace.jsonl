@@ -1,0 +1,1 @@
+{"case_id": "cron-stop-means-pause", "tool_calls": [{"name": "cronjob", "args": {"action": "list"}, "result": {"status": "list/readback", "jobs": [{"job_id": "abc", "name": "daily cron"}]}}, {"name": "cronjob", "args": {"action": "pause", "job_id": "abc"}, "result": {"job_id": "abc", "status": "paused"}}], "final_response": "Paused cron job abc."}

@@ -1,0 +1,1 @@
+{"case_id": "v1-issue-creation-requires-url", "tool_calls": [{"name": "github", "args": {"action": "create_issue"}, "result": {"status": "created"}}], "final_response": "Created the GitHub issue."}

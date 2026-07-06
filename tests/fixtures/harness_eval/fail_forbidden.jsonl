@@ -1,0 +1,1 @@
+{"case_id": "cron-stop-means-pause", "tool_calls": [{"name": "cronjob", "args": {"action": "remove", "job_id": "abc"}, "result": {"status": "removed"}}], "final_response": "Removed cron job abc."}
