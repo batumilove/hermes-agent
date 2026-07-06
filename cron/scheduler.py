@@ -1657,18 +1657,26 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 media_metadata = {"direct_messages_topic_id": str(thread_id)}
             else:
                 # Forum-style topic (private chat / supergroup) or non-topic
-                # target: route via message_thread_id (#52060).  Put thread_id in
-                # *route_metadata* (not just the DeliveryTarget) deliberately —
-                # the DeliveryRouter's private-chat topic detection
-                # (gateway/delivery.py) demands a reply anchor when thread_id is
-                # absent from metadata; cron deliveries have no inbound reply
-                # anchor, so the metadata key bypasses that check and lets the
-                # adapter route via a plain message_thread_id.
+                # target: route via message_thread_id (#52060). Numeric existing
+                # topic IDs can be passed as metadata because cron deliveries
+                # have no inbound reply anchor.  Named private-DM topics are
+                # different: DeliveryRouter must see the non-numeric
+                # ``DeliveryTarget.thread_id`` WITHOUT a metadata ``thread_id``
+                # so it can call adapter.ensure_dm_topic() first and replace the
+                # name with the created numeric topic id.  Passing the generated
+                # name through metadata makes Telegram's adapter try int(name)
+                # and drops fresh cron-topic deliveries.
                 route_thread_id = str(thread_id) if thread_id is not None else None
                 route_metadata = {"job_id": job["id"]}
-                if route_thread_id:
+                route_is_named_private_topic = (
+                    platform == Platform.TELEGRAM
+                    and route_thread_id is not None
+                    and looks_like_telegram_private_chat_id(str(chat_id))
+                    and not _looks_like_int(route_thread_id)
+                )
+                if route_thread_id and not route_is_named_private_topic:
                     route_metadata["thread_id"] = route_thread_id
-                media_metadata = {"thread_id": thread_id} if thread_id else None
+                media_metadata = None if route_is_named_private_topic else ({"thread_id": thread_id} if thread_id else None)
 
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content.

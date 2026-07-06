@@ -387,6 +387,7 @@ class TestResolveDeliveryTarget:
         assert adapter.sent[0] == "722341991"
         assert adapter.sent[2] is not None
         assert adapter.sent[2]["thread_id"] == "38049"
+        assert adapter.sent[2]["job_id"] == "job1"
         assert adapter.sent[2]["telegram_dm_topic_created_for_send"] is True
 
     def test_deliver_result_fresh_private_topic_does_not_fallback_to_standalone(self):
