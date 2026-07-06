@@ -7,6 +7,9 @@ on:
 
 permissions:
   contents: read
+  security-events: write
+  id-token: write
+  attestations: write
 
 # Concurrency: push/release runs are NEVER cancelled so every merge gets
 # its own image.  PR runs reuse a PR-scoped group with
@@ -39,7 +42,7 @@ jobs:
             cache-to: type=gha,mode=max,scope=docker-arm64
 
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -62,6 +65,30 @@ jobs:
           cache-from: ${{ matrix.cache-from }}
           cache-to: ${{ (github.event_name != 'pull_request') && matrix.cache-to || '' }}
 
+      # Vulnerability scan: advisory only.  The image is large and base-image
+      # OS advisories can be noisy; failing the build here would block publishes
+      # on issues we often cannot fix in this repo.  HIGH/CRITICAL +
+      # ignore-unfixed keeps the signal high and the SARIF is uploaded to the
+      # Security tab for triage.  continue-on-error makes the step non-blocking.
+      - name: Scan image for vulnerabilities
+        id: trivy
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:test
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          exit-code: 0
+          ignore-unfixed: true
+
+      - name: Upload Trivy SARIF
+        if: always() && hashFiles('trivy-results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@411c4c9a36b3fca4d674f06b6396b2c6d23522c6 # v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-${{ matrix.arch }}
+
       - name: Log in to Docker Hub
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
@@ -72,6 +99,11 @@ jobs:
       # Push by digest only (no tag).  The merge job assembles the
       # tagged manifest list.  `push-by-digest=true` is docker's recommended
       # pattern for multi-runner multi-platform builds.
+      #
+      # `provenance: true` and `sbom: true` generate in-toto SLSA provenance
+      # and a CycloneDX SBOM, which are attached to the pushed image manifest.
+      # The separate `attest-build-provenance` step below records a GitHub
+      # Attestation for the same digest so consumers can verify origin.
       - name: Push ${{ matrix.arch }} by digest
         id: push
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
@@ -85,8 +117,21 @@ jobs:
           build-args: |
             HERMES_GIT_SHA=${{ github.sha }}
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          provenance: true
+          sbom: true
           cache-from: ${{ matrix.cache-from }}
           cache-to: ${{ matrix.cache-to }}
+
+      # Record the per-arch digest that was pushed as a GitHub Attestation.
+      # This is separate from the buildx provenance/sbom flags above; it
+      # produces an attestation consumers can verify with `gh attestation`.
+      - name: Attest build provenance
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-name: ${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: false
 
       # Write the digest to a file and upload it as an artifact so the
       # merge job can stitch both per-arch digests into a manifest list.
