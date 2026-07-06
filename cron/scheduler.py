@@ -1070,6 +1070,74 @@ def _normalize_deliver_value(deliver) -> str:
     return str(deliver)
 
 
+def _cron_new_telegram_thread_per_output_enabled(config: Optional[dict]) -> bool:
+    """Return whether cron should create a fresh Telegram DM topic per output."""
+    env_value = os.getenv("HERMES_TELEGRAM_CRON_NEW_THREAD_PER_OUTPUT", "").strip().lower()
+    if env_value:
+        return env_value in {"1", "true", "yes", "on"}
+    try:
+        return bool((config or {}).get("cron", {}).get("telegram_new_thread_per_output", False))
+    except Exception:
+        return False
+
+
+def _cron_output_topic_name(job: dict) -> str:
+    """Build a Telegram-safe topic name for one cron output."""
+    raw_name = str(job.get("name") or job.get("id") or "cron")
+    clean_name = re.sub(r"\s+", " ", raw_name).strip() or "cron"
+    job_id = str(job.get("id") or "")[:8]
+    try:
+        ts = _hermes_now().astimezone().strftime("%m-%d %H:%M:%S UTC")
+    except Exception:
+        ts = "now UTC"
+    prefix = "Cron: "
+    suffix = f" · {job_id} · {ts}" if job_id else f" · {ts}"
+    max_total = 128
+    room = max_total - len(prefix) - len(suffix)
+    if room < 8:
+        room = 8
+    if len(clean_name) > room:
+        clean_name = clean_name[: max(0, room - 1)].rstrip() + "…"
+    return f"{prefix}{clean_name}{suffix}"[:max_total]
+
+
+def _maybe_assign_fresh_telegram_cron_thread(
+    job: dict,
+    target: dict,
+    config: Optional[dict],
+    *,
+    can_create_named_dm_topic: bool = True,
+) -> dict:
+    """Replace a Telegram private-chat target's thread with a fresh topic name.
+
+    ``cron.telegram_new_thread_per_output`` is intentionally a live-gateway
+    feature: the standalone sender can only address existing numeric thread IDs;
+    it cannot create the named private DM topic first.  When no live Telegram
+    adapter is available, leave the target untouched so explicit/origin thread
+    delivery keeps its previous behavior instead of passing a non-numeric topic
+    name into the standalone path.
+    """
+    if not can_create_named_dm_topic:
+        return target
+    if not _cron_new_telegram_thread_per_output_enabled(config):
+        return target
+    if str(target.get("platform", "")).lower() != "telegram":
+        return target
+
+    try:
+        from gateway.delivery import looks_like_telegram_private_chat_id
+    except Exception:
+        return target
+
+    chat_id = target.get("chat_id")
+    if not looks_like_telegram_private_chat_id(str(chat_id) if chat_id is not None else None):
+        return target
+
+    adjusted = dict(target)
+    adjusted["thread_id"] = _cron_output_topic_name(job)
+    return adjusted
+
+
 # Routing intent tokens — resolved at fire time, not create time, so a
 # job created before Telegram was wired up will pick up Telegram once it
 # comes online.  ``all`` expands into the set of connected platforms
@@ -1354,6 +1422,26 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # Prefer the live adapter when the gateway is running — this supports E2EE
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
         runtime_adapter = (adapters or {}).get(platform)
+
+        # Optional Telegram fresh-topic routing must run after we know whether a
+        # live Telegram adapter is available.  The named-topic route relies on
+        # DeliveryRouter -> adapter.ensure_dm_topic(); standalone senders cannot
+        # create a topic and would otherwise misroute/fail.
+        adjusted_target = _maybe_assign_fresh_telegram_cron_thread(
+            job,
+            target,
+            user_cfg,
+            can_create_named_dm_topic=(runtime_adapter is not None and loop is not None),
+        )
+        if adjusted_target is not target:
+            target = adjusted_target
+            chat_id = target["chat_id"]
+            thread_id = target.get("thread_id")
+            logger.info(
+                "Job '%s': using fresh Telegram cron topic %r for %s:%s",
+                job.get("id", "?"), thread_id, platform_name, chat_id,
+            )
+
         delivered = False
         target_errors = []
 
