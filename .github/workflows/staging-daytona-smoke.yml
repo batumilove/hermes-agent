@@ -97,10 +97,13 @@ jobs:
 
       - name: Daytona secret status
         if: always()
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HAS_DAYTONA_SECRETS: ${{ secrets.DAYTONA_API_KEY != '' && secrets.DAYTONA_API_URL != '' }}
         run: |
-          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+          if [ "$EVENT_NAME" != "workflow_dispatch" ]; then
             echo "Pull request smoke: Daytona secrets intentionally withheld; local temp-HERMES_HOME fallback is authoritative."
-          elif [ "${{ secrets.DAYTONA_API_KEY != '' && secrets.DAYTONA_API_URL != '' }}" = "true" ]; then
+          elif [ "$HAS_DAYTONA_SECRETS" = "true" ]; then
             echo "Daytona credentials present for manual dispatch: Daytona smoke attempted."
           else
             echo "Daytona credentials absent: Daytona smoke explicitly skipped; local temp-HERMES_HOME fallback is authoritative."
