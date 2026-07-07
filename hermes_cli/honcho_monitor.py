@@ -23,7 +23,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-HONCHO_TARGET = os.environ.get("HONCHO_MONITOR_HOST", "ubuntu@100.67.206.76")
+# Use Teleport SSH by default. The Honcho host is enrolled and available via
+# the cron tbot config, which keeps unattended runs off the interactive LAN path.
+# Keep HONCHO_MONITOR_HOST as an explicit escape hatch.
+HONCHO_TARGET = os.environ.get("HONCHO_MONITOR_HOST", "ubuntu@honcho.teleport.batumi.works")
 STATE_PATH = Path(
     os.environ.get(
         "HONCHO_MONITOR_STATE",
@@ -32,6 +35,8 @@ STATE_PATH = Path(
 )
 
 HOST_MAP = {
+    "192.168.10.211:8001": "spark-goat",
+    "192.168.10.211:11435": "spark-goat",
     "100.69.54.37:8001": "spark-goat",
     "100.69.54.37:11435": "spark-goat",
     "100.71.155.95:8001": "spark-polarbear",
@@ -42,7 +47,11 @@ HOST_MAP = {
     "openrouter.ai/api/v1": "openrouter",
 }
 
-SPARK_CHAT_BASE = "http://100.69.54.37:8001"
+# Prefer the LAN endpoint for spark-goat. The historical Tailscale address
+# (100.69.54.37) can refuse :8001 while Honcho and Hermes both reach the live
+# vLLM service through the current LAN address advertised in Honcho's loaded
+# config.
+SPARK_CHAT_BASE = os.environ.get("HONCHO_MONITOR_SPARK_CHAT_BASE", "http://192.168.10.211:8001")
 
 
 @dataclass(frozen=True)
@@ -468,17 +477,26 @@ def parse_queue_by_type_raw(queue_raw: str) -> dict[str, dict[str, int]]:
     return by_type
 
 
+def is_spark_goat_chat_url(url: str | None) -> bool:
+    """Return True when ``url`` points at the spark-goat chat service."""
+    if not url:
+        return False
+    return short_host(url) == "spark-goat" and ":8001" in url
+
+
 def select_spark_model(pipeline: dict[str, dict[str, str]]) -> str:
     """Return the model name that should be used for the spark-goat chat smoke.
 
     If the pipeline's deriver base_url is on the spark-goat chat host, use its
     model; otherwise fall back to aeon-ultimate, which is known to be hosted on
     spark-goat. This prevents using a model routed elsewhere (e.g. mac-studio)
-    against the spark-goat endpoint.
+    against the spark-goat endpoint. Accept both current LAN and historical
+    Tailscale addresses as spark-goat identity, even when the actual smoke
+    probe uses the configured current endpoint.
     """
     deriver = pipeline.get("deriver", {})
     deriver_base = deriver.get("base_url", "")
-    if deriver_base and deriver_base.startswith(SPARK_CHAT_BASE):
+    if is_spark_goat_chat_url(deriver_base):
         return deriver.get("model") or "aeon-ultimate"
     return "aeon-ultimate"
 

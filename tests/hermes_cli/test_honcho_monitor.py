@@ -8,8 +8,13 @@ from hermes_cli import honcho_monitor as hm
 
 
 def test_short_host_maps_both_dgx_spark_nodes():
+    assert hm.short_host("http://192.168.10.211:8001/v1") == "spark-goat"
     assert hm.short_host("http://100.69.54.37:8001/v1") == "spark-goat"
     assert hm.short_host("http://100.71.155.95:11435/v1") == "spark-polarbear"
+
+
+def test_honcho_target_defaults_to_lan_ssh_to_avoid_tailscale_approval_gate():
+    assert hm.HONCHO_TARGET == "ubuntu@honcho.teleport.batumi.works"
 
 
 def test_parse_pipeline_env_extracts_loaded_embedding_config():
