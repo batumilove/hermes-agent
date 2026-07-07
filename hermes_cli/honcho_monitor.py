@@ -317,9 +317,12 @@ def format_report(snapshot: dict[str, Any] | HonchoSnapshot, previous_state: dic
 
 
 def ssh(command: str, timeout: int = 20) -> str:
-    result = subprocess.run(
+    ssh_cmd = ["ssh"]
+    tbot_config = Path("/var/lib/tbot/hermes-cron-ssh/ssh_config")
+    if tbot_config.exists():
+        ssh_cmd.extend(["-F", str(tbot_config)])
+    ssh_cmd.extend(
         [
-            "ssh",
             "-o",
             "ConnectTimeout=5",
             "-o",
@@ -328,7 +331,10 @@ def ssh(command: str, timeout: int = 20) -> str:
             "StrictHostKeyChecking=accept-new",
             HONCHO_TARGET,
             command,
-        ],
+        ]
+    )
+    result = subprocess.run(
+        ssh_cmd,
         capture_output=True,
         text=True,
         timeout=timeout,

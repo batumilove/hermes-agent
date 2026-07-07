@@ -122,6 +122,28 @@ def test_ssh_uses_accept_new_instead_of_disabling_host_key_checks(monkeypatch):
     assert "StrictHostKeyChecking=no" not in ssh_args
 
 
+def test_ssh_uses_tbot_config_when_available(monkeypatch):
+    calls: list[list[str]] = []
+
+    class Result:
+        returncode = 0
+        stdout = "ok\n"
+        stderr = ""
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return Result()
+
+    monkeypatch.setattr(hm.subprocess, "run", fake_run)
+    monkeypatch.setattr(hm, "HONCHO_TARGET", "honcho.example")
+    monkeypatch.setattr(hm.Path, "exists", lambda self: str(self) == "/var/lib/tbot/hermes-cron-ssh/ssh_config")
+
+    assert hm.ssh("true") == "ok"
+
+    ssh_args = calls[0]
+    assert ssh_args[:3] == ["ssh", "-F", "/var/lib/tbot/hermes-cron-ssh/ssh_config"]
+
+
 def test_queue_parse_handles_postgresql_boolean_text():
     # Reproduce the live failure: PostgreSQL returns 'true'/'false' text
     queue_raw = "false|15\ntrue|128\n"
