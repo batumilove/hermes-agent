@@ -34,8 +34,10 @@ jobs:
 
       - name: Generate test slices
         id: matrix
+        env:
+          SLICE_COUNT: ${{ inputs.slice_count }}
         run: |
-          MATRIX=$(python3 scripts/run_tests_parallel.py --generate-slices ${{ inputs.slice_count }})
+          MATRIX=$(python3 scripts/run_tests_parallel.py --generate-slices "$SLICE_COUNT")
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
 
   test:
@@ -104,14 +106,15 @@ jobs:
         # which runs LPT distribution once and passes the file list to each
         # matrix job via --files. Previously each job re-discovered files and
         # re-ran LPT independently — redundant N times.
-        run: |
-          source .venv/bin/activate
-          scripts/run_tests.sh --files '${{ matrix.slice.files }}'
         env:
+          SLICE_FILES: ${{ matrix.slice.files }}
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
+        run: |
+          source .venv/bin/activate
+          scripts/run_tests.sh --files "$SLICE_FILES"
 
       - name: Upload per-slice durations
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
