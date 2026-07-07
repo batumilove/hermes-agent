@@ -2626,6 +2626,13 @@ DEFAULT_CONFIG = {
         # 1 = serial (pre-v0.9 behaviour).
         # Also overridable via HERMES_CRON_MAX_PARALLEL env var.
         "max_parallel_jobs": None,
+        # Live gateway adapter delivery wait budget. Cron delivery runs from a
+        # scheduler thread and hands Telegram/Discord/etc sends to the gateway
+        # event loop; on a busy gateway, a too-small budget can cancel a
+        # not-yet-dispatched fresh-topic send and correctly refuse unsafe
+        # standalone fallback. Operators with long-running gateway work can
+        # raise this instead of dropping fresh-topic cron outputs.
+        "live_adapter_send_timeout_seconds": 60,
         # Per-job output-file retention: save_job_output keeps the N most
         # recent .md files and prunes older ones. 0 or negative disables
         # pruning (for operators who manage cleanup externally). Default 50.

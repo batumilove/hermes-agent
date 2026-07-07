@@ -1718,8 +1718,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     else:
                         send_result = None
                         timeout_handled = False
+                        live_adapter_send_timeout = _get_live_adapter_send_timeout()
                         try:
-                            send_result = future.result(timeout=60)
+                            send_result = future.result(timeout=live_adapter_send_timeout)
                         except TimeoutError:
                             # #38922: a slow confirmation does NOT necessarily
                             # mean the send failed — but we must distinguish two
@@ -1756,10 +1757,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                 timeout_handled = True
                                 logger.warning(
                                     "Job '%s': live adapter send to %s:%s timed out "
-                                    "after 60s; already dispatched (in flight), "
+                                    "after %.1fs; already dispatched (in flight), "
                                     "assuming delivered (skipping standalone fallback "
                                     "to avoid duplicate)",
-                                    job["id"], platform_name, chat_id,
+                                    job["id"], platform_name, chat_id, live_adapter_send_timeout,
                                 )
                         except Exception as ex:
                             # A real send error (not a slow confirmation) — fall
@@ -1987,6 +1988,35 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 _DEFAULT_SCRIPT_TIMEOUT = 3600  # seconds (1 hour)
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
+_LIVE_ADAPTER_SEND_TIMEOUT_SECONDS = 60.0
+
+
+def _get_live_adapter_send_timeout() -> float:
+    """Resolve live gateway adapter send wait budget for cron delivery."""
+    env_value = os.getenv("HERMES_CRON_LIVE_ADAPTER_SEND_TIMEOUT", "").strip()
+    if env_value:
+        try:
+            timeout = float(env_value)
+            if timeout > 0:
+                return timeout
+        except Exception:
+            logger.warning(
+                "Invalid HERMES_CRON_LIVE_ADAPTER_SEND_TIMEOUT=%r; using config/default",
+                env_value,
+            )
+
+    try:
+        cfg = load_config() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        configured = cron_cfg.get("live_adapter_send_timeout_seconds")
+        if configured is not None:
+            timeout = float(configured)
+            if timeout > 0:
+                return timeout
+    except Exception as exc:
+        logger.debug("Failed to load cron live adapter send timeout from config: %s", exc)
+
+    return _LIVE_ADAPTER_SEND_TIMEOUT_SECONDS
 
 
 def _get_script_timeout() -> int:

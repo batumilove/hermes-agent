@@ -3469,6 +3469,50 @@ class TestDeliverResultTimeoutCancelsFuture:
         standalone_send.assert_awaited_once()
         assert result is None, f"standalone should have delivered, got: {result!r}"
 
+
+    def test_live_adapter_timeout_uses_configured_cron_budget(self):
+        """cron.live_adapter_send_timeout_seconds controls the live adapter wait budget."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        captured_future = Future()
+        captured_future.cancel = MagicMock(return_value=False)
+        captured_future.result = MagicMock(side_effect=TimeoutError("timed out"))
+
+        def fake_run_coro(coro, _loop):
+            coro.close()
+            return captured_future
+
+        job = {
+            "id": "timeout-config-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False, "live_adapter_send_timeout_seconds": 180}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            result = _deliver_result(
+                job,
+                "Hello world",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        assert result is None
+        captured_future.result.assert_called_once_with(timeout=180.0)
+
     def test_live_adapter_real_exception_falls_back_to_standalone(self):
         """A non-timeout send Exception (real failure, not a slow confirmation)
         must fall through to the standalone path so the message is still
