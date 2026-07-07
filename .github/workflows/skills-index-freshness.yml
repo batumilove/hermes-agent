@@ -16,6 +16,10 @@ permissions:
   contents: read
   issues: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check-freshness:
     if: github.repository == 'NousResearch/hermes-agent'
