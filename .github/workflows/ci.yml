@@ -34,6 +34,7 @@ jobs:
   detect:
     name: Detect affected areas
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       python: ${{ steps.classify.outputs.python }}
       frontend: ${{ steps.classify.outputs.frontend }}
@@ -135,6 +136,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────
   all-checks-pass:
     name: All required checks pass
+    timeout-minutes: 5
     needs:
       - tests
       - lint
@@ -176,6 +178,7 @@ jobs:
     needs: [all-checks-pass, docker]
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
