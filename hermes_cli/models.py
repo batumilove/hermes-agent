@@ -4006,7 +4006,7 @@ def validate_requested_model(
                 "persist": True,
                 "recognized": False,
                 "message": (
-                    f"Note: `{requested}` was not found in the {provider_label} curated catalog. "
+                    f"Note: `{requested}` was not found in the {provider_label} model listing / curated catalog. "
                     "It may still work if your account has access to a newer or hidden model ID."
                     f"{suggestion_text}"
                 ),

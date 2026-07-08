@@ -1160,6 +1160,25 @@ def rewrite_prompt_model_identity(agent, model: str, provider: str) -> None:
     agent._cached_system_prompt = sp
 
 
+
+def _fallback_endpoint_uses_anthropic_messages(provider: str, base_url: str) -> bool:
+    """Return True when a fallback target should use Anthropic Messages API.
+
+    Fallback entries are resolved from plain config dictionaries before the
+    full provider runtime is active, so keep this small predicate available for
+    tests and for the activation path. It treats native Anthropic, Kimi Coding's
+    Anthropic-compatible endpoint, and custom URLs ending in /anthropic (with
+    an optional /v1 suffix) as Anthropic Messages transports.
+    """
+    provider_id = (provider or "").strip().lower()
+    url = (base_url or "").strip().rstrip("/").lower()
+    url_no_v1 = url[:-3].rstrip("/") if url.endswith("/v1") else url
+    if provider_id == "anthropic" or base_url_hostname(url) == "api.anthropic.com":
+        return True
+    if provider_id == "kimi-coding" and url_no_v1 == "https://api.kimi.com/coding":
+        return True
+    return url_no_v1.endswith("/anthropic")
+
 def _fallback_entry_key(fb: dict) -> tuple[str, str, str]:
     return (
         str(fb.get("provider") or "").strip().lower(),
@@ -1326,11 +1345,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
         if fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
-        elif (
-            fb_provider == "anthropic"
-            or fb_base_url.rstrip("/").lower().endswith("/anthropic")
-            or base_url_hostname(fb_base_url) == "api.anthropic.com"
-        ):
+        elif _fallback_endpoint_uses_anthropic_messages(fb_provider, fb_base_url):
             # Custom providers (e.g. cron-anthropic) point at the native
             # api.anthropic.com host with no "/anthropic" path suffix, so the
             # name/suffix checks above miss them and they default to

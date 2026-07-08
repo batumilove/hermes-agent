@@ -151,7 +151,7 @@ def _load_web_config() -> dict:
 # WebSearchProvider. Keep the two sets aligned by hand: if xai ever ships as
 # a registered provider, drop it here so the registry path takes over.
 _LEGACY_WEB_BACKENDS = frozenset(
-    {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}
+    {"parallel", "firecrawl", "tavily", "exa", "tinyfish", "searxng", "brave-free", "ddgs", "xai"}
 )
 
 
@@ -226,6 +226,7 @@ def _get_backend() -> str:
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")),
         ("firecrawl", _is_tool_gateway_ready()),
+        ("tinyfish", _has_env("TINYFISH_API_KEY")),
         ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
         ("ddgs", _ddgs_package_importable()),
@@ -331,6 +332,8 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "tinyfish":
+        return _has_env("TINYFISH_API_KEY")
     if backend == "searxng":
         return _has_env("SEARXNG_URL")
     if backend == "brave-free":

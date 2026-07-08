@@ -2000,7 +2000,7 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
         )
         _mark_provider_unhealthy("nous", ttl=60)
         return None, None
-    if runtime is None and nous:
+    if runtime is None and nous and not _nous_api_key(nous):
         logger.warning(
             "Auxiliary Nous client unavailable: stored Nous authentication is present, "
             "but fresh runtime credentials could not be resolved; refusing to use stored raw authentication. "

@@ -91,11 +91,11 @@ class ZaiProfile(ProviderProfile):
         extra_body: dict[str, Any] = {}
         top_level: dict[str, Any] = {}
 
-        if not _model_supports_thinking(model) and not _is_glm_5_2(model):
-            return extra_body, top_level
-
         if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
             extra_body["thinking"] = {"type": "disabled"}
+            return extra_body, top_level
+
+        if not _model_supports_thinking(model) and not _is_glm_5_2(model):
             return extra_body, top_level
 
         # Only emit when the user expressed a preference; omitting the field

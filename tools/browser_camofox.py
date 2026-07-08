@@ -430,7 +430,7 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
         "timeout": _get_command_timeout(),
     }
     headers = _auth_headers()
-    if headers is not None:
+    if headers:
         req_kwargs["headers"] = headers
     resp = requests.post(f"{base}/tabs", **req_kwargs)
     resp.raise_for_status()
@@ -474,7 +474,7 @@ def _post(path: str, body: dict, timeout: Optional[int] = None) -> dict:
     url = f"{get_camofox_url()}{path}"
     kwargs = {"json": body, "timeout": timeout}
     headers = _auth_headers()
-    if headers is not None:
+    if headers:
         kwargs["headers"] = headers
     resp = requests.post(url, **kwargs)
     resp.raise_for_status()
@@ -488,7 +488,7 @@ def _get(path: str, params: dict = None, timeout: Optional[int] = None) -> dict:
     url = f"{get_camofox_url()}{path}"
     kwargs = {"params": params, "timeout": timeout}
     headers = _auth_headers()
-    if headers is not None:
+    if headers:
         kwargs["headers"] = headers
     resp = requests.get(url, **kwargs)
     resp.raise_for_status()
@@ -502,7 +502,7 @@ def _get_raw(path: str, params: dict = None, timeout: Optional[int] = None) -> r
     url = f"{get_camofox_url()}{path}"
     kwargs = {"params": params, "timeout": timeout}
     headers = _auth_headers()
-    if headers is not None:
+    if headers:
         kwargs["headers"] = headers
     resp = requests.get(url, **kwargs)
     resp.raise_for_status()
@@ -516,7 +516,7 @@ def _delete(path: str, body: dict = None, timeout: Optional[int] = None) -> dict
     url = f"{get_camofox_url()}{path}"
     kwargs = {"json": body, "timeout": timeout}
     headers = _auth_headers()
-    if headers is not None:
+    if headers:
         kwargs["headers"] = headers
     resp = requests.delete(url, **kwargs)
     resp.raise_for_status()
