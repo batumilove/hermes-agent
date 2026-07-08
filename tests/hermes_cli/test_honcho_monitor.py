@@ -83,12 +83,47 @@ def test_format_report_shows_loaded_config_dimensions_latency_and_alerts(tmp_pat
     assert "Embedding: text-embedding-3-small @ openai" in report
     assert "Embedding env: model=text-embedding-3-small base_url=https://api.openai.com/v1" in report
     assert "Embedding DB: docs 89/94 dims=768 · messages 80/80 dims=768" in report
-    assert "Δ15m: queue +10 · docs +3" in report
+    assert "Δ15m: representation +5 · reconciler +5 · webhook +0 · dream +0 · docs +3" in report
     assert "Recent errors: save-repr=2 · 401=1" in report
     assert "spark-goat chat: 1.2s" in report
     assert "⚠️" in report
     assert "Embedding config looks like OpenAI fallback" in report
-    assert "Queue advancing faster than documents" in report
+    assert "Representation queue advancing faster than documents" in report
+
+
+def test_format_report_infers_vector_dimensions_from_matching_db_dims():
+    snapshot = {
+        "services": {"api_ok": True, "deriver_up": True, "db_ok": True, "redis_ok": True},
+        "pipeline": {
+            "embedding": {
+                "model": "qwen3-embedding-8b-1536",
+                "base_url": "http://100.69.54.37:11435/v1",
+                "dimensions_mode": "never",
+                "vector_dimensions": "",
+            },
+            "deriver": {"model": "gemma12b-polar-gpustack", "base_url": "http://100.71.155.95:18081/v1"},
+            "summary": {"model": "mlx-community--Qwen3.5-4B-4bit", "base_url": "http://192.168.10.104:8000/v1"},
+            "dream": {"model": "aeon-ultimate", "base_url": "http://100.69.54.37:8001/v1"},
+            "dialectic": {"model": "mlx-community--Qwen3.5-9B-4bit", "base_url": "http://192.168.10.104:8000/v1"},
+        },
+        "db": {
+            "documents_total": 88520,
+            "documents_with_embeddings": 88520,
+            "documents_dims": 1536,
+            "messages_total": 13273,
+            "messages_with_embeddings": 13270,
+            "messages_dims": 1536,
+        },
+        "queue": {"pending": 0, "done": 153},
+        "queue_by_type": {"representation": {"pending": 0, "done": 8}, "reconciler": {"pending": 0, "done": 137}},
+        "errors": {"save_representation": 0, "four_oh_one": 0},
+        "spark_goat": {"ok": True, "latency_s": 1.1, "thinking": False, "model": "aeon-ultimate"},
+        "deriver": {"runs_15m": 1, "last_duration_s": 2, "conclusions": 0},
+    }
+
+    report = hm.format_report(snapshot, now=hm.datetime(2026, 7, 8, 14, 3))
+
+    assert "vector_dims=1536 (inferred from DB)" in report
 
 
 def test_state_round_trip(tmp_path: Path):
@@ -343,8 +378,8 @@ def test_reconciler_churn_does_not_trigger_queue_doc_drift_alert():
 
     report = hm.format_report(snapshot, previous_state=prev, now=hm.datetime(2026, 5, 28, 23, 51))
 
-    assert "Δ15m: queue +130 · docs +6" in report
-    assert "Queue advancing faster than documents" not in report
+    assert "Δ15m: representation +6 · reconciler +115 · webhook +5 · dream +4 · docs +6" in report
+    assert "Representation queue advancing faster than documents" not in report
 
 
 def test_representation_queue_outpacing_docs_triggers_drift_alert():
@@ -385,7 +420,7 @@ def test_representation_queue_outpacing_docs_triggers_drift_alert():
 
     alerts = hm.build_alerts(hm.HonchoSnapshot(**snapshot), previous_state=prev)
 
-    assert "Queue advancing faster than documents" in alerts
+    assert "Representation queue advancing faster than documents" in alerts
 
 
 def test_legacy_state_without_queue_by_type_does_not_crash_or_false_alert():
@@ -425,7 +460,7 @@ def test_legacy_state_without_queue_by_type_does_not_crash_or_false_alert():
 
     alerts = hm.build_alerts(hm.HonchoSnapshot(**snapshot), previous_state=prev)
 
-    assert "Queue advancing faster than documents" not in alerts
+    assert "Representation queue advancing faster than documents" not in alerts
 
 
 def test_spark_model_selection_falls_back_when_deriver_routed_elsewhere():

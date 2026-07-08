@@ -169,15 +169,49 @@ def _service_row(services: dict[str, bool]) -> str:
     )
 
 
+def _queue_type_delta(snapshot: HonchoSnapshot, previous_state: dict[str, Any], task_type: str) -> int:
+    """Return the non-negative done-count delta for one queue task type."""
+    current_done = int(snapshot.queue_by_type.get(task_type, {}).get("done", 0))
+    previous_by_type = previous_state.get("queue_by_type", {})
+    if not isinstance(previous_by_type, dict) or not previous_by_type:
+        return 0
+    prev_done = int(previous_by_type.get(task_type, {}).get("done", 0))
+    return max(0, current_done - prev_done)
+
+
 def _trend_line(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None) -> str | None:
     if not previous_state:
         return None
 
-    prev_queue = int(previous_state.get("queue_done", snapshot.queue.get("done", 0)))
     prev_docs = int(previous_state.get("documents_total", snapshot.db.get("documents_total", 0)))
-    queue_delta = max(0, int(snapshot.queue.get("done", 0)) - prev_queue)
     docs_delta = max(0, int(snapshot.db.get("documents_total", 0)) - prev_docs)
-    return f"Δ15m: queue +{queue_delta} · docs +{docs_delta}"
+    rep_delta = _queue_type_delta(snapshot, previous_state, "representation")
+    reconciler_delta = _queue_type_delta(snapshot, previous_state, "reconciler")
+    webhook_delta = _queue_type_delta(snapshot, previous_state, "webhook")
+    dream_delta = _queue_type_delta(snapshot, previous_state, "dream")
+    return (
+        "Δ15m: "
+        f"representation +{rep_delta} · "
+        f"reconciler +{reconciler_delta} · "
+        f"webhook +{webhook_delta} · "
+        f"dream +{dream_delta} · "
+        f"docs +{docs_delta}"
+    )
+
+
+def _embedding_vector_dimensions_display(embed: dict[str, str], db: dict[str, Any]) -> str:
+    configured = (embed.get("vector_dimensions") or "").strip()
+    if configured:
+        return configured
+    doc_dims = db.get("documents_dims")
+    msg_dims = db.get("messages_dims")
+    if (
+        doc_dims not in (None, "", 0, "0")
+        and msg_dims not in (None, "", 0, "0")
+        and str(doc_dims) == str(msg_dims)
+    ):
+        return f"{doc_dims} (inferred from DB)"
+    return ""
 
 
 def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None = None) -> list[str]:
@@ -231,7 +265,7 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
             docs_delta = max(0, snapshot.db.get("documents_total", 0) - prev_docs)
             rep_delta = max(0, rep_done - prev_rep_done)
             if rep_delta > docs_delta:
-                alerts.append("Queue advancing faster than documents")
+                alerts.append("Representation queue advancing faster than documents")
 
     return alerts
 
@@ -276,12 +310,13 @@ def format_report(snapshot: dict[str, Any] | HonchoSnapshot, previous_state: dic
         lines.append(f"  {label}: {stage.get('model', '?')} @ {short_host(stage.get('base_url'))}")
 
     embed = snapshot.pipeline.get("embedding", {})
+    vector_dims_display = _embedding_vector_dimensions_display(embed, snapshot.db)
     lines.append(
         "  Embedding env: "
         f"model={embed.get('model', '?')} "
         f"base_url={embed.get('base_url', '?')} "
         f"dims_mode={embed.get('dimensions_mode', '?')} "
-        f"vector_dims={embed.get('vector_dimensions', '?')}"
+        f"vector_dims={vector_dims_display}"
     )
 
     lines.append(
