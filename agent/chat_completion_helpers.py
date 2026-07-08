@@ -1160,6 +1160,25 @@ def rewrite_prompt_model_identity(agent, model: str, provider: str) -> None:
     agent._cached_system_prompt = sp
 
 
+
+def _fallback_endpoint_uses_anthropic_messages(provider: str, base_url: str) -> bool:
+    """Return True when a fallback target should use Anthropic Messages API.
+
+    Fallback entries are resolved from plain config dictionaries before the
+    full provider runtime is active, so keep this small predicate available for
+    tests and for the activation path. It treats native Anthropic, Kimi Coding's
+    Anthropic-compatible endpoint, and custom URLs ending in /anthropic (with
+    an optional /v1 suffix) as Anthropic Messages transports.
+    """
+    provider_id = (provider or "").strip().lower()
+    url = (base_url or "").strip().rstrip("/").lower()
+    url_no_v1 = url[:-3].rstrip("/") if url.endswith("/v1") else url
+    if provider_id == "anthropic" or base_url_hostname(url) == "api.anthropic.com":
+        return True
+    if provider_id == "kimi-coding" and url_no_v1 == "https://api.kimi.com/coding":
+        return True
+    return url_no_v1.endswith("/anthropic")
+
 def _fallback_entry_key(fb: dict) -> tuple[str, str, str]:
     return (
         str(fb.get("provider") or "").strip().lower(),
@@ -1326,11 +1345,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
         if fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
-        elif (
-            fb_provider == "anthropic"
-            or fb_base_url.rstrip("/").lower().endswith("/anthropic")
-            or base_url_hostname(fb_base_url) == "api.anthropic.com"
-        ):
+        elif _fallback_endpoint_uses_anthropic_messages(fb_provider, fb_base_url):
             # Custom providers (e.g. cron-anthropic) point at the native
             # api.anthropic.com host with no "/anthropic" path suffix, so the
             # name/suffix checks above miss them and they default to
@@ -1517,6 +1532,101 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
 
 
+def _build_compact_summary_messages(messages: list, max_recent: int = 6) -> list:
+    """Return a compact, API-safe message list for the auxiliary summary fallback.
+
+    Drops the internally appended summary request, removes Hermes-only keys,
+    and truncates oversized tool outputs so the auxiliary payload stays small
+    and secret-free.
+    """
+    compact = []
+    source = [m for m in messages if not (isinstance(m, dict) and m.get("_max_iter_summary"))]
+    for msg in source[-max_recent:]:
+        if not isinstance(msg, dict):
+            continue
+        copy_msg = msg.copy()
+        for key in ("reasoning", "finish_reason", "_thinking_prefill", "tool_name", "codex_reasoning_items", "codex_message_items"):
+            copy_msg.pop(key, None)
+        for key in [k for k in copy_msg if isinstance(k, str) and k.startswith("_")]:
+            copy_msg.pop(key, None)
+        content = copy_msg.get("content")
+        if copy_msg.get("role") == "tool" and isinstance(content, str) and len(content) > 1000:
+            copy_msg["content"] = "[large tool output truncated]"
+        compact.append(copy_msg)
+    return compact
+
+
+def _try_auxiliary_summary(agent, messages: list) -> Optional[str]:
+    """Try to get a compact summary from the auxiliary client.
+
+    Returns the assistant content on success, or None if the auxiliary client
+    is unavailable or also fails.
+    """
+    try:
+        from agent.auxiliary_client import get_text_auxiliary_client
+    except Exception:
+        return None
+
+    compact = _build_compact_summary_messages(messages)
+    if not compact:
+        return None
+
+    try:
+        aux_client, aux_model = get_text_auxiliary_client("iteration_summary")
+    except Exception:
+        return None
+
+    if aux_client is None or not aux_model:
+        return None
+
+    try:
+        aux_kwargs = {"model": aux_model, "messages": compact}
+        if agent.max_tokens is not None:
+            aux_kwargs.update(agent._max_tokens_param(agent.max_tokens))
+        if agent.api_mode != "codex_responses" and agent.api_mode != "anthropic_messages":
+            try:
+                from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE as _OMIT_TEMP
+                raw_temp = _fixed_temperature_for_model(aux_model, str(getattr(aux_client, "base_url", "")))
+                if raw_temp is not _OMIT_TEMP and raw_temp is not None:
+                    aux_kwargs["temperature"] = raw_temp
+            except Exception:
+                pass
+        aux_response = aux_client.chat.completions.create(**aux_kwargs)
+        aux_result = getattr(aux_response, "choices", None)
+        if aux_result:
+            return (aux_result[0].message.content or "").strip()
+        return (getattr(aux_response, "content", "") or "").strip()
+    except Exception as aux_exc:
+        logger.warning(
+            "Auxiliary summary model also failed: %s",
+            type(aux_exc).__name__,
+        )
+        return None
+
+
+def _format_local_fallback(agent, messages: list) -> str:
+    """Build a deterministic, sanitized fallback response from recent context."""
+    source = [m for m in messages if not (isinstance(m, dict) and m.get("_max_iter_summary"))]
+    lines = [f"I reached the maximum iterations ({agent.max_iterations}).\n"]
+    lines.append("The summary model/provider failed; the maximum tool-calling iteration limit was reached; returning the most recent context instead:\n")
+    for msg in source[-6:]:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role", "unknown")
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            content = " ".join(str(part.get("text", "")) for part in content if isinstance(part, dict))
+        if role == "tool":
+            name = msg.get("tool_name") or "tool"
+            lines.append(f"- {role} ({name}): {content}\n")
+        elif role == "assistant" and msg.get("tool_calls"):
+            names = [tc.get("function", {}).get("name", "tool") for tc in msg.get("tool_calls", [])]
+            lines.append(f"- {role} tool_calls: {', '.join(names)}\n")
+        else:
+            lines.append(f"- {role}: {content}\n")
+    return "".join(lines).strip()
+
+
 def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
     print(f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary...")
@@ -1526,7 +1636,9 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         "Please provide a final response summarizing what you've found and accomplished so far, "
         "without calling any more tools."
     )
-    messages.append({"role": "user", "content": summary_request})
+    messages.append({"role": "user", "content": summary_request, "_max_iter_summary": True})
+
+    summary_appended = False
 
     try:
         # Build API messages, stripping internal-only fields
@@ -1692,8 +1804,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
             if final_response:
                 messages.append({"role": "assistant", "content": final_response})
-            else:
-                final_response = "I reached the iteration limit and couldn't generate a summary."
+                summary_appended = True
         else:
             # Retry summary generation
             if agent.api_mode == "codex_responses":
@@ -1735,14 +1846,29 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                     final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
                 if final_response:
                     messages.append({"role": "assistant", "content": final_response})
+                    summary_appended = True
                 else:
                     final_response = "I reached the iteration limit and couldn't generate a summary."
             else:
                 final_response = "I reached the iteration limit and couldn't generate a summary."
 
     except Exception as e:
-        logger.warning(f"Failed to get summary response: {e}")
-        final_response = f"I reached the maximum iterations ({agent.max_iterations}) but couldn't summarize. Error: {str(e)}"
+        logger.warning("Failed to get summary response: %s", type(e).__name__)
+        aux_response = _try_auxiliary_summary(agent, messages)
+        if aux_response:
+            final_response = aux_response
+        else:
+            final_response = _format_local_fallback(agent, messages)
+
+    if final_response:
+        if "<think>" in final_response:
+            final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
+        if final_response and not summary_appended:
+            messages.append({"role": "assistant", "content": final_response})
+        elif not final_response:
+            final_response = "I reached the iteration limit and couldn't generate a summary."
+    else:
+        final_response = "I reached the iteration limit and couldn't generate a summary."
 
     return final_response
 
@@ -2766,7 +2892,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             _is_bedrock_stream_denied = (
                                 is_streaming_access_denied_error(e)
                             )
-                        if _is_stream_unsupported or _is_bedrock_stream_denied:
+                        _is_zai_glm52_overloaded = (
+                            getattr(agent, "provider", None) == "zai"
+                            and str(getattr(agent, "model", "")).lower() == "glm-5.2"
+                            and "1305" in _err_lower
+                            and "temporarily overloaded" in _err_lower
+                        )
+                        if _is_stream_unsupported or _is_bedrock_stream_denied or _is_zai_glm52_overloaded:
                             agent._disable_streaming = True
                             agent._safe_print(
                                 "\n⚠  AWS IAM denied bedrock:InvokeModelWithResponseStream. "

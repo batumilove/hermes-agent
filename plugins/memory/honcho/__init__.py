@@ -1457,12 +1457,19 @@ class HonchoMemoryProvider(MemoryProvider):
                     if ok:
                         return json.dumps({"result": f"Conclusion {delete_id} deleted."})
                     return tool_error(f"Failed to delete conclusion {delete_id}.")
-                ok = self._manager.create_conclusion(
-                    self._session_key,
-                    conclusion,
-                    peer=peer,
-                    metadata=metadata,
-                )
+                if metadata is not None:
+                    ok = self._manager.create_conclusion(
+                        self._session_key,
+                        conclusion,
+                        peer=peer,
+                        metadata=metadata,
+                    )
+                else:
+                    ok = self._manager.create_conclusion(
+                        self._session_key,
+                        conclusion,
+                        peer=peer,
+                    )
                 if ok:
                     return json.dumps({"result": f"Conclusion saved for {peer}: {conclusion}"})
                 return tool_error("Failed to save conclusion.")

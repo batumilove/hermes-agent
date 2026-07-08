@@ -16,6 +16,7 @@ call time (run.py fully loaded by then), avoiding an import cycle.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import dataclasses
 import hashlib
 import inspect
@@ -1274,9 +1275,11 @@ class GatewaySlashCommandsMixin:
         # treats as a deliberate stop — the gateway stays dead until next
         # login.  Interactive macOS shells inherit XPC_SERVICE_NAME=0, so
         # "0" must count as not-under-launchd.
-        _under_service = bool(os.environ.get("INVOCATION_ID")) or os.environ.get(
-            "XPC_SERVICE_NAME", "0"
-        ) not in ("", "0")
+        _under_service = (
+            bool(os.environ.get("INVOCATION_ID"))
+            or bool(os.environ.get("LAUNCHD_JOB_LABEL"))
+            or os.environ.get("XPC_SERVICE_NAME", "0") not in ("", "0")
+        )
         _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
         if _under_service or _in_container:
             self.request_restart(detached=False, via_service=True)
@@ -3366,7 +3369,7 @@ class GatewaySlashCommandsMixin:
         if args.lower() in {"lock", "manual"}:
             if not source.thread_id:
                 return "Run /topic lock inside the topic whose title Hermes should leave alone."
-            self._session_db.mark_telegram_topic_title_manual(
+            await self._session_db.mark_telegram_topic_title_manual(
                 chat_id=str(source.chat_id),
                 thread_id=str(source.thread_id),
             )
@@ -3374,7 +3377,7 @@ class GatewaySlashCommandsMixin:
         if args.lower() in {"unlock", "auto", "auto-title on"}:
             if not source.thread_id:
                 return "Run /topic unlock inside the topic where Hermes may auto-rename again."
-            self._session_db.mark_telegram_topic_title_auto(
+            await self._session_db.mark_telegram_topic_title_auto(
                 chat_id=str(source.chat_id),
                 thread_id=str(source.thread_id),
             )

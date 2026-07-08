@@ -1637,6 +1637,28 @@ def _nous_api_key(provider: dict) -> str:
     return ""
 
 
+def _stored_nous_access_token_api_key(provider: dict) -> str:
+    """Return a usable stored Nous access_token only, never a raw agent_key.
+
+    ``agent_key`` values must come from the runtime resolver/pool path so stale
+    raw auth state cannot bypass the refresh/min-TTL checks.  A stored
+    ``access_token`` may itself be an invoke-scoped JWT in older auth layouts;
+    keep that compatibility for the auxiliary fallback chain.
+    """
+    from hermes_cli.auth import _nous_invoke_jwt_is_usable
+
+    token = provider.get("access_token")
+    if not isinstance(token, str) or not token.strip():
+        return ""
+    if _nous_invoke_jwt_is_usable(
+        token,
+        scope=provider.get("scope"),
+        expires_at=provider.get("expires_at"),
+    ):
+        return token.strip()
+    return ""
+
+
 def _nous_base_url() -> str:
     """Resolve the Nous inference base URL from env or default."""
     return os.getenv("NOUS_INFERENCE_BASE_URL", _NOUS_DEFAULT_BASE_URL)
@@ -2000,11 +2022,11 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
         )
         _mark_provider_unhealthy("nous", ttl=60)
         return None, None
-    if runtime is None and nous:
+    if runtime is None and nous and not _stored_nous_access_token_api_key(nous):
         logger.warning(
-            "Auxiliary Nous client unavailable: stored Nous authentication is "
-            "present but fresh runtime credentials could not be resolved "
-            "(run: hermes auth add nous --type oauth)."
+            "Auxiliary Nous client unavailable: stored Nous authentication is present, "
+            "but fresh runtime credentials could not be resolved; refusing to use stored raw authentication. "
+            "Run: hermes auth add nous --type oauth"
         )
         _mark_provider_unhealthy("nous", ttl=60)
         return None, None
@@ -2043,7 +2065,7 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
     if runtime is not None:
         api_key, base_url = runtime
     else:
-        api_key = _nous_api_key(nous or {})
+        api_key = _stored_nous_access_token_api_key(nous or {})
         if not api_key:
             logger.warning(
                 "Auxiliary Nous client unavailable: no usable inference JWT found "

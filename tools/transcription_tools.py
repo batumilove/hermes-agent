@@ -1638,7 +1638,7 @@ def _ensure_agent_vault_ca(cfg_or_base_url: Any) -> tuple[str, Optional[str]]:
                 timeout=10,
             )
             if response.status_code == 200 and response.text:
-                Path(ca_path).write_text(response.text)
+                Path(ca_path).write_text(response.text, encoding="utf-8")
                 return https_proxy_origin, ca_path
         except Exception:
             pass

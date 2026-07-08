@@ -4649,6 +4649,12 @@ def block_task(
         same_cause = prev_kind == kind
         recurrences = prev_recurrences + 1 if same_cause else 1
 
+        # Iteration-budget exhaustion is governed by a separate auto-retry limit
+        # in the dispatcher; it must not feed the human block-recurrence loop
+        # breaker that would otherwise route budget retries to triage.
+        if reason and reason.startswith(ITERATION_EXHAUSTED_REASON_PREFIX):
+            recurrences = 0
+
         if recurrences >= BLOCK_RECURRENCE_LIMIT:
             # Loop detected — stop letting the unblocker spin this task. Route
             # to triage for a human-in-the-loop decision instead of blocked.

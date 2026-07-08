@@ -3686,6 +3686,11 @@ class TestHandleMaxIterations:
         assert isinstance(result, str)
         assert len(result) > 0
         assert "summary" in result.lower()
+        assistant_summaries = [
+            msg for msg in messages
+            if msg.get("role") == "assistant" and msg.get("content") == result
+        ]
+        assert len(assistant_summaries) == 1
 
     def test_api_failure_returns_deterministic_local_fallback_not_raw_error(self, agent):
         agent.client.chat.completions.create.side_effect = Exception(

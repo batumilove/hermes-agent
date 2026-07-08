@@ -33,6 +33,7 @@ from providers import register_provider
 from providers.base import ProviderProfile
 
 _GLM_VERSION_RE = re.compile(r"^glm-(\d+)(?:\.(\d+))?")
+_MODEL_UNSET = object()
 
 
 def _model_supports_thinking(model: str | None) -> bool:
@@ -86,21 +87,32 @@ class ZaiProfile(ProviderProfile):
     """Z.AI / GLM — extra_body.thinking on/off + GLM-5.2 reasoning_effort."""
 
     def build_api_kwargs_extras(
-        self, *, reasoning_config: dict | None = None, model: str | None = None, **context
+        self, *, reasoning_config: dict | None = None, model: str | None | object = _MODEL_UNSET, **context
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         extra_body: dict[str, Any] = {}
         top_level: dict[str, Any] = {}
 
-        if not _model_supports_thinking(model) and not _is_glm_5_2(model):
+        model_was_supplied = model is not _MODEL_UNSET
+        model_name = model if isinstance(model, str) else None
+        if model_was_supplied and not _model_supports_thinking(model_name) and not _is_glm_5_2(model_name):
             return extra_body, top_level
 
-        # Only emit when the user expressed a preference; omitting the field
-        # keeps the server default (enabled) exactly as before.
-        if isinstance(reasoning_config, dict):
-            enabled = reasoning_config.get("enabled") is not False
-            extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
+        if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
+            extra_body["thinking"] = {"type": "disabled"}
+            return extra_body, top_level
 
-        if _is_glm_5_2(model):
+        # Only emit enabled thinking when the target model is known to support
+        # it. Omitting the model keeps the legacy provider-profile behavior:
+        # enabled/unspecified leaves the wire clean, disabled opts out.
+        if (
+            model_was_supplied
+            and _model_supports_thinking(model_name)
+            and isinstance(reasoning_config, dict)
+            and reasoning_config.get("enabled") is True
+        ):
+            extra_body["thinking"] = {"type": "enabled"}
+
+        if _is_glm_5_2(model_name):
             effort = _glm_5_2_reasoning_effort(reasoning_config)
             if effort is not None:
                 top_level["reasoning_effort"] = effort
@@ -117,8 +129,15 @@ zai = ZaiProfile(
     signup_url="https://z.ai/",
     fallback_models=(
         "glm-5.2",
+        "glm-5.1",
         "glm-5",
-        "glm-4-9b",
+        "glm-5-turbo",
+        "glm-4.7-flash",
+        "glm-4.7-flashx",
+        "glm-4.7",
+        "glm-4.5-air",
+        "glm-4.5",
+        "glm-4.5-flash",
     ),
     base_url="https://api.z.ai/api/paas/v4",
     default_aux_model="glm-4.5-flash",

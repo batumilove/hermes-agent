@@ -211,7 +211,7 @@ class TestProviderModelIds:
             return_value={"api_key": "", "base_url": "https://api.z.ai/api/paas/v4"},
         ):
             ids = provider_model_ids("zai")
-        assert ids[:2] == ["glm-5.1", "glm-5"]
+        assert ids[:3] == ["glm-5.2", "glm-5.1", "glm-5"]
         assert "glm-4-9b" not in ids
 
     def test_copilot_prefers_live_catalog(self):

@@ -645,6 +645,7 @@ class GatewayConfig:
     # STT settings
     stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
     stt_echo_transcripts: bool = True  # Whether to echo raw STT transcripts back to the user
+    stt: Dict[str, Any] = field(default_factory=dict)
 
     # Session isolation in shared chats
     group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
@@ -770,6 +771,7 @@ class GatewayConfig:
             "filter_silence_narration": self.filter_silence_narration,
             "stt_enabled": self.stt_enabled,
             "stt_echo_transcripts": self.stt_echo_transcripts,
+            "stt": dict(self.stt),
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "max_concurrent_sessions": self.max_concurrent_sessions,
@@ -813,16 +815,14 @@ class GatewayConfig:
         if not isinstance(quick_commands, dict):
             quick_commands = {}
 
+        raw_stt = data.get("stt") if isinstance(data.get("stt"), dict) else {}
+        stt_config = dict(raw_stt)
         stt_enabled = data.get("stt_enabled")
         if stt_enabled is None:
-            stt_enabled = data.get("stt", {}).get("enabled") if isinstance(data.get("stt"), dict) else None
+            stt_enabled = raw_stt.get("enabled")
         stt_echo_transcripts = data.get("stt_echo_transcripts")
         if stt_echo_transcripts is None:
-            stt_echo_transcripts = (
-                data.get("stt", {}).get("echo_transcripts")
-                if isinstance(data.get("stt"), dict)
-                else None
-            )
+            stt_echo_transcripts = raw_stt.get("echo_transcripts", raw_stt.get("echo_transcript"))
 
         group_sessions_per_user = data.get("group_sessions_per_user")
         thread_sessions_per_user = data.get("thread_sessions_per_user")
@@ -868,6 +868,7 @@ class GatewayConfig:
             ),
             stt_enabled=_coerce_bool(stt_enabled, True),
             stt_echo_transcripts=_coerce_bool(stt_echo_transcripts, True),
+            stt=stt_config,
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),

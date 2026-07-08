@@ -2893,6 +2893,8 @@ def _temp_home_in_service_definition(definition: str) -> str | None:
 
 def _refuse_temp_home_service_write(definition: str, kind: str) -> bool:
     """Refuse (with guidance) when a service definition carries a temp HERMES_HOME."""
+    if not isinstance(definition, str):
+        return False
     temp_home = _temp_home_in_service_definition(definition)
     if temp_home is None:
         return False
@@ -3524,6 +3526,11 @@ def _launchd_domain() -> str:
     return user_domain
 
 
+def _launchd_preferred_domain(loaded_label: str | None = None) -> str:
+    """Return the launchd domain to manage for the gateway label."""
+    return _launchd_domain()
+
+
 # On macOS, exit code 125 ("Domain does not support specified action") and
 # 3/113 ("Could not find service") all mean the job isn't currently loaded in
 # the target domain, so start/restart should re-bootstrap the plist and retry.
@@ -3699,15 +3706,6 @@ def _retry_launchctl_bootstrap_until_registered(
 def _launchd_unsupported_marker_path() -> Path:
     return get_hermes_home() / ".gateway-launchd-unsupported"
 
-
-def _refuse_temp_home_service_write(destination: Path, kind: str) -> bool:
-    """Hook for refusing unsafe service marker writes.
-
-    The helper is intentionally monkeypatchable for tests and future guards;
-    by default marker writes are allowed so launchd fallback status remains
-    explainable even when HERMES_HOME is a temporary test profile.
-    """
-    return False
 
 
 def _write_launchd_unsupported_marker() -> None:
@@ -3950,7 +3948,7 @@ def refresh_launchd_plist_if_needed() -> bool:
 
     plist_path.write_text(new_plist, encoding="utf-8")
     label = get_launchd_label()
-    domain = _launchd_domain()
+    domain = _launchd_preferred_domain(label)
     target = f"{domain}/{label}"
 
     # If this refresh is running INSIDE the gateway's own launchd process tree

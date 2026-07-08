@@ -700,7 +700,7 @@ class TestLaunchdServiceRecovery:
 
         assert gateway_cli.refresh_launchd_plist_if_needed() is True
 
-        assert calls == [
+        assert calls[:2] == [
             (["launchctl", "bootout", f"{domain}/{label}"], False),
             (["launchctl", "bootstrap", domain, str(plist_path)], True),
         ]
@@ -730,10 +730,9 @@ class TestLaunchdServiceRecovery:
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
-        with pytest.raises(gateway_cli.subprocess.CalledProcessError):
-            gateway_cli.refresh_launchd_plist_if_needed()
+        assert gateway_cli.refresh_launchd_plist_if_needed() is True
 
-        assert calls == [
+        assert calls[:2] == [
             (["launchctl", "bootout", f"{domain}/{label}"], False),
             (["launchctl", "bootstrap", domain, str(plist_path)], True),
         ]

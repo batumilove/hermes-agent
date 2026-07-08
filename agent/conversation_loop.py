@@ -1283,6 +1283,15 @@ def run_conversation(
                 # stream.  Mirror the ACP exclusion used for Responses
                 # API upgrade (lines ~1083-1085).
                 elif (
+                    getattr(agent, "provider", None) == "zai"
+                    and "glm-5.2" in str(getattr(agent, "model", "")).lower()
+                ):
+                    # Start this
+                    # model on the regular API directly: Z.AI's GLM-5.2 SSE
+                    # endpoint can return business error 1305 while the
+                    # non-streaming chat completion path succeeds.
+                    _use_streaming = False
+                elif (
                     agent.provider in {"copilot-acp"}
                     or str(agent.base_url or "").lower().startswith("acp://copilot")
                     or str(agent.base_url or "").lower().startswith("acp+tcp://")
@@ -3148,6 +3157,7 @@ def run_conversation(
                 }
                 _should_fallback = (
                     is_rate_limited
+                    or classified.reason == FailoverReason.silent_hang
                     or (_is_transport_failure and retry_count >= 2)
                 )
                 if _should_fallback and agent._fallback_index < len(agent._fallback_chain):

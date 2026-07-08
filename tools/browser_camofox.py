@@ -81,10 +81,17 @@ def _get_command_timeout() -> int:
 
 
 def _auth_headers() -> Dict[str, str]:
-    """Return Authorization header when CAMOFOX_API_KEY is set."""
-    key = os.getenv("CAMOFOX_API_KEY", "").strip()
-    if key:
-        return {"Authorization": f"Bearer {key}"}
+    """Return Authorization header when a Camofox key is set.
+
+    Prefer CAMOFOX_ACCESS_KEY, fall back to CAMOFOX_API_KEY. Return an
+    empty dict when no key is configured so callers always pass
+    ``headers=`` explicitly to ``requests`` (keeps the call site uniform
+    and the test contract simple — ``headers`` is always present).
+    """
+    for var in ("CAMOFOX_ACCESS_KEY", "CAMOFOX_API_KEY"):
+        key = os.getenv(var, "").strip()
+        if key:
+            return {"Authorization": f"Bearer {key}"}
     return {}
 
 
@@ -414,16 +421,16 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
     if session["tab_id"]:
         return session
     base = get_camofox_url()
-    resp = requests.post(
-        f"{base}/tabs",
-        json={
+    req_kwargs = {
+        "json": {
             "userId": session["user_id"],
             "listItemId": session["session_key"],
             "url": url,
         },
-        timeout=_get_command_timeout(),
-        headers=_auth_headers(),
-    )
+        "timeout": _get_command_timeout(),
+    }
+    req_kwargs["headers"] = _auth_headers()
+    resp = requests.post(f"{base}/tabs", **req_kwargs)
     resp.raise_for_status()
     data = resp.json()
     session["tab_id"] = data.get("tabId")
@@ -463,7 +470,8 @@ def _post(path: str, body: dict, timeout: Optional[int] = None) -> dict:
     if timeout is None:
         timeout = _get_command_timeout()
     url = f"{get_camofox_url()}{path}"
-    resp = requests.post(url, json=body, timeout=timeout, headers=_auth_headers())
+    kwargs = {"json": body, "timeout": timeout, "headers": _auth_headers()}
+    resp = requests.post(url, **kwargs)
     resp.raise_for_status()
     return resp.json()
 
@@ -473,7 +481,11 @@ def _get(path: str, params: dict = None, timeout: Optional[int] = None) -> dict:
     if timeout is None:
         timeout = _get_command_timeout()
     url = f"{get_camofox_url()}{path}"
-    resp = requests.get(url, params=params, timeout=timeout, headers=_auth_headers())
+    kwargs = {"params": params, "timeout": timeout}
+    headers = _auth_headers()
+    if headers:
+        kwargs["headers"] = headers
+    resp = requests.get(url, **kwargs)
     resp.raise_for_status()
     return resp.json()
 
@@ -483,7 +495,11 @@ def _get_raw(path: str, params: dict = None, timeout: Optional[int] = None) -> r
     if timeout is None:
         timeout = _get_command_timeout()
     url = f"{get_camofox_url()}{path}"
-    resp = requests.get(url, params=params, timeout=timeout, headers=_auth_headers())
+    kwargs = {"params": params, "timeout": timeout}
+    headers = _auth_headers()
+    if headers:
+        kwargs["headers"] = headers
+    resp = requests.get(url, **kwargs)
     resp.raise_for_status()
     return resp
 
@@ -493,7 +509,11 @@ def _delete(path: str, body: dict = None, timeout: Optional[int] = None) -> dict
     if timeout is None:
         timeout = _get_command_timeout()
     url = f"{get_camofox_url()}{path}"
-    resp = requests.delete(url, json=body, timeout=timeout, headers=_auth_headers())
+    kwargs = {"json": body, "timeout": timeout}
+    headers = _auth_headers()
+    if headers:
+        kwargs["headers"] = headers
+    resp = requests.delete(url, **kwargs)
     resp.raise_for_status()
     return resp.json()
 

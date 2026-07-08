@@ -2062,25 +2062,46 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
                     session_info["cdp_url"] = _resolve_cdp_override(str(session_info["cdp_url"]))
             except Exception as e:
                 provider_name = type(provider).__name__
-                logger.warning(
-                    "Cloud provider %s failed (%s); attempting fallback to local "
-                    "Chromium for task %s",
-                    provider_name, e, task_id,
-                    exc_info=True,
-                )
+                if hasattr(provider, "provider_name"):
+                    try:
+                        candidate_name = provider.provider_name()
+                        if isinstance(candidate_name, str) and candidate_name:
+                            provider_name = candidate_name
+                    except Exception:
+                        pass
+                session_info = None
                 try:
-                    session_info = _create_local_session(task_id)
-                except Exception as local_error:
-                    raise RuntimeError(
-                        f"Cloud provider {provider_name} failed ({e}) and local "
-                        f"fallback also failed ({local_error})"
-                    ) from e
-                # Mark session as degraded for observability
-                if isinstance(session_info, dict):
-                    session_info = dict(session_info)
-                    session_info["fallback_from_cloud"] = True
-                    session_info["fallback_reason"] = str(e)
-                    session_info["fallback_provider"] = provider_name
+                    browser_use = BrowserUseProvider()
+                    if browser_use is not provider and browser_use.is_configured():
+                        session_info = browser_use.create_session(task_id)
+                        if isinstance(session_info, dict):
+                            session_info = dict(session_info)
+                            session_info["fallback_from_cloud"] = True
+                            session_info["fallback_reason"] = str(e)
+                            session_info["fallback_provider"] = provider_name
+                            session_info["fallback_to_provider"] = browser_use.provider_name() if hasattr(browser_use, "provider_name") else type(browser_use).__name__
+                except Exception:
+                    session_info = None
+                if session_info is None:
+                    logger.warning(
+                        "Cloud provider %s failed (%s); attempting fallback to local "
+                        "Chromium for task %s",
+                        provider_name, e, task_id,
+                        exc_info=True,
+                    )
+                    try:
+                        session_info = _create_local_session(task_id)
+                    except Exception as local_error:
+                        raise RuntimeError(
+                            f"Cloud provider {provider_name} failed ({e}) and local "
+                            f"fallback also failed ({local_error})"
+                        ) from e
+                    # Mark session as degraded for observability
+                    if isinstance(session_info, dict):
+                        session_info = dict(session_info)
+                        session_info["fallback_from_cloud"] = True
+                        session_info["fallback_reason"] = str(e)
+                        session_info["fallback_provider"] = provider_name
 
     with _cleanup_lock:
         # Double-check: another thread may have created a session while we

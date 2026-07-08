@@ -67,6 +67,7 @@ class FailoverReason(enum.Enum):
     long_context_tier = "long_context_tier"    # Anthropic "extra usage" tier gate
     oauth_long_context_beta_forbidden = "oauth_long_context_beta_forbidden"  # Anthropic OAuth subscription rejects 1M context beta — disable beta and retry
     llama_cpp_grammar_pattern = "llama_cpp_grammar_pattern"  # llama.cpp json-schema-to-grammar rejects regex escapes in `pattern` / `format` — strip from tools and retry
+    silent_hang = "silent_hang"  # Codex first-byte timeout — backend accepted connection but sent no stream events
 
     # Catch-all
     unknown = "unknown"                  # Unclassifiable — retry with backoff
@@ -619,6 +620,21 @@ def classify_api_error(
     if any(p in error_msg for p in _CONTENT_POLICY_BLOCKED_PATTERNS):
         return _result(
             FailoverReason.content_policy_blocked,
+            retryable=False,
+            should_fallback=True,
+        )
+
+    # Codex silent-hang (first-byte timeout): backend accepted the connection
+    # but sent no stream events. The model is effectively unusable on this
+    # provider right now; retrying the same model wastes tokens and time. Trigger
+    # immediate failover instead. The pattern is intentionally narrow so generic
+    # read/connect timeouts do not accidentally fall into this bucket.
+    if (
+        error_type == "TimeoutError"
+        and "codex stream produced no bytes" in error_msg
+    ):
+        return _result(
+            FailoverReason.silent_hang,
             retryable=False,
             should_fallback=True,
         )

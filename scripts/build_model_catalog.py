@@ -36,7 +36,19 @@ os.environ.setdefault("HERMES_HOME", os.path.join(os.path.expanduser("~"), ".her
 os.environ["HERMES_MODEL_CATALOG_STATIC"] = "1"
 
 from hermes_cli.auth import PROVIDER_REGISTRY  # noqa: E402
-from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS  # noqa: E402
+from hermes_cli.models import (  # noqa: E402
+    OPENROUTER_MODELS,
+    _PROVIDER_MODELS,
+    _XAI_STATIC_FALLBACK,
+    _xai_merge_curated_extras,
+)
+
+# ``hermes_cli.models`` may already be imported before this module is loaded
+# inside a long pytest process.  Force catalog generation to the hermetic xAI
+# fallback even if that earlier import populated _PROVIDER_MODELS["xai"] from
+# a developer-local models.dev disk cache.
+_PROVIDER_MODELS["xai"] = _xai_merge_curated_extras(list(_XAI_STATIC_FALLBACK))
+_PROVIDER_MODELS["xai-oauth"] = _xai_merge_curated_extras(list(_XAI_STATIC_FALLBACK))
 from hermes_cli.providers import HERMES_OVERLAYS  # noqa: E402
 from providers import get_provider_profile  # noqa: E402
 

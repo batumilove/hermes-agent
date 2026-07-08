@@ -83,6 +83,7 @@ class TestBundledPluginsRegister:
             "parallel",
             "searxng",
             "tavily",
+            "tinyfish",
             "xai",
         ]
 

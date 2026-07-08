@@ -347,11 +347,12 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     except Exception:  # noqa: BLE001 — belt-and-braces; apply_all shouldn't raise
         return
 
-    if report.applied_any:
+    if report.applied_any or report.provenance:
         # Re-run the ASCII sanitization pass: vault values are
         # user-supplied and might have the same copy-paste corruption as
         # a manually edited .env (see #6843).
-        _sanitize_loaded_credentials()
+        if report.applied_any:
+            _sanitize_loaded_credentials()
         # Remember where each var came from so setup / `hermes model`
         # flows can label detected credentials with "(from Bitwarden)" /
         # "(from 1Password)" — otherwise users see "credentials ✓" with

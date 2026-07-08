@@ -3274,6 +3274,7 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
     11: ["TERMINAL_MODAL_MODE"],
+    33: ["TINYFISH_API_KEY"],
 }
 
 # Required environment variables with metadata for migration prompts.
@@ -3690,6 +3691,14 @@ OPTIONAL_ENV_VARS = {
         "description": "Firecrawl API key for web search and scraping",
         "prompt": "Firecrawl API key",
         "url": "https://firecrawl.dev/",
+        "tools": ["web_search", "web_extract"],
+        "password": True,
+        "category": "tool",
+    },
+    "TINYFISH_API_KEY": {
+        "description": "Tinyfish API key for AI-native web search",
+        "prompt": "Tinyfish API key",
+        "url": "https://agent.tinyfish.ai/api-keys",
         "tools": ["web_search", "web_extract"],
         "password": True,
         "category": "tool",
@@ -6761,6 +6770,7 @@ TERMINAL_CONFIG_ENV_MAP = {
     "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
     "modal_image": "TERMINAL_MODAL_IMAGE",
     "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+    "daytona_auto_delete_interval_minutes": "TERMINAL_DAYTONA_AUTO_DELETE_INTERVAL_MINUTES",
     "ssh_host": "TERMINAL_SSH_HOST",
     "ssh_user": "TERMINAL_SSH_USER",
     "ssh_port": "TERMINAL_SSH_PORT",
