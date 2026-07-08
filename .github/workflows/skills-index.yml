@@ -57,12 +57,8 @@ jobs:
     permissions:
       pages: write
       id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
     # Only deploy on schedule or manual trigger (not on every push to the script)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
     steps:
       - name: Trigger Deploy Site workflow
         env:
