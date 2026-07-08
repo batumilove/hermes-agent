@@ -5,6 +5,7 @@ from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pytest import MonkeyPatch
 
 import gateway.run as gateway_run
 from agent.i18n import t
@@ -12,6 +13,10 @@ from gateway.platforms.base import MessageEvent, MessageType
 from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
 from gateway.session import SessionEntry, build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
+
+
+def monkeypatch_context():
+    return MonkeyPatch.context()
 
 
 @pytest.mark.asyncio
@@ -174,6 +179,49 @@ def test_load_restart_drain_timeout_prefers_env_then_config_then_default(
         == DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     )
     assert "Invalid restart_drain_timeout" in caplog.text
+
+
+def test_load_loop_lag_warning_threshold_prefers_env_then_config_then_default(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("HERMES_GATEWAY_LOOP_LAG_WARNING_SECONDS", raising=False)
+
+    assert gateway_run.GatewayRunner._load_loop_lag_warning_threshold() == 5.0
+
+    (tmp_path / "config.yaml").write_text(
+        "gateway:\n  loop_lag_warning_seconds: 2.5\n", encoding="utf-8"
+    )
+    assert gateway_run.GatewayRunner._load_loop_lag_warning_threshold() == 2.5
+
+    monkeypatch.setenv("HERMES_GATEWAY_LOOP_LAG_WARNING_SECONDS", "7")
+    assert gateway_run.GatewayRunner._load_loop_lag_warning_threshold() == 7.0
+
+    monkeypatch.setenv("HERMES_GATEWAY_LOOP_LAG_WARNING_SECONDS", "0")
+    assert gateway_run.GatewayRunner._load_loop_lag_warning_threshold() == 0.0
+
+    monkeypatch.setenv("HERMES_GATEWAY_LOOP_LAG_WARNING_SECONDS", "invalid")
+    assert gateway_run.GatewayRunner._load_loop_lag_warning_threshold() == 5.0
+    assert "Invalid gateway loop lag warning threshold" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_gateway_loop_lag_monitor_logs_when_tick_lags(caplog):
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner._loop_lag_warning_threshold = 0.001
+    runner._loop_lag_monitor_interval = 0.001
+
+    async def fake_sleep(_delay):
+        # Force one delayed tick, then cancel the monitor loop cleanly.
+        raise asyncio.CancelledError
+
+    with monkeypatch_context() as monkeypatch:
+        times = iter([0.0, 1.0])
+        monkeypatch.setattr(gateway_run.time, "monotonic", lambda: next(times))
+        monkeypatch.setattr(gateway_run.asyncio, "sleep", fake_sleep)
+        with caplog.at_level("WARNING", logger="gateway.run"):
+            await runner._gateway_loop_lag_monitor()
+
+    assert "Gateway event loop lag" in caplog.text
+
 
 
 @pytest.mark.asyncio

@@ -2803,6 +2803,12 @@ DEFAULT_CONFIG = {
         # works as a manual override and wins if set explicitly.
         "platform_connect_timeout": 30,
 
+        # Warn when the asyncio event loop is delayed this many seconds beyond
+        # its 1s monitor tick. This exposes root-cause breadcrumbs for symptoms
+        # such as cron deliveries timing out before their live-adapter coroutine
+        # is dispatched. Set 0 to disable.
+        "loop_lag_warning_seconds": 5,
+
         # Whether the gateway keeps writing the legacy sessions.json mirror of
         # its routing index. The primary copy lives in state.db (the
         # gateway_routing table). Default True for backward compatibility with
