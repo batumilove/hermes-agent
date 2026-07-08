@@ -46,6 +46,56 @@ from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
 
+# ActiveGraph event bridge — optional/user-plugin owned.
+# Keep this lazy and fail-open: cron must never depend on observability being
+# installed or initialized, and scheduler.py can be imported before the plugin
+# manager has loaded user plugins.
+_ag_emit = None
+_ag_import_attempted = False
+
+
+def _ag(event_type: str, payload: dict) -> None:
+    """Emit an ActiveGraph event when the optional activegraph plugin is loaded."""
+    global _ag_emit, _ag_import_attempted
+    if _ag_emit is None and not _ag_import_attempted:
+        _ag_import_attempted = True
+        try:
+            import importlib
+            _plugin = importlib.import_module("hermes_plugins.activegraph")
+            _ag_emit = getattr(_plugin, "_emit")
+        except Exception:
+            _ag_emit = None
+    if _ag_emit is None:
+        return
+    try:
+        _ag_emit(event_type, payload)
+    except Exception:
+        logger.debug("ActiveGraph cron emit failed for %s", event_type, exc_info=True)
+
+
+def _cron_ag_job_name(job: dict) -> str:
+    return str(job.get("name") or str(job.get("prompt") or "")[:60] or job.get("id") or "cron job")
+
+
+def _cron_ag_schedule(job: dict) -> str:
+    display = str(job.get("schedule_display") or "").strip()
+    if display:
+        return display
+    schedule = job.get("schedule")
+    if isinstance(schedule, dict):
+        for key in ("display", "value", "expr", "run_at"):
+            value = str(schedule.get(key) or "").strip()
+            if value:
+                return value
+        kind = str(schedule.get("kind") or "").strip()
+        if kind == "interval" and schedule.get("minutes"):
+            return f"every {schedule.get('minutes')}m"
+        if kind:
+            return kind
+    if schedule is not None:
+        return str(schedule)
+    return ""
+
 
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     """Return a compact one-line failure message for chat delivery.
@@ -3417,6 +3467,19 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             )
             return True  # not an error — already handled/removed
 
+        job_id = str(job.get("id", "?"))
+        job_name = _cron_ag_job_name(job)
+        _ag(
+            "hermes.cron.started",
+            {
+                "job_id": job_id,
+                "job_name": job_name,
+                "schedule": _cron_ag_schedule(job),
+                "no_agent": bool(job.get("no_agent", False)),
+                "has_script": bool(job.get("script")),
+            },
+        )
+
         # Run the job under the profile's secret scope. get_secret() fails
         # closed outside a scope once profile isolation is in play (multiple
         # gateway profiles / room→profile multiplexing), and cron fires from
@@ -3507,11 +3570,32 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             success = False
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
+        _ag(
+            "hermes.cron.completed" if success else "hermes.cron.failed",
+            {
+                "job_id": job_id,
+                "job_name": job_name,
+                "success": bool(success),
+                "output_len": len(output) if output else 0,
+                "response_len": len(final_response) if final_response else 0,
+                "error": (error or "")[:500],
+                "delivery_error": (delivery_error or "")[:500],
+            },
+        )
         mark_job_run(job["id"], success, error, delivery_error=delivery_error)
         return True
 
     except Exception as e:
         logger.error("Error processing job %s: %s", job['id'], e)
+        _ag(
+            "hermes.cron.failed",
+            {
+                "job_id": str(job.get("id", "?")),
+                "job_name": _cron_ag_job_name(job),
+                "success": False,
+                "error": f"{type(e).__name__}: {str(e)}"[:500],
+            },
+        )
         mark_job_run(job["id"], False, str(e))
         return False
 
