@@ -8728,6 +8728,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         source = event.source
 
+        if self._handle_telegram_topic_title_edit_event(event):
+            return None
+
         # 🔴 Cross-session leak guard. This handler runs inside a per-message
         # asyncio task created via create_task(), which snapshots the spawning
         # context with copy_context(). If a *concurrent* message had already
@@ -10303,11 +10306,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     message_text,
                     audio_paths,
                 )
+                if _successful_transcripts and self._stt_echo_mode() == "prefix":
+                    _prefix = "\n".join(self._format_stt_echo_transcript(_tx) for _tx in _successful_transcripts)
+                    message_text = f"{_prefix}\n\n{message_text}" if message_text else _prefix
                 # Echo each successful transcript back to the user immediately
                 # when configured. Lets users verify STT quality in real-time,
                 # while allowing quiet STT for users who only want the agent to
                 # receive the transcription.
-                if _successful_transcripts and self._should_echo_stt_transcripts():
+                if _successful_transcripts and self._stt_echo_mode() == "separate":
                     _echo_adapter = self._adapter_for_source(source)
                     _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
                     if _echo_adapter:
@@ -10315,7 +10321,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             try:
                                 await _echo_adapter.send(
                                     source.chat_id,
-                                    f'🎙️ "{_tx}"',
+                                    self._format_stt_echo_transcript(_tx),
                                     metadata=_echo_meta,
                                 )
                             except Exception as _echo_exc:
@@ -12813,9 +12819,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return True
 
+    def _stt_echo_mode(self) -> str:
+        """Return transcript echo mode: separate, prefix, or off."""
+        raw = getattr(self.config, "stt", {})
+        if not isinstance(raw, dict):
+            raw = {}
+        if not bool(raw.get("echo_transcript", getattr(self.config, "stt_echo_transcripts", True))):
+            return "off"
+        mode = str(raw.get("echo_mode") or "separate").strip().lower()
+        return mode if mode in {"separate", "prefix", "off"} else "separate"
+
     def _should_echo_stt_transcripts(self) -> bool:
         """Return whether inbound voice/STT transcripts should be echoed to chat."""
-        return bool(getattr(self.config, "stt_echo_transcripts", True))
+        return self._stt_echo_mode() != "off"
+
+    @staticmethod
+    def _format_stt_echo_transcript(transcript: str) -> str:
+        return f'Heard: "{transcript}"'
+
+    @staticmethod
+    async def _maybe_await(value):
+        if inspect.isawaitable(value):
+            return await value
+        return value
 
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
         """Generate TTS audio and send as a voice message before the text reply."""
@@ -13369,6 +13395,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 if binding and str(binding.get("session_id") or "") != str(session_id):
                     return
+                topic_name = self._sanitize_telegram_topic_title(title)
+                if binding:
+                    if str(binding.get("topic_title_mode") or "auto") == "manual":
+                        return
+                    if str(binding.get("auto_title") or "") == topic_name:
+                        return
             except Exception:
                 logger.debug("Failed to verify Telegram topic binding before rename", exc_info=True)
                 return
@@ -13384,6 +13416,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     thread_id=str(source.thread_id),
                     name=topic_name,
                 )
+                if session_db is not None:
+                    await self._maybe_await(session_db.record_telegram_topic_auto_title(
+                        chat_id=str(source.chat_id),
+                        thread_id=str(source.thread_id),
+                        title=topic_name,
+                    ))
                 return
 
             bot = getattr(adapter, "_bot", None)
@@ -13404,6 +13442,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     message_thread_id=source.thread_id,
                     name=topic_name,
                 )
+            if session_db is not None:
+                await self._maybe_await(session_db.record_telegram_topic_auto_title(
+                    chat_id=str(source.chat_id),
+                    thread_id=str(source.thread_id),
+                    title=topic_name,
+                ))
         except Exception:
             logger.debug("Failed to rename Telegram topic for auto-generated title", exc_info=True)
 
@@ -13946,6 +13990,47 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return cfg if isinstance(cfg, dict) else {}
         except Exception:
             return {}
+
+    def _handle_telegram_topic_title_edit_event(self, event: MessageEvent) -> bool:
+        """Track manual Telegram forum-topic title edits."""
+        source = getattr(event, "source", None)
+        raw = getattr(event, "raw_message", None)
+        edited = getattr(raw, "forum_topic_edited", None) if raw is not None else None
+        title = getattr(edited, "name", None) if edited is not None else None
+        if not source or not getattr(source, "chat_id", None) or not getattr(source, "thread_id", None) or title is None:
+            return False
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None:
+            return False
+        if hasattr(session_db, "_db"):
+            session_db = session_db._db
+        try:
+            binding = session_db.get_telegram_topic_binding(
+                chat_id=str(source.chat_id),
+                thread_id=str(source.thread_id),
+            )
+            if inspect.isawaitable(binding):
+                logger.debug("Skipping async Telegram topic title edit tracking in sync handler")
+                return False
+            if not binding:
+                return False
+            if str(binding.get("auto_title") or "") == str(title):
+                result = session_db.mark_telegram_topic_title_auto(
+                    chat_id=str(source.chat_id),
+                    thread_id=str(source.thread_id),
+                )
+            else:
+                result = session_db.mark_telegram_topic_title_manual(
+                    chat_id=str(source.chat_id),
+                    thread_id=str(source.thread_id),
+                )
+            if inspect.isawaitable(result):
+                logger.debug("Skipping async Telegram topic title edit write in sync handler")
+                return False
+            return True
+        except Exception:
+            logger.debug("Failed to handle Telegram topic title edit event", exc_info=True)
+            return False
 
     def _thread_metadata_for_source(
         self,
@@ -14790,6 +14875,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self,
         user_text: str,
         audio_paths: List[str],
+        source: Optional[SessionSource] = None,
+        echo_metadata: Optional[Dict[str, Any]] = None,
     ) -> tuple[str, List[str]]:
         """
         Auto-transcribe user voice/audio messages using the configured STT provider
@@ -14845,7 +14932,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # what they said: ...") read as a meta-instruction and made
                     # the LLM volunteer commentary about voice mode rather than
                     # reply to the content.
-                    enriched_parts.append(f'"{transcript}"')
+                    enriched_parts.append(f'[The user sent a voice message~ Here\'s what they said: "{transcript}"]')
                 else:
                     error = result.get("error", "unknown error")
                     # All failure branches: a single, minimal, neutral marker.
@@ -14862,6 +14949,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as e:
                 logger.error("Transcription error: %s", e)
                 enriched_parts.append("[voice message could not be transcribed]")
+
+        if successful_transcripts and self._stt_echo_mode() == "separate" and source is not None:
+            echo_adapter = self._adapter_for_source(source)
+            if echo_adapter:
+                for transcript in successful_transcripts:
+                    try:
+                        await echo_adapter.send(
+                            source.chat_id,
+                            self._format_stt_echo_transcript(transcript),
+                            metadata=echo_metadata,
+                        )
+                    except Exception as exc:
+                        logger.debug("Transcript echo failed (non-fatal): %s", exc)
 
         if enriched_parts:
             prefix = "\n\n".join(enriched_parts)
@@ -18859,7 +18959,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                                 try:
                                                     await _adapter.send(
                                                         source.chat_id,
-                                                        f'🎙️ "{_tx}"',
+                                                        self._format_stt_echo_transcript(_tx),
                                                         metadata=_echo_meta,
                                                     )
                                                 except Exception as _echo_exc:
@@ -19281,7 +19381,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     try:
                                         await adapter.send(
                                             source.chat_id,
-                                            f'🎙️ "{_tx}"',
+                                            self._format_stt_echo_transcript(_tx),
                                             metadata=_echo_meta,
                                         )
                                     except Exception as _echo_exc:

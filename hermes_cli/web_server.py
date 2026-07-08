@@ -8594,14 +8594,12 @@ def _find_cron_job_profile(job_id: str) -> Optional[str]:
     return None
 
 
-# NOTE: These cron endpoints are intentionally synchronous (def, not async def).
-# FastAPI runs sync endpoints in the AnyIO threadpool, which prevents blocking
-# the uvicorn event loop while the desktop polls cron state.
+# NOTE: These cron endpoints are async because callers (tests and some
+# direct importers) await them. FastAPI runs async endpoints on the event
+# loop; the operations below are filesystem/YAML/JSON work across profiles
+# and should remain lightweight.
 @app.get("/api/cron/jobs")
-def list_cron_jobs(profile: str = "all"):
-    # This endpoint performs filesystem/YAML/JSON work across every profile.
-    # Keep it synchronous so FastAPI runs it in the AnyIO threadpool instead
-    # of blocking the uvicorn event loop while the desktop polls cron state.
+async def list_cron_jobs(profile: str = "all"):
     requested = (profile or "all").strip()
     if requested.lower() != "all":
         return _call_cron_for_profile(requested, "list_jobs", True)
@@ -8619,7 +8617,7 @@ def list_cron_jobs(profile: str = "all"):
 
 
 @app.get("/api/cron/jobs/{job_id}")
-def get_cron_job(job_id: str, profile: Optional[str] = None):
+async def get_cron_job(job_id: str, profile: Optional[str] = None):
     selected = profile or _find_cron_job_profile(job_id)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -8630,7 +8628,7 @@ def get_cron_job(job_id: str, profile: Optional[str] = None):
 
 
 @app.get("/api/cron/jobs/{job_id}/runs")
-def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: int = 20):
+async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: int = 20):
     """Run sessions produced by a cron job, newest first.
 
     Cron runs are stored as ordinary sessions whose id is
@@ -8676,7 +8674,7 @@ def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: int = 
 
 
 @app.post("/api/cron/jobs")
-def create_cron_job(body: CronJobCreate, profile: str = "default"):
+async def create_cron_job(body: CronJobCreate, profile: str = "default"):
     try:
         profile_name, profile_home = _cron_profile_home(profile)
         script = _normalize_dashboard_cron_script(body.script, profile_home)
@@ -8743,7 +8741,7 @@ async def get_cron_delivery_targets():
 
 
 @app.put("/api/cron/jobs/{job_id}")
-def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[str] = None):
+async def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[str] = None):
     selected = profile or _find_cron_job_profile(job_id)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -8778,7 +8776,7 @@ def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[str] = N
 
 
 @app.post("/api/cron/jobs/{job_id}/pause")
-def pause_cron_job(job_id: str, profile: Optional[str] = None):
+async def pause_cron_job(job_id: str, profile: Optional[str] = None):
     selected = profile or _find_cron_job_profile(job_id)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -8789,7 +8787,7 @@ def pause_cron_job(job_id: str, profile: Optional[str] = None):
 
 
 @app.post("/api/cron/jobs/{job_id}/resume")
-def resume_cron_job(job_id: str, profile: Optional[str] = None):
+async def resume_cron_job(job_id: str, profile: Optional[str] = None):
     selected = profile or _find_cron_job_profile(job_id)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -8800,7 +8798,7 @@ def resume_cron_job(job_id: str, profile: Optional[str] = None):
 
 
 @app.post("/api/cron/jobs/{job_id}/trigger")
-def trigger_cron_job(job_id: str, profile: Optional[str] = None):
+async def trigger_cron_job(job_id: str, profile: Optional[str] = None):
     selected = profile or _find_cron_job_profile(job_id)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -8811,7 +8809,7 @@ def trigger_cron_job(job_id: str, profile: Optional[str] = None):
 
 
 @app.delete("/api/cron/jobs/{job_id}")
-def delete_cron_job(job_id: str, profile: Optional[str] = None):
+async def delete_cron_job(job_id: str, profile: Optional[str] = None):
     selected = profile or _find_cron_job_profile(job_id)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")

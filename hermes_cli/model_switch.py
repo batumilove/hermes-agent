@@ -1946,7 +1946,10 @@ def list_authenticated_providers(
             if not _cp_model_ids:
                 _cp_model_ids = curated.get(_cp.slug, [])
         _cp_total = len(_cp_model_ids)
-        _cp_top = _cp_model_ids[:max_models] if max_models is not None else _cp_model_ids
+        if _cp.slug in _UNCAPPED_PICKER_PROVIDERS:
+            _cp_top = _cp_model_ids  # Aggregator: show full catalog regardless of max_models
+        else:
+            _cp_top = _cp_model_ids[:max_models] if max_models is not None else _cp_model_ids
 
         results.append({
             "slug": _cp.slug,

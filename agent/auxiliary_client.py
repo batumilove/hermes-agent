@@ -2001,13 +2001,10 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
         _mark_provider_unhealthy("nous", ttl=60)
         return None, None
     if runtime is None and nous:
-        logger.warning(
-            "Auxiliary Nous client unavailable: stored Nous authentication is "
-            "present but fresh runtime credentials could not be resolved "
-            "(run: hermes auth add nous --type oauth)."
+        logger.debug(
+            "Auxiliary Nous: no fresh runtime credentials; falling back to "
+            "stored authentication."
         )
-        _mark_provider_unhealthy("nous", ttl=60)
-        return None, None
     global auxiliary_is_nous
     auxiliary_is_nous = True
     logger.debug("Auxiliary client: Nous Portal")

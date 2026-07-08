@@ -2341,7 +2341,8 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
 
     if not force and dispatch_in_gateway:
         print(
-            "hermes kanban daemon: gateway dispatch may already be active.\n"
+            "hermes kanban daemon: DEPRECATED — use `hermes gateway start` instead. "
+            "Gateway dispatch may already be active.\n"
             "\n"
             "For the safe external-dispatcher mode, first set\n"
             "kanban.dispatch_in_gateway=false so the gateway does not spawn\n"

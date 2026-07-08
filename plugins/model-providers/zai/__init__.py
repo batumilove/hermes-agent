@@ -91,14 +91,19 @@ class ZaiProfile(ProviderProfile):
         extra_body: dict[str, Any] = {}
         top_level: dict[str, Any] = {}
 
+        # Hermes' explicit "reasoning off" must always reach the wire as
+        # thinking disabled, even if the downstream model is unknown.
+        if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
+            extra_body["thinking"] = {"type": "disabled"}
+            return extra_body, top_level
+
         if not _model_supports_thinking(model) and not _is_glm_5_2(model):
             return extra_body, top_level
 
         # Only emit when the user expressed a preference; omitting the field
         # keeps the server default (enabled) exactly as before.
-        if isinstance(reasoning_config, dict):
-            enabled = reasoning_config.get("enabled") is not False
-            extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
+        if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is True:
+            extra_body["thinking"] = {"type": "enabled"}
 
         if _is_glm_5_2(model):
             effort = _glm_5_2_reasoning_effort(reasoning_config)
@@ -117,8 +122,15 @@ zai = ZaiProfile(
     signup_url="https://z.ai/",
     fallback_models=(
         "glm-5.2",
+        "glm-5.1",
         "glm-5",
-        "glm-4-9b",
+        "glm-5-turbo",
+        "glm-4.7-flash",
+        "glm-4.7-flashx",
+        "glm-4.7",
+        "glm-4.5-air",
+        "glm-4.5",
+        "glm-4.5-flash",
     ),
     base_url="https://api.z.ai/api/paas/v4",
     default_aux_model="glm-4.5-flash",

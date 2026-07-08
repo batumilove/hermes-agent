@@ -93,6 +93,7 @@ from tools.managed_tool_gateway import (  # noqa: F401 — backward-compat names
     resolve_managed_tool_gateway,
 )
 from tools.tool_backend_helpers import (  # noqa: F401
+    load_tool_fallbacks,
     managed_nous_tools_enabled,
     nous_tool_gateway_unavailable_message,
     prefers_gateway,
@@ -274,6 +275,22 @@ def _get_extract_backend() -> str:
     3. Auto-detect from env vars
     """
     return _get_capability_backend("extract")
+
+
+def _web_fallback_backends(capability: str) -> List[str]:
+    """Return configured fallback backends plus the default backend."""
+    configured = [entry.get("backend") for entry in load_tool_fallbacks("web")]
+    configured = [b for b in configured if isinstance(b, str) and b]
+    seen = set()
+    result = []
+    for backend in configured:
+        if backend not in seen:
+            seen.add(backend)
+            result.append(backend)
+    default = _get_capability_backend(capability)
+    if default not in seen:
+        result.append(default)
+    return result
 
 
 def _get_capability_backend(capability: str) -> str:

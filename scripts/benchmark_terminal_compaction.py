@@ -168,7 +168,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     rendered = json.dumps(rows, indent=2) if args.json else render_markdown(rows)
 
     if args.output:
-        Path(args.output).write_text(rendered)
+        Path(args.output).write_text(rendered, encoding="utf-8")
     print(rendered)
     return 0
 

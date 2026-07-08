@@ -950,6 +950,7 @@ from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
 from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.modal import ModalEnvironment as _ModalEnvironment
 from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
+from tools.environments.sandbox_manager import SandboxManagerEnvironment as _SandboxManagerEnvironment
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 import sys
 
@@ -1375,6 +1376,15 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_orphan_reaper": os.getenv(
             "TERMINAL_DOCKER_ORPHAN_REAPER", "true"
         ).lower() in {"true", "1", "yes"},
+        "sandbox_manager": {
+            "ssh_host": os.getenv("TERMINAL_SANDBOX_SSH_HOST", ""),
+            "ssh_user": os.getenv("TERMINAL_SANDBOX_SSH_USER", ""),
+            "manager_dir": os.getenv("TERMINAL_SANDBOX_MANAGER_DIR", "/opt/agent-sandbox-manager"),
+            "config_path": os.getenv("TERMINAL_SANDBOX_CONFIG", "config/sandbox-manager.example.json"),
+            "runtime": os.getenv("TERMINAL_SANDBOX_RUNTIME", "python"),
+            "network_profile": os.getenv("TERMINAL_SANDBOX_NETWORK", "offline"),
+            "output_bytes": _parse_env_var("TERMINAL_SANDBOX_OUTPUT_BYTES", "4096"),
+        },
     }
 
 
@@ -1520,6 +1530,18 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             persistent_filesystem=persistent, task_id=task_id,
         )
 
+    elif env_type == "sandbox_manager":
+        sm = cc.get("sandbox_manager", {}) if isinstance(cc, dict) else {}
+        return _SandboxManagerEnvironment(
+            ssh_host=sm.get("ssh_host", ""),
+            ssh_user=sm.get("ssh_user", ""),
+            manager_dir=sm.get("manager_dir", "/opt/agent-sandbox-manager"),
+            config_path=sm.get("config_path", "config/sandbox-manager.example.json"),
+            runtime=sm.get("runtime", "python"),
+            network_profile=sm.get("network_profile", "offline"),
+            output_bytes=sm.get("output_bytes", 4096),
+        )
+
     elif env_type == "ssh":
         if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
             raise ValueError("SSH environment requires ssh_host and ssh_user to be configured")
@@ -1535,7 +1557,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     else:
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', or 'ssh'"
+            f"'singularity', 'modal', 'daytona', 'sandbox_manager', or 'ssh'"
         )
 
 

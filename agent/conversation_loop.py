@@ -3148,6 +3148,7 @@ def run_conversation(
                 }
                 _should_fallback = (
                     is_rate_limited
+                    or classified.reason == FailoverReason.silent_hang
                     or (_is_transport_failure and retry_count >= 2)
                 )
                 if _should_fallback and agent._fallback_index < len(agent._fallback_chain):

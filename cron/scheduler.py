@@ -122,6 +122,14 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
         )
 
     if "readtimeout" in lower or "timed out" in lower or "timeout" in lower:
+        # no_agent/script timeouts are not provider failures; keep the summary
+        # from mentioning provider fallbacks, which is confusing for shell
+        # command / watchdog timeouts.
+        if job.get("no_agent") or "script" in lower or "command" in lower:
+            return (
+                f"⚠️ Cron '{job_name}' failed: script/command timeout. "
+                "Full details saved in cron output."
+            )
         return (
             f"⚠️ Cron '{job_name}' failed: provider timeout. "
             "Fallback chain was exhausted or unavailable. "
