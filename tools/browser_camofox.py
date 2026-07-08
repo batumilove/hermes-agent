@@ -429,9 +429,7 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
         },
         "timeout": _get_command_timeout(),
     }
-    headers = _auth_headers()
-    if headers:
-        req_kwargs["headers"] = headers
+    req_kwargs["headers"] = _auth_headers()
     resp = requests.post(f"{base}/tabs", **req_kwargs)
     resp.raise_for_status()
     data = resp.json()
@@ -472,10 +470,7 @@ def _post(path: str, body: dict, timeout: Optional[int] = None) -> dict:
     if timeout is None:
         timeout = _get_command_timeout()
     url = f"{get_camofox_url()}{path}"
-    kwargs = {"json": body, "timeout": timeout}
-    headers = _auth_headers()
-    if headers:
-        kwargs["headers"] = headers
+    kwargs = {"json": body, "timeout": timeout, "headers": _auth_headers()}
     resp = requests.post(url, **kwargs)
     resp.raise_for_status()
     return resp.json()

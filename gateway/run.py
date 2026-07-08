@@ -9408,6 +9408,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         event,
                         merge_text=True,
                     )
+                # Keep the sentinel present while setup continues.  Some tests
+                # and diagnostics assert that the session remains claimed until
+                # the starter turn reaches its own cleanup path.
+                self._running_agents.setdefault(_quick_key, _AGENT_PENDING_SENTINEL)
                 return None
             if self._draining:
                 if self._queue_during_drain_enabled():
@@ -10098,7 +10102,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # replays, background-process completions) bypass the gate — they are
         # not user-initiated new work and must still flow during a drain.
         # Reversible: once the marker is removed the gate opens again.
-        if self._external_drain_active and not is_internal:
+        if getattr(self, "_external_drain_active", False) and not is_internal:
             logger.info(
                 "Refusing new turn for session %s — external drain active.",
                 _quick_key,

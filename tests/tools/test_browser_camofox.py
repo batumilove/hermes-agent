@@ -161,7 +161,7 @@ class TestCamofoxNavigate:
         result = json.loads(camofox_navigate("https://example.com", task_id="t_no_auth"))
 
         assert result["success"] is True
-        assert "headers" not in mock_post.call_args.kwargs
+        assert mock_post.call_args.kwargs["headers"] == {}
 
     @patch("tools.browser_camofox.load_config")
     @patch("tools.browser_camofox.requests.post")
