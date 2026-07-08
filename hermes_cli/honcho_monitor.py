@@ -47,6 +47,11 @@ HOST_MAP = {
     "openrouter.ai/api/v1": "openrouter",
 }
 
+# Keep this narrow. A plain grep for "401" false-alerted on harmless log
+# substrings such as source ports (":40146") and timestamp milliseconds
+# ("10:16:25,401").
+AUTH_ERROR_LOG_PATTERN = r'HTTP/1\.1" 401|Error code: 401|invalid_api_key|Unauthorized|AuthenticationError'
+
 # Prefer the LAN endpoint for spark-goat. The historical Tailscale address
 # (100.69.54.37) can refuse :8001 while Honcho and Hermes both reach the live
 # vLLM service through the current LAN address advertised in Honcho's loaded
@@ -552,7 +557,7 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
     errors_raw = ssh(
         "docker logs honcho-deriver-1 --since 15m > /tmp/honcho-deriver-monitor.log 2>&1; "
         "printf 'save|%s\n' \"$(grep -c 'Failed to save representation' /tmp/honcho-deriver-monitor.log || true)\"; "
-        "printf '401|%s\n' \"$(grep -c '401' /tmp/honcho-deriver-monitor.log || true)\"",
+        f"printf '401|%s\\n' \"$(grep -Ec {AUTH_ERROR_LOG_PATTERN!r} /tmp/honcho-deriver-monitor.log || true)\"",
         timeout=30,
     )
     error_counts = _parse_kv_lines(errors_raw)
@@ -633,11 +638,24 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
     return snapshot, current_state
 
 
+def should_emit_report(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None = None) -> bool:
+    """Return True when the cron should send a Telegram message.
+
+    The Honcho monitor is a script-only cron job: any non-empty stdout is
+    delivered verbatim. Keep routine healthy runs silent, but leave an explicit
+    operator override for manual debugging.
+    """
+    if os.environ.get("HONCHO_MONITOR_ALWAYS_PRINT", "").strip().lower() in {"1", "true", "yes"}:
+        return True
+    return bool(build_alerts(snapshot, previous_state=previous_state))
+
+
 def main() -> int:
     snapshot, current_state = collect_snapshot()
     previous_state = load_state(STATE_PATH)
-    report = format_report(snapshot, previous_state=previous_state)
-    print(report)
+    if should_emit_report(snapshot, previous_state=previous_state):
+        report = format_report(snapshot, previous_state=previous_state)
+        print(report)
     save_state(STATE_PATH, current_state)
     return 0
 

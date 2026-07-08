@@ -442,3 +442,91 @@ def test_spark_model_selection_uses_deriver_when_on_spark_goat():
         "deriver": {"model": "custom-model", "base_url": "http://100.69.54.37:8001/v1"},
     }
     assert hm.select_spark_model(pipeline) == "custom-model"
+
+
+def test_auth_error_log_pattern_ignores_ports_and_timestamp_milliseconds():
+    benign = "\n".join(
+        [
+            "2026-07-08 10:16:25,401 - src.deriver.queue_manager - DEBUG - Claimed 1 work units",
+            '      INFO   172.18.0.1:40146 - "POST /v3/workspaces HTTP/1.1" 201',
+        ]
+    )
+    assert hm.re.search(hm.AUTH_ERROR_LOG_PATTERN, benign) is None
+
+    real = "Error code: 401 - invalid_api_key"
+    assert hm.re.search(hm.AUTH_ERROR_LOG_PATTERN, real)
+
+
+def test_should_emit_report_is_false_for_nominal_snapshot(monkeypatch):
+    snapshot = hm.HonchoSnapshot(
+        services={"api_ok": True, "deriver_up": True, "db_ok": True, "redis_ok": True},
+        pipeline={
+            "embedding": {
+                "model": "qwen3-embedding-8b-1536",
+                "base_url": "http://100.69.54.37:11435/v1",
+                "dimensions_mode": "never",
+                "vector_dimensions": "1536",
+            },
+            "deriver": {"model": "gemma12b-polar-gpustack", "base_url": "http://100.71.155.95:18081/v1"},
+            "summary": {"model": "mlx-community--Qwen3.5-4B-4bit", "base_url": "http://192.168.10.104:8000/v1"},
+            "dream": {"model": "aeon-ultimate", "base_url": "http://100.69.54.37:8001/v1"},
+            "dialectic": {"model": "mlx-community--Qwen3.5-9B-4bit", "base_url": "http://192.168.10.104:8000/v1"},
+        },
+        db={
+            "documents_total": 88520,
+            "documents_with_embeddings": 88520,
+            "documents_dims": 1536,
+            "messages_total": 13273,
+            "messages_with_embeddings": 13270,
+            "messages_dims": 1536,
+        },
+        queue={"pending": 0, "done": 123},
+        queue_by_type={"representation": {"pending": 0, "done": 8}, "reconciler": {"pending": 0, "done": 111}},
+        errors={"save_representation": 0, "four_oh_one": 0},
+        spark_goat={"ok": True, "latency_s": 1.3, "thinking": False, "model": "aeon-ultimate"},
+        deriver={"runs_15m": 1, "last_duration_s": 5.0, "conclusions": 0},
+    )
+    previous = {
+        "queue_done": 117,
+        "documents_total": 88520,
+        "queue_by_type": {"representation": {"pending": 0, "done": 8}, "reconciler": {"pending": 0, "done": 105}},
+    }
+
+    monkeypatch.delenv("HONCHO_MONITOR_ALWAYS_PRINT", raising=False)
+
+    assert hm.build_alerts(snapshot, previous_state=previous) == []
+    assert hm.should_emit_report(snapshot, previous_state=previous) is False
+
+
+def test_should_emit_report_can_be_forced_for_manual_debug(monkeypatch):
+    snapshot = hm.HonchoSnapshot(
+        services={"api_ok": True, "deriver_up": True, "db_ok": True, "redis_ok": True},
+        pipeline={
+            "embedding": {
+                "model": "qwen3-embedding-8b-1536",
+                "base_url": "http://100.69.54.37:11435/v1",
+                "dimensions_mode": "never",
+                "vector_dimensions": "1536",
+            },
+            "deriver": {"model": "gemma12b-polar-gpustack", "base_url": "http://100.71.155.95:18081/v1"},
+            "summary": {"model": "mlx-community--Qwen3.5-4B-4bit", "base_url": "http://192.168.10.104:8000/v1"},
+            "dream": {"model": "aeon-ultimate", "base_url": "http://100.69.54.37:8001/v1"},
+            "dialectic": {"model": "mlx-community--Qwen3.5-9B-4bit", "base_url": "http://192.168.10.104:8000/v1"},
+        },
+        db={
+            "documents_total": 88520,
+            "documents_with_embeddings": 88520,
+            "documents_dims": 1536,
+            "messages_total": 13273,
+            "messages_with_embeddings": 13270,
+            "messages_dims": 1536,
+        },
+        queue={"pending": 0, "done": 123},
+        queue_by_type={"representation": {"pending": 0, "done": 8}},
+        errors={"save_representation": 0, "four_oh_one": 0},
+        spark_goat={"ok": True, "latency_s": 1.3, "thinking": False, "model": "aeon-ultimate"},
+        deriver={"runs_15m": 1, "last_duration_s": 5.0, "conclusions": 0},
+    )
+    monkeypatch.setenv("HONCHO_MONITOR_ALWAYS_PRINT", "1")
+
+    assert hm.should_emit_report(snapshot, previous_state={}) is True
