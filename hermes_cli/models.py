@@ -388,6 +388,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai/gpt-5.4",
     ],
     "opencode-zen": [
+        "kimi-k2",
         "kimi-k2.5",
         "kimi-k2.6",
         "gpt-5.5",
@@ -3782,6 +3783,8 @@ def validate_requested_model(
     """
     requested = (model_name or "").strip()
     normalized = normalize_provider(provider)
+    if provider == "opencode-zen":
+        normalized = "opencode-zen"
     if normalized == "openrouter" and base_url and "openrouter.ai" not in base_url:
         normalized = "custom"
     requested_for_lookup = requested
@@ -3882,8 +3885,8 @@ def validate_requested_model(
                     "accepted": True,
                     "persist": True,
                     "recognized": True,
-                    "corrected_model": auto[0],
-                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                    "corrected_model": catalog_lower[auto[0]],
+                    "message": f"Auto-corrected `{requested}` → `{catalog_lower[auto[0]]}`",
                 }
 
             suggestions = get_close_matches(requested, api_models, n=3, cutoff=0.5)
@@ -3929,13 +3932,14 @@ def validate_requested_model(
         }
 
     # Providers with non-standard catalog validation — /v1/models probing is not the right path.
-    if normalized in {"openai-codex", "xai-oauth"}:
+    if normalized in {"openai-codex", "xai-oauth", "opencode-zen", "opencode-go"}:
         try:
             catalog_models = provider_model_ids(normalized)
         except Exception:
             catalog_models = []
         if catalog_models:
-            if requested_for_lookup in set(catalog_models):
+            catalog_lower = {m.lower(): m for m in catalog_models}
+            if requested_for_lookup.lower() in catalog_lower:
                 return {
                     "accepted": True,
                     "persist": True,
@@ -3943,7 +3947,7 @@ def validate_requested_model(
                     "message": None,
                 }
             # Auto-correct if the top match is very similar (e.g. typo)
-            auto = get_close_matches(requested_for_lookup, catalog_models, n=1, cutoff=0.9)
+            auto = get_close_matches(requested_for_lookup.lower(), list(catalog_lower), n=1, cutoff=0.9)
             if auto:
                 return {
                     "accepted": True,
@@ -3952,11 +3956,16 @@ def validate_requested_model(
                     "corrected_model": auto[0],
                     "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
                 }
-            suggestions = get_close_matches(requested_for_lookup, catalog_models, n=3, cutoff=0.5)
+            suggestions = get_close_matches(requested_for_lookup.lower(), list(catalog_lower), n=3, cutoff=0.5)
             suggestion_text = ""
             if suggestions:
-                suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
-            provider_label = "OpenAI Codex" if normalized == "openai-codex" else "xAI Grok OAuth (SuperGrok / Premium+)"
+                suggestion_text = "\n  Similar models: " + ", ".join(f"`{catalog_lower[s]}`" for s in suggestions)
+            provider_label = (
+                "OpenAI Codex" if normalized == "openai-codex"
+                else "xAI Grok OAuth (SuperGrok / Premium+)" if normalized == "xai-oauth"
+                else "OpenCode Zen" if normalized == "opencode-zen"
+                else "OpenCode Go"
+            )
             # Plausibility gate (#45006): the soft-accept (#16172 / #19729) exists
             # for entitlement-gated *hidden* slugs the curated listing hasn't
             # caught up with — but those are always the provider's own family
@@ -3969,10 +3978,14 @@ def validate_requested_model(
             _family_prefixes = {
                 "openai-codex": ("gpt-", "codex-", "o1", "o3", "o4"),
                 "xai-oauth": ("grok-",),
+                "opencode-zen": ("gpt-", "claude-", "gemini-", "glm-", "kimi-", "minimax-", "deepseek-", "qwen", "grok-", "mimo-", "north-", "nemotron-", "big-"),
+                "opencode-go": ("glm-", "kimi-", "minimax-", "deepseek-", "qwen", "mimo-"),
             }.get(normalized, ())
             _lower = requested_for_lookup.strip().lower()
-            _plausible = (not _family_prefixes) or any(
-                _lower.startswith(p) for p in _family_prefixes
+            _plausible = (
+                normalized in {"opencode-zen", "opencode-go"}
+                or (not _family_prefixes)
+                or any(_lower.startswith(p) for p in _family_prefixes)
             )
             if not _plausible:
                 return {
@@ -3993,7 +4006,7 @@ def validate_requested_model(
                 "persist": True,
                 "recognized": False,
                 "message": (
-                    f"Note: `{requested}` was not found in the {provider_label} model listing. "
+                    f"Note: `{requested}` was not found in the {provider_label} curated catalog. "
                     "It may still work if your account has access to a newer or hidden model ID."
                     f"{suggestion_text}"
                 ),

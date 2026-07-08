@@ -65,6 +65,7 @@ class TestFailoverReason:
             "thinking_signature", "long_context_tier",
             "oauth_long_context_beta_forbidden",
             "llama_cpp_grammar_pattern",
+            "silent_hang",
             "unknown",
         }
         actual = {r.value for r in FailoverReason}

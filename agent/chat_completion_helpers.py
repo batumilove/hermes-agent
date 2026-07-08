@@ -2877,7 +2877,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             _is_bedrock_stream_denied = (
                                 is_streaming_access_denied_error(e)
                             )
-                        if _is_stream_unsupported or _is_bedrock_stream_denied:
+                        _is_zai_glm52_overloaded = (
+                            getattr(agent, "provider", None) == "zai"
+                            and str(getattr(agent, "model", "")).lower() == "glm-5.2"
+                            and "1305" in _err_lower
+                            and "temporarily overloaded" in _err_lower
+                        )
+                        if _is_stream_unsupported or _is_bedrock_stream_denied or _is_zai_glm52_overloaded:
                             agent._disable_streaming = True
                             agent._safe_print(
                                 "\n⚠  AWS IAM denied bedrock:InvokeModelWithResponseStream. "

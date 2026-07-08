@@ -1331,6 +1331,9 @@ def _get_env_config() -> Dict[str, Any]:
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
+        "daytona_auto_delete_interval_minutes": _parse_env_var(
+            "TERMINAL_DAYTONA_AUTO_DELETE_INTERVAL_MINUTES", "-1"
+        ),
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
@@ -1528,6 +1531,9 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             image=image, cwd=cwd, timeout=timeout,
             cpu=int(cpu), memory=memory, disk=disk,
             persistent_filesystem=persistent, task_id=task_id,
+            auto_delete_interval_minutes=cc.get(
+                "daytona_auto_delete_interval_minutes"
+            ),
         )
 
     elif env_type == "sandbox_manager":
@@ -2916,6 +2922,43 @@ def check_terminal_requirements() -> bool:
         elif env_type == "daytona":
             from daytona import Daytona  # noqa: F401 — SDK presence check
             return os.getenv("DAYTONA_API_KEY") is not None
+
+        elif env_type == "kata":
+            # Kata Containers via Kubernetes (Containerd/CRI).  We require the
+            # `kubectl` CLI in PATH and an initial `kubectl version` probe so
+            # that the user finds out at startup if their kubeconfig is broken,
+            # rather than on the first command.  KUBECONFIG is honored so the
+            # user can point at a non-default cluster/context.
+            executable = shutil.which("kubectl")
+            if not executable:
+                logger.error(
+                    "Kata backend selected but kubectl was not found in PATH. "
+                    "Install kubectl (https://kubernetes.io/docs/tasks/tools/) "
+                    "or switch TERMINAL_ENV to a different backend."
+                )
+                return False
+            try:
+                run_kwargs = {
+                    "capture_output": True,
+                    "timeout": 10,
+                    "stdin": subprocess.DEVNULL,
+                }
+                kubeconfig = os.getenv("TERMINAL_KATA_KUBECONFIG")
+                if kubeconfig:
+                    env = os.environ.copy()
+                    env["KUBECONFIG"] = kubeconfig
+                    run_kwargs["env"] = env
+                result = subprocess.run(
+                    [executable, "version"],
+                    **run_kwargs,
+                )
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.error(
+                    "Kata backend selected but kubectl version probe failed: %s",
+                    exc,
+                )
+                return False
+            return result.returncode == 0
 
         else:
             logger.error(

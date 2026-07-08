@@ -1459,6 +1459,7 @@ if _config_path.exists():
                 "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
                 "modal_image": "TERMINAL_MODAL_IMAGE",
                 "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+                "daytona_auto_delete_interval_minutes": "TERMINAL_DAYTONA_AUTO_DELETE_INTERVAL_MINUTES",
                 "ssh_host": "TERMINAL_SSH_HOST",
                 "ssh_user": "TERMINAL_SSH_USER",
                 "ssh_port": "TERMINAL_SSH_PORT",
@@ -2581,6 +2582,11 @@ def _normalize_empty_agent_response(
                 "⚠️ Session too large for the model's context window.\n"
                 "Use /compact to compress the conversation, or "
                 "/reset to start fresh."
+            )
+        if "1213" in error_str and ("glm" in error_str or "zhipu" in error_str or "prompt parameter" in error_str):
+            return (
+                f"GLM returned error 1213: {str(error_detail)[:300]}\n"
+                "Try sending your message again, or use /reset to start a fresh session."
             )
         return (
             f"The request failed: {str(error_detail)[:300]}\n"
@@ -8728,7 +8734,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         source = event.source
 
-        if self._handle_telegram_topic_title_edit_event(event):
+        if await asyncio.to_thread(self._handle_telegram_topic_title_edit_event, event):
             return None
 
         # 🔴 Cross-session leak guard. This handler runs inside a per-message
@@ -13386,7 +13392,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if isinstance(operator_topic, dict):
                     return
 
-        session_db = getattr(self, "_session_db", None)
+        session_db = getattr(self, "_async_session_db", None) or getattr(self, "_session_db", None)
         if session_db is not None:
             try:
                 binding = await session_db.get_telegram_topic_binding(
@@ -13417,11 +13423,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     name=topic_name,
                 )
                 if session_db is not None:
-                    await self._maybe_await(session_db.record_telegram_topic_auto_title(
+                    await session_db.record_telegram_topic_auto_title(
                         chat_id=str(source.chat_id),
                         thread_id=str(source.thread_id),
                         title=topic_name,
-                    ))
+                    )
                 return
 
             bot = getattr(adapter, "_bot", None)
@@ -13443,11 +13449,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     name=topic_name,
                 )
             if session_db is not None:
-                await self._maybe_await(session_db.record_telegram_topic_auto_title(
+                await session_db.record_telegram_topic_auto_title(
                     chat_id=str(source.chat_id),
                     thread_id=str(source.thread_id),
                     title=topic_name,
-                ))
+                )
         except Exception:
             logger.debug("Failed to rename Telegram topic for auto-generated title", exc_info=True)
 

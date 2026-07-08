@@ -80,18 +80,19 @@ def _get_command_timeout() -> int:
     return result
 
 
-def _auth_headers() -> Optional[Dict[str, str]]:
+def _auth_headers() -> Dict[str, str]:
     """Return Authorization header when a Camofox key is set.
 
-    Prefer CAMOFOX_ACCESS_KEY, fall back to CAMOFOX_API_KEY. Return None
-    when no key is configured so callers can omit the ``headers`` kwarg
-    entirely instead of sending ``headers={}``.
+    Prefer CAMOFOX_ACCESS_KEY, fall back to CAMOFOX_API_KEY. Return an
+    empty dict when no key is configured so callers always pass
+    ``headers=`` explicitly to ``requests`` (keeps the call site uniform
+    and the test contract simple — ``headers`` is always present).
     """
     for var in ("CAMOFOX_ACCESS_KEY", "CAMOFOX_API_KEY"):
         key = os.getenv(var, "").strip()
         if key:
             return {"Authorization": f"Bearer {key}"}
-    return None
+    return {}
 
 
 def get_camofox_url() -> str:

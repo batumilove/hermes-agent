@@ -1056,6 +1056,11 @@ class TelegramAdapter(BasePlatformAdapter):
         name = error.__class__.__name__.lower()
         if name == "badrequest" or name.endswith("badrequest"):
             return True
+        # Some tests and compatibility shims surface Telegram's BadRequest
+        # text through a plain Exception. Keep the retry/prune logic tied to
+        # the specific known recoverable message, not to every Exception.
+        if TelegramAdapter._is_thread_not_found_error(error):
+            return True
         try:
             from telegram.error import BadRequest
             return isinstance(error, BadRequest)
@@ -4853,12 +4858,96 @@ class TelegramAdapter(BasePlatformAdapter):
         page_info = f" ({start + 1}–{end} of {total})" if total_pages > 1 else ""
         return InlineKeyboardMarkup(rows), page_info
 
+
+    def _factory_dir(self):
+        return _Path.home() / ".factory"
+
+    def _load_droid_byok_models(self) -> list[dict[str, str]]:
+        """Load Factory BYOK custom models from ~/.factory/settings.json."""
+        settings_path = self._factory_dir() / "settings.json"
+        try:
+            data = json.loads(settings_path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+        out: list[dict[str, str]] = []
+        for item in data.get("customModels") or []:
+            if not isinstance(item, dict):
+                continue
+            model_id = str(item.get("id") or "").strip()
+            if not model_id.startswith("custom:"):
+                continue
+            display = str(item.get("displayName") or model_id).strip()
+            out.append({"id": model_id, "displayName": display})
+        return out
+
+    def _replace_droid_model(self, path, model: str) -> bool:
+        text = path.read_text(encoding="utf-8")
+        lines = text.splitlines(keepends=True)
+        replaced = False
+        out = []
+        in_frontmatter = False
+        fence_count = 0
+        for line in lines:
+            if line.strip() == "---":
+                fence_count += 1
+                in_frontmatter = fence_count == 1
+                if fence_count >= 2:
+                    in_frontmatter = False
+                out.append(line)
+                continue
+            if fence_count == 1 and line.startswith("model:"):
+                newline = "\n" if line.endswith("\n") else ""
+                out.append(f"model: {model}{newline}")
+                replaced = True
+            else:
+                out.append(line)
+        if not replaced:
+            return False
+        new_text = "".join(out)
+        if new_text == text:
+            return False
+        import time
+        backup = path.with_name(f"{path.name}.bak-{int(time.time())}")
+        backup.write_text(text, encoding="utf-8")
+        path.write_text(new_text, encoding="utf-8")
+        return True
+
+    def _write_droid_models(self, mapping: dict[str, str]) -> str:
+        droid_dir = self._factory_dir() / "droids"
+        changed: list[str] = []
+        for filename, model in mapping.items():
+            path = droid_dir / filename
+            if path.exists() and self._replace_droid_model(path, str(model)):
+                changed.append(f"{filename} -> {model}")
+        if not changed:
+            return "No droid model files updated."
+        return "Updated droid model files: " + ", ".join(changed)
+
+    def _apply_droid_inherit(self) -> str:
+        droid_dir = self._factory_dir() / "droids"
+        if not droid_dir.exists():
+            return "No Factory droid directory found."
+        mapping = {path.name: "inherit" for path in droid_dir.glob("*.md")}
+        result = self._write_droid_models(mapping)
+        return f"Inherit mode applied. {result}"
+
     async def _handle_model_picker_callback(
         self, query, data: str, chat_id: str
     ) -> None:
         """Handle model picker inline keyboard callbacks (mp:/mm:/mc:/mb:/mx:/mg:)."""
         state = self._model_picker_state.get(chat_id)
         if not state:
+            await query.answer(text="Picker expired — use /model again.")
+            return
+
+        expected_msg_id = state.get("msg_id")
+        query_msg = getattr(query, "message", None)
+        actual_msg_id = getattr(query_msg, "message_id", None) if query_msg is not None else None
+        if (
+            expected_msg_id is not None
+            and isinstance(actual_msg_id, (int, str))
+            and str(expected_msg_id) != str(actual_msg_id)
+        ):
             await query.answer(text="Picker expired — use /model again.")
             return
 
@@ -5230,6 +5319,16 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:")):
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to change models.")
+                return
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_model_picker_callback(query, data, chat_id)

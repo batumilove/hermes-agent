@@ -1275,9 +1275,11 @@ class GatewaySlashCommandsMixin:
         # treats as a deliberate stop — the gateway stays dead until next
         # login.  Interactive macOS shells inherit XPC_SERVICE_NAME=0, so
         # "0" must count as not-under-launchd.
-        _under_service = bool(os.environ.get("INVOCATION_ID")) or os.environ.get(
-            "XPC_SERVICE_NAME", "0"
-        ) not in ("", "0")
+        _under_service = (
+            bool(os.environ.get("INVOCATION_ID"))
+            or bool(os.environ.get("LAUNCHD_JOB_LABEL"))
+            or os.environ.get("XPC_SERVICE_NAME", "0") not in ("", "0")
+        )
         _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
         if _under_service or _in_container:
             self.request_restart(detached=False, via_service=True)
@@ -3367,22 +3369,18 @@ class GatewaySlashCommandsMixin:
         if args.lower() in {"lock", "manual"}:
             if not source.thread_id:
                 return "Run /topic lock inside the topic whose title Hermes should leave alone."
-            result = self._session_db.mark_telegram_topic_title_manual(
+            await self._session_db.mark_telegram_topic_title_manual(
                 chat_id=str(source.chat_id),
                 thread_id=str(source.thread_id),
             )
-            if inspect.isawaitable(result):
-                await result
             return "This topic title is now locked. Hermes will not auto-rename it."
         if args.lower() in {"unlock", "auto", "auto-title on"}:
             if not source.thread_id:
                 return "Run /topic unlock inside the topic where Hermes may auto-rename again."
-            result = self._session_db.mark_telegram_topic_title_auto(
+            await self._session_db.mark_telegram_topic_title_auto(
                 chat_id=str(source.chat_id),
                 thread_id=str(source.thread_id),
             )
-            if inspect.isawaitable(result):
-                await result
             return "This topic title is back in auto mode. Hermes may rename it from future generated titles."
 
         if args:
