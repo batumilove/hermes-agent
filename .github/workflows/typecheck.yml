@@ -31,7 +31,9 @@ jobs:
       - uses: ./.github/actions/retry
         with:
           command: npm exec --package=npm@11.18.0 -- npm ci --ignore-scripts --min-release-age=7
-      - run: npm run --prefix ${{ matrix.package }} typecheck
+      - run: npm run --prefix "$PACKAGE" typecheck
+        env:
+          PACKAGE: ${{ matrix.package }}
 
   # Production build of the desktop renderer. `typecheck` runs `tsc` only,
   # which does NOT exercise Vite/Rolldown module resolution — so an
