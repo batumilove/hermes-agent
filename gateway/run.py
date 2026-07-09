@@ -9830,6 +9830,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "topic":
             return await self._handle_topic_command(event)
+
+        if canonical == "topicicon":
+            return await self._handle_topic_icon_command(event)
         
         if canonical == "help":
             return await self._handle_help_command(event)
@@ -13770,6 +13773,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         future.add_done_callback(_log_rename_failure)
 
+    async def _maybe_call_session_db(self, method_name: str, **kwargs):
+        """Call sync or async session-db methods without leaking coroutines."""
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None:
+            return None
+        session_db = getattr(session_db, "_db", session_db)
+        method = getattr(session_db, method_name)
+        result = method(**kwargs)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
+    def _maybe_call_session_db_sync(self, method_name: str, **kwargs):
+        """Synchronous variant for non-async gateway hooks/tests."""
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None:
+            return None
+        session_db = getattr(session_db, "_db", session_db)
+        method = getattr(session_db, method_name)
+        result = method(**kwargs)
+        if inspect.isawaitable(result):
+            logger.debug("Session DB method %s returned awaitable in sync context", method_name)
+            return None
+        return result
+
     async def _rename_telegram_topic_for_session_title(
         self,
         source: SessionSource,
@@ -13811,7 +13839,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_db = getattr(self, "_async_session_db", None) or getattr(self, "_session_db", None)
         if session_db is not None:
             try:
-                binding = await session_db.get_telegram_topic_binding(
+                binding = await self._maybe_call_session_db(
+                    "get_telegram_topic_binding",
                     chat_id=str(source.chat_id),
                     thread_id=str(source.thread_id),
                 )
@@ -13838,12 +13867,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     thread_id=str(source.thread_id),
                     name=topic_name,
                 )
-                if session_db is not None:
-                    await session_db.record_telegram_topic_auto_title(
-                        chat_id=str(source.chat_id),
-                        thread_id=str(source.thread_id),
-                        title=topic_name,
-                    )
+                await self._maybe_call_session_db(
+                    "record_telegram_topic_auto_title",
+                    chat_id=str(source.chat_id),
+                    thread_id=str(source.thread_id),
+                    title=topic_name,
+                )
                 return
 
             bot = getattr(adapter, "_bot", None)
@@ -13864,14 +13893,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     message_thread_id=source.thread_id,
                     name=topic_name,
                 )
-            if session_db is not None:
-                await session_db.record_telegram_topic_auto_title(
-                    chat_id=str(source.chat_id),
-                    thread_id=str(source.thread_id),
-                    title=topic_name,
-                )
+            await self._maybe_call_session_db(
+                "record_telegram_topic_auto_title",
+                chat_id=str(source.chat_id),
+                thread_id=str(source.thread_id),
+                title=topic_name,
+            )
         except Exception:
             logger.debug("Failed to rename Telegram topic for auto-generated title", exc_info=True)
+
+    def _handle_telegram_topic_title_edit_event(self, event: MessageEvent) -> bool:
+        """Track when a Telegram forum-topic title becomes user-owned/manual."""
+        source = event.source
+        if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
+            return False
+        if not source.chat_id or not source.thread_id:
+            return False
+        raw = getattr(event, "raw_message", None)
+        edited = getattr(raw, "forum_topic_edited", None)
+        if edited is None:
+            return False
+        title = str(getattr(edited, "name", "") or "").strip()
+        if not title:
+            return False
+        binding = self._maybe_call_session_db_sync(
+            "get_telegram_topic_binding",
+            chat_id=str(source.chat_id),
+            thread_id=str(source.thread_id),
+        )
+        if not binding:
+            return False
+        if title == str(binding.get("auto_title") or ""):
+            return True
+        self._maybe_call_session_db_sync(
+            "mark_telegram_topic_title_manual",
+            chat_id=str(source.chat_id),
+            thread_id=str(source.thread_id),
+        )
+        return True
 
     def _telegram_topic_auto_rename_disabled(self, source: SessionSource) -> bool:
         """Return True when operator disabled per-topic auto-rename for this Telegram chat.
@@ -14118,6 +14177,59 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
 
 
+
+    async def _handle_topic_icon_command(self, event: MessageEvent) -> str:
+        """Handle /topicicon — set, remove, or list Telegram topic icons."""
+        source = event.source
+        if source.platform != Platform.TELEGRAM:
+            return "/topicicon is only available on Telegram."
+        if not source.thread_id:
+            return "/topicicon must be used inside a Telegram topic/thread."
+
+        adapter = self.adapters.get(Platform.TELEGRAM)
+        if not adapter:
+            return "Telegram adapter is not available."
+
+        raw_arg = event.get_command_args().strip()
+        arg = raw_arg.split()[0] if raw_arg else ""
+        if not arg or arg.lower() in {"list", "ls", "help"}:
+            list_icons = getattr(adapter, "list_topic_icon_stickers", None)
+            if not callable(list_icons):
+                return "This Telegram adapter cannot list topic icons."
+            icons = await list_icons()
+            if not icons:
+                return (
+                    "No Telegram topic icons were returned. The bot may lack access "
+                    "or Telegram returned an empty allowed-icon list."
+                )
+            lines = ["Available topic icons:"]
+            for icon in icons[:50]:
+                emoji = icon.get("emoji")
+                custom_emoji_id = icon.get("custom_emoji_id", "")
+                prefix = f"{emoji} " if emoji else ""
+                lines.append(f"- {prefix}`{custom_emoji_id}`")
+            lines.append("\nUse `/topicicon <custom_emoji_id>` or `/topicicon remove`.")
+            return "\n".join(lines)
+
+        icon_custom_emoji_id = "" if arg.lower() in {"remove", "clear", "none", "off"} else arg
+        edit_icon = getattr(adapter, "edit_topic_icon", None)
+        if not callable(edit_icon):
+            return "This Telegram adapter cannot edit topic icons."
+
+        ok = await edit_icon(
+            chat_id=source.chat_id,
+            thread_id=source.thread_id,
+            icon_custom_emoji_id=icon_custom_emoji_id,
+        )
+        if not ok:
+            return (
+                "Failed to update the Telegram topic icon. In forum supergroups, "
+                "the bot must be an admin with Manage Topics (`can_manage_topics`), "
+                "unless it created the topic."
+            )
+        if icon_custom_emoji_id == "":
+            return "Topic icon removed."
+        return f"Topic icon updated to `{icon_custom_emoji_id}`."
 
     async def _execute_mcp_reload(self, event: MessageEvent) -> str:
         """Actually disconnect, reconnect, and notify MCP tool changes.

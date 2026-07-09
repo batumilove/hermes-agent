@@ -2062,26 +2062,35 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
                     session_info["cdp_url"] = _resolve_cdp_override(str(session_info["cdp_url"]))
             except Exception as e:
                 provider_name = type(provider).__name__
-                if hasattr(provider, "provider_name"):
-                    try:
-                        candidate_name = provider.provider_name()
-                        if isinstance(candidate_name, str) and candidate_name:
-                            provider_name = candidate_name
-                    except Exception:
-                        pass
+                provider_name_fn = getattr(provider, "provider_name", None)
+                try:
+                    maybe_name = provider_name_fn() if callable(provider_name_fn) else provider_name
+                    if isinstance(maybe_name, str):
+                        provider_name = maybe_name
+                except Exception:
+                    pass
+
                 session_info = None
                 try:
                     browser_use = BrowserUseProvider()
-                    if browser_use is not provider and browser_use.is_configured():
-                        session_info = browser_use.create_session(task_id)
-                        if isinstance(session_info, dict):
-                            session_info = dict(session_info)
-                            session_info["fallback_from_cloud"] = True
-                            session_info["fallback_reason"] = str(e)
-                            session_info["fallback_provider"] = provider_name
-                            session_info["fallback_to_provider"] = browser_use.provider_name() if hasattr(browser_use, "provider_name") else type(browser_use).__name__
+                    is_configured = getattr(browser_use, "is_configured", None)
+                    if callable(is_configured) and is_configured():
+                        managed_info = browser_use.create_session(task_id)
+                        if not managed_info or not isinstance(managed_info, dict):
+                            raise ValueError(f"Browser Use returned invalid session: {managed_info!r}")
+                        session_info = dict(managed_info)
+                        session_info["fallback_from_cloud"] = True
+                        session_info["fallback_reason"] = str(e)
+                        session_info["fallback_provider"] = provider_name
+                        fallback_name_fn = getattr(browser_use, "provider_name", None)
+                        try:
+                            fallback_name = fallback_name_fn() if callable(fallback_name_fn) else type(browser_use).__name__
+                        except Exception:
+                            fallback_name = type(browser_use).__name__
+                        session_info["fallback_to_provider"] = fallback_name
                 except Exception:
                     session_info = None
+
                 if session_info is None:
                     logger.warning(
                         "Cloud provider %s failed (%s); attempting fallback to local "

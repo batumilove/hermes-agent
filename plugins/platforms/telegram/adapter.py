@@ -2645,6 +2645,58 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return None
 
+    async def edit_topic_icon(
+        self,
+        chat_id: int | str,
+        thread_id: int | str,
+        icon_custom_emoji_id: str,
+    ) -> bool:
+        """Set or remove a Telegram forum/private-topic icon."""
+        if not self._bot:
+            return False
+        try:
+            try:
+                chat_id_arg: int | str = int(chat_id)
+            except (TypeError, ValueError):
+                chat_id_arg = str(chat_id)
+            await self._bot.edit_forum_topic(
+                chat_id=chat_id_arg,
+                message_thread_id=int(thread_id),
+                icon_custom_emoji_id=icon_custom_emoji_id,
+            )
+            logger.info(
+                "[%s] Updated Telegram topic icon in chat %s thread_id=%s",
+                self.name, chat_id, thread_id,
+            )
+            return True
+        except Exception as e:
+            logger.warning(
+                "[%s] Failed to update Telegram topic icon in chat %s thread_id=%s: %s",
+                self.name, chat_id, thread_id, e,
+            )
+            return False
+
+    async def list_topic_icon_stickers(self) -> list[dict[str, str]]:
+        """Return Telegram's allowed forum-topic icon stickers."""
+        if not self._bot:
+            return []
+        try:
+            stickers = await self._bot.get_forum_topic_icon_stickers()
+        except Exception as e:
+            logger.warning("[%s] Failed to list Telegram topic icons: %s", self.name, e)
+            return []
+        icons: list[dict[str, str]] = []
+        for sticker in stickers or []:
+            custom_emoji_id = getattr(sticker, "custom_emoji_id", None)
+            if not custom_emoji_id:
+                continue
+            entry = {"custom_emoji_id": str(custom_emoji_id)}
+            emoji = getattr(sticker, "emoji", None)
+            if emoji:
+                entry["emoji"] = str(emoji)
+            icons.append(entry)
+        return icons
+
     async def create_handoff_thread(
         self,
         parent_chat_id: str,
