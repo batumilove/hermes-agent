@@ -462,6 +462,8 @@ AUTHOR_MAP = {
     "32201324+simpolism@users.noreply.github.com": "simpolism",
     "simpolism@gmail.com": "simpolism",
     "jake@nousresearch.com": "simpolism",
+    "hermes@local": "batumilove",
+    "hermes@localhost": "batumilove",
     "mgongzai@gmail.com": "vKongv",
     "perkintahmaz50@gmail.com": "devatnull",
     "0x.badfriend@gmail.com": "discodirector",
