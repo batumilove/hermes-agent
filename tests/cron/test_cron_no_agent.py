@@ -295,6 +295,21 @@ def test_no_agent_timeout_failure_summary_is_not_provider_timeout(hermes_env):
     assert "Fallback chain" not in summary
 
 
+def test_no_agent_service_timeout_failure_summary_keeps_service_context(hermes_env):
+    """Domain/service timeout text from a completed watchdog is not a script timeout."""
+    from cron.scheduler import _summarize_cron_failure_for_delivery
+
+    job = {"id": "j1", "name": "technitium-dns-synthetic-watchdog", "no_agent": True}
+    summary = _summarize_cron_failure_for_delivery(
+        job,
+        "Script exited with code 1\nstdout:\n❌ router.home.arpa: got 'DNS timeout/unreachable'",
+    )
+
+    assert "script/command timeout" not in summary
+    assert "provider timeout" not in summary
+    assert "DNS timeout/unreachable" in summary
+
+
 def test_agent_timeout_failure_summary_still_mentions_provider(hermes_env):
     """Agent cron provider/API timeouts keep the provider-oriented summary."""
     from cron.scheduler import _summarize_cron_failure_for_delivery

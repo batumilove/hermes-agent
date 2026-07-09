@@ -134,20 +134,28 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
             "Full details saved in cron output."
         )
 
+    actual_script_timeout = (
+        "script timed out after" in lower
+        or "subprocess.timeoutexpired" in lower
+        or "command timed out after" in lower
+    )
     if "readtimeout" in lower or "timed out" in lower or "timeout" in lower:
-        # no_agent/script timeouts are not provider failures; keep the summary
-        # from mentioning provider fallbacks, which is confusing for shell
-        # command / watchdog timeouts.
-        if job.get("no_agent") or "script" in lower or "command" in lower:
+        # no_agent/script execution timeouts are not provider failures; keep the
+        # summary from mentioning provider fallbacks. Do not classify arbitrary
+        # watchdog output that contains domain-specific words like "DNS
+        # timeout" as a script/command timeout — the script may have completed
+        # normally and reported a service-layer timeout.
+        if actual_script_timeout:
             return (
                 f"⚠️ Cron '{job_name}' failed: script/command timeout. "
                 "Full details saved in cron output."
             )
-        return (
-            f"⚠️ Cron '{job_name}' failed: provider timeout. "
-            "Fallback chain was exhausted or unavailable. "
-            "Full details saved in cron output."
-        )
+        if not job.get("no_agent"):
+            return (
+                f"⚠️ Cron '{job_name}' failed: provider timeout. "
+                "Fallback chain was exhausted or unavailable. "
+                "Full details saved in cron output."
+            )
 
     # Match authentication/authorization wording at a word boundary and the
     # 401/403 status codes as whole tokens, so "oauth", "4015" and similar do
