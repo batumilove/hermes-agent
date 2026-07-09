@@ -1287,10 +1287,10 @@ def run_conversation(
                     getattr(agent, "provider", None) == "zai"
                     and "glm-5.2" in str(getattr(agent, "model", "")).lower()
                 ):
-                    # Start this
-                    # model on the regular API directly: GLM-5.2's SSE path
-                    # can return business error 1305 while chat completions
-                    # succeeds, so avoid burning the first retry on streaming.
+                    # Start this model on the regular API directly: GLM-5.2's
+                    # SSE path can return business error 1305 while chat
+                    # completions succeeds, so avoid burning the first retry on
+                    # streaming.
                     _use_streaming = False
                 # CopilotACPClient communicates via subprocess stdio and
                 # returns a plain SimpleNamespace — not an iterable
@@ -3214,6 +3214,10 @@ def run_conversation(
                         elif classified.reason == FailoverReason.billing:
                             agent._buffer_status(
                                 "⚠️ Billing or credits exhausted — switching to fallback provider..."
+                            )
+                        elif classified.reason == FailoverReason.silent_hang:
+                            agent._buffer_status(
+                                "⚠️ Codex stream stalled without events — switching to fallback provider..."
                             )
                         elif _is_transport_failure:
                             agent._buffer_status(

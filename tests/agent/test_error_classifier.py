@@ -257,6 +257,26 @@ class TestClassifyApiError:
         assert result.should_rotate_credential is True
         assert result.should_fallback is True
 
+    def test_codex_ttfb_timeout_classified_as_silent_hang(self):
+        e = TimeoutError(
+            "Codex stream produced no bytes within 45s "
+            "(TTFB threshold: 45s)"
+        )
+        result = classify_api_error(e, provider="openai-codex", model="gpt-5.5")
+        assert result.reason == FailoverReason.silent_hang
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_codex_idle_stream_timeout_classified_as_silent_hang(self):
+        e = TimeoutError(
+            "Codex stream produced no SSE events for 180s after first byte "
+            "(threshold: 180s)"
+        )
+        result = classify_api_error(e, provider="openai-codex", model="gpt-5.5")
+        assert result.reason == FailoverReason.silent_hang
+        assert result.retryable is False
+        assert result.should_fallback is True
+
     def test_403_spending_limit_classified_as_billing(self):
         e = MockAPIError("spending limit reached", status_code=403)
         result = classify_api_error(e, provider="openrouter")
