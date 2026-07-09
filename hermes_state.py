@@ -888,6 +888,8 @@ class SessionDB:
     _WRITE_MAX_RETRIES = 15
     _WRITE_RETRY_MIN_S = 0.020   # 20ms
     _WRITE_RETRY_MAX_S = 0.150   # 150ms
+    _SLOW_LOCK_WAIT_WARN_S = 2.0
+    _SLOW_WRITE_WARN_S = 5.0
     # Attempt a PASSIVE WAL checkpoint every N successful writes.
     _CHECKPOINT_EVERY_N_WRITES = 50
     # Merge fragmented FTS5 segments every N successful writes. The message
@@ -1155,9 +1157,16 @@ class SessionDB:
         Returns whatever *fn* returns.
         """
         last_err: Optional[Exception] = None
+        caller_name = getattr(fn, "__name__", fn.__class__.__name__)
+        started = time.monotonic()
+        lock_wait_s = 0.0
+        txn_s = 0.0
         for attempt in range(self._WRITE_MAX_RETRIES):
             try:
+                lock_start = time.monotonic()
                 with self._lock:
+                    lock_wait_s += time.monotonic() - lock_start
+                    txn_start = time.monotonic()
                     self._conn.execute("BEGIN IMMEDIATE")
                     try:
                         result = fn(self._conn)
@@ -1168,6 +1177,22 @@ class SessionDB:
                         except Exception:
                             pass
                         raise
+                    finally:
+                        txn_s += time.monotonic() - txn_start
+                elapsed_s = time.monotonic() - started
+                if (
+                    lock_wait_s >= self._SLOW_LOCK_WAIT_WARN_S
+                    or elapsed_s >= self._SLOW_WRITE_WARN_S
+                ):
+                    logger.warning(
+                        "SessionDB write latency: caller=%s attempts=%d lock_wait=%.3fs txn=%.3fs total=%.3fs db=%s",
+                        caller_name,
+                        attempt + 1,
+                        lock_wait_s,
+                        txn_s,
+                        elapsed_s,
+                        self.db_path,
+                    )
                 # Success — periodic best-effort checkpoint + FTS merge.
                 self._write_count += 1
                 if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
