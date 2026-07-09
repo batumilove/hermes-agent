@@ -46,6 +46,7 @@ HOST_MAP = {
     "100.69.54.37:11435": "spark-goat",
     "100.71.155.95:8001": "spark-polarbear",
     "100.71.155.95:11435": "spark-polarbear",
+    "100.71.155.95:18081": "spark-polarbear",
     "100.110.104.77:8087": "mac-studio",
     "192.168.100.14:8088": "mac-horse",
     "api.openai.com": "openai",
@@ -224,9 +225,16 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
     alerts: list[str] = []
 
     svc = snapshot.services
+    if svc.get("ssh_ok") is False:
+        alerts.append("Honcho SSH probe failed")
+        return alerts
     for key, label in (("api_ok", "API"), ("deriver_up", "Deriver"), ("db_ok", "DB"), ("redis_ok", "Redis")):
         if not svc.get(key, False):
             alerts.append(f"{label} down")
+
+    if svc.get("db_ok") and snapshot.db.get("probe_ok") is False:
+        alerts.append("DB stats probe failed")
+        return alerts
 
     embed = snapshot.pipeline.get("embedding", {})
     embed_model = embed.get("model", "")
@@ -485,12 +493,18 @@ def ssh(command: str, timeout: int = 20) -> str:
             command,
         ]
     )
-    result = subprocess.run(
-        ssh_cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    try:
+        result = subprocess.run(
+            ssh_cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return f"__SSH_ERROR__ timeout={timeout}s stderr={str(exc)[:200]}"
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip().replace("\n", " ")[:300]
+        return f"__SSH_ERROR__ rc={result.returncode} stderr={detail}"
     return result.stdout.strip()
 
 
@@ -551,8 +565,17 @@ def curl_post_json(url: str, payload: dict[str, Any], timeout: int = 30) -> tupl
         return False, None, time.perf_counter() - start
 
 
-def _parse_service_status(raw: str) -> dict[str, bool]:
-    services = {"api_ok": False, "deriver_up": False, "db_ok": False, "redis_ok": False}
+def _parse_service_status(raw: str) -> dict[str, Any]:
+    services: dict[str, Any] = {"api_ok": False, "deriver_up": False, "db_ok": False, "redis_ok": False}
+    if raw.startswith("__SSH_ERROR__"):
+        services["ssh_ok"] = False
+        services["ssh_error"] = raw
+        return services
+    services["ssh_ok"] = True
+    if not raw.strip():
+        services["ssh_ok"] = False
+        services["ssh_error"] = "empty SSH probe output"
+        return services
     for line in raw.splitlines():
         parts = line.strip().split(None, 1)
         if len(parts) != 2:
@@ -681,13 +704,16 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
         timeout=30,
     )
     db_parts = [part.strip() for part in db_stats_raw.split("|")] if db_stats_raw else []
+    db_probe_ok = bool(db_parts) and len(db_parts) >= 6 and not db_stats_raw.startswith("__SSH_ERROR__")
     db = {
-        "documents_total": _int_or_zero(db_parts[0]) if len(db_parts) > 0 else 0,
-        "documents_with_embeddings": _int_or_zero(db_parts[1]) if len(db_parts) > 1 else 0,
-        "documents_dims": _int_or_zero(db_parts[2]) if len(db_parts) > 2 and db_parts[2] else 0,
-        "messages_total": _int_or_zero(db_parts[3]) if len(db_parts) > 3 else 0,
-        "messages_with_embeddings": _int_or_zero(db_parts[4]) if len(db_parts) > 4 else 0,
-        "messages_dims": _int_or_zero(db_parts[5]) if len(db_parts) > 5 and db_parts[5] else 0,
+        "probe_ok": db_probe_ok,
+        "probe_error": "" if db_probe_ok else (db_stats_raw[:300] if db_stats_raw else "empty DB stats probe output"),
+        "documents_total": _int_or_zero(db_parts[0]) if db_probe_ok else 0,
+        "documents_with_embeddings": _int_or_zero(db_parts[1]) if db_probe_ok else 0,
+        "documents_dims": _int_or_zero(db_parts[2]) if db_probe_ok and db_parts[2] else 0,
+        "messages_total": _int_or_zero(db_parts[3]) if db_probe_ok else 0,
+        "messages_with_embeddings": _int_or_zero(db_parts[4]) if db_probe_ok else 0,
+        "messages_dims": _int_or_zero(db_parts[5]) if db_probe_ok and db_parts[5] else 0,
     }
 
     honcho_latest_raw = ssh(

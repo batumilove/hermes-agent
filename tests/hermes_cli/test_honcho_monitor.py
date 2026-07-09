@@ -11,6 +11,7 @@ def test_short_host_maps_both_dgx_spark_nodes():
     assert hm.short_host("http://192.168.10.211:8001/v1") == "spark-goat"
     assert hm.short_host("http://100.69.54.37:8001/v1") == "spark-goat"
     assert hm.short_host("http://100.71.155.95:11435/v1") == "spark-polarbear"
+    assert hm.short_host("http://100.71.155.95:18081/v1") == "spark-polarbear"
 
 
 def test_honcho_target_defaults_to_lan_ssh_to_avoid_tailscale_approval_gate():
@@ -460,6 +461,71 @@ def test_representation_backlog_with_no_progress_triggers_deriver_stall_alert():
     alerts = hm.build_alerts(hm.HonchoSnapshot(**snapshot), previous_state=prev)
 
     assert "Deriver stalled: representation backlog with no progress" in alerts
+
+
+def test_ssh_transport_failure_reports_probe_failure_not_fake_service_outage():
+    services = hm._parse_service_status("__SSH_ERROR__ rc=255 stderr=connection timed out")
+    snapshot = {
+        "services": services,
+        "pipeline": {
+            "embedding": {"model": "", "base_url": "", "dimensions_mode": "", "vector_dimensions": ""},
+            "deriver": {"model": "", "base_url": ""},
+            "summary": {"model": "", "base_url": ""},
+            "dream": {"model": "", "base_url": ""},
+            "dialectic": {"model": "", "base_url": ""},
+        },
+        "db": {"documents_total": 0, "documents_with_embeddings": 0, "documents_dims": 0, "messages_total": 0, "messages_with_embeddings": 0, "messages_dims": 0},
+        "queue": {"pending": 0, "done": 0},
+        "queue_by_type": {},
+        "errors": {"save_representation": 0, "four_oh_one": 0},
+        "spark_goat": {"ok": True, "latency_s": 1.2, "thinking": False, "model": "aeon-ultimate"},
+        "deriver": {"runs_15m": 0, "last_duration_s": 0, "conclusions": 0},
+    }
+
+    alerts = hm.build_alerts(hm.HonchoSnapshot(**snapshot), previous_state={})
+
+    assert "Honcho SSH probe failed" in alerts
+    assert "API down" not in alerts
+    assert "DB down" not in alerts
+    assert "Redis down" not in alerts
+    assert "Deriver down" not in alerts
+
+
+def test_db_stats_probe_failure_does_not_fake_zero_embedding_dims():
+    snapshot = {
+        "services": {"api_ok": True, "deriver_up": True, "db_ok": True, "redis_ok": True},
+        "pipeline": {
+            "embedding": {
+                "model": "qwen3-embedding-8b-1536",
+                "base_url": "http://100.69.54.37:11435/v1",
+                "dimensions_mode": "never",
+                "vector_dimensions": "",
+            },
+            "deriver": {"model": "gemma12b-polar-gpustack", "base_url": "http://100.71.155.95:18081/v1"},
+            "summary": {"model": "mlx-community--Qwen3.5-4B-4bit", "base_url": "http://192.168.10.104:8000/v1"},
+            "dream": {"model": "aeon-ultimate", "base_url": "http://100.69.54.37:8001/v1"},
+            "dialectic": {"model": "mlx-community--Qwen3.5-9B-4bit", "base_url": "http://192.168.10.104:8000/v1"},
+        },
+        "db": {
+            "probe_ok": False,
+            "probe_error": "ERROR: function array_length(vector, integer) does not exist",
+            "documents_total": 0,
+            "documents_with_embeddings": 0,
+            "documents_dims": 0,
+            "messages_total": 0,
+            "messages_with_embeddings": 0,
+            "messages_dims": 0,
+        },
+        "queue": {"pending": 0, "done": 128},
+        "queue_by_type": {"representation": {"pending": 0, "done": 128}},
+        "errors": {"save_representation": 0, "four_oh_one": 0},
+        "spark_goat": {"ok": True, "latency_s": 1.2, "thinking": False, "model": "aeon-ultimate"},
+        "deriver": {"runs_15m": 6, "last_duration_s": 39, "conclusions": 2602},
+    }
+
+    alerts = hm.build_alerts(hm.HonchoSnapshot(**snapshot), previous_state={})
+
+    assert alerts == ["DB stats probe failed"]
 
 
 def test_stale_active_deriver_work_triggers_alert():
