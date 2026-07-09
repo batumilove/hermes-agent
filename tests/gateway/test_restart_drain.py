@@ -203,10 +203,33 @@ def test_load_loop_lag_warning_threshold_prefers_env_then_config_then_default(tm
     assert "Invalid gateway loop lag warning threshold" in caplog.text
 
 
+def test_load_loop_lag_traceback_threshold_prefers_env_then_config_then_default(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("HERMES_GATEWAY_LOOP_LAG_TRACEBACK_SECONDS", raising=False)
+
+    assert gateway_run.GatewayRunner._load_loop_lag_traceback_threshold() == 30.0
+
+    (tmp_path / "config.yaml").write_text(
+        "gateway:\n  loop_lag_traceback_seconds: 12.5\n", encoding="utf-8"
+    )
+    assert gateway_run.GatewayRunner._load_loop_lag_traceback_threshold() == 12.5
+
+    monkeypatch.setenv("HERMES_GATEWAY_LOOP_LAG_TRACEBACK_SECONDS", "9")
+    assert gateway_run.GatewayRunner._load_loop_lag_traceback_threshold() == 9.0
+
+    monkeypatch.setenv("HERMES_GATEWAY_LOOP_LAG_TRACEBACK_SECONDS", "0")
+    assert gateway_run.GatewayRunner._load_loop_lag_traceback_threshold() == 0.0
+
+    monkeypatch.setenv("HERMES_GATEWAY_LOOP_LAG_TRACEBACK_SECONDS", "invalid")
+    assert gateway_run.GatewayRunner._load_loop_lag_traceback_threshold() == 30.0
+    assert "Invalid gateway loop lag traceback threshold" in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_gateway_loop_lag_monitor_logs_when_tick_lags(caplog):
     runner = object.__new__(gateway_run.GatewayRunner)
     runner._loop_lag_warning_threshold = 0.001
+    runner._loop_lag_traceback_threshold = 0
     runner._loop_lag_monitor_interval = 0.001
 
     async def fake_sleep(_delay):
@@ -221,6 +244,18 @@ async def test_gateway_loop_lag_monitor_logs_when_tick_lags(caplog):
             await runner._gateway_loop_lag_monitor()
 
     assert "Gateway event loop lag" in caplog.text
+
+
+def test_gateway_loop_lag_logger_dumps_thread_stacks_over_traceback_threshold(caplog):
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner._loop_lag_traceback_threshold = 0.5
+
+    with caplog.at_level("WARNING", logger="gateway.run"):
+        runner._log_loop_lag(1.0, 0.001)
+
+    assert "exceeded traceback threshold" in caplog.text
+    assert "thread" in caplog.text
+    assert "test_gateway_loop_lag_logger_dumps_thread_stacks" in caplog.text
 
 
 

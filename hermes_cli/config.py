@@ -2805,11 +2805,16 @@ DEFAULT_CONFIG = {
 
         # Warn when the asyncio event loop is delayed this many seconds beyond
         # its 1s monitor tick. This exposes root-cause breadcrumbs for symptoms
-        # such as cron deliveries timing out before their live-adapter coroutine
-        # is dispatched. Set 0 to disable.
+        # like cron live-adapter send timeouts where the target coroutine could
+        # not even be dispatched from a worker thread. Set 0 to disable.
         "loop_lag_warning_seconds": 5,
 
-        # Whether the gateway keeps writing the legacy sessions.json mirror of
+        # Dump all Python thread stacks when event-loop lag reaches this many
+        # seconds. This turns multi-minute loop stalls from an ambiguous symptom
+        # into a log sample showing the blocking call path. Set 0 to disable.
+        "loop_lag_traceback_seconds": 30,
+
+        # Whether the gateway keeps writing the legacy sessions.json mirror
         # its routing index. The primary copy lives in state.db (the
         # gateway_routing table). Default True for backward compatibility with
         # external tooling and downgrade safety; set to false to stop

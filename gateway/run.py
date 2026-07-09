@@ -40,6 +40,7 @@ import tempfile
 import threading
 import time
 import sqlite3
+import traceback
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
@@ -69,6 +70,7 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _GATEWAY_LOOP_LAG_WARNING_SECONDS_DEFAULT = 5.0
+_GATEWAY_LOOP_LAG_TRACEBACK_SECONDS_DEFAULT = 30.0
 _GATEWAY_LOOP_LAG_MONITOR_INTERVAL_SECONDS = 1.0
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
@@ -2805,6 +2807,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._busy_text_mode = self._load_busy_text_mode()
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._loop_lag_warning_threshold = self._load_loop_lag_warning_threshold()
+        self._loop_lag_traceback_threshold = self._load_loop_lag_traceback_threshold()
         self._loop_lag_monitor_interval = _GATEWAY_LOOP_LAG_MONITOR_INTERVAL_SECONDS
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
@@ -4915,6 +4918,54 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         return _GATEWAY_LOOP_LAG_WARNING_SECONDS_DEFAULT
 
+    @staticmethod
+    def _load_loop_lag_traceback_threshold() -> float:
+        """Load event-loop lag traceback threshold in seconds; 0 disables stack dumps."""
+        raw = os.getenv("HERMES_GATEWAY_LOOP_LAG_TRACEBACK_SECONDS", "").strip()
+        if not raw:
+            cfg = _load_gateway_runtime_config()
+            raw = str(cfg_get(cfg, "gateway", "loop_lag_traceback_seconds", default="") or "").strip()
+        if not raw:
+            return _GATEWAY_LOOP_LAG_TRACEBACK_SECONDS_DEFAULT
+        try:
+            value = float(raw)
+            if value >= 0:
+                return value
+        except (TypeError, ValueError):
+            pass
+        logger.warning(
+            "Invalid gateway loop lag traceback threshold '%s', using default %.1fs",
+            raw,
+            _GATEWAY_LOOP_LAG_TRACEBACK_SECONDS_DEFAULT,
+        )
+        return _GATEWAY_LOOP_LAG_TRACEBACK_SECONDS_DEFAULT
+
+    @staticmethod
+    def _format_thread_tracebacks() -> str:
+        frames = sys._current_frames()
+        names = {thread.ident: thread.name for thread in threading.enumerate()}
+        parts: list[str] = []
+        for thread_id, frame in sorted(frames.items(), key=lambda item: names.get(item[0], str(item[0]))):
+            name = names.get(thread_id, "unknown")
+            parts.append(f"--- thread {name} ({thread_id}) ---")
+            parts.extend(traceback.format_stack(frame))
+        return "".join(parts).rstrip()
+
+    def _log_loop_lag(self, lag: float, threshold: float) -> None:
+        traceback_threshold = float(getattr(self, "_loop_lag_traceback_threshold", _GATEWAY_LOOP_LAG_TRACEBACK_SECONDS_DEFAULT) or 0)
+        logger.warning(
+            "Gateway event loop lag %.3fs (threshold %.3fs)",
+            lag,
+            threshold,
+        )
+        if traceback_threshold > 0 and lag >= traceback_threshold:
+            logger.warning(
+                "Gateway event loop lag %.3fs exceeded traceback threshold %.3fs; thread stacks follow\n%s",
+                lag,
+                traceback_threshold,
+                self._format_thread_tracebacks(),
+            )
+
     async def _gateway_loop_lag_monitor(self) -> None:
         """Log when the gateway asyncio loop is too delayed to service tasks."""
         threshold = float(getattr(self, "_loop_lag_warning_threshold", _GATEWAY_LOOP_LAG_WARNING_SECONDS_DEFAULT) or 0)
@@ -4932,20 +4983,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 now = time.monotonic()
                 lag = now - expected
                 if lag >= threshold:
-                    logger.warning(
-                        "Gateway event loop lag %.3fs (threshold %.3fs)",
-                        lag,
-                        threshold,
-                    )
+                    self._log_loop_lag(lag, threshold)
                 return
             now = time.monotonic()
             lag = now - expected
             if lag >= threshold:
-                logger.warning(
-                    "Gateway event loop lag %.3fs (threshold %.3fs)",
-                    lag,
-                    threshold,
-                )
+                self._log_loop_lag(lag, threshold)
             expected = now + interval
 
     @staticmethod
