@@ -492,6 +492,42 @@ def test_auth_error_log_pattern_ignores_ports_and_timestamp_milliseconds():
     assert hm.re.search(hm.AUTH_ERROR_LOG_PATTERN, real)
 
 
+def test_build_alerts_detects_hermes_to_honcho_ingestion_staleness():
+    snapshot = {
+        "services": {"api_ok": True, "deriver_up": True, "db_ok": True, "redis_ok": True},
+        "pipeline": {
+            "embedding": {
+                "model": "qwen3-embedding-8b-1536",
+                "base_url": "http://100.69.54.37:11435/v1",
+                "dimensions_mode": "never",
+                "vector_dimensions": "1536",
+            },
+            "deriver": {"model": "gemma12b-polar-gpustack", "base_url": "http://100.71.155.95:18081/v1"},
+            "summary": {"model": "mlx-community--Qwen3.5-4B-4bit", "base_url": "http://192.168.10.104:8000/v1"},
+            "dream": {"model": "aeon-ultimate", "base_url": "http://100.69.54.37:8001/v1"},
+            "dialectic": {"model": "mlx-community--Qwen3.5-9B-4bit", "base_url": "http://192.168.10.104:8000/v1"},
+        },
+        "db": {
+            "documents_total": 88520,
+            "documents_with_embeddings": 88520,
+            "documents_dims": 1536,
+            "messages_total": 13273,
+            "messages_with_embeddings": 13270,
+            "messages_dims": 1536,
+        },
+        "queue": {"pending": 0, "done": 123},
+        "queue_by_type": {"representation": {"pending": 0, "done": 8}},
+        "errors": {"save_representation": 0, "four_oh_one": 0},
+        "spark_goat": {"ok": True, "latency_s": 1.3, "thinking": False, "model": "aeon-ultimate"},
+        "deriver": {"runs_15m": 1, "last_duration_s": 5.0, "conclusions": 0},
+        "ingestion": {"source_fresh": True, "downstream_fresh": False, "drift_s": 7200, "source_age_s": 60, "downstream_age_s": 7260},
+    }
+
+    alerts = hm.build_alerts(hm.HonchoSnapshot(**snapshot))
+
+    assert "Hermes→Honcho ingestion stale (2.0h drift)" in alerts
+
+
 def test_should_emit_report_is_false_for_nominal_snapshot(monkeypatch):
     snapshot = hm.HonchoSnapshot(
         services={"api_ok": True, "deriver_up": True, "db_ok": True, "redis_ok": True},

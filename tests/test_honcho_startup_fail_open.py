@@ -314,8 +314,58 @@ def test_honcho_tools_eager_init_failure_does_not_leave_ready_manager(monkeypatc
     assert provider._manager is None
 
 
-def test_honcho_tools_lazy_hooks_do_not_prestart_background_init(monkeypatch):
-    """tools lazy mode lets the first tool call own session initialization."""
+def test_honcho_tools_lazy_sync_turn_initializes_session_and_writes(monkeypatch):
+    """tools lazy mode must not silently drop completed turns before a tool call."""
+    provider = HonchoMemoryProvider()
+    cfg = _configured_tools_config(init_on_session_start=False)
+
+    monkeypatch.setattr(
+        "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+        lambda: cfg,
+    )
+
+    provider.initialize("session-1", platform="cli")
+
+    class Session:
+        def __init__(self):
+            self.messages = []
+
+        def add_message(self, peer, content):
+            self.messages.append((peer, content))
+
+    class ToolManager:
+        def __init__(self):
+            self.session = Session()
+            self.flushed = False
+
+        def get_or_create(self, session_key):
+            return self.session
+
+        def _flush_session(self, session):
+            self.flushed = True
+
+    manager = ToolManager()
+    init_calls = []
+
+    def fake_session_init(self, cfg, session_id, **kwargs):
+        init_calls.append(session_id)
+        self._manager = manager
+        self._session_key = "test-session"
+        self._session_initialized = True
+
+    monkeypatch.setattr(HonchoMemoryProvider, "_do_session_init", fake_session_init)
+
+    provider.sync_turn("hello", "world")
+
+    assert init_calls == ["session-1"]
+    assert provider._sync_thread is not None
+    provider._sync_thread.join(timeout=1)
+    assert manager.session.messages == [("user", "hello"), ("assistant", "world")]
+    assert manager.flushed is True
+
+
+def test_honcho_tools_lazy_prefetch_does_not_prestart_background_init(monkeypatch):
+    """tools lazy mode keeps prefetch hooks passive until a tool/sync write needs Honcho."""
     provider = HonchoMemoryProvider()
     cfg = _configured_tools_config(init_on_session_start=False)
 
@@ -330,8 +380,6 @@ def test_honcho_tools_lazy_hooks_do_not_prestart_background_init(monkeypatch):
 
     provider.prefetch("what do you know?")
     provider.queue_prefetch("what do you know?")
-    provider.sync_turn("hello", "world")
-    provider.on_memory_write("add", "user", "prefers fail-open memory")
 
     assert not background_started.is_set()
     assert provider._session_initialized is False

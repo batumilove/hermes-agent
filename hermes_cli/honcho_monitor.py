@@ -16,9 +16,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,8 @@ STATE_PATH = Path(
         str(Path.home() / ".hermes" / "cache" / "honcho_monitor.json"),
     )
 )
+HERMES_STATE_DB = Path(os.environ.get("HONCHO_MONITOR_HERMES_STATE_DB", str(Path.home() / ".hermes" / "state.db")))
+INGESTION_STALE_SECONDS = int(os.environ.get("HONCHO_MONITOR_INGESTION_STALE_SECONDS", "3600"))
 
 HOST_MAP = {
     "192.168.10.211:8001": "spark-goat",
@@ -69,6 +72,7 @@ class HonchoSnapshot:
     errors: dict[str, int]
     spark_goat: dict[str, Any]
     deriver: dict[str, Any]
+    ingestion: dict[str, Any] = field(default_factory=dict)
 
 
 def short_host(url: str | None) -> str:
@@ -256,6 +260,15 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
     elif float(spark.get("latency_s", 0.0) or 0.0) > 5.0:
         alerts.append("spark-goat chat latency degraded")
 
+    ingestion = snapshot.ingestion or {}
+    if ingestion.get("source_fresh") and not ingestion.get("downstream_fresh"):
+        try:
+            drift_s = int(float(ingestion.get("drift_s") or 0))
+        except Exception:
+            drift_s = 0
+        if drift_s > INGESTION_STALE_SECONDS:
+            alerts.append(f"Hermes→Honcho ingestion stale ({_format_age(drift_s)} drift)")
+
     if previous_state:
         prev_rep_state = previous_state.get("queue_by_type", {}).get("representation")
         if prev_rep_state is not None:
@@ -264,10 +277,81 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
             prev_docs = int(previous_state.get("documents_total", snapshot.db.get("documents_total", 0)))
             docs_delta = max(0, snapshot.db.get("documents_total", 0) - prev_docs)
             rep_delta = max(0, rep_done - prev_rep_done)
-            if rep_delta > docs_delta:
+            # A one-or-two-item gap is normal: representation units can complete
+            # before the corresponding document counters are visible in the next
+            # snapshot. Alert only on a meaningful drift, not routine tick jitter.
+            if rep_delta >= 5 and rep_delta > docs_delta:
                 alerts.append("Representation queue advancing faster than documents")
 
     return alerts
+
+
+def _format_age(seconds: int | float | None) -> str:
+    try:
+        total = max(0, int(float(seconds or 0)))
+    except Exception:
+        return "?"
+    if total >= 86400:
+        return f"{total / 86400:.1f}d"
+    if total >= 3600:
+        return f"{total / 3600:.1f}h"
+    if total >= 60:
+        return f"{total // 60}m"
+    return f"{total}s"
+
+
+def _parse_pg_timestamptz(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("+00"):
+        text = text[:-3] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except Exception:
+        return None
+    return _now_utc(dt)
+
+
+def latest_local_message_timestamp(path: Path | str = HERMES_STATE_DB) -> float | None:
+    try:
+        con = sqlite3.connect(Path(path))
+        try:
+            row = con.execute(
+                "SELECT max(timestamp) FROM messages WHERE role IN ('user','assistant') AND content IS NOT NULL AND length(content) > 0"
+            ).fetchone()
+        finally:
+            con.close()
+    except Exception:
+        return None
+    if not row or row[0] is None:
+        return None
+    try:
+        return float(row[0])
+    except Exception:
+        return None
+
+
+def build_ingestion_status(local_ts: float | None, honcho_latest_raw: str | None, now: datetime | None = None) -> dict[str, Any]:
+    now_dt = _now_utc(now)
+    honcho_dt = _parse_pg_timestamptz(honcho_latest_raw)
+    local_dt = datetime.fromtimestamp(local_ts, tz=timezone.utc) if local_ts else None
+    source_age_s = int((now_dt - local_dt).total_seconds()) if local_dt else None
+    downstream_age_s = int((now_dt - honcho_dt).total_seconds()) if honcho_dt else None
+    drift_s = int((local_dt - honcho_dt).total_seconds()) if local_dt and honcho_dt else None
+    return {
+        "local_latest_ts": local_ts,
+        "local_latest_iso": local_dt.isoformat() if local_dt else "",
+        "honcho_latest_raw": (honcho_latest_raw or "").strip(),
+        "honcho_latest_iso": honcho_dt.isoformat() if honcho_dt else "",
+        "source_age_s": source_age_s,
+        "downstream_age_s": downstream_age_s,
+        "drift_s": drift_s,
+        "source_fresh": source_age_s is not None and source_age_s <= INGESTION_STALE_SECONDS,
+        "downstream_fresh": downstream_age_s is not None and downstream_age_s <= INGESTION_STALE_SECONDS,
+    }
 
 
 def _normalize_queue_by_type(raw: Any) -> dict[str, dict[str, int]]:
@@ -294,6 +378,7 @@ def format_report(snapshot: dict[str, Any] | HonchoSnapshot, previous_state: dic
             errors={k: int(v) for k, v in snapshot.get("errors", {}).items()},
             spark_goat=dict(snapshot.get("spark_goat", {})),
             deriver=dict(snapshot.get("deriver", {})),
+            ingestion=dict(snapshot.get("ingestion", {})),
         )
 
     lines = [f"🩺 Honcho — {_now_utc(now).strftime('%H:%M UTC')}"]
@@ -345,6 +430,15 @@ def format_report(snapshot: dict[str, Any] | HonchoSnapshot, previous_state: dic
     if deriver:
         lines.append(
             f"⚡ {deriver.get('runs_15m', '?')} runs/15m · last={_fmt_s(deriver.get('last_duration_s'))} · {deriver.get('conclusions', '?')} total conclusions"
+        )
+
+    ingestion = snapshot.ingestion or {}
+    if ingestion:
+        lines.append(
+            "🔁 Ingestion: "
+            f"local age={_format_age(ingestion.get('source_age_s'))} · "
+            f"Honcho age={_format_age(ingestion.get('downstream_age_s'))} · "
+            f"drift={_format_age(ingestion.get('drift_s'))}"
         )
 
     alerts = build_alerts(snapshot, previous_state=previous_state)
@@ -578,6 +672,12 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
         "messages_dims": _int_or_zero(db_parts[5]) if len(db_parts) > 5 and db_parts[5] else 0,
     }
 
+    honcho_latest_raw = ssh(
+        "docker exec honcho-database-1 psql -U postgres -t -A -c \"SELECT COALESCE(max(created_at)::text, '') FROM messages;\"",
+        timeout=20,
+    )
+    ingestion = build_ingestion_status(latest_local_message_timestamp(), honcho_latest_raw)
+
     queue_raw = ssh(
         "docker exec honcho-database-1 psql -U postgres -t -A -F '|' -c \""
         "SELECT task_type, processed::text, count(*)::text FROM queue "
@@ -661,6 +761,7 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
             "model_ok": spark_model_ok,
         },
         deriver={"runs_15m": runs_15m, "last_duration_s": last_duration_s, "conclusions": conclusions},
+        ingestion=ingestion,
     )
 
     current_state = {
@@ -668,6 +769,7 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
         "queue_by_type": queue_by_type,
         "documents_total": db.get("documents_total", 0),
         "messages_total": db.get("messages_total", 0),
+        "ingestion": ingestion,
     }
 
     return snapshot, current_state

@@ -1258,11 +1258,13 @@ class HonchoMemoryProvider(MemoryProvider):
         """
         if self._cron_skipped:
             return
-        if self._recall_mode == "tools" and not self._session_ready():
-            return
         if not self._session_ready():
-            self._start_session_init_background()
-            return
+            if self._recall_mode == "tools":
+                self._ensure_session()
+            else:
+                self._start_session_init_background()
+            if not self._session_ready():
+                return
 
         msg_limit = self._config.message_max_chars if self._config else 25000
         clean_user_content = sanitize_context(user_content or "").strip()
@@ -1310,11 +1312,13 @@ class HonchoMemoryProvider(MemoryProvider):
             return
         if self._cron_skipped:
             return
-        if self._recall_mode == "tools" and not self._session_ready():
-            return
         if not self._session_ready():
-            self._start_session_init_background()
-            return
+            if self._recall_mode == "tools":
+                self._ensure_session()
+            else:
+                self._start_session_init_background()
+            if not self._session_ready():
+                return
 
         _ag("hermes.honcho.memory_write", {
             "action": action,
