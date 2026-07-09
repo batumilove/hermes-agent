@@ -118,7 +118,7 @@ WORKDIR /opt/hermes
 # because it is referenced as a `file:` workspace dependency from
 # ui-tui/package.json.  Copying the tree up front lets npm resolve the
 # workspace to real content instead of stopping at a bare package.json.
-COPY package.json package-lock.json ./
+COPY .npmrc package.json package-lock.json ./
 COPY web/package.json web/
 COPY ui-tui/package.json ui-tui/
 COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
@@ -138,7 +138,14 @@ COPY apps/shared/ apps/shared/
 # guards against a future regression if the source npm version changes.
 ENV npm_config_install_links=false
 
-RUN npm install --prefer-offline --no-audit && \
+# Run the install under npm 11.18.0 so the repo's `.npmrc` min-release-age
+# cooldown is actually enforced.  The node:22 source stage currently ships
+# npm 10.x, which parses `.npmrc` but does not implement the cooldown.  We
+# use `npm exec --package=npm@11.18.0` (same pattern as the CI workflows) so
+# the global npm stays untouched and the temporary npm version is pinned.
+# `--min-release-age=7` is passed explicitly as a second line of defense, in
+# addition to the `.npmrc` value; the Dockerfile must use numeric days.
+RUN npm exec --package=npm@11.18.0 -- npm install --prefer-offline --no-audit --min-release-age=7 && \
     npx playwright install --with-deps chromium --only-shell && \
     npm cache clean --force
 

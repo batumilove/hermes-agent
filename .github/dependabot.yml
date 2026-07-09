@@ -8,10 +8,11 @@
 # pins would undermine the strategy — pins are moved deliberately, after
 # review, not on a schedule.
 #
-# github-actions is the exception: action pins (we use full commit SHAs per
-# supply-chain policy) must be updated when upstream actions publish
-# patches — usually themselves security fixes. Dependabot opens a PR with
-# the new SHA and release notes; we review and merge like any other PR.
+# github-actions and docker are the exceptions: action pins and docker base
+# image pins (we use full commit SHAs / digests per supply-chain policy) must
+# be updated when upstream publishes patches — usually themselves security
+# fixes. Dependabot opens a PR with the new digest/SHA and release notes; we
+# review and merge like any other PR.
 #
 # Security-update PRs for source dependencies (opened ONLY when a CVE is
 # published affecting a currently-pinned version) are enabled separately
@@ -42,3 +43,16 @@ updates:
         update-types:
           - "minor"
           - "patch"
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "chore(docker)"
+      include: "scope"
