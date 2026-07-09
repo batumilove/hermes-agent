@@ -36,6 +36,8 @@ STATE_PATH = Path(
 )
 HERMES_STATE_DB = Path(os.environ.get("HONCHO_MONITOR_HERMES_STATE_DB", str(Path.home() / ".hermes" / "state.db")))
 INGESTION_STALE_SECONDS = int(os.environ.get("HONCHO_MONITOR_INGESTION_STALE_SECONDS", "3600"))
+DERIVER_STALE_ACTIVE_SECONDS = int(os.environ.get("HONCHO_MONITOR_DERIVER_STALE_ACTIVE_SECONDS", "600"))
+
 
 HOST_MAP = {
     "192.168.10.211:8001": "spark-goat",
@@ -283,6 +285,19 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
             if rep_delta >= 5 and rep_delta > docs_delta:
                 alerts.append("Representation queue advancing faster than documents")
 
+            rep_pending = int(snapshot.queue_by_type.get("representation", {}).get("pending", 0))
+            prev_rep_pending = int(prev_rep_state.get("pending", 0))
+            if rep_pending > 0 and prev_rep_pending > 0 and rep_delta == 0 and docs_delta == 0:
+                alerts.append("Deriver stalled: representation backlog with no progress")
+
+    deriver = snapshot.deriver or {}
+    active_count = int(deriver.get("active_count") or 0)
+    active_oldest_age_s = int(float(deriver.get("active_oldest_age_s") or 0))
+    if active_count > 0 and active_oldest_age_s >= DERIVER_STALE_ACTIVE_SECONDS:
+        alerts.append(
+            f"Deriver active work stale ({active_count} active, oldest {_format_age(active_oldest_age_s)})"
+        )
+
     return alerts
 
 
@@ -428,8 +443,11 @@ def format_report(snapshot: dict[str, Any] | HonchoSnapshot, previous_state: dic
 
     deriver = snapshot.deriver
     if deriver:
+        active = ""
+        if int(deriver.get("active_count") or 0) > 0:
+            active = f" · active={deriver.get('active_count')} oldest={_format_age(deriver.get('active_oldest_age_s'))}"
         lines.append(
-            f"⚡ {deriver.get('runs_15m', '?')} runs/15m · last={_fmt_s(deriver.get('last_duration_s'))} · {deriver.get('conclusions', '?')} total conclusions"
+            f"⚡ {deriver.get('runs_15m', '?')} runs/15m · last={_fmt_s(deriver.get('last_duration_s'))} · {deriver.get('conclusions', '?')} total conclusions{active}"
         )
 
     ingestion = snapshot.ingestion or {}
@@ -745,6 +763,16 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
         except Exception:
             last_duration_s = 0
 
+    active_raw = ssh(
+        "docker exec honcho-database-1 psql -U postgres -t -A -F '|' -c \""
+        "SELECT count(*)::text, COALESCE(EXTRACT(EPOCH FROM (now() - min(last_updated)))::int::text, '0') "
+        "FROM active_queue_sessions;\"",
+        timeout=20,
+    )
+    active_parts = [part.strip() for part in active_raw.split("|")] if active_raw else []
+    active_count = _int_or_zero(active_parts[0]) if len(active_parts) > 0 else 0
+    active_oldest_age_s = _int_or_zero(active_parts[1]) if len(active_parts) > 1 else 0
+
     snapshot = HonchoSnapshot(
         services=services,
         pipeline=pipeline,
@@ -760,7 +788,13 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
             "http_ok": spark_http_ok,
             "model_ok": spark_model_ok,
         },
-        deriver={"runs_15m": runs_15m, "last_duration_s": last_duration_s, "conclusions": conclusions},
+        deriver={
+            "runs_15m": runs_15m,
+            "last_duration_s": last_duration_s,
+            "conclusions": conclusions,
+            "active_count": active_count,
+            "active_oldest_age_s": active_oldest_age_s,
+        },
         ingestion=ingestion,
     )
 
@@ -770,6 +804,8 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
         "documents_total": db.get("documents_total", 0),
         "messages_total": db.get("messages_total", 0),
         "ingestion": ingestion,
+        "deriver_active_count": active_count,
+        "deriver_active_oldest_age_s": active_oldest_age_s,
     }
 
     return snapshot, current_state

@@ -423,6 +423,79 @@ def test_representation_queue_outpacing_docs_triggers_drift_alert():
     assert "Representation queue advancing faster than documents" in alerts
 
 
+def test_representation_backlog_with_no_progress_triggers_deriver_stall_alert():
+    prev = {
+        "documents_total": 91594,
+        "queue_by_type": {"representation": {"pending": 7050, "done": 373}},
+    }
+    snapshot = {
+        "services": {"api_ok": True, "deriver_up": True, "db_ok": True, "redis_ok": True},
+        "pipeline": {
+            "embedding": {
+                "model": "qwen3-embedding-8b-1536",
+                "base_url": "http://100.69.54.37:11435/v1",
+                "dimensions_mode": "never",
+                "vector_dimensions": "1536",
+            },
+            "deriver": {"model": "gemma12b-polar-gpustack", "base_url": "http://100.71.155.95:18081/v1"},
+            "summary": {"model": "mlx-community--Qwen3.5-4B-4bit", "base_url": "http://192.168.10.104:8000/v1"},
+            "dream": {"model": "aeon-ultimate", "base_url": "http://100.69.54.37:8001/v1"},
+            "dialectic": {"model": "mlx-community--Qwen3.5-9B-4bit", "base_url": "http://192.168.10.104:8000/v1"},
+        },
+        "db": {
+            "documents_total": 91594,
+            "documents_with_embeddings": 91594,
+            "documents_dims": 1536,
+            "messages_total": 22130,
+            "messages_with_embeddings": 22130,
+            "messages_dims": 1536,
+        },
+        "queue": {"pending": 7365, "done": 658},
+        "queue_by_type": {"representation": {"pending": 7052, "done": 373}},
+        "errors": {"save_representation": 0, "four_oh_one": 0},
+        "spark_goat": {"ok": True, "latency_s": 1.2, "thinking": False, "model": "aeon-ultimate"},
+        "deriver": {"runs_15m": 0, "last_duration_s": 0, "conclusions": 0},
+    }
+
+    alerts = hm.build_alerts(hm.HonchoSnapshot(**snapshot), previous_state=prev)
+
+    assert "Deriver stalled: representation backlog with no progress" in alerts
+
+
+def test_stale_active_deriver_work_triggers_alert():
+    snapshot = {
+        "services": {"api_ok": True, "deriver_up": True, "db_ok": True, "redis_ok": True},
+        "pipeline": {
+            "embedding": {
+                "model": "qwen3-embedding-8b-1536",
+                "base_url": "http://100.69.54.37:11435/v1",
+                "dimensions_mode": "never",
+                "vector_dimensions": "1536",
+            },
+            "deriver": {"model": "gemma12b-polar-gpustack", "base_url": "http://100.71.155.95:18081/v1"},
+            "summary": {"model": "mlx-community--Qwen3.5-4B-4bit", "base_url": "http://192.168.10.104:8000/v1"},
+            "dream": {"model": "aeon-ultimate", "base_url": "http://100.69.54.37:8001/v1"},
+            "dialectic": {"model": "mlx-community--Qwen3.5-9B-4bit", "base_url": "http://192.168.10.104:8000/v1"},
+        },
+        "db": {
+            "documents_total": 96179,
+            "documents_with_embeddings": 96179,
+            "documents_dims": 1536,
+            "messages_total": 22153,
+            "messages_with_embeddings": 22153,
+            "messages_dims": 1536,
+        },
+        "queue": {"pending": 6522, "done": 1565},
+        "queue_by_type": {"representation": {"pending": 6247, "done": 1201}},
+        "errors": {"save_representation": 0, "four_oh_one": 0},
+        "spark_goat": {"ok": True, "latency_s": 1.2, "thinking": False, "model": "aeon-ultimate"},
+        "deriver": {"runs_15m": 0, "last_duration_s": 0, "conclusions": 0, "active_count": 3, "active_oldest_age_s": 901},
+    }
+
+    alerts = hm.build_alerts(hm.HonchoSnapshot(**snapshot), previous_state={})
+
+    assert "Deriver active work stale (3 active, oldest 15m)" in alerts
+
 def test_legacy_state_without_queue_by_type_does_not_crash_or_false_alert():
     """Old state files lack queue_by_type; drift alert should be skipped."""
     prev = {"queue_done": 80, "documents_total": 91}
