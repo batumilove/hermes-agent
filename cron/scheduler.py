@@ -55,13 +55,26 @@ _ag_import_attempted = False
 
 
 def _ag(event_type: str, payload: dict) -> None:
-    """Emit an ActiveGraph event when the optional activegraph plugin is loaded."""
+    """Emit an ActiveGraph event when the optional activegraph plugin is loaded.
+
+    Directory plugins are importable as ``hermes_plugins.<slug>`` only after the
+    plugin manager has discovered them. Cron runs from scheduler threads where
+    this helper can be reached before that namespace exists, so fall back to a
+    best-effort plugin discovery before giving up.  Failure stays fail-open:
+    cron execution must not depend on observability.
+    """
     global _ag_emit, _ag_import_attempted
     if _ag_emit is None and not _ag_import_attempted:
         _ag_import_attempted = True
         try:
             import importlib
-            _plugin = importlib.import_module("hermes_plugins.activegraph")
+            try:
+                _plugin = importlib.import_module("hermes_plugins.activegraph")
+            except Exception:
+                from hermes_cli.plugins import discover_plugins
+
+                discover_plugins()
+                _plugin = importlib.import_module("hermes_plugins.activegraph")
             _ag_emit = getattr(_plugin, "_emit")
         except Exception:
             _ag_emit = None

@@ -13,6 +13,41 @@ extracted helper directly.
 import cron.scheduler as s
 
 
+def test_ag_discovers_directory_plugin_before_giving_up(monkeypatch):
+    """Cron ActiveGraph emission discovers directory plugins if the namespace is cold."""
+    events = []
+    imports = []
+    discovered = []
+
+    class FakePlugin:
+        @staticmethod
+        def _emit(event_type, payload):
+            events.append((event_type, payload))
+
+    def fake_import_module(name):
+        imports.append(name)
+        if len(imports) == 1:
+            raise ModuleNotFoundError("No module named 'hermes_plugins'")
+        return FakePlugin
+
+    def fake_discover_plugins():
+        discovered.append(True)
+
+    import importlib
+    import hermes_cli.plugins as plugins
+
+    monkeypatch.setattr(s, "_ag_emit", None)
+    monkeypatch.setattr(s, "_ag_import_attempted", False)
+    monkeypatch.setattr(importlib, "import_module", fake_import_module)
+    monkeypatch.setattr(plugins, "discover_plugins", fake_discover_plugins)
+
+    s._ag("hermes.cron.started", {"job_id": "cold-plugin"})
+
+    assert discovered == [True]
+    assert imports == ["hermes_plugins.activegraph", "hermes_plugins.activegraph"]
+    assert events == [("hermes.cron.started", {"job_id": "cold-plugin"})]
+
+
 def test_run_one_job_emits_activegraph_cron_events(monkeypatch):
     """Cron emits ActiveGraph started/completed events from the shared fire path."""
     events = []
