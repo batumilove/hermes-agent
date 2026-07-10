@@ -293,7 +293,13 @@ def _build_from_sessions_db(platform_name: str) -> List[Dict[str, str]]:
     entries: List[Dict[str, str]] = []
     try:
         from hermes_state import SessionDB
-        db = SessionDB()
+        # This is a read-only directory rebuild path. Opening a normal
+        # SessionDB runs schema reconciliation/FTS setup, which can briefly
+        # contend with the live gateway writer and has shown up in severe
+        # loop-lag stack dumps during channel-directory refreshes. Use the
+        # read-only connection mode so this periodic lookup never takes a
+        # write/DDL lock.
+        db = SessionDB(read_only=True)
         try:
             lister = getattr(db, "list_gateway_sessions", None)
             if not callable(lister):

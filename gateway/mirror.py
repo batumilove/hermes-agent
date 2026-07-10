@@ -114,7 +114,10 @@ def _find_session_id(
     # Primary: state.db
     try:
         from hermes_state import SessionDB
-        db = SessionDB()
+        # Lookup-only path: avoid SessionDB's normal schema-init/write-lock
+        # work when mirroring has only to resolve the target session. The
+        # subsequent append path opens a regular writer intentionally.
+        db = SessionDB(read_only=True)
         try:
             finder = getattr(db, "find_session_by_origin", None)
             if callable(finder):
