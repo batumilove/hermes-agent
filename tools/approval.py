@@ -573,6 +573,7 @@ DANGEROUS_PATTERNS = [
     (r'\bDELETE\s+FROM\b(?![^\n]*\bWHERE\b)', "SQL DELETE without WHERE"),
     (r'\bTRUNCATE\s+(TABLE)?\s*\w', "SQL TRUNCATE"),
     (rf'>\s*{_SYSTEM_CONFIG_PATH}', "overwrite system config"),
+
     # systemctl targeting hermes-gateway specifically — must appear before the
     # generic systemctl pattern so it matches first.  Using systemctl restart
     # from inside a gateway session kills the process without writing the

@@ -55,8 +55,12 @@ hermes_agent.egg-info/
 wandb/
 testlogs
 
-# CLI config (may contain sensitive SSH paths)
+# CLI/local config (may contain sensitive paths or tokens)
 cli-config.yaml
+/config/
+
+# Local mcporter/MCP config (may contain bearer tokens)
+config/mcporter.json
 
 # Local mcporter config may contain or reference credentials; keep the sanitized example tracked.
 /config/mcporter.json

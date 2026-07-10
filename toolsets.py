@@ -117,6 +117,7 @@ TOOLSETS = {
         "includes": []
     },
 
+
     "mcporter": {
         "description": "Lazy bridge for tools exposed through mcporter MCP server configuration",
         "tools": ["mcporter_list", "mcporter_schema", "mcporter_call"],

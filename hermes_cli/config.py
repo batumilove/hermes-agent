@@ -1013,6 +1013,14 @@ DEFAULT_CONFIG = {
     # sessions (no live client) so accumulated agents don't pile up under memory
     # pressure. Reopening one re-resumes it from disk. 0/null disables.
     "max_live_sessions": 16,
+
+    "mcporter": {
+        "enabled": "auto",
+        "command": "npx",
+        "args": ["-y", "mcporter@1.0.1"],
+        "config_path": "config/mcporter.json",
+        "timeout": 60,
+    },
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).

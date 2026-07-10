@@ -1470,10 +1470,15 @@ def get_running_pid(
 
         recorded_start = record.get("start_time")
         current_start = _get_process_start_time(pid)
-        if recorded_start is not None and current_start is not None and current_start != recorded_start:
+        if (
+            recorded_start is not None
+            and current_start is not None
+            and current_start != recorded_start
+        ):
             continue
 
         if _record_matches_live_gateway_pid(record, pid):
+
             return pid
 
     _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
