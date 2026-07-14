@@ -14,7 +14,7 @@ Update to the latest version with a single command:
 hermes update
 ```
 
-This pulls the latest code from `main`, updates dependencies, and prompts you to configure any new options that were added since your last update.
+This updates the codebase, refreshes dependencies and bundled assets, and prompts you to configure any new options that were added since your last update.
 
 :::tip
 `hermes update` automatically detects new configuration options and prompts you to add them. If you skipped that prompt, you can manually run `hermes config check` to see missing options, then `hermes config migrate` to interactively add them.
@@ -24,12 +24,14 @@ This pulls the latest code from `main`, updates dependencies, and prompts you to
 
 When you run `hermes update`, the following steps occur:
 
-1. **Pairing-data snapshot** — a lightweight pre-update state snapshot is saved (covers `~/.hermes/pairing/`, Feishu comment rules, and other state files that get modified at runtime). Recoverable via the snapshot restore flow described under [Snapshots and rollback](../user-guide/checkpoints-and-rollback.md), or by extracting the most recent quick-snapshot zip Hermes wrote next to your `~/.hermes/` directory.
-2. **Git pull** — pulls the latest code from the `main` branch and updates submodules
-3. **Post-pull syntax validation + auto-rollback** — after the pull, Hermes compiles the eight critical files every `hermes` invocation imports at startup. If any fails to parse (e.g. an orphan merge-conflict marker, an accidentally truncated file), Hermes runs `git reset --hard <pre-pull-sha>` to roll the install back so your shell stays bootable. Re-run `hermes update` once the upstream fix lands.
-4. **Dependency install** — runs `uv pip install -e ".[all]"` to pick up new or changed dependencies
-5. **Config migration** — detects new config options added since your version and prompts you to set them
-6. **Gateway auto-restart** — running gateways are refreshed after the update completes so the new code takes effect immediately. Service-managed gateways (systemd on Linux, launchd on macOS) are restarted through the service manager. Manual gateways are relaunched automatically when Hermes can map the running PID back to a profile.
+1. **Pairing-data snapshot** — a lightweight pre-update state snapshot is saved (covers `~/.hermes/pairing/`, Feishu comment rules, and other state files that get modified at runtime). Recoverable via the snapshot restore flow described under [Snapshots and rollback](../user-guide/checkpoints-and-rollback.md), via `hermes backup restore --state pre-update`, or by extracting the most recent quick-snapshot zip Hermes wrote next to your `~/.hermes/` directory.
+2. **Fetch + update code** — fetches `origin`, switches to the target branch if needed, then fast-forwards from the branch upstream when possible.
+3. **Local-change protection** — if the working tree is dirty, local changes are auto-stashed before the update and then optionally restored afterward.
+4. **Divergence recovery + syntax validation** — if a fast-forward pull is not possible, Hermes can reset to match the upstream branch and continue. After code changes, Hermes compiles the critical files every `hermes` invocation imports at startup. If any fails to parse (for example an orphan merge-conflict marker), Hermes rolls back to the pre-update commit so your shell stays bootable.
+5. **Dependency install** — updates Python dependencies, then refreshes Node.js dependencies where applicable.
+6. **Bundled asset sync** — syncs bundled skills and helper scripts, including other profiles where relevant.
+7. **Config migration** — detects new config options added since your version and prompts you to set them.
+8. **Gateway auto-restart** — running gateways are refreshed after the update completes so the new code takes effect immediately. Service-managed gateways (systemd on Linux, launchd on macOS) are restarted through the service manager. Manual gateways are relaunched automatically when Hermes can map the running PID back to a profile.
 
 ### Updating against a non-default branch: `--branch`
 
@@ -59,6 +61,7 @@ updates:
 - `discard` — auto-stash and drop the stash after the pull, so the update always lands on a clean tree. Use this only on machines where you never intend to keep local edits to the Hermes source. It stash-drops (not `git reset --hard` + `git clean -fd`), so ignored paths like `node_modules`, `venv`, and build outputs are never touched.
 
 In the desktop app this is **Settings → Advanced → In-App Update Local Changes**.
+
 
 ### Preview-only: `hermes update --check`
 
@@ -143,6 +146,7 @@ Already up to date.  (or: Updating abc1234..def5678)
 3. `hermes --version` — confirm the version bumped as expected
 4. If you use the gateway: `hermes gateway status`
 5. If `doctor` reports npm audit issues: run `npm audit fix` in the flagged directory
+6. If local changes were restored from stash, inspect the result carefully for conflicts or unintended reapplication
 
 :::warning Dirty working tree after update
 If `git status --short` shows unexpected changes after `hermes update`, stop and inspect them before continuing. This usually means local modifications were reapplied on top of the updated code, or a dependency step refreshed lockfiles.
@@ -162,6 +166,48 @@ tail -f ~/.hermes/logs/update.log
 - `Ctrl-C` (SIGINT) and system shutdown (SIGTERM) are still honored — those are deliberate cancellations, not accidents.
 
 You no longer need to wrap `hermes update` in `screen` or `tmux` to survive a terminal drop.
+
+### What about local changes and forks?
+
+A few behaviors are worth knowing before you run `hermes update` on a customized install:
+
+- If you have uncommitted local changes, Hermes will usually auto-stash them before updating and then offer to restore them afterward.
+- Restoring those changes can reapply customizations on top of the new codebase, so `git status` and a quick smoke test are worth doing after the update.
+- If your local branch has diverged from `origin/main`, Hermes may reset to match the remote after preserving your working-tree changes in stash.
+- That reset can also drop local commits that existed only on your current `main`, even if your working tree was clean after committing. If those commits matter, make sure they are pushed elsewhere or be ready to reapply them after the update.
+- Forked installs may also trigger upstream-sync logic, depending on how your remotes are configured.
+
+If you maintain significant local modifications or a fork workflow, verify your remotes and branch state before updating, and check whether any local-only commits on `main` need to be preserved separately.
+
+#### Maintaining a local patch stack
+
+For machines that intentionally carry local fixes on top of upstream, keep those fixes on an explicit branch instead of relying on `main` to remain divergent. Before updating:
+
+```bash
+git fetch origin upstream --prune
+git status --short --branch
+git log --oneline --decorate origin/main..HEAD
+
+git branch backup/local-patches-before-update-$(date +%Y%m%d-%H%M%S) HEAD
+```
+
+Then rebase the patch branch onto the freshly updated upstream main:
+
+```bash
+git switch <local-patch-branch>
+git rebase origin/main
+```
+
+After any update or rebase, audit the result before declaring success:
+
+```bash
+git status --short --branch
+git log --oneline --decorate origin/main..HEAD
+git diff --stat
+git grep -n -E '^(<<<<<<<|>>>>>>>)' -- '*.py' '*.md' '*.yaml' '*.yml' '*.json' || true
+```
+
+If `hermes update` dirties lockfiles via dependency installation, inspect the diff and revert accidental lockfile churn unless dependency changes were intended.
 
 ### Checking your current version
 

@@ -493,9 +493,10 @@ def _compute_tool_definitions(
                         break
 
     # Add cross-tool references to browser_navigate only for tools that are
-    # actually available after check_fn filtering.  Static schema descriptions
+    # actually available after check_fn filtering. Static schema descriptions
     # must not hard-code optional tool names, or the model will hallucinate
     # calls to tools that are disabled/unavailable in the current session.
+
     if "browser_navigate" in available_tool_names:
         retrieval_methods = []
         if "terminal" in available_tool_names:

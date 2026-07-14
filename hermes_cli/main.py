@@ -10286,6 +10286,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             logger.debug("Skills sync during update failed: %s", e)
 
         # Sync bundled helper scripts (systemd services, gateway hooks, etc.)
+
         try:
             from tools.bundled_scripts_sync import sync_bundled_scripts
 
@@ -10300,6 +10301,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 )
             if result.get("missing"):
                 print(f"  ⚠ {len(result['missing'])} missing: {', '.join(result['missing'])}")
+            if result.get("cleaned"):
+                print(f"  − {len(result['cleaned'])} cleaned legacy links")
             if not result.get("linked") and not result.get("updated") and not result.get("missing"):
                 print("  ✓ Helper scripts are up to date")
         except Exception as e:
@@ -10310,6 +10313,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # it is not affected by sync_skills()'s module-level HERMES_HOME cache,
         # which means the active profile is reliably synced regardless of whether
         # the caller's HERMES_HOME env var points at the default or a named profile.
+
         try:
             from hermes_cli.profiles import (
                 list_profiles,
