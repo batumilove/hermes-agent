@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-07-10T05:06:48Z",
+  "updated_at": "2026-07-14T03:50:48Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -330,6 +330,22 @@
           "id": "deepseek-reasoner"
         }
       ]
+    },
+    "fireworks": {
+      "metadata": {
+        "display_name": "Fireworks AI",
+        "auth_type": "api_key",
+        "env_vars": [
+          "FIREWORKS_API_KEY"
+        ],
+        "description": "Fireworks AI \u2014 OpenAI-compatible direct model API",
+        "signup_url": "https://app.fireworks.ai/settings/users/api-keys",
+        "base_url": "https://api.fireworks.ai/inference/v1",
+        "transport": "openai_chat",
+        "dynamic_models": true,
+        "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
+      },
+      "models": []
     },
     "gemini": {
       "metadata": {
@@ -1181,9 +1197,6 @@
           "id": "minimax-m2.5"
         },
         {
-          "id": "minimax-m3-free"
-        },
-        {
           "id": "glm-5.2"
         },
         {
@@ -1209,9 +1222,6 @@
         },
         {
           "id": "qwen3.6-plus"
-        },
-        {
-          "id": "qwen3.6-plus-free"
         },
         {
           "id": "qwen3.5-plus"
