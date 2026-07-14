@@ -180,6 +180,29 @@ def test_ssh_uses_tbot_config_when_available(monkeypatch):
     assert ssh_args[:3] == ["ssh", "-F", "/var/lib/tbot/hermes-cron-ssh/ssh_config"]
 
 
+def test_ssh_retries_one_transient_transport_failure(monkeypatch):
+    calls: list[list[str]] = []
+
+    class Result:
+        def __init__(self, returncode: int, stdout: str = "", stderr: str = ""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    results = [Result(255, stderr="connection timed out"), Result(0, stdout="ok\n")]
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return results.pop(0)
+
+    monkeypatch.setattr(hm.subprocess, "run", fake_run)
+    monkeypatch.setattr(hm.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(hm, "HONCHO_TARGET", "honcho.example")
+
+    assert hm.ssh("true") == "ok"
+    assert len(calls) == 2
+
+
 def test_queue_parse_handles_postgresql_boolean_text():
     # Reproduce the live failure: PostgreSQL returns 'true'/'false' text
     queue_raw = "false|15\ntrue|128\n"

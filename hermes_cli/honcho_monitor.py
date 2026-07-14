@@ -493,19 +493,25 @@ def ssh(command: str, timeout: int = 20) -> str:
             command,
         ]
     )
-    try:
-        result = subprocess.run(
-            ssh_cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        return f"__SSH_ERROR__ timeout={timeout}s stderr={str(exc)[:200]}"
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip().replace("\n", " ")[:300]
-        return f"__SSH_ERROR__ rc={result.returncode} stderr={detail}"
-    return result.stdout.strip()
+    last_error = ""
+    for attempt in range(2):
+        try:
+            result = subprocess.run(
+                ssh_cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            last_error = f"__SSH_ERROR__ timeout={timeout}s stderr={str(exc)[:200]}"
+        else:
+            if result.returncode == 0:
+                return result.stdout.strip()
+            detail = (result.stderr or result.stdout or "").strip().replace("\n", " ")[:300]
+            last_error = f"__SSH_ERROR__ rc={result.returncode} stderr={detail}"
+        if attempt == 0:
+            time.sleep(1)
+    return last_error
 
 
 def curl_json(url: str, timeout: int = 10) -> tuple[bool, dict[str, Any] | None]:
