@@ -95,31 +95,23 @@ def get_safe_write_roots() -> set[str]:
     return roots
 
 
-def is_write_denied(path: str) -> bool:
-    """Return True if path is blocked by the write denylist or safe root."""
+def _classify_write_denial(path: str) -> Optional[str]:
+    """Return ``'credential'``, ``'safe_root'``, or ``None`` if writes are allowed."""
     home = os.path.realpath(os.path.expanduser("~"))
     expanded = os.path.abspath(os.path.expanduser(str(path)))
     resolved = os.path.realpath(expanded)
 
-    lexical_denied_prefixes = (
-        os.path.join(os.path.expanduser("~"), ".ssh") + os.sep,
-        os.path.join(os.path.expanduser("~"), ".aws") + os.sep,
-        os.path.join(os.path.expanduser("~"), ".gnupg") + os.sep,
-        os.path.join(os.path.expanduser("~"), ".kube") + os.sep,
-        os.path.join(os.path.expanduser("~"), ".docker") + os.sep,
-        os.path.join(os.path.expanduser("~"), ".azure") + os.sep,
-    )
-    if any(expanded.startswith(prefix) for prefix in lexical_denied_prefixes):
-        return True
+    sensitive_dir_parts = {".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure"}
+    if any(part in sensitive_dir_parts for part in Path(expanded).parts):
+        return "credential"
+    if any(part in sensitive_dir_parts for part in Path(resolved).parts):
+        return "credential"
 
     if resolved in build_write_denied_paths(home):
-        return True
+        return "credential"
     for prefix in build_write_denied_prefixes(home):
         if resolved.startswith(prefix):
-            return True
-    sensitive_dir_parts = {".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure"}
-    if any(part in sensitive_dir_parts for part in Path(resolved).parts):
-        return True
+            return "credential"
 
     mcp_tokens_dir_name = "mcp-tokens"
 
@@ -136,13 +128,13 @@ def is_write_denied(path: str) -> bool:
         try:
             mcp_real = os.path.realpath(os.path.join(base_real, mcp_tokens_dir_name))
             if resolved == mcp_real or resolved.startswith(mcp_real + os.sep):
-                return True
+                return "credential"
         except Exception:
             pass
         try:
             pairing_real = os.path.realpath(os.path.join(base_real, "pairing"))
             if resolved == pairing_real or resolved.startswith(pairing_real + os.sep):
-                return True
+                return "credential"
         except Exception:
             pass
 
@@ -154,9 +146,28 @@ def is_write_denied(path: str) -> bool:
                 allowed = True
                 break
         if not allowed:
-            return True
+            return "safe_root"
 
-    return False
+    return None
+
+
+def is_write_denied(path: str) -> bool:
+    """Return True if path is blocked by the write denylist or safe root."""
+    return _classify_write_denial(path) is not None
+
+
+def get_write_denied_error(path: str, *, verb: str = "Write") -> Optional[str]:
+    """Return a user/model-facing error when writes to ``path`` are blocked."""
+    denial = _classify_write_denial(path)
+    if denial is None:
+        return None
+    if denial == "safe_root":
+        roots_display = os.pathsep.join(sorted(get_safe_write_roots()))
+        return (
+            f"{verb} denied: '{path}' is outside HERMES_WRITE_SAFE_ROOT "
+            f"({roots_display}). Unset the variable or add this path's directory prefix."
+        )
+    return f"{verb} denied: '{path}' is a protected system/credential file."
 
 
 # Common secret-bearing project-local environment file basenames.

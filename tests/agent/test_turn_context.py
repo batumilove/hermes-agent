@@ -8,6 +8,7 @@ confirm the prologue produces the right ``TurnContext`` and applies the
 
 from __future__ import annotations
 
+import threading
 import types
 from unittest.mock import MagicMock, patch
 
@@ -85,6 +86,9 @@ class _FakeAgent:
         self._turn_failed_file_mutations = {}
         self._turn_file_mutation_paths = set()
         self._verification_stop_nudges = 0
+        self._session_messages = []
+        self._pending_cli_user_message = None
+        self._session_persist_lock = threading.RLock()
         # Records _cached_system_prompt at the moment _ensure_db_session()
         # is called (regression guard for #45499 turn-setup ordering).
         self._ensure_db_prompt_at_call = "<unset>"

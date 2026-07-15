@@ -2165,6 +2165,7 @@ _DEFAULT_SCRIPT_TIMEOUT = 3600  # seconds (1 hour)
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
 _LIVE_ADAPTER_SEND_TIMEOUT_SECONDS = 60.0
+_RUN_CLAIM_HEARTBEAT_SECONDS = 60.0
 
 
 def _get_live_adapter_send_timeout() -> float:
@@ -2350,6 +2351,58 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         return False, f"Script timed out after {script_timeout}s: {path}"
     except Exception as exc:
         return False, f"Script execution failed: {exc}"
+
+
+def _run_job_script_with_claim_heartbeat(
+    job: dict, script_path: str
+) -> tuple[bool, str]:
+    """Run a cron script while keeping its owned one-shot claim fresh."""
+    schedule = job.get("schedule")
+    claim = job.get("run_claim")
+    owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
+    if not (
+        isinstance(schedule, dict)
+        and schedule.get("kind") == "once"
+        and owner
+    ):
+        return _run_job_script(script_path)
+
+    job_id = str(job.get("id") or "")
+    stop = threading.Event()
+    heartbeat_context = contextvars.copy_context()
+
+    def _heartbeat_loop() -> None:
+        while not stop.wait(_RUN_CLAIM_HEARTBEAT_SECONDS):
+            try:
+                heartbeat_run_claim(job_id, expected_owner=owner)
+            except Exception:
+                logger.debug(
+                    "Job '%s': script run_claim heartbeat failed",
+                    job_id,
+                    exc_info=True,
+                )
+
+    heartbeat_thread = threading.Thread(
+        target=heartbeat_context.run,
+        args=(_heartbeat_loop,),
+        name="cron-script-claim-heartbeat",
+        daemon=True,
+    )
+    try:
+        heartbeat_thread.start()
+    except Exception:
+        logger.debug(
+            "Job '%s': could not start script run_claim heartbeat",
+            job_id,
+            exc_info=True,
+        )
+        return _run_job_script(script_path)
+
+    try:
+        return _run_job_script(script_path)
+    finally:
+        stop.set()
+        heartbeat_thread.join(timeout=1.0)
 
 
 def _parse_wake_gate(script_output: str) -> bool:
@@ -2759,7 +2812,7 @@ def run_job(
                 _prior_cwd = None
 
         try:
-            ok, output = _run_job_script(script_path)
+            ok, output = _run_job_script_with_claim_heartbeat(job, script_path)
         finally:
             if _prior_cwd is not None:
                 try:
@@ -2848,7 +2901,7 @@ def run_job(
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        prerun_script = _run_job_script(script_path)
+        prerun_script = _run_job_script_with_claim_heartbeat(job, script_path)
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info(

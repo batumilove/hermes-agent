@@ -63,6 +63,7 @@ Field notes:
 - **`version`** — integer schema version. Future schemas bump this; Hermes refuses manifests with versions it doesn't understand and falls back to the hardcoded snapshot.
 - **`metadata`** — free-form dict at the manifest, provider, and model level. The generated provider metadata intentionally contains only non-secret configuration shape: `display_name`, `description`, `signup_url`, `auth_type`, env var names, base URL override env var, default base URL, transport, aggregator flag, and `dynamic_models` for providers discovered live instead of curated statically. Hermes ignores unknown fields, so you can annotate entries (`"tier": "paid"`, `"tags": [...]`, etc.) without coordinating a schema change.
 - **`description`** — optional. OpenRouter uses it for picker badge text (`"recommended"`, `"free"`, or empty). Other provider blocks usually omit it. Nous Portal free-tier gating is determined live from the Portal's pricing endpoint.
+- **`default`** — exactly one entry per provider may carry `"default": true`. That model is the silent default when the user has not selected one. Runtime resolution reads the cache only and falls back to the in-repo constant when no catalog cache exists.
 - **Pricing and context length** are NOT in the manifest. Those come from live provider APIs (`/v1/models` endpoints, models.dev) at fetch time.
 
 ## Fetch behavior

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-07-14T03:50:48Z",
+  "updated_at": "2026-07-15T08:57:32Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -301,6 +301,22 @@
           "id": "copilot-acp"
         }
       ]
+    },
+    "deepinfra": {
+      "metadata": {
+        "display_name": "DeepInfra",
+        "auth_type": "api_key",
+        "env_vars": [
+          "DEEPINFRA_API_KEY"
+        ],
+        "description": "DeepInfra \u2014 100+ open models, pay-per-use",
+        "signup_url": "https://deepinfra.com/dash/api_keys",
+        "base_url": "https://api.deepinfra.com/v1/openai",
+        "base_url_env_var": "DEEPINFRA_BASE_URL",
+        "dynamic_models": true,
+        "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
+      },
+      "models": []
     },
     "deepseek": {
       "metadata": {
@@ -753,7 +769,8 @@
           "id": "minimax/minimax-m3"
         },
         {
-          "id": "z-ai/glm-5.2"
+          "id": "z-ai/glm-5.2",
+          "default": true
         },
         {
           "id": "z-ai/glm-5.1"
@@ -836,7 +853,8 @@
           "id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
         },
         {
-          "id": "z-ai/glm-5.2"
+          "id": "z-ai/glm-5.2",
+          "default": true
         },
         {
           "id": "moonshotai/kimi-k2.6"
@@ -1297,6 +1315,23 @@
         }
       ]
     },
+    "upstage": {
+      "metadata": {
+        "display_name": "Upstage Solar",
+        "auth_type": "api_key",
+        "env_vars": [
+          "UPSTAGE_API_KEY"
+        ],
+        "description": "Upstage (Solar API)",
+        "signup_url": "https://console.upstage.ai/api-keys",
+        "base_url": "https://api.upstage.ai/v1",
+        "base_url_env_var": "UPSTAGE_BASE_URL",
+        "transport": "openai_chat",
+        "dynamic_models": true,
+        "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
+      },
+      "models": []
+    },
     "xai": {
       "metadata": {
         "display_name": "xAI",
@@ -1568,7 +1603,8 @@
         },
         {
           "id": "z-ai/glm-5.2",
-          "description": ""
+          "description": "default",
+          "default": true
         },
         {
           "id": "z-ai/glm-5.1",

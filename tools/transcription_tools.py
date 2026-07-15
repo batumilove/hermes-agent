@@ -246,6 +246,7 @@ BUILTIN_STT_PROVIDERS = frozenset({
     "xai",
     "deepgram",
     "elevenlabs",
+    "deepinfra",
 })
 
 

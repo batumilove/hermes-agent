@@ -38,6 +38,7 @@ os.environ["HERMES_MODEL_CATALOG_STATIC"] = "1"
 from hermes_cli.auth import PROVIDER_REGISTRY  # noqa: E402
 from hermes_cli.models import (  # noqa: E402
     OPENROUTER_MODELS,
+    PREFERRED_SILENT_DEFAULT_MODEL,
     _PROVIDER_MODELS,
     _XAI_STATIC_FALLBACK,
     _xai_merge_curated_extras,
@@ -120,7 +121,22 @@ def _provider_metadata(provider: str, *, note: str = "") -> dict[str, Any]:
 
 
 def _model_entries(provider: str) -> list[dict[str, Any]]:
-    return [{"id": mid} for mid in _PROVIDER_MODELS.get(provider, [])]
+    entries: list[dict[str, Any]] = [{"id": mid} for mid in _PROVIDER_MODELS.get(provider, [])]
+    for entry in entries:
+        if entry["id"] == PREFERRED_SILENT_DEFAULT_MODEL:
+            entry["default"] = True
+    return entries
+
+
+def _openrouter_entries() -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for mid, desc in OPENROUTER_MODELS:
+        entry: dict[str, Any] = {"id": mid, "description": desc}
+        if mid == PREFERRED_SILENT_DEFAULT_MODEL:
+            entry["description"] = desc or "default"
+            entry["default"] = True
+        entries.append(entry)
+    return entries
 
 
 def build_catalog() -> dict:
@@ -161,10 +177,7 @@ def build_catalog() -> dict:
                 "filters curated ids by tool-calling support and free pricing."
             ),
         ) | {"display_name": "OpenRouter", "aggregator": True},
-        "models": [
-            {"id": mid, "description": desc}
-            for mid, desc in OPENROUTER_MODELS
-        ],
+        "models": _openrouter_entries(),
     }
     providers["nous"] = {
         "metadata": _provider_metadata(
