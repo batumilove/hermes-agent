@@ -1605,6 +1605,20 @@ def restore_primary_runtime(agent) -> bool:
             "Primary runtime restored for new turn: %s (%s)",
             agent.model, agent.provider,
         )
+        # Observer-only hook for metrics / telemetry plugins.  Fail-open.
+        try:
+            from hermes_cli.plugins import has_hook, invoke_hook
+
+            if has_hook("on_primary_restored"):
+                invoke_hook(
+                    "on_primary_restored",
+                    provider=agent.provider,
+                    model=agent.model,
+                    session_id=getattr(agent, "session_id", None) or "",
+                    platform=getattr(agent, "platform", None) or "",
+                )
+        except Exception:
+            pass
         return True
     except Exception as e:
         logger.warning("Failed to restore primary runtime: %s", e)

@@ -2008,6 +2008,27 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             "Fallback activated: %s → %s (%s)",
             old_model, fb_model, fb_provider,
         )
+        # Observer-only hook for metrics / telemetry plugins.  Must never
+        # affect activation success — fail-open and ignore return values.
+        try:
+            from hermes_cli.plugins import has_hook, invoke_hook
+
+            if has_hook("on_fallback_activated"):
+                reason_value = None
+                if reason is not None:
+                    reason_value = getattr(reason, "value", reason)
+                invoke_hook(
+                    "on_fallback_activated",
+                    from_provider=old_provider,
+                    from_model=old_model,
+                    to_provider=fb_provider,
+                    to_model=fb_model,
+                    reason=reason_value,
+                    session_id=getattr(agent, "session_id", None) or "",
+                    platform=getattr(agent, "platform", None) or "",
+                )
+        except Exception:
+            pass
         # Reset the stale-call circuit breaker (#58962): the streak measured
         # the OLD provider's unresponsiveness.  Carrying it over would
         # short-circuit the freshly activated fallback before it gets a
