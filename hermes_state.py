@@ -140,7 +140,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
 # Search queries do not need to be arbitrarily large, and bounding them keeps
@@ -943,26 +943,32 @@ CREATE INDEX IF NOT EXISTS idx_sessions_prunable_started
 
 FTS_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-    content
+    content,
+    tool_name,
+    tool_calls,
+    content='messages',
+    content_rowid='id'
 );
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
-    INSERT INTO messages_fts(rowid, content) VALUES (
-        new.id,
-        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
-    );
+    INSERT INTO messages_fts(rowid, content, tool_name, tool_calls)
+    VALUES (new.id, new.content, new.tool_name, new.tool_calls);
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
-    DELETE FROM messages_fts WHERE rowid = old.id;
+    INSERT INTO messages_fts(messages_fts, rowid, content, tool_name, tool_calls)
+    VALUES ('delete', old.id, old.content, old.tool_name, old.tool_calls);
 END;
 
-CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
-    DELETE FROM messages_fts WHERE rowid = old.id;
-    INSERT INTO messages_fts(rowid, content) VALUES (
-        new.id,
-        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
-    );
+CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages
+WHEN old.content IS NOT new.content
+    OR old.tool_name IS NOT new.tool_name
+    OR old.tool_calls IS NOT new.tool_calls
+BEGIN
+    INSERT INTO messages_fts(messages_fts, rowid, content, tool_name, tool_calls)
+    VALUES ('delete', old.id, old.content, old.tool_name, old.tool_calls);
+    INSERT INTO messages_fts(rowid, content, tool_name, tool_calls)
+    VALUES (new.id, new.content, new.tool_name, new.tool_calls);
 END;
 """
 
@@ -970,29 +976,57 @@ END;
 # tokenizer splits CJK characters into individual tokens, breaking phrase
 # matching.  The trigram tokenizer creates overlapping 3-byte sequences so
 # substring queries work natively for any script (CJK, Thai, etc.).
+#
+# The trigram index is the most expensive index in state.db (~2.6x the size
+# of the text it covers), and ``role='tool'`` rows are ~90% of message bytes
+# while being almost entirely machine noise (base64 payloads, file dumps,
+# delegation transcripts).  The index therefore reads through
+# ``messages_fts_trigram_src``, a view that excludes tool rows — they stay
+# fully stored in ``messages`` and fully searchable via the standard
+# ``messages_fts`` index; they just don't get trigram (CJK substring)
+# treatment.  ``search_messages`` routes CJK queries that filter on
+# ``role='tool'`` to the LIKE fallback for the same reason.
 FTS_TRIGRAM_SQL = """
+CREATE VIEW IF NOT EXISTS messages_fts_trigram_src AS
+    SELECT id, role, content, tool_name, tool_calls
+    FROM messages
+    WHERE role <> 'tool';
+
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(
     content,
+    tool_name,
+    tool_calls,
+    content='messages_fts_trigram_src',
+    content_rowid='id',
     tokenize='trigram'
 );
 
-CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_insert AFTER INSERT ON messages BEGIN
-    INSERT INTO messages_fts_trigram(rowid, content) VALUES (
-        new.id,
-        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
-    );
+CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_insert AFTER INSERT ON messages
+WHEN new.role <> 'tool'
+BEGIN
+    INSERT INTO messages_fts_trigram(rowid, content, tool_name, tool_calls)
+    VALUES (new.id, new.content, new.tool_name, new.tool_calls);
 END;
 
-CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_delete AFTER DELETE ON messages BEGIN
-    DELETE FROM messages_fts_trigram WHERE rowid = old.id;
+CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_delete AFTER DELETE ON messages
+WHEN old.role <> 'tool'
+BEGIN
+    INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content, tool_name, tool_calls)
+    VALUES ('delete', old.id, old.content, old.tool_name, old.tool_calls);
 END;
 
-CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update AFTER UPDATE ON messages BEGIN
-    DELETE FROM messages_fts_trigram WHERE rowid = old.id;
-    INSERT INTO messages_fts_trigram(rowid, content) VALUES (
-        new.id,
-        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
-    );
+CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update AFTER UPDATE ON messages
+WHEN old.content IS NOT new.content
+    OR old.tool_name IS NOT new.tool_name
+    OR old.tool_calls IS NOT new.tool_calls
+    OR old.role IS NOT new.role
+BEGIN
+    INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content, tool_name, tool_calls)
+    SELECT 'delete', old.id, old.content, old.tool_name, old.tool_calls
+    WHERE old.role <> 'tool';
+    INSERT INTO messages_fts_trigram(rowid, content, tool_name, tool_calls)
+    SELECT new.id, new.content, new.tool_name, new.tool_calls
+    WHERE new.role <> 'tool';
 END;
 """
 
@@ -1222,25 +1256,15 @@ class SessionDB:
         *,
         include_trigram: bool = True,
     ) -> None:
-        cursor.execute("DELETE FROM messages_fts")
-        cursor.execute(
-            "INSERT INTO messages_fts(rowid, content) "
-            "SELECT id, "
-            "COALESCE(content, '') || ' ' || "
-            "COALESCE(tool_name, '') || ' ' || "
-            "COALESCE(tool_calls, '') "
-            "FROM messages"
-        )
+        # Both FTS tables are external-content (v23+): the special 'rebuild'
+        # command wipes the inverted index and repopulates it from the
+        # content source (messages for the standard index, the tool-row-
+        # excluding messages_fts_trigram_src view for the trigram index).
+        cursor.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
         if not include_trigram:
             return
-        cursor.execute("DELETE FROM messages_fts_trigram")
         cursor.execute(
-            "INSERT INTO messages_fts_trigram(rowid, content) "
-            "SELECT id, "
-            "COALESCE(content, '') || ' ' || "
-            "COALESCE(tool_name, '') || ' ' || "
-            "COALESCE(tool_calls, '') "
-            "FROM messages"
+            "INSERT INTO messages_fts_trigram(messages_fts_trigram) VALUES('rebuild')"
         )
 
     def _fts_table_probe(self, cursor: sqlite3.Cursor, table_name: str) -> Optional[bool]:
@@ -1620,66 +1644,16 @@ class SessionDB:
                         fts_migrations_complete = False
                 else:
                     fts_migrations_complete = False
-            if current_version < 11:
-                # v11: re-index FTS5 tables to cover tool_name + tool_calls and
-                # switch from external-content to inline mode. Existing DBs have
-                # old-schema FTS tables and triggers that IF NOT EXISTS won't
-                # overwrite, so we drop them explicitly and let the post-migration
-                # existence checks (below) recreate them from FTS_SQL /
-                # FTS_TRIGRAM_SQL, then backfill every message row. Fixes #16751.
-                if fts5_available:
-                    self._drop_fts_triggers(cursor)
-                    for _tbl in ("messages_fts", "messages_fts_trigram"):
-                        try:
-                            cursor.execute(f"DROP TABLE IF EXISTS {_tbl}")
-                        except sqlite3.OperationalError as exc:
-                            if not self._is_fts5_unavailable_error(exc):
-                                raise
-                            if self._is_trigram_unavailable_error(exc):
-                                self._warn_trigram_unavailable(exc)
-                            else:
-                                self._warn_fts5_unavailable(exc)
-                                fts5_available = False
-                                fts_migrations_complete = False
-                            break
-
-                    if fts5_available:
-                        # Recreate virtual tables + triggers with the new inline-mode
-                        # schema that indexes content || tool_name || tool_calls.
-                        # Handle base and trigram independently — a missing
-                        # trigram tokenizer should not prevent base FTS backfill.
-                        base_fts_ok = self._ensure_fts_schema(
-                            cursor, "messages_fts", FTS_SQL
-                        )
-                        if base_fts_ok:
-                            cursor.execute(
-                                "INSERT INTO messages_fts(rowid, content) "
-                                "SELECT id, "
-                                "COALESCE(content, '') || ' ' || "
-                                "COALESCE(tool_name, '') || ' ' || "
-                                "COALESCE(tool_calls, '') "
-                                "FROM messages"
-                            )
-                        trigram_ok = self._ensure_fts_schema(
-                            cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
-                        )
-                        if trigram_ok:
-                            cursor.execute(
-                                "INSERT INTO messages_fts_trigram(rowid, content) "
-                                "SELECT id, "
-                                "COALESCE(content, '') || ' ' || "
-                                "COALESCE(tool_name, '') || ' ' || "
-                                "COALESCE(tool_calls, '') "
-                                "FROM messages"
-                            )
-                        if not base_fts_ok:
-                            fts_migrations_complete = False
-                        # Track trigram availability for CJK LIKE fallback.
-                        self._trigram_available = trigram_ok
-                    else:
-                        fts_migrations_complete = False
-                else:
-                    fts_migrations_complete = False
+            if current_version < 11 and SCHEMA_VERSION < 23:
+                # v11 (SUPERSEDED by v23): re-index FTS5 tables to cover
+                # tool_name + tool_calls in inline mode (#16751). v23 drops
+                # and rebuilds both FTS tables in external-content form, so
+                # running the v11 inline backfill first would only burn
+                # startup time and WAL space before v23 throws the work
+                # away — and its inline INSERT shape no longer matches the
+                # current external-content FTS_SQL anyway. Kept only for
+                # source archaeology; unreachable while SCHEMA_VERSION >= 23.
+                pass
             if current_version < 16:
                 # v16: tag delegate subagent rows so pickers stay clean after
                 # parent deletes that used to orphan them (parent_session_id → NULL).
@@ -1829,6 +1803,92 @@ class SessionDB:
                         )
                 except sqlite3.OperationalError as exc:
                     logger.debug("v22 session_model_usage rebuild skipped: %s", exc)
+            if current_version < 23:
+                # v23: FTS storage redesign (issues #22478, #43690, #55233).
+                # The v11 inline-mode FTS tables each stored a full private
+                # copy of every message (content || tool_name || tool_calls),
+                # and the trigram index additionally covered role='tool' rows
+                # (~90% of message bytes: base64 payloads, file dumps) at
+                # ~2.6x amplification — together ~75% of state.db on heavy
+                # installs (observed: 18.9 GB of a 25 GB DB).
+                #
+                # New shape, defined in FTS_SQL / FTS_TRIGRAM_SQL:
+                #   - both tables are external-content over real columns
+                #     (content, tool_name, tool_calls) — no duplicate text
+                #     copies, and #16751 tool_calls searchability is kept;
+                #   - the trigram table reads through the
+                #     messages_fts_trigram_src view, which excludes
+                #     role='tool' rows. Tool rows remain fully stored in
+                #     messages and fully searchable via the standard index.
+                #
+                # Drop the old objects and rebuild. The rebuild scans every
+                # message row, so it can take minutes on multi-GB DBs — log
+                # loudly so a gateway/CLI startup pause is explicable. Space
+                # is returned to the OS by the next VACUUM (hermes sessions
+                # optimize, or sessions.vacuum_after_prune).
+                if fts5_available:
+                    _msg_count = cursor.execute(
+                        "SELECT COUNT(*) FROM messages"
+                    ).fetchone()[0]
+                    if _msg_count > 100_000:
+                        logger.warning(
+                            "state.db v23 migration: rebuilding FTS indexes for "
+                            "%d messages — this one-time step may take several "
+                            "minutes on large databases; do not interrupt.",
+                            _msg_count,
+                        )
+                    self._drop_fts_triggers(cursor)
+                    _drop_ok = True
+                    for _obj, _kind in (
+                        ("messages_fts", "TABLE"),
+                        ("messages_fts_trigram", "TABLE"),
+                        ("messages_fts_trigram_src", "VIEW"),
+                    ):
+                        try:
+                            cursor.execute(f"DROP {_kind} IF EXISTS {_obj}")
+                        except sqlite3.OperationalError as exc:
+                            if not self._is_fts5_unavailable_error(exc):
+                                raise
+                            if self._is_trigram_unavailable_error(exc):
+                                self._warn_trigram_unavailable(exc)
+                            else:
+                                self._warn_fts5_unavailable(exc)
+                                fts5_available = False
+                            _drop_ok = False
+                            fts_migrations_complete = False
+                            break
+
+                    if _drop_ok and fts5_available:
+                        # Recreate + rebuild base and trigram independently —
+                        # a missing trigram tokenizer must not block the base
+                        # index (same policy as the FTS setup block below).
+                        base_fts_ok = self._ensure_fts_schema(
+                            cursor, "messages_fts", FTS_SQL
+                        )
+                        if base_fts_ok:
+                            cursor.execute(
+                                "INSERT INTO messages_fts(messages_fts) "
+                                "VALUES('rebuild')"
+                            )
+                        else:
+                            fts_migrations_complete = False
+                        trigram_ok = self._ensure_fts_schema(
+                            cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
+                        )
+                        if trigram_ok:
+                            cursor.execute(
+                                "INSERT INTO messages_fts_trigram("
+                                "messages_fts_trigram) VALUES('rebuild')"
+                            )
+                        self._trigram_available = trigram_ok
+                        if base_fts_ok and _msg_count > 100_000:
+                            logger.warning(
+                                "state.db v23 FTS rebuild complete. Run "
+                                "'hermes sessions optimize' to return the "
+                                "freed space to the OS."
+                            )
+                else:
+                    fts_migrations_complete = False
             if current_version < SCHEMA_VERSION and fts_migrations_complete:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
@@ -5264,7 +5324,7 @@ class SessionDB:
                 m.id,
                 m.session_id,
                 m.role,
-                snippet(messages_fts, 0, '>>>', '<<<', '...', 40) AS snippet,
+                snippet(messages_fts, -1, '>>>', '<<<', '...', 40) AS snippet,
                 m.content,
                 m.timestamp,
                 m.tool_name,
@@ -5306,7 +5366,17 @@ class SessionDB:
             )
 
             _trigram_succeeded = False
-            if cjk_count >= 3 and not _any_short_cjk and self._trigram_available:
+            # Tool rows are excluded from the trigram index (they're ~90% of
+            # message bytes and machine noise — see FTS_TRIGRAM_SQL). A CJK
+            # query explicitly filtering on role='tool' must therefore use
+            # the LIKE fallback, which scans the base table directly.
+            _wants_tool_rows = bool(role_filter) and "tool" in role_filter
+            if (
+                cjk_count >= 3
+                and not _any_short_cjk
+                and self._trigram_available
+                and not _wants_tool_rows
+            ):
                 # Trigram FTS5 path — quote each non-operator token to handle
                 # FTS5 special chars (%, *, etc.) while preserving boolean
                 # operators (AND, OR, NOT) for multi-term queries.
@@ -5336,7 +5406,7 @@ class SessionDB:
                         m.id,
                         m.session_id,
                         m.role,
-                        snippet(messages_fts_trigram, 0, '>>>', '<<<', '...', 40) AS snippet,
+                        snippet(messages_fts_trigram, -1, '>>>', '<<<', '...', 40) AS snippet,
                         m.content,
                         m.timestamp,
                         m.tool_name,

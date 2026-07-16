@@ -3732,11 +3732,15 @@ class TestSchemaInit:
         migrated_db.close()
 
     def test_v9_migration_skips_v10_trigram_backfill_before_v11_rebuild(self, tmp_path, monkeypatch):
-        """Direct v9→current migration should do only the v11 FTS rebuild.
+        """Direct v9→current migration should do only the v23 FTS rebuild.
 
-        v10 backfilled ``messages_fts_trigram`` with content-only rows. Current
-        v11+ migration immediately drops and rebuilds both FTS tables with
-        content + tool metadata, so running the v10 insert first is wasted work.
+        v10 backfilled ``messages_fts_trigram`` with content-only rows. The
+        current migration immediately drops and rebuilds both FTS tables in
+        external-content form, so running the v10 insert first is wasted work.
+
+        v23 contract: tool rows are excluded from the trigram index (they
+        remain fully searchable via the standard index); non-tool rows are
+        indexed in both.
         """
         db_path = tmp_path / "v9_fts.db"
         conn = sqlite3.connect(str(db_path))
@@ -3751,6 +3755,11 @@ class TestSchemaInit:
             "INSERT INTO messages (session_id, role, content, tool_name, tool_calls, timestamp) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             ("s1", "tool", "plain content", "browser_snapshot", '{"name":"browser_snapshot"}', 1001.0),
+        )
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp) "
+            "VALUES (?, ?, ?, ?)",
+            ("s1", "assistant", "assistant summary of the snapshot", 1002.0),
         )
         conn.commit()
         conn.close()
@@ -3778,15 +3787,24 @@ class TestSchemaInit:
             assert trigram_content_only_inserts == []
             version = migrated_db._conn.execute("SELECT version FROM schema_version").fetchone()[0]
             assert version == SCHEMA_VERSION
+            # Standard FTS indexes every row, including tool output.
             normal_count = migrated_db._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+            assert normal_count == 2
+            # Trigram excludes role='tool' rows (v23) but keeps non-tool rows.
             trigram_count = migrated_db._conn.execute("SELECT COUNT(*) FROM messages_fts_trigram").fetchone()[0]
-            assert normal_count == 1
             assert trigram_count == 1
+            # Tool metadata stays searchable via the standard index (#16751).
             tool_hit = migrated_db._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts "
+                "WHERE messages_fts MATCH 'browser_snapshot'"
+            ).fetchone()[0]
+            assert tool_hit == 1
+            # And is intentionally absent from the trigram index.
+            tri_tool_hit = migrated_db._conn.execute(
                 "SELECT COUNT(*) FROM messages_fts_trigram "
                 "WHERE messages_fts_trigram MATCH 'browser_snapshot'"
             ).fetchone()[0]
-            assert tool_hit == 1
+            assert tri_tool_hit == 0
         finally:
             migrated_db.close()
 
@@ -5199,6 +5217,147 @@ class TestFTS5ToolCallMigration:
             assert version == SCHEMA_VERSION
         finally:
             session_db.close()
+
+
+class TestFTSExternalContentMigration:
+    """v23 migration: inline-mode FTS tables (v11-v22) are rebuilt as
+    external-content tables, and role='tool' rows are excluded from the
+    trigram index while remaining searchable via the standard index."""
+
+    @staticmethod
+    def _build_v22_db(db_path):
+        """Build a v22-shaped DB by hand: inline FTS tables + concat triggers."""
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript(SCHEMA_SQL)
+        # Replace the current (v23) FTS objects with the v22 inline shape.
+        conn.executescript("""
+            DROP TABLE IF EXISTS messages_fts;
+            DROP TABLE IF EXISTS messages_fts_trigram;
+            DROP VIEW IF EXISTS messages_fts_trigram_src;
+
+            CREATE VIRTUAL TABLE messages_fts USING fts5(content);
+            CREATE TRIGGER messages_fts_insert AFTER INSERT ON messages BEGIN
+                INSERT INTO messages_fts(rowid, content) VALUES (
+                    new.id,
+                    COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+                );
+            END;
+
+            CREATE VIRTUAL TABLE messages_fts_trigram USING fts5(content, tokenize='trigram');
+            CREATE TRIGGER messages_fts_trigram_insert AFTER INSERT ON messages BEGIN
+                INSERT INTO messages_fts_trigram(rowid, content) VALUES (
+                    new.id,
+                    COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+                );
+            END;
+        """)
+        conn.execute("DELETE FROM schema_version")
+        conn.execute("INSERT INTO schema_version (version) VALUES (22)")
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES ('s1', 'cli', ?)",
+            (time.time(),),
+        )
+        rows = [
+            ("user", "find the 大别山项目 deployment notes", None, None),
+            ("assistant", "关于大别山项目的总结在这里", None,
+             '{"function":{"name":"send_message","arguments":"{}"}}'),
+            ("tool", "TOOLBLOB " + "x" * 5000 + " 项目文件内容测试", "read_file", None),
+        ]
+        for role, content, tool_name, tool_calls in rows:
+            conn.execute(
+                "INSERT INTO messages (session_id, timestamp, role, content, tool_name, tool_calls) "
+                "VALUES ('s1', ?, ?, ?, ?, ?)",
+                (time.time(), role, content, tool_name, tool_calls),
+            )
+        conn.commit()
+        # Sanity: v22 inline tables have their own content shadow tables.
+        shadow = conn.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'messages_fts_content'"
+        ).fetchall()
+        assert shadow, "sanity: v22 inline FTS must have a content shadow table"
+        conn.close()
+
+    def test_v22_to_v23_rebuild_external_content(self, tmp_path):
+        db_path = tmp_path / "v22.db"
+        self._build_v22_db(db_path)
+
+        db = SessionDB(db_path=db_path)
+        try:
+            version = db._conn.execute(
+                "SELECT version FROM schema_version"
+            ).fetchone()[0]
+            assert version == SCHEMA_VERSION
+
+            # External-content tables store no private text copies: FTS5
+            # doesn't even create the *_content shadow tables in this mode.
+            for shadow in ("messages_fts_content", "messages_fts_trigram_content"):
+                row = db._conn.execute(
+                    "SELECT name FROM sqlite_master WHERE name = ?", (shadow,)
+                ).fetchone()
+                assert row is None, f"{shadow} must not exist in external-content mode"
+
+            # Standard FTS: all rows, tool metadata searchable (#16751).
+            assert db._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 3
+            assert len(db.search_messages("TOOLBLOB")) == 1
+            assert len(db.search_messages("send_message")) == 1
+
+            # Trigram: tool rows excluded, CJK search over conversation works.
+            assert db._conn.execute("SELECT COUNT(*) FROM messages_fts_trigram").fetchone()[0] == 2
+            cjk = db.search_messages("大别山项目")
+            assert len(cjk) == 2
+            # CJK substring that exists ONLY in tool output: not in trigram,
+            # but role_filter=['tool'] routes to the LIKE fallback and finds it.
+            assert db.search_messages("项目文件内容", role_filter=["tool"]) != []
+        finally:
+            db.close()
+
+    def test_v23_trigram_stays_in_sync_on_write_paths(self, tmp_path):
+        """INSERT/UPDATE/DELETE through SessionDB keep both indexes coherent
+        under the new trigger shape (integrity-check verifies external
+        content agreement)."""
+        db = SessionDB(db_path=tmp_path / "fresh.db")
+        try:
+            db.create_session(session_id="s1", source="cli")
+            db.append_message("s1", role="user", content="搜索大别山项目相关资料")
+            db.append_message("s1", role="tool", content="工具输出的大段内容在这里",
+                              tool_name="web_search")
+            db.append_message("s1", role="assistant", content="assistant reply")
+
+            # Trigram: user+assistant only; standard: everything.
+            assert db._conn.execute("SELECT COUNT(*) FROM messages_fts_trigram").fetchone()[0] == 2
+            assert db._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 3
+
+            # Rewind-style UPDATE (active=0) must not desync the index — the
+            # triggers only fire on content/tool column changes.
+            def _deactivate(conn):
+                conn.execute("UPDATE messages SET active = 0 WHERE role = 'assistant'")
+            db._execute_write(_deactivate)
+
+            # FTS5 integrity-check raises SQLITE_CORRUPT_VTAB on any
+            # index/content disagreement; passing = indexes are coherent.
+            db._conn.execute(
+                "INSERT INTO messages_fts(messages_fts, rank) VALUES('integrity-check', 1)"
+            )
+            db._conn.execute(
+                "INSERT INTO messages_fts_trigram(messages_fts_trigram, rank) "
+                "VALUES('integrity-check', 1)"
+            )
+        finally:
+            db.close()
+
+    def test_v23_cjk_tool_role_filter_uses_like_fallback(self, tmp_path):
+        """A CJK query with role_filter=['tool'] must bypass the trigram index
+        (tool rows aren't in it) and still find matches via LIKE."""
+        db = SessionDB(db_path=tmp_path / "fresh.db")
+        try:
+            db.create_session(session_id="s1", source="cli")
+            db.append_message("s1", role="tool", content="错误日志：数据库连接超时",
+                              tool_name="terminal")
+            hits = db.search_messages("数据库连接", role_filter=["tool"])
+            assert len(hits) == 1
+            assert hits[0]["role"] == "tool"
+        finally:
+            db.close()
 
 
 # ---------------------------------------------------------------------------
