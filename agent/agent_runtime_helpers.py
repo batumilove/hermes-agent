@@ -670,6 +670,21 @@ def strip_think_blocks(agent, content: str) -> str:
     after punctuation and carries a ``name="..."`` attribute) so prose
     mentions like "Use <function> in JavaScript" are preserved.
     """
+    # Defensive coercion: callers may pass multimodal content-parts lists
+    # (e.g. after vision turns or context compaction). Extract any text
+    # blocks and drop non-text parts before running regexes.
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict) and part.get("type") == "text":
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        content = "\n".join(parts)
+    elif not isinstance(content, str):
+        content = str(content) if content is not None else ""
     if not content:
         return ""
     # 1. Closed tag pairs — case-insensitive for all variants so
