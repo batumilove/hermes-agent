@@ -186,9 +186,9 @@ jobs:
         id: label-check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          PR="${{ github.event.pull_request.number }}"
           LABELS=$(gh pr view "$PR" --json labels --jq '.labels[].name' || true)
           if echo "$LABELS" | grep -Fxq 'ci-reviewed'; then
             echo "reviewed=true" >> "$GITHUB_OUTPUT"
@@ -206,9 +206,10 @@ jobs:
         if: steps.label-check.outputs.reviewed != 'true' && github.event.pull_request.head.repo.fork != true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          PR="${{ github.event.pull_request.number }}"
           MARKER="<!-- ci-review-bot -->"
           BODY="${MARKER}
           ## ⚠️ CI-sensitive file review required
@@ -226,13 +227,13 @@ jobs:
 
           # Find an existing comment with our marker.
           COMMENT_ID=$(gh api \
-            "repos/${{ github.repository }}/issues/${PR}/comments" \
+            "repos/${REPO}/issues/${PR}/comments" \
             --paginate --jq ".[] | select(.body | contains(\"${MARKER}\")) | .id" \
             | head -1 || true)
 
           if [ -n "$COMMENT_ID" ]; then
             gh api --method PATCH \
-              "repos/${{ github.repository }}/issues/comments/${COMMENT_ID}" \
+              "repos/${REPO}/issues/comments/${COMMENT_ID}" \
               -f body="$BODY"
           else
             gh pr comment "$PR" --body "$BODY"
@@ -254,14 +255,15 @@ jobs:
         if: steps.label-check.outputs.reviewed == 'true' && github.event.pull_request.head.repo.fork != true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          PR="${{ github.event.pull_request.number }}"
           MARKER="<!-- ci-review-bot -->"
 
           # Find an existing comment with our marker.
           COMMENT_ID=$(gh api \
-            "repos/${{ github.repository }}/issues/${PR}/comments" \
+            "repos/${REPO}/issues/${PR}/comments" \
             --paginate --jq ".[] | select(.body | contains(\"${MARKER}\")) | .id" \
             | head -1 || true)
 
@@ -272,6 +274,6 @@ jobs:
           The \`ci-reviewed\` label is present on this PR."
 
             gh api --method PATCH \
-              "repos/${{ github.repository }}/issues/comments/${COMMENT_ID}" \
+              "repos/${REPO}/issues/comments/${COMMENT_ID}" \
               -f body="$BODY"
           fi
