@@ -648,12 +648,96 @@ def test_stale_active_deriver_work_triggers_alert():
         "queue_by_type": {"representation": {"pending": 6247, "done": 1201}},
         "errors": {"save_representation": 0, "four_oh_one": 0},
         "spark_goat": {"ok": True, "latency_s": 1.2, "thinking": False, "model": "aeon-ultimate"},
-        "deriver": {"runs_15m": 0, "last_duration_s": 0, "conclusions": 0, "active_count": 3, "active_oldest_age_s": 901},
+        "deriver": {
+            "runs_15m": 0,
+            "last_duration_s": 0,
+            "conclusions": 0,
+            "active_count": 3,
+            "active_oldest_age_s": 901,
+            "active_oldest_work_unit_key": "representation:session-1",
+        },
     }
 
     alerts = hm.build_alerts(hm.HonchoSnapshot(**snapshot), previous_state={})
 
     assert "Deriver active work stale (3 active, oldest 15m)" in alerts
+
+
+def test_active_dream_work_uses_longer_stale_threshold():
+    snapshot = {
+        "services": {"api_ok": True, "deriver_up": True, "db_ok": True, "redis_ok": True},
+        "pipeline": {
+            "embedding": {
+                "model": "qwen3-embedding-8b-1536",
+                "base_url": "http://100.69.54.37:11435/v1",
+                "dimensions_mode": "never",
+                "vector_dimensions": "1536",
+            },
+        },
+        "db": {
+            "documents_total": 96179,
+            "documents_with_embeddings": 96179,
+            "documents_dims": 1536,
+            "messages_total": 22153,
+            "messages_with_embeddings": 22153,
+            "messages_dims": 1536,
+        },
+        "queue": {"pending": 2, "done": 3},
+        "queue_by_type": {"dream": {"pending": 1, "done": 3}},
+        "errors": {"save_representation": 0, "four_oh_one": 0},
+        "spark_goat": {"ok": True, "latency_s": 1.2, "thinking": False, "model": "aeon-ultimate"},
+        "deriver": {
+            "runs_15m": 0,
+            "last_duration_s": 0,
+            "conclusions": 0,
+            "active_count": 1,
+            "active_oldest_age_s": 901,
+            "active_oldest_work_unit_key": "dream:omni:hermes:407304892:hermes",
+        },
+    }
+
+    alerts = hm.build_alerts(hm.HonchoSnapshot(**snapshot), previous_state={})
+
+    assert not any("active work stale" in alert for alert in alerts)
+
+
+def test_stale_active_dream_work_is_labeled_as_dream():
+    snapshot = {
+        "services": {"api_ok": True, "deriver_up": True, "db_ok": True, "redis_ok": True},
+        "pipeline": {
+            "embedding": {
+                "model": "qwen3-embedding-8b-1536",
+                "base_url": "http://100.69.54.37:11435/v1",
+                "dimensions_mode": "never",
+                "vector_dimensions": "1536",
+            },
+        },
+        "db": {
+            "documents_total": 96179,
+            "documents_with_embeddings": 96179,
+            "documents_dims": 1536,
+            "messages_total": 22153,
+            "messages_with_embeddings": 22153,
+            "messages_dims": 1536,
+        },
+        "queue": {"pending": 2, "done": 3},
+        "queue_by_type": {"dream": {"pending": 1, "done": 3}},
+        "errors": {"save_representation": 0, "four_oh_one": 0},
+        "spark_goat": {"ok": True, "latency_s": 1.2, "thinking": False, "model": "aeon-ultimate"},
+        "deriver": {
+            "runs_15m": 0,
+            "last_duration_s": 0,
+            "conclusions": 0,
+            "active_count": 1,
+            "active_oldest_age_s": 1801,
+            "active_oldest_work_unit_key": "dream:omni:hermes:407304892:hermes",
+        },
+    }
+
+    alerts = hm.build_alerts(hm.HonchoSnapshot(**snapshot), previous_state={})
+
+    assert "Dream active work stale (1 active, oldest 30m)" in alerts
+
 
 def test_legacy_state_without_queue_by_type_does_not_crash_or_false_alert():
     """Old state files lack queue_by_type; drift alert should be skipped."""

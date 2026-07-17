@@ -37,6 +37,7 @@ STATE_PATH = Path(
 HERMES_STATE_DB = Path(os.environ.get("HONCHO_MONITOR_HERMES_STATE_DB", str(Path.home() / ".hermes" / "state.db")))
 INGESTION_STALE_SECONDS = int(os.environ.get("HONCHO_MONITOR_INGESTION_STALE_SECONDS", "3600"))
 DERIVER_STALE_ACTIVE_SECONDS = int(os.environ.get("HONCHO_MONITOR_DERIVER_STALE_ACTIVE_SECONDS", "600"))
+DREAM_STALE_ACTIVE_SECONDS = int(os.environ.get("HONCHO_MONITOR_DREAM_STALE_ACTIVE_SECONDS", "1800"))
 SSH_FAILURE_ALERT_THRESHOLD = int(os.environ.get("HONCHO_MONITOR_SSH_FAILURE_ALERT_THRESHOLD", "2"))
 
 
@@ -347,9 +348,17 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
     deriver = snapshot.deriver or {}
     active_count = int(deriver.get("active_count") or 0)
     active_oldest_age_s = int(float(deriver.get("active_oldest_age_s") or 0))
-    if active_count > 0 and active_oldest_age_s >= DERIVER_STALE_ACTIVE_SECONDS:
+    active_work_unit_key = str(deriver.get("active_oldest_work_unit_key") or "")
+    active_task_type = active_work_unit_key.partition(":")[0]
+    stale_threshold = (
+        DREAM_STALE_ACTIVE_SECONDS
+        if active_task_type == "dream"
+        else DERIVER_STALE_ACTIVE_SECONDS
+    )
+    if active_count > 0 and active_oldest_age_s >= stale_threshold:
+        label = "Dream" if active_task_type == "dream" else "Deriver"
         alerts.append(
-            f"Deriver active work stale ({active_count} active, oldest {_format_age(active_oldest_age_s)})"
+            f"{label} active work stale ({active_count} active, oldest {_format_age(active_oldest_age_s)})"
         )
 
     return alerts
@@ -501,7 +510,10 @@ def format_report(snapshot: dict[str, Any] | HonchoSnapshot, previous_state: dic
     if deriver:
         active = ""
         if int(deriver.get("active_count") or 0) > 0:
-            active = f" · active={deriver.get('active_count')} oldest={_format_age(deriver.get('active_oldest_age_s'))}"
+            work_unit_key = str(deriver.get("active_oldest_work_unit_key") or "")
+            task_type = work_unit_key.partition(":")[0]
+            task_label = f" {task_type}" if task_type else ""
+            active = f" · active={deriver.get('active_count')}{task_label} oldest={_format_age(deriver.get('active_oldest_age_s'))}"
         lines.append(
             f"⚡ {deriver.get('runs_15m', '?')} runs/15m · last={_fmt_s(deriver.get('last_duration_s'))} · {deriver.get('conclusions', '?')} total conclusions{active}"
         )
@@ -863,13 +875,15 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
 
     active_raw = ssh(
         "docker exec honcho-database-1 psql -U postgres -t -A -F '|' -c \""
-        "SELECT count(*)::text, COALESCE(EXTRACT(EPOCH FROM (now() - min(last_updated)))::int::text, '0') "
+        "SELECT count(*)::text, COALESCE(EXTRACT(EPOCH FROM (now() - min(last_updated)))::int::text, '0'), "
+        "COALESCE((SELECT work_unit_key FROM active_queue_sessions ORDER BY last_updated LIMIT 1), '') "
         "FROM active_queue_sessions;\"",
         timeout=20,
     )
     active_parts = [part.strip() for part in active_raw.split("|")] if active_raw else []
     active_count = _int_or_zero(active_parts[0]) if len(active_parts) > 0 else 0
     active_oldest_age_s = _int_or_zero(active_parts[1]) if len(active_parts) > 1 else 0
+    active_oldest_work_unit_key = active_parts[2] if len(active_parts) > 2 else ""
 
     snapshot = HonchoSnapshot(
         services=services,
@@ -892,6 +906,7 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
             "conclusions": conclusions,
             "active_count": active_count,
             "active_oldest_age_s": active_oldest_age_s,
+            "active_oldest_work_unit_key": active_oldest_work_unit_key,
         },
         ingestion=ingestion,
     )
@@ -911,6 +926,7 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
             "conclusions": conclusions,
             "active_count": active_count,
             "active_oldest_age_s": active_oldest_age_s,
+            "active_oldest_work_unit_key": active_oldest_work_unit_key,
         },
         "ingestion": ingestion,
         "deriver_active_count": active_count,
