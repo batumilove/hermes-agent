@@ -147,6 +147,13 @@ SCHEMA_VERSION = 21
 # sanitizer/runtime behavior predictable under adversarial input.
 MAX_FTS5_QUERY_CHARS = 2_048
 
+# A modest mmap window improves repeated index scans without reserving a large
+# per-connection SQLite page cache. Clean mapped pages remain reclaimable by
+# the OS; 128 MiB was the conservative point validated against an 8 GiB
+# production-sized state.db. Apply it only in WAL mode, never on the
+# rollback-journal network-filesystem fallback.
+STATE_DB_MMAP_SIZE = 128 * 1024 * 1024
+
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
 # ---------------------------------------------------------------------------
@@ -439,6 +446,25 @@ def apply_wal_with_fallback(
         _log_wal_fallback_once(db_label, exc)
         conn.execute("PRAGMA journal_mode=DELETE")
         return "delete"
+
+
+def apply_state_db_read_tuning(
+    conn: sqlite3.Connection,
+    *,
+    journal_mode: Optional[str] = None,
+) -> None:
+    """Apply conservative read tuning to a state.db connection.
+
+    Memory mapping is connection-local and safe to request repeatedly. Keep
+    SQLite's default small page cache: larger per-connection caches increased
+    first-query latency and multiply memory use under gateway concurrency.
+    """
+    mode = journal_mode
+    if mode is None:
+        row = conn.execute("PRAGMA journal_mode").fetchone()
+        mode = row[0] if row else ""
+    if str(mode).strip().lower() == "wal":
+        conn.execute(f"PRAGMA mmap_size={STATE_DB_MMAP_SIZE}")
 
 
 def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
@@ -908,6 +934,9 @@ CREATE INDEX IF NOT EXISTS idx_sessions_gateway_peer
     ON sessions(source, user_id, chat_id, chat_type, thread_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_handoff_state
     ON sessions(handoff_state, started_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_prunable_started
+    ON sessions(started_at)
+    WHERE ended_at IS NOT NULL AND archived = 0;
 """
 
 FTS_SQL = """
@@ -1038,6 +1067,7 @@ class SessionDB:
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
+                apply_state_db_read_tuning(self._conn)
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1056,7 +1086,14 @@ class SessionDB:
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
-                apply_wal_with_fallback(self._conn, db_label="state.db")
+                journal_mode = apply_wal_with_fallback(
+                    self._conn,
+                    db_label="state.db",
+                )
+                apply_state_db_read_tuning(
+                    self._conn,
+                    journal_mode=journal_mode,
+                )
                 self._conn.execute("PRAGMA foreign_keys=ON")
                 self._init_schema()
 
