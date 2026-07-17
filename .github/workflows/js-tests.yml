@@ -4,10 +4,14 @@ name: JS Tests
 on:
   workflow_call:
 
+permissions:
+  contents: read
+
 jobs:
   workspaces:
     name: List npm workspaces
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       packages: ${{ steps.set-matrix.outputs.packages }}
     steps:
@@ -32,6 +36,7 @@ jobs:
     name: Typecheck & Test
     needs: workspaces
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       matrix:
         package: ${{ fromJson(needs.workspaces.outputs.packages) }}
@@ -45,5 +50,9 @@ jobs:
       - uses: ./.github/actions/retry
         with:
           command: npm ci
-      - run: npm run --prefix ${{ matrix.package }} check
-      - run: npm run --prefix ${{ matrix.package }} fix
+      - env:
+          PACKAGE: ${{ matrix.package }}
+        run: npm run --prefix "$PACKAGE" check
+      - env:
+          PACKAGE: ${{ matrix.package }}
+        run: npm run --prefix "$PACKAGE" fix
