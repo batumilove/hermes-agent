@@ -39,10 +39,16 @@ jobs:
           SLICE_COUNT: ${{ inputs.slice_count }}
         run: |
           MATRIX=$(python3 scripts/run_tests_parallel.py --generate-slices "$SLICE_COUNT")
+          MATRIX=$(python3 -c '
+          import json, sys
+          matrix = json.loads(sys.argv[1])
+          matrix["python-version"] = ["3.11", "3.12", "3.13"]
+          print(json.dumps(matrix, separators=(",", ":")))
+          ' "$MATRIX")
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
 
   test:
-    name: Run tests slice ${{ matrix.slice.index }}/${{ inputs.slice_count }}
+    name: Python ${{ matrix.python-version }} · slice ${{ matrix.slice.index }}/${{ inputs.slice_count }}
     needs: generate
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -80,8 +86,10 @@ jobs:
             pyproject.toml
             uv.lock
 
-      - name: Set up Python 3.11
-        run: uv python install 3.11
+      - name: Set up Python ${{ matrix.python-version }}
+        env:
+          PYTHON_VERSION: ${{ matrix.python-version }}
+        run: uv python install "$PYTHON_VERSION"
 
       - name: Install dependencies
         # `uv sync --locked` installs the exact pinned set from uv.lock (and
@@ -90,7 +98,7 @@ jobs:
         # `uv venv` step is needed.
         uses: ./.github/actions/retry
         with:
-          command: uv sync --locked --python 3.11 --extra all --extra dev
+          command: uv sync --locked --python ${{ matrix.python-version }} --extra all --extra dev
 
       - name: Minimize uv cache
         # Optimized for CI: prunes pre-built wheels that are cheap to
@@ -118,6 +126,7 @@ jobs:
           scripts/run_tests.sh --files "$SLICE_FILES"
 
       - name: Upload per-slice durations
+        if: matrix.python-version == '3.11'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-durations-slice-${{ matrix.slice.index }}
