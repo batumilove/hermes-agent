@@ -2926,10 +2926,61 @@ def run_job(
 
     # Initialize SQLite session store so cron job messages are persisted
     # and discoverable via session_search (same pattern as gateway/run.py).
+    # Bound construction separately from HERMES_CRON_TIMEOUT: SessionDB opens
+    # and migrates state.db synchronously, so a wedged connect must not keep the
+    # dispatch guard occupied forever.
     _session_db = None
+    _session_db_timeout = 10.0
     try:
         from hermes_state import SessionDB
-        _session_db = SessionDB()
+
+        # Resolution order: env override -> config.yaml -> 10s default.
+        _raw_env_timeout = os.getenv("HERMES_CRON_SESSION_DB_TIMEOUT", "").strip()
+        _resolved_timeout = None
+        if _raw_env_timeout:
+            try:
+                _resolved_timeout = float(_raw_env_timeout)
+            except (ValueError, TypeError):
+                logger.warning(
+                    "Invalid HERMES_CRON_SESSION_DB_TIMEOUT=%r; using config/default",
+                    _raw_env_timeout,
+                )
+        if _resolved_timeout is None:
+            try:
+                from hermes_cli.config import load_config
+
+                _cfg = load_config() or {}
+                _cron_cfg = _cfg.get("cron", {}) if isinstance(_cfg, dict) else {}
+                _configured_timeout = _cron_cfg.get("session_db_timeout_seconds")
+                if _configured_timeout is not None:
+                    _resolved_timeout = float(_configured_timeout)
+            except Exception as exc:
+                logger.debug(
+                    "Failed to load cron.session_db_timeout_seconds from config: %s",
+                    exc,
+                )
+        if _resolved_timeout is not None:
+            _session_db_timeout = _resolved_timeout
+
+        if _session_db_timeout > 0:
+            _session_db_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            try:
+                _session_db = _session_db_pool.submit(SessionDB).result(
+                    timeout=_session_db_timeout
+                )
+            finally:
+                # Do not wait for a wedged sqlite connect to unwind.
+                _session_db_pool.shutdown(wait=False)
+        else:
+            # 0 = unlimited, retained as an explicit debugging escape hatch.
+            _session_db = SessionDB()
+    except concurrent.futures.TimeoutError:
+        logger.error(
+            "Job '%s': SessionDB init did not return within %.3gs; proceeding "
+            "without a session store",
+            job.get("id", "?"),
+            _session_db_timeout,
+        )
     except Exception as e:
         logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
 

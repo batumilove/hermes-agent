@@ -435,18 +435,9 @@ def init_agent(
     provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
     agent.provider = provider_name or ""
     agent._disable_streaming = False
-    if credential_pool is not None:
-        try:
-            from agent.credential_pool import credential_pool_matches_provider
-
-            if not credential_pool_matches_provider(
-                credential_pool,
-                agent.provider,
-                base_url=agent.base_url,
-            ):
-                credential_pool = None
-        except Exception:
-            credential_pool = None
+    # Preserve the caller-supplied pool until provider auto-detection below has
+    # established the effective provider; validating against an empty provider
+    # here would incorrectly discard compatible pools.
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
@@ -482,6 +473,21 @@ def init_agent(
         agent.api_mode = "bedrock_converse"
     else:
         agent.api_mode = "chat_completions"
+
+    # Validate only after URL-based provider inference. This keeps a compatible
+    # pool supplied with provider=None attached to the detected provider.
+    if credential_pool is not None:
+        try:
+            from agent.credential_pool import credential_pool_matches_provider
+
+            if not credential_pool_matches_provider(
+                credential_pool,
+                agent.provider,
+                base_url=agent.base_url,
+            ):
+                agent._credential_pool = None
+        except Exception:
+            agent._credential_pool = None
 
     # Eagerly warm the transport cache so import errors surface at init,
     # not mid-conversation.  Also validates the api_mode is registered.
