@@ -19,7 +19,7 @@ import re
 import sqlite3
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -37,6 +37,7 @@ STATE_PATH = Path(
 HERMES_STATE_DB = Path(os.environ.get("HONCHO_MONITOR_HERMES_STATE_DB", str(Path.home() / ".hermes" / "state.db")))
 INGESTION_STALE_SECONDS = int(os.environ.get("HONCHO_MONITOR_INGESTION_STALE_SECONDS", "3600"))
 DERIVER_STALE_ACTIVE_SECONDS = int(os.environ.get("HONCHO_MONITOR_DERIVER_STALE_ACTIVE_SECONDS", "600"))
+SSH_FAILURE_ALERT_THRESHOLD = int(os.environ.get("HONCHO_MONITOR_SSH_FAILURE_ALERT_THRESHOLD", "2"))
 
 
 HOST_MAP = {
@@ -184,10 +185,36 @@ def _fmt_s(value: Any) -> str:
 
 def _service_row(services: dict[str, bool]) -> str:
     labels = (("api_ok", "API"), ("deriver_up", "Deriver"), ("db_ok", "DB"), ("redis_ok", "Redis"))
+    if services.get("ssh_ok") is False:
+        return " ".join(f"⚪ {label}" for _, label in labels)
     return " ".join(
         f"{'🟢' if services.get(key, False) else '🔴'} {label}"
         for key, label in labels
     )
+
+
+def _ssh_error_reason(services: dict[str, Any]) -> str:
+    raw = str(services.get("ssh_error") or "unknown transport error")
+    raw = raw.removeprefix("__SSH_ERROR__").strip()
+    raw = re.sub(r"https://login\.tailscale\.com/a/\S+", "<redacted-auth-url>", raw)
+    raw = re.sub(r"\s+", " ", raw).strip()
+    return raw[:180] or "unknown transport error"
+
+
+def restore_last_valid_remote_sample(
+    snapshot: HonchoSnapshot,
+    previous_state: dict[str, Any] | None,
+) -> HonchoSnapshot:
+    """Show the last valid remote sample when only the SSH transport failed."""
+    if snapshot.services.get("ssh_ok") is not False or not previous_state:
+        return snapshot
+
+    replacements: dict[str, Any] = {}
+    for key in ("pipeline", "db", "queue", "queue_by_type", "errors", "deriver"):
+        value = previous_state.get(key)
+        if isinstance(value, dict) and value:
+            replacements[key] = value
+    return replace(snapshot, **replacements) if replacements else snapshot
 
 
 def _queue_type_delta(snapshot: HonchoSnapshot, previous_state: dict[str, Any], task_type: str) -> int:
@@ -240,7 +267,12 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
 
     svc = snapshot.services
     if svc.get("ssh_ok") is False:
-        alerts.append("Honcho SSH probe failed")
+        previous_streak = int((previous_state or {}).get("ssh_failure_streak", 0))
+        streak = previous_streak + 1
+        if streak >= SSH_FAILURE_ALERT_THRESHOLD:
+            alerts.append(
+                f"Honcho SSH probe failed ({streak} consecutive): {_ssh_error_reason(svc)}"
+            )
         return alerts
     for key, label in (("api_ok", "API"), ("deriver_up", "Deriver"), ("db_ok", "DB"), ("redis_ok", "Redis")):
         if not svc.get(key, False):
@@ -420,6 +452,8 @@ def format_report(snapshot: dict[str, Any] | HonchoSnapshot, previous_state: dic
 
     lines = [f"🩺 Honcho — {_now_utc(now).strftime('%H:%M UTC')}"]
     lines.append(_service_row(snapshot.services))
+    if snapshot.services.get("ssh_ok") is False:
+        lines.append("  Remote sample: stale (SSH unavailable; last valid counters/config shown)")
 
     for label, key in (
         ("Embedding", "embedding"),
@@ -702,6 +736,28 @@ def select_spark_model(pipeline: dict[str, dict[str, str]]) -> str:
     return "aeon-ultimate"
 
 
+def build_db_stats_query() -> str:
+    """Return the embedding inventory query used by the health monitor.
+
+    Dimension checks intentionally sample one populated vector. Aggregating
+    ``array_length(embedding::real[], 1)`` across the full documents table
+    repeatedly materializes every large vector and can exceed the monitor's
+    timeout as the database grows.
+    """
+    return (
+        "SELECT "
+        "count(*) FILTER (WHERE deleted_at IS NULL)::text, "
+        "count(*) FILTER (WHERE deleted_at IS NULL AND embedding IS NOT NULL)::text, "
+        "COALESCE((SELECT array_length(embedding::real[], 1)::text FROM documents "
+        "WHERE deleted_at IS NULL AND embedding IS NOT NULL LIMIT 1), '')::text, "
+        "(SELECT count(*)::text FROM message_embeddings), "
+        "(SELECT count(*)::text FROM message_embeddings WHERE embedding IS NOT NULL), "
+        "COALESCE((SELECT array_length(embedding::real[], 1)::text FROM message_embeddings "
+        "WHERE embedding IS NOT NULL LIMIT 1), '')::text "
+        "FROM documents;"
+    )
+
+
 def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
     services_raw = ssh("cd /opt/honcho/honcho && sudo docker compose ps --format '{{.Name}} {{.Status}}'", timeout=30)
     services = _parse_service_status(services_raw)
@@ -709,18 +765,14 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
     env_raw = ssh("docker exec honcho-api-1 env", timeout=20) if services.get("api_ok") else ""
     pipeline = parse_pipeline_env(env_raw)
 
-    # One row from documents plus subqueries for message embeddings keeps the
-    # command compact while still verifying both vector dimensions.
+    # Count rows, but sample one populated vector per table for dimensions.
+    # Casting every stored vector to real[] made this probe increasingly costly
+    # and eventually caused 30-second timeouts on the production database.
+    db_stats_query = build_db_stats_query().replace('"', '\\"')
     db_stats_raw = ssh(
         "docker exec honcho-database-1 psql -U postgres -t -A -F '|' -c \""
-        "SELECT "
-        "count(*) FILTER (WHERE deleted_at IS NULL)::text, "
-        "count(*) FILTER (WHERE deleted_at IS NULL AND embedding IS NOT NULL)::text, "
-        "COALESCE((SELECT min(array_length(embedding::real[], 1))::text FROM documents WHERE deleted_at IS NULL AND embedding IS NOT NULL), '')::text, "
-        "(SELECT count(*)::text FROM message_embeddings), "
-        "(SELECT count(*)::text FROM message_embeddings WHERE embedding IS NOT NULL), "
-        "COALESCE((SELECT min(array_length(embedding::real[], 1))::text FROM message_embeddings WHERE embedding IS NOT NULL), '')::text "
-        "FROM documents;\"",
+        + db_stats_query
+        + "\"",
         timeout=30,
     )
     db_parts = [part.strip() for part in db_stats_raw.split("|")] if db_stats_raw else []
@@ -849,6 +901,17 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
         "queue_by_type": queue_by_type,
         "documents_total": db.get("documents_total", 0),
         "messages_total": db.get("messages_total", 0),
+        "pipeline": pipeline,
+        "db": db,
+        "queue": {"pending": pending, "done": done},
+        "errors": {"save_representation": _int_or_zero(error_counts.get("save", "0")), "four_oh_one": _int_or_zero(error_counts.get("401", "0"))},
+        "deriver": {
+            "runs_15m": runs_15m,
+            "last_duration_s": last_duration_s,
+            "conclusions": conclusions,
+            "active_count": active_count,
+            "active_oldest_age_s": active_oldest_age_s,
+        },
         "ingestion": ingestion,
         "deriver_active_count": active_count,
         "deriver_active_oldest_age_s": active_oldest_age_s,
@@ -872,9 +935,17 @@ def should_emit_report(snapshot: HonchoSnapshot, previous_state: dict[str, Any] 
 def main() -> int:
     snapshot, current_state = collect_snapshot()
     previous_state = load_state(STATE_PATH)
-    if should_emit_report(snapshot, previous_state=previous_state):
-        report = format_report(snapshot, previous_state=previous_state)
+    report_snapshot = restore_last_valid_remote_sample(snapshot, previous_state)
+    if should_emit_report(report_snapshot, previous_state=previous_state):
+        report = format_report(report_snapshot, previous_state=previous_state)
         print(report)
+    if snapshot.services.get("ssh_ok") is False:
+        current_state["ssh_failure_streak"] = int(previous_state.get("ssh_failure_streak", 0)) + 1
+        for key in ("pipeline", "db", "queue", "queue_by_type", "errors", "deriver"):
+            if key in previous_state:
+                current_state[key] = previous_state[key]
+    else:
+        current_state["ssh_failure_streak"] = 0
     current_state = preserve_last_valid_probe_state(snapshot, current_state, previous_state)
     save_state(STATE_PATH, current_state)
     return 0

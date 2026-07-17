@@ -507,32 +507,81 @@ def test_representation_backlog_with_no_progress_triggers_deriver_stall_alert():
     assert "Deriver stalled: representation backlog with no progress" in alerts
 
 
-def test_ssh_transport_failure_reports_probe_failure_not_fake_service_outage():
-    services = hm._parse_service_status("__SSH_ERROR__ rc=255 stderr=connection timed out")
-    snapshot = {
-        "services": services,
-        "pipeline": {
+def _ssh_failure_snapshot() -> hm.HonchoSnapshot:
+    return hm.HonchoSnapshot(
+        services=hm._parse_service_status("__SSH_ERROR__ rc=255 stderr=connection timed out"),
+        pipeline={
             "embedding": {"model": "", "base_url": "", "dimensions_mode": "", "vector_dimensions": ""},
             "deriver": {"model": "", "base_url": ""},
             "summary": {"model": "", "base_url": ""},
             "dream": {"model": "", "base_url": ""},
             "dialectic": {"model": "", "base_url": ""},
         },
-        "db": {"documents_total": 0, "documents_with_embeddings": 0, "documents_dims": 0, "messages_total": 0, "messages_with_embeddings": 0, "messages_dims": 0},
-        "queue": {"pending": 0, "done": 0},
-        "queue_by_type": {},
-        "errors": {"save_representation": 0, "four_oh_one": 0},
-        "spark_goat": {"ok": True, "latency_s": 1.2, "thinking": False, "model": "aeon-ultimate"},
-        "deriver": {"runs_15m": 0, "last_duration_s": 0, "conclusions": 0},
-    }
+        db={"probe_ok": False, "documents_total": 0, "documents_with_embeddings": 0, "documents_dims": 0, "messages_total": 0, "messages_with_embeddings": 0, "messages_dims": 0},
+        queue={"pending": 0, "done": 0},
+        queue_by_type={},
+        errors={"save_representation": 0, "four_oh_one": 0},
+        spark_goat={"ok": True, "latency_s": 1.2, "thinking": False, "model": "aeon-ultimate"},
+        deriver={"runs_15m": 0, "last_duration_s": 0, "conclusions": 0},
+    )
 
-    alerts = hm.build_alerts(hm.HonchoSnapshot(**snapshot), previous_state={})
 
-    assert "Honcho SSH probe failed" in alerts
+def test_first_ssh_transport_failure_is_silent_and_services_are_unknown():
+    snapshot = _ssh_failure_snapshot()
+
+    alerts = hm.build_alerts(snapshot, previous_state={"ssh_failure_streak": 0})
+
+    assert alerts == []
+    assert hm._service_row(snapshot.services) == "⚪ API ⚪ Deriver ⚪ DB ⚪ Redis"
+
+
+def test_second_ssh_transport_failure_alerts_with_sanitized_reason():
+    snapshot = _ssh_failure_snapshot()
+
+    alerts = hm.build_alerts(snapshot, previous_state={"ssh_failure_streak": 1})
+
+    assert alerts == ["Honcho SSH probe failed (2 consecutive): rc=255 stderr=connection timed out"]
     assert "API down" not in alerts
     assert "DB down" not in alerts
     assert "Redis down" not in alerts
     assert "Deriver down" not in alerts
+
+
+def test_ssh_failure_report_reuses_last_valid_remote_sample():
+    snapshot = _ssh_failure_snapshot()
+    previous_state = {
+        "ssh_failure_streak": 1,
+        "pipeline": {
+            "embedding": {"model": "qwen3-embedding-8b-1536", "base_url": "http://192.168.10.211:11435/v1", "dimensions_mode": "never", "vector_dimensions": "1536"},
+            "deriver": {"model": "gemma12b-polar-gpustack", "base_url": "http://100.71.155.95:18081/v1"},
+            "summary": {"model": "qwen3.5-4b", "base_url": "http://192.168.10.104:8000/v1"},
+            "dream": {"model": "aeon-ultimate", "base_url": "http://192.168.10.211:8001/v1"},
+            "dialectic": {"model": "qwen3.5-9b", "base_url": "http://192.168.10.104:8000/v1"},
+        },
+        "db": {"probe_ok": True, "documents_total": 187307, "documents_with_embeddings": 187307, "documents_dims": 1536, "messages_total": 19532, "messages_with_embeddings": 19529, "messages_dims": 1536},
+        "queue": {"pending": 509, "done": 43},
+        "queue_by_type": {"representation": {"pending": 509, "done": 43}},
+        "errors": {"save_representation": 0, "four_oh_one": 0},
+        "deriver": {"runs_15m": 6, "last_duration_s": 8, "conclusions": 100, "active_count": 1, "active_oldest_age_s": 18},
+    }
+
+    restored = hm.restore_last_valid_remote_sample(snapshot, previous_state)
+    report = hm.format_report(restored, previous_state=previous_state, now=hm.datetime(2026, 7, 17, 7, 30))
+
+    assert "⚪ API ⚪ Deriver ⚪ DB ⚪ Redis" in report
+    assert "Remote sample: stale (SSH unavailable; last valid counters/config shown)" in report
+    assert "Embedding: qwen3-embedding-8b-1536 @ spark-goat" in report
+    assert "Embedding DB: docs 187307/187307 dims=1536 · messages 19529/19532 dims=1536" in report
+    assert "Queue: 509 pending · 43 done" in report
+
+
+def test_db_stats_query_samples_vector_dimensions_instead_of_scanning_every_vector():
+    query = hm.build_db_stats_query()
+
+    assert "min(array_length" not in query.lower()
+    assert query.count("LIMIT 1") == 2
+    assert "count(*) FILTER (WHERE deleted_at IS NULL)" in query
+    assert "count(*)::text FROM message_embeddings" in query
 
 
 def test_db_stats_probe_failure_does_not_fake_zero_embedding_dims():
