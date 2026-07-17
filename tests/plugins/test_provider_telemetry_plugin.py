@@ -199,6 +199,65 @@ def test_primary_restore_records_counter(monkeypatch, tmp_path):
     )
 
 
+def test_successful_fallback_response_records_recovery_once(monkeypatch, tmp_path):
+    module = load_plugin_module("provider_telemetry_recovery")
+    hooks, metrics_file = _registered_hooks(module, monkeypatch, tmp_path)
+
+    hooks["on_fallback_activated"](
+        from_provider="openai-codex",
+        from_model="gpt-5.6-sol",
+        to_provider="kimi-coding",
+        to_model="kimi-k2.7-code",
+        reason="silent_hang",
+        session_id="sess-recovery",
+    )
+    hooks["post_api_request"](
+        provider="kimi-coding",
+        model="kimi-k2.7-code",
+        session_id="sess-recovery",
+        api_request_id="fallback-api-1",
+        api_duration=2.5,
+    )
+    # Later successful tool-loop calls on the same provider are normal API
+    # requests, not additional fallback recoveries.
+    hooks["post_api_request"](
+        provider="kimi-coding",
+        model="kimi-k2.7-code",
+        session_id="sess-recovery",
+        api_request_id="fallback-api-2",
+        api_duration=1.0,
+    )
+
+    body = metrics_file.read_text()
+    assert (
+        'hermes_model_fallback_recoveries_total{from_provider="openai-codex",from_model="gpt-5.6-sol",'
+        'to_provider="kimi-coding",to_model="kimi-k2.7-code",reason="silent_hang"} 1'
+        in body
+    )
+
+
+def test_chain_exhaustion_records_terminal_failure(monkeypatch, tmp_path):
+    module = load_plugin_module("provider_telemetry_exhaustion")
+    hooks, metrics_file = _registered_hooks(module, monkeypatch, tmp_path)
+
+    hooks["on_fallback_chain_exhausted"](
+        provider="nous",
+        model="minimax/minimax-m3",
+        primary_provider="openai-codex",
+        primary_model="gpt-5.6-sol",
+        reason="timeout",
+        chain_length=2,
+        session_id="sess-exhausted",
+    )
+
+    body = metrics_file.read_text()
+    assert (
+        'hermes_model_fallback_chain_exhaustions_total{provider="nous",model="minimax/minimax-m3",'
+        'primary_provider="openai-codex",primary_model="gpt-5.6-sol",reason="timeout"} 1'
+        in body
+    )
+
+
 def test_metrics_override_rejects_non_prom_path(monkeypatch, tmp_path, capsys):
     module = load_plugin_module("provider_telemetry_bad_path")
     monkeypatch.setenv("HERMES_PROVIDER_TELEMETRY_METRICS_FILE", str(tmp_path / "not-a-prom"))
