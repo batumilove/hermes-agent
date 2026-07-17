@@ -147,12 +147,12 @@ SCHEMA_VERSION = 22
 # sanitizer/runtime behavior predictable under adversarial input.
 MAX_FTS5_QUERY_CHARS = 2_048
 
-# A modest mmap window improves repeated index scans without reserving a large
+# A bounded mmap window improves repeated index scans without reserving a large
 # per-connection SQLite page cache. Clean mapped pages remain reclaimable by
-# the OS; 128 MiB was the conservative point validated against an 8 GiB
-# production-sized state.db. Apply it only in WAL mode, never on the
-# rollback-journal network-filesystem fallback.
-STATE_DB_MMAP_SIZE = 128 * 1024 * 1024
+# the OS; 2 GiB was validated against the production-sized 8 GiB snapshot and
+# is intended for the fixed-32-GiB Hermes VM. Apply it only in WAL mode, never
+# on the rollback-journal network-filesystem fallback.
+STATE_DB_MMAP_SIZE = 2 * 1024 * 1024 * 1024
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
