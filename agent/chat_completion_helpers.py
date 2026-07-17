@@ -1666,6 +1666,32 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
             agent._rate_limited_until = time.monotonic() + 60
     if agent._fallback_index >= len(agent._fallback_chain):
+        # Emit one structured terminal event per fallback episode.  This is an
+        # observer-only seam for metrics/alerting; it must not affect routing.
+        if (
+            agent._fallback_chain
+            and not getattr(agent, "_fallback_exhaustion_notified", False)
+        ):
+            agent._fallback_exhaustion_notified = True
+            try:
+                from hermes_cli.plugins import has_hook, invoke_hook
+
+                if has_hook("on_fallback_chain_exhausted"):
+                    primary = getattr(agent, "_primary_runtime", None) or {}
+                    reason_value = getattr(reason, "value", reason) if reason is not None else None
+                    invoke_hook(
+                        "on_fallback_chain_exhausted",
+                        provider=getattr(agent, "provider", "") or "",
+                        model=getattr(agent, "model", "") or "",
+                        primary_provider=primary.get("provider") or "",
+                        primary_model=primary.get("model") or "",
+                        reason=reason_value,
+                        chain_length=len(agent._fallback_chain),
+                        session_id=getattr(agent, "session_id", None) or "",
+                        platform=getattr(agent, "platform", None) or "",
+                    )
+            except Exception:
+                pass
         # Chain exhausted.  If we actually walked a non-empty chain and the
         # failure was NOT a rate-limit/billing event (those already armed
         # their own 60s cooldown above), arm a short cooldown so the next
