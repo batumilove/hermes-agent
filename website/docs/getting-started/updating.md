@@ -94,10 +94,10 @@ Or make it the default for every run:
 ```yaml
 # ~/.hermes/config.yaml
 updates:
-  pre_update_backup: true
+  pre_update_backup: full
 ```
 
-`--backup` was the always-on behavior in earlier builds, but it was adding minutes to every update on large homes, so it's now opt-in. The lightweight pairing-data snapshot above still runs unconditionally.
+`updates.pre_update_backup` is a single knob with three modes: `quick` (default — the lightweight state snapshot described above), `full` (the quick snapshot plus a complete `HERMES_HOME` zip; can add minutes on large homes), and `off` (no pre-update backup at all — `--no-backup` does the same for a single run). Legacy boolean values still work: `true` means `full`, `false` means `off`.
 
 ### Windows: another `hermes.exe` is running
 

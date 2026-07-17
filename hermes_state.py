@@ -140,7 +140,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
 # Search queries do not need to be arbitrarily large, and bounding them keeps
@@ -791,6 +791,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     compression_failure_cooldown_until REAL,
     compression_failure_error TEXT,
     compression_fallback_streak INTEGER NOT NULL DEFAULT 0,
+    profile_name TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
@@ -825,6 +826,7 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     billing_provider TEXT NOT NULL DEFAULT '',
     billing_base_url TEXT NOT NULL DEFAULT '',
     billing_mode TEXT NOT NULL DEFAULT '',
+    task TEXT NOT NULL DEFAULT '',
     api_call_count INTEGER NOT NULL DEFAULT 0,
     input_tokens INTEGER NOT NULL DEFAULT 0,
     output_tokens INTEGER NOT NULL DEFAULT 0,
@@ -837,7 +839,7 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     cost_source TEXT,
     first_seen REAL,
     last_seen REAL,
-    PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode)
+    PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task)
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -986,8 +988,6 @@ class SessionDB:
     _WRITE_MAX_RETRIES = 15
     _WRITE_RETRY_MIN_S = 0.020   # 20ms
     _WRITE_RETRY_MAX_S = 0.150   # 150ms
-    _SLOW_LOCK_WAIT_WARN_S = 2.0
-    _SLOW_WRITE_WARN_S = 5.0
     # Attempt a WAL checkpoint every N successful writes (PASSIVE mode).
     _CHECKPOINT_EVERY_N_WRITES = 50
     # Merge fragmented FTS5 segments every N successful writes. The message
@@ -1264,16 +1264,9 @@ class SessionDB:
         Returns whatever *fn* returns.
         """
         last_err: Optional[Exception] = None
-        caller_name = getattr(fn, "__name__", fn.__class__.__name__)
-        started = time.monotonic()
-        lock_wait_s = 0.0
-        txn_s = 0.0
         for attempt in range(self._WRITE_MAX_RETRIES):
             try:
-                lock_start = time.monotonic()
                 with self._lock:
-                    lock_wait_s += time.monotonic() - lock_start
-                    txn_start = time.monotonic()
                     self._conn.execute("BEGIN IMMEDIATE")
                     try:
                         result = fn(self._conn)
@@ -1284,22 +1277,6 @@ class SessionDB:
                         except Exception:
                             pass
                         raise
-                    finally:
-                        txn_s += time.monotonic() - txn_start
-                elapsed_s = time.monotonic() - started
-                if (
-                    lock_wait_s >= self._SLOW_LOCK_WAIT_WARN_S
-                    or elapsed_s >= self._SLOW_WRITE_WARN_S
-                ):
-                    logger.warning(
-                        "SessionDB write latency: caller=%s attempts=%d lock_wait=%.3fs txn=%.3fs total=%.3fs db=%s",
-                        caller_name,
-                        attempt + 1,
-                        lock_wait_s,
-                        txn_s,
-                        elapsed_s,
-                        self.db_path,
-                    )
                 # Success — periodic best-effort checkpoint + FTS merge.
                 self._write_count += 1
                 if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
@@ -1728,18 +1705,111 @@ class SessionDB:
                     )
                 except sqlite3.OperationalError:
                     pass
+            if current_version < 22:
+                # v22: task-dimension usage attribution (issue #23270).
+                # session_model_usage gains a ``task`` column ('' = main agent
+                # loop; 'vision'/'compression'/'title_generation'/... =
+                # auxiliary calls) so aux model spend is visible in analytics.
+                # The column participates in the PRIMARY KEY and SQLite cannot
+                # ALTER a PK, so rebuild the table. The reconciler will have
+                # already ADDed the plain column on legacy DBs (harmless);
+                # the rebuild bakes it into the PK properly. Existing rows are
+                # main-loop accounting by definition → task=''.
+                try:
+                    legacy_pk = cursor.execute(
+                        "SELECT COUNT(*) FROM pragma_table_info('session_model_usage') "
+                        "WHERE name = 'task' AND pk > 0"
+                    ).fetchone()[0]
+                    if not legacy_pk:
+                        cursor.execute("ALTER TABLE session_model_usage RENAME TO session_model_usage_v21")
+                        cursor.execute(
+                            """CREATE TABLE session_model_usage (
+                                   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                                   model TEXT NOT NULL,
+                                   billing_provider TEXT NOT NULL DEFAULT '',
+                                   billing_base_url TEXT NOT NULL DEFAULT '',
+                                   billing_mode TEXT NOT NULL DEFAULT '',
+                                   task TEXT NOT NULL DEFAULT '',
+                                   api_call_count INTEGER NOT NULL DEFAULT 0,
+                                   input_tokens INTEGER NOT NULL DEFAULT 0,
+                                   output_tokens INTEGER NOT NULL DEFAULT 0,
+                                   cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                                   cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+                                   reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                                   estimated_cost_usd REAL NOT NULL DEFAULT 0,
+                                   actual_cost_usd REAL NOT NULL DEFAULT 0,
+                                   cost_status TEXT,
+                                   cost_source TEXT,
+                                   first_seen REAL,
+                                   last_seen REAL,
+                                   PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task)
+                               )"""
+                        )
+                        cursor.execute(
+                            """INSERT INTO session_model_usage (
+                                   session_id, model, billing_provider, billing_base_url,
+                                   billing_mode, task, api_call_count, input_tokens,
+                                   output_tokens, cache_read_tokens, cache_write_tokens,
+                                   reasoning_tokens, estimated_cost_usd, actual_cost_usd,
+                                   cost_status, cost_source, first_seen, last_seen
+                               )
+                               SELECT session_id, model, billing_provider, billing_base_url,
+                                      billing_mode, '', api_call_count, input_tokens,
+                                      output_tokens, cache_read_tokens, cache_write_tokens,
+                                      reasoning_tokens, estimated_cost_usd, actual_cost_usd,
+                                      cost_status, cost_source, first_seen, last_seen
+                               FROM session_model_usage_v21"""
+                        )
+                        cursor.execute("DROP TABLE session_model_usage_v21")
+                        cursor.execute(
+                            "CREATE INDEX IF NOT EXISTS idx_session_model_usage_session "
+                            "ON session_model_usage(session_id)"
+                        )
+                        cursor.execute(
+                            "CREATE INDEX IF NOT EXISTS idx_session_model_usage_model "
+                            "ON session_model_usage(model)"
+                        )
+                except sqlite3.OperationalError as exc:
+                    logger.debug("v22 session_model_usage rebuild skipped: %s", exc)
             if current_version < SCHEMA_VERSION and fts_migrations_complete:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
                     (SCHEMA_VERSION,),
                 )
 
-        # Unique title index — always ensure it exists
+        # Unique title index — always ensure it exists. Older databases may
+        # contain duplicate aliases from before the constraint was enforced;
+        # preserve every session while letting the newest one retain the alias.
+        title_index_sql = (
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique "
+            "ON sessions(title) WHERE title IS NOT NULL"
+        )
         try:
-            cursor.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique "
-                "ON sessions(title) WHERE title IS NOT NULL"
-            )
+            cursor.execute(title_index_sql)
+        except sqlite3.IntegrityError:
+            # The index is an optimization — its creation must never abort
+            # opening the database, so the repair itself is also guarded.
+            try:
+                cursor.execute(
+                    """UPDATE sessions AS older
+                       SET title = NULL
+                       WHERE title IS NOT NULL
+                         AND EXISTS (
+                             SELECT 1 FROM sessions AS newer
+                             WHERE newer.title = older.title
+                               AND newer.rowid > older.rowid
+                         )"""
+                )
+                logger.warning(
+                    "Cleared %d duplicate session title(s) while restoring the unique index",
+                    cursor.rowcount,
+                )
+                cursor.execute(title_index_sql)
+            except sqlite3.Error:
+                logger.exception(
+                    "Could not repair duplicate session titles; "
+                    "unique title index not created"
+                )
         except sqlite3.OperationalError:
             pass  # Index already exists
 
@@ -1784,6 +1854,7 @@ class SessionDB:
         thread_id: str = None,
         parent_session_id: str = None,
         cwd: str = None,
+        profile_name: str = None,
     ) -> None:
         """Insert a session row, enriching NULL metadata on conflict.
 
@@ -1807,9 +1878,9 @@ class SessionDB:
             conn.execute(
                 """INSERT INTO sessions (
                    id, source, user_id, session_key, chat_id, chat_type, thread_id,
-                   model, model_config, system_prompt, parent_session_id, cwd, started_at
+                   model, model_config, system_prompt, parent_session_id, cwd, profile_name, started_at
                 )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        model = COALESCE(sessions.model, excluded.model),
                        model_config = COALESCE(sessions.model_config, excluded.model_config),
@@ -1819,7 +1890,8 @@ class SessionDB:
                        chat_type = COALESCE(sessions.chat_type, excluded.chat_type),
                        thread_id = COALESCE(sessions.thread_id, excluded.thread_id),
                        parent_session_id = COALESCE(sessions.parent_session_id, excluded.parent_session_id),
-                       cwd = COALESCE(sessions.cwd, excluded.cwd)""",
+                       cwd = COALESCE(sessions.cwd, excluded.cwd),
+                       profile_name = COALESCE(sessions.profile_name, excluded.profile_name)""",
                 (
                     session_id,
                     source,
@@ -1833,6 +1905,7 @@ class SessionDB:
                     system_prompt,
                     parent_session_id,
                     cwd,
+                    profile_name,
                     time.time(),
                 ),
             )
@@ -2807,6 +2880,7 @@ class SessionDB:
         cost_status: Optional[str],
         cost_source: Optional[str],
         api_call_count: int,
+        task: str = "",
     ) -> None:
         """Accumulate a per-API-call usage delta into session_model_usage.
 
@@ -2815,6 +2889,11 @@ class SessionDB:
         When the caller omits the model/provider (some paths only pass token
         deltas), fall back to the values already recorded on the session row —
         the same COALESCE-from-session behaviour the summary update uses.
+
+        ``task`` distinguishes what kind of work consumed the tokens:
+        ``''`` (empty) is the main agent loop; auxiliary calls record their
+        task name (``vision``, ``compression``, ``title_generation``, ...)
+        via :meth:`record_auxiliary_usage` (issue #23270).
         """
         row = conn.execute(
             "SELECT model, billing_provider, billing_base_url, billing_mode "
@@ -2826,20 +2905,30 @@ class SessionDB:
         sess_base_url = row["billing_base_url"] if row is not None else None
         sess_billing_mode = row["billing_mode"] if row is not None else None
 
-        eff_model = model or sess_model or "unknown"
-        eff_provider = billing_provider or sess_provider or ""
-        eff_base_url = billing_base_url or sess_base_url or ""
-        eff_billing_mode = billing_mode or sess_billing_mode or ""
+        # Aux-task rows (task != '') must NOT inherit the session's main-loop
+        # route: an aux call may use a completely different provider/model
+        # (vision on gemini while the main loop runs anthropic). Missing info
+        # stays 'unknown'/empty rather than borrowing a misleading route.
+        if task:
+            eff_model = model or "unknown"
+            eff_provider = billing_provider or ""
+            eff_base_url = billing_base_url or ""
+            eff_billing_mode = billing_mode or ""
+        else:
+            eff_model = model or sess_model or "unknown"
+            eff_provider = billing_provider or sess_provider or ""
+            eff_base_url = billing_base_url or sess_base_url or ""
+            eff_billing_mode = billing_mode or sess_billing_mode or ""
         now = time.time()
         conn.execute(
             """INSERT INTO session_model_usage (
                    session_id, model, billing_provider, billing_base_url, billing_mode,
-                   api_call_count, input_tokens, output_tokens,
+                   task, api_call_count, input_tokens, output_tokens,
                    cache_read_tokens, cache_write_tokens, reasoning_tokens,
                    estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
                    first_seen, last_seen
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(session_id, model, billing_provider, billing_base_url, billing_mode)
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(session_id, model, billing_provider, billing_base_url, billing_mode, task)
                DO UPDATE SET
                    api_call_count = api_call_count + excluded.api_call_count,
                    input_tokens = input_tokens + excluded.input_tokens,
@@ -2858,6 +2947,7 @@ class SessionDB:
                 eff_provider,
                 eff_base_url,
                 eff_billing_mode,
+                task or "",
                 api_call_count or 0,
                 input_tokens or 0,
                 output_tokens or 0,
@@ -2883,6 +2973,65 @@ class SessionDB:
         """Ensure a session row exists (INSERT OR IGNORE). Accepts optional kwargs."""
         self._insert_session_row(session_id, source, model=model, **kwargs)
         return session_id
+
+    def record_auxiliary_usage(
+        self,
+        session_id: str,
+        task: str,
+        *,
+        model: Optional[str] = None,
+        billing_provider: Optional[str] = None,
+        billing_base_url: Optional[str] = None,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        reasoning_tokens: int = 0,
+        estimated_cost_usd: Optional[float] = None,
+    ) -> None:
+        """Record an auxiliary LLM call's usage against *session_id* (issue #23270).
+
+        Auxiliary calls (vision, compression, title_generation, web_extract,
+        session_search, ...) historically discarded their usage, leaving the
+        dashboard's per-model analytics blind to aux model spend. This writes
+        a per-(model, provider, task) delta into ``session_model_usage`` —
+        the same table the main loop's ``update_token_counts`` feeds — WITHOUT
+        touching the ``sessions`` summary row. That separation is deliberate:
+        the gateway overwrites session counters with absolute main-loop totals,
+        so folding aux tokens into the summary row would either be clobbered
+        or double-counted. Insights/analytics read the union of both.
+
+        Best-effort by contract: callers must never fail an aux call because
+        accounting failed.
+        """
+        if not session_id or not task:
+            return
+        # FK on session_model_usage.session_id → sessions.id: ensure the row
+        # exists (same INSERT OR IGNORE guard update_token_counts uses — the
+        # initial create_session() can fail under concurrent SQLite locking).
+        self._insert_session_row(session_id, "unknown")
+
+        def _do(conn):
+            self._record_model_usage(
+                conn,
+                session_id,
+                model=model,
+                billing_provider=billing_provider,
+                billing_base_url=billing_base_url,
+                billing_mode=None,
+                input_tokens=input_tokens or 0,
+                output_tokens=output_tokens or 0,
+                cache_read_tokens=cache_read_tokens or 0,
+                cache_write_tokens=cache_write_tokens or 0,
+                reasoning_tokens=reasoning_tokens or 0,
+                estimated_cost_usd=estimated_cost_usd,
+                actual_cost_usd=None,
+                cost_status=None,
+                cost_source=None,
+                api_call_count=1,
+                task=task,
+            )
+        self._execute_write(_do)
 
     def prune_empty_ghost_sessions(self, sessions_dir: "Optional[Path]" = None) -> int:
         """Remove empty TUI ghost sessions (no messages, no title, >24hr old)."""
@@ -3073,16 +3222,24 @@ class SessionDB:
         ).fetchone()
         return row is not None
 
-    def set_session_title(self, session_id: str, title: str) -> bool:
-        """Set or update a session's title.
-
-        Returns True if session was found and title was set.
-        Raises ValueError if title is already in use by another session,
-        or if the title fails validation (too long, invalid characters).
-        Empty/whitespace-only strings are normalized to None (clearing the title).
-        """
+    def _set_session_title(
+        self,
+        session_id: str,
+        title: str,
+        *,
+        only_if_empty: bool,
+    ) -> bool:
         title = self.sanitize_title(title)
+
         def _do(conn):
+            if only_if_empty:
+                current = conn.execute(
+                    "SELECT title FROM sessions WHERE id = ?",
+                    (session_id,),
+                ).fetchone()
+                if current is None or current["title"] is not None:
+                    return 0
+
             if title:
                 # Check uniqueness (allow the same session to keep its own title)
                 cursor = conn.execute(
@@ -3114,47 +3271,38 @@ class SessionDB:
                         raise ValueError(
                             f"Title '{title}' is already in use by session {conflict_id}"
                         )
+            predicate = " AND title IS NULL" if only_if_empty else ""
             cursor = conn.execute(
-                "UPDATE sessions SET title = ? WHERE id = ?",
+                f"UPDATE sessions SET title = ? WHERE id = ?{predicate}",
                 (title, session_id),
             )
             return cursor.rowcount
+
         rowcount = self._execute_write(_do)
         return rowcount > 0
+
+    def set_session_title(self, session_id: str, title: str) -> bool:
+        """Set or update a session's title.
+
+        Returns True if session was found and title was set.
+        Raises ValueError if title is already in use by another session,
+        or if the title fails validation (too long, invalid characters).
+        Empty/whitespace-only strings are normalized to None (clearing the title).
+        """
+        return self._set_session_title(session_id, title, only_if_empty=False)
+
+    def set_auto_title_if_empty(self, session_id: str, title: str) -> bool:
+        """Set an auto-generated title only when the current title is NULL.
+
+        The predicate and write run in one transaction so a concurrent manual
+        rename cannot be overwritten. Validation and uniqueness behavior match
+        :meth:`set_session_title`.
+        """
+        return self._set_session_title(session_id, title, only_if_empty=True)
 
     def set_session_title_if_empty(self, session_id: str, title: str) -> bool:
-        """Set a session title only if it is currently empty.
-
-        Used by background auto-title workers so concurrent/delayed title
-        generation cannot overwrite a title that was already set by another
-        worker or by the user.
-        """
-        title = self.sanitize_title(title)
-        if not title:
-            return False
-
-        def _do(conn):
-            cursor = conn.execute(
-                "SELECT id FROM sessions WHERE title = ? AND id != ?",
-                (title, session_id),
-            )
-            conflict = cursor.fetchone()
-            if conflict:
-                raise ValueError(
-                    f"Title '{title}' is already in use by session {conflict['id']}"
-                )
-            cursor = conn.execute(
-                """
-                UPDATE sessions
-                SET title = ?
-                WHERE id = ? AND (title IS NULL OR TRIM(title) = '')
-                """,
-                (title, session_id),
-            )
-            return cursor.rowcount
-
-        rowcount = self._execute_write(_do)
-        return rowcount > 0
+        """Backward-compatible alias for the fork's conditional title writer."""
+        return self.set_auto_title_if_empty(session_id, title)
 
     def get_session_title(self, session_id: str) -> Optional[str]:
         """Get the title for a session, or None."""
@@ -4493,6 +4641,7 @@ class SessionDB:
         session_id: str,
         include_ancestors: bool = False,
         include_inactive: bool = False,
+        repair_alternation: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Load messages in the OpenAI conversation format (role + content dicts).
@@ -4501,6 +4650,16 @@ class SessionDB:
         By default only active messages are returned. Pass
         ``include_inactive=True`` to load soft-deleted (rewound) rows
         as well. See :meth:`rewind_to_message`.
+
+        ``repair_alternation=True`` runs ``repair_message_sequence`` over the
+        loaded list before returning it. Callers that restore a session for
+        LIVE REPLAY should pass it: a durable alternation violation (e.g. a
+        ``user;user`` pair left by a turn that persisted no assistant row)
+        otherwise re-triggers the pre-request defensive repair on every
+        single request for the rest of the session's life — the repair
+        mutates only the per-request list, never the stored transcript.
+        Inspection/export consumers keep the default and see the transcript
+        verbatim.
         """
         session_ids = [session_id]
         if include_ancestors:
@@ -4597,7 +4756,36 @@ class SessionDB:
         # assistant reply immediately following it, so a polluted session
         # resumes clean even if stray rows exist.
         messages = _strip_background_review_harness(messages)
+        if repair_alternation and messages:
+            # Lazy import: hermes_state already depends on agent.* (see
+            # sanitize_context above), but keep this optional path from
+            # widening the import surface at module load.
+            from agent.agent_runtime_helpers import repair_message_sequence
+
+            repaired = repair_message_sequence(None, messages)
+            if repaired:
+                logger.info(
+                    "Repaired %d message-alternation violation(s) while "
+                    "restoring session %s — durable transcript kept them, "
+                    "see repair_message_sequence",
+                    repaired,
+                    session_id,
+                )
         return messages
+
+    def get_conversation_root(self, session_id: str) -> str:
+        """Return the ROOT id of *session_id*'s lineage chain.
+
+        The root is the stable "conversation id": context compression
+        rotates ``session_id`` to a new segment linked via
+        ``parent_session_id``, and delegate subagents hang off their
+        parent the same way. Walking to the root gives every segment of
+        one user-facing conversation (and its delegation tree) a single
+        identifier — used for Nous Portal ``conversation=`` usage tagging.
+        Returns *session_id* unchanged when it has no recorded parent.
+        """
+        chain = self._session_lineage_root_to_tip(session_id)
+        return (chain[0] if chain and chain[0] else session_id)
 
     def _session_lineage_root_to_tip(self, session_id: str) -> List[str]:
         if not session_id:
@@ -6560,6 +6748,9 @@ class SessionDB:
                             session_key TEXT NOT NULL,
                             session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
                             managed_mode TEXT NOT NULL DEFAULT 'auto',
+                            topic_title_mode TEXT NOT NULL DEFAULT 'auto',
+                            auto_title TEXT,
+                            auto_title_updated_at REAL,
                             linked_at REAL NOT NULL,
                             updated_at REAL NOT NULL,
                             PRIMARY KEY (chat_id, thread_id)
@@ -6578,13 +6769,13 @@ class SessionDB:
                         """
                     )
 
-            # v2 → v3: record whether Hermes still owns a Telegram topic title.
-            # Existing DBs need additive columns; fresh CREATE TABLE above already
-            # includes them, so duplicate-column errors are harmless.
+            # v2 → v3: track whether Hermes or the user owns each topic title.
             if current_version < 3:
                 existing_cols = {
                     row[1]
-                    for row in conn.execute("PRAGMA table_info('telegram_dm_topic_bindings')").fetchall()
+                    for row in conn.execute(
+                        "PRAGMA table_info('telegram_dm_topic_bindings')"
+                    ).fetchall()
                 }
                 if "topic_title_mode" not in existing_cols:
                     conn.execute(
@@ -6597,13 +6788,11 @@ class SessionDB:
                     )
                 if "auto_title_updated_at" not in existing_cols:
                     conn.execute(
-                        "ALTER TABLE telegram_dm_topic_bindings ADD COLUMN auto_title_updated_at REAL"
+                        "ALTER TABLE telegram_dm_topic_bindings "
+                        "ADD COLUMN auto_title_updated_at REAL"
                     )
 
-            # v3 → v4: seed auto_title for topics Hermes had already renamed
-            # before ownership tracking existed. Without this, any later binding
-            # refresh re-applies the same session title and creates a visible
-            # Telegram service-message wave even though the name is unchanged.
+            # v3 → v4: seed the last Hermes-generated title for existing bindings.
             if current_version < 4:
                 conn.execute(
                     """
@@ -6921,7 +7110,9 @@ class SessionDB:
                     session_key = excluded.session_key,
                     session_id = excluded.session_id,
                     managed_mode = excluded.managed_mode,
-                    topic_title_mode = COALESCE(telegram_dm_topic_bindings.topic_title_mode, 'auto'),
+                    topic_title_mode = COALESCE(
+                        telegram_dm_topic_bindings.topic_title_mode, 'auto'
+                    ),
                     auto_title = telegram_dm_topic_bindings.auto_title,
                     auto_title_updated_at = telegram_dm_topic_bindings.auto_title_updated_at,
                     updated_at = excluded.updated_at
@@ -6946,12 +7137,7 @@ class SessionDB:
         thread_id: str,
         title: str,
     ) -> None:
-        """Record the last Telegram topic title set by Hermes.
-
-        This keeps title ownership in ``auto`` mode. If the user later edits the
-        topic to a different name, the gateway can compare against this value
-        and stop future auto-renames for that topic.
-        """
+        """Record the last topic title set by Hermes and retain auto ownership."""
         self.apply_telegram_topic_migration()
         now = time.time()
 
@@ -6967,6 +7153,7 @@ class SessionDB:
                 """,
                 (str(title), now, now, str(chat_id), str(thread_id)),
             )
+
         self._execute_write(_do)
 
     def mark_telegram_topic_title_manual(
@@ -6983,12 +7170,12 @@ class SessionDB:
             conn.execute(
                 """
                 UPDATE telegram_dm_topic_bindings
-                SET topic_title_mode = 'manual',
-                    updated_at = ?
+                SET topic_title_mode = 'manual', updated_at = ?
                 WHERE chat_id = ? AND thread_id = ?
                 """,
                 (now, str(chat_id), str(thread_id)),
             )
+
         self._execute_write(_do)
 
     def mark_telegram_topic_title_auto(
@@ -7005,12 +7192,12 @@ class SessionDB:
             conn.execute(
                 """
                 UPDATE telegram_dm_topic_bindings
-                SET topic_title_mode = 'auto',
-                    updated_at = ?
+                SET topic_title_mode = 'auto', updated_at = ?
                 WHERE chat_id = ? AND thread_id = ?
                 """,
                 (now, str(chat_id), str(thread_id)),
             )
+
         self._execute_write(_do)
 
     def is_telegram_session_linked_to_topic(self, *, session_id: str) -> bool:
