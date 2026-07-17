@@ -153,6 +153,20 @@ def save_state(path: Path | str, state: dict[str, Any]) -> None:
     state_path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def preserve_last_valid_probe_state(
+    snapshot: HonchoSnapshot,
+    current_state: dict[str, Any],
+    previous_state: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Keep counter baselines when a probe failed instead of recording zeroes."""
+    merged = dict(current_state)
+    if snapshot.db.get("probe_ok") is False and previous_state:
+        for key in ("documents_total", "messages_total"):
+            if key in previous_state:
+                merged[key] = previous_state[key]
+    return merged
+
+
 def _now_utc(now: datetime | None = None) -> datetime:
     if now is None:
         return datetime.now(timezone.utc)
@@ -861,6 +875,7 @@ def main() -> int:
     if should_emit_report(snapshot, previous_state=previous_state):
         report = format_report(snapshot, previous_state=previous_state)
         print(report)
+    current_state = preserve_last_valid_probe_state(snapshot, current_state, previous_state)
     save_state(STATE_PATH, current_state)
     return 0
 

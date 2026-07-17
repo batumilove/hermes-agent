@@ -136,6 +136,27 @@ def test_state_round_trip(tmp_path: Path):
     assert hm.load_state(state_path) == state
 
 
+def test_failed_db_probe_does_not_replace_last_valid_counter_baseline():
+    snapshot = hm.HonchoSnapshot(
+        services={"db_ok": True},
+        pipeline={},
+        db={"probe_ok": False, "documents_total": 0, "messages_total": 0},
+        queue={},
+        queue_by_type={},
+        errors={},
+        spark_goat={},
+        deriver={},
+    )
+    current = {"documents_total": 0, "messages_total": 0, "queue_done": 141}
+    previous = {"documents_total": 182500, "messages_total": 19200, "queue_done": 138}
+
+    merged = hm.preserve_last_valid_probe_state(snapshot, current, previous)
+
+    assert merged["documents_total"] == 182500
+    assert merged["messages_total"] == 19200
+    assert merged["queue_done"] == 141
+
+
 def test_ssh_uses_accept_new_instead_of_disabling_host_key_checks(monkeypatch):
     calls: list[list[str]] = []
 
