@@ -226,6 +226,89 @@ def test_persist_user_message_becomes_original():
     assert ctx.messages[-1]["content"] == "api-prefixed"
 
 
+def test_pending_cli_message_carries_durable_marker_to_new_turn_dict():
+    """A close-persisted CLI input must not be written again by turn start."""
+    agent = _FakeAgent()
+    staged = {"role": "user", "content": "already durable", "_db_persisted": True}
+    agent._pending_cli_user_message = staged
+
+    ctx = _build(agent, user_message="already durable")
+
+    assert ctx.messages[-1] is staged
+    assert ctx.messages[-1]["content"] == "already durable"
+    assert ctx.messages[-1]["_db_persisted"] is True
+    assert agent._pending_cli_user_message is None
+
+
+def test_stale_pending_cli_message_does_not_replace_new_turn_input():
+    """A failed prior persistence handoff cannot substitute later user input."""
+    agent = _FakeAgent()
+    agent._pending_cli_user_message = {"role": "user", "content": "old prompt"}
+
+    stale = agent._pending_cli_user_message
+    ctx = _build(
+        agent,
+        user_message="new prompt",
+        conversation_history=[{"role": "assistant", "content": "old answer"}],
+    )
+
+    assert ctx.messages[-1]["content"] == "new prompt"
+    assert ctx.messages[-1] is not stale
+    assert agent._pending_cli_user_message is None
+
+
+def test_pending_cli_message_uses_clean_override_for_api_local_note():
+    """A noted API message reuses the clean staged dict and its DB marker."""
+    agent = _FakeAgent()
+    staged = {"role": "user", "content": "clean prompt", "_db_persisted": True}
+    agent._pending_cli_user_message = staged
+
+    ctx = _build(
+        agent,
+        user_message="[MODEL NOTE]\n\nclean prompt",
+        persist_user_message="clean prompt",
+    )
+
+    assert ctx.messages[-1] is staged
+    assert ctx.messages[-1]["content"] == "[MODEL NOTE]\n\nclean prompt"
+    assert ctx.messages[-1]["_db_persisted"] is True
+    assert agent._pending_cli_user_message is None
+
+
+def test_runtime_main_sync_happens_after_restore():
+    agent = _FakeAgent()
+    agent.model = "stale-fallback-model"
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_key = "fallback-key"
+    agent.api_mode = "codex_responses"
+
+    def restore_primary():
+        agent.model = "primary-model"
+        agent.provider = "anthropic"
+        agent.base_url = "https://api.anthropic.com"
+        agent.api_key = "primary-key"
+        agent.api_mode = "anthropic_messages"
+
+    agent._restore_primary_runtime = restore_primary
+    calls = []
+    with patch(
+        "agent.auxiliary_client.set_runtime_main",
+        side_effect=lambda *args, **kwargs: calls.append((args, kwargs)),
+    ):
+        _build(agent)
+
+    assert calls == [(
+        ("anthropic", "primary-model"),
+        {
+            "base_url": "https://api.anthropic.com",
+            "api_key": "primary-key",
+            "api_mode": "anthropic_messages",
+            "auth_mode": "",
+        },
+    )]
+
+
 def test_memory_nudge_fires_at_interval():
     agent = _FakeAgent()
     agent._memory_nudge_interval = 1
