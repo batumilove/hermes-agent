@@ -25,7 +25,9 @@ env:
 jobs:
   # Build, test, and optionally push the image for each architecture.
   build:
-    if: github.repository == 'NousResearch/hermes-agent'
+    # Forks build and test the image, but only the upstream repository may
+    # authenticate, publish images, or create release attestations below.
+    if: github.repository == 'NousResearch/hermes-agent' || github.repository == 'batumilove/hermes-agent'
     strategy:
       fail-fast: false
       matrix:
@@ -90,7 +92,7 @@ jobs:
           category: trivy-${{ matrix.arch }}
 
       - name: Log in to Docker Hub
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -106,7 +108,7 @@ jobs:
       # Attestation for the same digest so consumers can verify origin.
       - name: Push ${{ matrix.arch }} by digest
         id: push
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
         with:
           context: .
@@ -126,7 +128,7 @@ jobs:
       # This is separate from the buildx provenance/sbom flags above; it
       # produces an attestation consumers can verify with `gh attestation`.
       - name: Attest build provenance
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-name: ${{ env.IMAGE_NAME }}
@@ -136,7 +138,7 @@ jobs:
       # Write the digest to a file and upload it as an artifact so the
       # merge job can stitch both per-arch digests into a manifest list.
       - name: Export digest
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
         env:
           IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
         run: |
@@ -145,7 +147,7 @@ jobs:
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest artifact
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: digest-${{ matrix.arch }}
