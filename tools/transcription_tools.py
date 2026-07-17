@@ -841,6 +841,15 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
+        if provider == "deepinfra":
+            if _HAS_OPENAI and get_env_value("DEEPINFRA_API_KEY"):
+                return "deepinfra"
+            logger.warning(
+                "STT provider 'deepinfra' configured but openai is unavailable "
+                "or DEEPINFRA_API_KEY is not set"
+            )
+            return "none"
+
         return provider  # Unknown — let it fail downstream
 
     # --- Auto-detect (no explicit provider): local > groq > openai > xai > elevenlabs -
@@ -1396,6 +1405,78 @@ def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
         logger.error("OpenAI transcription failed: %s", e, exc_info=True)
         return {"success": False, "transcript": "", "error": f"Transcription failed: {e}"}
 
+
+# ---------------------------------------------------------------------------
+# Provider: DeepInfra (OpenAI-compatible transcription API)
+# ---------------------------------------------------------------------------
+
+
+def _transcribe_deepinfra(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe through DeepInfra's OpenAI-compatible audio endpoint."""
+    api_key = get_env_value("DEEPINFRA_API_KEY")
+    if not api_key:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": "DEEPINFRA_API_KEY not set",
+        }
+    if not _HAS_OPENAI:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": "openai package not installed",
+        }
+
+    stt_config = _load_stt_config()
+    deepinfra_config = stt_config.get("deepinfra") or {}
+    from hermes_cli.models import deepinfra_base_url
+
+    try:
+        from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
+
+        client = OpenAI(
+            api_key=api_key,
+            base_url=deepinfra_base_url(deepinfra_config),
+            timeout=30,
+            max_retries=0,
+        )
+        try:
+            with open(file_path, "rb") as audio_file:
+                transcription = client.audio.transcriptions.create(
+                    model=model_name,
+                    file=audio_file,
+                    response_format="json",
+                )
+            return {
+                "success": True,
+                "transcript": _extract_transcript_text(transcription),
+                "provider": "deepinfra",
+            }
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
+    except PermissionError:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"Permission denied: {file_path}",
+        }
+    except APIConnectionError as exc:
+        return {"success": False, "transcript": "", "error": f"Connection error: {exc}"}
+    except APITimeoutError as exc:
+        return {"success": False, "transcript": "", "error": f"Request timeout: {exc}"}
+    except APIError as exc:
+        return {"success": False, "transcript": "", "error": f"API error: {exc}"}
+    except Exception as exc:
+        logger.error("DeepInfra transcription failed: %s", exc, exc_info=True)
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"Transcription failed: {exc}",
+        }
+
+
 # ---------------------------------------------------------------------------
 # Provider: mistral (Voxtral Transcribe API)
 # ---------------------------------------------------------------------------
@@ -1890,6 +1971,17 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         openai_cfg = stt_config.get("openai") or {}
         model_name = model or openai_cfg.get("model", DEFAULT_STT_MODEL)
         return _transcribe_openai(file_path, model_name)
+
+    if provider == "deepinfra":
+        deepinfra_cfg = stt_config.get("deepinfra") or {}
+        model_name = model or deepinfra_cfg.get("model")
+        if not model_name:
+            return {
+                "success": False,
+                "transcript": "",
+                "error": "DeepInfra STT model is not configured",
+            }
+        return _transcribe_deepinfra(file_path, model_name)
 
     if provider == "mistral":
         mistral_cfg = stt_config.get("mistral") or {}

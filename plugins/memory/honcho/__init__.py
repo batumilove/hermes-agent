@@ -1568,6 +1568,9 @@ class HonchoMemoryProvider(MemoryProvider):
                 if sum([has_delete_id, has_conclusion, list_mode]) != 1:
                     return tool_error("Exactly one of conclusion, delete_id, or list must be provided.")
 
+                if metadata is not None and not has_conclusion:
+                    return tool_error("metadata can only be provided when creating a conclusion.")
+
                 query = (args.get("query") or "").strip()
                 if query and not list_mode:
                     return tool_error("query is only valid when list is true.")

@@ -18,8 +18,8 @@ def _plugin_path() -> Path:
     for path in PLUGIN_CANDIDATES:
         if path.is_file():
             return path
-    raise FileNotFoundError(
-        "provider_telemetry plugin not found under ~/.hermes/plugins or worktree plugins/"
+    pytest.skip(
+        "optional provider_telemetry plugin is not installed or mirrored in this worktree"
     )
 
 

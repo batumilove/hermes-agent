@@ -1017,6 +1017,8 @@ class SessionDB:
     _WRITE_MAX_RETRIES = 15
     _WRITE_RETRY_MIN_S = 0.020   # 20ms
     _WRITE_RETRY_MAX_S = 0.150   # 150ms
+    _SLOW_WRITE_WARN_S = 1.0
+    _SLOW_LOCK_WAIT_WARN_S = 0.25
     # Attempt a WAL checkpoint every N successful writes (PASSIVE mode).
     _CHECKPOINT_EVERY_N_WRITES = 50
     # Merge fragmented FTS5 segments every N successful writes. The message
@@ -1303,7 +1305,11 @@ class SessionDB:
         last_err: Optional[Exception] = None
         for attempt in range(self._WRITE_MAX_RETRIES):
             try:
+                write_started = time.monotonic()
+                lock_wait_started = time.monotonic()
                 with self._lock:
+                    lock_wait = time.monotonic() - lock_wait_started
+                    transaction_started = time.monotonic()
                     self._conn.execute("BEGIN IMMEDIATE")
                     try:
                         result = fn(self._conn)
@@ -1314,6 +1320,21 @@ class SessionDB:
                         except Exception:
                             pass
                         raise
+                transaction_time = time.monotonic() - transaction_started
+                total_time = time.monotonic() - write_started
+                if (
+                    lock_wait >= self._SLOW_LOCK_WAIT_WARN_S
+                    or total_time >= self._SLOW_WRITE_WARN_S
+                ):
+                    logger.warning(
+                        "SessionDB write latency: caller=%s lock_wait=%.3fs "
+                        "txn=%.3fs total=%.3fs attempt=%d",
+                        getattr(fn, "__name__", type(fn).__name__),
+                        lock_wait,
+                        transaction_time,
+                        total_time,
+                        attempt + 1,
+                    )
                 # Success — periodic best-effort checkpoint + FTS merge.
                 self._write_count += 1
                 if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
@@ -6792,7 +6813,10 @@ class SessionDB:
                             updated_at REAL NOT NULL,
                             PRIMARY KEY (chat_id, thread_id)
                         );
-                        INSERT INTO telegram_dm_topic_bindings_new
+                        INSERT INTO telegram_dm_topic_bindings_new (
+                            chat_id, thread_id, user_id, session_key,
+                            session_id, managed_mode, linked_at, updated_at
+                        )
                             SELECT chat_id, thread_id, user_id, session_key,
                                    session_id, managed_mode, linked_at, updated_at
                             FROM telegram_dm_topic_bindings;

@@ -195,6 +195,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
           START_SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
@@ -220,7 +221,7 @@ jobs:
 
             # If main moved, the PR may have already merged (which moves
             # main) or another commit landed. Re-check state first.
-            CURRENT_SHA=$(gh api "repos/${{ github.repository }}/branches/main" --jq '.commit.sha')
+            CURRENT_SHA=$(gh api "repos/${REPO}/branches/main" --jq '.commit.sha')
             if [ "$CURRENT_SHA" != "$START_SHA" ]; then
               STATE=$(gh pr view "$PR_NUM" --json state --jq '.state')
               if [ "$STATE" = "MERGED" ]; then
