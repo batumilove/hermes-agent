@@ -7891,6 +7891,8 @@ class SessionDB:
         Returns the number of FTS indexes that were optimized.
         """
         optimized = 0
+        started = time.monotonic()
+        logger.info("FTS optimize starting: db=%s", self.db_path)
         with self._lock:
             for tbl in self._FTS_TABLES:
                 if not self._fts_table_exists(tbl):
@@ -7906,6 +7908,12 @@ class SessionDB:
                     logger.warning(
                         "FTS optimize failed for %s: %s", tbl, exc
                     )
+        logger.info(
+            "FTS optimize completed: indexes=%d duration=%.3fs db=%s",
+            optimized,
+            time.monotonic() - started,
+            self.db_path,
+        )
         return optimized
 
     def vacuum(self) -> int:

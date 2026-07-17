@@ -3,6 +3,7 @@
 import sqlite3
 import time
 import json
+import logging
 from unittest import mock
 
 import pytest
@@ -4865,6 +4866,21 @@ class TestOptimizeFts:
         assert db.optimize_fts() == 2
         # Search still works after repeated optimization.
         assert len(db.search_messages("repeat")) == 1
+
+    def test_optimize_logs_start_and_duration(self, db, caplog):
+        """Explicit maintenance reports its potentially long critical section."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(session_id="s1", role="user", content="timed optimize")
+
+        with caplog.at_level(logging.INFO, logger="hermes_state"):
+            assert db.optimize_fts() == 2
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("FTS optimize starting" in message for message in messages)
+        assert any(
+            "FTS optimize completed" in message and "duration=" in message
+            for message in messages
+        )
 
     def test_write_path_never_runs_full_fts_optimize(self, db, monkeypatch):
         """Normal writes must not synchronously run full FTS maintenance.
