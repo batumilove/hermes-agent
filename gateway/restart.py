@@ -34,6 +34,8 @@ def is_gateway_supervisor_process(
         return True
     if env.get("HERMES_S6_SUPERVISED_CHILD"):
         return True
+    if env.get("LAUNCHD_JOB_LABEL"):
+        return True
     xpc_service = env.get("XPC_SERVICE_NAME", "")
     if xpc_service and xpc_service != "0":
         return True
