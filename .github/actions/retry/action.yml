@@ -31,7 +31,7 @@ runs:
         _ATTEMPTS: ${{ inputs.attempts }}
         _DELAY: ${{ inputs.delay }}
       run: |
-        set -uo pipefail
+        set -euo pipefail
         n=0
         while :; do
           n=$((n + 1))
