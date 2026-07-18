@@ -3773,7 +3773,9 @@ class TestSchemaInit:
 
         v23 contract: tool rows are excluded from the trigram index (they
         remain fully searchable via the standard index); non-tool rows are
-        indexed in both.
+        indexed in both. Very large assistant rows are also excluded from the
+        trigram index, but remain in the canonical message store and the base
+        FTS index.
         """
         db_path = tmp_path / "v9_fts.db"
         conn = sqlite3.connect(str(db_path))
@@ -3847,6 +3849,104 @@ class TestSchemaInit:
             assert tri_tool_hit == 0
         finally:
             migrated_db.close()
+
+    def test_trigram_triggers_apply_same_byte_policy_on_fresh_db(self, db):
+        db.create_session(session_id="s1", source="cli")
+        short = "needle " + ("é" * 10)
+        long_content = "needle " + ("z" * 5000)
+        tool_content = "needle tool payload"
+
+        db.append_message(session_id="s1", role="assistant", content=short)
+        db.append_message(session_id="s1", role="assistant", content=long_content)
+        db.append_message(session_id="s1", role="tool", content=tool_content)
+
+        # Base search still sees everything.
+        assert len(db.search_messages("needle")) == 3
+        # Trigram search excludes tool rows and assistant rows above the byte cap.
+        trigram_hits = db._conn.execute(
+            "SELECT COUNT(*) FROM messages_fts_trigram "
+            "WHERE messages_fts_trigram MATCH 'needle'"
+        ).fetchone()[0]
+        assert trigram_hits == 1
+        assert db._conn.execute(
+            "SELECT COUNT(*) FROM messages_fts_trigram WHERE rowid IN (2, 3)"
+        ).fetchone()[0] == 0
+
+    def test_deferred_trigram_backfill_uses_same_byte_policy(self, tmp_path):
+        db_path = tmp_path / "deferred_byte_policy.db"
+        db = SessionDB(db_path=db_path)
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(session_id="s1", role="assistant", content="seed")
+        db.close()
+
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("DELETE FROM schema_version")
+        conn.execute("INSERT INTO schema_version (version) VALUES (23)")
+        conn.execute("DELETE FROM state_meta WHERE key LIKE 'fts_rebuild_%'")
+        conn.execute(
+            "INSERT INTO state_meta(key, value) VALUES ('fts_rebuild_high_water', '2')"
+        )
+        conn.execute(
+            "INSERT INTO state_meta(key, value) VALUES ('fts_rebuild_progress', '0')"
+        )
+        conn.execute(
+            "INSERT INTO messages (id, session_id, role, content, timestamp) VALUES (?, ?, ?, ?, ?)",
+            (2, "s1", "assistant", "seed", 1.0),
+        )
+        conn.execute(
+            "INSERT INTO messages (id, session_id, role, content, timestamp) VALUES (?, ?, ?, ?, ?)",
+            (3, "s1", "assistant", "needle " + ("x" * 5000), 2.0),
+        )
+        conn.commit()
+        conn.close()
+
+        migrated = SessionDB(db_path=db_path)
+        try:
+            _wait_fts_rebuild(migrated)
+            assert migrated._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_trigram "
+                "WHERE messages_fts_trigram MATCH 'seed'"
+            ).fetchone()[0] == 1
+            assert migrated._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_trigram "
+                "WHERE messages_fts_trigram MATCH 'needle'"
+            ).fetchone()[0] == 0
+            assert len(migrated.search_messages("needle")) == 1
+        finally:
+            migrated.close()
+
+    def test_migrated_db_recreates_trigram_triggers_with_policy(self, tmp_path):
+        db_path = tmp_path / "recreate_triggers.db"
+        db = SessionDB(db_path=db_path)
+        db.create_session(session_id="s1", source="cli")
+        with db._lock:
+            for trig in (
+                "messages_fts_trigram_insert",
+                "messages_fts_trigram_delete",
+                "messages_fts_trigram_update",
+            ):
+                db._conn.execute(f"DROP TRIGGER IF EXISTS {trig}")
+        db.close()
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert reopened._fts_trigger_count(reopened._conn) == len(hermes_state._FTS_TRIGGERS)
+            reopened.append_message(
+                session_id="s1",
+                role="assistant",
+                content="needle " + ("q" * 5000),
+            )
+            assert reopened._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_trigram "
+                "WHERE messages_fts_trigram MATCH 'needle'"
+            ).fetchone()[0] == 0
+            reopened.append_message(session_id="s1", role="assistant", content="needle ok")
+            assert reopened._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_trigram "
+                "WHERE messages_fts_trigram MATCH 'needle'"
+            ).fetchone()[0] == 1
+        finally:
+            reopened.close()
 
     def test_reconciliation_adds_missing_columns(self, tmp_path):
         """Columns present in SCHEMA_SQL but missing from the live table
