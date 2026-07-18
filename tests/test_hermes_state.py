@@ -5474,6 +5474,49 @@ class TestFTSExternalContentMigration:
         finally:
             db.close()
 
+    def test_update_trigram_rows_on_role_transitions(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            db.create_session("s1", source="cli")
+            first_id = db.append_message("s1", role="assistant", content="大别山项目 旧内容")
+            second_id = db.append_message("s1", role="tool", content="tool 大别山项目 payload", tool_name="x")
+
+            db._conn.execute(
+                "UPDATE messages SET role = 'tool', content = '大别山项目 新内容' WHERE id = ?",
+                (first_id,),
+            )
+            db._conn.commit()
+            tri_count = db._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_trigram WHERE messages_fts_trigram MATCH '\"大别山项目\"'"
+            ).fetchone()[0]
+            assert tri_count == 0
+
+            db._conn.execute(
+                "UPDATE messages SET role = 'assistant', content = '大别山项目 回来' WHERE id = ?",
+                (second_id,),
+            )
+            db._conn.commit()
+            tri_rows = db._conn.execute(
+                "SELECT rowid FROM messages_fts_trigram WHERE messages_fts_trigram MATCH '\"大别山项目\"' ORDER BY rowid"
+            ).fetchall()
+            assert [row[0] for row in tri_rows] == [second_id]
+        finally:
+            db.close()
+
+    def test_cjk_tool_rows_remain_searchable_via_session_search_fallback(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            db.create_session("s1", source="cli")
+            db.append_message("s1", role="tool", content="工具输出：大别山项目部署说明", tool_name="browser_snapshot")
+            db.append_message("s1", role="assistant", content="普通消息：大别山项目部署说明")
+
+            hits = db.search_messages("大别山项目")
+            assert any(hit["role"] == "tool" for hit in hits)
+            tool_hits = db.search_messages("大别山项目", role_filter=["tool"])
+            assert tool_hits and all(hit["role"] == "tool" for hit in tool_hits)
+        finally:
+            db.close()
+
     def test_v23_deferred_rebuild_searchable_during_and_resumable(self, tmp_path):
         """Mid-rebuild: new writes are indexed live, unindexed old rows are
         still found via the gap supplement, and a killed rebuild resumes
