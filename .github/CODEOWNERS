@@ -1,0 +1,3 @@
+# CI/CD configuration requires explicit fork-maintainer review.
+/.github/workflows/** @batumilove
+/.github/actions/** @batumilove

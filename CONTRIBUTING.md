@@ -209,6 +209,27 @@ scripts/run_tests.sh
 pytest tests/ -v
 ```
 
+### Fork CI policy
+
+The `batumilove/hermes-agent` deployment fork uses `batumi/live` as its
+protected integration branch. Its ruleset should require the single aggregate
+check **All required checks pass**. The orchestrator decides which lanes apply
+from the changed paths, but an applicable lane must report `success`; a
+required lane may not pass merely because it was skipped.
+
+Docker changes are handled in two separate trust domains:
+
+- Pull requests in both `NousResearch/hermes-agent` and
+  `batumilove/hermes-agent` build and test the image when Python, frontend, or
+  Docker build inputs change.
+- Docker registry authentication, image publication, release attestations,
+  and manifest promotion remain restricted to `NousResearch/hermes-agent`.
+
+Changes under `.github/workflows/` and `.github/actions/` require review from
+the owners listed in `.github/CODEOWNERS`. Repository rulesets must require the
+aggregate check and code-owner review on `batumi/live` for these controls to be
+enforced by GitHub, rather than only documented in the repository.
+
 ---
 
 ## Project Structure
