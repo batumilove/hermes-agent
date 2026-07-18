@@ -1038,6 +1038,9 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_insert AFTER INSERT ON messages
 WHEN new.role <> 'tool'
+   AND length(CAST(COALESCE(new.content, '') AS BLOB)) +
+       length(CAST(COALESCE(new.tool_name, '') AS BLOB)) +
+       length(CAST(COALESCE(new.tool_calls, '') AS BLOB)) <= 4096
    AND (new.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
                            WHERE key = 'fts_rebuild_high_water'), -1)
      OR new.id <= COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
@@ -1049,6 +1052,9 @@ END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_delete AFTER DELETE ON messages
 WHEN old.role <> 'tool'
+   AND length(CAST(COALESCE(old.content, '') AS BLOB)) +
+       length(CAST(COALESCE(old.tool_name, '') AS BLOB)) +
+       length(CAST(COALESCE(old.tool_calls, '') AS BLOB)) <= 4096
    AND (old.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
                            WHERE key = 'fts_rebuild_high_water'), -1)
      OR old.id <= COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
@@ -1063,6 +1069,9 @@ WHEN (old.content IS NOT new.content
     OR old.tool_name IS NOT new.tool_name
     OR old.tool_calls IS NOT new.tool_calls
     OR old.role IS NOT new.role)
+   AND length(CAST(COALESCE(old.content, '') AS BLOB)) +
+       length(CAST(COALESCE(old.tool_name, '') AS BLOB)) +
+       length(CAST(COALESCE(old.tool_calls, '') AS BLOB)) <= 4096
    AND (old.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
                            WHERE key = 'fts_rebuild_high_water'), -1)
      OR old.id <= COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
@@ -1073,7 +1082,10 @@ BEGIN
     WHERE old.role <> 'tool';
     INSERT INTO messages_fts_trigram(rowid, content, tool_name, tool_calls)
     SELECT new.id, new.content, new.tool_name, new.tool_calls
-    WHERE new.role <> 'tool';
+    WHERE new.role <> 'tool'
+      AND length(CAST(COALESCE(new.content, '') AS BLOB)) +
+          length(CAST(COALESCE(new.tool_name, '') AS BLOB)) +
+          length(CAST(COALESCE(new.tool_calls, '') AS BLOB)) <= 4096;
 END;
 """
 
@@ -1364,6 +1376,10 @@ class SessionDB:
     _CHECKPOINT_INTERVAL_S = 60
     # Warning threshold for slow checkpoint I/O.
     _SLOW_CHECKPOINT_WARN_S = 2.0
+    # Keep large payloads out of the expensive trigram index. Standard FTS
+    # still indexes every row, so ordinary token search and rollback semantics
+    # remain intact.
+    _FTS_TRIGRAM_MAX_SOURCE_BYTES = 4096
 
     # Session imports intentionally use a lower cap than exports: import holds
     # one BEGIN IMMEDIATE transaction, so bounded batches avoid starving live
@@ -1561,6 +1577,22 @@ class SessionDB:
             "(underlying error: %s)",
             self.db_path,
             exc,
+        )
+
+    @staticmethod
+    def _trigram_source_bytes_sql(prefix: str) -> str:
+        return (
+            f"(length(CAST(COALESCE({prefix}.content, '') AS BLOB)) + "
+            f"length(CAST(COALESCE({prefix}.tool_name, '') AS BLOB)) + "
+            f"length(CAST(COALESCE({prefix}.tool_calls, '') AS BLOB)))"
+        )
+
+    def _should_index_trigram(self, role: str, fts_source_bytes: int) -> bool:
+        return (
+            self._fts_enabled
+            and self._trigram_available
+            and role != "tool"
+            and fts_source_bytes <= self._FTS_TRIGRAM_MAX_SOURCE_BYTES
         )
 
     def _sqlite_supports_fts5(self, cursor: sqlite3.Cursor) -> bool:
@@ -2076,8 +2108,9 @@ class SessionDB:
                     "INSERT INTO messages_fts_trigram"
                     "(rowid, content, tool_name, tool_calls) "
                     "SELECT id, content, tool_name, tool_calls FROM messages "
-                    "WHERE id > ? AND id <= ? AND role <> 'tool'",
-                    (progress, upper),
+                    "WHERE id > ? AND id <= ? AND role <> 'tool' "
+                    f"AND {self._trigram_source_bytes_sql('messages')} <= ?",
+                    (progress, upper, self._FTS_TRIGRAM_MAX_SOURCE_BYTES),
                 )
             # Publish progress in the same transaction as the rows it
             # covers — crash-atomic: either both land or neither does.
