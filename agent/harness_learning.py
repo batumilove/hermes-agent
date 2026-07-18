@@ -223,6 +223,14 @@ def _has_affirmative_side_effect_claim(
                     rf"\b(?:is|are)\s+(?:currently\s+)?{re.escape(verb)}\b",
                     clause,
                 )
+                or (
+                    not first_person
+                    and re.search(
+                        rf"\b(?:is|are)\s+(?:currently\s+)?[^.!?;,]{{0,60}}"
+                        rf"\b(?:and|or)\s+(?:currently\s+)?{re.escape(verb)}\b",
+                        sentence,
+                    )
+                )
                 for verb in affirmative_verbs
             )
             if present_state:

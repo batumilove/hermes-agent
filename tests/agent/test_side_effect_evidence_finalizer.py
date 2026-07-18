@@ -427,6 +427,32 @@ def test_finalizer_no_warning_for_present_state_description(monkeypatch):
         assert "Side-effect evidence regulator" not in result["final_response"], response
 
 
+def test_finalizer_no_warning_for_coordinated_present_state_description(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "inspect the production cron"}]
+    response = (
+        "Production cron: olah-health-monitor is enabled and scheduled every 30 minutes. "
+        "No manual production run was triggered."
+    )
+
+    result = _run_finalizer(agent, messages, response)
+
+    assert "Side-effect evidence regulator" not in result["final_response"]
+
+
+def test_finalizer_warns_when_coordinated_sentence_contains_fresh_action(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "schedule the production cron"}]
+    response = "The production cron is enabled and I scheduled it every 30 minutes."
+
+    result = _run_finalizer(agent, messages, response)
+
+    assert "Side-effect evidence regulator" in result["final_response"]
+    assert "cronjob" in result["final_response"]
+
+
 def test_finalizer_does_not_borrow_category_context_from_later_sentence(monkeypatch):
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
     agent = FakeAgent()
