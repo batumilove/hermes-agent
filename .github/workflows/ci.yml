@@ -94,7 +94,9 @@ jobs:
   contributor-check:
     name: Check contributors
     needs: detect
-    if: needs.detect.outputs.python == 'true'
+    # Attribution is a review-time check over the PR delta. Running it on a
+    # branch push scans accumulated fork history and produces false failures.
+    if: needs.detect.outputs.event_name == 'pull_request' && needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/contributor-check.yml
 
   uv-lockfile:
@@ -195,7 +197,9 @@ jobs:
           if event_name == 'pull_request':
               required.add('history-check')
           if enabled('PYTHON_CHANGED'):
-              required.update({'tests', 'lint', 'contributor-check'})
+              required.update({'tests', 'lint'})
+              if event_name == 'pull_request':
+                  required.add('contributor-check')
           if enabled('FRONTEND_CHANGED'):
               required.add('js-tests')
           if enabled('SITE_CHANGED'):
