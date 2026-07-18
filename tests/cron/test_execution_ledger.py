@@ -39,6 +39,23 @@ def test_execution_transitions_are_durable(monkeypatch, tmp_path):
     assert persisted == [completed]
 
 
+def test_active_execution_metrics_report_queue_depth_and_oldest_claim(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+
+    oldest = executions.create_execution("queued-oldest", source="builtin")
+    running = executions.create_execution("running", source="builtin")
+    executions.mark_execution_running(running["id"])
+    executions.create_execution("queued-newer", source="builtin")
+
+    metrics = executions.active_execution_metrics()
+
+    assert metrics == {
+        "claimed": 2,
+        "running": 1,
+        "oldest_claimed_at": oldest["claimed_at"],
+    }
+
+
 def test_terminal_execution_cannot_be_rewritten(monkeypatch, tmp_path):
     executions = _point_ledger(monkeypatch, tmp_path)
     record = executions.create_execution("immutable", source="builtin")

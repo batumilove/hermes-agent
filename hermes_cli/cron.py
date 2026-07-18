@@ -242,6 +242,7 @@ def cron_status():
         ))
         print()
         _print_active_jobs_summary(list_jobs(include_disabled=False))
+        _print_execution_metrics()
         print()
         return
 
@@ -300,6 +301,7 @@ def cron_status():
     print()
 
     _print_active_jobs_summary(list_jobs(include_disabled=False))
+    _print_execution_metrics()
 
     print()
 
@@ -314,6 +316,25 @@ def _print_active_jobs_summary(jobs) -> None:
             print(f"  Next run: {min(next_runs)}")
     else:
         print("  No active jobs")
+
+
+def _print_execution_metrics() -> None:
+    """Print durable in-flight queue depth and oldest queued age."""
+    from datetime import datetime, timezone
+    from cron.executions import active_execution_metrics
+
+    metrics = active_execution_metrics()
+    claimed = metrics["claimed"]
+    running = metrics["running"]
+    print(f"  Executions: {running} running, {claimed} queued")
+    oldest = metrics.get("oldest_claimed_at")
+    if oldest:
+        try:
+            claimed_at = datetime.fromisoformat(str(oldest).replace("Z", "+00:00"))
+            age = max(0, int((datetime.now(timezone.utc) - claimed_at).total_seconds()))
+            print(f"  Oldest queued: {age}s ({oldest})")
+        except (TypeError, ValueError):
+            print(f"  Oldest queued: {oldest}")
 
 
 def cron_create(args):

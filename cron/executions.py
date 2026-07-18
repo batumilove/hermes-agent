@@ -205,6 +205,24 @@ def list_executions(
     return [dict(row) for row in rows]
 
 
+def active_execution_metrics() -> Dict[str, Any]:
+    """Return queue depth, running count, and the oldest queued claim."""
+    with _lock, _connect() as conn:
+        row = conn.execute(
+            """SELECT
+                 SUM(CASE WHEN status='claimed' THEN 1 ELSE 0 END) AS claimed,
+                 SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) AS running,
+                 MIN(CASE WHEN status='claimed' THEN claimed_at END) AS oldest_claimed_at
+               FROM executions
+               WHERE status IN ('claimed','running')"""
+        ).fetchone()
+    return {
+        "claimed": int(row["claimed"] or 0),
+        "running": int(row["running"] or 0),
+        "oldest_claimed_at": row["oldest_claimed_at"],
+    }
+
+
 def latest_execution(job_id: str) -> Optional[Dict[str, Any]]:
     rows = list_executions(job_id=job_id, limit=1)
     return rows[0] if rows else None
