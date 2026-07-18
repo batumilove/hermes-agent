@@ -1173,9 +1173,51 @@ class _CheckpointCoordinator:
             )
 
     def _loop(self) -> None:
-        while not self._stop_event.is_set():
+        while not self._stop_event.wait(timeout=self._interval_s):
             self._run_checkpoint()
-            self._stop_event.wait(timeout=self._interval_s)
+
+
+_CHECKPOINT_COORDINATORS_LOCK = threading.Lock()
+_CHECKPOINT_COORDINATORS: Dict[str, Tuple[_CheckpointCoordinator, int]] = {}
+
+
+def _acquire_checkpoint_coordinator(
+    db_path: Path,
+    interval_s: float,
+    slow_warn_s: float,
+) -> Tuple[str, _CheckpointCoordinator]:
+    """Return the process-wide coordinator shared by one database path."""
+    key = str(Path(db_path).expanduser().resolve(strict=False))
+    with _CHECKPOINT_COORDINATORS_LOCK:
+        existing = _CHECKPOINT_COORDINATORS.get(key)
+        if existing is not None:
+            coordinator, owners = existing
+            _CHECKPOINT_COORDINATORS[key] = (coordinator, owners + 1)
+            return key, coordinator
+        coordinator = _CheckpointCoordinator(db_path, interval_s, slow_warn_s)
+        _CHECKPOINT_COORDINATORS[key] = (coordinator, 1)
+        return key, coordinator
+
+
+def _release_checkpoint_coordinator(
+    key: str,
+    coordinator: _CheckpointCoordinator,
+) -> bool:
+    """Release one owner; return true when it was the final process owner."""
+    should_stop = False
+    with _CHECKPOINT_COORDINATORS_LOCK:
+        existing = _CHECKPOINT_COORDINATORS.get(key)
+        if existing is None or existing[0] is not coordinator:
+            return False
+        owners = existing[1] - 1
+        if owners > 0:
+            _CHECKPOINT_COORDINATORS[key] = (coordinator, owners)
+        else:
+            _CHECKPOINT_COORDINATORS.pop(key, None)
+            should_stop = True
+    if should_stop:
+        coordinator.stop(timeout=10.0)
+    return should_stop
 
 
 class SessionDB:
@@ -1223,11 +1265,16 @@ class SessionDB:
 
         self._lock = threading.Lock()
         self._write_count = 0
-        self._checkpoint_coordinator = _CheckpointCoordinator(
+        (
+            self._checkpoint_coordinator_key,
+            self._checkpoint_coordinator,
+        ) = _acquire_checkpoint_coordinator(
             self.db_path,
             self._CHECKPOINT_INTERVAL_S,
             self._SLOW_CHECKPOINT_WARN_S,
         )
+        self._registered_checkpoint_coordinator = self._checkpoint_coordinator
+        self._checkpoint_coordinator_released = False
         # One-shot guard for the runtime FTS rebuild recovery on the write
         # path. A corrupt FTS shadow table makes EVERY message write raise
         # the malformed/corrupt error class via the sync triggers; we repair
@@ -1331,6 +1378,11 @@ class SessionDB:
             # cause that another thread's /resume is about to format.
             # Tests that need to reset the state can call
             # ``hermes_state._set_last_init_error(None)`` explicitly.
+            _release_checkpoint_coordinator(
+                self._checkpoint_coordinator_key,
+                self._registered_checkpoint_coordinator,
+            )
+            self._checkpoint_coordinator_released = True
             _set_last_init_error(f"{type(exc).__name__}: {exc}")
             raise
 
@@ -1698,16 +1750,29 @@ class SessionDB:
         help shrink the WAL file.  Also joins the checkpoint coordinator so
         it doesn't outlive the SessionDB instance.
         """
-        try:
-            self._checkpoint_coordinator.stop(timeout=10.0)
-        except Exception as exc:
-            logger.debug("Checkpoint coordinator stop at close failed: %s", exc)
+        final_checkpoint_owner = False
+        if not self._checkpoint_coordinator_released:
+            try:
+                # Tests and specialized callers may replace the instance
+                # coordinator. Stop that private replacement directly while
+                # still releasing the originally registered shared owner.
+                if self._checkpoint_coordinator is not self._registered_checkpoint_coordinator:
+                    self._checkpoint_coordinator.stop(timeout=10.0)
+                final_checkpoint_owner = _release_checkpoint_coordinator(
+                    self._checkpoint_coordinator_key,
+                    self._registered_checkpoint_coordinator,
+                )
+            except Exception as exc:
+                logger.debug("Checkpoint coordinator release at close failed: %s", exc)
+            finally:
+                self._checkpoint_coordinator_released = True
         with self._lock:
             if self._conn:
-                try:
-                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                except Exception as exc:
-                    logger.debug("WAL checkpoint (TRUNCATE) at close failed: %s", exc)
+                if final_checkpoint_owner:
+                    try:
+                        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    except Exception as exc:
+                        logger.debug("WAL checkpoint (TRUNCATE) at close failed: %s", exc)
                 self._conn.close()
                 self._conn = None
 
