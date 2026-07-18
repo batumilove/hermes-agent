@@ -10,8 +10,10 @@ services:
     security_opt:
       - no-new-privileges:true
     tmpfs:
-      - /run:rw,nosuid,nodev,mode=755
-      - /tmp:rw,nosuid,nodev,mode=1777
+      # s6-overlay copies and executes its init from /run/s6 during startup.
+      # Docker's default tmpfs options include noexec, so exec must be explicit.
+      - /run:rw,exec,nosuid,nodev,size=64m,mode=0755
+      - /tmp:rw,noexec,nosuid,nodev,size=1g,mode=1777
     volumes:
       - type: bind
         source: ${HERMES_DATA_DIR:?set HERMES_DATA_DIR}
