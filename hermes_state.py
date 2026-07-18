@@ -23,6 +23,7 @@ import sqlite3
 import sys
 import threading
 import time
+import weakref
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
@@ -1076,6 +1077,107 @@ END;
 """
 
 
+class _CheckpointCoordinator:
+    """Background thread that performs PASSIVE WAL checkpoints off the write path.
+
+    Runs on its own sqlite3.Connection so it never touches the SessionDB's
+    primary connection or holds SessionDB._lock during checkpoint I/O.  Started
+    lazily on the first successful write and joined on ``stop()``.
+    """
+
+    def __init__(self, db_path: Path, interval_s: float, slow_warn_s: float):
+        self._db_path = db_path
+        self._interval_s = interval_s
+        self._slow_warn_s = slow_warn_s
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._lock = threading.Lock()
+        self._conn: Optional[sqlite3.Connection] = None
+
+    def start(self) -> bool:
+        """Start the coordinator thread if not already running."""
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return False
+            self._stop_event.clear()
+            self._thread = threading.Thread(
+                target=self._loop,
+                name="sessiondb-checkpoint-coordinator",
+                daemon=True,
+            )
+            self._thread.start()
+            return True
+
+    def stop(self, timeout: float = 10.0) -> None:
+        """Signal and join the coordinator thread."""
+        self._stop_event.set()
+        with self._lock:
+            thread = self._thread
+            self._thread = None
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=timeout)
+        self._close_conn()
+
+    def _close_conn(self) -> None:
+        conn = self._conn
+        self._conn = None
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _ensure_conn(self) -> Optional[sqlite3.Connection]:
+        if self._conn is not None:
+            return self._conn
+        try:
+            self._conn = sqlite3.connect(
+                str(self._db_path),
+                check_same_thread=True,
+                timeout=1.0,
+                isolation_level=None,
+            )
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA wal_autocheckpoint=0")
+            return self._conn
+        except Exception as exc:
+            logger.warning("Checkpoint coordinator failed to open connection: %s", exc)
+            return None
+
+    def _run_checkpoint(self) -> None:
+        conn = self._ensure_conn()
+        if conn is None:
+            return
+        started = time.monotonic()
+        try:
+            result = conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+        except Exception as exc:
+            logger.warning("WAL checkpoint (PASSIVE) failed: %s", exc)
+            return
+        duration = time.monotonic() - started
+        if result is None:
+            return
+        # wal_checkpoint returns (busy, log, checkpointed)
+        busy, total_pages, checkpointed = result[0], result[1], result[2]
+        if total_pages > 0 or duration >= self._slow_warn_s:
+            logger.debug(
+                "WAL checkpoint: %d/%d pages checkpointed in %.3fs (busy=%d)",
+                checkpointed, total_pages, duration, busy,
+            )
+        if duration >= self._slow_warn_s:
+            logger.warning(
+                "SessionDB slow checkpoint: operation=wal_checkpoint "
+                "mode=PASSIVE duration_s=%.3f pages_checkpointed=%d "
+                "total_pages=%d busy=%d",
+                duration, checkpointed, total_pages, busy,
+            )
+
+    def _loop(self) -> None:
+        while not self._stop_event.is_set():
+            self._run_checkpoint()
+            self._stop_event.wait(timeout=self._interval_s)
+
+
 class SessionDB:
     """
     SQLite-backed session storage with FTS5 search.
@@ -1100,6 +1202,10 @@ class SessionDB:
     _SLOW_LOCK_WAIT_WARN_S = 0.25
     # Attempt a WAL checkpoint every N successful writes (PASSIVE mode).
     _CHECKPOINT_EVERY_N_WRITES = 50
+    # Run the periodic checkpoint on a dedicated coordinator thread every N seconds.
+    _CHECKPOINT_INTERVAL_S = 60
+    # Warning threshold for slow checkpoint I/O.
+    _SLOW_CHECKPOINT_WARN_S = 2.0
 
     # Session imports intentionally use a lower cap than exports: import holds
     # one BEGIN IMMEDIATE transaction, so bounded batches avoid starving live
@@ -1117,6 +1223,11 @@ class SessionDB:
 
         self._lock = threading.Lock()
         self._write_count = 0
+        self._checkpoint_coordinator = _CheckpointCoordinator(
+            self.db_path,
+            self._CHECKPOINT_INTERVAL_S,
+            self._SLOW_CHECKPOINT_WARN_S,
+        )
         # One-shot guard for the runtime FTS rebuild recovery on the write
         # path. A corrupt FTS shadow table makes EVERY message write raise
         # the malformed/corrupt error class via the sync triggers; we repair
@@ -1442,14 +1553,16 @@ class SessionDB:
                         total_time,
                         attempt + 1,
                     )
-                # Success — periodic best-effort checkpoint. Full FTS
-                # optimization is intentionally excluded from this hot path:
-                # on multi-gigabyte indexes it can hold the shared SessionDB
-                # lock for minutes. ``optimize_fts()`` remains available for
-                # explicit stopped-gateway maintenance.
+                # Success — periodic best-effort checkpoint is now handled by a
+                # dedicated background coordinator so checkpoint I/O no longer
+                # runs under self._lock or on self._conn. Full FTS optimization
+                # is intentionally excluded from this hot path: on multi-gigabyte
+                # indexes it can hold the shared SessionDB lock for minutes.
+                # ``optimize_fts()`` remains available for explicit
+                # stopped-gateway maintenance.
                 self._write_count += 1
-                if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
-                    self._try_wal_checkpoint()
+                if not self.read_only:
+                    self._checkpoint_coordinator.start()
                 return result
             except sqlite3.OperationalError as exc:
                 err_msg = str(exc).lower()
@@ -1582,8 +1695,13 @@ class SessionDB:
         """Close the database connection.
 
         Attempts a TRUNCATE WAL checkpoint first so that exiting processes
-        help shrink the WAL file.
+        help shrink the WAL file.  Also joins the checkpoint coordinator so
+        it doesn't outlive the SessionDB instance.
         """
+        try:
+            self._checkpoint_coordinator.stop(timeout=10.0)
+        except Exception as exc:
+            logger.debug("Checkpoint coordinator stop at close failed: %s", exc)
         with self._lock:
             if self._conn:
                 try:
@@ -1592,6 +1710,21 @@ class SessionDB:
                     logger.debug("WAL checkpoint (TRUNCATE) at close failed: %s", exc)
                 self._conn.close()
                 self._conn = None
+
+    @staticmethod
+    def _operation_name(fn: Callable[..., Any]) -> str:
+        """Derive a semantic operation name from the write function for metrics.
+
+        Strips the common internal prefixes so the log/metric field reads as
+        the logical operation (``append_message``, ``deactivate``, etc.).
+        """
+        name = getattr(fn, "__name__", type(fn).__name__)
+        for prefix in ("_do_", "_delete_", "_update_"):
+            if name.startswith(prefix):
+                return name[len(prefix):]
+        # For lambdas / callables used directly, keep the raw name rather than
+        # inventing a misleading one.
+        return name
 
     # ── Deferred FTS rebuild (schema v23) ──
     #
