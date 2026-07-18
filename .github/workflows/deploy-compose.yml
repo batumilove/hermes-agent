@@ -1,0 +1,138 @@
+name: Publish and deploy Hermes image
+
+on:
+  push:
+    branches:
+      - batumi/live
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hermes-staging-deploy
+  cancel-in-progress: true
+
+env:
+  IMAGE_REPOSITORY: ghcr.io/batumilove/hermes-agent-deploy
+
+jobs:
+  wait-for-required-ci:
+    if: github.repository == 'batumilove/hermes-agent'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      checks: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EXPECTED_SHA: ${{ github.sha }}
+      REQUIRED_CONTEXT: All required checks pass
+    steps:
+      - name: Wait for the aggregate CI gate on this exact commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 100); do
+            latest=$(gh api \
+              repos/batumilove/hermes-agent/branches/batumi%2Flive \
+              --jq '.commit.sha')
+            if [[ "$latest" != "$EXPECTED_SHA" ]]; then
+              echo "Refusing stale deployment: branch=$latest workflow=$EXPECTED_SHA" >&2
+              exit 1
+            fi
+
+            result=$(gh api \
+              "repos/batumilove/hermes-agent/commits/$EXPECTED_SHA/check-runs?filter=latest&per_page=100" \
+              | python3 -c '
+          import json, os, sys
+          runs = [
+              r for r in json.load(sys.stdin).get("check_runs", [])
+              if r.get("name") == os.environ["REQUIRED_CONTEXT"]
+              and r.get("app", {}).get("id") == 15368
+          ]
+          runs.sort(key=lambda r: r.get("started_at") or "")
+          run = runs[-1] if runs else {}
+          print(f"{run.get('"'"'status'"'"', '"'"'missing'"'"')}:{run.get('"'"'conclusion'"'"') or '"'"'pending'"'"'}")
+          ')
+            echo "aggregate gate: $result (attempt $attempt)"
+            case "$result" in
+              completed:success) exit 0 ;;
+              completed:failure|completed:cancelled|completed:timed_out|completed:action_required)
+                echo "Required CI did not pass for $EXPECTED_SHA" >&2
+                exit 1
+                ;;
+            esac
+            sleep 20
+          done
+          echo "Timed out waiting for required CI on $EXPECTED_SHA" >&2
+          exit 1
+
+  publish-image:
+    needs: wait-for-required-ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      source-sha: ${{ github.sha }}
+    steps:
+      - name: Check out the verified commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to the fork GHCR namespace
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and publish immutable deployment image
+        id: build
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE_REPOSITORY }}:sha-${{ github.sha }}
+            ${{ env.IMAGE_REPOSITORY }}:candidate
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          build-args: |
+            HERMES_GIT_SHA=${{ github.sha }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=hermes-deploy-amd64
+          cache-to: type=gha,mode=max,scope=hermes-deploy-amd64
+
+      - name: Attest image provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-name: ${{ env.IMAGE_REPOSITORY }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+  deploy-staging:
+    needs: publish-image
+    # Fail closed until the isolated staging VM, host key, and environment
+    # secrets have been provisioned and independently verified.
+    if: vars.HERMES_STAGING_DEPLOY_ENABLED == 'true'
+    uses: ./.github/workflows/_deploy-compose.yml
+    with:
+      environment: batumi-staging
+      operation: deploy
+      image_digest: ${{ needs.publish-image.outputs.digest }}
+      source_sha: ${{ needs.publish-image.outputs.source-sha }}
+    secrets: inherit

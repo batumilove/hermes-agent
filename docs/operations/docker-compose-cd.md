@@ -1,0 +1,198 @@
+# Docker Compose CD for the Batumi Hermes fork
+
+This document describes the fork-owned deployment path for
+`batumilove/hermes-agent`. It does not change or weaken the upstream
+`NousResearch/hermes-agent` Docker Hub release boundary. Fork deployment images
+use the separate repository `ghcr.io/batumilove/hermes-agent-deploy`.
+
+## Delivery model
+
+1. A merge lands on `batumi/live`.
+2. `.github/workflows/deploy-compose.yml` waits for the exact commit's
+   `All required checks pass` result from the GitHub Actions app.
+3. The workflow refuses to continue if `batumi/live` has moved to a newer SHA.
+4. BuildKit publishes a Linux/amd64 image with SBOM and provenance. The commit
+   tag and `candidate` tag are discovery aids only; deployment always uses the
+   returned `sha256:` digest.
+5. The digest is deployed automatically to the `batumi-staging` GitHub
+   environment.
+6. After staging validation, `.github/workflows/promote-compose.yml` promotes
+   the same digest to `batumi-production`; it never rebuilds the image.
+7. The host deploy helper serializes deployments with `flock`, pulls before
+   replacing the healthy container, waits for the s6-supervised gateway health
+   check, and restores the prior digest on failure.
+
+`deploy/compose.yml` intentionally runs only the gateway. Add the dashboard as
+a separately reviewed service after gateway migration is stable. Both staging
+and production use host networking, so they must be on separate hosts and must
+use separate Hermes homes and messaging credentials.
+
+## GitHub environments
+
+Create `batumi-staging` and `batumi-production`. Configure these environment
+variables in each environment:
+
+| Variable | Example | Purpose |
+| --- | --- | --- |
+| `DEPLOY_HOST` | `hermes-staging-01` | Tailnet DNS name; no shell syntax |
+| `DEPLOY_USER` | `hermes-staging` | Dedicated deployment account |
+| `DEPLOY_ROOT` | `/opt/hermes-compose/staging` | Account-owned deployment root |
+| `TAILSCALE_TAGS` | `tag:ci` | Ephemeral runner identity |
+
+Configure these environment secrets:
+
+- `TAILSCALE_OAUTH_CLIENT_ID`
+- `TAILSCALE_OAUTH_SECRET`
+- `DEPLOY_SSH_KEY`
+- `DEPLOY_KNOWN_HOSTS`
+
+Automatic staging is additionally gated by the repository Actions variable
+`HERMES_STAGING_DEPLOY_ENABLED`. Keep it set to `false` until the staging host
+preflight and first manual deployment have passed; set it to `true` only after
+that evidence exists. Image publication can continue while deployment remains
+disabled.
+
+Use a Tailscale OAuth client restricted to creation of the CI tag. ACLs should
+allow that tag to reach only TCP/22 on the two deployment hosts. The SSH key
+must belong to the dedicated deployment account, not `root`, and the workflow
+uses strict host-key checking. Store an exact, independently verified ED25519
+known-host entry; do not use `ssh-keyscan` during deployment.
+
+Production should require an environment approval. For a personal repository,
+configure `batumilove` as reviewer with self-review allowed, or use a second
+maintainer when available. Staging should not require approval but should allow
+only `batumi/live`.
+
+> `workflow_dispatch` workflows are exposed from the repository's default
+> branch. This fork currently uses `main` as its default while deployment code
+> lives on `batumi/live`. Change the default branch to `batumi/live` only after
+> the staging deployment PR is merged and verified. Automatic staging on push
+> does not depend on this change; manual promotion and rollback do.
+
+## Host preparation
+
+The workflow does not bootstrap Docker, modify firewall policy, create users,
+or install registry credentials. Those are infrastructure operations and must
+be reviewed independently.
+
+Required host state:
+
+1. Docker Engine and Docker Compose v2 are installed.
+2. The deployment account can run Docker and owns `DEPLOY_ROOT`. Membership in
+   the Docker group is root-equivalent; restrict SSH and Tailscale access
+   accordingly.
+3. The host is already authenticated for pull-only access to
+   `ghcr.io/batumilove/hermes-agent-deploy`, or the package is deliberately
+   public. Never pass a registry token through workflow command arguments.
+4. A dedicated Hermes data directory exists and is backed up off-host.
+5. Runtime secrets are present only inside that Hermes home or its approved
+   host-side secret injection path. They do not belong in Compose or GitHub
+   workflow files.
+6. The deployment account's `runtime.env` exists at mode `0600`.
+
+Example staging preparation (values are examples, not a command to run on
+production):
+
+```bash
+install -d -m 0700 /opt/hermes-compose/staging
+install -d -m 0700 /home/hermes-staging/.hermes-staging
+cat >/opt/hermes-compose/staging/runtime.env <<'EOF'
+HERMES_DATA_DIR=/home/hermes-staging/.hermes-staging
+HERMES_UID=1001
+HERMES_GID=1001
+EOF
+chmod 0600 /opt/hermes-compose/staging/runtime.env
+```
+
+`HERMES_UID` and `HERMES_GID` must match the owner of `HERMES_DATA_DIR`.
+Create `runtime.env` directly on the host; do not generate it in Actions if it
+contains site-specific or sensitive values.
+
+The container root filesystem is not mounted globally read-only. Hermes' s6
+initialization must update the internal user/group records before dropping
+privileges to the host-matching UID/GID. The application tree remains
+root-owned and non-writable to the runtime Hermes user, and Compose enables
+`no-new-privileges`; forcing `read_only: true` would break the supported UID/GID
+remap rather than provide a usable hardening layer.
+
+## Staging target
+
+The existing isolated target is:
+
+- host: `hermes-staging-01`
+- VMID: `429`
+- Hermes home: `/home/hermes-staging/.hermes-staging`
+- existing profiles: `gateway-canary`, `skill-lab`
+
+The host was unreachable during implementation, so no deployment or host
+mutation was attempted. Before enabling automatic staging:
+
+1. Start and identity-check VM 429 through its Proxmox host.
+2. Re-verify its SSH host key against the recorded VM identity.
+3. Install Docker Compose v2 and prepare the dedicated deployment account/root.
+4. Configure staging-only credentials. Never mount `/home/ubuntu/.hermes` or
+   use the production Telegram token on staging.
+5. Run the manual promotion workflow against staging once, then permit the
+   automatic push workflow.
+
+## Production migration safety
+
+Production currently runs `hermes-gateway.service` as a source installation on
+`hermes-vm`. Do not run the containerized gateway concurrently with that unit:
+both processes would compete for the same Telegram token and state files.
+
+A production cutover requires a separate approved maintenance window:
+
+1. Verify a current off-host backup and a tested restore path for
+   `/home/ubuntu/.hermes`.
+2. Record the running source commit and systemd unit state.
+3. Verify the chosen digest has passed staging using non-production credentials.
+4. Pull the digest before stopping the systemd gateway.
+5. Stop and disable only the confirmed production gateway unit.
+6. Start the Compose release and verify container health, Telegram ownership,
+   dashboard/API exposure, cron state, and provider access.
+7. If verification fails, stop Compose, restore the prior release/state if
+   needed, and restart the original systemd unit.
+
+Do not automate that first cutover. After one successful observed migration,
+normal production promotions may use the environment-gated workflow.
+
+## Promotion and rollback
+
+Promotion requires a digest and its source SHA. The workflow requires the
+source commit to be contained in protected `batumi/live`, verifies that the
+digest exists in the fork GHCR repository, then deploys that same digest:
+
+```text
+environment: batumi-production
+operation: deploy
+image_digest: sha256:<64 hex characters>
+source_sha: <40-character commit SHA>
+```
+
+Rollback uses the host's `release.previous.env` and needs no registry tag:
+
+```text
+environment: batumi-production
+operation: rollback
+source_sha: <40-character incident/change SHA>
+```
+
+The host records timestamp, result, environment, source SHA, and digest in
+`DEPLOY_ROOT/releases/history.tsv` with mode `0600`. It never records secret
+values or container logs.
+
+## Failure behavior
+
+- CI missing, pending, failed, cancelled, or attached to another SHA: no image.
+- Branch advanced while waiting: stale deployment exits.
+- Build or attestation failure: no deployment.
+- Tailscale, SSH, host-key, Compose preflight, or registry pull failure: the
+  currently healthy release remains running.
+- New container fails health: previous digest is restored automatically.
+- Automatic rollback also fails: workflow fails loudly for operator action.
+- First deployment fails: unhealthy gateway is stopped.
+
+The deployment lock prevents concurrent host changes. A newer GitHub push
+cancels the older workflow, while the host lock prevents overlapping remote
+operations if cancellation arrives after the remote script has started.
