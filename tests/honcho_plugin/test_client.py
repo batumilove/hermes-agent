@@ -1239,3 +1239,255 @@ class TestGetHonchoClientBaseUrlDoublePrefixFix:
         assert passed_base_url == "http://127.0.0.1:38000", (
             f"Expected 'http://127.0.0.1:38000', got {passed_base_url!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Singleton reuse and deterministic close regression tests (t_e9449348)
+# ---------------------------------------------------------------------------
+
+class TestHonchoSingletonReuseAndClose:
+    """Regression tests for the Honcho client lifecycle leak.
+
+    Before the fix:
+      * A no-config get_honcho_client() call after an explicit-config build
+        resolved a different effective timeout (because explicit 11.0 was
+        compared against the default 30.0 instead of the active config file
+        value), forcing an unnecessary rebuild.
+      * reset_honcho_client() dropped the cached reference without closing the
+        SDK's owned sync httpx.Client, leaking FDs.
+      * The lazily-created async HTTP client was never closed.
+    """
+
+    def teardown_method(self):
+        reset_honcho_client()
+
+    @pytest.fixture
+    def fake_honcho_module(self):
+        """A minimal fake Honcho SDK whose HTTP clients record close calls."""
+        created = {"sync": [], "async": []}
+        closed = {"sync": [], "async": []}
+
+        class _FakeHTTPClient:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                self._client = MagicMock()
+                self._client.is_closed = False
+                created["sync"].append(kwargs)
+
+            def close(self):
+                if not self._client.is_closed:
+                    self._client.is_closed = True
+                    closed["sync"].append(self.kwargs)
+
+        class _FakeAsyncHTTPClient:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                self._client = MagicMock()
+                self._client.is_closed = False
+                created["async"].append(kwargs)
+
+            async def close(self):
+                if not self._client.is_closed:
+                    self._client.is_closed = True
+                    closed["async"].append(self.kwargs)
+
+        class _FakeHoncho:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                self._http = _FakeHTTPClient(**kwargs)
+                self._async_http = None
+
+            @property
+            def _async_http_client(self):
+                if self._async_http is None:
+                    self._async_http = _FakeAsyncHTTPClient(**self.kwargs)
+                return self._async_http
+
+        fake_mod = types.ModuleType("honcho")
+        fake_mod.Honcho = _FakeHoncho
+        fake_mod.HonchoHTTPClient = _FakeHTTPClient
+        fake_mod.AsyncHonchoHTTPClient = _FakeAsyncHTTPClient
+        return fake_mod, created, closed
+
+    def test_explicit_then_no_config_reuses_singleton_when_timeout_matches(self, fake_honcho_module, tmp_path, monkeypatch):
+        """Explicit-config and config-less acquisitions must share one client
+        when the active honcho.json resolves the same effective timeout."""
+        fake_mod, created, closed = fake_honcho_module
+
+        # Active config resolves timeout to 11.0, matching the explicit config.
+        config_file = tmp_path / "honcho.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "cfg-key",
+            "baseUrl": "http://localhost:8000",
+            "timeout": 11,
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            "plugins.memory.honcho.client.resolve_config_path",
+            lambda: config_file,
+        )
+
+        with patch.dict(sys.modules, {"honcho": fake_mod}), \
+             patch("hermes_cli.config.load_config", return_value={}):
+            c1 = get_honcho_client(HonchoClientConfig(
+                api_key="explicit-key", workspace_id="ws", environment="production",
+                base_url="http://localhost:8000", timeout=11.0,
+            ))
+            c2 = get_honcho_client()
+
+        assert c1 is c2
+        assert len(created["sync"]) == 1
+        assert created["sync"][0]["timeout"] == 11.0
+
+    def test_explicit_then_no_config_rebuilds_when_timeout_differs(self, fake_honcho_module, tmp_path, monkeypatch):
+        """If the active config and explicit config disagree on timeout, the
+        cached client must be deterministically closed and rebuilt."""
+        fake_mod, created, closed = fake_honcho_module
+
+        config_file = tmp_path / "honcho.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "cfg-key",
+            "baseUrl": "http://localhost:8000",
+            "timeout": 55,
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            "plugins.memory.honcho.client.resolve_config_path",
+            lambda: config_file,
+        )
+
+        with patch.dict(sys.modules, {"honcho": fake_mod}), \
+             patch("hermes_cli.config.load_config", return_value={}):
+            c1 = get_honcho_client(HonchoClientConfig(
+                api_key="explicit-key", workspace_id="ws", environment="production",
+                base_url="http://localhost:8000", timeout=11.0,
+            ))
+            c2 = get_honcho_client()
+
+        assert c1 is not c2
+        assert len(created["sync"]) == 2
+        # Old client must be closed before replacement.
+        assert len(closed["sync"]) == 1
+        assert closed["sync"][0] is c1._http.kwargs
+
+    def test_reset_closes_sync_client(self, fake_honcho_module):
+        """reset_honcho_client() must close the SDK's owned sync HTTP client."""
+        fake_mod, created, closed = fake_honcho_module
+
+        with patch.dict(sys.modules, {"honcho": fake_mod}), \
+             patch("hermes_cli.config.load_config", return_value={}):
+            c1 = get_honcho_client(HonchoClientConfig(
+                api_key="k", workspace_id="ws", environment="production",
+                timeout=11.0,
+            ))
+            reset_honcho_client()
+
+        assert len(closed["sync"]) == 1
+        assert closed["sync"][0] is c1._http.kwargs
+
+    def test_reset_closes_async_client(self, fake_honcho_module):
+        """reset_honcho_client() must close the lazily-created async HTTP client."""
+        fake_mod, created, closed = fake_honcho_module
+
+        import asyncio
+        with patch.dict(sys.modules, {"honcho": fake_mod}), \
+             patch("hermes_cli.config.load_config", return_value={}):
+            c1 = get_honcho_client(HonchoClientConfig(
+                api_key="k", workspace_id="ws", environment="production",
+                timeout=11.0,
+            ))
+            # Force lazy async creation.
+            _ = c1._async_http_client
+            reset_honcho_client()
+
+        assert len(closed["sync"]) == 1
+        assert len(closed["async"]) == 1
+
+    def test_running_loop_async_close_failure_is_observed(
+        self, fake_honcho_module, caplog
+    ):
+        """A scheduled close failure must be retrieved and logged, not orphaned."""
+        import asyncio
+
+        fake_mod, _, _ = fake_honcho_module
+
+        async def exercise():
+            with patch.dict(sys.modules, {"honcho": fake_mod}), \
+                 patch("hermes_cli.config.load_config", return_value={}):
+                client = get_honcho_client(HonchoClientConfig(
+                    api_key="k", workspace_id="ws", environment="production",
+                    timeout=11.0,
+                ))
+                async_http = client._async_http_client
+
+                async def failing_close():
+                    raise RuntimeError("close exploded")
+
+                async_http.close = failing_close
+                reset_honcho_client()
+                await asyncio.sleep(0)
+
+        with caplog.at_level("WARNING"):
+            asyncio.run(exercise())
+
+        assert "Honcho async client close failed" in caplog.text
+        assert "close exploded" in caplog.text
+
+    def test_timeout_change_triggers_close_and_rebuild(self, fake_honcho_module, tmp_path, monkeypatch):
+        """Changing the effective timeout after the client is cached must close
+        the old sync client before rebuilding."""
+        fake_mod, created, closed = fake_honcho_module
+
+        config_file = tmp_path / "honcho.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "cfg-key",
+            "baseUrl": "http://localhost:8000",
+            "timeout": 10,
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            "plugins.memory.honcho.client.resolve_config_path",
+            lambda: config_file,
+        )
+
+        with patch.dict(sys.modules, {"honcho": fake_mod}), \
+             patch("hermes_cli.config.load_config", return_value={}):
+            c1 = get_honcho_client()
+            assert len(created["sync"]) == 1
+            # Mutate the active config file so the next resolution differs.
+            config_file.write_text(json.dumps({
+                "apiKey": "cfg-key",
+                "baseUrl": "http://localhost:8000",
+                "timeout": 20,
+            }))
+            c2 = get_honcho_client()
+
+        assert c1 is not c2
+        assert len(created["sync"]) == 2
+        assert len(closed["sync"]) == 1
+        assert closed["sync"][0] is c1._http.kwargs
+
+    def test_config_less_identity_reuse(self, fake_honcho_module, tmp_path, monkeypatch):
+        """Two consecutive no-config acquisitions must return the same client."""
+        fake_mod, created, closed = fake_honcho_module
+
+        config_file = tmp_path / "honcho.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "cfg-key",
+            "baseUrl": "http://localhost:8000",
+            "timeout": 30,
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            "plugins.memory.honcho.client.resolve_config_path",
+            lambda: config_file,
+        )
+
+        with patch.dict(sys.modules, {"honcho": fake_mod}), \
+             patch("hermes_cli.config.load_config", return_value={}):
+            c1 = get_honcho_client()
+            c2 = get_honcho_client()
+
+        assert c1 is c2
+        assert len(created["sync"]) == 1
+        assert len(closed["sync"]) == 0

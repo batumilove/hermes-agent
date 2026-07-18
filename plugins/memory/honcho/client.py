@@ -13,11 +13,13 @@ Resolution order for host-specific settings:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import logging
 import hashlib
 import ipaddress
+import inspect
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
@@ -860,6 +862,34 @@ _cached_timeout: float | None = None
 # the staleness check on every get_honcho_client() call costs one stat()
 # instead of a full YAML load. (None, None) = not yet populated.
 _config_timeout_memo: tuple[int | None, float | None] = (None, None)
+# Memo for the active honcho.json-derived timeout, keyed on resolved path
+# and mtime_ns. (None, None, None) = not yet populated.
+_global_timeout_memo: tuple[str | None, int | None, float | None] = (None, None, None)
+
+
+def _global_config_timeout() -> float | None:
+    """Read the timeout from the active Honcho config, memoized on path and mtime."""
+    global _global_timeout_memo
+    try:
+        path = resolve_config_path()
+        path_str = str(path)
+        try:
+            mtime_ns = path.stat().st_mtime_ns
+        except OSError:
+            mtime_ns = None
+        if (
+            _global_timeout_memo[0] == path_str
+            and _global_timeout_memo[1] is not None
+            and _global_timeout_memo[1] == mtime_ns
+        ):
+            return _global_timeout_memo[2]
+
+        cfg = HonchoClientConfig.from_global_config(config_path=path)
+        timeout = cfg.timeout
+        _global_timeout_memo = (path_str, mtime_ns, timeout)
+        return timeout
+    except Exception:
+        return None
 
 
 def _config_yaml_timeout() -> float | None:
@@ -892,13 +922,86 @@ def _config_yaml_timeout() -> float | None:
 
 
 def _resolve_timeout_from_sources(config: HonchoClientConfig | None) -> float:
-    """Resolve the effective timeout from env, config.yaml, and the explicit config."""
+    """Resolve the effective timeout that a fresh build would use.
+
+    For config-less calls this resolves through the active HonchoClientConfig
+    (loaded from honcho.json / env) so that mixed explicit/config-less
+    acquisitions share an identity when the effective timeout matches.
+    """
     timeout = config.timeout if config is not None else None
+    if timeout is None and config is None:
+        timeout = _global_config_timeout()
     if timeout is None:
         timeout = _resolve_optional_float(os.environ.get("HONCHO_TIMEOUT"))
     if timeout is None:
         timeout = _config_yaml_timeout()
     return timeout if timeout is not None else _DEFAULT_HTTP_TIMEOUT
+
+
+_pending_async_close_tasks: set[asyncio.Task] = set()
+
+
+def _observe_async_close(task: asyncio.Task) -> None:
+    """Retain scheduled closes until completion and retrieve any exception."""
+    _pending_async_close_tasks.discard(task)
+    try:
+        task.result()
+    except Exception:
+        logger.warning("Honcho async client close failed", exc_info=True)
+
+
+def _run_async_close(coro) -> None:
+    """Best-effort async close that avoids blocking a running event loop."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is None:
+        try:
+            asyncio.run(coro)
+        except Exception:
+            logger.warning("Honcho async client close failed", exc_info=True)
+    else:
+        # Keep a strong reference until completion so the task cannot be
+        # collected while awaiting I/O, and always retrieve its exception.
+        try:
+            task = loop.create_task(coro)
+            _pending_async_close_tasks.add(task)
+            task.add_done_callback(_observe_async_close)
+        except Exception:
+            logger.warning("Honcho async client close task scheduling failed", exc_info=True)
+            close_coro = getattr(coro, "close", None)
+            if callable(close_coro):
+                close_coro()
+
+
+def _close_honcho_client(client: "Honcho") -> None:
+    """Deterministically close the SDK's owned sync and lazy async HTTP clients."""
+    if client is None:
+        return
+
+    # Sync HTTP client (always created eagerly by the SDK).
+    http = getattr(client, "_http", None)
+    if http is not None and getattr(http, "_owns_client", True):
+        close_fn = getattr(http, "close", None)
+        if callable(close_fn) and not inspect.iscoroutinefunction(close_fn):
+            try:
+                close_fn()
+            except Exception:
+                logger.warning("Honcho sync HTTP client close failed", exc_info=True)
+
+    # Lazy async HTTP client (created only on first access to aio/_async_http_client).
+    async_http = getattr(client, "_async_http", None)
+    if async_http is not None and getattr(async_http, "_owns_client", True):
+        close_fn = getattr(async_http, "close", None)
+        if inspect.iscoroutinefunction(close_fn):
+            _run_async_close(close_fn())
+        elif callable(close_fn):
+            # SDK shape changed or a mock; call sync anyway.
+            try:
+                close_fn()
+            except Exception:
+                logger.warning("Honcho async HTTP client close failed", exc_info=True)
 
 
 def _apply_fresh_oauth_token(config: HonchoClientConfig) -> None:
@@ -920,8 +1023,8 @@ def _apply_fresh_oauth_token(config: HonchoClientConfig) -> None:
 def _refresh_cached_oauth(client: "Honcho", config: HonchoClientConfig | None) -> None:
     """Rotate the cached client's Bearer in place when its OAuth token is stale.
 
-    If the SDK shape changed and the in-place rotation can't apply, the slot is
-    reset so the next acquisition rebuilds with the fresh token.
+    If the SDK shape changed and the in-place rotation can't apply, close the
+    old client and reset the slot so the next acquisition rebuilds with the fresh token.
     """
     try:
         from plugins.memory.honcho import oauth
@@ -929,6 +1032,7 @@ def _refresh_cached_oauth(client: "Honcho", config: HonchoClientConfig | None) -
         host = config.host if config is not None else resolve_active_host()
         token, refreshed = oauth.ensure_fresh_token(resolve_config_path(), host)
         if refreshed and token and not oauth.apply_token_to_client(client, token):
+            _close_honcho_client(client)
             _honcho_client_slot.reset()
     except Exception:
         logger.warning("Honcho OAuth cached refresh failed", exc_info=True)
@@ -949,9 +1053,10 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
     if cached is not None:
         # Detect timeout config changes in long-lived processes (gateway,
         # dashboard).  If the user changed the timeout after the client was
-        # built, rebuild with the new value.
+        # built, close the old client and rebuild with the new value.
         new_timeout = _resolve_timeout_from_sources(config)
         if new_timeout != _cached_timeout:
+            _close_honcho_client(cached)
             _honcho_client_slot.reset()
             _cached_timeout = None
             cached = None
@@ -1077,7 +1182,11 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
 
 def reset_honcho_client() -> None:
     """Reset the Honcho client singleton (useful for testing)."""
-    global _cached_timeout, _config_timeout_memo
+    global _cached_timeout, _config_timeout_memo, _global_timeout_memo
+    cached = _honcho_client_slot.peek()
+    if cached is not None:
+        _close_honcho_client(cached)
     _honcho_client_slot.reset()
     _cached_timeout = None
     _config_timeout_memo = (None, None)
+    _global_timeout_memo = (None, None, None)
