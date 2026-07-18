@@ -217,13 +217,20 @@ check **All required checks pass**. The orchestrator decides which lanes apply
 from the changed paths, but an applicable lane must report `success`; a
 required lane may not pass merely because it was skipped.
 
-Docker changes are handled in two separate trust domains:
+Docker changes are handled in separate trust domains:
 
 - Pull requests in both `NousResearch/hermes-agent` and
   `batumilove/hermes-agent` build and test the image when Python, frontend, or
   Docker build inputs change.
-- Docker registry authentication, image publication, release attestations,
-  and manifest promotion remain restricted to `NousResearch/hermes-agent`.
+- Docker Hub authentication, upstream release publication, upstream release
+  attestations, and manifest promotion remain restricted to
+  `NousResearch/hermes-agent`.
+- The fork may publish only its dedicated deployment image,
+  `ghcr.io/batumilove/hermes-agent-deploy`, after the exact `batumi/live`
+  commit passes **All required checks pass**. Pull requests never publish this
+  image. Deployments consume the immutable digest, not a mutable tag, and use
+  the staging-first process in
+  [`docs/operations/docker-compose-cd.md`](docs/operations/docker-compose-cd.md).
 
 Changes under `.github/workflows/` and `.github/actions/` require review from
 the owners listed in `.github/CODEOWNERS`. Repository rulesets must require the

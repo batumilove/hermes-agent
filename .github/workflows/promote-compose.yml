@@ -1,0 +1,100 @@
+name: Promote or roll back Hermes deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target GitHub deployment environment
+        required: true
+        type: choice
+        options:
+          - batumi-staging
+          - batumi-production
+      operation:
+        description: Deploy the supplied digest or restore the previous digest
+        required: true
+        type: choice
+        options:
+          - deploy
+          - rollback
+      image_digest:
+        description: sha256 digest to promote (required for deploy)
+        required: false
+        type: string
+      source_sha:
+        description: Full source commit SHA associated with the image/evidence
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hermes-${{ inputs.environment }}-manual-deploy
+  cancel-in-progress: false
+
+jobs:
+  verify-candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    env:
+      DEPLOY_OPERATION: ${{ inputs.operation }}
+      IMAGE_DIGEST: ${{ inputs.image_digest }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      IMAGE_REPOSITORY: ghcr.io/batumilove/hermes-agent-deploy
+    steps:
+      - name: Validate manual deployment request
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$DEPLOY_OPERATION" =~ ^(deploy|rollback)$ ]]
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          if [[ "$DEPLOY_OPERATION" == deploy ]]; then
+            [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          fi
+
+      - name: Check out protected deployment history
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: batumi/live
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require source commit to be contained in batumi/live
+        shell: bash
+        run: |
+          set -euo pipefail
+          git cat-file -e "$SOURCE_SHA^{commit}"
+          git merge-base --is-ancestor "$SOURCE_SHA" HEAD
+
+      - name: Set up Docker Buildx
+        if: inputs.operation == 'deploy'
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR for candidate verification
+        if: inputs.operation == 'deploy'
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Verify the immutable image exists
+        if: inputs.operation == 'deploy'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "$IMAGE_REPOSITORY@$IMAGE_DIGEST" >/dev/null
+
+  deploy:
+    needs: verify-candidate
+    uses: ./.github/workflows/_deploy-compose.yml
+    with:
+      environment: ${{ inputs.environment }}
+      operation: ${{ inputs.operation }}
+      image_digest: ${{ inputs.image_digest }}
+      source_sha: ${{ inputs.source_sha }}
+    secrets: inherit
