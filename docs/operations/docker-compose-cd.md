@@ -35,14 +35,14 @@ variables in each environment:
 | Variable | Example | Purpose |
 | --- | --- | --- |
 | `DEPLOY_HOST` | `hermes-staging-01` | Tailnet DNS name; no shell syntax |
-| `DEPLOY_USER` | `hermes-staging` | Dedicated deployment account |
+| `DEPLOY_USER` | `hermes-deploy` | Dedicated deployment account |
 | `DEPLOY_ROOT` | `/opt/hermes-compose/staging` | Account-owned deployment root |
 | `TAILSCALE_TAGS` | `tag:ci` | Ephemeral runner identity |
 
 Configure these environment secrets:
 
-- `TAILSCALE_OAUTH_CLIENT_ID`
-- `TAILSCALE_OAUTH_SECRET`
+- `TAILSCALE_OAUTH_CLIENT_ID` and `TAILSCALE_OAUTH_SECRET` (preferred), or
+  `TAILSCALE_AUTHKEY` as a scoped, reusable, ephemeral-key fallback
 - `DEPLOY_SSH_KEY`
 - `DEPLOY_KNOWN_HOSTS`
 
@@ -54,9 +54,14 @@ disabled.
 
 Use a Tailscale OAuth client restricted to creation of the CI tag. ACLs should
 allow that tag to reach only TCP/22 on the two deployment hosts. The SSH key
-must belong to the dedicated deployment account, not `root`, and the workflow
-uses strict host-key checking. Store an exact, independently verified ED25519
-known-host entry; do not use `ssh-keyscan` during deployment.
+should belong only to the unprivileged deployment account. Docker-group access
+is already root-equivalent; do not also grant broad passwordless sudo.
+
+If the auth-key fallback is used, create it with only `tag:ci`, `ephemeral`,
+`preauthorized`, and the shortest practical expiry. Record its expiry and
+rotate it before expiration; never use a broad personal auth key.
+The workflow uses strict host-key checking. Store an exact, independently
+verified ED25519 known-host entry; do not use `ssh-keyscan` during deployment.
 
 Production should require an environment approval. For a personal repository,
 configure `batumilove` as reviewer with self-review allowed, or use a second
@@ -114,6 +119,11 @@ privileges to the host-matching UID/GID. The application tree remains
 root-owned and non-writable to the runtime Hermes user, and Compose enables
 `no-new-privileges`; forcing `read_only: true` would break the supported UID/GID
 remap rather than provide a usable hardening layer.
+
+Likewise, `/run` must explicitly use the `exec` mount flag: Docker's tmpfs
+default includes `noexec`, while s6-overlay copies and executes its init from
+`/run/s6`. `/run` remains an isolated `nosuid,nodev` tmpfs; `/tmp` remains
+`noexec,nosuid,nodev`.
 
 ## Staging target
 

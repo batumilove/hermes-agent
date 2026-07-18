@@ -65,6 +65,9 @@ def test_deployment_uses_environment_scoped_reusable_workflow() -> None:
     assert job["environment"]["name"] == "${{ inputs.environment }}"
     assert reusable["permissions"] == {"contents": "read"}
     assert job["timeout-minutes"] == "20"
+    tailnet = next(step for step in job["steps"] if step["name"] == "Join the deployment tailnet")
+    assert tailnet["with"]["authkey"] == "${{ secrets.TAILSCALE_AUTHKEY }}"
+    assert reusable["on"]["workflow_call"]["secrets"]["TAILSCALE_AUTHKEY"]["required"] == "false"
 
 
 def test_manual_promotion_verifies_digest_without_rebuilding() -> None:
@@ -101,6 +104,9 @@ def test_compose_runtime_is_digest_driven_and_health_checked() -> None:
     assert "HERMES_IMAGE" in gateway["image"]
     assert gateway["network_mode"] == "host"
     assert gateway["security_opt"] == ["no-new-privileges:true"]
+    run_tmpfs = next(entry for entry in gateway["tmpfs"] if entry.startswith("/run:"))
+    assert "noexec" not in run_tmpfs
+    assert "exec" in run_tmpfs.split(",")
     assert gateway["stop_grace_period"] == "90s"
     assert gateway["healthcheck"]["test"][0] == "CMD-SHELL"
     assert "s6-svstat" in gateway["healthcheck"]["test"][1]

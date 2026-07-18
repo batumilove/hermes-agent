@@ -20,10 +20,13 @@ on:
         required: true
         type: string
     secrets:
+      TAILSCALE_AUTHKEY:
+        description: Scoped, reusable, ephemeral Tailscale auth key fallback
+        required: false
       TAILSCALE_OAUTH_CLIENT_ID:
-        required: true
+        required: false
       TAILSCALE_OAUTH_SECRET:
-        required: true
+        required: false
       DEPLOY_SSH_KEY:
         required: true
       DEPLOY_KNOWN_HOSTS:
@@ -70,9 +73,10 @@ jobs:
           ref: ${{ inputs.source_sha }}
           persist-credentials: false
 
-      - name: Join the private deployment network
+      - name: Join the deployment tailnet
         uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3
         with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
           oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
           tags: ${{ env.TAILSCALE_TAGS }}
