@@ -316,6 +316,7 @@ class HonchoMemoryProvider(MemoryProvider):
         self._init_thread: Optional[threading.Thread] = None
         self._init_lock = threading.Lock()
         self._init_error = ""
+        self._shutdown_requested = False
 
         # Cron and flush contexts disable the plugin entirely.
         self._cron_skipped = False
@@ -443,6 +444,24 @@ class HonchoMemoryProvider(MemoryProvider):
             or "hermes-default"
         )
 
+    def _shutdown_manager(self) -> bool:
+        """Stop the current manager, retaining it when shutdown needs a retry."""
+        manager = self._manager
+        if manager is None:
+            return True
+        shutdown = getattr(manager, "shutdown", None)
+        if not callable(shutdown):
+            # Partially initialized/test-double managers without lifecycle
+            # resources have nothing to retain for a cleanup retry.
+            self._manager = None
+            return True
+        try:
+            shutdown()
+        except Exception:
+            return False
+        self._manager = None
+        return True
+
     def _start_session_init_background(self, *, wait_timeout: float = 0.0) -> None:
         """Start Honcho session initialization in a daemon thread.
 
@@ -452,18 +471,23 @@ class HonchoMemoryProvider(MemoryProvider):
         assembly. ``wait_timeout`` lets fast/mock initializations finish before
         returning while still failing open for slow backends.
         """
-        if self._cron_skipped or self._session_initialized:
+        if self._shutdown_requested or self._cron_skipped or self._session_initialized:
             return
         if not self._config or self._lazy_init_kwargs is None:
             return
 
         with self._init_lock:
-            if self._cron_skipped or self._session_initialized:
+            if self._shutdown_requested or self._cron_skipped or self._session_initialized:
                 return
             if self._init_thread and self._init_thread.is_alive():
                 return
             if not self._config or self._lazy_init_kwargs is None:
                 return
+            if self._manager is not None and not self._session_initialized:
+                # A prior partial init retained this manager because cleanup
+                # failed.  Never overwrite its only retry handle.
+                if not self._shutdown_manager():
+                    return
 
             cfg = self._config
             init_kwargs = dict(self._lazy_init_kwargs)
@@ -477,8 +501,13 @@ class HonchoMemoryProvider(MemoryProvider):
                     self._init_error = ""
                 except Exception as e:
                     self._init_error = str(e)
-                    self._manager = None
+                    self._session_initialized = False
+                    self._shutdown_manager()
                     logger.warning("Honcho background session init failed: %s", e)
+                finally:
+                    if self._shutdown_requested:
+                        self._shutdown_manager()
+                        self._session_initialized = False
 
             self._init_thread = threading.Thread(
                 target=_run,
@@ -579,30 +608,44 @@ class HonchoMemoryProvider(MemoryProvider):
 
         Returns True if the manager is ready, False otherwise.
         """
-        if self._manager and self._session_initialized:
-            return True
-        if self._cron_skipped:
-            return False
-        if self._init_thread and self._init_thread.is_alive():
-            return False
-        if not self._config or self._lazy_init_kwargs is None:
-            return False
+        with self._init_lock:
+            if self._shutdown_requested:
+                return False
+            if self._manager and self._session_initialized:
+                return True
+            if self._cron_skipped:
+                return False
+            if self._init_thread and self._init_thread.is_alive():
+                return False
+            if not self._config or self._lazy_init_kwargs is None:
+                return False
+            if self._manager is not None and not self._session_initialized:
+                # Retry cleanup from a prior partial init before publishing a
+                # replacement manager.
+                if not self._shutdown_manager():
+                    return False
 
-        try:
-            self._do_session_init(
-                self._config,
-                self._lazy_init_session_id or "hermes-default",
-                **self._lazy_init_kwargs,
-            )
-            # Clear lazy refs
-            self._lazy_init_kwargs = None
-            self._lazy_init_session_id = None
+            try:
+                self._do_session_init(
+                    self._config,
+                    self._lazy_init_session_id or "hermes-default",
+                    **self._lazy_init_kwargs,
+                )
+                self._lazy_init_kwargs = None
+                self._lazy_init_session_id = None
+            except Exception as e:
+                self._session_initialized = False
+                self._shutdown_manager()
+                logger.warning("Honcho lazy session init failed: %s", e)
+                return False
+
+            # shutdown() marks intent before waiting for this lock.  If it raced
+            # this initializer, clean up here before allowing teardown to finish.
+            if self._shutdown_requested:
+                self._shutdown_manager()
+                self._session_initialized = False
+                return False
             return self._manager is not None
-        except Exception as e:
-            self._manager = None
-            self._session_initialized = False
-            logger.warning("Honcho lazy session init failed: %s", e)
-            return False
 
     def _session_ready(self) -> bool:
         """Return whether a manager/session key can be used safely.
@@ -1604,22 +1647,24 @@ class HonchoMemoryProvider(MemoryProvider):
             return tool_error(f"Honcho {tool_name} failed: {e}")
 
     def shutdown(self) -> None:
+        # Prevent lazy/background initialization from publishing a fresh manager
+        # after teardown starts, then wait for an in-flight initializer to run
+        # its shutdown-aware cleanup path.
+        self._shutdown_requested = True
+        with self._init_lock:
+            self._lazy_init_kwargs = None
+            self._lazy_init_session_id = None
+            init_thread = self._init_thread
+        if init_thread and init_thread.is_alive():
+            init_thread.join(timeout=10.0)
+
         for t in (self._prefetch_thread, self._sync_thread):
             if t and t.is_alive():
                 t.join(timeout=5.0)
         # Flush any remaining messages, then deterministically stop the Honcho
         # async writer thread.  ``shutdown()`` is idempotent on the manager.
-        if self._manager and not (self._init_thread and self._init_thread.is_alive() and not self._session_initialized):
-            try:
-                self._manager.flush_all()
-                self._manager.shutdown()
-            except Exception:
-                pass
-
-        # Defensive: prevent any new lazy init from racing during teardown.
-        with self._init_lock:
-            self._lazy_init_kwargs = None
-            self._lazy_init_session_id = None
+        self._shutdown_manager()
+        self._session_initialized = False
 
 
 # ---------------------------------------------------------------------------

@@ -144,6 +144,8 @@ class HonchoSessionManager:
         # Async write queue — started lazily on first enqueue
         self._async_queue: queue.Queue | None = None
         self._async_thread: threading.Thread | None = None
+        self._shutdown_lock = threading.Lock()
+        self._shutdown_called = False
         if write_frequency == "async":
             self._async_queue = queue.Queue()
             self._async_thread = threading.Thread(
@@ -548,13 +550,26 @@ class HonchoSessionManager:
 
     def shutdown(self) -> None:
         """Gracefully shut down the async writer thread (idempotent)."""
-        if getattr(self, "_shutdown_called", False):
-            return
-        self._shutdown_called = True
-        if self._async_queue is not None and self._async_thread is not None:
-            self.flush_all()
-            self._async_queue.put(_ASYNC_SHUTDOWN)
-            self._async_thread.join(timeout=10)
+        with self._shutdown_lock:
+            if self._shutdown_called:
+                return
+
+            flush_error: Exception | None = None
+            try:
+                self.flush_all()
+            except Exception as exc:
+                flush_error = exc
+            finally:
+                if self._async_queue is not None and self._async_thread is not None:
+                    self._async_queue.put(_ASYNC_SHUTDOWN)
+                    self._async_thread.join(timeout=10)
+
+            if self._async_thread is not None and self._async_thread.is_alive():
+                raise RuntimeError("Honcho async writer did not stop within 10 seconds")
+            if flush_error is not None:
+                # Leave shutdown retryable so a later call can retry the flush.
+                raise flush_error
+            self._shutdown_called = True
 
     def delete(self, key: str) -> bool:
         """Delete a session from local cache."""

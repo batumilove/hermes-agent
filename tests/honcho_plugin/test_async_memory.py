@@ -10,9 +10,11 @@ Covers:
 """
 
 import json
+import threading
 import time
 from unittest.mock import MagicMock, patch
 
+import pytest
 
 from plugins.memory.honcho.client import HonchoClientConfig
 from plugins.memory.honcho.session import (
@@ -335,6 +337,24 @@ class TestAsyncWriterThread:
         thread.join(timeout=3)
         assert not thread.is_alive()
 
+    def test_shutdown_can_retry_after_flush_failure(self):
+        """A failed flush must not strand a live writer behind an idempotence flag."""
+        mgr = _make_manager(write_frequency="async")
+        thread = mgr._async_thread
+
+        with patch.object(
+            mgr,
+            "flush_all",
+            side_effect=[RuntimeError("flush failed"), None],
+        ) as flush_all:
+            with pytest.raises(RuntimeError, match="flush failed"):
+                mgr.shutdown()
+            mgr.shutdown()
+
+        assert flush_all.call_count == 2
+        assert mgr._shutdown_called is True
+        assert not thread.is_alive()
+
 
 # ---------------------------------------------------------------------------
 # async retry on failure
@@ -534,4 +554,276 @@ class TestAsyncWriterLifecycle:
         provider._session_initialized = False
         provider._init_thread = None
         provider.shutdown()  # must not raise
+
+    def test_provider_does_not_lazy_initialize_after_shutdown(self):
+        """Tools-mode lazy initialization remains disabled after teardown."""
+        from plugins.memory.honcho.__init__ import HonchoMemoryProvider
+
+        provider = HonchoMemoryProvider()
+        provider.shutdown()
+        provider._config = MagicMock()
+        provider._lazy_init_kwargs = {}
+        provider._lazy_init_session_id = "after-shutdown"
+
+        def publish_manager(*_args, **_kwargs):
+            provider._manager = MagicMock()
+            provider._session_initialized = True
+
+        provider._do_session_init = MagicMock(side_effect=publish_manager)
+
+        assert provider._ensure_session() is False
+        provider._do_session_init.assert_not_called()
+        assert provider._manager is None
+
+    def test_provider_retains_manager_when_shutdown_needs_retry(self):
+        """A failed manager flush keeps the retry handle until shutdown succeeds."""
+        manager = _make_manager(write_frequency="async")
+        provider = self._make_provider(manager)
+        thread = manager._async_thread
+
+        with patch.object(
+            manager,
+            "flush_all",
+            side_effect=[RuntimeError("flush failed"), None],
+        ) as flush_all:
+            provider.shutdown()
+            assert provider._manager is manager
+            assert not thread.is_alive()
+            provider.shutdown()
+
+        assert flush_all.call_count == 2
+        assert provider._manager is None
+        assert manager._shutdown_called is True
+
+    def test_provider_shutdown_waits_for_background_init_and_closes_manager(self):
+        """An init finishing during shutdown cannot leave a new writer behind."""
+        from plugins.memory.honcho.__init__ import HonchoMemoryProvider
+
+        provider = HonchoMemoryProvider()
+        provider._config = MagicMock()
+        provider._lazy_init_kwargs = {}
+        provider._lazy_init_session_id = "race"
+        manager = MagicMock()
+        init_started = threading.Event()
+        allow_init_finish = threading.Event()
+        shutdown_done = threading.Event()
+
+        def blocked_init(*_args, **_kwargs):
+            init_started.set()
+            allow_init_finish.wait(timeout=2.0)
+            provider._manager = manager
+            provider._session_initialized = True
+
+        provider._do_session_init = blocked_init
+        provider._start_session_init_background()
+        assert init_started.wait(timeout=1.0)
+
+        def run_shutdown():
+            provider.shutdown()
+            shutdown_done.set()
+
+        shutdown_thread = threading.Thread(target=run_shutdown)
+        shutdown_thread.start()
+        try:
+            assert not shutdown_done.wait(timeout=0.05)
+        finally:
+            allow_init_finish.set()
+            shutdown_thread.join(timeout=2.0)
+            if provider._init_thread:
+                provider._init_thread.join(timeout=2.0)
+
+        assert shutdown_done.is_set()
+        manager.shutdown.assert_called_once()
+        assert provider._manager is None
+        assert provider._session_initialized is False
+
+    def test_background_init_shutdown_retries_manager_failure(self):
+        """Initializer cleanup cannot discard a manager whose first shutdown fails."""
+        from plugins.memory.honcho.__init__ import HonchoMemoryProvider
+
+        provider = HonchoMemoryProvider()
+        provider._config = MagicMock()
+        provider._lazy_init_kwargs = {}
+        provider._lazy_init_session_id = "race-retry"
+        manager = MagicMock()
+        manager.shutdown.side_effect = [RuntimeError("flush failed"), None]
+        init_started = threading.Event()
+        allow_init_finish = threading.Event()
+
+        def blocked_init(*_args, **_kwargs):
+            init_started.set()
+            allow_init_finish.wait(timeout=2.0)
+            provider._manager = manager
+            provider._session_initialized = True
+
+        provider._do_session_init = blocked_init
+        provider._start_session_init_background()
+        assert init_started.wait(timeout=1.0)
+
+        shutdown_thread = threading.Thread(target=provider.shutdown)
+        shutdown_thread.start()
+        allow_init_finish.set()
+        shutdown_thread.join(timeout=2.0)
+        if provider._init_thread:
+            provider._init_thread.join(timeout=2.0)
+
+        assert not shutdown_thread.is_alive()
+        assert manager.shutdown.call_count == 2
+        assert provider._manager is None
+
+    def test_lazy_init_racing_shutdown_cannot_publish_manager(self):
+        """Shutdown wins against an already-running tools-mode lazy initializer."""
+        from plugins.memory.honcho.__init__ import HonchoMemoryProvider
+
+        provider = HonchoMemoryProvider()
+        provider._config = MagicMock()
+        provider._lazy_init_kwargs = {}
+        provider._lazy_init_session_id = "lazy-race"
+        manager = MagicMock()
+        init_started = threading.Event()
+        allow_init_finish = threading.Event()
+        shutdown_done = threading.Event()
+        ensure_result = []
+
+        def blocked_init(*_args, **_kwargs):
+            init_started.set()
+            allow_init_finish.wait(timeout=2.0)
+            provider._manager = manager
+            provider._session_initialized = True
+
+        provider._do_session_init = blocked_init
+        ensure_thread = threading.Thread(
+            target=lambda: ensure_result.append(provider._ensure_session())
+        )
+        ensure_thread.start()
+        assert init_started.wait(timeout=1.0)
+
+        shutdown_thread = threading.Thread(
+            target=lambda: (provider.shutdown(), shutdown_done.set())
+        )
+        shutdown_thread.start()
+        try:
+            assert not shutdown_done.wait(timeout=0.05)
+        finally:
+            allow_init_finish.set()
+            ensure_thread.join(timeout=2.0)
+            shutdown_thread.join(timeout=2.0)
+
+        assert ensure_result == [False]
+        assert shutdown_done.is_set()
+        manager.shutdown.assert_called_once()
+        assert provider._manager is None
+        assert provider._session_initialized is False
+
+    def test_failed_background_init_stops_published_writer(self):
+        """A partial manager is shut down when background initialization fails."""
+        from plugins.memory.honcho.__init__ import HonchoMemoryProvider
+
+        provider = HonchoMemoryProvider()
+        provider._config = MagicMock()
+        provider._lazy_init_kwargs = {}
+        provider._lazy_init_session_id = "failed-init"
+        manager = _make_manager(write_frequency="async")
+        thread = manager._async_thread
+
+        def failing_init(*_args, **_kwargs):
+            provider._manager = manager
+            raise RuntimeError("get_or_create failed")
+
+        provider._do_session_init = failing_init
+        provider._start_session_init_background()
+        provider._init_thread.join(timeout=2.0)
+        try:
+            assert not thread.is_alive()
+            assert provider._manager is None
+        finally:
+            if thread.is_alive():
+                manager.shutdown()
+
+    def test_failed_lazy_init_stops_published_writer(self):
+        """Tools-mode initialization failure also closes its partial manager."""
+        from plugins.memory.honcho.__init__ import HonchoMemoryProvider
+
+        provider = HonchoMemoryProvider()
+        provider._config = MagicMock()
+        provider._lazy_init_kwargs = {}
+        provider._lazy_init_session_id = "failed-lazy-init"
+        manager = _make_manager(write_frequency="async")
+        thread = manager._async_thread
+
+        def failing_init(*_args, **_kwargs):
+            provider._manager = manager
+            raise RuntimeError("get_or_create failed")
+
+        provider._do_session_init = failing_init
+        try:
+            assert provider._ensure_session() is False
+            assert not thread.is_alive()
+            assert provider._manager is None
+        finally:
+            if thread.is_alive():
+                manager.shutdown()
+
+    def test_lazy_retry_cleans_retained_manager_before_reinitializing(self):
+        """A failed cleanup handle cannot be overwritten by the next lazy init."""
+        from plugins.memory.honcho.__init__ import HonchoMemoryProvider
+
+        provider = HonchoMemoryProvider()
+        provider._config = MagicMock()
+        provider._lazy_init_kwargs = {}
+        provider._lazy_init_session_id = "lazy-cleanup-retry"
+        manager_a = MagicMock()
+        manager_a.shutdown.side_effect = [RuntimeError("still flushing"), None]
+        manager_b = MagicMock()
+        attempts = 0
+
+        def init_sequence(*_args, **_kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                provider._manager = manager_a
+                raise RuntimeError("init failed")
+            provider._manager = manager_b
+            provider._session_initialized = True
+
+        provider._do_session_init = init_sequence
+
+        assert provider._ensure_session() is False
+        assert provider._manager is manager_a
+        assert provider._ensure_session() is True
+        assert manager_a.shutdown.call_count == 2
+        assert provider._manager is manager_b
+
+    def test_background_retry_cleans_retained_manager_before_reinitializing(self):
+        """Background retries also close a retained manager before replacement."""
+        from plugins.memory.honcho.__init__ import HonchoMemoryProvider
+
+        provider = HonchoMemoryProvider()
+        provider._config = MagicMock()
+        provider._lazy_init_kwargs = {}
+        provider._lazy_init_session_id = "background-cleanup-retry"
+        manager_a = MagicMock()
+        manager_a.shutdown.side_effect = [RuntimeError("still flushing"), None]
+        manager_b = MagicMock()
+        attempts = 0
+
+        def init_sequence(*_args, **_kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                provider._manager = manager_a
+                raise RuntimeError("init failed")
+            provider._manager = manager_b
+            provider._session_initialized = True
+
+        provider._do_session_init = init_sequence
+        provider._start_session_init_background()
+        provider._init_thread.join(timeout=2.0)
+        assert provider._manager is manager_a
+
+        provider._start_session_init_background()
+        provider._init_thread.join(timeout=2.0)
+
+        assert manager_a.shutdown.call_count == 2
+        assert provider._manager is manager_b
 
