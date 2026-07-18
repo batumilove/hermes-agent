@@ -73,11 +73,11 @@ class TestTryWalCheckpointPassive:
         db._try_wal_checkpoint()
 
 
-class TestCloseUsesTruncate:
-    """close() should still use TRUNCATE to shrink WAL on shutdown."""
+class TestCloseDoesNotCheckpoint:
+    """Per-instance close must not checkpoint a WAL shared across processes."""
 
-    def test_close_uses_truncate_mode(self, db):
-        """TRUNCATE at close is safe — no concurrent writers during shutdown."""
+    def test_close_does_not_truncate_wal(self, db):
+        """Instance close must not TRUNCATE a WAL shared with other processes."""
         real_conn = db._conn
         execute_calls = []
 
@@ -92,9 +92,7 @@ class TestCloseUsesTruncate:
         db.close()
 
         truncate_calls = [c for c in execute_calls if "wal_checkpoint(TRUNCATE)" in c]
-        assert len(truncate_calls) == 1, (
-            f"Expected 1 TRUNCATE checkpoint call, got {len(truncate_calls)}"
-        )
+        assert truncate_calls == []
 
     def test_close_skips_truncate_while_same_path_has_another_owner(self, tmp_path):
         """Closing one gateway SessionDB must not checkpoint under live peers."""
@@ -116,20 +114,6 @@ class TestCloseUsesTruncate:
             assert not any("wal_checkpoint(TRUNCATE)" in sql for sql in execute_calls)
         finally:
             second.close()
-
-    def test_close_logs_debug_on_failure(self, db, caplog):
-        """Failed TRUNCATE at close logs debug (not warning — close is best-effort)."""
-        mock_conn = MagicMock()
-        mock_conn.execute.side_effect = sqlite3.OperationalError("database is locked")
-        db._conn = mock_conn
-
-        with caplog.at_level(logging.DEBUG):
-            db.close()
-
-        assert any("WAL checkpoint (TRUNCATE) at close failed" in r.message for r in caplog.records), (
-            f"Expected debug log about TRUNCATE failure at close, got: {caplog.text}"
-        )
-
 
 class TestCheckpointCoordinator:
     """Checkpoint coordinator safety: separate connection, no write-lock hold,
@@ -194,6 +178,136 @@ class TestCheckpointCoordinator:
         second = db._checkpoint_coordinator.start()
         assert first is True
         assert second is False
+
+    def test_stop_serializes_with_concurrent_start(self, tmp_path):
+        """A new coordinator thread cannot start until the old one has joined."""
+        import threading
+        import time as _time
+
+        coordinator = _CheckpointCoordinator(tmp_path / "stop-start.db", 0.01, 2.0)
+        checkpoint_entered = threading.Event()
+        release_checkpoint = threading.Event()
+
+        def blocking_checkpoint():
+            checkpoint_entered.set()
+            release_checkpoint.wait(timeout=2.0)
+
+        coordinator._run_checkpoint = blocking_checkpoint
+        coordinator.start()
+        assert checkpoint_entered.wait(timeout=1.0)
+
+        stop_thread = threading.Thread(target=coordinator.stop)
+        stop_thread.start()
+        _time.sleep(0.05)
+
+        start_done = threading.Event()
+        start_result = []
+
+        def restart():
+            start_result.append(coordinator.start())
+            start_done.set()
+
+        start_thread = threading.Thread(target=restart)
+        start_thread.start()
+        try:
+            assert not start_done.wait(timeout=0.05)
+        finally:
+            release_checkpoint.set()
+            stop_thread.join(timeout=1.0)
+            start_thread.join(timeout=1.0)
+            coordinator.stop(timeout=1.0)
+        assert start_result == [True]
+
+    def test_coordinator_connection_can_be_closed_by_stopper(self, tmp_path, monkeypatch):
+        """The joined coordinator connection must be safely closable by stop()."""
+        connect_kwargs = []
+        fake_conn = MagicMock()
+
+        def fake_connect(*args, **kwargs):
+            connect_kwargs.append(kwargs)
+            return fake_conn
+
+        monkeypatch.setattr(sqlite3, "connect", fake_connect)
+        coordinator = _CheckpointCoordinator(tmp_path / "thread-close.db", 60.0, 2.0)
+        assert coordinator._ensure_conn() is fake_conn
+        assert connect_kwargs[0]["check_same_thread"] is False
+
+    def test_final_release_keeps_registry_when_stop_times_out(self, tmp_path, monkeypatch):
+        """A still-running coordinator cannot be replaced under a new owner."""
+        import hermes_state
+
+        key, coordinator = hermes_state._acquire_checkpoint_coordinator(
+            tmp_path / "stop-timeout.db", 60.0, 2.0
+        )
+        monkeypatch.setattr(coordinator, "stop", lambda timeout=10.0: False)
+        try:
+            assert hermes_state._release_checkpoint_coordinator(key, coordinator) is False
+            assert hermes_state._CHECKPOINT_COORDINATORS[key] == (coordinator, 0)
+        finally:
+            hermes_state._CHECKPOINT_COORDINATORS.pop(key, None)
+
+    def test_close_is_single_release_under_concurrency(self, tmp_path, monkeypatch):
+        """Two concurrent close calls release one registry owner exactly once."""
+        import threading
+        import time as _time
+        import hermes_state
+
+        db = SessionDB(tmp_path / "double-close.db")
+        real_release = hermes_state._release_checkpoint_coordinator
+        release_entered = threading.Event()
+        allow_release = threading.Event()
+        calls = []
+        calls_lock = threading.Lock()
+
+        def blocking_release(*args, **kwargs):
+            with calls_lock:
+                calls.append(1)
+                first = len(calls) == 1
+            if first:
+                release_entered.set()
+                allow_release.wait(timeout=2.0)
+            return real_release(*args, **kwargs)
+
+        monkeypatch.setattr(hermes_state, "_release_checkpoint_coordinator", blocking_release)
+        first = threading.Thread(target=db.close)
+        second = threading.Thread(target=db.close)
+        first.start()
+        assert release_entered.wait(timeout=1.0)
+        second.start()
+        _time.sleep(0.05)
+        allow_release.set()
+        first.join(timeout=1.0)
+        second.join(timeout=1.0)
+        assert calls == [1]
+
+    def test_close_cannot_be_followed_by_late_coordinator_start(self, tmp_path):
+        """A successful write racing close cannot restart an orphan coordinator."""
+        import threading
+        import time as _time
+
+        db = SessionDB(tmp_path / "write-close.db")
+        coordinator = db._checkpoint_coordinator
+        original_start = coordinator.start
+        start_entered = threading.Event()
+        allow_start = threading.Event()
+
+        def delayed_start():
+            start_entered.set()
+            allow_start.wait(timeout=2.0)
+            return original_start()
+
+        coordinator.start = delayed_start
+        writer = threading.Thread(target=lambda: db._execute_write(lambda conn: None))
+        writer.start()
+        assert start_entered.wait(timeout=1.0)
+        closer = threading.Thread(target=db.close)
+        closer.start()
+        _time.sleep(0.05)
+        allow_start.set()
+        writer.join(timeout=1.0)
+        closer.join(timeout=1.0)
+        assert db._conn is None
+        assert coordinator._thread is None or not coordinator._thread.is_alive()
 
     def test_coordinator_waits_for_interval_before_first_checkpoint(self, tmp_path):
         """The first ordinary write must not trigger an immediate checkpoint."""
