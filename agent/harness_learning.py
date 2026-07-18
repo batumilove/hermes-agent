@@ -8,6 +8,7 @@ for failed trajectories without forcing a new model tool into the core schema.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
@@ -117,6 +118,135 @@ class EvidenceDecision:
     message: str = ""
 
 
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?;])\s+|\n+")
+_ACTION_CLAUSE_SPLIT_RE = re.compile(
+    r"(?:,\s*)?\b(?:and(?:\s+then)?|but|however|yet)\b\s*"
+)
+_HISTORICAL_CLAIM_RE = re.compile(
+    r"(?:^\s*(?:earlier|previously|historically|last\s+(?:week|month|year|night))\b|"
+    r"\b(?:previously|historically|yesterday|earlier today|last\s+(?:week|month|year|night))\b|"
+    r"\bbefore this turn\b|\bin (?:a )?prior turn\b|\bearlier\s*[.!?]?$)"
+)
+_STATUS_DESCRIPTION_RE = re.compile(
+    r"\b(?:current (?:code(?: path)?|state|schema|configuration)|"
+    r"inspection (?:shows|found)|readback (?:shows|found))\b"
+)
+_REPORTING_CLAIM_RE = re.compile(
+    r"\b(?:inspect(?:ed|ion)|verif(?:y|ied|ication)|confirm(?:ed|ation)|"
+    r"readback|observed|found|logs?\s+(?:show|shows|showed))\b"
+)
+_FIRST_PERSON_RE = re.compile(r"\b(?:i|we|i've|we've|i have|we have)\b")
+
+
+def _has_unnegated_verb(clause: str, verb: str) -> bool:
+    """Return True when at least one occurrence of *verb* is affirmative."""
+
+    escaped = re.escape(verb)
+    previous_end = 0
+    for match in re.finditer(rf"\b{escaped}\b", clause):
+        prefix = clause[previous_end:match.start()]
+        suffix = clause[match.end():]
+        negated_before = any(
+            re.search(pattern, prefix)
+            for pattern in (
+                r"\b(?:not(?!\s+only\b)|never|nothing|neither|nor|didn't|wasn't|weren't|"
+                r"hasn't|haven't|isn't|aren't|don't|doesn't|can't|couldn't|"
+                r"won't|wouldn't|shouldn't)\b[^.!?;,]{0,60}$",
+                r"\bno\b[^,;.!?]{0,40}\b(?:was|were|is|are|has been|have been)\s*$",
+            )
+        )
+        negated_after = bool(re.match(r"\s+no\b", suffix))
+        if not negated_before and not negated_after:
+            return True
+        previous_end = match.end()
+    return False
+
+
+def _has_affirmative_side_effect_claim(
+    text: str,
+    verbs: tuple[str, ...],
+    *,
+    required_terms: tuple[str, ...] = (),
+    context_terms: tuple[str, ...] = (),
+) -> bool:
+    """Return True only for a local affirmative completion claim.
+
+    The regulator is intentionally conservative: status/history descriptions
+    and explicit denials are evidence reports, not claims that this turn
+    performed a side effect.  First-person clauses and terse completion forms
+    (``Deployed successfully.``) remain covered.
+    """
+
+    normalized = str(text or "").lower()
+    sentences = [
+        sentence.strip()
+        for sentence in _SENTENCE_SPLIT_RE.split(normalized)
+        if sentence.strip()
+    ]
+
+    for sentence_index, sentence in enumerate(sentences):
+        # Category nouns may naturally precede a pronoun-only completion claim
+        # in the immediately following sentence, but later sentences must not
+        # retroactively classify an unrelated earlier action.
+        previous = sentences[sentence_index - 1] if sentence_index else ""
+        context_scope = f"{previous} {sentence}".strip()
+        if required_terms and not all(
+            term in context_scope for term in required_terms
+        ):
+            continue
+        if context_terms and not any(
+            re.search(rf"\b{re.escape(term)}\b", context_scope)
+            for term in context_terms
+        ):
+            continue
+
+        for raw_clause in _ACTION_CLAUSE_SPLIT_RE.split(sentence):
+            clause = raw_clause.strip()
+            if not clause:
+                continue
+            affirmative_verbs = [
+                verb for verb in verbs if _has_unnegated_verb(clause, verb)
+            ]
+            if not affirmative_verbs:
+                continue
+            first_person = _FIRST_PERSON_RE.search(clause)
+            if _HISTORICAL_CLAIM_RE.search(clause):
+                continue
+            if _STATUS_DESCRIPTION_RE.search(clause) and not first_person:
+                continue
+            starts_with_verb = any(
+                re.match(rf"^(?:successfully\s+)?{re.escape(verb)}\b", clause)
+                for verb in affirmative_verbs
+            )
+            present_state = any(
+                re.search(
+                    rf"\b(?:is|are)\s+(?:currently\s+)?{re.escape(verb)}\b",
+                    clause,
+                )
+                for verb in affirmative_verbs
+            )
+            if present_state:
+                continue
+            passive_completion = any(
+                re.search(
+                    rf"\b(?:was|were|has been|have been)\s+{re.escape(verb)}\b",
+                    clause,
+                )
+                for verb in affirmative_verbs
+            )
+            if passive_completion and _REPORTING_CLAIM_RE.search(clause):
+                continue
+            if (
+                first_person
+                or starts_with_verb
+                or passive_completion
+                or "successfully" in clause
+                or "completed" in clause
+            ):
+                return True
+    return False
+
+
 class SideEffectEvidenceRegulator:
     """Track side-effect tool evidence before final success claims.
 
@@ -150,23 +280,33 @@ class SideEffectEvidenceRegulator:
     def evaluate_final_response(self, text: str) -> EvidenceDecision:
         lower = str(text or "").lower()
         missing: list[str] = []
-        if "sent" in lower and "message" in lower and "send_message" not in self._evidence:
+        if _has_affirmative_side_effect_claim(
+            lower, ("sent",), required_terms=("message",)
+        ) and "send_message" not in self._evidence:
             missing.append("send_message")
-        if ("github" in lower or "issue" in lower or "pull request" in lower or " pr " in f" {lower} ") and (
-            "created" in lower or "opened" in lower or "submitted" in lower
+        if _has_affirmative_side_effect_claim(
+            lower,
+            ("created", "opened", "submitted"),
+            context_terms=("github", "issue", "pull request", "pr"),
         ) and "github" not in self._evidence:
             missing.append("github")
-        if (
-            any(word in lower for word in ("scheduled", "paused", "resumed"))
-            and "cron" in lower
-            and "cronjob" not in self._evidence
-        ):
+        if _has_affirmative_side_effect_claim(
+            lower,
+            ("created", "paused", "resumed", "ran", "scheduled"),
+            context_terms=("cron", "cronjob", "scheduler"),
+        ) and "cronjob" not in self._evidence:
             missing.append("cronjob")
-        if "uploaded" in lower and "media" not in self._evidence and "browser" not in self._evidence and "generic_side_effect" not in self._evidence:
+        if _has_affirmative_side_effect_claim(
+            lower, ("uploaded",)
+        ) and "media" not in self._evidence and "browser" not in self._evidence and "generic_side_effect" not in self._evidence:
             missing.append("upload")
-        if "deployed" in lower and "generic_side_effect" not in self._evidence:
+        if _has_affirmative_side_effect_claim(
+            lower, ("deployed",)
+        ) and "generic_side_effect" not in self._evidence:
             missing.append("deploy")
-        if ("deleted" in lower or "removed" in lower) and not ({"cronjob", "github", "browser", "generic_side_effect"} & self._evidence):
+        if _has_affirmative_side_effect_claim(
+            lower, ("deleted", "removed")
+        ) and not ({"cronjob", "github", "browser", "generic_side_effect"} & self._evidence):
             missing.append("delete")
         if missing:
             return EvidenceDecision(

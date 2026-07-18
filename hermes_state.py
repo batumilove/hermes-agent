@@ -1366,7 +1366,15 @@ class SessionDB:
                 self._warn_fts5_unavailable(exc)
             return False
 
-    def _execute_write(self, fn: Callable[[sqlite3.Connection], T]) -> T:
+    def _execute_write(
+        self,
+        fn: Callable[[sqlite3.Connection], T],
+        *,
+        operation: Optional[str] = None,
+        role: Optional[str] = None,
+        payload_bytes: Optional[int] = None,
+        fts_bytes: Optional[int] = None,
+    ) -> T:
         """Execute a write transaction with BEGIN IMMEDIATE and jitter retry.
 
         *fn* receives the connection and should perform INSERT/UPDATE/DELETE
@@ -1382,6 +1390,21 @@ class SessionDB:
         Returns whatever *fn* returns.
         """
         last_err: Optional[Exception] = None
+        caller_name = getattr(fn, "__name__", type(fn).__name__)
+        if operation is None and caller_name == "_do":
+            qualname = getattr(fn, "__qualname__", "")
+            enclosing = qualname.rsplit(".<locals>.", 1)[0]
+            inferred_operation = enclosing.rsplit(".", 1)[-1] if enclosing else caller_name
+        else:
+            inferred_operation = caller_name
+        operation_name = str(operation or inferred_operation)
+        operation_label = re.sub(r"[\r\n\t]+", " ", operation_name)[:96]
+        raw_role = str(role or "").strip().lower()
+        role_label = (
+            raw_role
+            if raw_role in {"system", "user", "assistant", "tool"}
+            else "other"
+        )
         for attempt in range(self._WRITE_MAX_RETRIES):
             try:
                 write_started = time.monotonic()
@@ -1406,9 +1429,14 @@ class SessionDB:
                     or total_time >= self._SLOW_WRITE_WARN_S
                 ):
                     logger.warning(
-                        "SessionDB write latency: caller=%s lock_wait=%.3fs "
-                        "txn=%.3fs total=%.3fs attempt=%d",
-                        getattr(fn, "__name__", type(fn).__name__),
+                        "SessionDB write latency: caller=%s operation=%s role=%s "
+                        "payload_bytes=%s fts_bytes=%s lock_wait=%.3fs txn=%.3fs "
+                        "total=%.3fs attempt=%d",
+                        caller_name,
+                        operation_label,
+                        role_label,
+                        payload_bytes if payload_bytes is not None else "-",
+                        fts_bytes if fts_bytes is not None else "-",
                         lock_wait,
                         transaction_time,
                         total_time,
@@ -4611,6 +4639,44 @@ class SessionDB:
         # cannot bind list/dict parameters directly.
         stored_content = self._encode_content(content)
 
+        def _utf8_bytes(value: Any) -> int:
+            if value is None:
+                return 0
+            if isinstance(value, (bytes, bytearray, memoryview)):
+                return len(value)
+            return len(str(value).encode("utf-8"))
+
+        fts_source_bytes = sum(
+            _utf8_bytes(value)
+            for value in (stored_content, tool_name, tool_calls_json)
+        )
+        # Count only indexes active for this runtime. The standard FTS index
+        # covers every message when FTS is enabled; trigram additionally covers
+        # non-tool rows when that tokenizer/index is available.
+        fts_index_count = 0
+        if self._fts_enabled:
+            fts_index_count = 1
+            if role != "tool" and self._trigram_available:
+                fts_index_count += 1
+        fts_indexed_bytes = fts_source_bytes * fts_index_count
+        payload_size_bytes = sum(
+            _utf8_bytes(value)
+            for value in (
+                stored_content,
+                tool_call_id,
+                tool_calls_json,
+                tool_name,
+                effect_disposition,
+                finish_reason,
+                reasoning,
+                reasoning_content,
+                reasoning_details_json,
+                codex_items_json,
+                codex_message_items_json,
+                platform_message_id,
+            )
+        )
+
         message_timestamp = time.time()
         if timestamp is not None:
             try:
@@ -4670,7 +4736,13 @@ class SessionDB:
                 )
             return msg_id
 
-        return self._execute_write(_do)
+        return self._execute_write(
+            _do,
+            operation="append_message",
+            role=role,
+            payload_bytes=payload_size_bytes,
+            fts_bytes=fts_indexed_bytes,
+        )
 
     def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
         """Insert *messages* as fresh active rows for *session_id*.

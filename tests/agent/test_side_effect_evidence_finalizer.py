@@ -120,6 +120,42 @@ def test_finalizer_no_warning_for_generic_discussion_without_action_claims(monke
     assert "Side-effect evidence regulator" not in result["final_response"]
 
 
+def test_finalizer_no_warning_for_negated_side_effect_claims(monkeypatch):
+    """Explicit denials are not success claims and must not demand evidence."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "verify the prior report"}]
+
+    result = _run_finalizer(
+        agent,
+        messages,
+        (
+            "I have not sent the message. "
+            "Nothing was deployed, and nothing was deleted."
+        ),
+    )
+
+    assert "Side-effect evidence regulator" not in result["final_response"]
+
+
+def test_finalizer_no_warning_for_inspected_historical_state(monkeypatch):
+    """Describing inspected code/history is not a fresh side-effect claim."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "what is the current state?"}]
+
+    result = _run_finalizer(
+        agent,
+        messages,
+        (
+            "The structural fix was deployed earlier. "
+            "The automatic optimizer is removed from the current code path."
+        ),
+    )
+
+    assert "Side-effect evidence regulator" not in result["final_response"]
+
+
 def test_finalizer_no_warning_when_response_has_no_side_effect_claims(monkeypatch):
     """A normal informational response should never get a footer."""
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
@@ -173,6 +209,236 @@ def test_terminal_error_result_does_not_satisfy_side_effect_claim(monkeypatch):
     result = _run_finalizer(agent, messages, "I deployed the service successfully.")
 
     assert "Side-effect evidence regulator" in result["final_response"]
+
+
+def test_finalizer_still_warns_for_affirmative_claim_with_no_errors_phrase(monkeypatch):
+    """The word 'no' after the action verb must not negate a success claim."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "deploy it"}]
+
+    result = _run_finalizer(agent, messages, "I deployed the service with no errors.")
+
+    assert "Side-effect evidence regulator" in result["final_response"]
+    assert "deploy" in result["final_response"]
+
+
+def test_finalizer_warns_for_first_person_claim_about_earlier_version(monkeypatch):
+    """An object described as earlier is still a first-person completion claim."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "deploy it"}]
+
+    result = _run_finalizer(agent, messages, "I deployed the earlier version.")
+
+    assert "Side-effect evidence regulator" in result["final_response"]
+    assert "deploy" in result["final_response"]
+
+
+def test_finalizer_no_warning_for_negated_or_historical_other_categories(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "verify prior claims"}]
+    cases = (
+        "The GitHub issue was not created.",
+        "The cron job was paused earlier.",
+        "The file was uploaded previously.",
+    )
+
+    for response in cases:
+        result = _run_finalizer(agent, messages, response)
+        assert "Side-effect evidence regulator" not in result["final_response"], response
+
+
+def test_finalizer_warns_for_positive_action_after_negative_contrast(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "deploy the new service"}]
+    cases = (
+        "I have not deployed the old service, but I deployed the new service successfully.",
+        "Previously the deploy failed, but I deployed the service successfully.",
+        "I did not deploy the old service and then I deployed the new service successfully.",
+    )
+
+    for response in cases:
+        result = _run_finalizer(agent, messages, response)
+        assert "Side-effect evidence regulator" in result["final_response"], response
+        assert "deploy" in result["final_response"]
+
+
+def test_finalizer_no_warning_for_genuinely_historical_first_person_action(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "inspect history"}]
+    cases = (
+        "I deployed it earlier.",
+        "Earlier, I sent the message.",
+        "I previously uploaded the file.",
+    )
+
+    for response in cases:
+        result = _run_finalizer(agent, messages, response)
+        assert "Side-effect evidence regulator" not in result["final_response"], response
+
+
+def test_finalizer_no_warning_for_contracted_negation(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "verify prior claims"}]
+    cases = (
+        "I haven't sent the message.",
+        "I couldn't deploy the service.",
+        "I don't believe I sent the message.",
+        "I wouldn't delete the record.",
+        "I can't upload the file.",
+    )
+
+    for response in cases:
+        result = _run_finalizer(agent, messages, response)
+        assert "Side-effect evidence regulator" not in result["final_response"], response
+
+
+def test_finalizer_does_not_treat_generic_job_as_cron_context(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "run build"}]
+
+    result = _run_finalizer(agent, messages, "I ran the build job successfully.")
+
+    assert "Side-effect evidence regulator" not in result["final_response"]
+
+
+def test_finalizer_preserves_category_context_across_sentences(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "do it"}]
+    cases = (
+        ("The message is ready. I sent it successfully.", "send_message"),
+        ("The GitHub issue is #123. I created it successfully.", "github"),
+    )
+
+    for response, category in cases:
+        result = _run_finalizer(agent, messages, response)
+        assert "Side-effect evidence regulator" in result["final_response"], response
+        assert category in result["final_response"]
+
+
+def test_finalizer_warns_for_positive_action_after_plain_and(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "do it"}]
+
+    result = _run_finalizer(
+        agent,
+        messages,
+        "I did not create the issue and submitted the pull request successfully.",
+    )
+
+    assert "Side-effect evidence regulator" in result["final_response"]
+    assert "github" in result["final_response"]
+
+
+def test_finalizer_no_warning_for_first_person_inspection_report(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "inspect it"}]
+
+    result = _run_finalizer(
+        agent,
+        messages,
+        "I inspected the logs and confirmed the message was sent.",
+    )
+
+    assert "Side-effect evidence regulator" not in result["final_response"]
+
+
+def test_finalizer_warns_for_current_action_after_historical_action(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "upload new file"}]
+
+    result = _run_finalizer(
+        agent,
+        messages,
+        "I previously uploaded the old file and uploaded the new file successfully.",
+    )
+
+    assert "Side-effect evidence regulator" in result["final_response"]
+    assert "upload" in result["final_response"]
+
+
+def test_finalizer_warns_for_unqualified_passive_completion_claims(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "do it"}]
+    cases = (
+        ("The message was sent.", "send_message"),
+        ("The service was deployed.", "deploy"),
+        ("The record was deleted.", "delete"),
+    )
+
+    for response, category in cases:
+        result = _run_finalizer(agent, messages, response)
+        assert "Side-effect evidence regulator" in result["final_response"], response
+        assert category in result["final_response"]
+
+
+def test_finalizer_no_warning_for_neither_nor(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "check issue"}]
+
+    result = _run_finalizer(
+        agent,
+        messages,
+        "I neither created nor submitted the GitHub issue.",
+    )
+
+    assert "Side-effect evidence regulator" not in result["final_response"]
+
+
+def test_finalizer_no_warning_for_calendar_history(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "inspect history"}]
+    cases = (
+        "The service was deployed yesterday.",
+        "The service was deployed last week.",
+        "The service was deployed earlier today.",
+        "Last week, I deployed it.",
+    )
+
+    for response in cases:
+        result = _run_finalizer(agent, messages, response)
+        assert "Side-effect evidence regulator" not in result["final_response"], response
+
+
+def test_finalizer_no_warning_for_present_state_description(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "inspect state"}]
+    cases = (
+        "The cron job is paused.",
+        "The issue is currently opened.",
+    )
+
+    for response in cases:
+        result = _run_finalizer(agent, messages, response)
+        assert "Side-effect evidence regulator" not in result["final_response"], response
+
+
+def test_finalizer_does_not_borrow_category_context_from_later_sentence(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "work locally"}]
+
+    result = _run_finalizer(
+        agent,
+        messages,
+        "I created a local file successfully. GitHub access is unavailable.",
+    )
+
+    assert "Side-effect evidence regulator" not in result["final_response"]
 
 
 # ── Edge cases ──────────────────────────────────────────────────────────
