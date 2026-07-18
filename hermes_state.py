@@ -1077,6 +1077,12 @@ END;
 """
 
 
+# Capture the constructor at import time so unrelated tests/callers that
+# monkeypatch the shared ``threading`` module cannot turn this background
+# worker into a synchronous/infinite call.
+_CHECKPOINT_THREAD_CLS = threading.Thread
+
+
 class _CheckpointCoordinator:
     """Background thread that performs PASSIVE WAL checkpoints off the write path.
 
@@ -1100,7 +1106,7 @@ class _CheckpointCoordinator:
             if self._thread is not None and self._thread.is_alive():
                 return False
             self._stop_event.clear()
-            self._thread = threading.Thread(
+            self._thread = _CHECKPOINT_THREAD_CLS(
                 target=self._loop,
                 name="sessiondb-checkpoint-coordinator",
                 daemon=True,
