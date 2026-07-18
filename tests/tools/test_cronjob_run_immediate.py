@@ -1,10 +1,12 @@
-"""Tests for cronjob action='run' immediate execution (#41037).
+"""Tests for cronjob action='run' execution mode.
 
 Before this fix, `cronjob(action='run')` only set next_run_at=now and returned
 success, relying on the scheduler ticker to actually run the job. With no
 gateway/ticker active (e.g. a CLI-only Windows setup) the job never executed and
-last_run_at stayed null forever. Now action='run' claims the job (at-most-once,
-blocking a concurrent tick) and fires it inline via the shared run_one_job body.
+last_run_at stayed null forever. Local action='run' therefore claims the job
+(at-most-once) and fires it inline via the shared run_one_job body. Gateway
+turns instead enqueue it for the live scheduler so long jobs cannot block the
+agent until its inactivity watchdog fires.
 """
 import json
 from unittest.mock import patch
@@ -16,11 +18,46 @@ _JOB = {"id": "job-run-1", "name": "manual run", "prompt": "hi",
         "schedule": {"kind": "cron", "expr": "0 9 * * *"}}
 
 
-class TestCronjobRunExecutesImmediately:
+class TestCronjobRunExecutionMode:
+    def test_gateway_run_queues_for_scheduler_without_blocking_agent(self):
+        """Gateway turns must enqueue manual runs instead of executing inline."""
+        queued = dict(_JOB, next_run_at="2026-07-18T05:00:00+00:00")
+        with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
+             patch("tools.cronjob_tools._origin_from_env", return_value={"platform": "telegram", "chat_id": "1"}), \
+             patch("tools.cronjob_tools.trigger_job", return_value=queued) as m_trigger, \
+             patch("tools.cronjob_tools._execute_job_now") as m_execute:
+            out = json.loads(cronjob(action="run", job_id="job-run-1"))
+
+        assert out["success"] is True
+        assert out["job"]["queued"] is True
+        assert out["job"]["executed"] is False
+        assert "scheduler" in out["job"]["execution_status"]
+        m_trigger.assert_called_once_with("job-run-1")
+        m_execute.assert_not_called()
+
+    def test_gateway_run_does_not_resume_or_queue_paused_job(self):
+        """Manual gateway runs preserve the existing paused-state contract."""
+        paused = dict(_JOB, enabled=False, state="paused")
+        with patch("tools.cronjob_tools.resolve_job_ref", return_value=paused), \
+             patch("tools.cronjob_tools._origin_from_env", return_value={"platform": "telegram", "chat_id": "1"}), \
+             patch("tools.cronjob_tools.trigger_job") as m_trigger, \
+             patch("tools.cronjob_tools._execute_job_now") as m_execute:
+            out = json.loads(cronjob(action="run", job_id="job-run-1"))
+
+        assert out["success"] is True
+        assert out["job"]["queued"] is False
+        assert out["job"]["executed"] is False
+        assert out["job"]["state"] == "paused"
+        assert out["job"]["enabled"] is False
+        assert "paused/disabled" in out["job"]["execution_status"]
+        m_trigger.assert_not_called()
+        m_execute.assert_not_called()
+
     def test_run_action_claims_and_fires_via_run_one_job(self):
-        """action='run' must claim the job then fire it through run_one_job."""
+        """A local CLI run must still claim and fire through run_one_job."""
         ran = {"job": "after-run", "last_status": "ok", "last_error": None}
         with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
+             patch("tools.cronjob_tools._origin_from_env", return_value=None), \
              patch("tools.cronjob_tools.claim_job_for_fire", return_value=True) as m_claim, \
              patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
              patch("tools.cronjob_tools.get_job", return_value=ran):

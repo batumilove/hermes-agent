@@ -10,7 +10,7 @@ import logging
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, cast
 
 from hermes_constants import display_hermes_home
 
@@ -31,6 +31,7 @@ from cron.jobs import (
     remove_job,
     resolve_job_ref,
     resume_job,
+    trigger_job,
     update_job,
 )
 
@@ -805,7 +806,7 @@ def cronjob(
                 indent=2,
             )
         # Resolve to canonical ID (supports name-based lookup)
-        job_id = job["id"]
+        job_id = cast(str, job["id"])
 
         if normalized == "remove":
             removed = remove_job(job_id)
@@ -836,9 +837,35 @@ def cronjob(
             return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
 
         if normalized in {"run", "run_now", "trigger"}:
+            # Gateway turns have a live scheduler. Queue the job and return
+            # immediately so a long script cannot pin the agent's tool thread
+            # until the gateway inactivity watchdog kills the conversation.
+            # Local CLI/TUI sessions still execute inline below because they
+            # may not have a gateway ticker (#41037).
+            if _origin_from_env() is not None:
+                result = _format_job(job)
+                result["executed"] = False
+                if not job.get("enabled", True) or job.get("state") == "paused":
+                    result["queued"] = False
+                    result["execution_status"] = (
+                        "Job is paused/disabled; resume it before running."
+                    )
+                else:
+                    queued = trigger_job(job_id)
+                    _notify_provider_jobs_changed_safe()
+                    result = _format_job(queued or job)
+                    result["queued"] = queued is not None
+                    result["executed"] = False
+                    result["execution_status"] = (
+                        "Queued for the gateway scheduler; execution continues "
+                        "outside this agent turn."
+                    )
+                return json.dumps({"success": True, "job": result}, indent=2)
+
             # Execute the job immediately rather than only scheduling it for the
-            # next scheduler tick — a manual `run` should actually run, even when
-            # no gateway/ticker is active (the #41037 case). The claim inside
+            # next scheduler tick in local sessions — a manual `run` should
+            # actually run even when no gateway/ticker is active (the #41037
+            # case). The claim inside
             # _execute_job_now advances next_run_at and blocks a concurrent tick
             # from double-firing.
             exec_result = _execute_job_now(job)
@@ -974,6 +1001,9 @@ CRONJOB_SCHEMA = {
 Use action='create' to schedule a new job from a prompt or one or more skills.
 Use action='list' to inspect jobs.
 Use action='update', 'pause', 'resume', 'remove', or 'run' to manage an existing job.
+In gateway conversations, action='run' queues the job for the live scheduler and
+returns immediately; local CLI/TUI sessions execute it inline when no scheduler
+may be available.
 
 To stop a job the user no longer wants: first action='list' to find the job_id, then action='remove' with that job_id. Never guess job IDs — always list first.
 
