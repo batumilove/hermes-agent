@@ -415,6 +415,8 @@ def _is_cron_silence_response(text: str) -> bool:
 # ---------------------------------------------------------------------------
 _parallel_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _parallel_pool_max_workers: Optional[int] = None
+_script_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
+_script_pool_max_workers: Optional[int] = None
 _running_job_ids: set = set()
 _running_lock = threading.Lock()
 
@@ -578,7 +580,7 @@ _terminal_cwd_lock = _ReadWriteLock()
 
 
 def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadPoolExecutor:
-    """Return (or create) the persistent parallel pool."""
+    """Return (or create) the persistent agent-job pool."""
     global _parallel_pool, _parallel_pool_max_workers
     if _parallel_pool is None or _parallel_pool_max_workers != max_workers:
         if _parallel_pool is not None:
@@ -589,6 +591,20 @@ def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadP
         )
         _parallel_pool_max_workers = max_workers
     return _parallel_pool
+
+
+def _get_script_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadPoolExecutor:
+    """Return (or create) the persistent script-only job pool."""
+    global _script_pool, _script_pool_max_workers
+    if _script_pool is None or _script_pool_max_workers != max_workers:
+        if _script_pool is not None:
+            _script_pool.shutdown(wait=False, cancel_futures=False)
+        _script_pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="cron-script",
+        )
+        _script_pool_max_workers = max_workers
+    return _script_pool
 
 
 def _get_sequential_pool() -> concurrent.futures.ThreadPoolExecutor:
@@ -610,11 +626,16 @@ def _get_sequential_pool() -> concurrent.futures.ThreadPoolExecutor:
 
 def _shutdown_parallel_pool() -> None:
     """Shut down the persistent pools on process exit."""
-    global _parallel_pool, _parallel_pool_max_workers, _sequential_pool
+    global _parallel_pool, _parallel_pool_max_workers
+    global _script_pool, _script_pool_max_workers, _sequential_pool
     if _parallel_pool is not None:
         _parallel_pool.shutdown(wait=True, cancel_futures=False)
         _parallel_pool = None
         _parallel_pool_max_workers = None
+    if _script_pool is not None:
+        _script_pool.shutdown(wait=True, cancel_futures=False)
+        _script_pool = None
+        _script_pool_max_workers = None
     if _sequential_pool is not None:
         _sequential_pool.shutdown(wait=True, cancel_futures=False)
         _sequential_pool = None
@@ -4093,31 +4114,57 @@ def tick(
         for job in due_jobs:
             advance_next_run(job["id"])
 
-        # Resolve max parallel workers: env var > config.yaml > unbounded.
-        # Set HERMES_CRON_MAX_PARALLEL=1 to restore old serial behaviour.
+        # Resolve the legacy/shared limit first. Separate agent and script
+        # limits may override it below; when absent, both lanes retain the
+        # historical shared limit for backward compatibility.
         _max_workers: Optional[int] = None
+        _cron_cfg: dict = {}
         try:
             _env_par = os.getenv("HERMES_CRON_MAX_PARALLEL", "").strip()
             if _env_par:
                 _max_workers = int(_env_par) or None
         except (ValueError, TypeError):
             logger.warning("Invalid HERMES_CRON_MAX_PARALLEL value; defaulting to unbounded")
-        if _max_workers is None:
-            try:
-                _ucfg = load_config() or {}
-                _cfg_par = (
-                    _ucfg.get("cron", {}) if isinstance(_ucfg, dict) else {}
-                ).get("max_parallel_jobs")
+        try:
+            _ucfg = load_config() or {}
+            _cron_cfg = (
+                _ucfg.get("cron", {}) if isinstance(_ucfg, dict) else {}
+            )
+            if _max_workers is None:
+                _cfg_par = _cron_cfg.get("max_parallel_jobs")
                 if _cfg_par is not None:
                     _max_workers = int(_cfg_par) or None
-            except Exception:
-                pass
+        except Exception:
+            pass
+
+        def _lane_limit(env_name: str, config_name: str) -> Optional[int]:
+            raw = os.getenv(env_name, "").strip()
+            if raw:
+                try:
+                    return int(raw) or None
+                except (ValueError, TypeError):
+                    logger.warning("Invalid %s value; using shared cron limit", env_name)
+            try:
+                configured = _cron_cfg.get(config_name)
+                if configured is not None:
+                    return int(configured) or None
+            except (ValueError, TypeError):
+                logger.warning("Invalid cron.%s value; using shared cron limit", config_name)
+            return _max_workers
+
+        _agent_max_workers = _lane_limit(
+            "HERMES_CRON_MAX_PARALLEL_AGENT", "max_parallel_agent_jobs"
+        )
+        _script_max_workers = _lane_limit(
+            "HERMES_CRON_MAX_PARALLEL_SCRIPT", "max_parallel_script_jobs"
+        )
 
         if verbose:
             logger.info(
-                "Running %d job(s) in parallel (max_workers=%s)",
+                "Running %d job(s) (agent_workers=%s, script_workers=%s)",
                 len(due_jobs),
-                _max_workers if _max_workers else "unbounded",
+                _agent_max_workers if _agent_max_workers else "unbounded",
+                _script_max_workers if _script_max_workers else "unbounded",
             )
 
         def _process_job(job: dict) -> bool:
@@ -4135,6 +4182,8 @@ def tick(
         # firing workdir-less parallel-pool job from observing the override.
         sequential_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
         parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
+        script_jobs = [j for j in parallel_jobs if j.get("no_agent")]
+        agent_jobs = [j for j in parallel_jobs if not j.get("no_agent")]
 
         _results: list = []
         _all_futures: list = []
@@ -4217,15 +4266,24 @@ def tick(
                 if not sync:
                     _results.append(True)  # optimistically counted
 
-        # Parallel pass — persistent pool, non-blocking dispatch.
-        # Jobs that are already running (from a previous tick) are skipped.
-        # mark_job_run() updates next_run_at on completion, so the next tick
-        # after completion finds the job due again naturally.  No catch-up
-        # queue needed.
-        if parallel_jobs:
-            pool = _get_parallel_pool(_max_workers)
-            for job in parallel_jobs:
+        # Agent pass — persistent pool, non-blocking dispatch. Jobs that are
+        # already running (from a previous tick) are skipped.
+        if agent_jobs:
+            pool = _get_parallel_pool(_agent_max_workers)
+            for job in agent_jobs:
                 fut = _submit_with_guard(job, pool)
+                if fut is None:
+                    continue
+                _all_futures.append(fut)
+                if not sync:
+                    _results.append(True)  # optimistically counted
+
+        # Script-only pass — a separate pool prevents long LLM/agent jobs from
+        # starving deterministic watchdogs and maintenance scripts.
+        if script_jobs:
+            script_pool = _get_script_pool(_script_max_workers)
+            for job in script_jobs:
+                fut = _submit_with_guard(job, script_pool)
                 if fut is None:
                     continue
                 _all_futures.append(fut)

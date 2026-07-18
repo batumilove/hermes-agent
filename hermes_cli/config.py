@@ -2796,6 +2796,11 @@ DEFAULT_CONFIG = {
         # 1 = serial (pre-v0.9 behaviour).
         # Also overridable via HERMES_CRON_MAX_PARALLEL env var.
         "max_parallel_jobs": None,
+        # Optional independent lane limits. When unset, both inherit
+        # max_parallel_jobs. Keeping deterministic script-only jobs separate
+        # prevents long LLM jobs from starving watchdogs.
+        "max_parallel_agent_jobs": None,
+        "max_parallel_script_jobs": None,
         # Live gateway adapter delivery wait budget. Cron delivery runs from a
         # scheduler thread and hands Telegram/Discord/etc sends to the gateway
         # event loop; on a busy gateway, a too-small budget can cancel a

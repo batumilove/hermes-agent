@@ -43,17 +43,133 @@ class TestPersistentPool:
 
         sched._shutdown_parallel_pool()
 
+    def test_script_pool_is_independent_and_reused(self):
+        import cron.scheduler as sched
+
+        sched._parallel_pool = None
+        sched._parallel_pool_max_workers = None
+        sched._script_pool = None
+        sched._script_pool_max_workers = None
+
+        agent_pool = sched._get_parallel_pool(2)
+        script_pool = sched._get_script_pool(4)
+
+        assert script_pool is sched._get_script_pool(4)
+        assert script_pool is not agent_pool
+
+        sched._shutdown_parallel_pool()
+
+    def test_script_pool_is_recreated_on_worker_change(self):
+        import cron.scheduler as sched
+
+        sched._script_pool = None
+        sched._script_pool_max_workers = None
+
+        pool1 = sched._get_script_pool(2)
+        pool2 = sched._get_script_pool(4)
+        assert pool1 is not pool2
+
+        sched._shutdown_parallel_pool()
+
     def test_shutdown_clears_pool(self, monkeypatch):
         """_shutdown_parallel_pool resets state."""
         import cron.scheduler as sched
 
         sched._parallel_pool = None
         sched._parallel_pool_max_workers = None
+        sched._script_pool = None
+        sched._script_pool_max_workers = None
         sched._get_parallel_pool(2)
+        sched._get_script_pool(4)
 
         sched._shutdown_parallel_pool()
         assert sched._parallel_pool is None
         assert sched._parallel_pool_max_workers is None
+        assert sched._script_pool is None
+        assert sched._script_pool_max_workers is None
+
+
+class TestConcurrencyLanes:
+    """Script-only and agent jobs use independent worker pools."""
+
+    def test_tick_routes_script_and_agent_jobs_to_separate_limits(self, monkeypatch):
+        import cron.scheduler as sched
+
+        class ImmediatePool:
+            def __init__(self):
+                self.submissions = 0
+
+            def submit(self, fn):
+                self.submissions += 1
+                future = concurrent.futures.Future()
+                try:
+                    future.set_result(fn())
+                except Exception as exc:
+                    future.set_exception(exc)
+                return future
+
+        agent_pool = ImmediatePool()
+        script_pool = ImmediatePool()
+        sequential_pool = ImmediatePool()
+        requested = {}
+        jobs = [
+            {"id": "agent-job", "name": "agent", "prompt": "work"},
+            {
+                "id": "script-job",
+                "name": "script",
+                "script": "watchdog.py",
+                "no_agent": True,
+            },
+            {
+                "id": "workdir-script-job",
+                "name": "workdir-script",
+                "script": "maintenance.py",
+                "no_agent": True,
+                "workdir": "/tmp/project",
+            },
+        ]
+
+        sched._running_job_ids.clear()
+        monkeypatch.delenv("HERMES_CRON_MAX_PARALLEL", raising=False)
+        monkeypatch.delenv("HERMES_CRON_MAX_PARALLEL_AGENT", raising=False)
+        monkeypatch.delenv("HERMES_CRON_MAX_PARALLEL_SCRIPT", raising=False)
+        monkeypatch.setattr(sched, "get_due_jobs", lambda: jobs)
+        monkeypatch.setattr(sched, "advance_next_run", lambda _job_id: None)
+        monkeypatch.setattr(
+            sched,
+            "load_config",
+            lambda: {
+                "cron": {
+                    "max_parallel_jobs": 9,
+                    "max_parallel_agent_jobs": 2,
+                    "max_parallel_script_jobs": 5,
+                }
+            },
+        )
+        monkeypatch.setattr(
+            sched,
+            "_get_parallel_pool",
+            lambda workers: (requested.__setitem__("agent", workers), agent_pool)[1],
+        )
+        monkeypatch.setattr(
+            sched,
+            "_get_script_pool",
+            lambda workers: (requested.__setitem__("script", workers), script_pool)[1],
+            raising=False,
+        )
+        monkeypatch.setattr(sched, "_get_sequential_pool", lambda: sequential_pool)
+        monkeypatch.setattr(
+            sched,
+            "create_execution",
+            lambda job_id, source: {"id": f"exec-{job_id}"},
+        )
+        monkeypatch.setattr(sched, "run_one_job", lambda *_a, **_kw: True)
+
+        assert sched.tick(verbose=False, sync=True) == 3
+        assert requested == {"agent": 2, "script": 5}
+        assert agent_pool.submissions == 1
+        assert script_pool.submissions == 1
+        assert sequential_pool.submissions == 1
 
 
 class TestRunningJobGuard:
