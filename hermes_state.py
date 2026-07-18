@@ -1025,7 +1025,10 @@ FTS_TRIGRAM_SQL = """
 CREATE VIEW IF NOT EXISTS messages_fts_trigram_src AS
     SELECT id, role, content, tool_name, tool_calls
     FROM messages
-    WHERE role <> 'tool';
+    WHERE role <> 'tool'
+      AND length(CAST(COALESCE(content, '') AS BLOB)) +
+          length(CAST(COALESCE(tool_name, '') AS BLOB)) +
+          length(CAST(COALESCE(tool_calls, '') AS BLOB)) <= 4096;
 
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(
     content,
@@ -6609,8 +6612,11 @@ class SessionDB:
         if not tokens:
             return []
 
-        where = ["m.role = 'tool'"]
-        params: list = []
+        where = [
+            "(m.role = 'tool' OR "
+            f"{self._trigram_source_bytes_sql('m')} > ?)"
+        ]
+        params: list = [self._FTS_TRIGRAM_MAX_SOURCE_BYTES]
         for tok in tokens:
             esc = tok.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             where.append(

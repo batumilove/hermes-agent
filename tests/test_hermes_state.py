@@ -3868,9 +3868,9 @@ class TestSchemaInit:
             "WHERE messages_fts_trigram MATCH 'needle'"
         ).fetchone()[0]
         assert trigram_hits == 1
-        assert db._conn.execute(
-            "SELECT COUNT(*) FROM messages_fts_trigram WHERE rowid IN (2, 3)"
-        ).fetchone()[0] == 0
+        # MATCH probes actual index membership. COUNT(*)/rowid predicates on an
+        # external-content FTS table read through the content view and therefore
+        # cannot distinguish an excluded large row from an indexed row.
 
     def test_deferred_trigram_backfill_uses_same_byte_policy(self, tmp_path):
         db_path = tmp_path / "deferred_byte_policy.db"
@@ -3906,7 +3906,7 @@ class TestSchemaInit:
             assert migrated._conn.execute(
                 "SELECT COUNT(*) FROM messages_fts_trigram "
                 "WHERE messages_fts_trigram MATCH 'seed'"
-            ).fetchone()[0] == 1
+            ).fetchone()[0] == 2
             assert migrated._conn.execute(
                 "SELECT COUNT(*) FROM messages_fts_trigram "
                 "WHERE messages_fts_trigram MATCH 'needle'"
@@ -5500,6 +5500,48 @@ class TestFTSExternalContentMigration:
                 "SELECT rowid FROM messages_fts_trigram WHERE messages_fts_trigram MATCH '\"大别山项目\"' ORDER BY rowid"
             ).fetchall()
             assert [row[0] for row in tri_rows] == [second_id]
+        finally:
+            db.close()
+
+    def test_same_role_updates_reindex_and_large_cjk_uses_fallback(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "same_role.db")
+        try:
+            db.create_session("s1", source="cli")
+            msg_id = db.append_message("s1", role="assistant", content="甲乙丙丁 old")
+
+            def _update(content):
+                def _do(conn):
+                    conn.execute(
+                        "UPDATE messages SET content = ? WHERE id = ?",
+                        (content, msg_id),
+                    )
+                db._execute_write(_do)
+
+            _update("戊己庚辛 short")
+            assert db._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_trigram "
+                "WHERE messages_fts_trigram MATCH '\"甲乙丙丁\"'"
+            ).fetchone()[0] == 0
+            assert db._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_trigram "
+                "WHERE messages_fts_trigram MATCH '\"戊己庚辛\"'"
+            ).fetchone()[0] == 1
+
+            _update("壬癸子丑" + ("界" * 1500))
+            assert db._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_trigram "
+                "WHERE messages_fts_trigram MATCH '\"壬癸子丑\"'"
+            ).fetchone()[0] == 0
+            fallback_hits = db.search_messages(
+                "壬癸子丑", role_filter=["assistant"]
+            )
+            assert [hit["id"] for hit in fallback_hits] == [msg_id]
+
+            _update("寅卯辰巳 short again")
+            assert db._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_trigram "
+                "WHERE messages_fts_trigram MATCH '\"寅卯辰巳\"'"
+            ).fetchone()[0] == 1
         finally:
             db.close()
 
