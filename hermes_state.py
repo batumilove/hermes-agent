@@ -17,6 +17,7 @@ Key design decisions:
 import asyncio
 import json
 import logging
+import os
 import random
 import re
 import sqlite3
@@ -1191,6 +1192,109 @@ class _CheckpointCoordinator:
 
 _CHECKPOINT_COORDINATORS_LOCK = threading.Lock()
 _CHECKPOINT_COORDINATORS: Dict[str, Tuple[_CheckpointCoordinator, int]] = {}
+# PID of the process that owns the registry above.  After os.fork() the child
+# inherits a copy of the registry that may contain stale coordinator threads and
+# SQLite connections, so the first access resets it.
+_CHECKPOINT_REGISTRY_PID: int = 0
+
+
+def _reset_checkpoint_registry_unlocked() -> None:
+    """Discard any inherited coordinator state after fork or PID mismatch.
+
+    Must not acquire any inherited locks: in the child of a fork the original
+    lock may be held by a thread that no longer exists.  This is called either
+    from the os.register_at_fork after-in-child hook or from _acquire when it
+    detects a PID mismatch.
+    """
+    global _CHECKPOINT_COORDINATORS, _CHECKPOINT_COORDINATORS_LOCK, _CHECKPOINT_REGISTRY_PID
+    old = _CHECKPOINT_COORDINATORS
+    for coordinator, _ in old.values():
+        # Close the inherited SQLite connection so the child can never reuse it.
+        try:
+            coordinator._close_conn()
+        except Exception:
+            pass
+        # The worker thread does not exist in the child; clear the stale reference
+        # and mark the stop event so any late loop iteration in the child aborts.
+        try:
+            coordinator._stop_event.set()
+            coordinator._thread = None
+        except Exception:
+            pass
+    # Replace the mutable container itself so any extant weakref/finalizer
+    # bound to the parent process's dict cannot observe or mutate the child's
+    # fresh registry. This guarantees the child always creates a new entry.
+    _CHECKPOINT_COORDINATORS = {}
+    _CHECKPOINT_COORDINATORS_LOCK = threading.Lock()
+    _CHECKPOINT_REGISTRY_PID = os.getpid()
+
+
+def _checkpoint_registry_after_fork() -> None:
+    """Fork-child handler: reset the registry so the child starts fresh."""
+    _reset_checkpoint_registry_unlocked()
+
+
+def _register_checkpoint_registry_fork_safety() -> None:
+    """Capture the current PID and install the fork-child reset hook."""
+    global _CHECKPOINT_REGISTRY_PID
+    _CHECKPOINT_REGISTRY_PID = os.getpid()
+    if hasattr(os, "register_at_fork"):
+        os.register_at_fork(after_in_child=_checkpoint_registry_after_fork)
+
+
+_register_checkpoint_registry_fork_safety()
+
+
+def _release_checkpoint_coordinator_with_state(
+    key: str,
+    coordinator: _CheckpointCoordinator,
+    state: Dict[str, Any],
+) -> bool:
+    """Idempotent release of one checkpoint coordinator owner.
+
+    ``state`` is a per-instance mutable dict (created during SessionDB.__init__)
+    used by both explicit close() and the weakref finalizer to guarantee
+    exactly-once release even when the finalizer runs after close().
+    """
+    try:
+        if state.get("released"):
+            return False
+        with _CHECKPOINT_COORDINATORS_LOCK:
+            if state.get("released"):
+                return False
+            state["released"] = True
+            existing = _CHECKPOINT_COORDINATORS.get(key)
+            if existing is None or existing[0] is not coordinator:
+                return False
+            owners = existing[1] - 1
+            if owners > 0:
+                _CHECKPOINT_COORDINATORS[key] = (coordinator, owners)
+                return False
+            # Keep the registry lock until the old coordinator is fully stopped so
+            # a new same-path owner cannot overlap teardown with a replacement.
+            if not coordinator.stop(timeout=10.0):
+                # Preserve a zero-owner tombstone.
+                _CHECKPOINT_COORDINATORS[key] = (coordinator, 0)
+                return False
+            _CHECKPOINT_COORDINATORS.pop(key, None)
+            return True
+    except Exception:
+        # Shutdown/finalizer safety: never raise out of a release callback.
+        return False
+
+
+def _release_checkpoint_coordinator(
+    key: str,
+    coordinator: _CheckpointCoordinator,
+) -> bool:
+    """Release one owner; return true when it was the final process owner.
+
+    Kept for backward compatibility with call sites that do not track an
+    idempotency state.  New SessionDB ownership uses the stateful variant.
+    """
+    return _release_checkpoint_coordinator_with_state(
+        key, coordinator, {"released": False}
+    )
 
 
 def _acquire_checkpoint_coordinator(
@@ -1200,6 +1304,10 @@ def _acquire_checkpoint_coordinator(
 ) -> Tuple[str, _CheckpointCoordinator]:
     """Return the process-wide coordinator shared by one database path."""
     key = str(Path(db_path).expanduser().resolve(strict=False))
+    if _CHECKPOINT_REGISTRY_PID != os.getpid():
+        # We are in a forked child (or the fork hook was not available): discard
+        # inherited coordinator state before any lock acquisition.
+        _reset_checkpoint_registry_unlocked()
     with _CHECKPOINT_COORDINATORS_LOCK:
         existing = _CHECKPOINT_COORDINATORS.get(key)
         if existing is not None:
@@ -1209,31 +1317,6 @@ def _acquire_checkpoint_coordinator(
         coordinator = _CheckpointCoordinator(db_path, interval_s, slow_warn_s)
         _CHECKPOINT_COORDINATORS[key] = (coordinator, 1)
         return key, coordinator
-
-
-def _release_checkpoint_coordinator(
-    key: str,
-    coordinator: _CheckpointCoordinator,
-) -> bool:
-    """Release one owner; return true when it was the final process owner."""
-    with _CHECKPOINT_COORDINATORS_LOCK:
-        existing = _CHECKPOINT_COORDINATORS.get(key)
-        if existing is None or existing[0] is not coordinator:
-            return False
-        owners = existing[1] - 1
-        if owners > 0:
-            _CHECKPOINT_COORDINATORS[key] = (coordinator, owners)
-            return False
-        # Keep the registry lock until the old coordinator is fully stopped so
-        # a new same-path owner cannot overlap teardown with a replacement.
-        if not coordinator.stop(timeout=10.0):
-            # Preserve a zero-owner tombstone. A future owner reuses this
-            # coordinator and its final close retries teardown; removing it now
-            # could overlap a replacement with the still-running old thread.
-            _CHECKPOINT_COORDINATORS[key] = (coordinator, 0)
-            return False
-        _CHECKPOINT_COORDINATORS.pop(key, None)
-        return True
 
 
 class SessionDB:
@@ -1292,6 +1375,16 @@ class SessionDB:
         self._registered_checkpoint_coordinator = self._checkpoint_coordinator
         self._checkpoint_coordinator_released = False
         self._closed = False
+        # Shared mutable state used by both explicit close() and the weakref
+        # finalizer to guarantee exactly-once release of the registry owner.
+        self._checkpoint_release_state = {"released": False}
+        self._checkpoint_finalizer = weakref.finalize(
+            self,
+            _release_checkpoint_coordinator_with_state,
+            self._checkpoint_coordinator_key,
+            self._registered_checkpoint_coordinator,
+            self._checkpoint_release_state,
+        )
         # One-shot guard for the runtime FTS rebuild recovery on the write
         # path. A corrupt FTS shadow table makes EVERY message write raise
         # the malformed/corrupt error class via the sync triggers; we repair
@@ -1397,9 +1490,10 @@ class SessionDB:
             # cause that another thread's /resume is about to format.
             # Tests that need to reset the state can call
             # ``hermes_state._set_last_init_error(None)`` explicitly.
-            _release_checkpoint_coordinator(
+            _release_checkpoint_coordinator_with_state(
                 self._checkpoint_coordinator_key,
                 self._registered_checkpoint_coordinator,
+                self._checkpoint_release_state,
             )
             self._checkpoint_coordinator_released = True
             _set_last_init_error(f"{type(exc).__name__}: {exc}")
@@ -1799,9 +1893,10 @@ class SessionDB:
                     # still releasing the originally registered shared owner.
                     if self._checkpoint_coordinator is not self._registered_checkpoint_coordinator:
                         self._checkpoint_coordinator.stop(timeout=10.0)
-                    _release_checkpoint_coordinator(
+                    _release_checkpoint_coordinator_with_state(
                         self._checkpoint_coordinator_key,
                         self._registered_checkpoint_coordinator,
+                        self._checkpoint_release_state,
                     )
                 except Exception as exc:
                     logger.debug("Checkpoint coordinator release at close failed: %s", exc)
