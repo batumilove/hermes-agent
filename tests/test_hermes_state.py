@@ -1888,6 +1888,22 @@ class TestCJKSearchFallback:
         results = db.search_messages("通信")
         assert len(results) == 1
 
+    def test_short_cjk_fallback_honors_oldest_sort_and_pagination(self, db):
+        """Short-CJK LIKE results must sort before applying OFFSET/LIMIT."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1", role="user", content="甲乙 newest", timestamp=200.0
+        )
+        db.append_message(
+            "s1", role="user", content="甲乙 oldest", timestamp=100.0
+        )
+
+        first = db.search_messages("甲乙", sort="oldest", limit=1, offset=0)
+        second = db.search_messages("甲乙", sort="oldest", limit=1, offset=1)
+
+        assert [row["timestamp"] for row in first] == [100.0]
+        assert [row["timestamp"] for row in second] == [200.0]
+
     def test_korean_query_returns_results(self, db):
         """Guards against Hangul range typos (\\uac00-\\ud7af, not \\ud7a0-)."""
         db.create_session(session_id="s1", source="cli")
