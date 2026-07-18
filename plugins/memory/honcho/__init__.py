@@ -1607,12 +1607,19 @@ class HonchoMemoryProvider(MemoryProvider):
         for t in (self._prefetch_thread, self._sync_thread):
             if t and t.is_alive():
                 t.join(timeout=5.0)
-        # Flush any remaining messages
+        # Flush any remaining messages, then deterministically stop the Honcho
+        # async writer thread.  ``shutdown()`` is idempotent on the manager.
         if self._manager and not (self._init_thread and self._init_thread.is_alive() and not self._session_initialized):
             try:
                 self._manager.flush_all()
+                self._manager.shutdown()
             except Exception:
                 pass
+
+        # Defensive: prevent any new lazy init from racing during teardown.
+        with self._init_lock:
+            self._lazy_init_kwargs = None
+            self._lazy_init_session_id = None
 
 
 # ---------------------------------------------------------------------------

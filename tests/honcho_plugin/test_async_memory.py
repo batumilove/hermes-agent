@@ -474,3 +474,64 @@ class TestPrefetchCacheAccessors:
         assert mgr.pop_context_result("cli:test") == payload
         assert mgr.pop_context_result("cli:test") == {}
 
+
+# ---------------------------------------------------------------------------
+# HonchoMemoryProvider lifecycle (P0-1)
+# ---------------------------------------------------------------------------
+
+class TestAsyncWriterLifecycle:
+    def _make_provider(self, manager=None):
+        from plugins.memory.honcho.__init__ import HonchoMemoryProvider
+        provider = HonchoMemoryProvider()
+        provider._manager = manager or _make_manager(write_frequency="async")
+        provider._session_initialized = True
+        return provider
+
+    def test_provider_shutdown_joins_async_writer_thread(self):
+        provider = self._make_provider()
+        mgr = provider._manager
+        assert mgr._async_thread is not None
+        assert mgr._async_thread.is_alive()
+        provider.shutdown()
+        assert not mgr._async_thread.is_alive(), "async writer thread should be joined after provider.shutdown()"
+
+    def test_provider_shutdown_is_idempotent(self):
+        provider = self._make_provider()
+        mgr = provider._manager
+        provider.shutdown()
+        provider.shutdown()  # second call must not raise
+        assert not mgr._async_thread.is_alive()
+
+    def test_provider_shutdown_flushes_before_join(self):
+        provider = self._make_provider()
+        mgr = provider._manager
+        sess = _make_session()
+        sess.add_message("user", "must-flush")
+        mgr._cache[sess.key] = sess
+
+        flushed = []
+        original = mgr._flush_session
+
+        def capture(s):
+            flushed.append(s)
+            return original(s)
+
+        mgr._flush_session = capture
+        provider.shutdown()
+        assert any(flushed), "provider.shutdown() should flush remaining messages before joining"
+        assert not mgr._async_thread.is_alive()
+
+    def test_provider_shutdown_no_manager_is_safe(self):
+        from plugins.memory.honcho.__init__ import HonchoMemoryProvider
+        provider = HonchoMemoryProvider()
+        provider._manager = None
+        provider.shutdown()  # must not raise
+
+    def test_provider_shutdown_uninitialized_session_is_safe(self):
+        from plugins.memory.honcho.__init__ import HonchoMemoryProvider
+        provider = HonchoMemoryProvider()
+        provider._manager = _make_manager(write_frequency="async")
+        provider._session_initialized = False
+        provider._init_thread = None
+        provider.shutdown()  # must not raise
+

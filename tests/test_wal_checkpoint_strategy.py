@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_state import SessionDB
+from hermes_state import SessionDB, _CheckpointCoordinator
 
 
 @pytest.fixture()
@@ -110,29 +110,136 @@ class TestCloseUsesTruncate:
         )
 
 
-class TestCheckpointFrequency:
-    """Checkpoint triggers every N writes."""
+class TestCheckpointCoordinator:
+    """Checkpoint coordinator safety: separate connection, no write-lock hold,
+    singleton per SessionDB, joined on close.
+    """
 
-    def test_checkpoint_triggers_at_interval(self, db):
-        """_try_wal_checkpoint is called every _CHECKPOINT_EVERY_N_WRITES writes."""
+    def test_coordinator_runs_on_dedicated_connection(self, db, monkeypatch):
+        """Coordinator's sqlite connection is distinct from SessionDB._conn."""
+        import time as _time
+
+        monkeypatch.setattr(db, "_CHECKPOINT_INTERVAL_S", 0.05)
+        db._checkpoint_coordinator.stop(timeout=1.0)
+        db._checkpoint_coordinator = _CheckpointCoordinator(
+            db.db_path, db._CHECKPOINT_INTERVAL_S, db._SLOW_CHECKPOINT_WARN_S
+        )
+        db._execute_write(lambda conn: conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+            ("sess_conn", "test", _time.time()),
+        ))
+        _time.sleep(0.15)
+        assert db._checkpoint_coordinator._conn is not None
+        assert db._checkpoint_coordinator._conn is not db._conn
+
+    def test_coordinator_does_not_hold_write_lock(self, db, monkeypatch):
+        """Checkpoint executes without SessionDB._lock being held."""
+        import time as _time
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(db, "_CHECKPOINT_INTERVAL_S", 0.05)
+        db._checkpoint_coordinator.stop(timeout=1.0)
+        db._checkpoint_coordinator = _CheckpointCoordinator(
+            db.db_path, db._CHECKPOINT_INTERVAL_S, db._SLOW_CHECKPOINT_WARN_S
+        )
+
+        lock_held_during_checkpoint = []
+        original_checkpoint = db._checkpoint_coordinator._run_checkpoint
+
+        def instrumented_checkpoint():
+            lock_held_during_checkpoint.append(db._lock.locked())
+            return original_checkpoint()
+
+        db._checkpoint_coordinator._run_checkpoint = instrumented_checkpoint
+
+        db._execute_write(lambda conn: conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+            ("sess_lock", "test", _time.time()),
+        ))
+        _time.sleep(0.15)
+        assert lock_held_during_checkpoint, "coordinator should have run at least once"
+        assert not any(lock_held_during_checkpoint), (
+            "SessionDB._lock must not be held while coordinator runs checkpoint"
+        )
+
+    def test_single_coordinator_per_instance(self, db, monkeypatch):
+        """Starting the coordinator twice should not create a second thread."""
+        monkeypatch.setattr(db, "_CHECKPOINT_INTERVAL_S", 1.0)
+        db._checkpoint_coordinator.stop(timeout=1.0)
+        db._checkpoint_coordinator = _CheckpointCoordinator(
+            db.db_path, db._CHECKPOINT_INTERVAL_S, db._SLOW_CHECKPOINT_WARN_S
+        )
+        first = db._checkpoint_coordinator.start()
+        second = db._checkpoint_coordinator.start()
+        assert first is True
+        assert second is False
+
+    def test_coordinator_joined_on_close(self, db, monkeypatch):
+        """close() must join the coordinator thread."""
+        import time as _time
+
+        monkeypatch.setattr(db, "_CHECKPOINT_INTERVAL_S", 1.0)
+        db._checkpoint_coordinator.stop(timeout=1.0)
+        db._checkpoint_coordinator = _CheckpointCoordinator(
+            db.db_path, db._CHECKPOINT_INTERVAL_S, db._SLOW_CHECKPOINT_WARN_S
+        )
+        db._execute_write(lambda conn: conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+            ("sess_close", "test", _time.time()),
+        ))
+        thread = db._checkpoint_coordinator._thread
+        assert thread is not None
+        db.close()
+        assert not thread.is_alive(), "coordinator thread should be joined on close"
+
+    def test_no_inline_checkpoint_in_execute_write(self, db, monkeypatch):
+        """_execute_write must not call _try_wal_checkpoint inline."""
+        import time as _time
+
         call_count = [0]
         original = db._try_wal_checkpoint
 
         def counting_checkpoint():
             call_count[0] += 1
-            original()
+            return original()
 
         db._try_wal_checkpoint = counting_checkpoint
-
-        # Write exactly _CHECKPOINT_EVERY_N_WRITES sessions to trigger one checkpoint
-        n = db._CHECKPOINT_EVERY_N_WRITES
-        import time as _time
-        for i in range(n):
-            db._execute_write(lambda conn, _i=i: conn.execute(
-                "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
-                (f"sess_{_i}", "test", _time.time()),
-            ))
-
-        assert call_count[0] == 1, (
-            f"Expected 1 checkpoint after {n} writes, got {call_count[0]}"
+        db._execute_write(lambda conn: conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+            ("sess_inline", "test", _time.time()),
+        ))
+        # The coordinator is independent of _try_wal_checkpoint; inline calls
+        # from _execute_write are expected to be gone.
+        assert call_count[0] == 0, (
+            "_execute_write should not trigger inline _try_wal_checkpoint"
         )
+
+
+class TestCheckpointFrequency:
+    """Periodic checkpoint is now driven by a dedicated background coordinator,
+    not inline on every N writes.  This test guards the new behavior.
+    """
+
+    def test_checkpoint_runs_on_coordinator_interval(self, db, monkeypatch):
+        """The coordinator runs PASSIVE checkpoints on its own connection and interval."""
+        import time as _time
+        from unittest.mock import patch
+
+        # Short interval so the test doesn't wait a full minute.
+        monkeypatch.setattr(db, "_CHECKPOINT_INTERVAL_S", 0.05)
+        # Recreate coordinator with the new interval (don't mutate the running one).
+        db._checkpoint_coordinator.stop(timeout=1.0)
+        db._checkpoint_coordinator = _CheckpointCoordinator(
+            db.db_path, db._CHECKPOINT_INTERVAL_S, db._SLOW_CHECKPOINT_WARN_S
+        )
+
+        db._execute_write(lambda conn: conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+            ("sess_0", "test", _time.time()),
+        ))
+        # Wait long enough for the coordinator to tick at least once.
+        _time.sleep(0.15)
+        # The coordinator must have its own connection, distinct from db._conn.
+        assert db._checkpoint_coordinator._conn is not None
+        assert db._checkpoint_coordinator._conn is not db._conn
+

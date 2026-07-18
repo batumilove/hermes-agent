@@ -547,7 +547,10 @@ class HonchoSessionManager:
                     break
 
     def shutdown(self) -> None:
-        """Gracefully shut down the async writer thread."""
+        """Gracefully shut down the async writer thread (idempotent)."""
+        if getattr(self, "_shutdown_called", False):
+            return
+        self._shutdown_called = True
         if self._async_queue is not None and self._async_thread is not None:
             self.flush_all()
             self._async_queue.put(_ASYNC_SHUTDOWN)

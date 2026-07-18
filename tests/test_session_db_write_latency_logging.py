@@ -150,3 +150,24 @@ def test_append_message_payload_bytes_include_finish_reason(tmp_path, caplog):
     messages = "\n".join(record.getMessage() for record in caplog.records)
     assert "payload_bytes=6" in messages
     db.close()
+
+
+def test_slow_checkpoint_log_includes_duration_and_pages(tmp_path, caplog):
+    """A slow PASSIVE checkpoint emits operation, duration, and page metrics."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db._SLOW_CHECKPOINT_WARN_S = 0.0
+    db._checkpoint_coordinator.stop(timeout=1.0)
+    db._checkpoint_coordinator = db._checkpoint_coordinator.__class__(
+        db.db_path, db._CHECKPOINT_INTERVAL_S, db._SLOW_CHECKPOINT_WARN_S
+    )
+
+    with caplog.at_level(logging.WARNING, logger="hermes_state"):
+        db._checkpoint_coordinator._run_checkpoint()
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "SessionDB slow checkpoint" in messages
+    assert "operation=wal_checkpoint" in messages
+    assert "mode=PASSIVE" in messages
+    assert "duration_s=" in messages
+    assert "pages_checkpointed=" in messages
+    db.close()
