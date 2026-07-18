@@ -21,6 +21,46 @@ logger = logging.getLogger(__name__)
 
 _TELEGRAM_API_HOST = "api.telegram.org"
 
+# Strong references for detached cleanups. asyncio's loop only keeps weak
+# references to tasks; without this set a cleanup can be garbage-collected
+# before it closes the abandoned response stream.
+_abandoned_response_cleanups: set[asyncio.Task] = set()
+
+
+async def _close_abandoned_transport_response(task: asyncio.Task) -> None:
+    """Close a response that completed after its caller was cancelled."""
+    try:
+        response = await task
+    except BaseException:
+        # Observe every terminal state (including cancellation) so detached
+        # transport operations never produce "Task exception was never retrieved".
+        return
+    try:
+        await response.aclose()
+    except Exception:
+        logger.debug("Failed to close abandoned Telegram transport response", exc_info=True)
+
+
+async def _handle_transport_request(
+    transport: httpx.AsyncBaseTransport, request: httpx.Request
+) -> httpx.Response:
+    """Run one transport request without leaking sockets on caller cancellation.
+
+    Cancelling httpcore while it is connecting or reading response headers can
+    detach the live socket from its pool. Under Telegram progress/edit churn,
+    those sockets persist in CLOSE_WAIT until the gateway reaches RLIMIT_NOFILE.
+    Shield the bounded network operation; if its caller goes away, finish it in
+    the background and close the otherwise-unclaimed response explicitly.
+    """
+    request_task = asyncio.create_task(transport.handle_async_request(request))
+    try:
+        return await asyncio.shield(request_task)
+    except asyncio.CancelledError:
+        cleanup = asyncio.create_task(_close_abandoned_transport_response(request_task))
+        _abandoned_response_cleanups.add(cleanup)
+        cleanup.add_done_callback(_abandoned_response_cleanups.discard)
+        raise
+
 # DNS-over-HTTPS providers used to discover Telegram API IPs that may differ
 # from the (potentially unreachable) IP returned by the local system resolver.
 _DOH_TIMEOUT = 4.0  # seconds — bounded so connect() isn't noticeably delayed
@@ -87,7 +127,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
             candidate = request if ip is None else _rewrite_request_for_ip(request, ip)
             transport = self._primary if ip is None else self._fallbacks[ip]
             try:
-                response = await transport.handle_async_request(candidate)
+                response = await _handle_transport_request(transport, candidate)
                 if ip is not None and self._sticky_ip != ip:
                     async with self._sticky_lock:
                         if self._sticky_ip != ip:

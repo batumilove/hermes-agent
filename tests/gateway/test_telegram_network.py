@@ -15,6 +15,8 @@ path first, and on ConnectTimeout / ConnectError fall through to configured
 fallback IPs in order, then "stick" to whichever IP works.
 """
 
+import asyncio
+
 import httpx
 import pytest
 
@@ -53,6 +55,39 @@ class FakeTransport(httpx.AsyncBaseTransport):
 
     async def aclose(self) -> None:
         self.closed = True
+
+
+class _TrackingStream(httpx.AsyncByteStream):
+    def __init__(self):
+        self.closed = False
+
+    async def __aiter__(self):
+        yield b"ok"
+
+    async def aclose(self):
+        self.closed = True
+
+
+class _CancellationTrackingTransport(httpx.AsyncBaseTransport):
+    """Hold a request open and record whether caller cancellation reaches it."""
+
+    def __init__(self):
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.cancelled = False
+        self.stream = _TrackingStream()
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.started.set()
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        return httpx.Response(200, request=request, stream=self.stream)
+
+    async def aclose(self) -> None:
+        return None
 
 
 def _fake_transport_factory(calls, behavior):
@@ -144,6 +179,38 @@ class TestRewriteRequestForIp:
 
 class TestFallbackTransport:
     """Primary path fails → try fallback IPs → stick to whichever works."""
+
+    @pytest.mark.asyncio
+    async def test_cancelled_caller_does_not_orphan_transport_socket(self, monkeypatch):
+        """A cancelled PTB request must not cancel httpcore mid-connect/read.
+
+        Cancelling ``AsyncHTTPTransport.handle_async_request`` directly can
+        leave its socket detached from the pool; repeated Telegram progress
+        cancellations then accumulate persistent CLOSE_WAIT descriptors.  The
+        transport operation should finish under a shield and its abandoned
+        response must be closed in the background.
+        """
+        inner = _CancellationTrackingTransport()
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", lambda **kw: inner)
+
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
+        transport._sticky_ip = "149.154.167.220"
+        request_task = asyncio.create_task(
+            transport.handle_async_request(_telegram_request())
+        )
+        await inner.started.wait()
+
+        request_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request_task
+
+        assert inner.cancelled is False
+        inner.release.set()
+        for _ in range(10):
+            if inner.stream.closed:
+                break
+            await asyncio.sleep(0)
+        assert inner.stream.closed is True
 
     @pytest.mark.asyncio
     async def test_falls_back_on_connect_timeout_and_becomes_sticky(self, monkeypatch):
