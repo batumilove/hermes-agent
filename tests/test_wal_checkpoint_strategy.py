@@ -93,8 +93,29 @@ class TestCloseUsesTruncate:
 
         truncate_calls = [c for c in execute_calls if "wal_checkpoint(TRUNCATE)" in c]
         assert len(truncate_calls) == 1, (
-            f"Expected 1 TRUNCATE checkpoint at close, got {len(truncate_calls)}"
+            f"Expected 1 TRUNCATE checkpoint call, got {len(truncate_calls)}"
         )
+
+    def test_close_skips_truncate_while_same_path_has_another_owner(self, tmp_path):
+        """Closing one gateway SessionDB must not checkpoint under live peers."""
+        db_path = tmp_path / "shared-close-truncate.db"
+        first = SessionDB(db_path=db_path)
+        second = SessionDB(db_path=db_path)
+        real_conn = first._conn
+        execute_calls = []
+
+        def tracking_execute(sql, *args, **kwargs):
+            execute_calls.append(sql)
+            return real_conn.execute(sql, *args, **kwargs)
+
+        mock_conn = MagicMock()
+        mock_conn.execute.side_effect = tracking_execute
+        first._conn = mock_conn
+        try:
+            first.close()
+            assert not any("wal_checkpoint(TRUNCATE)" in sql for sql in execute_calls)
+        finally:
+            second.close()
 
     def test_close_logs_debug_on_failure(self, db, caplog):
         """Failed TRUNCATE at close logs debug (not warning — close is best-effort)."""
@@ -173,6 +194,47 @@ class TestCheckpointCoordinator:
         second = db._checkpoint_coordinator.start()
         assert first is True
         assert second is False
+
+    def test_coordinator_waits_for_interval_before_first_checkpoint(self, tmp_path):
+        """The first ordinary write must not trigger an immediate checkpoint."""
+        import threading
+
+        coordinator = _CheckpointCoordinator(tmp_path / "deferred.db", 0.15, 2.0)
+        ran = threading.Event()
+        coordinator._run_checkpoint = ran.set
+        try:
+            coordinator.start()
+            assert not ran.wait(timeout=0.05)
+            assert ran.wait(timeout=0.30)
+        finally:
+            coordinator.stop(timeout=1.0)
+
+    def test_session_dbs_for_same_path_share_one_coordinator(self, tmp_path):
+        """Many gateway SessionDB objects must not create a checkpoint storm."""
+        db_path = tmp_path / "shared.db"
+        first = SessionDB(db_path=db_path)
+        second = SessionDB(db_path=db_path)
+        try:
+            assert first._checkpoint_coordinator is second._checkpoint_coordinator
+        finally:
+            first.close()
+            second.close()
+
+    def test_closing_one_session_db_keeps_shared_coordinator_for_other(self, tmp_path):
+        """A shared coordinator stops only after the final owner closes."""
+        db_path = tmp_path / "shared-close.db"
+        first = SessionDB(db_path=db_path)
+        second = SessionDB(db_path=db_path)
+        coordinator = first._checkpoint_coordinator
+        coordinator.start()
+        thread = coordinator._thread
+        assert thread is not None and thread.is_alive()
+
+        first.close()
+        assert thread.is_alive()
+
+        second.close()
+        assert not thread.is_alive()
 
     def test_coordinator_joined_on_close(self, db, monkeypatch):
         """close() must join the coordinator thread."""
