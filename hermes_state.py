@@ -1318,6 +1318,7 @@ class SessionDB:
                     check_same_thread=False,
                     timeout=1.0,
                     isolation_level=None,
+                    cached_statements=0,
                 )
                 self._conn.row_factory = sqlite3.Row
                 apply_state_db_read_tuning(self._conn)
@@ -1337,6 +1338,7 @@ class SessionDB:
                     # our explicit BEGIN IMMEDIATE.  None = we manage
                     # transactions ourselves.
                     isolation_level=None,
+                    cached_statements=0,
                 )
                 self._conn.row_factory = sqlite3.Row
                 journal_mode = apply_wal_with_fallback(
@@ -1650,6 +1652,25 @@ class SessionDB:
                         time.sleep(jitter)
                         continue
                 # Non-lock error or retries exhausted — propagate.
+                raise
+            except sqlite3.InterfaceError as exc:
+                # CPython 3.12+ can raise this from a stale prepared-statement
+                # cache entry on a ``check_same_thread=False`` connection
+                # (``no more rows available`` / ``another row available``).
+                # With cached_statements=0 we should not get here, but we still
+                # treat it as a transient retry so that canonical messages are
+                # not lost if another process/thread opened a cached-statement
+                # connection to the same database.
+                msg = str(exc).lower()
+                if "no more rows" in msg or "another row" in msg:
+                    last_err = exc
+                    if attempt < self._WRITE_MAX_RETRIES - 1:
+                        jitter = random.uniform(
+                            self._WRITE_RETRY_MIN_S,
+                            self._WRITE_RETRY_MAX_S,
+                        )
+                        time.sleep(jitter)
+                        continue
                 raise
             except sqlite3.DatabaseError as exc:
                 # Corrupt FTS shadow tables make every write raise the
