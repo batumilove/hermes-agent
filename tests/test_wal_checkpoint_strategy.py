@@ -418,4 +418,3 @@ class TestCheckpointFrequency:
         # The coordinator must have its own connection, distinct from db._conn.
         assert db._checkpoint_coordinator._conn is not None
         assert db._checkpoint_coordinator._conn is not db._conn
-
