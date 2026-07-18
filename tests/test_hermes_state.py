@@ -81,6 +81,20 @@ class _NoTrigramConnection(sqlite3.Connection):
     def cursor(self, factory=None):
         return super().cursor(factory or _NoTrigramCursor)
 
+    def execute(self, sql, parameters=()):
+        # sqlite3.Connection.execute() is a C-level shortcut that does not
+        # dispatch through this subclass's cursor() override.  Intercept the
+        # table probes here so Python 3.13 deterministically propagates the
+        # simulated missing-tokenizer error instead of returning NULL without
+        # setting an exception while loading the existing virtual table.
+        probe = sql.strip()
+        if probe in (
+            "SELECT * FROM messages_fts_trigram LIMIT 0",
+            "SELECT 1 FROM messages_fts_trigram LIMIT 0",
+        ):
+            raise sqlite3.OperationalError("no such table: messages_fts_trigram")
+        return super().execute(sql, parameters)
+
 
 @pytest.fixture()
 def db(tmp_path):
