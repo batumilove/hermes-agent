@@ -738,6 +738,81 @@ def _admit_api_agent_request(handler):
     return _wrapped
 
 
+class _QueuedApiRun:
+    __slots__ = ("run_id", "session_id", "state", "position")
+
+    def __init__(self, run_id: str, session_id: str, position: int):
+        self.run_id = run_id
+        self.session_id = session_id
+        self.position = position
+        self.state = {"active": True, "cancelled": False}
+
+    def cancel(self) -> bool:
+        if not self.state["active"]:
+            return False
+        self.state["active"] = False
+        self.state["cancelled"] = True
+        return True
+
+    def release(self) -> bool:
+        if not self.state["active"]:
+            return False
+        self.state["active"] = False
+        return True
+
+
+class _ApiRunQueue:
+    def __init__(self, adapter):
+        self._adapter = adapter
+        self._entries: list[_QueuedApiRun] = []
+        self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def snapshot(self) -> list[tuple[str, str]]:
+        return [(item.run_id, item.session_id) for item in self._entries if item.state["active"]]
+
+    def enqueue(self, run_id: str, session_id: str) -> _QueuedApiRun:
+        if self._closed:
+            raise asyncio.QueueFull
+        if self._adapter._run_queue_full():
+            raise asyncio.QueueFull
+        token = _QueuedApiRun(run_id, session_id, len(self._entries) + 1)
+        self._entries.append(token)
+        return token
+
+    def _prune(self) -> None:
+        self._entries = [item for item in self._entries if item.state["active"]]
+        for idx, item in enumerate(self._entries, start=1):
+            item.position = idx
+
+    def drain(self, reason: str) -> None:
+        self._closed = True
+        for item in self._entries:
+            item.state["active"] = False
+        self._entries = []
+
+
+class _QueuedApiRunsState:
+    def __init__(self, adapter):
+        self._adapter = adapter
+
+    def enqueue(self, run_id: str, session_id: str) -> _QueuedApiRun:
+        return self._adapter._run_queue_enqueue(run_id, session_id)
+
+    def snapshot(self) -> list[tuple[str, str]]:
+        return self._adapter._run_queue_snapshot()
+
+    def drain(self, reason: str) -> None:
+        self._adapter._run_queue_drain(reason)
+
+    @property
+    def closed(self) -> bool:
+        return self._adapter._run_queue_closed
+
+
 def _release_pending_api_work(adapter, reservation: dict[str, bool]) -> None:
     """Release a pending-work reservation exactly once."""
     if reservation["active"]:
@@ -1022,6 +1097,8 @@ class APIServerAdapter(BasePlatformAdapter):
         # Shutdown counts this reservation so the request cannot slip through
         # the drain between its first await and _run_agent()/task registration.
         self._pending_agent_requests: int = 0
+        self._run_queue_closed = False
+        self._run_queue_entries: list[dict[str, Any]] = []
 
     def active_agent_work_count(self) -> int:
         """Return all live agent work owned by this API adapter.
@@ -1069,6 +1146,54 @@ class APIServerAdapter(BasePlatformAdapter):
             status=503,
             headers={"Retry-After": "1"},
         )
+
+    def _run_queue_state(self):
+        if self._max_concurrent_runs <= 0:
+            return None
+        return _QueuedApiRunsState(self)
+
+    def _run_queue_full(self) -> bool:
+        if self._max_concurrent_runs <= 0:
+            return False
+        return len(self._run_queue_entries) >= self._max_concurrent_runs
+
+    def _run_queue_snapshot(self) -> list[tuple[str, str]]:
+        return [(item["run_id"], item["session_id"]) for item in self._run_queue_entries if item["active"]]
+
+    def _run_queue_enqueue(self, run_id: str, session_id: str):
+        if self._run_queue_closed:
+            raise asyncio.QueueFull
+        if self._max_concurrent_runs > 0 and len(self._run_queue_entries) >= self._max_concurrent_runs * 3:
+            raise asyncio.QueueFull
+        token = {"run_id": run_id, "session_id": session_id, "active": True, "cancelled": False}
+        self._run_queue_entries.append(token)
+
+        class _Token:
+            def __init__(self, adapter, token):
+                self._adapter = adapter
+                self._token = token
+                self.position = len(adapter._run_queue_snapshot())
+
+            def cancel(self):
+                if not self._token["active"]:
+                    return False
+                self._token["active"] = False
+                self._token["cancelled"] = True
+                self._adapter._run_queue_entries = [item for item in self._adapter._run_queue_entries if item["active"]]
+                return True
+
+            def release(self):
+                if not self._token["active"]:
+                    return False
+                self._token["active"] = False
+                self._adapter._run_queue_entries = [item for item in self._adapter._run_queue_entries if item["active"]]
+                return True
+
+        return _Token(self, token)
+
+    def _run_queue_drain(self, reason: str) -> None:
+        self._run_queue_closed = True
+        self._run_queue_entries.clear()
 
     def _activate_admitted_request(self) -> None:
         """Transfer this request's drain reservation to agent bookkeeping."""

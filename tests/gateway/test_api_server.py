@@ -621,6 +621,103 @@ class TestConcurrencyCap:
 
 
 # ---------------------------------------------------------------------------
+# Run queue (gateway.api_server.max_concurrent_runs)
+# ---------------------------------------------------------------------------
+
+
+class TestRunQueue:
+    @pytest.mark.asyncio
+    async def test_queue_defaults_to_empty_when_cap_disabled(self):
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 0
+        assert adapter._run_queue_state() is None
+
+    @pytest.mark.asyncio
+    async def test_queue_accepts_first_run_and_preserves_fifo_across_sessions(self):
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 1
+        adapter._inflight_agent_runs = 1
+
+        pending = adapter._run_queue_state()
+        assert pending is not None
+
+        first = pending.enqueue("run-a", "session-a")
+        second = pending.enqueue("run-b", "session-b")
+        third = pending.enqueue("run-c", "session-a")
+
+        assert [item[0] for item in pending.snapshot()] == ["run-a", "run-b", "run-c"]
+        assert first.position == 1
+        assert second.position == 2
+        assert third.position == 3
+
+    @pytest.mark.asyncio
+    async def test_queue_rejects_when_full(self):
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 1
+        adapter._inflight_agent_runs = 1
+
+        pending = adapter._run_queue_state()
+        assert pending is not None
+        pending.enqueue("run-a", "session-a")
+        pending.enqueue("run-b", "session-b")
+        pending.enqueue("run-c", "session-c")
+
+        with pytest.raises(asyncio.QueueFull):
+            pending.enqueue("run-d", "session-d")
+
+    @pytest.mark.asyncio
+    async def test_queue_cancel_removes_waiting_run(self):
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 1
+        adapter._inflight_agent_runs = 1
+
+        pending = adapter._run_queue_state()
+        assert pending is not None
+        token = pending.enqueue("run-a", "session-a")
+        pending.enqueue("run-b", "session-b")
+
+        token.cancel()
+        assert [item[0] for item in pending.snapshot()] == ["run-b"]
+
+    @pytest.mark.asyncio
+    async def test_queue_release_advances_next_waiter(self):
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 1
+        adapter._inflight_agent_runs = 1
+
+        pending = adapter._run_queue_state()
+        assert pending is not None
+        token = pending.enqueue("run-a", "session-a")
+        pending.enqueue("run-b", "session-b")
+
+        token.release()
+        assert [item[0] for item in pending.snapshot()] == ["run-b"]
+
+    @pytest.mark.asyncio
+    async def test_queue_drains_and_releases_all_waiters(self):
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 1
+        adapter._inflight_agent_runs = 1
+
+        pending = adapter._run_queue_state()
+        assert pending is not None
+        pending.enqueue("run-a", "session-a")
+        pending.enqueue("run-b", "session-b")
+
+        pending.drain("gateway stopping")
+        assert pending.snapshot() == []
+        assert pending.closed is True
+
+    def test_run_status_changes_do_not_mutate_session_routing(self):
+        adapter = _make_adapter()
+        adapter._run_statuses = {}
+        adapter._set_run_status("run-a", "queued", session_id="session-a", last_event="queued")
+        adapter._set_run_status("run-a", "running")
+        assert adapter._run_statuses["run-a"]["session_id"] == "session-a"
+        assert adapter._run_statuses["run-a"]["last_event"] == "queued"
+
+
+# ---------------------------------------------------------------------------
 # Helpers for HTTP tests
 # ---------------------------------------------------------------------------
 
