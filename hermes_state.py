@@ -1108,15 +1108,19 @@ class _CheckpointCoordinator:
             self._thread.start()
             return True
 
-    def stop(self, timeout: float = 10.0) -> None:
-        """Signal and join the coordinator thread."""
-        self._stop_event.set()
+    def stop(self, timeout: float = 10.0) -> bool:
+        """Signal and join the coordinator thread; report complete teardown."""
         with self._lock:
+            self._stop_event.set()
             thread = self._thread
+            if thread is not None and thread.is_alive():
+                thread.join(timeout=timeout)
+            if thread is not None and thread.is_alive():
+                logger.warning("Checkpoint coordinator did not stop within %.1fs", timeout)
+                return False
             self._thread = None
-        if thread is not None and thread.is_alive():
-            thread.join(timeout=timeout)
-        self._close_conn()
+            self._close_conn()
+            return True
 
     def _close_conn(self) -> None:
         conn = self._conn
@@ -1133,7 +1137,9 @@ class _CheckpointCoordinator:
         try:
             self._conn = sqlite3.connect(
                 str(self._db_path),
-                check_same_thread=True,
+                # stop() joins the worker before closing this dedicated
+                # connection from its caller thread.
+                check_same_thread=False,
                 timeout=1.0,
                 isolation_level=None,
             )
@@ -1204,7 +1210,6 @@ def _release_checkpoint_coordinator(
     coordinator: _CheckpointCoordinator,
 ) -> bool:
     """Release one owner; return true when it was the final process owner."""
-    should_stop = False
     with _CHECKPOINT_COORDINATORS_LOCK:
         existing = _CHECKPOINT_COORDINATORS.get(key)
         if existing is None or existing[0] is not coordinator:
@@ -1212,12 +1217,17 @@ def _release_checkpoint_coordinator(
         owners = existing[1] - 1
         if owners > 0:
             _CHECKPOINT_COORDINATORS[key] = (coordinator, owners)
-        else:
-            _CHECKPOINT_COORDINATORS.pop(key, None)
-            should_stop = True
-    if should_stop:
-        coordinator.stop(timeout=10.0)
-    return should_stop
+            return False
+        # Keep the registry lock until the old coordinator is fully stopped so
+        # a new same-path owner cannot overlap teardown with a replacement.
+        if not coordinator.stop(timeout=10.0):
+            # Preserve a zero-owner tombstone. A future owner reuses this
+            # coordinator and its final close retries teardown; removing it now
+            # could overlap a replacement with the still-running old thread.
+            _CHECKPOINT_COORDINATORS[key] = (coordinator, 0)
+            return False
+        _CHECKPOINT_COORDINATORS.pop(key, None)
+        return True
 
 
 class SessionDB:
@@ -1275,6 +1285,7 @@ class SessionDB:
         )
         self._registered_checkpoint_coordinator = self._checkpoint_coordinator
         self._checkpoint_coordinator_released = False
+        self._closed = False
         # One-shot guard for the runtime FTS rebuild recovery on the write
         # path. A corrupt FTS shadow table makes EVERY message write raise
         # the malformed/corrupt error class via the sync triggers; we repair
@@ -1574,6 +1585,8 @@ class SessionDB:
                 lock_wait_started = time.monotonic()
                 with self._lock:
                     lock_wait = time.monotonic() - lock_wait_started
+                    if self._closed or self._conn is None:
+                        raise RuntimeError("SessionDB is closed")
                     transaction_started = time.monotonic()
                     self._conn.execute("BEGIN IMMEDIATE")
                     try:
@@ -1585,6 +1598,12 @@ class SessionDB:
                         except Exception:
                             pass
                         raise
+                    # Start while holding the same lifecycle lock used by
+                    # close(), preventing a committed write from restarting a
+                    # coordinator after the instance has been closed.
+                    self._write_count += 1
+                    if not self.read_only:
+                        self._checkpoint_coordinator.start()
                 transaction_time = time.monotonic() - transaction_started
                 total_time = time.monotonic() - write_started
                 if (
@@ -1612,9 +1631,6 @@ class SessionDB:
                 # indexes it can hold the shared SessionDB lock for minutes.
                 # ``optimize_fts()`` remains available for explicit
                 # stopped-gateway maintenance.
-                self._write_count += 1
-                if not self.read_only:
-                    self._checkpoint_coordinator.start()
                 return result
             except sqlite3.OperationalError as exc:
                 err_msg = str(exc).lower()
@@ -1744,35 +1760,27 @@ class SessionDB:
 
 
     def close(self):
-        """Close the database connection.
-
-        Attempts a TRUNCATE WAL checkpoint first so that exiting processes
-        help shrink the WAL file.  Also joins the checkpoint coordinator so
-        it doesn't outlive the SessionDB instance.
-        """
-        final_checkpoint_owner = False
-        if not self._checkpoint_coordinator_released:
-            try:
-                # Tests and specialized callers may replace the instance
-                # coordinator. Stop that private replacement directly while
-                # still releasing the originally registered shared owner.
-                if self._checkpoint_coordinator is not self._registered_checkpoint_coordinator:
-                    self._checkpoint_coordinator.stop(timeout=10.0)
-                final_checkpoint_owner = _release_checkpoint_coordinator(
-                    self._checkpoint_coordinator_key,
-                    self._registered_checkpoint_coordinator,
-                )
-            except Exception as exc:
-                logger.debug("Checkpoint coordinator release at close failed: %s", exc)
-            finally:
-                self._checkpoint_coordinator_released = True
+        """Idempotently close this connection and release checkpoint ownership."""
         with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            if not self._checkpoint_coordinator_released:
+                try:
+                    # Tests and specialized callers may replace the instance
+                    # coordinator. Stop that private replacement directly while
+                    # still releasing the originally registered shared owner.
+                    if self._checkpoint_coordinator is not self._registered_checkpoint_coordinator:
+                        self._checkpoint_coordinator.stop(timeout=10.0)
+                    _release_checkpoint_coordinator(
+                        self._checkpoint_coordinator_key,
+                        self._registered_checkpoint_coordinator,
+                    )
+                except Exception as exc:
+                    logger.debug("Checkpoint coordinator release at close failed: %s", exc)
+                finally:
+                    self._checkpoint_coordinator_released = True
             if self._conn:
-                if final_checkpoint_owner:
-                    try:
-                        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                    except Exception as exc:
-                        logger.debug("WAL checkpoint (TRUNCATE) at close failed: %s", exc)
                 self._conn.close()
                 self._conn = None
 
