@@ -6179,9 +6179,8 @@ class SessionDB:
           - ``"newest"``: order by message timestamp DESC, then by rank.
           - ``"oldest"``: order by message timestamp ASC, then by rank.
 
-        The short-CJK LIKE fallback already orders by timestamp DESC and
-        ignores ``sort``. The trigram CJK path honours ``sort`` like the main
-        FTS5 path.
+        The short-CJK LIKE fallback and trigram CJK path both honour temporal
+        ``sort`` before applying pagination.
 
         Rewound (``active=0``, ``compacted=0``) rows are excluded by default —
         the user took those back. Compaction-archived rows (``active=0``,
@@ -6363,6 +6362,12 @@ class SessionDB:
                         matches = [dict(row) for row in tri_cursor.fetchall()]
                         _trigram_succeeded = True
             if not _trigram_succeeded:
+                if sort_norm == "oldest":
+                    like_order_by_sql = "ORDER BY m.timestamp ASC, m.id ASC"
+                else:
+                    # Preserve the historical default for rankless LIKE rows;
+                    # ``newest`` uses the same deterministic temporal order.
+                    like_order_by_sql = "ORDER BY m.timestamp DESC, m.id DESC"
                 non_op_tokens = [
                     t for t in raw_query.split()
                     if t.upper() not in {"AND", "OR", "NOT"}
@@ -6397,7 +6402,7 @@ class SessionDB:
                     FROM messages m
                     JOIN sessions s ON s.id = m.session_id
                     WHERE {' AND '.join(like_where)}
-                    ORDER BY m.timestamp DESC, m.id DESC
+                    {like_order_by_sql}
                     LIMIT ? OFFSET ?
                 """
                 like_params.extend([limit, offset])

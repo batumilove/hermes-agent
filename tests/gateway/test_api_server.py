@@ -708,6 +708,75 @@ class TestRunQueue:
         assert pending.snapshot() == []
         assert pending.closed is True
 
+    @pytest.mark.asyncio
+    async def test_disconnect_releases_http_queue_waiter_with_503(self):
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 1
+        adapter._inflight_agent_runs = 1
+
+        waiter = asyncio.create_task(adapter._await_run_queue_slot())
+        for _ in range(20):
+            if adapter._run_queue_snapshot():
+                break
+            await asyncio.sleep(0.01)
+        assert len(adapter._run_queue_snapshot()) == 1
+
+        await adapter.disconnect()
+        response = await asyncio.wait_for(waiter, timeout=1.0)
+
+        assert response is not None
+        assert response.status == 503
+        assert adapter._run_queue_snapshot() == []
+        assert adapter._run_queue_closed is True
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_waits_in_bounded_fifo_queue(self):
+        """A second HTTP turn waits for capacity instead of receiving 429."""
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 1
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        call_count = 0
+
+        async def _mock_run_agent(**_kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                first_started.set()
+                await release_first.wait()
+            return (
+                {"final_response": f"response-{call_count}", "messages": [], "api_calls": 1},
+                {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                first = asyncio.create_task(cli.post(
+                    "/v1/chat/completions",
+                    json={"model": "test", "messages": [{"role": "user", "content": "one"}]},
+                ))
+                assert await asyncio.wait_for(first_started.wait(), timeout=1.0)
+
+                second = asyncio.create_task(cli.post(
+                    "/v1/chat/completions",
+                    json={"model": "test", "messages": [{"role": "user", "content": "two"}]},
+                ))
+                await asyncio.sleep(0.1)
+
+                assert not second.done()
+                assert len(adapter._run_queue_snapshot()) == 1
+
+                release_first.set()
+                first_response, second_response = await asyncio.wait_for(
+                    asyncio.gather(first, second), timeout=2.0
+                )
+
+        assert first_response.status == 200
+        assert second_response.status == 200
+        assert call_count == 2
+        assert adapter._run_queue_snapshot() == []
+
     def test_run_status_changes_do_not_mutate_session_routing(self):
         adapter = _make_adapter()
         adapter._run_statuses = {}
@@ -1323,6 +1392,87 @@ class TestChatCompletionsEndpoint:
                 assert "data: " in body
                 assert "[DONE]" in body
                 assert "Hello!" in body
+
+    @pytest.mark.asyncio
+    async def test_stream_true_uses_bounded_transport_queue(self, adapter):
+        import queue as std_queue
+
+        real_queue = std_queue.Queue
+        observed_maxsizes = []
+
+        def _recording_queue(maxsize=0):
+            observed_maxsizes.append(maxsize)
+            return real_queue(maxsize=maxsize)
+
+        async def _mock_run_agent(**kwargs):
+            callback = kwargs["stream_delta_callback"]
+            callback("bounded")
+            return (
+                {"final_response": "bounded", "messages": [], "api_calls": 1},
+                {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch("queue.Queue", side_effect=_recording_queue),
+                patch.object(adapter, "_run_agent", side_effect=_mock_run_agent),
+            ):
+                response = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "stream": True,
+                    },
+                )
+                assert response.status == 200
+                await response.text()
+
+        assert observed_maxsizes
+        assert observed_maxsizes[0] > 0
+
+    @pytest.mark.asyncio
+    async def test_stream_transport_overflow_fails_closed_without_deadlock(self, adapter):
+        import queue as std_queue
+
+        real_queue = std_queue.Queue
+
+        def _tiny_queue(maxsize=0):
+            return real_queue(maxsize=1)
+
+        async def _mock_run_agent(**kwargs):
+            callback = kwargs["stream_delta_callback"]
+            for chunk in ("A", "B", "C", "D"):
+                callback(chunk)
+            return (
+                {"final_response": "ABCD", "messages": [], "api_calls": 1},
+                {"input_tokens": 1, "output_tokens": 4, "total_tokens": 5},
+            )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch("queue.Queue", side_effect=_tiny_queue),
+                patch.object(adapter, "_run_agent", side_effect=_mock_run_agent),
+            ):
+                response = await asyncio.wait_for(
+                    cli.post(
+                        "/v1/chat/completions",
+                        json={
+                            "model": "test",
+                            "messages": [{"role": "user", "content": "hi"}],
+                            "stream": True,
+                        },
+                    ),
+                    timeout=2.0,
+                )
+                body = await asyncio.wait_for(response.text(), timeout=2.0)
+
+        assert response.status == 200
+        assert "stream_overflow" in body
+        assert '"finish_reason": "error"' in body
+        assert "[DONE]" in body
 
     @pytest.mark.asyncio
     async def test_stream_string_false_returns_json_completion(self, adapter):

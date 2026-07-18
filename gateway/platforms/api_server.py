@@ -724,6 +724,9 @@ def _admit_api_agent_request(handler):
         draining = self._draining_response()
         if draining is not None:
             return draining
+        queued_response = await self._await_run_queue_slot()
+        if queued_response is not None:
+            return queued_response
         reservation = {"active": True}
         token = _api_agent_request_reservation.set(reservation)
         self._pending_agent_requests += 1
@@ -1194,6 +1197,58 @@ class APIServerAdapter(BasePlatformAdapter):
     def _run_queue_drain(self, reason: str) -> None:
         self._run_queue_closed = True
         self._run_queue_entries.clear()
+
+    async def _await_run_queue_slot(self) -> Optional["web.Response"]:
+        """Wait in a bounded FIFO queue until an agent-run slot is available."""
+        limit = self._max_concurrent_runs
+        if limit <= 0:
+            return None
+
+        queue_id = f"http-{uuid.uuid4().hex}"
+        queue_token = None
+        try:
+            while True:
+                if self._run_queue_closed:
+                    if queue_token is not None:
+                        queue_token.cancel()
+                    return web.json_response(
+                        _openai_error(
+                            "Gateway is draining queued work; retry shortly.",
+                            code="gateway_draining",
+                        ),
+                        status=503,
+                        headers={"Retry-After": "1"},
+                    )
+
+                queued = self._run_queue_snapshot()
+                inflight = self.active_agent_work_count()
+                if queue_token is None and not queued and inflight < limit:
+                    return None
+
+                if queue_token is None:
+                    try:
+                        queue_token = self._run_queue_enqueue(queue_id, "")
+                    except asyncio.QueueFull:
+                        return web.json_response(
+                            _openai_error(
+                                f"Agent run queue is full (max {limit * 3})",
+                                err_type="rate_limit_error",
+                                code="run_queue_full",
+                            ),
+                            status=429,
+                            headers={"Retry-After": "1"},
+                        )
+                    queued = self._run_queue_snapshot()
+
+                if queued and queued[0][0] == queue_id and inflight < limit:
+                    queue_token.release()
+                    return None
+
+                await asyncio.sleep(0.025)
+        except asyncio.CancelledError:
+            if queue_token is not None:
+                queue_token.cancel()
+            raise
 
     def _activate_admitted_request(self) -> None:
         """Transfer this request's drain reservation to agent bookkeeping."""
@@ -2824,7 +2879,50 @@ class APIServerAdapter(BasePlatformAdapter):
 
         if stream:
             import queue as _q
-            _stream_q: _q.Queue = _q.Queue()
+            _stream_q: _q.Queue = _q.Queue(maxsize=64)
+            agent_ref = [None]
+            _stream_overflowed = False
+
+            def _stream_put(item) -> bool:
+                """Enqueue without blocking the event loop; fail closed on overflow."""
+                nonlocal _stream_overflowed
+                if _stream_overflowed:
+                    return False
+                try:
+                    _stream_q.put_nowait(item)
+                    return True
+                except _q.Full:
+                    _stream_overflowed = True
+                    # Keep memory bounded and replace one pending chunk with an
+                    # explicit error marker. The SSE consumer can then finish
+                    # cleanly instead of silently losing arbitrary tokens.
+                    try:
+                        _stream_q.get_nowait()
+                    except _q.Empty:
+                        pass
+                    try:
+                        _stream_q.put_nowait(("__stream_error__", {
+                            "code": "stream_overflow",
+                            "message": "Streaming client did not drain output quickly enough.",
+                        }))
+                    except _q.Full:
+                        pass
+                    agent = agent_ref[0]
+                    if agent is not None:
+                        try:
+                            agent.interrupt()
+                        except Exception:
+                            pass
+                    return False
+
+            def _signal_stream_done(_future) -> None:
+                # Never block the event loop when a bounded queue is full. The
+                # SSE loop also observes agent_task.done() and drains remaining
+                # items, so a missing sentinel is safe.
+                try:
+                    _stream_q.put_nowait(None)
+                except _q.Full:
+                    pass
 
             def _on_delta(delta):
                 # Filter out None — the agent fires stream_delta_callback(None)
@@ -2835,7 +2933,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 # the final answer after tool calls.  The SSE loop detects
                 # completion via agent_task.done() instead.
                 if delta is not None:
-                    _stream_q.put(delta)
+                    _stream_put(delta)
 
             # Track which tool_call_ids we've emitted a "running" lifecycle
             # event for, so a "completed" event without a matching "running"
@@ -2861,7 +2959,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 _started_tool_call_ids.add(tool_call_id)
                 from agent.display import build_tool_preview, get_tool_emoji
                 label = build_tool_preview(function_name, function_args) or function_name
-                _stream_q.put(("__tool_progress__", {
+                _stream_put(("__tool_progress__", {
                     "tool": function_name,
                     "emoji": get_tool_emoji(function_name),
                     "label": label,
@@ -2879,7 +2977,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 if not tool_call_id or tool_call_id not in _started_tool_call_ids:
                     return
                 _started_tool_call_ids.discard(tool_call_id)
-                _stream_q.put(("__tool_progress__", {
+                _stream_put(("__tool_progress__", {
                     "tool": function_name,
                     "toolCallId": tool_call_id,
                     "status": "completed",
@@ -2893,7 +2991,6 @@ class APIServerAdapter(BasePlatformAdapter):
             # side-by-side with ``tool_start_callback``/``tool_complete_callback``.
             # The structured callbacks are strictly richer (they carry
             # the tool_call id), so they own the chat-completions SSE channel.
-            agent_ref = [None]
             agent_task = asyncio.ensure_future(self._run_agent(
                 user_message=user_message,
                 conversation_history=history,
@@ -2906,9 +3003,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 gateway_session_key=gateway_session_key,
                 route=route,
             ))
-            # Ensure SSE drain loops can terminate without relying on polling
-            # agent_task.done(), which can race with queue timeout checks.
-            agent_task.add_done_callback(lambda _fut: _stream_q.put(None))
+            # Ensure SSE drain loops can terminate without blocking the event
+            # loop when the bounded transport queue is full.
+            agent_task.add_done_callback(_signal_stream_done)
 
             return await self._write_sse_chat_completion(
                 request, completion_id, model_name, created, _stream_q,
@@ -3070,6 +3167,7 @@ class APIServerAdapter(BasePlatformAdapter):
             }
             await response.write(f"data: {json.dumps(role_chunk)}\n\n".encode())
             last_activity = time.monotonic()
+            transport_error = None
 
             # Helper — route a queue item to the correct SSE event.
             async def _emit(item):
@@ -3082,7 +3180,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation history.  See #6972 for the original event,
                 #16588 for the ``toolCallId``/``status`` lifecycle fields.
                 """
-                if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
+                nonlocal transport_error
+                if isinstance(item, tuple) and len(item) == 2 and item[0] == "__stream_error__":
+                    transport_error = item[1].get("message") or "stream_overflow"
+                    event_data = json.dumps(item[1])
+                    await response.write(
+                        f"event: error\ndata: {event_data}\n\n".encode()
+                    )
+                elif isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
                     event_data = json.dumps(item[1])
                     await response.write(
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
@@ -3151,6 +3256,10 @@ class APIServerAdapter(BasePlatformAdapter):
             if agent_error is not None:
                 is_failed = True
                 err_msg = err_msg or str(agent_error)
+            if transport_error is not None:
+                is_failed = True
+                completed = False
+                err_msg = transport_error
 
             # Decide finish_reason, matching the non-streaming logic: "length"
             # for truncation, "error" for failure, "stop" for normal completion.
@@ -5420,6 +5529,8 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Start the aiohttp web server."""
+        self._run_queue_closed = False
+        self._run_queue_entries.clear()
         if not AIOHTTP_AVAILABLE:
             logger.warning("[%s] aiohttp not installed", self.name)
             return False
@@ -5566,6 +5677,7 @@ class APIServerAdapter(BasePlatformAdapter):
         and turns the whole gateway into a zombie
         (OSError: [Errno 24] Too many open files, #37011).
         """
+        self._run_queue_drain("api server disconnecting")
         self._mark_disconnected()
         if self._response_store is not None:
             try:
