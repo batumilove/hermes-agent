@@ -1069,9 +1069,6 @@ WHEN (old.content IS NOT new.content
     OR old.tool_name IS NOT new.tool_name
     OR old.tool_calls IS NOT new.tool_calls
     OR old.role IS NOT new.role)
-   AND length(CAST(COALESCE(old.content, '') AS BLOB)) +
-       length(CAST(COALESCE(old.tool_name, '') AS BLOB)) +
-       length(CAST(COALESCE(old.tool_calls, '') AS BLOB)) <= 4096
    AND (old.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
                            WHERE key = 'fts_rebuild_high_water'), -1)
      OR old.id <= COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
@@ -1079,7 +1076,10 @@ WHEN (old.content IS NOT new.content
 BEGIN
     INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content, tool_name, tool_calls)
     SELECT 'delete', old.id, old.content, old.tool_name, old.tool_calls
-    WHERE old.role <> 'tool';
+    WHERE old.role <> 'tool'
+      AND length(CAST(COALESCE(old.content, '') AS BLOB)) +
+          length(CAST(COALESCE(old.tool_name, '') AS BLOB)) +
+          length(CAST(COALESCE(old.tool_calls, '') AS BLOB)) <= 4096;
     INSERT INTO messages_fts_trigram(rowid, content, tool_name, tool_calls)
     SELECT new.id, new.content, new.tool_name, new.tool_calls
     WHERE new.role <> 'tool'
@@ -6349,17 +6349,11 @@ class SessionDB:
                     try:
                         tri_cursor = self._conn.execute(tri_sql, tri_params)
                     except sqlite3.OperationalError:
-                        # Trigram query failed at runtime — fall through to LIKE.
                         pass
                     else:
                         matches = [dict(row) for row in tri_cursor.fetchall()]
                         _trigram_succeeded = True
             if not _trigram_succeeded:
-                # Short / mixed CJK query, trigram unavailable, or trigram
-                # <3 CJK chars. Fall back to LIKE substring search.
-                # For multi-token OR queries (e.g. "广西 OR 桂林 OR 漓江"),
-                # build one LIKE condition per non-operator token so each term
-                # is matched independently (#20494).
                 non_op_tokens = [
                     t for t in raw_query.split()
                     if t.upper() not in {"AND", "OR", "NOT"}
@@ -6374,9 +6368,6 @@ class SessionDB:
                     like_params += [f"%{esc}%", f"%{esc}%", f"%{esc}%"]
                 like_where = [f"({' OR '.join(token_clauses)})"]
                 if not include_inactive:
-                    # Same visibility rule as the FTS5 paths: live rows and
-                    # compaction-archived rows are discoverable; rewind/undo
-                    # rows (active=0, compacted=0) are hidden (#38763).
                     like_where.append("(m.active = 1 OR m.compacted = 1)")
                 if source_filter is not None:
                     like_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
@@ -6397,21 +6388,33 @@ class SessionDB:
                     FROM messages m
                     JOIN sessions s ON s.id = m.session_id
                     WHERE {' AND '.join(like_where)}
-                    ORDER BY m.timestamp DESC
+                    ORDER BY m.timestamp DESC, m.id DESC
                     LIMIT ? OFFSET ?
                 """
                 like_params.extend([limit, offset])
-                # instr() for snippet uses first search token
                 like_params = [non_op_tokens[0]] + like_params
                 with self._lock:
                     like_cursor = self._conn.execute(like_sql, like_params)
-                    matches = [dict(row) for row in like_cursor.fetchall()]
+                    matches = [dict(r) for r in like_cursor.fetchall()]
+            if cjk_count >= 3:
+                try:
+                    gap_matches = self._search_cjk_trigram_gap(
+                        query,
+                        limit=max(0, limit - len(matches)),
+                        include_inactive=include_inactive,
+                        source_filter=source_filter,
+                        exclude_sources=exclude_sources,
+                        role_filter=role_filter,
+                    )
+                    seen_ids = {m["id"] for m in matches}
+                    matches.extend(m for m in gap_matches if m["id"] not in seen_ids)
+                except sqlite3.OperationalError as exc:
+                    logger.debug("CJK gap supplement skipped: %s", exc)
         else:
             with self._lock:
                 try:
                     cursor = self._conn.execute(sql, params)
                 except sqlite3.OperationalError:
-                    # FTS5 query syntax error despite sanitization — return empty
                     return []
                 else:
                     matches = [dict(row) for row in cursor.fetchall()]
@@ -6572,10 +6575,75 @@ class SessionDB:
             FROM messages m
             JOIN sessions s ON s.id = m.session_id
             WHERE {' AND '.join(where)}
-            ORDER BY m.timestamp DESC
+            ORDER BY m.timestamp DESC, m.id DESC
             LIMIT ?
         """
         params = [terms[0]] + params + [limit]
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def _search_cjk_trigram_gap(
+        self,
+        query: str,
+        limit: int,
+        *,
+        include_inactive: bool = False,
+        source_filter: Optional[List[str]] = None,
+        exclude_sources: Optional[List[str]] = None,
+        role_filter: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """LIKE-scan rows excluded from trigram coverage.
+
+        This is the bounded fallback for large CJK/tool queries: it keeps tool
+        rows discoverable without adding them back to the trigram index and
+        uses the same visibility/session/source filters as the main search
+        paths. Results are ordered deterministically by timestamp/id so merged
+        results stay stable across runs.
+        """
+        if limit <= 0:
+            return []
+
+        raw_query = (query or "").strip().strip('"')
+        tokens = [t for t in raw_query.split() if t.upper() not in {"AND", "OR", "NOT"}]
+        if not tokens:
+            return []
+
+        where = ["m.role = 'tool'"]
+        params: list = []
+        for tok in tokens:
+            esc = tok.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            where.append(
+                "(m.content LIKE ? ESCAPE '\\' OR m.tool_name LIKE ? ESCAPE '\\' "
+                "OR m.tool_calls LIKE ? ESCAPE '\\')"
+            )
+            params += [f"%{esc}%"] * 3
+        if not include_inactive:
+            where.append("(m.active = 1 OR m.compacted = 1)")
+        if source_filter is not None:
+            where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
+            params.extend(source_filter)
+        if exclude_sources is not None:
+            where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
+            params.extend(exclude_sources)
+        if role_filter:
+            where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
+            params.extend(role_filter)
+
+        sql = f"""
+            SELECT m.id, m.session_id, m.role,
+                   substr(m.content,
+                          max(1, instr(m.content, ?) - 40),
+                          120) AS snippet,
+                   m.content, m.timestamp, m.tool_name,
+                   s.source, s.model, s.started_at AS session_started
+            FROM messages m
+            JOIN sessions s ON s.id = m.session_id
+            WHERE {' AND '.join(where)}
+            ORDER BY m.timestamp DESC, m.id DESC
+            LIMIT ?
+        """
+        params = [tokens[0]] + params + [limit]
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
