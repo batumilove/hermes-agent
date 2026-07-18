@@ -16,6 +16,8 @@ fallback IPs in order, then "stick" to whichever IP works.
 """
 
 import asyncio
+import socket
+import threading
 
 import httpx
 import pytest
@@ -105,6 +107,68 @@ def _fake_transport_factory(calls, behavior):
 
 def _telegram_request(path="/botTOKEN/getMe"):
     return httpx.Request("GET", f"https://api.telegram.org{path}")
+
+
+class _SlowBodyServer:
+    """Threaded TCP server that accepts one connection and stalls mid-body."""
+
+    def __init__(self, body: bytes = b"x" * 256, sent_bytes: int = 1):
+        self.body = body
+        self.sent_bytes = sent_bytes
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock.bind(("127.0.0.1", 0))
+        self._sock.listen(1)
+        self.port = self._sock.getsockname()[1]
+        self._connected = threading.Event()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.port}/"
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        try:
+            self._sock.close()
+        except Exception:
+            pass
+
+    def _serve(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self._sock.settimeout(0.5)
+                conn, _addr = self._sock.accept()
+            except socket.timeout:
+                continue
+            except Exception:
+                break
+            self._connected.set()
+            try:
+                request = b""
+                while b"\r\n\r\n" not in request:
+                    chunk = conn.recv(4096)
+                    if not chunk:
+                        break
+                    request += chunk
+                headers = (
+                    b"HTTP/1.1 200 OK\r\n"
+                    + f"Content-Length: {len(self.body)}\r\n".encode()
+                    + b"\r\n"
+                )
+                conn.sendall(headers)
+                conn.sendall(self.body[: self.sent_bytes])
+                # Stall; the client will be cancelled while reading the rest.
+                self._stop.wait(30.0)
+            finally:
+                conn.close()
+
+    def wait_for_connection(self, timeout: float = 2.0) -> None:
+        self._connected.wait(timeout)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -211,6 +275,45 @@ class TestFallbackTransport:
                 break
             await asyncio.sleep(0)
         assert inner.stream.closed is True
+
+    @pytest.mark.asyncio
+    async def test_caller_body_read_cancellation_closes_real_socket_response(self):
+        """A caller cancelled while reading the response body must close the socket.
+
+        PTB's ``HTTPXRequest.do_request`` does ``res = await client.request(...)``
+        and then ``return res.status_code, res.content``. If its task is cancelled
+        during ``res.content``, the response is abandoned and the underlying socket
+        stays in CLOSE_WAIT. Our transport must close the response when the
+        caller's task ends abnormally.
+        """
+        server = _SlowBodyServer(body=b"x" * 256, sent_bytes=1)
+        server.start()
+        try:
+            transport = httpx.AsyncHTTPTransport()
+            request = httpx.Request("GET", server.url)
+            response_holder: dict[str, httpx.Response] = {}
+
+            async def _read_body():
+                response = await tnet._handle_transport_request(transport, request)
+                response_holder["response"] = response
+                return await response.aread()
+
+            task = asyncio.create_task(_read_body())
+            server.wait_for_connection(timeout=2.0)
+            await asyncio.sleep(0.05)  # ensure body reading has started
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+            # Yield to let the response-close callback fire.
+            await asyncio.sleep(0)
+
+            assert response_holder["response"].is_closed, (
+                "Response was abandoned on caller cancellation and its socket was not closed"
+            )
+            await transport.aclose()
+        finally:
+            server.stop()
 
     @pytest.mark.asyncio
     async def test_falls_back_on_connect_timeout_and_becomes_sticky(self, monkeypatch):

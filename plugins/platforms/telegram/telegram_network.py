@@ -35,10 +35,15 @@ async def _close_abandoned_transport_response(task: asyncio.Task) -> None:
         # Observe every terminal state (including cancellation) so detached
         # transport operations never produce "Task exception was never retrieved".
         return
+    await _close_response(response)
+
+
+async def _close_response(response: httpx.Response) -> None:
+    """Close an abandoned response, swallowing any error."""
     try:
         await response.aclose()
     except Exception:
-        logger.debug("Failed to close abandoned Telegram transport response", exc_info=True)
+        logger.debug("Failed to close abandoned Telegram response", exc_info=True)
 
 
 async def _handle_transport_request(
@@ -51,15 +56,46 @@ async def _handle_transport_request(
     those sockets persist in CLOSE_WAIT until the gateway reaches RLIMIT_NOFILE.
     Shield the bounded network operation; if its caller goes away, finish it in
     the background and close the otherwise-unclaimed response explicitly.
+
+    The same protection applies after the response has been returned: a caller
+    that is cancelled while reading the response body (e.g. PTB's
+    ``HTTPXRequest.do_request`` awaiting ``res.content``) may abandon the
+    response and leave its socket in CLOSE_WAIT. We attach a callback to the
+    caller's task so the response is closed if the caller ends without having
+    closed it.
     """
     request_task = asyncio.create_task(transport.handle_async_request(request))
     try:
-        return await asyncio.shield(request_task)
+        response = await asyncio.shield(request_task)
     except asyncio.CancelledError:
         cleanup = asyncio.create_task(_close_abandoned_transport_response(request_task))
         _abandoned_response_cleanups.add(cleanup)
         cleanup.add_done_callback(_abandoned_response_cleanups.discard)
         raise
+    else:
+        # Guard the response against caller task cancellation/exception after
+        # we have returned it. If the caller is cancelled while consuming the
+        # body, its done callback will close the otherwise-abandoned response.
+        current_task = asyncio.current_task()
+        if current_task is not None:
+            _close_response_on_task_done(current_task, response)
+        return response
+
+
+def _close_response_on_task_done(task: asyncio.Task, response: httpx.Response) -> None:
+    """Attach a callback that closes *response* if *task* ends abnormally."""
+    def _on_done(finished_task: asyncio.Task) -> None:
+        if finished_task.cancelled():
+            should_close = True
+        else:
+            exc = finished_task.exception()
+            should_close = exc is not None
+        if should_close and not getattr(response, "is_closed", True):
+            close_task = asyncio.create_task(_close_response(response))
+            _abandoned_response_cleanups.add(close_task)
+            close_task.add_done_callback(_abandoned_response_cleanups.discard)
+
+    task.add_done_callback(_on_done)
 
 # DNS-over-HTTPS providers used to discover Telegram API IPs that may differ
 # from the (potentially unreachable) IP returned by the local system resolver.
