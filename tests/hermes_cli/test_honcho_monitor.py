@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sqlite3
 
 from hermes_cli import honcho_monitor as hm
 
@@ -806,6 +807,32 @@ def test_auth_error_log_pattern_ignores_ports_and_timestamp_milliseconds():
 
     real = "Error code: 401 - invalid_api_key"
     assert hm.re.search(hm.AUTH_ERROR_LOG_PATTERN, real)
+
+
+def test_latest_local_message_timestamp_ignores_cron_sessions(tmp_path: Path):
+    db_path = tmp_path / "state.db"
+    con = sqlite3.connect(db_path)
+    con.executescript(
+        """
+        CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT);
+        CREATE TABLE messages (
+            id INTEGER PRIMARY KEY,
+            session_id TEXT,
+            timestamp REAL,
+            role TEXT,
+            content TEXT
+        );
+        INSERT INTO sessions (id, source) VALUES
+            ('telegram-session', 'telegram'),
+            ('cron-session', 'cron');
+        INSERT INTO messages (session_id, timestamp, role, content) VALUES
+            ('telegram-session', 1000, 'assistant', 'eligible completed turn'),
+            ('cron-session', 2000, 'assistant', 'newer cron output');
+        """
+    )
+    con.close()
+
+    assert hm.latest_local_message_timestamp(db_path) == 1000.0
 
 
 def test_build_alerts_detects_hermes_to_honcho_ingestion_staleness():

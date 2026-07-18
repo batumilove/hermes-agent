@@ -398,7 +398,15 @@ def latest_local_message_timestamp(path: Path | str = HERMES_STATE_DB) -> float 
         con = sqlite3.connect(Path(path))
         try:
             row = con.execute(
-                "SELECT max(timestamp) FROM messages WHERE role IN ('user','assistant') AND content IS NOT NULL AND length(content) > 0"
+                """
+                SELECT max(m.timestamp)
+                FROM messages AS m
+                LEFT JOIN sessions AS s ON s.id = m.session_id
+                WHERE m.role IN ('user','assistant')
+                  AND m.content IS NOT NULL
+                  AND length(m.content) > 0
+                  AND (s.source IS NULL OR s.source != 'cron')
+                """
             ).fetchone()
         finally:
             con.close()
