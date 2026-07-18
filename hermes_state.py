@@ -1102,7 +1102,12 @@ class _CheckpointCoordinator:
         self._conn: Optional[sqlite3.Connection] = None
 
     def start(self) -> bool:
-        """Start the coordinator thread if not already running."""
+        """Start the coordinator thread if the previous one has exited.
+
+        Returns ``False`` if the prior coordinator thread is still alive,
+        including after a stop() whose join timed out.  Restart is only
+        allowed once the old thread has actually finished.
+        """
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 return False
@@ -1116,20 +1121,29 @@ class _CheckpointCoordinator:
             return True
 
     def stop(self, timeout: float = 10.0) -> bool:
-        """Signal and join the coordinator thread; report complete teardown."""
+        """Signal and join the coordinator thread.
+
+        The actual connection is owned and closed by the coordinator thread
+        itself in ``_loop``'s ``finally`` clause, so this method never calls
+        SQLite from a different thread.  On join timeout the thread reference
+        is retained so callers can retry stop() or wait until the thread exits
+        before calling start() again.
+        """
+        self._stop_event.set()
         with self._lock:
-            self._stop_event.set()
             thread = self._thread
-            if thread is not None and thread.is_alive():
-                thread.join(timeout=timeout)
-            if thread is not None and thread.is_alive():
-                logger.warning("Checkpoint coordinator did not stop within %.1fs", timeout)
-                return False
-            self._thread = None
-            self._close_conn()
-            return True
+            if thread is None:
+                return True
+        if thread.is_alive():
+            thread.join(timeout=timeout)
+        with self._lock:
+            if self._thread is thread and not thread.is_alive():
+                self._thread = None
+                return True
+        return False
 
     def _close_conn(self) -> None:
+        """Close the thread-owned connection; must be called from the coordinator thread."""
         conn = self._conn
         self._conn = None
         if conn is not None:
@@ -1144,9 +1158,9 @@ class _CheckpointCoordinator:
         try:
             self._conn = sqlite3.connect(
                 str(self._db_path),
-                # stop() joins the worker before closing this dedicated
-                # connection from its caller thread.
-                check_same_thread=False,
+                # The connection is opened and closed exclusively on the
+                # coordinator thread, so thread-affinity enforcement is safe.
+                check_same_thread=True,
                 timeout=1.0,
                 isolation_level=None,
             )
@@ -1186,8 +1200,11 @@ class _CheckpointCoordinator:
             )
 
     def _loop(self) -> None:
-        while not self._stop_event.wait(timeout=self._interval_s):
-            self._run_checkpoint()
+        try:
+            while not self._stop_event.wait(timeout=self._interval_s):
+                self._run_checkpoint()
+        finally:
+            self._close_conn()
 
 
 _CHECKPOINT_COORDINATORS_LOCK = threading.Lock()

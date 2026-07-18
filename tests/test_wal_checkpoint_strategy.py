@@ -6,6 +6,9 @@ while close() and pre-VACUUM paths still use TRUNCATE.
 
 import sqlite3
 import logging
+import tempfile
+import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -180,7 +183,7 @@ class TestCheckpointCoordinator:
         assert second is False
 
     def test_stop_serializes_with_concurrent_start(self, tmp_path):
-        """A new coordinator thread cannot start until the old one has joined."""
+        """A new coordinator thread cannot start while the old one is alive."""
         import threading
         import time as _time
 
@@ -200,26 +203,21 @@ class TestCheckpointCoordinator:
         stop_thread.start()
         _time.sleep(0.05)
 
-        start_done = threading.Event()
-        start_result = []
+        # While the old thread is still alive, start() must refuse.
+        assert coordinator.start() is False
 
-        def restart():
-            start_result.append(coordinator.start())
-            start_done.set()
+        # Once the old thread exits, start() can restart cleanly.
+        release_checkpoint.set()
+        stop_thread.join(timeout=1.0)
+        assert coordinator.start() is True
+        coordinator.stop(timeout=1.0)
 
-        start_thread = threading.Thread(target=restart)
-        start_thread.start()
-        try:
-            assert not start_done.wait(timeout=0.05)
-        finally:
-            release_checkpoint.set()
-            stop_thread.join(timeout=1.0)
-            start_thread.join(timeout=1.0)
-            coordinator.stop(timeout=1.0)
-        assert start_result == [True]
+    def test_coordinator_connection_uses_thread_affinity(self, tmp_path, monkeypatch):
+        """The coordinator connection is created with check_same_thread=True.
 
-    def test_coordinator_connection_can_be_closed_by_stopper(self, tmp_path, monkeypatch):
-        """The joined coordinator connection must be safely closable by stop()."""
+        The connection is opened and closed on the dedicated coordinator
+        thread, so SQLite thread-affinity checks are safe.
+        """
         connect_kwargs = []
         fake_conn = MagicMock()
 
@@ -230,7 +228,17 @@ class TestCheckpointCoordinator:
         monkeypatch.setattr(sqlite3, "connect", fake_connect)
         coordinator = _CheckpointCoordinator(tmp_path / "thread-close.db", 60.0, 2.0)
         assert coordinator._ensure_conn() is fake_conn
-        assert connect_kwargs[0]["check_same_thread"] is False
+        assert connect_kwargs[0]["check_same_thread"] is True
+
+    def test_coordinator_connection_closed_by_thread(self, tmp_path):
+        """The coordinator thread itself closes its connection in _loop finally."""
+        coordinator = _CheckpointCoordinator(tmp_path / "thread-close.db", 0.01, 2.0)
+        coordinator.start()
+        # Wait for the first iteration to open the connection.
+        time.sleep(0.05)
+        coordinator.stop(timeout=1.0)
+        assert coordinator._thread is None
+        assert coordinator._conn is None
 
     def test_final_release_keeps_registry_when_stop_times_out(self, tmp_path, monkeypatch):
         """A still-running coordinator cannot be replaced under a new owner."""
@@ -253,7 +261,7 @@ class TestCheckpointCoordinator:
         import hermes_state
 
         db = SessionDB(tmp_path / "double-close.db")
-        real_release = hermes_state._release_checkpoint_coordinator
+        real_release = hermes_state._release_checkpoint_coordinator_with_state
         release_entered = threading.Event()
         allow_release = threading.Event()
         calls = []
@@ -268,7 +276,7 @@ class TestCheckpointCoordinator:
                 allow_release.wait(timeout=2.0)
             return real_release(*args, **kwargs)
 
-        monkeypatch.setattr(hermes_state, "_release_checkpoint_coordinator", blocking_release)
+        monkeypatch.setattr(hermes_state, "_release_checkpoint_coordinator_with_state", blocking_release)
         first = threading.Thread(target=db.close)
         second = threading.Thread(target=db.close)
         first.start()
@@ -418,3 +426,143 @@ class TestCheckpointFrequency:
         # The coordinator must have its own connection, distinct from db._conn.
         assert db._checkpoint_coordinator._conn is not None
         assert db._checkpoint_coordinator._conn is not db._conn
+
+
+def _fds_for_path(path: Path) -> list[str]:
+    """Return currently open FD entries under /proc/self/fd pointing at *path*."""
+    fds = []
+    target = path.resolve()
+    for fd_str in Path("/proc/self/fd").glob("*"):
+        try:
+            resolved = fd_str.resolve()
+        except (OSError, ValueError):
+            continue
+        if resolved == target:
+            fds.append(fd_str.name)
+    return fds
+
+
+class TestCheckpointCoordinatorNoFdLeak:
+    """Starting the coordinator and closing SessionDB must not leak file descriptors."""
+
+    def test_close_leaves_no_db_fds_after_coordinator_started(self, tmp_path):
+        """Regression for P0 review: SessionDB.close() releases coordinator FDs."""
+        db_path = tmp_path / "leak_state.db"
+        db = SessionDB(db_path=db_path)
+        db._CHECKPOINT_INTERVAL_S = 0.05
+        db._checkpoint_coordinator.stop(timeout=1.0)
+        db._checkpoint_coordinator = _CheckpointCoordinator(
+            db.db_path, db._CHECKPOINT_INTERVAL_S, db._SLOW_CHECKPOINT_WARN_S
+        )
+
+        # Force a write so the coordinator starts (lazily) and opens its own connection.
+        db._execute_write(lambda conn: conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+            ("fd-leak", "test", time.time()),
+        ))
+        # Give the coordinator enough time to open its sqlite connection.
+        time.sleep(0.15)
+
+        before_close = _fds_for_path(db_path)
+        assert before_close, "expected coordinator to have opened the database file"
+
+        db.close()
+
+        # After close, no state.db / wal / shm FDs may remain for this temp database.
+        for suffix in ("", "-wal", "-shm"):
+            residual = _fds_for_path(db_path.parent / (db_path.name + suffix))
+            assert residual == [], (
+                f"leaked FDs for {db_path.name}{suffix} after close: {residual}"
+            )
+
+
+class TestCheckpointCoordinatorStopTimeout:
+    """stop(timeout) must not allow a new thread while the old one is alive."""
+
+    def test_stop_timeout_does_not_forget_live_thread(self):
+        """Regression for review BLOCK: a join timeout must not orphan the thread."""
+        import threading as _threading
+
+        db_path = Path(tempfile.mkdtemp()) / "timeout_state.db"
+        c = _CheckpointCoordinator(db_path, 0.01, 2.0)
+        entered = _threading.Event()
+        release = _threading.Event()
+
+        def blocked_checkpoint():
+            entered.set()
+            release.wait(timeout=5.0)
+
+        c._run_checkpoint = blocked_checkpoint
+        assert c.start() is True
+        assert entered.wait(timeout=1.0), "coordinator thread did not enter _run_checkpoint"
+        first_thread = c._thread
+        assert first_thread is not None
+
+        c.stop(timeout=0.01)
+
+        # The old thread may still be alive (blocked) after the short timeout.
+        # The coordinator must retain a reference to it so start() cannot launch
+        # a second loop concurrently.
+        assert c._thread is first_thread, (
+            "stop() forgot the live thread before it exited"
+        )
+        assert c.start() is False, "start() must refuse while prior thread is alive"
+        assert c._thread is first_thread, (
+            "start() replaced the live thread reference"
+        )
+
+        release.set()
+        first_thread.join(timeout=1.0)
+        assert not first_thread.is_alive(), "first thread did not exit after release"
+
+        # Once the old thread has exited, explicit restart is safe and allowed.
+        assert c.start() is True
+        second_thread = c._thread
+        assert second_thread is not first_thread
+        assert second_thread.is_alive()
+        c.stop(timeout=1.0)
+        assert not second_thread.is_alive()
+
+    def test_stop_retries_join_until_thread_exits(self):
+        """stop() on a stuck thread can be repeated; each call keeps joining the same thread."""
+        import threading as _threading
+        import tempfile as _tempfile
+
+        db_path = Path(_tempfile.mkdtemp()) / "retry_state.db"
+        c = _CheckpointCoordinator(db_path, 0.01, 2.0)
+        entered = _threading.Event()
+        release = _threading.Event()
+
+        def blocked_checkpoint():
+            entered.set()
+            release.wait(timeout=5.0)
+
+        c._run_checkpoint = blocked_checkpoint
+        c.start()
+        assert entered.wait(timeout=1.0)
+        thread = c._thread
+
+        c.stop(timeout=0.005)
+        assert c._thread is thread, "first stop should still reference the live thread"
+        c.stop(timeout=0.005)
+        assert c._thread is thread, "second stop should still reference the same live thread"
+
+        release.set()
+        c.stop(timeout=1.0)
+        assert not thread.is_alive()
+        assert c._thread is None, "thread ref should be cleared once the thread exits"
+
+    def test_stop_idempotent_after_thread_exits(self):
+        """stop() after a clean shutdown is a no-op and does not resurrect a thread."""
+        import tempfile as _tempfile
+
+        db_path = Path(_tempfile.mkdtemp()) / "idempotent_state.db"
+        c = _CheckpointCoordinator(db_path, 100.0, 2.0)
+        c.start()
+        thread = c._thread
+        c.stop(timeout=1.0)
+        assert c._thread is None
+        # Another stop should be safe and leave thread None.
+        c.stop(timeout=1.0)
+        assert c._thread is None
+        assert not thread.is_alive()
