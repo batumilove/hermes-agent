@@ -6292,6 +6292,8 @@ class SessionDB:
                 self._count_cjk(t) < 3 for t in _tokens_for_check
             )
 
+            matches: List[Dict[str, Any]] = []
+            merge_window = max(0, limit + offset)
             _trigram_succeeded = False
             # Tool rows are excluded from the trigram index (they're ~90% of
             # message bytes and machine noise — see FTS_TRIGRAM_SQL). A CJK
@@ -6347,7 +6349,11 @@ class SessionDB:
                     {order_by_sql}
                     LIMIT ? OFFSET ?
                 """
-                tri_params.extend([limit, offset])
+                # Fetch an unsliced window from each source. Trigram-indexed
+                # and excluded-row fallback hits are merged, ordered, and only
+                # then paginated below; applying OFFSET independently would
+                # produce missing/duplicated rows across pages.
+                tri_params.extend([merge_window, 0])
                 with self._lock:
                     try:
                         tri_cursor = self._conn.execute(tri_sql, tri_params)
@@ -6399,11 +6405,11 @@ class SessionDB:
                 with self._lock:
                     like_cursor = self._conn.execute(like_sql, like_params)
                     matches = [dict(r) for r in like_cursor.fetchall()]
-            if cjk_count >= 3:
+            if cjk_count >= 3 and _trigram_succeeded:
                 try:
                     gap_matches = self._search_cjk_trigram_gap(
                         query,
-                        limit=max(0, limit - len(matches)),
+                        limit=merge_window,
                         include_inactive=include_inactive,
                         source_filter=source_filter,
                         exclude_sources=exclude_sources,
@@ -6411,6 +6417,24 @@ class SessionDB:
                     )
                     seen_ids = {m["id"] for m in matches}
                     matches.extend(m for m in gap_matches if m["id"] not in seen_ids)
+                    if sort_norm == "newest":
+                        matches.sort(
+                            key=lambda m: (
+                                -float(m.get("timestamp") or 0),
+                                -int(m.get("id") or 0),
+                            )
+                        )
+                    elif sort_norm == "oldest":
+                        matches.sort(
+                            key=lambda m: (
+                                float(m.get("timestamp") or 0),
+                                int(m.get("id") or 0),
+                            )
+                        )
+                    # With no temporal sort, preserve FTS rank order first and
+                    # append deterministic fallback hits. In every mode,
+                    # paginate only after merging/deduplicating both sources.
+                    matches = matches[offset:offset + limit]
                 except sqlite3.OperationalError as exc:
                     logger.debug("CJK gap supplement skipped: %s", exc)
         else:

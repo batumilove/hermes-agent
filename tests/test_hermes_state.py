@@ -5545,6 +5545,39 @@ class TestFTSExternalContentMigration:
         finally:
             db.close()
 
+    def test_cjk_gap_merge_preserves_newest_order_and_pagination(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "ordering.db")
+        try:
+            db.create_session("s1", source="cli")
+            indexed_old = db.append_message(
+                "s1", role="assistant", content="大别山项目 indexed", timestamp=100
+            )
+            large_new = db.append_message(
+                "s1",
+                role="assistant",
+                content="大别山项目" + ("界" * 1500),
+                timestamp=300,
+            )
+            tool_mid = db.append_message(
+                "s1", role="tool", content="大别山项目 tool", timestamp=250
+            )
+
+            newest = db.search_messages("大别山项目", sort="newest", limit=3)
+            assert [hit["id"] for hit in newest] == [large_new, tool_mid, indexed_old]
+            page = db.search_messages(
+                "大别山项目", sort="newest", limit=2, offset=1
+            )
+            assert [hit["id"] for hit in page] == [tool_mid, indexed_old]
+
+            oldest = db.search_messages("大别山项目", sort="oldest", limit=3)
+            assert [hit["id"] for hit in oldest] == [indexed_old, tool_mid, large_new]
+            oldest_page = db.search_messages(
+                "大别山项目", sort="oldest", limit=2, offset=1
+            )
+            assert [hit["id"] for hit in oldest_page] == [tool_mid, large_new]
+        finally:
+            db.close()
+
     def test_cjk_tool_rows_remain_searchable_via_session_search_fallback(self, tmp_path):
         db = SessionDB(db_path=tmp_path / "state.db")
         try:
