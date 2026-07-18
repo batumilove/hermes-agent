@@ -549,16 +549,13 @@ class HonchoSessionManager:
                     break
 
     def shutdown(self) -> None:
-        """Gracefully shut down the async writer thread (idempotent).
-
-        Returns only after the thread has exited. If the thread does not stop
-        within a reasonable time the queue is poisoned so no further work can
-        be enqueued, and the thread reference is cleared. On a clean join the
-        thread object is left for inspection (tests assert ``not alive()``), and
-        repeated shutdown calls are no-ops.
-        """
-        with self._shutdown_lock:
-            if self._shutdown_called:
+        """Gracefully shut down the async writer thread (idempotent/retryable)."""
+        shutdown_lock = getattr(self, "_shutdown_lock", None)
+        if shutdown_lock is None:
+            shutdown_lock = threading.Lock()
+            self._shutdown_lock = shutdown_lock
+        with shutdown_lock:
+            if getattr(self, "_shutdown_called", False):
                 return
 
             flush_error: Exception | None = None
@@ -572,7 +569,11 @@ class HonchoSessionManager:
                     self._async_thread.join(timeout=10)
 
             if self._async_thread is not None and self._async_thread.is_alive():
-                raise RuntimeError("Honcho async writer did not stop within 10 seconds")
+                # A Python thread cannot be force-killed. Poison both handles so
+                # this manager cannot enqueue or mistake the wedged writer for a
+                # usable lifecycle resource; the daemon can no longer receive work.
+                self._async_queue = None
+                self._async_thread = None
             if flush_error is not None:
                 # Leave shutdown retryable so a later call can retry the flush.
                 raise flush_error
