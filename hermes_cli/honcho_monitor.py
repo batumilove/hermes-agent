@@ -360,16 +360,46 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
 
     active_work_unit_key = str(deriver.get("active_oldest_work_unit_key") or "")
     active_task_type = active_work_unit_key.partition(":")[0]
-    stale_threshold = (
-        DREAM_STALE_ACTIVE_SECONDS
-        if active_task_type == "dream"
-        else DERIVER_STALE_ACTIVE_SECONDS
-    )
-    if active_count > 0 and active_oldest_age_s >= stale_threshold:
-        label = "Dream" if active_task_type == "dream" else "Deriver"
-        alerts.append(
-            f"{label} active work stale ({active_count} active, oldest {_format_age(active_oldest_age_s)})"
+    has_per_task_active_stats = "active_representation_count" in deriver
+    if has_per_task_active_stats:
+        active_groups = (
+            (
+                "Deriver",
+                int(deriver.get("active_representation_count") or 0),
+                int(float(deriver.get("active_representation_oldest_age_s") or 0)),
+                DERIVER_STALE_ACTIVE_SECONDS,
+            ),
+            (
+                "Dream",
+                int(deriver.get("active_dream_count") or 0),
+                int(float(deriver.get("active_dream_oldest_age_s") or 0)),
+                DREAM_STALE_ACTIVE_SECONDS,
+            ),
+            (
+                "Deriver",
+                int(deriver.get("active_other_count") or 0),
+                int(float(deriver.get("active_other_oldest_age_s") or 0)),
+                DERIVER_STALE_ACTIVE_SECONDS,
+            ),
         )
+        for label, count, oldest_age_s, threshold in active_groups:
+            if count > 0 and oldest_age_s >= threshold:
+                alerts.append(
+                    f"{label} active work stale ({count} active, oldest {_format_age(oldest_age_s)})"
+                )
+    else:
+        # Backward compatibility for cached state and callers that predate the
+        # per-task query. New snapshots always report all three active groups.
+        stale_threshold = (
+            DREAM_STALE_ACTIVE_SECONDS
+            if active_task_type == "dream"
+            else DERIVER_STALE_ACTIVE_SECONDS
+        )
+        if active_count > 0 and active_oldest_age_s >= stale_threshold:
+            label = "Dream" if active_task_type == "dream" else "Deriver"
+            alerts.append(
+                f"{label} active work stale ({active_count} active, oldest {_format_age(active_oldest_age_s)})"
+            )
 
     return alerts
 
@@ -894,7 +924,13 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
     active_raw = ssh(
         "docker exec honcho-database-1 psql -U postgres -t -A -F '|' -c \""
         "SELECT count(*)::text, COALESCE(EXTRACT(EPOCH FROM (now() - min(last_updated)))::int::text, '0'), "
-        "COALESCE((SELECT work_unit_key FROM active_queue_sessions ORDER BY last_updated LIMIT 1), '') "
+        "COALESCE((SELECT work_unit_key FROM active_queue_sessions ORDER BY last_updated LIMIT 1), ''), "
+        "count(*) FILTER (WHERE work_unit_key LIKE 'representation:%')::text, "
+        "COALESCE(EXTRACT(EPOCH FROM (now() - min(last_updated) FILTER (WHERE work_unit_key LIKE 'representation:%')))::int::text, '0'), "
+        "count(*) FILTER (WHERE work_unit_key LIKE 'dream:%')::text, "
+        "COALESCE(EXTRACT(EPOCH FROM (now() - min(last_updated) FILTER (WHERE work_unit_key LIKE 'dream:%')))::int::text, '0'), "
+        "count(*) FILTER (WHERE work_unit_key NOT LIKE 'representation:%' AND work_unit_key NOT LIKE 'dream:%')::text, "
+        "COALESCE(EXTRACT(EPOCH FROM (now() - min(last_updated) FILTER (WHERE work_unit_key NOT LIKE 'representation:%' AND work_unit_key NOT LIKE 'dream:%')))::int::text, '0') "
         "FROM active_queue_sessions;\"",
         timeout=20,
     )
@@ -902,6 +938,12 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
     active_count = _int_or_zero(active_parts[0]) if len(active_parts) > 0 else 0
     active_oldest_age_s = _int_or_zero(active_parts[1]) if len(active_parts) > 1 else 0
     active_oldest_work_unit_key = active_parts[2] if len(active_parts) > 2 else ""
+    active_representation_count = _int_or_zero(active_parts[3]) if len(active_parts) > 3 else 0
+    active_representation_oldest_age_s = _int_or_zero(active_parts[4]) if len(active_parts) > 4 else 0
+    active_dream_count = _int_or_zero(active_parts[5]) if len(active_parts) > 5 else 0
+    active_dream_oldest_age_s = _int_or_zero(active_parts[6]) if len(active_parts) > 6 else 0
+    active_other_count = _int_or_zero(active_parts[7]) if len(active_parts) > 7 else 0
+    active_other_oldest_age_s = _int_or_zero(active_parts[8]) if len(active_parts) > 8 else 0
 
     snapshot = HonchoSnapshot(
         services=services,
@@ -925,6 +967,12 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
             "active_count": active_count,
             "active_oldest_age_s": active_oldest_age_s,
             "active_oldest_work_unit_key": active_oldest_work_unit_key,
+            "active_representation_count": active_representation_count,
+            "active_representation_oldest_age_s": active_representation_oldest_age_s,
+            "active_dream_count": active_dream_count,
+            "active_dream_oldest_age_s": active_dream_oldest_age_s,
+            "active_other_count": active_other_count,
+            "active_other_oldest_age_s": active_other_oldest_age_s,
         },
         ingestion=ingestion,
     )
@@ -945,6 +993,12 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
             "active_count": active_count,
             "active_oldest_age_s": active_oldest_age_s,
             "active_oldest_work_unit_key": active_oldest_work_unit_key,
+            "active_representation_count": active_representation_count,
+            "active_representation_oldest_age_s": active_representation_oldest_age_s,
+            "active_dream_count": active_dream_count,
+            "active_dream_oldest_age_s": active_dream_oldest_age_s,
+            "active_other_count": active_other_count,
+            "active_other_oldest_age_s": active_other_oldest_age_s,
         },
         "ingestion": ingestion,
         "deriver_active_count": active_count,

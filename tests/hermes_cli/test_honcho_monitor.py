@@ -531,6 +531,27 @@ def test_fresh_active_representation_suppresses_backlog_stall_alert():
     assert not any("active work stale" in alert for alert in alerts)
 
 
+def test_stale_representation_alerts_when_older_dream_is_still_within_grace():
+    snapshot, previous_state = _representation_backlog_without_progress(
+        active_count=2, active_age_s=1200
+    )
+    snapshot.deriver.update(
+        {
+            "active_oldest_work_unit_key": "dream:omni:hermes:session:hermes",
+            "active_representation_count": 1,
+            "active_representation_oldest_age_s": 601,
+            "active_dream_count": 1,
+            "active_dream_oldest_age_s": 1200,
+        }
+    )
+
+    alerts = hm.build_alerts(snapshot, previous_state=previous_state)
+
+    assert "Deriver stalled: representation backlog with no progress" not in alerts
+    assert "Deriver active work stale (1 active, oldest 10m)" in alerts
+    assert not any(alert.startswith("Dream active work stale") for alert in alerts)
+
+
 def _ssh_failure_snapshot() -> hm.HonchoSnapshot:
     return hm.HonchoSnapshot(
         services=hm._parse_service_status("__SSH_ERROR__ rc=255 stderr=connection timed out"),
