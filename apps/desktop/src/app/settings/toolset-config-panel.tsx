@@ -448,6 +448,18 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
       }
 
       setEnvState(seeded)
+      // Initialize the expanded row in the same state transition that makes
+      // the fetched providers visible. A later effect can race with a quick
+      // provider click and overwrite that selection with the default row.
+      const selected =
+        next.providers.find(provider => provider.is_active) ??
+        (next.active_provider
+          ? next.providers.find(provider => provider.name === next.active_provider)
+          : undefined) ??
+        next.providers.find(provider => providerConfigured(provider, seeded)) ??
+        next.providers[0]
+
+      setActiveProvider(selected?.name ?? null)
     } catch (err) {
       notifyError(err, copy.failedLoad)
     } finally {
@@ -460,25 +472,6 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
   }, [refresh])
 
   const providers = useMemo(() => cfg?.providers ?? [], [cfg])
-
-  // Default the expanded provider to the one actually active in config
-  // (`is_active` / `cfg.active_provider`, mirroring the CLI picker), then the
-  // first fully-configured provider, else the first provider. Without this the
-  // panel highlighted the first keyless provider (e.g. Nous Portal) even when
-  // the user had already selected another (e.g. DuckDuckGo).
-  useEffect(() => {
-    if (activeProvider || providers.length === 0) {
-      return
-    }
-
-    const selected =
-      providers.find(p => p.is_active) ??
-      (cfg?.active_provider ? providers.find(p => p.name === cfg.active_provider) : undefined) ??
-      providers.find(p => providerConfigured(p, envState)) ??
-      providers[0]
-
-    setActiveProvider(selected.name)
-  }, [activeProvider, providers, envState, cfg])
 
   async function handleSelect(provider: ToolProvider) {
     setActiveProvider(provider.name)
