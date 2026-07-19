@@ -16,8 +16,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -39,6 +41,8 @@ INGESTION_STALE_SECONDS = int(os.environ.get("HONCHO_MONITOR_INGESTION_STALE_SEC
 DERIVER_STALE_ACTIVE_SECONDS = int(os.environ.get("HONCHO_MONITOR_DERIVER_STALE_ACTIVE_SECONDS", "600"))
 DREAM_STALE_ACTIVE_SECONDS = int(os.environ.get("HONCHO_MONITOR_DREAM_STALE_ACTIVE_SECONDS", "1800"))
 SSH_FAILURE_ALERT_THRESHOLD = int(os.environ.get("HONCHO_MONITOR_SSH_FAILURE_ALERT_THRESHOLD", "2"))
+LOCAL_DISK_MIN_FREE_BYTES = 10 * 1024**3
+LOCAL_DISK_MAX_USED_PERCENT = 95
 
 
 HOST_MAP = {
@@ -78,6 +82,7 @@ class HonchoSnapshot:
     spark_goat: dict[str, Any]
     deriver: dict[str, Any]
     ingestion: dict[str, Any] = field(default_factory=dict)
+    observer: dict[str, Any] = field(default_factory=dict)
 
 
 def short_host(url: str | None) -> str:
@@ -152,7 +157,21 @@ def load_state(path: Path | str = STATE_PATH) -> dict[str, Any]:
 def save_state(path: Path | str, state: dict[str, Any]) -> None:
     state_path = Path(path)
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+    payload = json.dumps(state, indent=2, sort_keys=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{state_path.name}.",
+        suffix=".tmp",
+        dir=str(state_path.parent),
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, state_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def preserve_last_valid_probe_state(
@@ -265,6 +284,18 @@ def _embedding_vector_dimensions_display(embed: dict[str, str], db: dict[str, An
 
 def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None = None) -> list[str]:
     alerts: list[str] = []
+
+    observer = snapshot.observer or {}
+    disk_free_bytes = int(observer.get("disk_free_bytes") or 0)
+    disk_used_percent = int(observer.get("disk_used_percent") or 0)
+    if observer and (
+        disk_free_bytes < LOCAL_DISK_MIN_FREE_BYTES
+        or disk_used_percent >= LOCAL_DISK_MAX_USED_PERCENT
+    ):
+        alerts.append(
+            "Local observer disk critically low "
+            f"({_format_bytes(disk_free_bytes)} free, {disk_used_percent}% used)"
+        )
 
     svc = snapshot.services
     if svc.get("ssh_ok") is False:
@@ -423,6 +454,15 @@ def _format_age(seconds: int | float | None) -> str:
     return f"{total}s"
 
 
+def _format_bytes(value: int | float | None) -> str:
+    size = max(0.0, float(value or 0))
+    for unit in ("bytes", "KiB", "MiB", "GiB", "TiB"):
+        if size < 1024 or unit == "TiB":
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TiB"
+
+
 def _parse_pg_timestamptz(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -510,6 +550,7 @@ def format_report(snapshot: dict[str, Any] | HonchoSnapshot, previous_state: dic
             spark_goat=dict(snapshot.get("spark_goat", {})),
             deriver=dict(snapshot.get("deriver", {})),
             ingestion=dict(snapshot.get("ingestion", {})),
+            observer=dict(snapshot.get("observer", {})),
         )
 
     lines = [f"🩺 Honcho — {_now_utc(now).strftime('%H:%M UTC')}"]
@@ -578,6 +619,14 @@ def format_report(snapshot: dict[str, Any] | HonchoSnapshot, previous_state: dic
             f"local age={_format_age(ingestion.get('source_age_s'))} · "
             f"Honcho age={_format_age(ingestion.get('downstream_age_s'))} · "
             f"drift={_format_age(ingestion.get('drift_s'))}"
+        )
+
+    observer = snapshot.observer or {}
+    if observer:
+        lines.append(
+            "💾 Observer disk: "
+            f"{_format_bytes(observer.get('disk_free_bytes'))} free · "
+            f"{int(observer.get('disk_used_percent') or 0)}% used"
         )
 
     alerts = build_alerts(snapshot, previous_state=previous_state)
@@ -824,6 +873,13 @@ def build_db_stats_query() -> str:
 
 
 def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
+    disk_usage = shutil.disk_usage(STATE_PATH.parent)
+    observer = {
+        "disk_total_bytes": disk_usage.total,
+        "disk_free_bytes": disk_usage.free,
+        "disk_used_percent": round((disk_usage.used / disk_usage.total) * 100) if disk_usage.total else 0,
+    }
+
     services_raw = ssh("cd /opt/honcho/honcho && sudo docker compose ps --format '{{.Name}} {{.Status}}'", timeout=30)
     services = _parse_service_status(services_raw)
 
@@ -980,6 +1036,7 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
             "active_other_oldest_age_s": active_other_oldest_age_s,
         },
         ingestion=ingestion,
+        observer=observer,
     )
 
     current_state = {
@@ -1006,6 +1063,7 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
             "active_other_oldest_age_s": active_other_oldest_age_s,
         },
         "ingestion": ingestion,
+        "observer": observer,
         "deriver_active_count": active_count,
         "deriver_active_oldest_age_s": active_oldest_age_s,
     }
@@ -1040,7 +1098,11 @@ def main() -> int:
     else:
         current_state["ssh_failure_streak"] = 0
     current_state = preserve_last_valid_probe_state(snapshot, current_state, previous_state)
-    save_state(STATE_PATH, current_state)
+    try:
+        save_state(STATE_PATH, current_state)
+    except OSError as exc:
+        print(f"⚠️ Local observer state save failed: {exc}")
+        return 1
     return 0
 
 

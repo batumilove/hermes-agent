@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 import sqlite3
 
+import pytest
+
 from hermes_cli import honcho_monitor as hm
 
 
@@ -135,6 +137,63 @@ def test_state_round_trip(tmp_path: Path):
     hm.save_state(state_path, state)
 
     assert hm.load_state(state_path) == state
+
+
+def test_failed_atomic_state_replace_preserves_previous_baseline(tmp_path: Path, monkeypatch):
+    state_path = tmp_path / "state.json"
+    previous = {"queue_done": 80, "documents_total": 100}
+    hm.save_state(state_path, previous)
+
+    def fail_replace(_src, _dst):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(hm.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="No space left on device"):
+        hm.save_state(state_path, {"queue_done": 81, "documents_total": 101})
+
+    assert hm.load_state(state_path) == previous
+    assert list(tmp_path.glob(".state.json.*.tmp")) == []
+
+
+def test_local_observer_disk_pressure_is_reported_and_alerted():
+    snapshot = hm.HonchoSnapshot(
+        services={"api_ok": True, "deriver_up": True, "db_ok": True, "redis_ok": True},
+        pipeline={},
+        db={},
+        queue={},
+        queue_by_type={},
+        errors={},
+        spark_goat={},
+        deriver={},
+        observer={"disk_free_bytes": 512 * 1024 * 1024, "disk_used_percent": 99},
+    )
+
+    alerts = hm.build_alerts(snapshot)
+    report = hm.format_report(snapshot, now=hm.datetime(2026, 7, 19, 12, 27))
+
+    assert "Local observer disk critically low (512.0 MiB free, 99% used)" in alerts
+    assert "💾 Observer disk: 512.0 MiB free · 99% used" in report
+
+
+def test_main_reports_state_persistence_failure(monkeypatch, capsys):
+    snapshot = hm.HonchoSnapshot(
+        services={"api_ok": True, "deriver_up": True, "db_ok": True, "redis_ok": True},
+        pipeline={},
+        db={},
+        queue={},
+        queue_by_type={},
+        errors={},
+        spark_goat={},
+        deriver={},
+        observer={"disk_free_bytes": 20 * 1024**3, "disk_used_percent": 50},
+    )
+    monkeypatch.setattr(hm, "collect_snapshot", lambda: (snapshot, {}))
+    monkeypatch.setattr(hm, "load_state", lambda _path: {})
+    monkeypatch.setattr(hm, "save_state", lambda _path, _state: (_ for _ in ()).throw(OSError(28, "No space left on device")))
+
+    assert hm.main() == 1
+    assert "Local observer state save failed: [Errno 28] No space left on device" in capsys.readouterr().out
 
 
 def test_failed_db_probe_does_not_replace_last_valid_counter_baseline():
