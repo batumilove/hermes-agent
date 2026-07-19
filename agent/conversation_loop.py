@@ -74,6 +74,27 @@ from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger(__name__)
 
+_LOCAL_PROCESSING_MODULES = frozenset({
+    "agent_runtime_helpers",
+    "message_content",
+    "run_agent",
+})
+_API_CALL_MODULES = frozenset({"chat_completion_helpers"})
+
+
+def _is_local_processing_exception(exc: BaseException) -> bool:
+    """Return whether *exc* came from targeted local post-processing only."""
+    if exc.__traceback__ is None:
+        return False
+    module_names = {
+        os.path.splitext(os.path.basename(frame.filename))[0]
+        for frame in traceback.extract_tb(exc.__traceback__)
+    }
+    return bool(module_names & _LOCAL_PROCESSING_MODULES) and not bool(
+        module_names & _API_CALL_MODULES
+    )
+
+
 # Stable prefix of the local interrupt status string emitted when a turn is
 # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
 # to treat it as cancellation metadata rather than assistant prose.
@@ -5631,30 +5652,10 @@ def run_conversation(
             # passing a multimodal content list into a regex helper after a
             # vision turn or context compaction) should not be retried: they
             # will fail identically on every iteration and only burn the
-            # iteration budget. We classify an error as local by inspecting the
-            # traceback: if the exception propagated through any of the known
-            # local post-processing helpers and never entered the interruptible
-            # API-call helpers, it is almost certainly a local processing bug.
+            # iteration budget. Targeted local helper frames identify the
+            # post-processing path; any API-call helper frame takes precedence.
             # (#66267)
-            _local_processing_modules = {
-                "agent_runtime_helpers",
-                "conversation_loop",
-                "message_content",
-                "run_agent",
-            }
-            _api_call_modules = {
-                "chat_completion_helpers",
-            }
-
-            tb_stack = traceback.extract_tb(e.__traceback__)
-            tb_module_names = {
-                os.path.splitext(os.path.basename(frame.filename))[0]
-                for frame in tb_stack
-            }
-            _hit_local = bool(tb_module_names & _local_processing_modules)
-            _hit_api = bool(tb_module_names & _api_call_modules)
-
-            _is_local_processing_error = _hit_local and not _hit_api
+            _is_local_processing_error = _is_local_processing_exception(e)
 
             if _is_local_processing_error:
                 error_msg = (

@@ -639,7 +639,7 @@ def repair_message_sequence_with_cursor(agent, messages: List[Dict]) -> int:
 
 
 
-def strip_think_blocks(agent, content: str) -> str:
+def strip_think_blocks(agent, content: Any) -> str:
     """Remove reasoning/thinking blocks from content, returning only visible text.
 
     Handles four cases:
