@@ -1215,7 +1215,10 @@ class APIServerAdapter(BasePlatformAdapter):
 
     def _run_queue_drain(self, reason: str) -> None:
         self._run_queue_closed = True
-        self._run_queue_entries.clear()
+        entries = getattr(self, "_run_queue_entries", None)
+        if entries is None:
+            return
+        entries.clear()
         self._notify_run_queue_slot()
 
     def _notify_run_queue_slot(self) -> None:
