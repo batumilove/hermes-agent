@@ -1161,6 +1161,9 @@ class SessionStore:
             except Exception as e:
                 print(f"[gateway] Warning: Failed to load sessions: {e}")
 
+        self._persisted_routing_data = {
+            key: entry.to_dict() for key, entry in self._entries.items()
+        }
         self._loaded = True
 
         # Prune any sessions.json entries that point to sessions already ended
@@ -1256,12 +1259,18 @@ class SessionStore:
             del self._entries[key]
 
         if stale_keys or recovered_keys:
-            self._save()
+            self._save(atomic=True)
 
-    def _save(self) -> None:
-        """Persist the routing index while the caller holds ``_lock``."""
+    def _save(self, *, atomic: bool = False) -> None:
+        """Persist the routing index while the caller holds ``_lock``.
+
+        When ``atomic`` is True, the whole snapshot is reconciled via the atomic
+        ``replace_gateway_routing_entries`` path (used for startup/migration/
+        pruning/reset/repair).  Routine callers leave it False and use point
+        upsert/exact delete for minimal WAL churn.
+        """
         data, generation = self._snapshot_routing_locked()
-        self._persist_routing_data(data, generation)
+        self._persist_routing_data(data, generation, atomic=atomic)
 
     def _snapshot_routing_locked(self) -> tuple[Dict[str, Any], int]:
         """Capture immutable routing data and a monotonic generation."""
@@ -1271,8 +1280,19 @@ class SessionStore:
             self._routing_generation,
         )
 
-    def _persist_routing_data(self, data: Dict[str, Any], generation: int) -> None:
-        """Serialize all whole-index writers through one durable write lock."""
+    def _persist_routing_data(
+        self, data: Dict[str, Any], generation: int, *, atomic: bool = False
+    ) -> None:
+        """Serialize routing changes through one durable write lock.
+
+        Only advances the durable baseline and generation after a successful
+        primary write to state.db.  The legacy sessions.json mirror is written
+        for compatibility but does not count as a successful primary DB write.
+
+        ``atomic`` forces a full-scope reconciliation (replace_gateway_routing_entries)
+        suitable for startup pruning, migration, reset, and repair.  Routine
+        callers use point upsert/exact delete.
+        """
         save_lock = getattr(self, "_save_lock", None)
         if save_lock is None:
             save_lock = threading.Lock()
@@ -1280,24 +1300,38 @@ class SessionStore:
         with save_lock:
             if generation <= getattr(self, "_persisted_routing_generation", 0):
                 return
+            prev_data = getattr(self, "_persisted_routing_data", {}) or {}
+            scope = self._routing_scope()
             db_saved = False
             _db = getattr(self, "_db", None)
             if _db:
                 replacer = getattr(_db, "replace_gateway_routing_entries", None)
-                if callable(replacer):
-                    try:
+                saver = getattr(_db, "save_gateway_routing_entry", None)
+                deleter = getattr(_db, "delete_gateway_routing_entries", None)
+                try:
+                    if atomic and callable(replacer):
                         replacer(
-                            {k: json.dumps(v) for k, v in data.items()},
-                            scope=self._routing_scope(),
+                            {key: json.dumps(value) for key, value in data.items()},
+                            scope=scope,
                         )
                         db_saved = True
-                    except Exception as exc:
-                        logger.warning(
-                            "gateway.session: state.db routing save failed: %s", exc
-                        )
+                    elif callable(saver):
+                        for key, value in data.items():
+                            if prev_data.get(key) != value:
+                                saver(key, json.dumps(value), scope=scope)
+                        removed = [key for key in prev_data.keys() if key not in data]
+                        if removed and callable(deleter):
+                            deleter(removed, scope=scope)
+                        db_saved = True
+                except Exception as exc:
+                    logger.warning(
+                        "gateway.session: state.db routing save failed: %s", exc
+                    )
             if getattr(self, "_write_sessions_json", True) or not db_saved:
                 self._save_sessions_json(data)
-            self._persisted_routing_generation = generation
+            if db_saved:
+                self._persisted_routing_data = dict(data)
+                self._persisted_routing_generation = generation
 
     def _save_sessions_json(self, data: Dict[str, Any]) -> None:
         """Write the legacy sessions.json mirror of the routing index."""
