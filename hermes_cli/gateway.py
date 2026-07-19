@@ -4805,7 +4805,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
         except Exception:
             pass  # best-effort; don't block gateway startup
 
-    from gateway.run import start_gateway
+    from gateway.run import _exit_after_graceful_shutdown, start_gateway
 
     print("┌─────────────────────────────────────────────────────────┐")
     print("│           ⚕ Hermes Gateway Starting...                 │")
@@ -4889,7 +4889,19 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
             code=getattr(e, "code", None),
             traceback=_traceback.format_exc(),
         )
-        raise
+        if e.code is None:
+            exit_code = 0
+        elif isinstance(e.code, int):
+            exit_code = e.code
+        else:
+            exit_code = 1
+        # ``start_gateway`` has already completed graceful teardown. Route
+        # planned restart/fatal-config exits through the same hard-exit
+        # backstop as ``python -m gateway.run`` so CPython finalization cannot
+        # wait indefinitely for a wedged non-daemon tool worker while launchd
+        # still considers the old gateway PID alive.
+        _exit_after_graceful_shutdown(exit_code)
+        return
     except BaseException as e:
         # Absolutely everything else: Exception, asyncio.CancelledError,
         # even exotic BaseException subclasses. We want the cause logged.
