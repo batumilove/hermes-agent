@@ -448,6 +448,22 @@ class TestStripThinkBlocks:
     def test_no_blocks_unchanged(self, agent):
         assert agent._strip_think_blocks("hello world") == "hello world"
 
+    def test_multimodal_parts_join_text_and_drop_non_text(self, agent):
+        content = [
+            "prefix",
+            {"type": "text", "text": "<think>hidden</think> visible"},
+            {"type": "image_url", "image_url": {"url": "https://example.invalid/x"}},
+            {"type": "audio", "audio": "ignored"},
+        ]
+
+        result = agent._strip_think_blocks(content)
+
+        assert "prefix" in result
+        assert "visible" in result
+        assert "hidden" not in result
+        assert "example.invalid" not in result
+        assert "ignored" not in result
+
     def test_single_block_removed(self, agent):
         result = agent._strip_think_blocks("<think>reasoning</think> answer")
         assert "reasoning" not in result
@@ -629,6 +645,19 @@ class TestStripThinkBlocks:
         assert "let me plan" not in result
         assert "<tool_call>" not in result
         assert "final answer" in result
+
+
+class TestInterimAssistantVisibleText:
+    def test_multimodal_user_content_is_flattened_before_reasoning_scrub(self, agent):
+        message = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Translate"},
+                {"type": "image_url", "image_url": {"url": "https://example.invalid/x"}},
+            ],
+        }
+
+        assert agent._interim_assistant_visible_text(message) == "Translate"
 
 
 class TestExtractReasoning:
