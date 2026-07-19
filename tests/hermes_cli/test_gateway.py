@@ -10,9 +10,12 @@ import pytest
 import hermes_cli.gateway as gateway
 
 
-def _install_fake_gateway_run(monkeypatch, start_gateway):
+def _install_fake_gateway_run(
+    monkeypatch, start_gateway, exit_after_graceful_shutdown=lambda _code: None
+):
     module = ModuleType("gateway.run")
     module.start_gateway = start_gateway
+    setattr(module, "_exit_after_graceful_shutdown", exit_after_graceful_shutdown)
     monkeypatch.setitem(sys.modules, "gateway.run", module)
     # ``run_gateway()`` calls ``refresh_systemd_unit_if_needed()`` on every
     # invocation so that restart settings stay current after exit-code-75
@@ -76,6 +79,27 @@ def test_run_gateway_exits_nonzero_when_start_gateway_reports_failure(monkeypatc
 
     assert exc_info.value.code == 1
     assert calls == [(True, None)]
+
+
+def test_run_gateway_hard_exits_after_planned_service_restart(monkeypatch):
+    exit_codes = []
+
+    def fake_start_gateway(*, replace, verbosity):
+        return object()
+
+    def fake_asyncio_run(coro):
+        raise SystemExit(75)
+
+    _install_fake_gateway_run(
+        monkeypatch,
+        fake_start_gateway,
+        exit_after_graceful_shutdown=exit_codes.append,
+    )
+    monkeypatch.setattr(gateway.asyncio, "run", fake_asyncio_run)
+
+    gateway.run_gateway(replace=True)
+
+    assert exit_codes == [75]
 
 
 def test_run_gateway_refuses_root_in_official_docker(monkeypatch, tmp_path, capsys):
