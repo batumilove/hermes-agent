@@ -921,6 +921,56 @@ class TestRunQueue:
         assert admitted == ["w0", "w2"]
 
     @pytest.mark.asyncio
+    async def test_atomic_admission_fresh_request_cannot_barge_ahead(self):
+        """An older FIFO waiter owns a freed slot before any fresh request."""
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 1
+        adapter._inflight_agent_runs = 1
+        release_old = asyncio.Event()
+        admitted: list[str] = []
+
+        async def waiter(label: str, release: asyncio.Event):
+            response = await adapter._await_run_queue_slot()
+            assert response is None
+            reservation = _api_agent_request_reservation.get()
+            assert reservation and reservation["active"]
+            admitted.append(label)
+            await release.wait()
+            reservation["active"] = False
+            adapter._pending_agent_requests = max(0, adapter._pending_agent_requests - 1)
+            adapter._notify_run_queue_slot()
+
+        old = asyncio.create_task(waiter("old", release_old))
+        for _ in range(200):
+            if adapter._run_queue_snapshot():
+                break
+            await asyncio.sleep(0.005)
+        assert len(adapter._run_queue_snapshot()) == 1
+
+        # Free the occupied slot and immediately submit a fresh request before
+        # the condition wake-up has a chance to run.
+        adapter._inflight_agent_runs = 0
+        adapter._notify_run_queue_slot()
+        release_new = asyncio.Event()
+        new = asyncio.create_task(waiter("new", release_new))
+
+        for _ in range(200):
+            if admitted:
+                break
+            await asyncio.sleep(0.005)
+        assert admitted == ["old"]
+        assert len(adapter._run_queue_snapshot()) == 1
+
+        release_old.set()
+        for _ in range(200):
+            if len(admitted) == 2:
+                break
+            await asyncio.sleep(0.005)
+        assert admitted == ["old", "new"]
+        release_new.set()
+        await asyncio.wait_for(asyncio.gather(old, new), timeout=3.0)
+
+    @pytest.mark.asyncio
     async def test_atomic_admission_queue_full_returns_429(self):
         """A fourth waiter receives 429 when the bounded queue is at capacity."""
         adapter = _make_adapter()

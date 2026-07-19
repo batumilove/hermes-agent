@@ -1265,8 +1265,11 @@ class APIServerAdapter(BasePlatformAdapter):
 
                     inflight = self.active_agent_work_count()
 
-                    # Fast path: there is already room before we even enqueue.
-                    if queue_token is None and inflight < limit:
+                    # Fast path is allowed only when no older waiter exists.
+                    # Otherwise a fresh request could barge into a just-freed
+                    # slot before the FIFO head wakes on the condition.
+                    queued = self._run_queue_snapshot()
+                    if queue_token is None and not queued and inflight < limit:
                         reservation = {"active": True}
                         _api_agent_request_reservation.set(reservation)
                         self._pending_agent_requests += 1
