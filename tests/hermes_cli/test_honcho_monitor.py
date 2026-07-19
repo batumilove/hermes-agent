@@ -548,8 +548,53 @@ def test_stale_representation_alerts_when_older_dream_is_still_within_grace():
     alerts = hm.build_alerts(snapshot, previous_state=previous_state)
 
     assert "Deriver stalled: representation backlog with no progress" not in alerts
-    assert "Deriver active work stale (1 active, oldest 10m)" in alerts
+    assert "Representation active work stale (1 active, oldest 10m)" in alerts
     assert not any(alert.startswith("Dream active work stale") for alert in alerts)
+
+
+def test_fresh_dream_does_not_suppress_representation_backlog_stall():
+    snapshot, previous_state = _representation_backlog_without_progress(
+        active_count=1, active_age_s=30
+    )
+    snapshot.deriver.update(
+        {
+            "active_oldest_work_unit_key": "dream:omni:hermes:session:hermes",
+            "active_representation_count": 0,
+            "active_representation_oldest_age_s": 0,
+            "active_dream_count": 1,
+            "active_dream_oldest_age_s": 30,
+            "active_other_count": 0,
+            "active_other_oldest_age_s": 0,
+        }
+    )
+
+    alerts = hm.build_alerts(snapshot, previous_state=previous_state)
+
+    assert "Deriver stalled: representation backlog with no progress" in alerts
+    assert not any("active work stale" in alert for alert in alerts)
+
+
+def test_stale_representation_and_other_work_have_distinct_alerts():
+    snapshot, previous_state = _representation_backlog_without_progress(
+        active_count=2, active_age_s=601
+    )
+    snapshot.deriver.update(
+        {
+            "active_oldest_work_unit_key": "representation:hermes:session:hermes",
+            "active_representation_count": 1,
+            "active_representation_oldest_age_s": 601,
+            "active_dream_count": 0,
+            "active_dream_oldest_age_s": 0,
+            "active_other_count": 1,
+            "active_other_oldest_age_s": 601,
+        }
+    )
+
+    alerts = hm.build_alerts(snapshot, previous_state=previous_state)
+
+    assert "Representation active work stale (1 active, oldest 10m)" in alerts
+    assert "Other active work stale (1 active, oldest 10m)" in alerts
+    assert len(alerts) == len(set(alerts))
 
 
 def _ssh_failure_snapshot() -> hm.HonchoSnapshot:
