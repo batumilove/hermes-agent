@@ -469,26 +469,24 @@ def test_representation_queue_outpacing_docs_triggers_drift_alert():
     assert "Representation queue advancing faster than documents" in alerts
 
 
-def test_representation_backlog_with_no_progress_triggers_deriver_stall_alert():
-    prev = {
+def _representation_backlog_without_progress(
+    *, active_count: int = 0, active_age_s: int = 0
+) -> tuple[hm.HonchoSnapshot, dict]:
+    previous_state = {
         "documents_total": 91594,
         "queue_by_type": {"representation": {"pending": 7050, "done": 373}},
     }
-    snapshot = {
-        "services": {"api_ok": True, "deriver_up": True, "db_ok": True, "redis_ok": True},
-        "pipeline": {
+    snapshot = hm.HonchoSnapshot(
+        services={"api_ok": True, "deriver_up": True, "db_ok": True, "redis_ok": True},
+        pipeline={
             "embedding": {
                 "model": "qwen3-embedding-8b-1536",
                 "base_url": "http://100.69.54.37:11435/v1",
                 "dimensions_mode": "never",
                 "vector_dimensions": "1536",
             },
-            "deriver": {"model": "gemma12b-polar-gpustack", "base_url": "http://100.71.155.95:18081/v1"},
-            "summary": {"model": "mlx-community--Qwen3.5-4B-4bit", "base_url": "http://192.168.10.104:8000/v1"},
-            "dream": {"model": "aeon-ultimate", "base_url": "http://100.69.54.37:8001/v1"},
-            "dialectic": {"model": "mlx-community--Qwen3.5-9B-4bit", "base_url": "http://192.168.10.104:8000/v1"},
         },
-        "db": {
+        db={
             "documents_total": 91594,
             "documents_with_embeddings": 91594,
             "documents_dims": 1536,
@@ -496,16 +494,41 @@ def test_representation_backlog_with_no_progress_triggers_deriver_stall_alert():
             "messages_with_embeddings": 22130,
             "messages_dims": 1536,
         },
-        "queue": {"pending": 7365, "done": 658},
-        "queue_by_type": {"representation": {"pending": 7052, "done": 373}},
-        "errors": {"save_representation": 0, "four_oh_one": 0},
-        "spark_goat": {"ok": True, "latency_s": 1.2, "thinking": False, "model": "aeon-ultimate"},
-        "deriver": {"runs_15m": 0, "last_duration_s": 0, "conclusions": 0},
-    }
+        queue={"pending": 7365, "done": 658},
+        queue_by_type={"representation": {"pending": 7052, "done": 373}},
+        errors={"save_representation": 0, "four_oh_one": 0},
+        spark_goat={"ok": True, "latency_s": 1.2, "thinking": False, "model": "aeon-ultimate"},
+        deriver={
+            "runs_15m": 0,
+            "last_duration_s": 0,
+            "conclusions": 0,
+            "active_count": active_count,
+            "active_oldest_age_s": active_age_s,
+            "active_oldest_work_unit_key": (
+                "representation:hermes:session:hermes" if active_count else ""
+            ),
+        },
+    )
+    return snapshot, previous_state
 
-    alerts = hm.build_alerts(hm.HonchoSnapshot(**snapshot), previous_state=prev)
+
+def test_representation_backlog_with_no_progress_triggers_deriver_stall_alert():
+    snapshot, previous_state = _representation_backlog_without_progress()
+
+    alerts = hm.build_alerts(snapshot, previous_state=previous_state)
 
     assert "Deriver stalled: representation backlog with no progress" in alerts
+
+
+def test_fresh_active_representation_suppresses_backlog_stall_alert():
+    snapshot, previous_state = _representation_backlog_without_progress(
+        active_count=1, active_age_s=2
+    )
+
+    alerts = hm.build_alerts(snapshot, previous_state=previous_state)
+
+    assert "Deriver stalled: representation backlog with no progress" not in alerts
+    assert not any("active work stale" in alert for alert in alerts)
 
 
 def _ssh_failure_snapshot() -> hm.HonchoSnapshot:
