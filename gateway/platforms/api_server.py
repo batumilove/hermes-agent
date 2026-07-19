@@ -715,6 +715,11 @@ def _admit_api_agent_request(handler):
     still parsing its body or resolving session state. The mutable reservation
     is intentionally shared with child tasks so agent/task bookkeeping releases
     this one slot exactly once.
+
+    The run-queue admission itself is atomic: a request must reserve its slot
+    *inside* the queue wait loop before the await that lets other tasks run.
+    This closes the gap where a released slot could be claimed by every waiter
+    that woke between release and re-check (#7483).
     """
     @wraps(handler)
     async def _wrapped(self, request, *args, **kwargs):
@@ -727,16 +732,16 @@ def _admit_api_agent_request(handler):
         queued_response = await self._await_run_queue_slot()
         if queued_response is not None:
             return queued_response
-        reservation = {"active": True}
-        token = _api_agent_request_reservation.set(reservation)
-        self._pending_agent_requests += 1
+        # Reservation is set atomically by the queue when it admits us.
         try:
             return await handler(self, request, *args, **kwargs)
         finally:
-            if reservation["active"]:
+            reservation = _api_agent_request_reservation.get()
+            if reservation and reservation["active"]:
                 reservation["active"] = False
                 self._pending_agent_requests = max(0, self._pending_agent_requests - 1)
-            _api_agent_request_reservation.reset(token)
+                self._notify_run_queue_slot()
+            # Reset only the token we own; the queue sets the var when it admits.
 
     return _wrapped
 
@@ -821,6 +826,7 @@ def _release_pending_api_work(adapter, reservation: dict[str, bool]) -> None:
     if reservation["active"]:
         reservation["active"] = False
         adapter._pending_agent_requests = max(0, adapter._pending_agent_requests - 1)
+        adapter._notify_run_queue_slot()
 
 
 @contextmanager
@@ -1102,6 +1108,19 @@ class APIServerAdapter(BasePlatformAdapter):
         self._pending_agent_requests: int = 0
         self._run_queue_closed = False
         self._run_queue_entries: list[dict[str, Any]] = []
+        # Lazy-init: asyncio synchronization primitives must bind to the running
+        # event loop, not the loop active at adapter construction time. The queue
+        # lock + condition serialize admission so exactly one waiter can reserve a
+        # freed slot atomically.
+        self._run_queue_lock: Optional[asyncio.Lock] = None
+        self._run_queue_cond: Optional[asyncio.Condition] = None
+
+    def _get_run_queue_cond(self) -> asyncio.Condition:
+        """Return the queue condition, creating it on the running event loop."""
+        if self._run_queue_cond is None:
+            self._run_queue_lock = asyncio.Lock()
+            self._run_queue_cond = asyncio.Condition(self._run_queue_lock)
+        return self._run_queue_cond
 
     def active_agent_work_count(self) -> int:
         """Return all live agent work owned by this API adapter.
@@ -1197,54 +1216,90 @@ class APIServerAdapter(BasePlatformAdapter):
     def _run_queue_drain(self, reason: str) -> None:
         self._run_queue_closed = True
         self._run_queue_entries.clear()
+        self._notify_run_queue_slot()
+
+    def _notify_run_queue_slot(self) -> None:
+        """Wake queue waiters so the head of the FIFO queue can compete for the slot."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        async def _wake():
+            cond = self._get_run_queue_cond()
+            async with cond:
+                cond.notify_all()
+
+        loop.create_task(_wake())
 
     async def _await_run_queue_slot(self) -> Optional["web.Response"]:
-        """Wait in a bounded FIFO queue until an agent-run slot is available."""
+        """Wait in a bounded FIFO queue until an agent-run slot is available.
+
+        Admission is atomic: a slot is reserved inside the queue condition's
+        lock. The lock is held for the check-reserve block and released during
+        ``await cond.wait()``. This closes the window where multiple waiters
+        could observe a freed slot before the head of the FIFO queue had
+        reserved it.
+        """
         limit = self._max_concurrent_runs
         if limit <= 0:
             return None
 
+        cond = self._get_run_queue_cond()
         queue_id = f"http-{uuid.uuid4().hex}"
         queue_token = None
         try:
-            while True:
-                if self._run_queue_closed:
-                    if queue_token is not None:
-                        queue_token.cancel()
-                    return web.json_response(
-                        _openai_error(
-                            "Gateway is draining queued work; retry shortly.",
-                            code="gateway_draining",
-                        ),
-                        status=503,
-                        headers={"Retry-After": "1"},
-                    )
-
-                queued = self._run_queue_snapshot()
-                inflight = self.active_agent_work_count()
-                if queue_token is None and not queued and inflight < limit:
-                    return None
-
-                if queue_token is None:
-                    try:
-                        queue_token = self._run_queue_enqueue(queue_id, "")
-                    except asyncio.QueueFull:
+            async with cond:
+                while True:
+                    if self._run_queue_closed:
+                        if queue_token is not None:
+                            queue_token.cancel()
                         return web.json_response(
                             _openai_error(
-                                f"Agent run queue is full (max {limit * 3})",
-                                err_type="rate_limit_error",
-                                code="run_queue_full",
+                                "Gateway is draining queued work; retry shortly.",
+                                code="gateway_draining",
                             ),
-                            status=429,
+                            status=503,
                             headers={"Retry-After": "1"},
                         )
+
+                    inflight = self.active_agent_work_count()
+
+                    # Fast path: there is already room before we even enqueue.
+                    if queue_token is None and inflight < limit:
+                        reservation = {"active": True}
+                        _api_agent_request_reservation.set(reservation)
+                        self._pending_agent_requests += 1
+                        return None
+
+                    # Enqueue on first iteration if we haven't already.
+                    if queue_token is None:
+                        try:
+                            queue_token = self._run_queue_enqueue(queue_id, "")
+                        except asyncio.QueueFull:
+                            return web.json_response(
+                                _openai_error(
+                                    f"Agent run queue is full (max {limit * 3})",
+                                    err_type="rate_limit_error",
+                                    code="run_queue_full",
+                                ),
+                                status=429,
+                                headers={"Retry-After": "1"},
+                            )
+
+                    # Head-of-queue admission: only the FIFO head may reserve the
+                    # freed slot. Reservation + token release are inside the lock so
+                    # no other waiter can observe the slot until it is owned.
                     queued = self._run_queue_snapshot()
+                    if queued and queued[0][0] == queue_id and inflight < limit:
+                        reservation = {"active": True}
+                        _api_agent_request_reservation.set(reservation)
+                        self._pending_agent_requests += 1
+                        queue_token.release()
+                        cond.notify_all()
+                        return None
 
-                if queued and queued[0][0] == queue_id and inflight < limit:
-                    queue_token.release()
-                    return None
-
-                await asyncio.sleep(0.025)
+                    await cond.wait()
         except asyncio.CancelledError:
             if queue_token is not None:
                 queue_token.cancel()
@@ -2564,6 +2619,14 @@ class APIServerAdapter(BasePlatformAdapter):
     @_admit_api_agent_request
     async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/chat — one synchronous agent turn."""
+        # Bound total in-flight agent runs (configurable; #7483).
+        # Admission already reserved a slot atomically in the queue; this
+        # secondary limiter only rejects when the cap is reached through
+        # non-queued paths (e.g. /v1/runs tasks).
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            return limited
+
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
@@ -2606,6 +2669,14 @@ class APIServerAdapter(BasePlatformAdapter):
     @_admit_api_agent_request
     async def _handle_session_chat_stream(self, request: "web.Request") -> "web.StreamResponse":
         """POST /api/sessions/{session_id}/chat/stream — SSE wrapper over _run_agent."""
+        # Bound total in-flight agent runs (configurable; #7483).
+        # Admission already reserved a slot atomically in the queue; this
+        # secondary limiter only rejects when the cap is reached through
+        # non-queued paths (e.g. /v1/runs tasks).
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            return limited
+
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
@@ -2746,6 +2817,9 @@ class APIServerAdapter(BasePlatformAdapter):
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
         # Bound total in-flight agent runs (configurable; #7483).
+        # Admission already reserved a slot atomically in the queue; this
+        # secondary limiter only rejects when the cap is reached through
+        # non-queued paths (e.g. /v1/runs tasks).
         limited = self._concurrency_limited_response()
         if limited is not None:
             return limited
@@ -3933,6 +4007,9 @@ class APIServerAdapter(BasePlatformAdapter):
     async def _handle_responses(self, request: "web.Request") -> "web.Response":
         """POST /v1/responses — OpenAI Responses API format."""
         # Bound total in-flight agent runs (configurable; #7483).
+        # Admission already reserved a slot atomically in the queue; this
+        # secondary limiter only rejects when the cap is reached through
+        # non-queued paths (e.g. /v1/runs tasks).
         limited = self._concurrency_limited_response()
         if limited is not None:
             return limited
@@ -4852,6 +4929,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return await loop.run_in_executor(None, _run)
         finally:
             self._inflight_agent_runs -= 1
+            self._notify_run_queue_slot()
 
     # ------------------------------------------------------------------
     # /v1/runs — structured event streaming
@@ -4931,6 +5009,10 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Enforce concurrency limit (shared across all agent-serving
         # endpoints; configurable via gateway.api_server.max_concurrent_runs).
+        # /v1/runs does not currently participate in the FIFO queue; it
+        # returns 429 immediately when the cap is reached. The pending-work
+        # reservation from @_admit_api_agent_request still keeps the request
+        # visible to shutdown draining.
         limited = self._concurrency_limited_response()
         if limited is not None:
             return limited
@@ -5249,6 +5331,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
                 self._stopping_run_ids.discard(run_id)
+                self._notify_run_queue_slot()
 
         self._activate_admitted_request()
         task = asyncio.create_task(_run_and_close())
