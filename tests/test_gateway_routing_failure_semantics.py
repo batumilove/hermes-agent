@@ -449,3 +449,67 @@ def test_sessions_json_compatibility_after_db_failure(tmp_path, monkeypatch):
     assert sessions_file.exists()
     data = json.loads(sessions_file.read_text(encoding="utf-8"))
     assert data["k"] == {"session_id": "s1"}
+
+
+# ---------------------------------------------------------------------------
+# Review blockers: legacy migration durability and reset atomicity
+# ---------------------------------------------------------------------------
+
+
+def test_legacy_json_import_stays_pending_until_written_to_db(tmp_path):
+    """JSON-only routes must not enter the durable baseline before SQLite has them."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    legacy = _make_entry("legacy", "legacy-session")
+    (tmp_path / "sessions.json").write_text(
+        json.dumps({"legacy": legacy.to_dict()}), encoding="utf-8"
+    )
+    try:
+        config = GatewayConfig(
+            write_sessions_json=False,
+            default_reset_policy=SessionResetPolicy(mode="none"),
+        )
+        with patch("hermes_state.SessionDB", return_value=db):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._ensure_loaded()
+
+        assert set(store._entries) == {"legacy"}
+        assert store._persisted_routing_data == {}
+
+        store._entries["other"] = _make_entry("other", "other-session")
+        store._save()
+
+        rows = db.load_gateway_routing_entries(scope=store._routing_scope())
+        assert set(rows) == {"legacy", "other"}
+        assert set(store._persisted_routing_data) == {"legacy", "other"}
+    finally:
+        db.close()
+
+
+def test_reset_session_uses_atomic_full_scope_reconciliation(tmp_path, monkeypatch):
+    """A reset is a reconciliation boundary, never a routine point write."""
+    config = GatewayConfig(
+        write_sessions_json=False,
+        default_reset_policy=SessionResetPolicy(mode="none"),
+    )
+    with patch("gateway.session.SessionStore._ensure_loaded"):
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+
+    old = _make_entry("route", "old-session")
+    store._loaded = True
+    store._entries = {"route": old}
+    store._persisted_routing_data = {"route": old.to_dict()}
+    store._persisted_routing_generation = 0
+    db = MagicMock()
+    store._db = db
+    store._routing_scope = lambda: "gateway"
+    monkeypatch.setattr(store, "_save_sessions_json", lambda data: None)
+
+    new_entry = store.reset_session("route")
+
+    assert new_entry is not None
+    db.replace_gateway_routing_entries.assert_called_once()
+    db.save_gateway_routing_entry.assert_not_called()
+    db.delete_gateway_routing_entries.assert_not_called()
+    persisted, = db.replace_gateway_routing_entries.call_args.args
+    assert set(persisted) == {"route"}
+    assert json.loads(persisted["route"])["session_id"] == new_entry.session_id

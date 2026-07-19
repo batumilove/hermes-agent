@@ -1098,6 +1098,12 @@ class SessionStore:
         # partially-initialized stores without __init__ (same pattern as
         # _prune_stale_sessions_locked).
         db_had_entries = False
+        # The durable baseline must describe rows that were actually loaded
+        # from SQLite. Legacy sessions.json entries are folded into
+        # ``_entries`` below, but remain pending until a later DB write
+        # succeeds; treating them as already durable can silently skip their
+        # migration when an unrelated route is saved first.
+        db_persisted_routing_data: Dict[str, Any] = {}
         _db = getattr(self, "_db", None)
         if _db:
             loader = getattr(_db, "load_gateway_routing_entries", None)
@@ -1112,7 +1118,10 @@ class SessionStore:
                             logger.warning(
                                 "Skipping invalid routing entry %r: %s", key, e
                             )
-                    db_had_entries = bool(self._entries)
+                    db_persisted_routing_data = {
+                        key: entry.to_dict() for key, entry in self._entries.items()
+                    }
+                    db_had_entries = bool(db_persisted_routing_data)
                 except Exception as e:
                     logger.warning(
                         "gateway.session: state.db routing load failed: %s", e
@@ -1161,9 +1170,7 @@ class SessionStore:
             except Exception as e:
                 print(f"[gateway] Warning: Failed to load sessions: {e}")
 
-        self._persisted_routing_data = {
-            key: entry.to_dict() for key, entry in self._entries.items()
-        }
+        self._persisted_routing_data = db_persisted_routing_data
         self._loaded = True
 
         # Prune any sessions.json entries that point to sessions already ended
@@ -2384,7 +2391,7 @@ class SessionStore:
             )
 
             self._entries[session_key] = new_entry
-            self._save()
+            self._save(atomic=True)
             db_create_kwargs = {
                 "session_id": session_id,
                 "source": old_entry.platform.value if old_entry.platform else "unknown",
