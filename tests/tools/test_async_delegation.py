@@ -341,6 +341,121 @@ def test_submit_failure_removes_durable_running_record(tmp_path, monkeypatch):
         assert conn.execute("SELECT COUNT(*) FROM async_delegations").fetchone()[0] == 0
 
 
+def test_prune_lock_is_best_effort_after_dispatch_is_persisted(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        ad,
+        "_prune_durable_records",
+        lambda: (_ for _ in ()).throw(ad.sqlite3.OperationalError("database is locked")),
+    )
+
+    result = ad.dispatch_async_delegation(
+        goal="still runs", context=None, toolsets=None, role="leaf", model="m",
+        session_key="owner",
+        runner=lambda: {"status": "completed", "summary": "done"},
+    )
+
+    assert result["status"] == "dispatched"
+    event = _drain_for(result["delegation_id"])
+    assert event is not None
+    assert event["summary"] == "done"
+    durable = ad.get_durable_delegation(result["delegation_id"])
+    assert durable is not None
+    assert durable["state"] == "completed"
+
+
+def test_persist_failure_before_submit_releases_capacity(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    persist_dispatch = ad._persist_dispatch
+
+    def fail_persist(record):
+        persist_dispatch(record)
+        raise ad.sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(ad, "_persist_dispatch", fail_persist)
+    result = ad.dispatch_async_delegation(
+        goal="never submitted", context=None, toolsets=None, role="leaf", model="m",
+        session_key="owner", runner=lambda: {}, max_async_children=1,
+    )
+
+    assert result["status"] == "rejected"
+    assert "persist" in result["error"].lower()
+    assert ad.active_count() == 0
+    assert ad.list_async_delegations() == []
+    with ad._DB_LOCK, ad._connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM async_delegations").fetchone()[0] == 0
+
+    monkeypatch.setattr(ad, "_persist_dispatch", persist_dispatch)
+    retry = ad.dispatch_async_delegation(
+        goal="uses released slot", context=None, toolsets=None, role="leaf", model="m",
+        session_key="owner",
+        runner=lambda: {"status": "completed", "summary": "done"},
+        max_async_children=1,
+    )
+    assert retry["status"] == "dispatched"
+    event = _drain_for(retry["delegation_id"])
+    assert event is not None
+    assert event["summary"] == "done"
+
+
+def test_batch_persist_failure_before_submit_releases_capacity(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    persist_dispatch = ad._persist_dispatch
+
+    def fail_persist(record):
+        persist_dispatch(record)
+        raise ad.sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(ad, "_persist_dispatch", fail_persist)
+    raised = None
+    result = None
+    try:
+        result = ad.dispatch_async_delegation_batch(
+            goals=["never submitted"], context=None, toolsets=None, role="leaf",
+            model="m", session_key="owner", runner=lambda: {},
+            max_async_children=1,
+        )
+    except ad.sqlite3.OperationalError as exc:
+        raised = str(exc)
+
+    active_after_failure = ad.active_count()
+    listed_after_failure = ad.list_async_delegations()
+    with ad._DB_LOCK, ad._connect() as conn:
+        durable_after_failure = conn.execute(
+            "SELECT COUNT(*) FROM async_delegations"
+        ).fetchone()[0]
+
+    monkeypatch.setattr(ad, "_persist_dispatch", persist_dispatch)
+    retry = ad.dispatch_async_delegation_batch(
+        goals=["uses released slot"], context=None, toolsets=None, role="leaf",
+        model="m", session_key="owner",
+        runner=lambda: {
+            "results": [{"status": "completed", "summary": "done"}],
+        },
+        max_async_children=1,
+    )
+
+    observed = {
+        "raised": raised,
+        "result_status": result and result["status"],
+        "active_after_failure": active_after_failure,
+        "listed_after_failure": len(listed_after_failure),
+        "durable_after_failure": durable_after_failure,
+        "retry_status": retry["status"],
+    }
+    assert observed == {
+        "raised": None,
+        "result_status": "rejected",
+        "active_after_failure": 0,
+        "listed_after_failure": 0,
+        "durable_after_failure": 0,
+        "retry_status": "dispatched",
+    }
+    event = _drain_for(retry["delegation_id"])
+    assert event is not None
+    assert event["results"][0]["summary"] == "done"
+
+
 def test_pending_retention_prunes_delivered_before_undelivered(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(ad, "_MAX_RETAINED_COMPLETED", 2)

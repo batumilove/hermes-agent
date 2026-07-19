@@ -149,7 +149,10 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
              record["dispatched_at"], now, __import__("os").getpid(),
              owner_started_at, json.dumps(task_payload)),
         )
-    _prune_durable_records()
+    try:
+        _prune_durable_records()
+    except Exception as exc:  # noqa: BLE001 — retention must not block dispatch
+        logger.warning("Async delegation durable-record pruning failed: %s", exc)
 
 
 def _delete_durable_delegation(delegation_id: str) -> None:
@@ -520,7 +523,24 @@ def dispatch_async_delegation(
             }
         _records[delegation_id] = record
 
-    _persist_dispatch(record)
+    try:
+        _persist_dispatch(record)
+    except Exception as exc:  # noqa: BLE001 — fail closed before scheduling
+        with _records_lock:
+            _records.pop(delegation_id, None)
+        try:
+            _delete_durable_delegation(delegation_id)
+        except Exception as cleanup_exc:  # noqa: BLE001 — preserve rejection result
+            logger.warning(
+                "Async delegation %s: failed to clean up rejected dispatch: %s",
+                delegation_id,
+                cleanup_exc,
+            )
+        return {
+            "status": "rejected",
+            "error": f"Failed to persist async delegation before scheduling: {exc}",
+        }
+
     executor = _get_executor(max_async_children)
 
     def _worker() -> None:
@@ -716,7 +736,25 @@ def dispatch_async_delegation_batch(
             }
         _records[delegation_id] = record
 
-    _persist_dispatch(record)
+    try:
+        _persist_dispatch(record)
+    except Exception as exc:  # noqa: BLE001 — fail closed before scheduling
+        with _records_lock:
+            _records.pop(delegation_id, None)
+        try:
+            _delete_durable_delegation(delegation_id)
+        except Exception as cleanup_exc:  # noqa: BLE001 — preserve rejection result
+            logger.warning(
+                "Async delegation batch %s: failed to clean up rejected dispatch: %s",
+                delegation_id,
+                cleanup_exc,
+            )
+        return {
+            "status": "rejected",
+            "error": (
+                f"Failed to persist async delegation batch before scheduling: {exc}"
+            ),
+        }
     executor = _get_executor(max_async_children)
 
     def _worker() -> None:
