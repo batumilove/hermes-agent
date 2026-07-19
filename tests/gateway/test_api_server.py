@@ -29,6 +29,7 @@ from gateway.platforms.api_server import (
     APIServerAdapter,
     ResponseStore,
     _IdempotencyCache,
+    _api_agent_request_reservation,
     _derive_chat_session_id,
     _redact_api_error_text,
     check_api_server_requirements,
@@ -776,6 +777,187 @@ class TestRunQueue:
         assert second_response.status == 200
         assert call_count == 2
         assert adapter._run_queue_snapshot() == []
+
+    @pytest.mark.asyncio
+    async def test_atomic_admission_allows_exactly_one_waiter(self):
+        """When one slot frees, only the head of the FIFO queue is admitted."""
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 1
+        adapter._inflight_agent_runs = 1
+        blocker = asyncio.Event()
+        admitted: list[str] = []
+
+        async def waiter(label: str):
+            response = await adapter._await_run_queue_slot()
+            if response is not None:
+                return label, "queued"
+            reservation = _api_agent_request_reservation.get()
+            assert reservation and reservation["active"]
+            admitted.append(label)
+            await blocker.wait()
+            reservation["active"] = False
+            adapter._pending_agent_requests = max(0, adapter._pending_agent_requests - 1)
+            adapter._notify_run_queue_slot()
+            return label, "admitted"
+
+        tasks = [asyncio.create_task(waiter(f"w{i}")) for i in range(3)]
+        for _ in range(200):
+            if len(adapter._run_queue_entries) >= 3:
+                break
+            await asyncio.sleep(0.01)
+        assert len(adapter._run_queue_entries) >= 3
+
+        adapter._inflight_agent_runs = 0
+        adapter._notify_run_queue_slot()
+
+        for _ in range(200):
+            if len(admitted) >= 1:
+                break
+            await asyncio.sleep(0.01)
+        assert len(admitted) == 1, admitted
+        assert adapter._pending_agent_requests == 1
+        # Two waiters still queued; the admitted one is not in the queue.
+        assert len(adapter._run_queue_snapshot()) == 2
+
+        blocker.set()
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=3.0)
+        assert admitted == ["w0", "w1", "w2"]
+
+    @pytest.mark.asyncio
+    async def test_atomic_admission_releases_sequentially_in_fifo_order(self):
+        """Each finished run admits exactly the next FIFO waiter."""
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 1
+        adapter._inflight_agent_runs = 1
+        release_events = [asyncio.Event() for _ in range(3)]
+        admitted: list[str] = []
+
+        async def waiter(idx: int):
+            response = await adapter._await_run_queue_slot()
+            if response is not None:
+                return idx, "queued"
+            reservation = _api_agent_request_reservation.get()
+            assert reservation and reservation["active"]
+            admitted.append(f"w{idx}")
+            await release_events[idx].wait()
+            reservation["active"] = False
+            adapter._pending_agent_requests = max(0, adapter._pending_agent_requests - 1)
+            adapter._notify_run_queue_slot()
+            return idx, "admitted"
+
+        tasks = [asyncio.create_task(waiter(i)) for i in range(3)]
+        for _ in range(200):
+            if len(adapter._run_queue_entries) >= 3:
+                break
+            await asyncio.sleep(0.01)
+        assert len(adapter._run_queue_entries) >= 3
+
+        adapter._inflight_agent_runs = 0
+        adapter._notify_run_queue_slot()
+
+        # Wait for w0 to be admitted, then release it, then w1, then w2.
+        for idx in range(3):
+            for _ in range(200):
+                if len(admitted) >= idx + 1:
+                    break
+                await asyncio.sleep(0.01)
+            assert len(admitted) == idx + 1, f"step={idx} admitted={admitted}"
+            assert admitted[idx] == f"w{idx}"
+            release_events[idx].set()
+            if idx < 2:
+                # Give the released waiter a chance to decrement state and notify.
+                await asyncio.sleep(0.05)
+
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=3.0)
+        assert admitted == ["w0", "w1", "w2"]
+
+    @pytest.mark.asyncio
+    async def test_atomic_admission_cancelling_waiter_skips_turn(self):
+        """Cancelling a queued waiter removes it and preserves FIFO for the rest."""
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 1
+        adapter._inflight_agent_runs = 1
+        blocker = asyncio.Event()
+        admitted: list[str] = []
+
+        async def waiter(label: str):
+            response = await adapter._await_run_queue_slot()
+            if response is not None:
+                return label, "queued"
+            reservation = _api_agent_request_reservation.get()
+            assert reservation and reservation["active"]
+            admitted.append(label)
+            await blocker.wait()
+            reservation["active"] = False
+            adapter._pending_agent_requests = max(0, adapter._pending_agent_requests - 1)
+            adapter._notify_run_queue_slot()
+            return label, "admitted"
+
+        tasks = [asyncio.create_task(waiter(f"w{i}")) for i in range(3)]
+        for _ in range(200):
+            if len(adapter._run_queue_entries) >= 3:
+                break
+            await asyncio.sleep(0.01)
+        assert len(adapter._run_queue_entries) >= 3
+
+        # Cancel the middle waiter before any slot frees.
+        tasks[1].cancel()
+        try:
+            await tasks[1]
+        except asyncio.CancelledError:
+            pass
+
+        adapter._inflight_agent_runs = 0
+        adapter._notify_run_queue_slot()
+
+        for _ in range(200):
+            if len(admitted) >= 1:
+                break
+            await asyncio.sleep(0.01)
+        assert len(admitted) == 1 and admitted[0] == "w0"
+
+        blocker.set()
+        await asyncio.wait_for(asyncio.gather(*[t for t in tasks if not t.done()]), timeout=3.0)
+        assert admitted == ["w0", "w2"]
+
+    @pytest.mark.asyncio
+    async def test_atomic_admission_queue_full_returns_429(self):
+        """A fourth waiter receives 429 when the bounded queue is at capacity."""
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 1
+        adapter._inflight_agent_runs = 1
+        blocker = asyncio.Event()
+
+        async def waiter(label: str):
+            response = await adapter._await_run_queue_slot()
+            if response is not None:
+                return label, response
+            reservation = _api_agent_request_reservation.get()
+            assert reservation and reservation["active"]
+            await blocker.wait()
+            reservation["active"] = False
+            adapter._pending_agent_requests = max(0, adapter._pending_agent_requests - 1)
+            adapter._notify_run_queue_slot()
+            return label, "admitted"
+
+        tasks = [asyncio.create_task(waiter(f"w{i}")) for i in range(4)]
+        for _ in range(200):
+            if any(t.done() for t in tasks):
+                break
+            await asyncio.sleep(0.01)
+
+        # One task should have completed with 429 because the queue cap is 3.
+        done = [t for t in tasks if t.done()]
+        assert len(done) == 1
+        label, result = await done[0]
+        assert result.status == 429
+        assert result.headers.get("Retry-After")
+
+        # Free the slot so the three queued waiters can finish and be cleaned up.
+        adapter._inflight_agent_runs = 0
+        adapter._notify_run_queue_slot()
+        blocker.set()
+        await asyncio.wait_for(asyncio.gather(*[t for t in tasks if not t.done()]), timeout=3.0)
 
     def test_run_status_changes_do_not_mutate_session_routing(self):
         adapter = _make_adapter()
