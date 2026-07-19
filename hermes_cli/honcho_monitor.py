@@ -329,6 +329,12 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
     deriver = snapshot.deriver or {}
     active_count = int(deriver.get("active_count") or 0)
     active_oldest_age_s = int(float(deriver.get("active_oldest_age_s") or 0))
+    has_per_task_active_stats = "active_representation_count" in deriver
+    active_representation_count = (
+        int(deriver.get("active_representation_count") or 0)
+        if has_per_task_active_stats
+        else active_count
+    )
 
     if previous_state:
         prev_rep_state = previous_state.get("queue_by_type", {}).get("representation")
@@ -346,11 +352,11 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
 
             rep_pending = int(snapshot.queue_by_type.get("representation", {}).get("pending", 0))
             prev_rep_pending = int(prev_rep_state.get("pending", 0))
-            # Active work is handled by the task-aware stale-work check below.
-            # Do not call a fresh claim stalled merely because no completion is
-            # visible yet; if it wedges, that check alerts at its task threshold.
+            # Active representation work is handled by the task-aware stale-work
+            # check below. Dream/other work must not mask an idle representation
+            # backlog; legacy snapshots fall back to the aggregate active count.
             if (
-                active_count == 0
+                active_representation_count == 0
                 and rep_pending > 0
                 and prev_rep_pending > 0
                 and rep_delta == 0
@@ -360,12 +366,11 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
 
     active_work_unit_key = str(deriver.get("active_oldest_work_unit_key") or "")
     active_task_type = active_work_unit_key.partition(":")[0]
-    has_per_task_active_stats = "active_representation_count" in deriver
     if has_per_task_active_stats:
         active_groups = (
             (
-                "Deriver",
-                int(deriver.get("active_representation_count") or 0),
+                "Representation",
+                active_representation_count,
                 int(float(deriver.get("active_representation_oldest_age_s") or 0)),
                 DERIVER_STALE_ACTIVE_SECONDS,
             ),
@@ -376,7 +381,7 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
                 DREAM_STALE_ACTIVE_SECONDS,
             ),
             (
-                "Deriver",
+                "Other",
                 int(deriver.get("active_other_count") or 0),
                 int(float(deriver.get("active_other_oldest_age_s") or 0)),
                 DERIVER_STALE_ACTIVE_SECONDS,
