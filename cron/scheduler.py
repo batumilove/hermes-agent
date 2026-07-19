@@ -197,10 +197,15 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
                 "Full details saved in cron output."
             )
 
-    # Match authentication/authorization wording at a word boundary and the
-    # 401/403 status codes as whole tokens, so "oauth", "4015" and similar do
-    # not trip a misleading auth message.
-    if re.search(r"authenticat|authoriz", lower) or re.search(r"\b(401|403)\b", text):
+    # Only agent-backed jobs can fail model-provider authentication. Script-only
+    # watchdogs may legitimately mention service authentication (for example,
+    # Tailscale SSH's "To authenticate" handoff); preserve that script context.
+    # Match authentication/authorization wording and 401/403 as whole tokens so
+    # "oauth", "4015" and similar do not trip the provider summary.
+    if not job.get("no_agent") and (
+        re.search(r"authenticat|authoriz", lower)
+        or re.search(r"\b(401|403)\b", text)
+    ):
         return (
             f"⚠️ Cron '{job_name}' failed: provider authentication error. "
             "Full details saved in cron output."

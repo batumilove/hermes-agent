@@ -310,6 +310,31 @@ def test_no_agent_service_timeout_failure_summary_keeps_service_context(hermes_e
     assert "DNS timeout/unreachable" in summary
 
 
+def test_no_agent_auth_wording_keeps_script_context(hermes_env):
+    """Script output mentioning authentication must not be blamed on the model provider."""
+    from cron.scheduler import _summarize_cron_failure_for_delivery
+
+    job = {"id": "j1", "name": "Infisical watchdog", "no_agent": True}
+    summary = _summarize_cron_failure_for_delivery(
+        job,
+        "Script exited with code 142\nstdout:\n"
+        "ALERT: Tailscale SSH requires an additional check. To authenticate, visit: https://example.test",
+    )
+
+    assert "provider authentication error" not in summary
+    assert "Tailscale SSH requires an additional check" in summary
+
+
+def test_agent_auth_failure_summary_still_mentions_provider(hermes_env):
+    """Agent cron provider/API authentication failures keep the provider summary."""
+    from cron.scheduler import _summarize_cron_failure_for_delivery
+
+    job = {"id": "j2", "name": "research digest", "no_agent": False}
+    summary = _summarize_cron_failure_for_delivery(job, "HTTP 401: authentication failed")
+
+    assert "provider authentication error" in summary
+
+
 def test_agent_timeout_failure_summary_still_mentions_provider(hermes_env):
     """Agent cron provider/API timeouts keep the provider-oriented summary."""
     from cron.scheduler import _summarize_cron_failure_for_delivery
