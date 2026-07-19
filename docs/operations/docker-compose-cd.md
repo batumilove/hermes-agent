@@ -11,9 +11,11 @@ use the separate repository `ghcr.io/batumilove/hermes-agent-deploy`.
 2. `.github/workflows/deploy-compose.yml` waits for the exact commit's
    `All required checks pass` result from the GitHub Actions app.
 3. The workflow refuses to continue if `batumi/live` has moved to a newer SHA.
-4. BuildKit publishes a Linux/amd64 image with SBOM and provenance. The commit
-   tag and `candidate` tag are discovery aids only; deployment always uses the
-   returned `sha256:` digest.
+4. The workflow resolves the commit tag before building. A verified existing
+   digest is reused; only a definitive registry 404 permits BuildKit to publish
+   a Linux/amd64 image with SBOM and provenance. The commit tag and `candidate`
+   tag are discovery aids only; deployment always uses the returned `sha256:`
+   digest.
 5. The digest is deployed automatically to the `batumi-staging` GitHub
    environment.
 6. After staging validation, `.github/workflows/promote-compose.yml` promotes
@@ -69,10 +71,28 @@ maintainer when available. Staging should not require approval but should allow
 only `batumi/live`.
 
 > `workflow_dispatch` workflows are exposed from the repository's default
-> branch. This fork currently uses `main` as its default while deployment code
-> lives on `batumi/live`. Change the default branch to `batumi/live` only after
-> the staging deployment PR is merged and verified. Automatic staging on push
-> does not depend on this change; manual promotion and rollback do.
+> branch. This fork uses protected `batumi/live` as its default, so manual
+> promotion and rollback use the same reviewed deployment code as automatic
+> staging.
+
+## Publication idempotency
+
+The immutable source tag is `sha-<40-character source SHA>`. Before building,
+`scripts/deploy/resolve_ghcr_digest.py` obtains a scoped GHCR pull token and
+performs an authenticated manifest request:
+
+- `404` with registry error code `MANIFEST_UNKNOWN`: the source tag does not
+  exist and this run may build it. Generic or authorization-masked 404s fail.
+- `200`: the workflow reuses `Docker-Content-Digest` only after
+  authenticated `gh attestation verify` constrains the certificate source SHA,
+  source ref, signer workflow, signer digest, and hosted runner. The SLSA
+  statement must additionally bind that exact subject digest to the expected
+  Git repository/ref URI and commit.
+- Any other registry response, malformed digest, token error, or provenance
+  mismatch: fail closed without building or deploying.
+
+This prevents workflow reruns from replacing the canonical source tag with a
+different rebuild. The mutable `candidate` tag is not a deployment input.
 
 ## Host preparation
 
@@ -134,16 +154,11 @@ The existing isolated target is:
 - Hermes home: `/home/hermes-staging/.hermes-staging`
 - existing profiles: `gateway-canary`, `skill-lab`
 
-The host was unreachable during implementation, so no deployment or host
-mutation was attempted. Before enabling automatic staging:
-
-1. Start and identity-check VM 429 through its Proxmox host.
-2. Re-verify its SSH host key against the recorded VM identity.
-3. Install Docker Compose v2 and prepare the dedicated deployment account/root.
-4. Configure staging-only credentials. Never mount `/home/ubuntu/.hermes` or
-   use the production Telegram token on staging.
-5. Run the manual promotion workflow against staging once, then permit the
-   automatic push workflow.
+VM 429 is prepared with Docker Compose v2, the unprivileged `hermes-deploy`
+account, strict SSH host-key verification, and staging-only persistent state.
+The first digest deployment and rollback were observed successfully before
+automatic staging was enabled. Never mount `/home/ubuntu/.hermes` or use the
+production Telegram token on staging.
 
 ## Production migration safety
 
@@ -196,6 +211,8 @@ values or container logs.
 
 - CI missing, pending, failed, cancelled, or attached to another SHA: no image.
 - Branch advanced while waiting: stale deployment exits.
+- Existing-tag resolution error or provenance mismatch: no build and no
+  deployment.
 - Build or attestation failure: no deployment.
 - Tailscale, SSH, host-key, Compose preflight, or registry pull failure: the
   currently healthy release remains running.
@@ -203,6 +220,7 @@ values or container logs.
 - Automatic rollback also fails: workflow fails loudly for operator action.
 - First deployment fails: unhealthy gateway is stopped.
 
-The deployment lock prevents concurrent host changes. A newer GitHub push
-cancels the older workflow, while the host lock prevents overlapping remote
-operations if cancellation arrives after the remote script has started.
+The workflow concurrency group serializes publication runs without cancellation,
+preventing two reruns from racing to publish the same source tag. Queued stale
+runs fail the protected-branch SHA check. The host deployment lock separately
+prevents overlapping remote changes.

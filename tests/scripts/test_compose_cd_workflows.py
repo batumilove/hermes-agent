@@ -50,6 +50,40 @@ def test_publish_job_has_only_required_write_permissions_and_attests() -> None:
     assert attest["with"]["push-to-registry"] == "true"
 
 
+def test_publish_job_reuses_only_verified_exact_source_artifacts() -> None:
+    workflow = _workflow("deploy-compose.yml")
+    assert workflow["concurrency"]["cancel-in-progress"] == "false"
+    publish = workflow["jobs"]["publish-image"]
+    steps = publish["steps"]
+    resolve = next(step for step in steps if step.get("id") == "resolve")
+    verify = next(step for step in steps if step["name"] == "Verify reused image provenance")
+    build = next(step for step in steps if step.get("id") == "build")
+    attest = next(step for step in steps if step["name"] == "Attest image provenance")
+    login = next(
+        step for step in steps if step["name"] == "Log in to the fork GHCR namespace"
+    )
+
+    assert "resolve_ghcr_digest.py" in resolve["run"]
+    assert resolve["env"]["GHCR_TOKEN"] == "${{ github.token }}"
+    assert steps.index(login) < steps.index(resolve)
+    assert "if" not in login
+    assert build["if"] == "steps.resolve.outputs.exists == 'false'"
+    assert attest["if"] == "steps.resolve.outputs.exists == 'false'"
+    assert verify["if"] == "steps.resolve.outputs.exists == 'true'"
+    assert "gh attestation verify" in verify["run"]
+    assert '--source-digest "$EXPECTED_SHA"' in verify["run"]
+    assert '--source-ref "$GITHUB_REF"' in verify["run"]
+    assert "--signer-workflow" in verify["run"]
+    assert '--signer-digest "$EXPECTED_SHA"' in verify["run"]
+    assert "--deny-self-hosted-runners" in verify["run"]
+    assert "verify_image_attestation.py" in verify["run"]
+    assert '--source-sha "$EXPECTED_SHA"' in verify["run"]
+    assert '--source-uri "$EXPECTED_SOURCE_URI"' in verify["run"]
+    assert publish["outputs"]["digest"] == (
+        "${{ steps.resolve.outputs.digest || steps.build.outputs.digest }}"
+    )
+
+
 def test_deployment_uses_environment_scoped_reusable_workflow() -> None:
     automatic = _workflow("deploy-compose.yml")["jobs"]["deploy-staging"]
     manual = _workflow("promote-compose.yml")["jobs"]["deploy"]

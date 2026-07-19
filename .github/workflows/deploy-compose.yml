@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: hermes-staging-deploy
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   IMAGE_REPOSITORY: ghcr.io/batumilove/hermes-agent-deploy
@@ -77,7 +77,7 @@ jobs:
       id-token: write
       attestations: write
     outputs:
-      digest: ${{ steps.build.outputs.digest }}
+      digest: ${{ steps.resolve.outputs.digest || steps.build.outputs.digest }}
       source-sha: ${{ github.sha }}
     steps:
       - name: Check out the verified commit
@@ -86,9 +86,6 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-
       - name: Log in to the fork GHCR namespace
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
@@ -96,8 +93,55 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
+      - name: Resolve existing source-SHA image
+        id: resolve
+        shell: bash
+        env:
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/deploy/resolve_ghcr_digest.py \
+            --repository "$IMAGE_REPOSITORY" \
+            --reference "sha-$GITHUB_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Verify reused image provenance
+        if: steps.resolve.outputs.exists == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_DIGEST: ${{ steps.resolve.outputs.digest }}
+          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_SOURCE_URI: git+${{ github.server_url }}/${{ github.repository }}@${{ github.ref }}
+        run: |
+          set -euo pipefail
+          evidence=$(mktemp)
+          trap 'rm -f "$evidence"' EXIT
+          gh attestation verify \
+            "oci://${IMAGE_REPOSITORY}@${EXPECTED_DIGEST}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --source-digest "$EXPECTED_SHA" \
+            --source-ref "$GITHUB_REF" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/deploy-compose.yml" \
+            --signer-digest "$EXPECTED_SHA" \
+            --deny-self-hosted-runners \
+            --format json > "$evidence"
+          python3 scripts/deploy/verify_image_attestation.py \
+            --evidence "$evidence" \
+            --repository "$IMAGE_REPOSITORY" \
+            --digest "$EXPECTED_DIGEST" \
+            --source-sha "$EXPECTED_SHA" \
+            --source-uri "$EXPECTED_SOURCE_URI"
+
+      - name: Set up Docker Buildx
+        if: steps.resolve.outputs.exists == 'false'
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+
       - name: Build and publish immutable deployment image
         id: build
+        if: steps.resolve.outputs.exists == 'false'
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
         with:
           context: .
@@ -118,6 +162,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=hermes-deploy-amd64
 
       - name: Attest image provenance
+        if: steps.resolve.outputs.exists == 'false'
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-name: ${{ env.IMAGE_REPOSITORY }}
