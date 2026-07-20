@@ -21,6 +21,7 @@ Checks are intentionally conservative and evidence-oriented:
 - external ``steps[*].uses`` values not pinned to a full 40-char SHA
 - workflows using ``pull_request_target``
 - workflows missing top-level ``permissions``
+- malformed workflow YAML, including duplicate mapping keys
 - runnable jobs missing ``timeout-minutes``
 - invalid ``timeout-minutes`` on reusable workflow-call wrapper jobs
 - standalone workflows missing top-level ``concurrency``
@@ -43,6 +44,7 @@ EXPR = "${{"
 
 
 ACTIONABLE_KEYS = (
+    "yaml_parse_errors",
     "run_expression_hits",
     "unpinned_uses",
     "pull_request_target",
@@ -50,6 +52,33 @@ ACTIONABLE_KEYS = (
     "runnable_jobs_without_timeout",
     "invalid_timeout_on_workflow_callers",
     "standalone_workflows_without_concurrency",
+)
+
+
+class UniqueKeyLoader(yaml.BaseLoader):
+    """BaseLoader variant that rejects duplicate YAML mapping keys."""
+
+
+def construct_unique_mapping(
+    loader: UniqueKeyLoader, node: yaml.nodes.MappingNode, *, deep: bool = False
+) -> dict[Any, Any]:
+    mapping: dict[Any, Any] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in mapping:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key {key!r}",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    construct_unique_mapping,
 )
 
 
@@ -63,7 +92,7 @@ def as_dict(value: Any) -> dict[str, Any]:
 
 def load_workflow(path: Path) -> Any:
     # BaseLoader avoids YAML 1.1 surprises such as `on:` becoming boolean True.
-    return yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    return yaml.load(path.read_text(encoding="utf-8"), Loader=UniqueKeyLoader)
 
 
 def event_names(events: Any) -> set[str]:
@@ -80,6 +109,7 @@ def main() -> int:
     root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path.cwd()
     workflow_dir = root / ".github" / "workflows"
     findings: dict[str, list[dict[str, str]]] = {
+        "yaml_parse_errors": [],
         "run_expression_hits": [],
         "unpinned_uses": [],
         "pull_request_target": [],
@@ -93,7 +123,11 @@ def main() -> int:
 
     for path in sorted(workflow_dir.glob("*.y*ml")):
         rel = str(path.relative_to(root))
-        data = load_workflow(path)
+        try:
+            data = load_workflow(path)
+        except yaml.YAMLError as exc:
+            findings["yaml_parse_errors"].append({"file": rel, "error": str(exc)})
+            continue
         doc = as_dict(data)
 
         if "permissions" not in doc:
