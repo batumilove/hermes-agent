@@ -3,7 +3,8 @@
 
 Compares the atomic full-scope reconciliation path against the point-update
 routine path used by SessionStore._persist_routing_data. Reports p50/p95/max
-latencies for each strategy.
+latencies for each strategy. Every sample writes a distinct value so the
+benchmark cannot silently degrade to no-op updates.
 """
 
 from __future__ import annotations
@@ -22,17 +23,23 @@ def seed_rows(db: SessionDB, n: int = 2297, scope: str = "gateway") -> dict[str,
     return rows
 
 
-def bench_full_replace(db: SessionDB, rows: dict[str, str], scope: str = "gateway") -> float:
+def bench_full_replace(
+    db: SessionDB, rows: dict[str, str], iteration: int, scope: str = "gateway"
+) -> float:
     updated = dict(rows)
-    updated["k0001"] = json.dumps({"session_id": "changed"})
+    updated["k0001"] = json.dumps({"session_id": f"changed-{iteration:04d}"})
     start = time.perf_counter()
     db.replace_gateway_routing_entries(updated, scope=scope)
     return time.perf_counter() - start
 
 
-def bench_point_update(db: SessionDB, rows: dict[str, str], scope: str = "gateway") -> float:
+def bench_point_update(
+    db: SessionDB, rows: dict[str, str], iteration: int, scope: str = "gateway"
+) -> float:
     start = time.perf_counter()
-    db.save_gateway_routing_entry("k0001", json.dumps({"session_id": "changed"}), scope=scope)
+    db.save_gateway_routing_entry(
+        "k0001", json.dumps({"session_id": f"changed-{iteration:04d}"}), scope=scope
+    )
     return time.perf_counter() - start
 
 
@@ -64,8 +71,12 @@ def main() -> None:
         db = SessionDB(db_path=Path(td) / "state.db")
         try:
             rows = seed_rows(db)
-            full_times = [bench_full_replace(db, rows) for _ in range(iterations)]
-            point_times = [bench_point_update(db, rows) for _ in range(iterations)]
+            full_times = [
+                bench_full_replace(db, rows, i) for i in range(iterations)
+            ]
+            point_times = [
+                bench_point_update(db, rows, i) for i in range(iterations)
+            ]
             result = {
                 "rows": len(rows),
                 "scope": "gateway",

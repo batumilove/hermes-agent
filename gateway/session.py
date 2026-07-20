@@ -1026,6 +1026,7 @@ class SessionStore:
         self._save_lock = threading.Lock()
         self._routing_generation = 0
         self._persisted_routing_generation = 0
+        self._invalid_routing_keys: set = set()
         self._inflight_lock = threading.Lock()
         self._inflight_sessions: Dict[str, _SessionFlight] = {}
         self._transcript_retry_lock = threading.Lock()
@@ -1114,14 +1115,19 @@ class SessionStore:
                             entry_data = json.loads(entry_json)
                             if isinstance(entry_data, dict):
                                 self._entries[key] = SessionEntry.from_dict(entry_data)
+                                db_persisted_routing_data[key] = self._entries[key].to_dict()
+                            else:
+                                self._invalid_routing_keys.add(key)
+                                logger.warning(
+                                    "Skipping invalid routing entry %r: expected dict, got %s",
+                                    key, type(entry_data).__name__,
+                                )
                         except (ValueError, KeyError, TypeError) as e:
+                            self._invalid_routing_keys.add(key)
                             logger.warning(
                                 "Skipping invalid routing entry %r: %s", key, e
                             )
-                    db_persisted_routing_data = {
-                        key: entry.to_dict() for key, entry in self._entries.items()
-                    }
-                    db_had_entries = bool(db_persisted_routing_data)
+                    db_had_entries = bool(db_persisted_routing_data) or bool(self._invalid_routing_keys)
                 except Exception as e:
                     logger.warning(
                         "gateway.session: state.db routing load failed: %s", e
@@ -1298,7 +1304,9 @@ class SessionStore:
 
         ``atomic`` forces a full-scope reconciliation (replace_gateway_routing_entries)
         suitable for startup pruning, migration, reset, and repair.  Routine
-        callers use point upsert/exact delete.
+        callers use point upsert/exact delete when exactly one mutation is
+        required; otherwise they fall back to the atomic reconciliation path so
+        multi-key mutations are never partially persisted.
         """
         save_lock = getattr(self, "_save_lock", None)
         if save_lock is None:
@@ -1316,19 +1324,28 @@ class SessionStore:
                 saver = getattr(_db, "save_gateway_routing_entry", None)
                 deleter = getattr(_db, "delete_gateway_routing_entries", None)
                 try:
-                    if atomic and callable(replacer):
+                    # Count mutations: changed upserts + removed keys. The set
+                    # of invalid keys discovered at load also counts toward the
+                    # atomic path because they must be reconciled together with
+                    # any valid rows.
+                    changed = [key for key in data.keys() if prev_data.get(key) != data[key]]
+                    removed = [key for key in prev_data.keys() if key not in data]
+                    invalid = getattr(self, "_invalid_routing_keys", set())
+                    total_mutations = len(changed) + len(removed) + len(invalid)
+                    if atomic or total_mutations > 1 or invalid:
+                        # Atomic reconciliation: desired keys are exactly the
+                        # valid entries in *data*; invalid keys are omitted so
+                        # the replacer deletes them.
                         replacer(
                             {key: json.dumps(value) for key, value in data.items()},
                             scope=scope,
                         )
                         db_saved = True
-                    elif callable(saver):
-                        for key, value in data.items():
-                            if prev_data.get(key) != value:
-                                saver(key, json.dumps(value), scope=scope)
-                        removed = [key for key in prev_data.keys() if key not in data]
-                        if removed and callable(deleter):
-                            deleter(removed, scope=scope)
+                    elif changed and callable(saver):
+                        saver(changed[0], json.dumps(data[changed[0]]), scope=scope)
+                        db_saved = True
+                    elif removed and callable(deleter):
+                        deleter([removed[0]], scope=scope)
                         db_saved = True
                 except Exception as exc:
                     logger.warning(
@@ -1339,6 +1356,7 @@ class SessionStore:
             if db_saved:
                 self._persisted_routing_data = dict(data)
                 self._persisted_routing_generation = generation
+                self._invalid_routing_keys = set()
 
     def _save_sessions_json(self, data: Dict[str, Any]) -> None:
         """Write the legacy sessions.json mirror of the routing index."""
