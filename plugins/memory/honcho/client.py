@@ -986,6 +986,8 @@ def _close_honcho_client(client: "Honcho") -> None:
 
     # Lazy async HTTP client (created only on first access to aio/_async_http_client).
     async_http = getattr(client, "_async_http", None)
+    if async_http is None:
+        async_http = getattr(client, "_async_http_client", None)
     if async_http is not None and getattr(async_http, "_owns_client", True):
         close_fn = getattr(async_http, "close", None)
         if inspect.iscoroutinefunction(close_fn):
@@ -1177,6 +1179,9 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
 def reset_honcho_client() -> None:
     """Reset the Honcho client singleton (useful for testing)."""
     global _cached_timeout, _honcho_json_timeout_memo
+    cached = _honcho_client_slot.peek()
+    if cached is not None:
+        _close_honcho_client(cached)
     _honcho_client_slot.reset()
     _cached_timeout = None
     _honcho_json_timeout_memo = (None, None)
