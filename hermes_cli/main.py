@@ -10490,6 +10490,25 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if not target_verification.verified:
             print("✗ UNKNOWN — remote state could not be verified.")
             if target_verification.error:
+                error_lower = target_verification.error.lower()
+                if any(
+                    marker in error_lower
+                    for marker in (
+                        "could not resolve host",
+                        "name or service not known",
+                        "network is unreachable",
+                    )
+                ):
+                    print("  Network error — check your internet connection.")
+                elif any(
+                    marker in error_lower
+                    for marker in (
+                        "authentication failed",
+                        "could not read username",
+                        "permission denied",
+                    )
+                ):
+                    print("  Authentication failed — check your Git credentials.")
                 print(f"  {target_verification.error}")
             sys.exit(1)
 

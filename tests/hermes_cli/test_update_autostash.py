@@ -9,6 +9,24 @@ from hermes_cli import config as hermes_config
 from hermes_cli import main as hermes_main
 
 
+_TEST_SHA = "a" * 40
+
+
+def _verified_target_git_result(cmd, branch="main"):
+    """Return a realistic result for exact-ref update verification commands."""
+    if cmd == ["git", "fetch", "--prune", "origin", branch]:
+        return SimpleNamespace(stdout="", stderr="", returncode=0)
+    if cmd == ["git", "rev-parse", f"refs/remotes/origin/{branch}"]:
+        return SimpleNamespace(stdout=f"{_TEST_SHA}\n", stderr="", returncode=0)
+    if cmd == ["git", "ls-remote", "origin", f"refs/heads/{branch}"]:
+        return SimpleNamespace(
+            stdout=f"{_TEST_SHA}\trefs/heads/{branch}\n",
+            stderr="",
+            returncode=0,
+        )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Managed-uv compatibility for tests that patch shutil.which
 # ---------------------------------------------------------------------------
@@ -394,6 +412,17 @@ def _setup_update_mocks(monkeypatch, tmp_path):
     monkeypatch.setattr(hermes_config, "check_config_version", lambda: (5, 5))
     monkeypatch.setattr(hermes_config, "migrate_config", lambda **kw: {"env_added": [], "config_added": []})
     monkeypatch.setattr(hermes_main, "_refresh_active_lazy_features", lambda: None)
+    monkeypatch.setattr(hermes_main, "_capture_head_sha", lambda *a, **kw: _TEST_SHA)
+
+    from hermes_cli.update_verification import UpstreamComparison
+
+    monkeypatch.setattr(
+        hermes_main,
+        "_compare_official_upstream",
+        lambda *a, **kw: UpstreamComparison(
+            _TEST_SHA, _TEST_SHA, 0, 0, True
+        ),
+    )
 
 
 def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypatch, tmp_path, capsys):
@@ -407,8 +436,9 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
 
     def fake_run(cmd, **kwargs):
         recorded.append(cmd)
-        if cmd == ["git", "fetch", "origin", "main"]:
-            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        verification_result = _verified_target_git_result(cmd)
+        if verification_result is not None:
+            return verification_result
         if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
         if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
@@ -456,8 +486,9 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
 
     def fake_run(cmd, **kwargs):
         recorded.append(cmd)
-        if cmd == ["git", "fetch", "origin", "main"]:
-            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        verification_result = _verified_target_git_result(cmd)
+        if verification_result is not None:
+            return verification_result
         if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
         if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
@@ -544,7 +575,13 @@ def _make_update_side_effect(
         if "fetch" in joined and "origin" in joined:
             if fetch_fails:
                 return SimpleNamespace(stdout="", stderr=fetch_stderr, returncode=128)
+            verification_result = _verified_target_git_result(cmd)
+            if verification_result is not None:
+                return verification_result
             return SimpleNamespace(stdout="", stderr="", returncode=0)
+        verification_result = _verified_target_git_result(cmd)
+        if verification_result is not None:
+            return verification_result
         if "rev-parse" in joined and "--abbrev-ref" in joined:
             return SimpleNamespace(stdout=f"{current_branch}\n", stderr="", returncode=0)
         if "checkout" in joined and "main" in joined:
@@ -700,7 +737,10 @@ def test_cmd_update_fetch_is_scoped_to_target_branch(monkeypatch, tmp_path):
     hermes_main.cmd_update(SimpleNamespace())
 
     fetch_calls = [c for c in recorded if "fetch" in c]
-    assert fetch_calls == [["git", "fetch", "origin", "main"]]
+    assert fetch_calls == [
+        ["git", "fetch", "--prune", "origin", "main"],
+        ["git", "fetch", "--prune", "origin", "main"],
+    ]
     assert ["git", "fetch", "origin"] not in recorded
 
 
