@@ -289,7 +289,7 @@ def test_legacy_and_off_lock_saves_share_one_serialization_lock(tmp_path):
     write_count = 0
     count_lock = threading.Lock()
 
-    def replace(entries, *, scope):
+    def save(key, value, *, scope):
         nonlocal write_count, persisted
         with count_lock:
             write_count += 1
@@ -297,9 +297,10 @@ def test_legacy_and_off_lock_saves_share_one_serialization_lock(tmp_path):
         if call_number == 1:
             first_write_started.set()
             assert release_first_write.wait(timeout=2)
-        persisted = dict(entries)
+        persisted[key] = value
 
-    db.replace_gateway_routing_entries.side_effect = replace
+    db.save_gateway_routing_entry.side_effect = save
+    db.delete_gateway_routing_entries.side_effect = lambda *a, **k: None
     store = _make_store(tmp_path, db)
     source_a = _source()
     source_b = SessionSource(
@@ -333,7 +334,7 @@ def test_save_serialization_snapshots_latest_routing_index(tmp_path):
     write_count = 0
     count_lock = threading.Lock()
 
-    def replace(entries, *, scope):
+    def save(key, value, *, scope):
         nonlocal write_count, persisted
         with count_lock:
             write_count += 1
@@ -341,9 +342,10 @@ def test_save_serialization_snapshots_latest_routing_index(tmp_path):
         if call_number == 1:
             first_write_started.set()
             assert release_first_write.wait(timeout=2)
-        persisted = dict(entries)
+        persisted[key] = value
 
-    db.replace_gateway_routing_entries.side_effect = replace
+    db.save_gateway_routing_entry.side_effect = save
+    db.delete_gateway_routing_entries.side_effect = lambda *a, **k: None
     store = _make_store(tmp_path, db)
     source_a = _source()
     source_b = SessionSource(
