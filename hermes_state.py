@@ -5076,6 +5076,10 @@ class SessionDB:
             if codex_message_items else None
         )
         tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+        safe_tool_name = _scrub_surrogates(tool_name)
+        safe_reasoning = _scrub_surrogates(reasoning)
+        safe_reasoning_content = _scrub_surrogates(reasoning_content)
+        safe_api_content = _scrub_surrogates(api_content) if isinstance(api_content, str) else None
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
         stored_content = self._encode_content(content)
@@ -5085,6 +5089,8 @@ class SessionDB:
                 return 0
             if isinstance(value, (bytes, bytearray, memoryview)):
                 return len(value)
+            if isinstance(value, str):
+                value = _scrub_surrogates(value)
             return len(str(value).encode("utf-8"))
 
         fts_source_bytes = sum(
@@ -5106,11 +5112,11 @@ class SessionDB:
                 stored_content,
                 tool_call_id,
                 tool_calls_json,
-                tool_name,
+                safe_tool_name,
                 effect_disposition,
                 finish_reason,
-                reasoning,
-                reasoning_content,
+                safe_reasoning,
+                safe_reasoning_content,
                 reasoning_details_json,
                 codex_items_json,
                 codex_message_items_json,
@@ -5146,13 +5152,13 @@ class SessionDB:
                     stored_content,
                     tool_call_id,
                     tool_calls_json,
-                    _scrub_surrogates(tool_name),
+                    safe_tool_name,
                     effect_disposition,
                     message_timestamp,
                     token_count,
                     finish_reason,
-                    _scrub_surrogates(reasoning),
-                    _scrub_surrogates(reasoning_content),
+                    safe_reasoning,
+                    safe_reasoning_content,
                     reasoning_details_json,
                     codex_items_json,
                     codex_message_items_json,
@@ -5228,6 +5234,9 @@ class SessionDB:
                 json.dumps(codex_message_items) if codex_message_items else None
             )
             tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+            safe_tool_name = _scrub_surrogates(msg.get("tool_name"))
+            safe_reasoning = _scrub_surrogates(msg.get("reasoning")) if role == "assistant" else None
+            safe_reasoning_content = _scrub_surrogates(msg.get("reasoning_content")) if role == "assistant" else None
             # Accept either `platform_message_id` (new explicit name) or
             # `message_id` (yuanbao's existing convention on message dicts).
             platform_msg_id = (
@@ -5248,13 +5257,13 @@ class SessionDB:
                     self._encode_content(msg.get("content")),
                     msg.get("tool_call_id"),
                     tool_calls_json,
-                    _scrub_surrogates(msg.get("tool_name")),
+                    safe_tool_name,
                     msg.get("effect_disposition"),
                     message_timestamp,
                     msg.get("token_count"),
                     msg.get("finish_reason"),
-                    _scrub_surrogates(msg.get("reasoning")) if role == "assistant" else None,
-                    _scrub_surrogates(msg.get("reasoning_content")) if role == "assistant" else None,
+                    safe_reasoning,
+                    safe_reasoning_content,
                     reasoning_details_json,
                     codex_items_json,
                     codex_message_items_json,
