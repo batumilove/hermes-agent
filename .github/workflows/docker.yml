@@ -50,7 +50,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       # Build once, load into the local daemon for testing.  Cached
       # per-arch; the push step below reuses every layer from this build.
@@ -86,7 +86,7 @@ jobs:
 
       - name: Upload Trivy SARIF
         if: always() && hashFiles('trivy-results.sarif') != ''
-        uses: github/codeql-action/upload-sarif@411c4c9a36b3fca4d674f06b6396b2c6d23522c6 # v3
+        uses: github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a # v4.37.1
         with:
           sarif_file: trivy-results.sarif
           category: trivy-${{ matrix.arch }}
@@ -129,7 +129,7 @@ jobs:
       # produces an attestation consumers can verify with `gh attestation`.
       - name: Attest build provenance
         if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
-        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-name: ${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.push.outputs.digest }}
@@ -217,7 +217,7 @@ jobs:
           merge-multiple: true
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Log in to Docker Hub
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
