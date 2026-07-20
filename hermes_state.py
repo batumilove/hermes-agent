@@ -4402,27 +4402,35 @@ class SessionDB:
         return dict(row) if row else None
 
     def resolve_session_by_title(self, title: str) -> Optional[str]:
-        """Resolve a title to a session ID, preferring the latest in a lineage.
+        """Resolve a title to a session ID, preferring the latest continuation.
 
-        If the exact title exists, returns that session's ID.
-        If not, searches for "title #N" variants and returns the latest one.
-        If the exact title exists AND numbered variants exist, returns the
-        latest numbered variant (the most recent continuation).
+        If numbered variants exist for the base title, returns the newest one.
+        Otherwise falls back to the exact title. This preserves the historical
+        contract where a continuation like "title #2" wins over a later exact
+        "title" row.
         """
-        # Look for both the exact title and any numbered variants (e.g.
-        # "title #2", "title #3", ...). The title index is used to seek the
-        # exact match and a prefix range over "title #...", avoiding the full
-        # started_at scan that the previous LIKE implementation performed.
+        # Look for numbered variants first, using a prefix range over
+        # "title #...". The title+started_at index can satisfy both the prefix
+        # filter and the descending recency order without scanning unrelated
+        # sessions.
         lower = title + " #"
         # Next lexicographic prefix after "title #" without matching strings
         # that do not start with "title #".
         upper = title + " $"
         with self._lock:
             cursor = self._conn.execute(
-                "SELECT id FROM sessions "
-                "WHERE title = ? OR (title >= ? AND title < ?) "
+                "SELECT id FROM sessions INDEXED BY idx_sessions_title_started_at "
+                "WHERE title >= ? AND title < ? "
                 "ORDER BY started_at DESC LIMIT 1",
-                (title, lower, upper),
+                (lower, upper),
+            )
+            row = cursor.fetchone()
+            if row is not None:
+                return row["id"]
+
+            cursor = self._conn.execute(
+                "SELECT id FROM sessions WHERE title = ? LIMIT 1",
+                (title,),
             )
             row = cursor.fetchone()
         return row["id"] if row else None
