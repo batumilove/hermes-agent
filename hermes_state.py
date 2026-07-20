@@ -2757,6 +2757,17 @@ class SessionDB:
         except sqlite3.OperationalError:
             pass  # Index already exists
 
+        # Title + started_at index used for fast "latest continuation" lookups
+        # by resolve_session_by_title. The index is partial over non-null titles
+        # and supports both exact equality and the prefix range scan.
+        try:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_title_started_at "
+                "ON sessions(title, started_at DESC) WHERE title IS NOT NULL"
+            )
+        except sqlite3.OperationalError:
+            pass  # Index already exists
+
         if fts5_available:
             # FTS5 setup. Run the DDL even when the virtual table exists so
             # CREATE TRIGGER IF NOT EXISTS repairs trigger-only degradation from
@@ -4398,26 +4409,23 @@ class SessionDB:
         If the exact title exists AND numbered variants exist, returns the
         latest numbered variant (the most recent continuation).
         """
-        # First try exact match
-        exact = self.get_session_by_title(title)
-
-        # Also search for numbered variants: "title #2", "title #3", etc.
-        # Escape SQL LIKE wildcards (%, _) in the title to prevent false matches
-        escaped = title.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        # Look for both the exact title and any numbered variants (e.g.
+        # "title #2", "title #3", ...). The title index is used to seek the
+        # exact match and a prefix range over "title #...", avoiding the full
+        # started_at scan that the previous LIKE implementation performed.
+        lower = title + " #"
+        # Next lexicographic prefix after "title #" without matching strings
+        # that do not start with "title #".
+        upper = title + " $"
         with self._lock:
             cursor = self._conn.execute(
-                "SELECT id, title, started_at FROM sessions "
-                "WHERE title LIKE ? ESCAPE '\\' ORDER BY started_at DESC",
-                (f"{escaped} #%",),
+                "SELECT id FROM sessions "
+                "WHERE title = ? OR (title >= ? AND title < ?) "
+                "ORDER BY started_at DESC LIMIT 1",
+                (title, lower, upper),
             )
-            numbered = cursor.fetchall()
-
-        if numbered:
-            # Return the most recent numbered variant
-            return numbered[0]["id"]
-        elif exact:
-            return exact["id"]
-        return None
+            row = cursor.fetchone()
+        return row["id"] if row else None
 
     def get_next_title_in_lineage(self, base_title: str) -> str:
         """Generate the next title in a lineage (e.g., "my session" → "my session #2").
