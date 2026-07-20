@@ -1,8 +1,12 @@
 """Tests for hermes_cli.gateway."""
 
 import argparse
+import os
+import pty
 import signal
+import subprocess
 import sys
+import textwrap
 from types import ModuleType, SimpleNamespace
 
 import pytest

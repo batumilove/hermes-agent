@@ -858,7 +858,7 @@ class HonchoClientConfig:
 
 _honcho_client_slot: SingletonSlot = SingletonSlot()
 _cached_timeout: float | None = None
-# Memo for the config.yaml-derived timeout, keyed on the file's mtime_ns so
+# Memo for the honcho.json-derived timeout, keyed on the file's mtime_ns so
 # the staleness check on every get_honcho_client() call costs one stat()
 # instead of a full YAML load. (None, None) = not yet populated.
 _config_timeout_memo: tuple[int | None, float | None] = (None, None)
@@ -893,29 +893,44 @@ def _global_config_timeout() -> float | None:
 
 
 def _config_yaml_timeout() -> float | None:
-    """Read honcho.timeout / honcho.request_timeout from config.yaml, memoized on mtime."""
-    global _config_timeout_memo
+    """Read honcho.timeout / honcho.request_timeout via the cached config loader."""
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_cli.config import load_config_readonly
 
-        cfg_path = get_hermes_home() / "config.yaml"
-        try:
-            mtime_ns: int | None = cfg_path.stat().st_mtime_ns
-        except OSError:
-            mtime_ns = None
-        if _config_timeout_memo[0] is not None and _config_timeout_memo[0] == mtime_ns:
-            return _config_timeout_memo[1]
-
-        from hermes_cli.config import load_config
-
-        honcho_cfg = load_config().get("honcho", {})
-        timeout = None
+        honcho_cfg = load_config_readonly().get("honcho", {})
         if isinstance(honcho_cfg, dict):
-            timeout = _resolve_optional_float(
+            return _resolve_optional_float(
                 honcho_cfg.get("timeout"),
                 honcho_cfg.get("request_timeout"),
             )
-        _config_timeout_memo = (mtime_ns, timeout)
+        return None
+    except Exception:
+        return None
+
+
+def _honcho_json_timeout() -> float | None:
+    """Read timeout/requestTimeout from honcho.json (host block wins), memoized on mtime."""
+    global _honcho_json_timeout_memo
+    try:
+        path = resolve_config_path()
+        try:
+            mtime_ns: int = path.stat().st_mtime_ns
+        except OSError:
+            mtime_ns = -1
+        if _honcho_json_timeout_memo[0] == mtime_ns:
+            return _honcho_json_timeout_memo[1]
+
+        timeout = None
+        if mtime_ns != -1:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            host_block = _host_block(raw, resolve_active_host())
+            timeout = _resolve_optional_float(
+                host_block.get("timeout"),
+                host_block.get("requestTimeout"),
+                raw.get("timeout"),
+                raw.get("requestTimeout"),
+            )
+        _honcho_json_timeout_memo = (mtime_ns, timeout)
         return timeout
     except Exception:
         return None

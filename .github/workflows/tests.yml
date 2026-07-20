@@ -32,6 +32,12 @@ jobs:
         with:
           path: test_durations.json
           key: test-durations
+          # Saves use test-durations-${run_id}, so the exact key above never
+          # matches — without this prefix fallback the cache ALWAYS missed,
+          # LPT slicing ran on no data, and unbalanced slices pushed heavy
+          # files toward the per-file timeout under load.
+          restore-keys: |
+            test-durations-
 
       - name: Generate test slices
         id: matrix
