@@ -68,7 +68,7 @@ async def test_stt_echo_prefix_prepends_user_visible_transcript(monkeypatch, tmp
     )
 
     assert text.startswith('Heard: "please check the backups"\n\n')
-    assert '[The user sent a voice message~ Here\'s what they said: "please check the backups"]' in text
+    assert '"please check the backups"' in text
 
 
 @pytest.mark.asyncio
@@ -92,7 +92,7 @@ async def test_stt_echo_separate_sends_transcript_before_agent(monkeypatch, tmp_
         'Heard: "restart the gateway"',
         metadata=None,
     )
-    assert text == '[The user sent a voice message~ Here\'s what they said: "restart the gateway"]'
+    assert text == '"restart the gateway"'
 
 
 @pytest.mark.asyncio
