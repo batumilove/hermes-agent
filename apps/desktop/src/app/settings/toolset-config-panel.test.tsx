@@ -233,6 +233,47 @@ describe('ToolsetConfigPanel', () => {
     expect(selectToolsetProvider).not.toHaveBeenCalled()
   })
 
+  it('reinitializes the expanded provider when the toolset changes', async () => {
+    getToolsetConfig.mockImplementation(async name =>
+      name === 'tts'
+        ? config()
+        : config({
+            name: 'browser',
+            active_provider: 'Camofox',
+            providers: [
+              {
+                name: 'Camofox',
+                badge: 'free',
+                tag: 'Managed browser',
+                env_vars: [
+                  {
+                    key: 'CAMOFOX_API_KEY',
+                    prompt: 'Camofox API key',
+                    url: 'https://x',
+                    default: null,
+                    is_set: true
+                  }
+                ],
+                post_setup: null,
+                requires_nous_auth: false,
+                is_active: true
+              }
+            ]
+          })
+    )
+
+    const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+    const { rerender } = render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
+
+    const edge = await screen.findByRole('button', { name: /Microsoft Edge TTS/ })
+    await waitFor(() => expect(edge.getAttribute('aria-pressed')).toBe('true'))
+
+    rerender(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
+
+    expect(await screen.findByRole('button', { name: /Actions for CAMOFOX_API_KEY/ })).toBeTruthy()
+    expect(selectToolsetProvider).not.toHaveBeenCalled()
+  })
+
   it('runs a provider post-setup install hook and tails its log', async () => {
     // A browser-style toolset whose active provider declares a post_setup hook.
     getToolsetConfig.mockResolvedValue(
