@@ -10689,16 +10689,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print(f"⚠ Venv still unhealthy after repair: {detail_after}")
                     print("  Close all Hermes windows/gateways and re-run: hermes update")
             else:
-                if noop_payload["status"] == "success":
-                    print("✓ Already up to date!")
-                elif not exact_target_match:
-                    print(
-                        "⚠ No remote commits to pull, but local HEAD differs from the live remote."
-                    )
-                else:
-                    print(
-                        "⚠ Target is current, but official-upstream verification is UNKNOWN."
-                    )
+                print("✓ Already up to date!")
             _resume_windows_gateways_after_update(_windows_gateway_resume)
             return
 

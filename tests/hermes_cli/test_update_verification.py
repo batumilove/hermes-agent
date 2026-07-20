@@ -5,6 +5,8 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
+
 from hermes_cli.update_verification import (
     compare_with_upstream,
     fetch_and_verify_remote_ref,
@@ -78,6 +80,23 @@ def test_write_update_result_replaces_previous_record_atomically(tmp_path):
     replaced = write_update_result(tmp_path, second)
     assert replaced == path
     assert json.loads(path.read_text()) == second
+    assert not list(tmp_path.glob(".update_result.json.tmp*"))
+
+
+def test_write_update_result_cleans_partial_temp_when_fsync_fails(
+    tmp_path, monkeypatch
+):
+    from hermes_cli import update_verification as uv
+
+    def fail_fsync(_fd):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(uv.os, "fsync", fail_fsync)
+
+    with pytest.raises(OSError, match="disk full"):
+        write_update_result(tmp_path, {"status": "started"})
+
+    assert not (tmp_path / ".update_result.json").exists()
     assert not list(tmp_path.glob(".update_result.json.tmp*"))
 
 

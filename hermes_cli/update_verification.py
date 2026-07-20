@@ -284,10 +284,10 @@ def write_update_result(home: Path, result: Mapping[str, Any]) -> Path:
             prefix=".update_result.json.tmp.",
             delete=False,
         ) as stream:
+            temporary = Path(stream.name)
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-            temporary = Path(stream.name)
         os.chmod(temporary, 0o600)
         os.replace(temporary, path)
         try:
