@@ -14,7 +14,11 @@ name: OSV-Scanner
 # code patterns in PR diffs) by covering the orthogonal "currently-pinned
 # dep became known-vulnerable" case.
 #
-# Uses Google's officially-recommended reusable workflow, pinned by SHA.
+# Steps below are inlined from Google's officially-recommended reusable
+# workflow (google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml),
+# rather than called via `uses:` so we can set a `timeout-minutes` in the
+# degenerate case where this job hangs.
+
 # Findings land in the repo's Security tab (Code Scanning > OSV-Scanner).
 # fail-on-vuln remains disabled so OSV can report advisory findings without
 # blocking deliberate patch scheduling; the npm-audit-high job below is the
@@ -25,11 +29,11 @@ on:
   schedule:
     # Weekly scan against main — catches CVEs published after merge for
     # deps that haven't changed since.
-    - cron: "0 9 * * 1"
+    - cron: '0 9 * * 1'
   workflow_dispatch:
 
 permissions:
-  # Required by the reusable workflow to upload SARIF to the Security tab.
+  # Required to upload SARIF file to CodeQL. See: https://github.com/github/codeql-action/issues/2117
   actions: read
   contents: read
   security-events: write
