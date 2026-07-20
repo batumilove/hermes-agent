@@ -169,7 +169,6 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────
   all-checks-pass:
     name: All required checks pass
-    timeout-minutes: 5
     needs:
       - detect
       - tests
