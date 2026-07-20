@@ -3376,6 +3376,25 @@ class TestResolveSessionByTitle:
         db.set_session_title("cont", "My Session #2")
         assert db.resolve_session_by_title("My Session") == "cont"
 
+    def test_numbered_variant_wins_even_when_exact_title_is_newer(self, db):
+        """A later exact-title session must not steal lookup from an existing
+        numbered continuation."""
+        db.create_session("variant", "cli")
+        db.set_session_title("variant", "Conversation #2")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?",
+            (time.time() - 100, "variant"),
+        )
+        db.create_session("exact", "cli")
+        db.set_session_title("exact", "Conversation")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?",
+            (time.time(), "exact"),
+        )
+        db._conn.commit()
+
+        assert db.resolve_session_by_title("Conversation") == "variant"
+
     def test_returns_latest_numbered_variant(self, db):
         db.create_session("older", "cli")
         db.set_session_title("older", "My Session #2")
@@ -3453,17 +3472,22 @@ class TestResolveSessionByTitle:
         upper = title + " $"
         plan = db._conn.execute(
             "EXPLAIN QUERY PLAN "
-            "SELECT id FROM sessions "
-            "WHERE title = ? OR (title >= ? AND title < ?) "
+            "SELECT id FROM sessions INDEXED BY idx_sessions_title_started_at "
+            "WHERE title >= ? AND title < ? "
             "ORDER BY started_at DESC LIMIT 1",
-            (title, lower, upper),
+            (lower, upper),
         ).fetchall()
         detail = " ".join(str(row["detail"]) for row in plan)
         # Reject the pathological plan that scans the entire started_at index.
         assert "SCAN sessions" not in detail, f"query plan still scans: {detail}"
-        # Expect the multi-index title lookup (exact + range).
-        assert "MULTI-INDEX OR" in detail, f"expected multi-index plan: {detail}"
-        assert "idx_sessions_title" in detail, f"expected title index use: {detail}"
+        assert "idx_sessions_title_started_at" in detail, f"expected range index use: {detail}"
+
+        exact_plan = db._conn.execute(
+            "EXPLAIN QUERY PLAN SELECT id FROM sessions WHERE title = ? LIMIT 1",
+            (title,),
+        ).fetchall()
+        exact_detail = " ".join(str(row["detail"]) for row in exact_plan)
+        assert "idx_sessions_title_unique" in exact_detail, f"expected exact index use: {exact_detail}"
 
 
 class TestSanitizeTitle:
