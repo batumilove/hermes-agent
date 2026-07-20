@@ -1365,6 +1365,106 @@ class TestHonchoSingletonReuseAndClose:
         reset_honcho_client()
 
     @pytest.fixture
+    def real_honcho_client(self):
+        """Build an offline real Honcho 2.2.0 client and close any leaked backing."""
+        import asyncio
+        from importlib.metadata import version
+        from honcho import Honcho
+
+        assert version("honcho-ai") == "2.2.0"
+        config = HonchoClientConfig(
+            api_key="test-key",
+            workspace_id="test-workspace",
+            environment="production",
+            base_url="http://127.0.0.1:9",
+            timeout=1.0,
+        )
+        with patch(
+            "plugins.memory.honcho.client._apply_fresh_oauth_token"
+        ), patch("hermes_cli.config.load_config", return_value={}):
+            client = get_honcho_client(config)
+        assert isinstance(client, Honcho)
+
+        yield client
+
+        # RED on the blocked implementation intentionally leaves the real async
+        # backing open. Clean it directly without touching the lazy property.
+        private = object.__getattribute__(client, "__pydantic_private__")
+        async_http = private.get("_async_http")
+        if async_http is not None and not async_http._client.is_closed:
+            asyncio.run(async_http.close())
+        http = private.get("_http")
+        if http is not None and not http._client.is_closed:
+            http.close()
+        from plugins.memory.honcho import client as honcho_client_module
+        honcho_client_module._honcho_client_slot.reset()
+
+    def test_reset_real_sdk_does_not_create_unused_async_backing(
+        self, real_honcho_client
+    ):
+        """Reset must not invoke Honcho 2.2.0's lazy async client property."""
+        private = object.__getattribute__(
+            real_honcho_client, "__pydantic_private__"
+        )
+        assert private["_async_http"] is None
+
+        reset_honcho_client()
+
+        assert private["_async_http"] is None
+        assert private["_http"]._client.is_closed is True
+
+    def test_reset_real_sdk_closes_created_async_inner_client(
+        self, real_honcho_client
+    ):
+        """Reset must close Honcho 2.2.0's Pydantic-private async backing."""
+        async_http = real_honcho_client._async_http_client
+        async_inner = async_http._client
+        sync_inner = real_honcho_client._http._client
+        assert async_inner.is_closed is False
+
+        reset_honcho_client()
+
+        assert sync_inner.is_closed is True
+        assert async_inner.is_closed is True
+
+    @pytest.mark.parametrize("failure_mode", ["sync", "async"])
+    def test_reset_real_sdk_detaches_and_clears_memos_on_cleanup_failure(
+        self, real_honcho_client, failure_mode, caplog
+    ):
+        """Real SDK close failures cannot retain singleton or timeout memos."""
+        from plugins.memory.honcho import client as honcho_client_module
+
+        private = object.__getattribute__(
+            real_honcho_client, "__pydantic_private__"
+        )
+        if failure_mode == "sync":
+            http = private["_http"]
+            original_close = http.close
+
+            def failing_close():
+                raise RuntimeError("real sync close exploded")
+        else:
+            http = real_honcho_client._async_http_client
+            original_close = http.close
+
+            async def failing_close():
+                raise RuntimeError("real async close exploded")
+
+        http.close = failing_close
+        honcho_client_module._cached_timeout = 123.0
+        honcho_client_module._honcho_json_timeout_memo = (object(), 456.0)
+        try:
+            with caplog.at_level("WARNING"):
+                reset_honcho_client()
+        finally:
+            http.close = original_close
+
+        assert f"real {failure_mode} close exploded" in caplog.text
+        assert honcho_client_module._honcho_client_slot.peek() is None
+        assert honcho_client_module._cached_timeout is None
+        assert honcho_client_module._honcho_json_timeout_memo == (None, None)
+
+    @pytest.fixture
     def fake_honcho_module(self):
         """A minimal fake Honcho SDK whose HTTP clients record close calls."""
         created = {"sync": [], "async": []}
@@ -1505,6 +1605,66 @@ class TestHonchoSingletonReuseAndClose:
 
         assert len(closed["sync"]) == 1
         assert len(closed["async"]) == 1
+
+    @pytest.mark.parametrize("failure_mode", ["access", "close"])
+    def test_reset_avoids_lazy_async_allocation_and_detaches_on_cleanup_failure(
+        self, failure_mode
+    ):
+        """Cleanup failures must not allocate async state or retain the singleton."""
+        built = []
+        async_created = []
+
+        class _FailingHTTPClient:
+            _owns_client = True
+
+            def close(self):
+                if failure_mode == "close":
+                    raise RuntimeError("sync close exploded")
+
+        class _FakeAsyncHTTPClient:
+            _owns_client = True
+
+            async def close(self):
+                pass
+
+        class _FakeHoncho:
+            def __init__(self, **kwargs):
+                self._http = _FailingHTTPClient()
+                self._async_http = None
+                built.append(self)
+
+            def __getattribute__(self, name):
+                if name == "_http" and failure_mode == "access":
+                    raise RuntimeError("sync cleanup access exploded")
+                return object.__getattribute__(self, name)
+
+            @property
+            def _async_http_client(self):
+                async_created.append(True)
+                self._async_http = _FakeAsyncHTTPClient()
+                return self._async_http
+
+        fake_mod = types.ModuleType("honcho")
+        fake_mod.Honcho = _FakeHoncho
+
+        try:
+            with patch.dict(sys.modules, {"honcho": fake_mod}), \
+                 patch("hermes_cli.config.load_config", return_value={}):
+                config = HonchoClientConfig(
+                    api_key="k", workspace_id="ws", environment="production",
+                    timeout=11.0,
+                )
+                first = get_honcho_client(config)
+                reset_honcho_client()
+                second = get_honcho_client(config)
+
+            assert async_created == []
+            assert second is not first
+            assert built == [first, second]
+        finally:
+            # Keep a deliberately broken cleanup fake from contaminating teardown.
+            from plugins.memory.honcho import client as honcho_client_module
+            honcho_client_module._honcho_client_slot.reset()
 
     def test_running_loop_async_close_failure_is_observed(
         self, fake_honcho_module, caplog
