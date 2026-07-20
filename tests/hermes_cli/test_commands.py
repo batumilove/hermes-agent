@@ -345,6 +345,19 @@ class TestSlackNativeSlashes:
                 f"/{reserved} is a Slack built-in and must not appear in the manifest"
             )
 
+    def test_update_version_route_via_hermes_under_slack_cap(self):
+        """Low-frequency release commands are explicit /hermes routes on Slack.
+
+        Slack's app manifest allows only 50 slash_commands, so these keep
+        Telegram/Discord-native behavior without displacing higher-value Slack
+        native slots such as /btw and /bg.
+        """
+        names = {n for n, _d, _h in slack_native_slashes()}
+        for command in ("update", "version"):
+            assert command in _SLACK_VIA_HERMES_ONLY
+            assert command not in names
+            assert slack_subcommand_map()[command] == f"/{command}"
+
     def test_includes_aliases_as_first_class_slashes(self):
         """Aliases (/btw, /bg, …) must be registered as standalone
         slashes — this is the whole point of native-slashes parity.
