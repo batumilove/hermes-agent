@@ -659,6 +659,40 @@ def test_fresh_dream_does_not_suppress_representation_backlog_stall_with_multipl
     assert not any("active work stale" in alert for alert in alerts)
 
 
+@pytest.mark.parametrize(
+    ("deriver_pipeline", "case"),
+    [
+        ({}, "missing"),
+        ({"workers": "not-an-integer"}, "malformed"),
+        ({"workers": "0"}, "zero"),
+    ],
+    ids=["missing-workers", "malformed-workers", "zero-workers"],
+)
+def test_fresh_dream_does_not_suppress_representation_backlog_when_worker_count_fails_closed(
+    deriver_pipeline: dict[str, str], case: str
+):
+    snapshot, previous_state = _representation_backlog_without_progress(
+        active_count=1, active_age_s=9 * 60
+    )
+    snapshot.pipeline["deriver"] = deriver_pipeline
+    snapshot.deriver.update(
+        {
+            "active_oldest_work_unit_key": "dream:omni:hermes:session:hermes",
+            "active_representation_count": 0,
+            "active_representation_oldest_age_s": 0,
+            "active_dream_count": 1,
+            "active_dream_oldest_age_s": 9 * 60,
+            "active_other_count": 0,
+            "active_other_oldest_age_s": 0,
+        }
+    )
+
+    alerts = hm.build_alerts(snapshot, previous_state=previous_state)
+
+    assert "Deriver stalled: representation backlog with no progress" in alerts, case
+    assert not any("active work stale" in alert for alert in alerts)
+
+
 def test_stale_dream_still_alerts_with_single_worker():
     snapshot, previous_state = _representation_backlog_without_progress(
         active_count=1, active_age_s=30 * 60
