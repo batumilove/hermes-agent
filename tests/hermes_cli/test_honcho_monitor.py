@@ -30,6 +30,7 @@ def test_parse_pipeline_env_extracts_loaded_embedding_config():
             "EMBEDDING_VECTOR_DIMENSIONS=1536",
             "DERIVER_MODEL_CONFIG__MODEL=aeon-ultimate",
             "DERIVER_MODEL_CONFIG__OVERRIDES__BASE_URL=http://100.69.54.37:8001/v1",
+            "DERIVER_WORKERS=1",
             "SUMMARY_MODEL_CONFIG__MODEL=qwen3.5-397b",
             "SUMMARY_MODEL_CONFIG__OVERRIDES__BASE_URL=http://100.110.104.77:8087/v1",
             "DREAM_DEDUCTION_MODEL_CONFIG__MODEL=aeon-ultimate",
@@ -46,6 +47,7 @@ def test_parse_pipeline_env_extracts_loaded_embedding_config():
     assert parsed["embedding"]["dimensions_mode"] == "never"
     assert parsed["embedding"]["vector_dimensions"] == "1536"
     assert parsed["deriver"]["model"] == "aeon-ultimate"
+    assert parsed["deriver"]["workers"] == "1"
     assert parsed["summary"]["base_url"] == "http://100.110.104.77:8087/v1"
     assert parsed["dialectic"]["base_url"] == "http://100.69.54.37:8001/v1"
 
@@ -611,17 +613,41 @@ def test_stale_representation_alerts_when_older_dream_is_still_within_grace():
     assert not any(alert.startswith("Dream active work stale") for alert in alerts)
 
 
-def test_fresh_dream_does_not_suppress_representation_backlog_stall():
+def test_fresh_dream_suppresses_representation_backlog_stall_with_single_worker():
     snapshot, previous_state = _representation_backlog_without_progress(
-        active_count=1, active_age_s=30
+        active_count=1, active_age_s=9 * 60
     )
+    snapshot.pipeline["deriver"] = {"workers": "1"}
     snapshot.deriver.update(
         {
             "active_oldest_work_unit_key": "dream:omni:hermes:session:hermes",
             "active_representation_count": 0,
             "active_representation_oldest_age_s": 0,
             "active_dream_count": 1,
-            "active_dream_oldest_age_s": 30,
+            "active_dream_oldest_age_s": 9 * 60,
+            "active_other_count": 0,
+            "active_other_oldest_age_s": 0,
+        }
+    )
+
+    alerts = hm.build_alerts(snapshot, previous_state=previous_state)
+
+    assert "Deriver stalled: representation backlog with no progress" not in alerts
+    assert not any("active work stale" in alert for alert in alerts)
+
+
+def test_fresh_dream_does_not_suppress_representation_backlog_stall_with_multiple_workers():
+    snapshot, previous_state = _representation_backlog_without_progress(
+        active_count=1, active_age_s=9 * 60
+    )
+    snapshot.pipeline["deriver"] = {"workers": "2"}
+    snapshot.deriver.update(
+        {
+            "active_oldest_work_unit_key": "dream:omni:hermes:session:hermes",
+            "active_representation_count": 0,
+            "active_representation_oldest_age_s": 0,
+            "active_dream_count": 1,
+            "active_dream_oldest_age_s": 9 * 60,
             "active_other_count": 0,
             "active_other_oldest_age_s": 0,
         }
@@ -631,6 +657,28 @@ def test_fresh_dream_does_not_suppress_representation_backlog_stall():
 
     assert "Deriver stalled: representation backlog with no progress" in alerts
     assert not any("active work stale" in alert for alert in alerts)
+
+
+def test_stale_dream_still_alerts_with_single_worker():
+    snapshot, previous_state = _representation_backlog_without_progress(
+        active_count=1, active_age_s=30 * 60
+    )
+    snapshot.pipeline["deriver"] = {"workers": "1"}
+    snapshot.deriver.update(
+        {
+            "active_oldest_work_unit_key": "dream:omni:hermes:session:hermes",
+            "active_representation_count": 0,
+            "active_representation_oldest_age_s": 0,
+            "active_dream_count": 1,
+            "active_dream_oldest_age_s": 30 * 60,
+            "active_other_count": 0,
+            "active_other_oldest_age_s": 0,
+        }
+    )
+
+    alerts = hm.build_alerts(snapshot, previous_state=previous_state)
+
+    assert "Dream active work stale (1 active, oldest 30m)" in alerts
 
 
 def test_stale_representation_and_other_work_have_distinct_alerts():
