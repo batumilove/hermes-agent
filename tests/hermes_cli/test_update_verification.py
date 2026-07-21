@@ -83,6 +83,25 @@ def test_write_update_result_replaces_previous_record_atomically(tmp_path):
     assert not list(tmp_path.glob(".update_result.json.tmp*"))
 
 
+def test_write_update_result_redacts_url_credentials_from_raw_payload(tmp_path):
+    secret = "writer-secret-token"
+    credential_url = f"https://writer-user:{secret}@github.com/org/repo.git"
+
+    path = write_update_result(
+        tmp_path,
+        {
+            "status": "failed",
+            "remote_error": f"fatal: unable to access '{credential_url}/': HTTP 401",
+        },
+    )
+
+    persisted = path.read_text()
+    assert secret not in persisted
+    assert "writer-user" not in persisted
+    assert credential_url not in persisted
+    assert "github.com/org/repo.git" in persisted
+
+
 def test_write_update_result_cleans_partial_temp_when_fsync_fails(
     tmp_path, monkeypatch
 ):
@@ -161,6 +180,77 @@ def test_compare_with_upstream_returns_unknown_for_non_numeric_divergence(
 
     assert result.verified is False
     assert "non-integer" in (result.error or "")
+
+
+@pytest.mark.parametrize("failure_step", ["fetch", "rev-parse", "ls-remote"])
+def test_remote_verification_redacts_url_credentials_from_git_errors(
+    tmp_path, monkeypatch, failure_step
+):
+    from hermes_cli import update_verification as uv
+
+    secret = "super-secret-token"
+    credential_url = f"https://git-user:{secret}@github.com/org/repo.git"
+    failure = subprocess.CompletedProcess(
+        ["git"],
+        128,
+        stdout="",
+        stderr=f"fatal: unable to access '{credential_url}/': HTTP 401\n",
+    )
+    success = subprocess.CompletedProcess(["git"], 0, stdout="", stderr="")
+    resolved = subprocess.CompletedProcess(
+        ["git"], 0, stdout=f"{'a' * 40}\n", stderr=""
+    )
+
+    if failure_step == "fetch":
+        results = iter([failure])
+    elif failure_step == "rev-parse":
+        results = iter([success, failure])
+    else:
+        results = iter([success, resolved, failure])
+    monkeypatch.setattr(uv.subprocess, "run", lambda *a, **k: next(results))
+
+    result = fetch_and_verify_remote_ref(["git"], tmp_path, "origin", "main")
+
+    assert result.verified is False
+    assert result.error is not None
+    assert secret not in result.error
+    assert "git-user" not in result.error
+    assert credential_url not in result.error
+
+    path = write_update_result(
+        tmp_path, {"status": "failed", "remote_error": result.error}
+    )
+    persisted = path.read_text()
+    assert secret not in persisted
+    assert "git-user" not in persisted
+    assert credential_url not in persisted
+
+
+def test_upstream_comparison_redacts_url_credentials_from_fetch_error(
+    tmp_path, monkeypatch
+):
+    from hermes_cli import update_verification as uv
+
+    secret = "upstream-secret-token"
+    credential_url = f"https://upstream-user:{secret}@github.com/org/repo.git"
+    monkeypatch.setattr(
+        uv.subprocess,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(
+            cmd,
+            128,
+            stdout="",
+            stderr=f"fatal: unable to access '{credential_url}/': HTTP 401\n",
+        ),
+    )
+
+    result = compare_with_upstream(["git"], tmp_path)
+
+    assert result.verified is False
+    assert result.error is not None
+    assert secret not in result.error
+    assert "upstream-user" not in result.error
+    assert credential_url not in result.error
 
 
 def test_fetch_and_verify_remote_ref_rejects_malformed_object_ids(

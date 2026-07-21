@@ -4,11 +4,43 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+from agent.redact import redact_sensitive_text
+
+
+_GIT_ERROR_URL_USERINFO_RE = re.compile(
+    r"(?i)\b(?P<scheme>https?|ftp|ssh|git)://[^/\s'\"<>@]+@"
+)
+
+
+def _redact_update_text(value: str) -> str:
+    """Remove credentials from text crossing update log/result boundaries."""
+
+    redacted = redact_sensitive_text(
+        value,
+        force=True,
+        redact_url_credentials=True,
+    )
+    return _GIT_ERROR_URL_USERINFO_RE.sub(
+        lambda match: f"{match.group('scheme')}://***@",
+        redacted,
+    )
+
+
+def _sanitize_update_result_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return _redact_update_text(value)
+    if isinstance(value, Mapping):
+        return {key: _sanitize_update_result_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_update_result_value(item) for item in value]
+    return value
 
 
 @dataclass(frozen=True)
@@ -37,7 +69,8 @@ class UpstreamComparison:
 
 def _first_error_line(result: subprocess.CompletedProcess[str]) -> str:
     text = (result.stderr or result.stdout or "").strip()
-    return text.splitlines()[0] if text else "git command failed"
+    line = text.splitlines()[0] if text else "git command failed"
+    return _redact_update_text(line)
 
 
 def _is_object_id(value: str | None) -> bool:
@@ -274,7 +307,8 @@ def write_update_result(home: Path, result: Mapping[str, Any]) -> Path:
 
     home.mkdir(parents=True, exist_ok=True)
     path = home / ".update_result.json"
-    payload = json.dumps(dict(result), indent=2, sort_keys=True) + "\n"
+    sanitized_result = _sanitize_update_result_value(dict(result))
+    payload = json.dumps(sanitized_result, indent=2, sort_keys=True) + "\n"
     temporary: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
