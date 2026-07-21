@@ -2,6 +2,7 @@
 
 import hashlib
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -15,6 +16,41 @@ def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0", track
 
     def side_effect(cmd, **kwargs):
         joined = " ".join(str(c) for c in cmd)
+        remote_sha = "c" * 40
+
+        if "remote get-url myfork" in joined:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout="https://github.com/batumilove/hermes-agent.git\n",
+                stderr="",
+            )
+        if "remote get-url upstream" in joined or "remote get-url origin" in joined:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout="https://github.com/NousResearch/hermes-agent.git\n",
+                stderr="",
+            )
+
+        if "ls-remote" in joined:
+            branch_name = str(cmd[-1]).removeprefix("refs/heads/")
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout=f"{remote_sha}\trefs/heads/{branch_name}\n",
+                stderr="",
+            )
+
+        if "rev-parse" in joined and "refs/remotes/" in joined:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=f"{remote_sha}\n", stderr=""
+            )
+
+        if joined.endswith("rev-parse HEAD"):
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=f"{remote_sha}\n", stderr=""
+            )
 
         # git rev-parse --abbrev-ref --symbolic-full-name @{u}  (get tracking ref)
         if "rev-parse" in joined and "--symbolic-full-name" in joined and "@{u}" in joined:
@@ -41,6 +77,15 @@ def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0", track
         if "rev-parse" in joined and "--verify" in joined:
             rc = 0 if verify_ok else 128
             return subprocess.CompletedProcess(cmd, rc, stdout="", stderr="")
+
+        # git rev-list --left-right --count upstream/main...HEAD
+        if "rev-list --left-right --count" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="0 0\n", stderr="")
+
+        if "merge-base" in joined:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=f"{remote_sha}\n", stderr=""
+            )
 
         # git rev-list HEAD..origin/{branch} --count
         if "rev-list" in joined:
@@ -82,9 +127,16 @@ def _patch_managed_uv(request):
     def _fake_update_managed_uv():
         return None  # never actually self-update in tests
 
+    from hermes_cli.update_verification import UpstreamComparison
+
+    default_upstream = UpstreamComparison(
+        "c" * 40, "c" * 40, 0, 0, True
+    )
     with patch("hermes_cli.managed_uv.resolve_uv", side_effect=_fake_resolve_uv), \
          patch("hermes_cli.managed_uv.ensure_uv", side_effect=_fake_ensure_uv), \
-         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv):
+         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv), \
+         patch("hermes_cli.update_verification.write_update_result"), \
+         patch("hermes_cli.main._compare_official_upstream", return_value=default_upstream):
         yield
 
 
@@ -374,7 +426,7 @@ class TestCmdUpdateBranchFallback:
 
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
 
-        rev_list_cmds = [c for c in commands if "rev-list" in c]
+        rev_list_cmds = [c for c in commands if "rev-list HEAD.." in c]
         assert len(rev_list_cmds) == 1
         assert "origin/fix/stoicneko" in rev_list_cmds[0]
         assert "origin/main" not in rev_list_cmds[0]
@@ -399,11 +451,373 @@ class TestCmdUpdateBranchFallback:
         cmd_update(mock_args)
 
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
-        assert any("fetch myfork batumi/live" in c for c in commands)
+        assert any("fetch --prune myfork batumi/live" in c for c in commands)
         assert any("rev-list HEAD..myfork/batumi/live --count" in c for c in commands)
         assert not any("checkout main" in c for c in commands)
         captured = capsys.readouterr()
         assert "switching to main" not in captured.out
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_fails_closed_when_live_remote_ref_cannot_be_verified(
+        self, mock_run, _mock_which, mock_args, capsys
+    ):
+        from hermes_cli.update_verification import RemoteRefVerification
+
+        mock_run.side_effect = _make_run_side_effect(
+            branch="batumi/live-deploy",
+            tracking_ref="myfork/batumi/live",
+            verify_ok=True,
+            commit_count="0",
+        )
+        failure = RemoteRefVerification(
+            remote="myfork",
+            branch="batumi/live",
+            fetched_sha="a" * 40,
+            live_sha=None,
+            verified=False,
+            error="ls-remote failed: network unavailable",
+        )
+
+        with patch(
+            "hermes_cli.update_verification.fetch_and_verify_remote_ref",
+            return_value=failure,
+        ), pytest.raises(SystemExit) as exc_info:
+            cmd_update(mock_args)
+
+        assert exc_info.value.code == 1
+        output = capsys.readouterr().out
+        assert "UNKNOWN — remote state could not be verified" in output
+        assert "ls-remote failed: network unavailable" in output
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_invalidates_prior_success_before_initial_verification(
+        self, mock_run, _mock_which, mock_args
+    ):
+        from hermes_cli.update_verification import RemoteRefVerification
+
+        mock_run.side_effect = _make_run_side_effect(
+            branch="batumi/live-deploy",
+            tracking_ref="myfork/batumi/live",
+            verify_ok=True,
+            commit_count="0",
+        )
+        failure = RemoteRefVerification(
+            "myfork", "batumi/live", None, None, False, "network unavailable"
+        )
+
+        with patch(
+            "hermes_cli.update_verification.fetch_and_verify_remote_ref",
+            return_value=failure,
+        ), patch(
+            "hermes_cli.update_verification.write_update_result"
+        ) as write_result, pytest.raises(SystemExit):
+            cmd_update(mock_args)
+
+        payload = write_result.call_args_list[0].args[1]
+        assert payload["status"] == "started"
+        assert payload["completed_sha"] is None
+        assert payload["remote_verified"] is False
+        assert payload["restart_requested"] is False
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_final_verification_failure_blocks_restart(
+        self, mock_run, _mock_which, mock_args, capsys, tmp_path, monkeypatch
+    ):
+        from hermes_cli.update_verification import (
+            RemoteRefVerification,
+            UpstreamComparison,
+        )
+
+        sha = "c" * 40
+        verified = RemoteRefVerification("origin", "main", sha, sha, True)
+        failure = RemoteRefVerification(
+            "origin", "main", sha, None, False, "ls-remote failed"
+        )
+        upstream = UpstreamComparison(sha, sha, 0, 0, True)
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="1"
+        )
+        mock_args.gateway = True
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        with patch(
+            "hermes_cli.update_verification.fetch_and_verify_remote_ref",
+            side_effect=[verified, failure],
+        ), patch(
+            "hermes_cli.main._compare_official_upstream",
+            return_value=upstream,
+        ), patch(
+            "hermes_cli.update_verification.write_update_result"
+        ) as write_result, pytest.raises(SystemExit) as exc_info:
+            cmd_update(mock_args)
+
+        assert exc_info.value.code == 1
+        final_payload = write_result.call_args_list[-1].args[1]
+        assert final_payload["status"] == "unknown"
+        assert final_payload["restart_requested"] is False
+        assert (tmp_path / ".update_exit_code").read_text() == "1"
+        assert "restart blocked" in capsys.readouterr().out.lower()
+
+    def test_result_success_requires_verified_official_upstream(self):
+        from hermes_cli import main as hm
+        from hermes_cli.update_verification import UpstreamComparison
+
+        unknown_upstream = UpstreamComparison(
+            None, None, None, None, False, "official upstream unavailable"
+        )
+        with patch(
+            "hermes_cli.update_verification.write_update_result"
+        ) as write_result:
+            payload = hm._record_git_update_result(
+                started_sha="a" * 40,
+                completed_sha="b" * 40,
+                target_remote="myfork",
+                target_branch="batumi/live",
+                target_sha="b" * 40,
+                remote_verified=True,
+                restart_requested=False,
+                upstream_comparison=unknown_upstream,
+            )
+
+        assert payload["status"] == "unknown"
+        assert write_result.call_args.args[1]["upstream_verified"] is False
+
+    def test_record_git_update_result_redacts_completion_error_payload_and_output(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        from hermes_cli import main as hm
+        from hermes_cli.update_verification import UpstreamComparison
+
+        secret = "completion-secret-token"
+        credential_url = f"https://completion-user:{secret}@github.com/org/repo.git"
+        upstream = UpstreamComparison("c" * 40, "c" * 40, 0, 0, True)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        with patch(
+            "hermes_cli.update_verification.write_update_result",
+            return_value=tmp_path / ".update_result.json",
+        ):
+            payload = hm._record_git_update_result(
+                started_sha="a" * 40,
+                completed_sha="b" * 40,
+                target_remote="myfork",
+                target_branch="batumi/live",
+                target_sha="b" * 40,
+                remote_verified=True,
+                restart_requested=False,
+                upstream_comparison=upstream,
+                completion_error=(
+                    f"checkout failed for '{credential_url}/': authentication failed"
+                ),
+            )
+
+        output = capsys.readouterr().out
+        for surface in (payload["completion_error"], output):
+            assert secret not in surface
+            assert "completion-user" not in surface
+            assert credential_url not in surface
+        assert "github.com/org/repo.git" in payload["completion_error"]
+
+    def test_official_upstream_remote_is_bound_by_url_not_remote_name(self):
+        from hermes_cli import main as hm
+
+        assert hm._is_official_hermes_repository_url(
+            "https://github.com/NousResearch/hermes-agent.git"
+        )
+        assert hm._is_official_hermes_repository_url(
+            "git@github.com:NousResearch/hermes-agent.git"
+        )
+        assert hm._is_official_hermes_repository_url(
+            "ssh://git@github.com/NousResearch/hermes-agent"
+        )
+        assert not hm._is_official_hermes_repository_url(
+            "https://github.com/evil/NousResearch/hermes-agent.git"
+        )
+        assert not hm._is_official_hermes_repository_url(
+            "https://evil.example/NousResearch/hermes-agent.git"
+        )
+
+        urls = {
+            "myfork": "https://github.com/batumilove/hermes-agent.git",
+            "upstream": "https://github.com/attacker/hermes-agent.git",
+            "origin": "https://github.com/NousResearch/hermes-agent.git",
+        }
+        with patch.object(hm, "_git_remote_url", side_effect=lambda _g, _c, r: urls[r]):
+            selected = hm._resolve_official_update_remote(
+                ["git"], Path("/repo"), "myfork"
+            )
+
+        assert selected == "origin"
+
+    def test_official_upstream_remote_fails_closed_when_missing(self):
+        from hermes_cli import main as hm
+
+        with patch.object(
+            hm,
+            "_git_remote_url",
+            return_value="https://github.com/attacker/hermes-agent.git",
+        ):
+            selected = hm._resolve_official_update_remote(
+                ["git"], Path("/repo"), "myfork"
+            )
+
+        assert selected is None
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_records_authoritative_noop_result(
+        self, mock_run, _mock_which, mock_args
+    ):
+        from hermes_cli import main as hm
+        from hermes_cli.update_verification import (
+            RemoteRefVerification,
+            UpstreamComparison,
+        )
+
+        target_sha = "b" * 40
+        mock_run.side_effect = _make_run_side_effect(
+            branch="batumi/live-deploy",
+            tracking_ref="myfork/batumi/live",
+            verify_ok=True,
+            commit_count="0",
+        )
+        verified = RemoteRefVerification(
+            remote="myfork",
+            branch="batumi/live",
+            fetched_sha=target_sha,
+            live_sha=target_sha,
+            verified=True,
+        )
+        upstream = UpstreamComparison(
+            upstream_sha="d" * 40,
+            merged_through_sha="e" * 40,
+            behind=1,
+            carried=420,
+            verified=True,
+        )
+
+        with patch(
+            "hermes_cli.update_verification.fetch_and_verify_remote_ref",
+            return_value=verified,
+        ), patch(
+            "hermes_cli.main._compare_official_upstream",
+            return_value=upstream,
+        ), patch(
+            "hermes_cli.update_verification.write_update_result"
+        ) as write_result, patch.object(
+            hm, "_capture_head_sha", return_value=target_sha
+        ):
+            cmd_update(mock_args)
+
+        assert [call.args[1]["status"] for call in write_result.call_args_list] == [
+            "started",
+            "success",
+        ]
+        payload = write_result.call_args.args[1]
+        assert payload["status"] == "success"
+        assert payload["target_ref"] == "myfork/batumi/live"
+        assert payload["target_sha"] == target_sha
+        assert payload["completed_sha"] == target_sha
+        assert payload["remote_verified"] is True
+        assert payload["restart_requested"] is False
+        assert payload["upstream_sha"] == "d" * 40
+        assert payload["upstream_merged_through"] == "e" * 40
+        assert payload["upstream_behind"] == 1
+        assert payload["carried_commits"] == 420
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_noop_does_not_claim_success_when_official_upstream_is_unknown(
+        self, mock_run, _mock_which, mock_args, capsys, tmp_path, monkeypatch
+    ):
+        from hermes_cli import main as hm
+        from hermes_cli.update_verification import (
+            RemoteRefVerification,
+            UpstreamComparison,
+        )
+
+        sha = "b" * 40
+        mock_run.side_effect = _make_run_side_effect(
+            branch="batumi/live-deploy",
+            tracking_ref="myfork/batumi/live",
+            verify_ok=True,
+            commit_count="0",
+        )
+        verified = RemoteRefVerification(
+            "myfork", "batumi/live", sha, sha, True
+        )
+        unknown_upstream = UpstreamComparison(
+            None, None, None, None, False, "official upstream unavailable"
+        )
+        mock_args.gateway = True
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        with patch(
+            "hermes_cli.update_verification.fetch_and_verify_remote_ref",
+            return_value=verified,
+        ), patch(
+            "hermes_cli.main._compare_official_upstream",
+            return_value=unknown_upstream,
+        ), patch.object(
+            hm, "_capture_head_sha", return_value=sha
+        ), pytest.raises(SystemExit) as exc_info:
+            cmd_update(mock_args)
+
+        assert exc_info.value.code == 1
+        assert (tmp_path / ".update_exit_code").read_text() == "1"
+        output = capsys.readouterr().out
+        assert "Already up to date!" not in output
+        assert "official-upstream verification is UNKNOWN" in output
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_does_not_claim_up_to_date_when_head_differs_from_remote(
+        self, mock_run, _mock_which, mock_args, capsys
+    ):
+        from hermes_cli import main as hm
+        from hermes_cli.update_verification import (
+            RemoteRefVerification,
+            UpstreamComparison,
+        )
+
+        local_sha = "a" * 40
+        remote_sha = "b" * 40
+        mock_run.side_effect = _make_run_side_effect(
+            branch="batumi/live-deploy",
+            tracking_ref="myfork/batumi/live",
+            verify_ok=True,
+            commit_count="0",
+        )
+        verified = RemoteRefVerification(
+            "myfork", "batumi/live", remote_sha, remote_sha, True
+        )
+        upstream = UpstreamComparison(
+            "d" * 40, "e" * 40, 1, 420, True
+        )
+
+        with patch(
+            "hermes_cli.update_verification.fetch_and_verify_remote_ref",
+            return_value=verified,
+        ), patch(
+            "hermes_cli.main._compare_official_upstream",
+            return_value=upstream,
+        ), patch(
+            "hermes_cli.update_verification.write_update_result"
+        ) as write_result, patch.object(
+            hm, "_capture_head_sha", return_value=local_sha
+        ), pytest.raises(SystemExit) as exc_info:
+            cmd_update(mock_args)
+
+        assert exc_info.value.code == 1
+        payload = write_result.call_args.args[1]
+        assert payload["status"] == "unknown"
+        assert payload["remote_verified"] is False
+        output = capsys.readouterr().out
+        assert "Already up to date!" not in output
+        assert "local HEAD differs from the live remote" in output
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
@@ -527,7 +941,29 @@ class TestCmdUpdateBranchFallback:
             branch="main", verify_ok=True, commit_count="2"
         )
 
-        cmd_update(mock_args)
+        from hermes_cli.update_verification import UpstreamComparison
+
+        upstream = UpstreamComparison(
+            upstream_sha="d" * 40,
+            merged_through_sha="e" * 40,
+            behind=0,
+            carried=2,
+            verified=True,
+        )
+        with patch(
+            "hermes_cli.update_verification.write_update_result"
+        ) as write_result, patch(
+            "hermes_cli.main._compare_official_upstream",
+            return_value=upstream,
+        ):
+            cmd_update(mock_args)
+
+        payload = write_result.call_args.args[1]
+        assert payload["status"] == "success"
+        assert payload["target_ref"] == "origin/main"
+        assert payload["remote_verified"] is True
+        assert payload["restart_requested"] is True
+        assert payload["upstream_merged_through"] == "e" * 40
 
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
 
@@ -894,6 +1330,37 @@ class TestCmdUpdateBranchFlag:
 
         def side_effect(cmd, **kwargs):
             joined = " ".join(str(c) for c in cmd)
+            remote_sha = "c" * 40
+
+            if "remote get-url" in joined:
+                return subprocess.CompletedProcess(
+                    cmd,
+                    0,
+                    stdout="https://github.com/NousResearch/hermes-agent.git\n",
+                    stderr="",
+                )
+            if "ls-remote" in joined:
+                branch_name = str(cmd[-1]).removeprefix("refs/heads/")
+                return subprocess.CompletedProcess(
+                    cmd,
+                    0,
+                    stdout=f"{remote_sha}\trefs/heads/{branch_name}\n",
+                    stderr="",
+                )
+            if "rev-parse" in joined and "refs/remotes/" in joined:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=f"{remote_sha}\n", stderr=""
+                )
+            if joined.endswith("rev-parse HEAD"):
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=f"{remote_sha}\n", stderr=""
+                )
+            if "merge-base" in joined:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=f"{remote_sha}\n", stderr=""
+                )
+            if "rev-list --left-right --count" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="0 0\n", stderr="")
 
             if "rev-parse" in joined and "--symbolic-full-name" in joined and "@{u}" in joined:
                 rc = 0 if tracking_ref else 128
@@ -932,8 +1399,8 @@ class TestCmdUpdateBranchFlag:
 
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
 
-        # rev-list must compare against origin/bb/gui, not origin/main
-        rev_list_cmds = [c for c in commands if "rev-list" in c]
+        # update rev-list must compare against origin/bb/gui, not origin/main
+        rev_list_cmds = [c for c in commands if "rev-list HEAD.." in c]
         assert any("origin/bb/gui" in c for c in rev_list_cmds), rev_list_cmds
         assert not any("origin/main" in c for c in rev_list_cmds), rev_list_cmds
 
@@ -953,7 +1420,7 @@ class TestCmdUpdateBranchFlag:
         cmd_update(args)
 
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
-        rev_list_cmds = [c for c in commands if "rev-list" in c]
+        rev_list_cmds = [c for c in commands if "rev-list HEAD.." in c]
         assert all("origin/main" in c for c in rev_list_cmds), rev_list_cmds
 
     @patch("shutil.which", return_value=None)
@@ -997,6 +1464,80 @@ class TestCmdUpdateBranchFlag:
         assert len(track_cmds) == 1
         assert "bb/gui" in track_cmds[0]
         assert "origin/bb/gui" in track_cmds[0]
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_noop_branch_switch_records_state_after_restoring_original_head(
+        self, mock_run, _mock_which
+    ):
+        from hermes_cli import main as hm
+
+        mock_run.side_effect = self._branch_side_effect(
+            current_branch="main", target_branch="bb/gui", commit_count="0"
+        )
+        args = SimpleNamespace(branch="bb/gui")
+        local_sha = "a" * 40
+        capture_count = 0
+
+        def capture_after_restore(_git_cmd, _cwd):
+            nonlocal capture_count
+            capture_count += 1
+            if capture_count == 2:
+                commands = [
+                    " ".join(str(a) for a in call.args[0])
+                    for call in mock_run.call_args_list
+                ]
+                assert any("checkout main" in command for command in commands)
+            return local_sha
+
+        with patch.object(
+            hm, "_capture_head_sha", side_effect=capture_after_restore
+        ), patch(
+            "hermes_cli.update_verification.write_update_result"
+        ) as write_result, pytest.raises(SystemExit) as exc_info:
+            cmd_update(args)
+
+        assert exc_info.value.code == 1
+        payload = write_result.call_args.args[1]
+        assert payload["completed_sha"] == local_sha
+        assert payload["status"] == "unknown"
+        assert payload["remote_verified"] is False
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_noop_failed_original_branch_restore_forces_unknown(
+        self, mock_run, _mock_which
+    ):
+        from hermes_cli import main as hm
+
+        base_side_effect = self._branch_side_effect(
+            current_branch="main", target_branch="bb/gui", commit_count="0"
+        )
+
+        def fail_restore(cmd, **kwargs):
+            joined = " ".join(str(arg) for arg in cmd)
+            if joined.endswith("checkout main"):
+                return subprocess.CompletedProcess(
+                    cmd, 1, stdout="", stderr="checkout blocked"
+                )
+            return base_side_effect(cmd, **kwargs)
+
+        mock_run.side_effect = fail_restore
+        args = SimpleNamespace(branch="bb/gui")
+        target_sha = "c" * 40
+
+        with patch.object(
+            hm, "_capture_head_sha", return_value=target_sha
+        ), patch(
+            "hermes_cli.update_verification.write_update_result"
+        ) as write_result, pytest.raises(SystemExit) as exc_info:
+            cmd_update(args)
+
+        assert exc_info.value.code == 1
+        payload = write_result.call_args.args[1]
+        assert payload["status"] == "unknown"
+        assert payload["remote_verified"] is False
+        assert "checkout blocked" in payload["completion_error"]
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
@@ -1230,6 +1771,13 @@ def test_gateway_update_starts_unloaded_launchd_service_when_update_ran_from_gat
     def fake_run(cmd, **kwargs):
         cmd = [str(part) for part in cmd]
         joined = " ".join(cmd)
+        if "remote get-url" in joined:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout="https://github.com/NousResearch/hermes-agent.git\n",
+                stderr="",
+            )
         if "launchctl list" in joined:
             return subprocess.CompletedProcess(cmd, 113, stdout="", stderr="Could not find service")
         if "rev-parse --abbrev-ref HEAD" in joined:
@@ -1268,6 +1816,23 @@ def test_gateway_update_starts_unloaded_launchd_service_when_update_ran_from_gat
 
     monkeypatch.setattr(managed_uv, "update_managed_uv", lambda: None)
     monkeypatch.setattr(managed_uv, "ensure_uv", lambda: None)
+
+    import hermes_cli.update_verification as update_verification
+
+    monkeypatch.setattr(
+        update_verification,
+        "fetch_and_verify_remote_ref",
+        lambda *a, **k: update_verification.RemoteRefVerification(
+            "origin", "main", "abc123", "abc123", True
+        ),
+    )
+    monkeypatch.setattr(
+        update_verification,
+        "compare_with_upstream",
+        lambda *a, **k: update_verification.UpstreamComparison(
+            "abc123", "abc123", 0, 0, True
+        ),
+    )
     monkeypatch.setattr(hm.subprocess, "run", fake_run)
 
     import hermes_cli.gateway as gw
@@ -1307,6 +1872,13 @@ def test_cli_update_does_not_start_intentionally_stopped_launchd(monkeypatch, tm
     def fake_run(cmd, **kwargs):
         cmd = [str(part) for part in cmd]
         joined = " ".join(cmd)
+        if "remote get-url" in joined:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout="https://github.com/NousResearch/hermes-agent.git\n",
+                stderr="",
+            )
         if "launchctl list" in joined:
             return subprocess.CompletedProcess(cmd, 113, stdout="", stderr="Could not find service")
         if "rev-parse --abbrev-ref HEAD" in joined:
@@ -1345,6 +1917,23 @@ def test_cli_update_does_not_start_intentionally_stopped_launchd(monkeypatch, tm
 
     monkeypatch.setattr(managed_uv, "update_managed_uv", lambda: None)
     monkeypatch.setattr(managed_uv, "ensure_uv", lambda: None)
+
+    import hermes_cli.update_verification as update_verification
+
+    monkeypatch.setattr(
+        update_verification,
+        "fetch_and_verify_remote_ref",
+        lambda *a, **k: update_verification.RemoteRefVerification(
+            "origin", "main", "abc123", "abc123", True
+        ),
+    )
+    monkeypatch.setattr(
+        update_verification,
+        "compare_with_upstream",
+        lambda *a, **k: update_verification.UpstreamComparison(
+            "abc123", "abc123", 0, 0, True
+        ),
+    )
     monkeypatch.setattr(hm.subprocess, "run", fake_run)
 
     import hermes_cli.gateway as gw

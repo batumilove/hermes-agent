@@ -22,11 +22,33 @@ def _make_run_side_effect(
 
     def side_effect(cmd, **kwargs):
         joined = " ".join(str(c) for c in cmd)
+        sha = "a" * 40
 
         if "rev-parse" in joined and "@{u}" in joined:
             return subprocess.CompletedProcess(cmd, 0, stdout="origin/main\n", stderr="")
         if "rev-parse" in joined and "--abbrev-ref" in joined:
             return subprocess.CompletedProcess(cmd, 0, stdout=f"{branch}\n", stderr="")
+        if cmd == ["git", "fetch", "--prune", "origin", "main"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd == ["git", "rev-parse", "refs/remotes/origin/main"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{sha}\n", stderr="")
+        if cmd == ["git", "ls-remote", "origin", "refs/heads/main"]:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=f"{sha}\trefs/heads/main\n", stderr=""
+            )
+        if cmd == ["git", "rev-parse", "HEAD"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{sha}\n", stderr="")
+        if cmd == ["git", "remote", "get-url", "origin"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout="https://github.com/NousResearch/hermes-agent.git\n",
+                stderr="",
+            )
+        if "merge-base" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{sha}\n", stderr="")
+        if "rev-list --left-right --count" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="0 0\n", stderr="")
         if "rev-parse" in joined and "--verify" in joined:
             return subprocess.CompletedProcess(
                 cmd, 0 if verify_ok else 128, stdout="", stderr=""

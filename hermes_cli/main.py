@@ -9898,6 +9898,180 @@ def _discard_lockfile_churn(git_cmd, repo_root):
         pass
 
 
+def _is_official_hermes_repository_url(url):
+    """Match the exact canonical GitHub repository across HTTPS/SSH URL forms."""
+    if not url:
+        return False
+
+    from urllib.parse import urlparse
+
+    value = str(url).strip()
+    if value.startswith("git@github.com:"):
+        repo_path = value.removeprefix("git@github.com:")
+    else:
+        parsed = urlparse(value)
+        if parsed.scheme.lower() not in {"http", "https", "ssh", "git"}:
+            return False
+        if (parsed.hostname or "").lower() != "github.com":
+            return False
+        repo_path = parsed.path.lstrip("/")
+
+    normalized = repo_path.rstrip("/")
+    if normalized.lower().endswith(".git"):
+        normalized = normalized[:-4]
+    return normalized.lower() == "nousresearch/hermes-agent"
+
+
+def _resolve_official_update_remote(git_cmd, repo_root, target_remote):
+    """Return a remote whose URL is the official NousResearch repository."""
+    candidates = []
+    for candidate in (target_remote, "upstream", "origin"):
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+    for candidate in candidates:
+        remote_url = _git_remote_url(git_cmd, repo_root, candidate)
+        if _is_official_hermes_repository_url(remote_url):
+            return candidate
+    return None
+
+
+def _compare_official_upstream(git_cmd, repo_root, target_remote):
+    """Compare HEAD with a URL-verified official upstream remote."""
+    from hermes_cli.update_verification import UpstreamComparison, compare_with_upstream
+
+    official_remote = _resolve_official_update_remote(
+        git_cmd, repo_root, target_remote
+    )
+    if not official_remote:
+        return UpstreamComparison(
+            None,
+            None,
+            None,
+            None,
+            False,
+            "no remote points to the official NousResearch/hermes-agent repository",
+        )
+    return compare_with_upstream(
+        git_cmd, repo_root, remote=official_remote, branch="main"
+    )
+
+
+def _record_git_update_started(*, started_sha, target_remote, target_branch):
+    """Invalidate any prior success before update-side effects begin."""
+    from hermes_cli.update_verification import write_update_result
+    from hermes_constants import get_hermes_home
+
+    payload = {
+        "schema_version": 1,
+        "status": "started",
+        "timestamp": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+        "started_sha": started_sha,
+        "completed_sha": None,
+        "target_ref": f"{target_remote}/{target_branch}",
+        "target_sha": None,
+        "remote_verified": False,
+        "restart_requested": False,
+        "upstream_sha": None,
+        "upstream_merged_through": None,
+        "upstream_behind": None,
+        "carried_commits": None,
+        "upstream_verified": False,
+    }
+    write_update_result(get_hermes_home(), payload)
+    return payload
+
+
+def _record_git_update_result(
+    *,
+    started_sha,
+    completed_sha,
+    target_remote,
+    target_branch,
+    target_sha,
+    remote_verified,
+    restart_requested,
+    upstream_comparison,
+    completion_error=None,
+):
+    """Persist and print the authoritative Git update result before restart."""
+    from hermes_cli.update_verification import redact_update_text, write_update_result
+    from hermes_constants import get_hermes_home
+
+    safe_completion_error = (
+        redact_update_text(completion_error) if completion_error else None
+    )
+    exact_remote_binding = bool(
+        remote_verified
+        and completed_sha
+        and target_sha
+        and completed_sha == target_sha
+    )
+    authoritative_success = bool(
+        exact_remote_binding
+        and upstream_comparison.verified
+        and not safe_completion_error
+    )
+    payload = {
+        "schema_version": 1,
+        "status": "success" if authoritative_success else "unknown",
+        "timestamp": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+        "started_sha": started_sha,
+        "completed_sha": completed_sha,
+        "target_ref": f"{target_remote}/{target_branch}",
+        "target_sha": target_sha,
+        "remote_verified": exact_remote_binding,
+        "restart_requested": bool(restart_requested),
+        "upstream_sha": upstream_comparison.upstream_sha,
+        "upstream_merged_through": upstream_comparison.merged_through_sha,
+        "upstream_behind": upstream_comparison.behind,
+        "carried_commits": upstream_comparison.carried,
+        "upstream_verified": upstream_comparison.verified,
+        "completion_error": safe_completion_error,
+    }
+    result_path = write_update_result(get_hermes_home(), payload)
+    print()
+    print("Update verification:")
+    print(f"  Tracking: {payload['target_ref']}")
+    print(f"  Before:   {started_sha or 'unknown'}")
+    print(f"  Remote:   {target_sha or 'unknown'}")
+    print(f"  After:    {completed_sha or 'unknown'}")
+    print(
+        "  Upstream merged through: "
+        f"{upstream_comparison.merged_through_sha or 'unknown'}"
+    )
+    print(
+        "  Current upstream delta: "
+        f"{upstream_comparison.behind if upstream_comparison.behind is not None else 'unknown'}"
+    )
+    print(
+        "  Carried commits: "
+        f"{upstream_comparison.carried if upstream_comparison.carried is not None else 'unknown'}"
+    )
+    print(
+        f"  Remote verification: "
+        f"{'PASS' if exact_remote_binding else 'UNKNOWN'}"
+    )
+    print(
+        f"  Upstream verification: "
+        f"{'PASS' if upstream_comparison.verified else 'UNKNOWN'}"
+    )
+    print(f"  Verdict:   {payload['status'].upper()}")
+    if payload["completion_error"]:
+        print(f"  Completion error: {payload['completion_error']}")
+    print(f"  Result:   {result_path}")
+    return payload
+
+
+def _write_gateway_update_exit_code(exit_code):
+    """Persist gateway-mode update failure/success status best-effort."""
+    from hermes_constants import get_hermes_home
+
+    try:
+        (get_hermes_home() / ".update_exit_code").write_text(str(exit_code))
+    except OSError:
+        pass
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version.
 
@@ -10174,6 +10348,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     git_cmd = ["git"]
     if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+    update_started_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
 
     # Discard npm lockfile churn before any stash/branch logic. npm rewrites
     # tracked package-lock.json files non-deterministically at install/build
@@ -10214,6 +10389,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
             git_cmd,
             PROJECT_ROOT,
             current_branch,
+        )
+        _record_git_update_started(
+            started_sha=update_started_sha,
+            target_remote=target_remote,
+            target_branch=branch,
         )
 
         if getattr(args, "sync_fork", False):
@@ -10304,28 +10484,35 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 sys.exit(1)
             print(f"  ✓ Synced {current_branch} with upstream/main and pushed {target_remote}/{branch}")
 
-        print(f"→ Fetching updates from {target_remote}/{branch}...")
-        fetch_result = subprocess.run(
-            git_cmd + ["fetch", target_remote, branch],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
+        print(f"→ Fetching and verifying updates from {target_remote}/{branch}...")
+        from hermes_cli.update_verification import fetch_and_verify_remote_ref
+
+        target_verification = fetch_and_verify_remote_ref(
+            git_cmd, PROJECT_ROOT, target_remote, branch
         )
-        if fetch_result.returncode != 0:
-            stderr = fetch_result.stderr.strip()
-            if "Could not resolve host" in stderr or "unable to access" in stderr:
-                print("✗ Network error — cannot reach the remote repository.")
-                print(f"  {stderr.splitlines()[0]}" if stderr else "")
-            elif (
-                "Authentication failed" in stderr or "could not read Username" in stderr
-            ):
-                print(
-                    "✗ Authentication failed — check your git credentials or SSH key."
-                )
-            else:
-                print("✗ Failed to fetch updates from origin.")
-                if stderr:
-                    print(f"  {stderr.splitlines()[0]}")
+        if not target_verification.verified:
+            print("✗ UNKNOWN — remote state could not be verified.")
+            if target_verification.error:
+                error_lower = target_verification.error.lower()
+                if any(
+                    marker in error_lower
+                    for marker in (
+                        "could not resolve host",
+                        "name or service not known",
+                        "network is unreachable",
+                    )
+                ):
+                    print("  Network error — check your internet connection.")
+                elif any(
+                    marker in error_lower
+                    for marker in (
+                        "authentication failed",
+                        "could not read username",
+                        "permission denied",
+                    )
+                ):
+                    print("  Authentication failed — check your Git credentials.")
+                print(f"  {target_verification.error}")
             sys.exit(1)
 
         # If user explicitly requested a different branch than the current one,
@@ -10395,9 +10582,19 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if commit_count == 0:
             _invalidate_update_cache()
 
-            # Even if origin is up to date, the fork may be behind upstream
-            if is_fork and target_remote == "origin" and branch == "main" and not getattr(args, "sync_fork", False):
+            # Even if origin is up to date, the fork may be behind upstream.
+            # Re-bind the target afterward because this helper may merge and push.
+            checked_fork_upstream = bool(
+                is_fork
+                and target_remote == "origin"
+                and branch == "main"
+                and not getattr(args, "sync_fork", False)
+            )
+            if checked_fork_upstream:
                 _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
+                target_verification = fetch_and_verify_remote_ref(
+                    git_cmd, PROJECT_ROOT, target_remote, branch
+                )
 
             # Restore stash and switch back to original branch if we moved
             if auto_stash_ref is not None:
@@ -10408,14 +10605,62 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     prompt_user=prompt_for_restore,
                     input_fn=gw_input_fn,
                 )
+            branch_restore_error = None
             if branch_explicit and current_branch not in {branch, "HEAD"}:
-                subprocess.run(
+                restore_branch = subprocess.run(
                     git_cmd + ["checkout", current_branch],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
                     text=True,
                     check=False,
                 )
+                if restore_branch.returncode != 0:
+                    detail = (
+                        restore_branch.stderr
+                        or restore_branch.stdout
+                        or "git checkout failed"
+                    ).strip().splitlines()[0]
+                    branch_restore_error = (
+                        f"failed to restore original branch {current_branch}: {detail}"
+                    )
+
+            completed_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
+            exact_target_match = bool(
+                not branch_restore_error
+                and target_verification.verified
+                and completed_sha == target_verification.live_sha
+            )
+            upstream_comparison = _compare_official_upstream(
+                git_cmd, PROJECT_ROOT, target_remote
+            )
+            noop_payload = _record_git_update_result(
+                started_sha=update_started_sha,
+                completed_sha=completed_sha,
+                target_remote=target_remote,
+                target_branch=branch,
+                target_sha=target_verification.live_sha,
+                remote_verified=exact_target_match,
+                restart_requested=False,
+                upstream_comparison=upstream_comparison,
+                completion_error=branch_restore_error,
+            )
+            if noop_payload["status"] != "success":
+                if branch_restore_error:
+                    print(f"✗ {noop_payload['completion_error']}")
+                elif not exact_target_match:
+                    print(
+                        "✗ No remote commits to pull, but local HEAD differs "
+                        "from the live remote."
+                    )
+                else:
+                    print(
+                        "✗ Target is current, but official-upstream "
+                        "verification is UNKNOWN."
+                    )
+                if gateway_mode:
+                    _write_gateway_update_exit_code(1)
+                _resume_windows_gateways_after_update(_windows_gateway_resume)
+                raise SystemExit(1)
 
             # A current checkout does NOT imply a healthy install: a previous
             # dependency sync may have failed partway (classic on Windows,
@@ -11064,6 +11309,44 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 install_cua_driver(upgrade=True)
         except Exception as e:
             logger.debug("cua-driver refresh failed: %s", e)
+
+        # Re-read and bind the live remote ref immediately before restart. The
+        # remote may have advanced while dependency/UI updates were running;
+        # never claim exact deployment parity from the earlier fetch alone.
+        final_target_verification = fetch_and_verify_remote_ref(
+            git_cmd, PROJECT_ROOT, target_remote, branch
+        )
+        completed_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
+        upstream_comparison = _compare_official_upstream(
+            git_cmd, PROJECT_ROOT, target_remote
+        )
+        final_exact_binding = bool(
+            final_target_verification.verified
+            and completed_sha == final_target_verification.live_sha
+        )
+        restart_authorized = bool(
+            final_exact_binding and upstream_comparison.verified
+        )
+        final_payload = _record_git_update_result(
+            started_sha=update_started_sha,
+            completed_sha=completed_sha,
+            target_remote=target_remote,
+            target_branch=branch,
+            target_sha=final_target_verification.live_sha,
+            remote_verified=final_exact_binding,
+            restart_requested=restart_authorized,
+            upstream_comparison=upstream_comparison,
+        )
+        if final_payload["status"] != "success":
+            print("✗ Authoritative update verification is UNKNOWN; gateway restart blocked.")
+            if final_target_verification.error:
+                print(f"  Target verification: {final_target_verification.error}")
+            if upstream_comparison.error:
+                print(f"  Upstream verification: {upstream_comparison.error}")
+            if gateway_mode:
+                _write_gateway_update_exit_code(1)
+            _resume_windows_gateways_after_update(_windows_gateway_resume)
+            sys.exit(1)
 
         # Write exit code *before* the gateway restart attempt.
         # When running as ``hermes update --gateway`` (spawned by the gateway's
