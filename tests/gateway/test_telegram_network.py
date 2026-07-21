@@ -29,6 +29,11 @@ import plugins.platforms.telegram.telegram_network as tnet
 # Helpers
 # ---------------------------------------------------------------------------
 
+class _FakePool:
+    def __init__(self):
+        self._network_backend = object()
+
+
 class FakeTransport(httpx.AsyncBaseTransport):
     """Records calls and raises / returns based on a host→action mapping."""
 
@@ -36,6 +41,7 @@ class FakeTransport(httpx.AsyncBaseTransport):
         self.calls = calls
         self.behavior = behavior
         self.closed = False
+        self._pool = _FakePool()
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(
@@ -78,6 +84,7 @@ class _CancellationTrackingTransport(httpx.AsyncBaseTransport):
         self.release = asyncio.Event()
         self.cancelled = False
         self.stream = _TrackingStream()
+        self._pool = _FakePool()
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         self.started.set()
@@ -90,6 +97,28 @@ class _CancellationTrackingTransport(httpx.AsyncBaseTransport):
 
     async def aclose(self) -> None:
         return None
+
+
+def test_new_transport_wraps_expected_httpcore_backend():
+    transport = tnet._new_async_http_transport()
+    assert isinstance(
+        transport._pool._network_backend,
+        tnet._CancellationSafeNetworkBackend,
+    )
+
+
+def test_new_transport_fails_closed_when_httpcore_shape_changes(monkeypatch):
+    class UnsupportedTransport:
+        pass
+
+    monkeypatch.setattr(
+        tnet.httpx,
+        "AsyncHTTPTransport",
+        lambda **_kwargs: UnsupportedTransport(),
+    )
+
+    with pytest.raises(RuntimeError, match=r"_pool\._network_backend"):
+        tnet._new_async_http_transport()
 
 
 def _fake_transport_factory(calls, behavior):
@@ -245,14 +274,13 @@ class TestFallbackTransport:
     """Primary path fails → try fallback IPs → stick to whichever works."""
 
     @pytest.mark.asyncio
-    async def test_cancelled_caller_does_not_orphan_transport_socket(self, monkeypatch):
-        """A cancelled PTB request must not cancel httpcore mid-connect/read.
+    async def test_cancelled_caller_cancels_inflight_transport_request(self, monkeypatch):
+        """Caller cancellation must unwind an in-flight transport request.
 
-        Cancelling ``AsyncHTTPTransport.handle_async_request`` directly can
-        leave its socket detached from the pool; repeated Telegram progress
-        cancellations then accumulate persistent CLOSE_WAIT descriptors.  The
-        transport operation should finish under a shield and its abandoned
-        response must be closed in the background.
+        Shielding the request from its caller is useful only while a response
+        can finish promptly. During connect or response-header stalls, leaving
+        the shielded request alive retains its socket indefinitely. Explicitly
+        cancelling the transport task lets httpcore unwind and release it.
         """
         inner = _CancellationTrackingTransport()
         monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", lambda **kw: inner)
@@ -268,13 +296,12 @@ class TestFallbackTransport:
         with pytest.raises(asyncio.CancelledError):
             await request_task
 
-        assert inner.cancelled is False
-        inner.release.set()
+        assert inner.cancelled is True
         for _ in range(10):
-            if inner.stream.closed:
+            if not tnet._abandoned_response_cleanups:
                 break
             await asyncio.sleep(0)
-        assert inner.stream.closed is True
+        assert not tnet._abandoned_response_cleanups
 
     @pytest.mark.asyncio
     async def test_caller_body_read_cancellation_closes_real_socket_response(self):
