@@ -16968,7 +16968,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # what they said: ...") read as a meta-instruction and made
                     # the LLM volunteer commentary about voice mode rather than
                     # reply to the content.
-                    enriched_parts.append(f'[The user sent a voice message~ Here\'s what they said: "{transcript}"]')
+                    enriched_parts.append(f'"{transcript}"')
                 else:
                     error = result.get("error", "unknown error")
                     # All failure branches: a single, minimal, neutral marker.

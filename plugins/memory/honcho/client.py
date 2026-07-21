@@ -975,27 +975,37 @@ def _close_honcho_client(client: "Honcho") -> None:
         return
 
     # Sync HTTP client (always created eagerly by the SDK).
-    http = getattr(client, "_http", None)
-    if http is not None and getattr(http, "_owns_client", True):
-        close_fn = getattr(http, "close", None)
-        if callable(close_fn) and not inspect.iscoroutinefunction(close_fn):
-            try:
+    try:
+        http = getattr(client, "_http", None)
+        if http is not None and getattr(http, "_owns_client", True):
+            close_fn = getattr(http, "close", None)
+            if callable(close_fn) and not inspect.iscoroutinefunction(close_fn):
                 close_fn()
-            except Exception:
-                logger.warning("Honcho sync HTTP client close failed", exc_info=True)
+    except Exception:
+        logger.warning("Honcho sync HTTP client close failed", exc_info=True)
 
-    # Lazy async HTTP client (created only on first access to aio/_async_http_client).
-    async_http = getattr(client, "_async_http", None)
-    if async_http is not None and getattr(async_http, "_owns_client", True):
-        close_fn = getattr(async_http, "close", None)
-        if inspect.iscoroutinefunction(close_fn):
-            _run_async_close(close_fn())
-        elif callable(close_fn):
-            # SDK shape changed or a mock; call sync anyway.
+    # Inspect only backing state. In Honcho 2.2.0, Pydantic stores the private
+    # attribute outside __dict__; older SDKs and simple fakes may use __dict__.
+    # Never touch _async_http_client because that property allocates lazily.
+    try:
+        async_http = None
+        for state_name in ("__pydantic_private__", "__dict__"):
             try:
+                state = object.__getattribute__(client, state_name)
+            except AttributeError:
+                continue
+            if isinstance(state, dict) and "_async_http" in state:
+                async_http = state["_async_http"]
+                break
+        if async_http is not None and getattr(async_http, "_owns_client", True):
+            close_fn = getattr(async_http, "close", None)
+            if inspect.iscoroutinefunction(close_fn):
+                _run_async_close(close_fn())
+            elif callable(close_fn):
+                # SDK shape changed or a mock; call sync anyway.
                 close_fn()
-            except Exception:
-                logger.warning("Honcho async HTTP client close failed", exc_info=True)
+    except Exception:
+        logger.warning("Honcho async HTTP client close failed", exc_info=True)
 
 
 def _apply_fresh_oauth_token(config: HonchoClientConfig) -> None:
@@ -1177,6 +1187,11 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
 def reset_honcho_client() -> None:
     """Reset the Honcho client singleton (useful for testing)."""
     global _cached_timeout, _honcho_json_timeout_memo
-    _honcho_client_slot.reset()
-    _cached_timeout = None
-    _honcho_json_timeout_memo = (None, None)
+    cached = _honcho_client_slot.peek()
+    try:
+        if cached is not None:
+            _close_honcho_client(cached)
+    finally:
+        _honcho_client_slot.reset()
+        _cached_timeout = None
+        _honcho_json_timeout_memo = (None, None)

@@ -13,7 +13,7 @@ import asyncio
 import ipaddress
 import logging
 import socket
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 import httpx
 
@@ -21,21 +21,84 @@ logger = logging.getLogger(__name__)
 
 _TELEGRAM_API_HOST = "api.telegram.org"
 
-# Strong references for detached cleanups. asyncio's loop only keeps weak
-# references to tasks; without this set a cleanup can be garbage-collected
-# before it closes the abandoned response stream.
+# Strong references for asynchronous abandoned-response closes. asyncio's loop
+# only keeps weak references to tasks; without this set a cleanup can be
+# garbage-collected before it closes the response stream.
 _abandoned_response_cleanups: set[asyncio.Task] = set()
 
 
-async def _close_abandoned_transport_response(task: asyncio.Task) -> None:
-    """Close a response that completed after its caller was cancelled."""
-    try:
-        response = await task
-    except BaseException:
-        # Observe every terminal state (including cancellation) so detached
-        # transport operations never produce "Task exception was never retrieved".
-        return
-    await _close_response(response)
+class _CancellationSafeNetworkStream:
+    """Close the raw TCP stream if TLS setup is cancelled.
+
+    httpcore 1.0.9's AnyIO stream closes on ``Exception`` during ``start_tls``
+    but not on asyncio's ``CancelledError`` (a ``BaseException``). Retaining the
+    pre-TLS stream here lets this Telegram transport close exactly that socket;
+    no shared pool or concurrent healthy request is interrupted.
+    """
+
+    def __init__(self, stream: Any):
+        self._stream = stream
+
+    async def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
+        return await self._stream.read(max_bytes, timeout=timeout)
+
+    async def write(self, buffer: bytes, timeout: float | None = None) -> None:
+        await self._stream.write(buffer, timeout=timeout)
+
+    async def aclose(self) -> None:
+        await self._stream.aclose()
+
+    async def start_tls(
+        self, ssl_context, server_hostname=None, timeout=None
+    ) -> "_CancellationSafeNetworkStream":
+        try:
+            stream = await self._stream.start_tls(
+                ssl_context, server_hostname, timeout
+            )
+        except BaseException:
+            # We have caught the delivered cancellation, so this bounded local
+            # socket close can run before cancellation is propagated upward.
+            try:
+                await self._stream.aclose()
+            except BaseException:
+                pass
+            raise
+        return _CancellationSafeNetworkStream(stream)
+
+    def get_extra_info(self, info: str) -> Any:
+        return self._stream.get_extra_info(info)
+
+
+class _CancellationSafeNetworkBackend:
+    """Wrap httpcore-created streams with TLS cancellation cleanup."""
+
+    def __init__(self, backend: Any):
+        self._backend = backend
+
+    async def connect_tcp(self, *args, **kwargs) -> _CancellationSafeNetworkStream:
+        stream = await self._backend.connect_tcp(*args, **kwargs)
+        return _CancellationSafeNetworkStream(stream)
+
+    async def connect_unix_socket(self, *args, **kwargs) -> _CancellationSafeNetworkStream:
+        stream = await self._backend.connect_unix_socket(*args, **kwargs)
+        return _CancellationSafeNetworkStream(stream)
+
+    async def sleep(self, seconds: float) -> None:
+        await self._backend.sleep(seconds)
+
+
+def _new_async_http_transport(**kwargs) -> httpx.AsyncHTTPTransport:
+    """Build an HTTPX transport whose raw TLS sockets are cancellation-safe."""
+    transport = httpx.AsyncHTTPTransport(**kwargs)
+    pool = getattr(transport, "_pool", None)
+    backend = getattr(pool, "_network_backend", None)
+    if pool is None or backend is None:
+        raise RuntimeError(
+            "Unsupported httpx/httpcore transport internals: expected "
+            "AsyncHTTPTransport._pool._network_backend"
+        )
+    pool._network_backend = _CancellationSafeNetworkBackend(backend)
+    return transport
 
 
 async def _close_response(response: httpx.Response) -> None:
@@ -54,32 +117,24 @@ async def _handle_transport_request(
     Cancelling httpcore while it is connecting or reading response headers can
     detach the live socket from its pool. Under Telegram progress/edit churn,
     those sockets persist in CLOSE_WAIT until the gateway reaches RLIMIT_NOFILE.
-    Shield the bounded network operation; if its caller goes away, finish it in
-    the background and close the otherwise-unclaimed response explicitly.
+    ``_CancellationSafeNetworkStream`` closes the exact raw socket when caller
+    cancellation interrupts TLS setup; cancellation otherwise propagates into
+    httpcore so its normal connect/header cleanup runs.
 
-    The same protection applies after the response has been returned: a caller
-    that is cancelled while reading the response body (e.g. PTB's
+    After the response has been returned, a caller that is cancelled while
+    reading the response body (e.g. PTB's
     ``HTTPXRequest.do_request`` awaiting ``res.content``) may abandon the
-    response and leave its socket in CLOSE_WAIT. We attach a callback to the
-    caller's task so the response is closed if the caller ends without having
-    closed it.
+    response and leave its socket in CLOSE_WAIT. The caller-task done callback
+    closes that otherwise-unclaimed response.
     """
-    request_task = asyncio.create_task(transport.handle_async_request(request))
-    try:
-        response = await asyncio.shield(request_task)
-    except asyncio.CancelledError:
-        cleanup = asyncio.create_task(_close_abandoned_transport_response(request_task))
-        _abandoned_response_cleanups.add(cleanup)
-        cleanup.add_done_callback(_abandoned_response_cleanups.discard)
-        raise
-    else:
-        # Guard the response against caller task cancellation/exception after
-        # we have returned it. If the caller is cancelled while consuming the
-        # body, its done callback will close the otherwise-abandoned response.
-        current_task = asyncio.current_task()
-        if current_task is not None:
-            _close_response_on_task_done(current_task, response)
-        return response
+    response = await transport.handle_async_request(request)
+    # Guard the response against caller task cancellation/exception after
+    # we have returned it. If the caller is cancelled while consuming the
+    # body, its done callback will close the otherwise-abandoned response.
+    current_task = asyncio.current_task()
+    if current_task is not None:
+        _close_response_on_task_done(current_task, response)
+    return response
 
 
 def _close_response_on_task_done(task: asyncio.Task, response: httpx.Response) -> None:
@@ -139,9 +194,9 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
         if proxy_url and "proxy" not in transport_kwargs:
             transport_kwargs["proxy"] = proxy_url
-        self._primary = httpx.AsyncHTTPTransport(**transport_kwargs)
+        self._primary = _new_async_http_transport(**transport_kwargs)
         self._fallbacks = {
-            ip: httpx.AsyncHTTPTransport(**transport_kwargs) for ip in self._fallback_ips
+            ip: _new_async_http_transport(**transport_kwargs) for ip in self._fallback_ips
         }
         self._sticky_ip: Optional[str] = None
         self._sticky_lock = asyncio.Lock()

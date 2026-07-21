@@ -1169,8 +1169,10 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     (the rehaul folded the old /credits + /billing surfaces into /topup.)
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
-#   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug"})
+#   - update/version/debug: low-frequency diagnostics/release surfaces; reached
+#     via /hermes <command> on Slack so the 50 native slots keep everyday
+#     session controls and aliases such as /btw.
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "update", "version", "debug"})
 
 
 def _sanitize_slack_name(raw: str) -> str:
