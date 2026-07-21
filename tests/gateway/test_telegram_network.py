@@ -551,11 +551,12 @@ class TestFallbackTransportInit:
         assert len(seen_kwargs) == 2
         assert all("proxy" not in kwargs for kwargs in seen_kwargs)
 
-    def test_forwards_limits_to_inner_transports(self, monkeypatch):
-        """Verify that caller-supplied limits reach the inner
-        AsyncHTTPTransport instances (#58790).  httpx ignores the
-        client-level limits kwarg when a custom transport is
-        supplied, so the limits must be forwarded via transport_kwargs.
+    def test_preserves_concurrency_limits_but_disables_idle_keepalive(self, monkeypatch):
+        """Inner fallback pools retain caller concurrency without idle sockets.
+
+        httpx ignores client-level limits when a custom transport is supplied,
+        so the fallback transport must forward the connection ceiling while
+        forcing zero idle keepalive to avoid route-stranded CLOSE_WAIT sockets.
         """
         seen_kwargs = []
 
@@ -580,7 +581,33 @@ class TestFallbackTransportInit:
         assert len(seen_kwargs) == 2
         for kw in seen_kwargs:
             assert "limits" in kw
-            assert kw["limits"] is custom_limits
+            limits = kw["limits"]
+            assert limits.max_connections == custom_limits.max_connections
+            assert limits.max_keepalive_connections == 0
+            assert limits.keepalive_expiry == custom_limits.keepalive_expiry
+
+    def test_default_limits_remain_bounded_without_idle_keepalive(self, monkeypatch):
+        seen_kwargs = []
+
+        def factory(**kwargs):
+            seen_kwargs.append(kwargs.copy())
+            return FakeTransport([], {})
+
+        for key in (
+            "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy",
+            "http_proxy", "all_proxy", "TELEGRAM_PROXY", "NO_PROXY", "no_proxy",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)
+
+        tnet.TelegramFallbackTransport(["149.154.167.220"])
+
+        assert len(seen_kwargs) == 2
+        for kw in seen_kwargs:
+            limits = kw["limits"]
+            assert limits.max_connections == 100
+            assert limits.max_keepalive_connections == 0
+            assert limits.keepalive_expiry == 5.0
 
 
 class TestFallbackTransportClose:

@@ -191,6 +191,26 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
 
     def __init__(self, fallback_ips: Iterable[str], **transport_kwargs):
         self._fallback_ips = list(dict.fromkeys(_normalize_fallback_ips(fallback_ips)))
+        # Each logical PTB request owns a primary pool plus one pool per fallback
+        # route. httpcore only reaps expired/peer-closed idle connections when
+        # that same pool receives another request, so an inactive route can hold
+        # CLOSE_WAIT sockets indefinitely. Keep active-request concurrency, but
+        # do not retain completed Telegram connections as idle pool members.
+        limits = transport_kwargs.get("limits")
+        if limits is None:
+            # Match AsyncHTTPTransport's httpx 0.28 bounded defaults except for
+            # idle keepalive ownership, which is deliberately disabled here.
+            transport_kwargs["limits"] = httpx.Limits(
+                max_connections=100,
+                max_keepalive_connections=0,
+                keepalive_expiry=5.0,
+            )
+        else:
+            transport_kwargs["limits"] = httpx.Limits(
+                max_connections=limits.max_connections,
+                max_keepalive_connections=0,
+                keepalive_expiry=limits.keepalive_expiry,
+            )
         proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
         if proxy_url and "proxy" not in transport_kwargs:
             transport_kwargs["proxy"] = proxy_url
