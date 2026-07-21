@@ -45,6 +45,7 @@ _CASES = (
     "tls_handshake",
     "response_headers",
     "response_body",
+    "peer_fin_idle",
     "repeated",
     "concurrent",
     "proxy_tls_handshake",
@@ -56,6 +57,7 @@ _PTB_CASES = frozenset(
         "tls_handshake",
         "response_headers",
         "response_body",
+        "peer_fin_idle",
         "repeated",
         "concurrent",
     }
@@ -123,6 +125,9 @@ class _ProtocolServer:
     def __init__(self, mode: str):
         self.mode = mode
         self.started = asyncio.Event()
+        self.allow_peer_fin = asyncio.Event()
+        self.peer_fin_sent = asyncio.Event()
+        self.client_eof = asyncio.Event()
         self.disconnects = 0
         self.accepted = 0
         self.server: asyncio.Server | None = None
@@ -191,6 +196,28 @@ class _ProtocolServer:
                     b'{"ok":true,"result":"'
                 )
                 await writer.drain()
+
+            if self.mode == "peer_fin_idle":
+                body = b'{"ok":true,"result":{}}'
+                writer.write(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                    + f"Content-Length: {len(body)}\r\nConnection: keep-alive\r\n\r\n".encode()
+                    + body
+                )
+                await writer.drain()
+                self.started.set()
+                await self.allow_peer_fin.wait()
+                writer.write_eof()
+                await writer.drain()
+                self.peer_fin_sent.set()
+                if not await reader.read(1):
+                    self.client_eof.set()
+                writer.close()
+                with contextlib.suppress(Exception):
+                    await writer.wait_closed()
+                self._writers.discard(writer)
+                self.disconnects += 1
+                return
 
             self.started.set()
             await self._wait_for_disconnect(reader, writer)
@@ -458,6 +485,38 @@ async def _single_cancel_case(mode: str) -> dict[str, Any]:
     return result
 
 
+async def _peer_fin_idle_case() -> dict[str, Any]:
+    """A fully consumed response must not strand an idle CLOSE_WAIT socket."""
+    runtime = _RealRuntime()
+    await runtime.initialize()
+    server = await _ProtocolServer("peer_fin_idle").start()
+    try:
+        data = await runtime.request.retrieve(server.url())
+        await asyncio.wait_for(server.started.wait(), timeout=5.0)
+        server.allow_peer_fin.set()
+        await asyncio.wait_for(server.peer_fin_sent.wait(), timeout=5.0)
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(server.client_eof.wait(), timeout=1.0)
+        await asyncio.sleep(0.1)
+        leaks = _connections_to_port(server.port)
+        result = {
+            "case": "peer_fin_idle",
+            "ok": (
+                data == b'{"ok":true,"result":{}}'
+                and server.client_eof.is_set()
+                and not leaks
+            ),
+            "data": data.decode(),
+            "peer_fin_sent": server.peer_fin_sent.is_set(),
+            "client_eof": server.client_eof.is_set(),
+            "leaks": leaks,
+        }
+    finally:
+        await server.aclose()
+        await runtime.aclose()
+    return result
+
+
 async def _repeated_case() -> dict[str, Any]:
     runtime = _RealRuntime()
     await runtime.initialize()
@@ -604,6 +663,8 @@ async def _run_case(case: str) -> dict[str, Any]:
         return await _provenance_case()
     if case in {"tls_handshake", "response_headers", "response_body"}:
         return await _single_cancel_case(case)
+    if case == "peer_fin_idle":
+        return await _peer_fin_idle_case()
     if case == "repeated":
         return await _repeated_case()
     if case == "concurrent":
