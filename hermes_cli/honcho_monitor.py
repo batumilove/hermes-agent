@@ -116,6 +116,7 @@ def parse_pipeline_env(raw: str) -> dict[str, dict[str, str]]:
         "deriver": {
             "model": "DERIVER_MODEL_CONFIG__MODEL",
             "base_url": "DERIVER_MODEL_CONFIG__OVERRIDES__BASE_URL",
+            "workers": "DERIVER_WORKERS",
         },
         "summary": {
             "model": "SUMMARY_MODEL_CONFIG__MODEL",
@@ -366,6 +367,18 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
         if has_per_task_active_stats
         else active_count
     )
+    active_dream_count = int(deriver.get("active_dream_count") or 0)
+    active_dream_oldest_age_s = int(float(deriver.get("active_dream_oldest_age_s") or 0))
+    active_other_count = int(deriver.get("active_other_count") or 0)
+    active_other_oldest_age_s = int(float(deriver.get("active_other_oldest_age_s") or 0))
+    try:
+        deriver_workers = int(snapshot.pipeline.get("deriver", {}).get("workers") or 0)
+    except (TypeError, ValueError):
+        deriver_workers = 0
+    sole_worker_has_fresh_non_representation = deriver_workers == 1 and (
+        (active_dream_count > 0 and active_dream_oldest_age_s < DREAM_STALE_ACTIVE_SECONDS)
+        or (active_other_count > 0 and active_other_oldest_age_s < DERIVER_STALE_ACTIVE_SECONDS)
+    )
 
     if previous_state:
         prev_rep_state = previous_state.get("queue_by_type", {}).get("representation")
@@ -384,10 +397,12 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
             rep_pending = int(snapshot.queue_by_type.get("representation", {}).get("pending", 0))
             prev_rep_pending = int(prev_rep_state.get("pending", 0))
             # Active representation work is handled by the task-aware stale-work
-            # check below. Dream/other work must not mask an idle representation
-            # backlog; legacy snapshots fall back to the aggregate active count.
+            # check below. With one worker, any fresh active unit explains why the
+            # representation backlog cannot advance; with multiple workers,
+            # dream/other work must not mask an idle representation backlog.
             if (
                 active_representation_count == 0
+                and not sole_worker_has_fresh_non_representation
                 and rep_pending > 0
                 and prev_rep_pending > 0
                 and rep_delta == 0
@@ -407,14 +422,14 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
             ),
             (
                 "Dream",
-                int(deriver.get("active_dream_count") or 0),
-                int(float(deriver.get("active_dream_oldest_age_s") or 0)),
+                active_dream_count,
+                active_dream_oldest_age_s,
                 DREAM_STALE_ACTIVE_SECONDS,
             ),
             (
                 "Other",
-                int(deriver.get("active_other_count") or 0),
-                int(float(deriver.get("active_other_oldest_age_s") or 0)),
+                active_other_count,
+                active_other_oldest_age_s,
                 DERIVER_STALE_ACTIVE_SECONDS,
             ),
         )
