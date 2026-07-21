@@ -2757,17 +2757,6 @@ class SessionDB:
         except sqlite3.OperationalError:
             pass  # Index already exists
 
-        # Title + started_at index used for fast "latest continuation" lookups
-        # by resolve_session_by_title. The index is partial over non-null titles
-        # and supports both exact equality and the prefix range scan.
-        try:
-            cursor.execute(
-                "CREATE INDEX IF NOT EXISTS idx_sessions_title_started_at "
-                "ON sessions(title, started_at DESC) WHERE title IS NOT NULL"
-            )
-        except sqlite3.OperationalError:
-            pass  # Index already exists
-
         if fts5_available:
             # FTS5 setup. Run the DDL even when the virtual table exists so
             # CREATE TRIGGER IF NOT EXISTS repairs trigger-only degradation from
@@ -4410,16 +4399,16 @@ class SessionDB:
         "title" row.
         """
         # Look for numbered variants first, using a prefix range over
-        # "title #...". The title+started_at index can satisfy both the prefix
-        # filter and the descending recency order without scanning unrelated
-        # sessions.
+        # "title #...". SQLite can use the existing unique title index for the
+        # bounded range, while old read-only profile databases without newer
+        # optional indexes remain correct.
         lower = title + " #"
         # Next lexicographic prefix after "title #" without matching strings
         # that do not start with "title #".
         upper = title + " $"
         with self._lock:
             cursor = self._conn.execute(
-                "SELECT id FROM sessions INDEXED BY idx_sessions_title_started_at "
+                "SELECT id FROM sessions "
                 "WHERE title >= ? AND title < ? "
                 "ORDER BY started_at DESC LIMIT 1",
                 (lower, upper),

@@ -3419,6 +3419,23 @@ class TestResolveSessionByTitle:
     def test_returns_none_for_unknown_title(self, db):
         assert db.resolve_session_by_title("Does Not Exist") is None
 
+    def test_read_only_old_schema_without_new_index_still_resolves(self, tmp_path):
+        """Read-only profile databases may not have run the latest DDL yet."""
+        db_path = tmp_path / "old-schema.db"
+        writer = SessionDB(db_path)
+        writer.create_session("root", "cli")
+        writer.set_session_title("root", "Old Project")
+        writer.create_session("continuation", "cli")
+        writer.set_session_title("continuation", "Old Project #2")
+        writer._conn.execute("DROP INDEX IF EXISTS idx_sessions_title_started_at")
+        writer.close()
+
+        reader = SessionDB(db_path, read_only=True)
+        try:
+            assert reader.resolve_session_by_title("Old Project") == "continuation"
+        finally:
+            reader.close()
+
     def test_empty_title_never_matches(self, db):
         db.create_session("s1", "cli")
         assert db.resolve_session_by_title("") is None
@@ -3454,14 +3471,15 @@ class TestResolveSessionByTitle:
         must not perform a full started_at scan. This is a regression guard
         against the ~188 ms pathological resolve observed in production traces.
         """
-        self._seed_many_sessions(db, total=3000, variant_count=5)
+        self._seed_many_sessions(db, total=10000, variant_count=5)
         start = time.perf_counter()
         for _ in range(100):
             db.resolve_session_by_title("My Project")
         elapsed = time.perf_counter() - start
-        # The indexed path is normally far faster, but keep a generous bound
-        # so noisy/coverage-enabled CI runners do not make this guard flaky.
-        assert elapsed < 0.500, f"100 resolves took {elapsed*1000:.1f} ms"
+        # The indexed path is normally under 10 ms locally. This bound leaves
+        # ample CI headroom while the pre-fix full scan takes about 0.9 seconds
+        # at this fixture size.
+        assert elapsed < 0.200, f"100 resolves took {elapsed*1000:.1f} ms"
 
     def test_resolve_query_plan_uses_title_index(self, db):
         """The underlying query should seek on the title indexes, not fall
@@ -3472,7 +3490,7 @@ class TestResolveSessionByTitle:
         upper = title + " $"
         plan = db._conn.execute(
             "EXPLAIN QUERY PLAN "
-            "SELECT id FROM sessions INDEXED BY idx_sessions_title_started_at "
+            "SELECT id FROM sessions "
             "WHERE title >= ? AND title < ? "
             "ORDER BY started_at DESC LIMIT 1",
             (lower, upper),
@@ -3481,7 +3499,7 @@ class TestResolveSessionByTitle:
         # Reject modern and legacy SQLite spellings for a full table scan.
         assert "SCAN sessions" not in detail, f"query plan still scans: {detail}"
         assert "SCAN TABLE sessions" not in detail, f"query plan still scans: {detail}"
-        assert "idx_sessions_title_started_at" in detail, f"expected range index use: {detail}"
+        assert "idx_sessions_title_unique" in detail, f"expected range index use: {detail}"
 
         exact_plan = db._conn.execute(
             "EXPLAIN QUERY PLAN SELECT id FROM sessions WHERE title = ? LIMIT 1",
