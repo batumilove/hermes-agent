@@ -2757,6 +2757,17 @@ class SessionDB:
         except sqlite3.OperationalError:
             pass  # Index already exists
 
+        # Title + started_at index used for fast "latest continuation" lookups
+        # by resolve_session_by_title. The index is partial over non-null titles
+        # and supports both exact equality and the prefix range scan.
+        try:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_title_started_at "
+                "ON sessions(title, started_at DESC) WHERE title IS NOT NULL"
+            )
+        except sqlite3.OperationalError:
+            pass  # Index already exists
+
         if fts5_available:
             # FTS5 setup. Run the DDL even when the virtual table exists so
             # CREATE TRIGGER IF NOT EXISTS repairs trigger-only degradation from
@@ -4391,33 +4402,38 @@ class SessionDB:
         return dict(row) if row else None
 
     def resolve_session_by_title(self, title: str) -> Optional[str]:
-        """Resolve a title to a session ID, preferring the latest in a lineage.
+        """Resolve a title to a session ID, preferring the latest continuation.
 
-        If the exact title exists, returns that session's ID.
-        If not, searches for "title #N" variants and returns the latest one.
-        If the exact title exists AND numbered variants exist, returns the
-        latest numbered variant (the most recent continuation).
+        If numbered variants exist for the base title, returns the newest one.
+        Otherwise falls back to the exact title. This preserves the historical
+        contract where a continuation like "title #2" wins over a later exact
+        "title" row.
         """
-        # First try exact match
-        exact = self.get_session_by_title(title)
-
-        # Also search for numbered variants: "title #2", "title #3", etc.
-        # Escape SQL LIKE wildcards (%, _) in the title to prevent false matches
-        escaped = title.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        # Look for numbered variants first, using a prefix range over
+        # "title #...". The title+started_at index can satisfy both the prefix
+        # filter and the descending recency order without scanning unrelated
+        # sessions.
+        lower = title + " #"
+        # Next lexicographic prefix after "title #" without matching strings
+        # that do not start with "title #".
+        upper = title + " $"
         with self._lock:
             cursor = self._conn.execute(
-                "SELECT id, title, started_at FROM sessions "
-                "WHERE title LIKE ? ESCAPE '\\' ORDER BY started_at DESC",
-                (f"{escaped} #%",),
+                "SELECT id FROM sessions INDEXED BY idx_sessions_title_started_at "
+                "WHERE title >= ? AND title < ? "
+                "ORDER BY started_at DESC LIMIT 1",
+                (lower, upper),
             )
-            numbered = cursor.fetchall()
+            row = cursor.fetchone()
+            if row is not None:
+                return row["id"]
 
-        if numbered:
-            # Return the most recent numbered variant
-            return numbered[0]["id"]
-        elif exact:
-            return exact["id"]
-        return None
+            cursor = self._conn.execute(
+                "SELECT id FROM sessions WHERE title = ? LIMIT 1",
+                (title,),
+            )
+            row = cursor.fetchone()
+        return row["id"] if row else None
 
     def get_next_title_in_lineage(self, base_title: str) -> str:
         """Generate the next title in a lineage (e.g., "my session" → "my session #2").

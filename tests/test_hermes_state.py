@@ -3322,6 +3322,175 @@ class TestSessionTitleLineage:
             db.set_session_title("child", "shared")
 
 
+class TestResolveSessionByTitle:
+    """Tests for SessionDB.resolve_session_by_title() title continuation lookup.
+
+    These tests assert the behavior contracts and latency requirements that
+    motivated the title+started_at lookup optimization. They exercise real
+    temp databases, not the live ~/.hermes/state.db.
+    """
+
+    def _seed_many_sessions(self, db, *, total=3000, variant_count=5):
+        """Seed many uniquely-titled sessions plus a small numbered lineage.
+
+        Uses raw INSERT (executemany) to avoid the per-call overhead of
+        create_session().
+        """
+        now = time.time()
+        # Many unrelated sessions to create the full-table-scan pathology.
+        db._conn.executemany(
+            "INSERT INTO sessions (id, source, started_at, title) "
+            "VALUES (?, ?, ?, ?)",
+            [
+                (f"s_{i:05d}", "cli", now - total + i, f"Unrelated Title {i}")
+                for i in range(total)
+            ],
+        )
+        # A single lineage of numbered variants for a shared base title.
+        db._conn.executemany(
+            "INSERT INTO sessions (id, source, started_at, title) "
+            "VALUES (?, ?, ?, ?)",
+            [
+                (f"v_{j:03d}", "cli", now - variant_count + j, f"My Project #{j}")
+                for j in range(1, variant_count + 1)
+            ],
+        )
+        db._conn.commit()
+
+    def test_exact_match_returns_session_id(self, db):
+        db.create_session("s1", "cli")
+        db.set_session_title("s1", "My Session")
+        assert db.resolve_session_by_title("My Session") == "s1"
+
+    def test_exact_match_with_no_variants(self, db):
+        db.create_session("s1", "cli")
+        db.set_session_title("s1", "Only Session")
+        assert db.resolve_session_by_title("Only Session") == "s1"
+
+    def test_numbered_variant_preferred_over_exact_match(self, db):
+        """If both the base title and numbered variants exist, the latest
+        numbered continuation wins."""
+        db.create_session("root", "cli")
+        db.set_session_title("root", "My Session")
+        db.create_session("cont", "cli")
+        db.set_session_title("cont", "My Session #2")
+        assert db.resolve_session_by_title("My Session") == "cont"
+
+    def test_numbered_variant_wins_even_when_exact_title_is_newer(self, db):
+        """A later exact-title session must not steal lookup from an existing
+        numbered continuation."""
+        db.create_session("variant", "cli")
+        db.set_session_title("variant", "Conversation #2")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?",
+            (time.time() - 100, "variant"),
+        )
+        db.create_session("exact", "cli")
+        db.set_session_title("exact", "Conversation")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?",
+            (time.time(), "exact"),
+        )
+        db._conn.commit()
+
+        assert db.resolve_session_by_title("Conversation") == "variant"
+
+    def test_returns_latest_numbered_variant(self, db):
+        db.create_session("older", "cli")
+        db.set_session_title("older", "My Session #2")
+        db.create_session("newer", "cli")
+        db.set_session_title("newer", "My Session #10")
+        assert db.resolve_session_by_title("My Session") == "newer"
+
+    def test_tie_breaks_by_started_at_descending(self, db):
+        db.create_session("old", "cli")
+        db.set_session_title("old", "Tied Base #1")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?", (time.time() - 100, "old")
+        )
+        db.create_session("new", "cli")
+        db.set_session_title("new", "Tied Base #2")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?", (time.time() - 10, "new")
+        )
+        db._conn.commit()
+        assert db.resolve_session_by_title("Tied Base") == "new"
+
+    def test_returns_none_for_unknown_title(self, db):
+        assert db.resolve_session_by_title("Does Not Exist") is None
+
+    def test_empty_title_never_matches(self, db):
+        db.create_session("s1", "cli")
+        assert db.resolve_session_by_title("") is None
+
+    def test_escapes_like_special_characters(self, db):
+        """Titles containing SQL LIKE wildcards must not produce false matches."""
+        db.create_session("s1", "cli")
+        db.set_session_title("s1", "100% Done")
+        db.create_session("s2", "cli")
+        db.set_session_title("s2", "100% Done #2")
+        # The percent in the base title must be treated as a literal, not a wildcard.
+        assert db.resolve_session_by_title("100% Done") == "s2"
+
+    def test_escapes_underscore_in_base_title(self, db):
+        db.create_session("s1", "cli")
+        db.set_session_title("s1", "my_session")
+        db.create_session("s2", "cli")
+        db.set_session_title("s2", "my_session #2")
+        assert db.resolve_session_by_title("my_session") == "s2"
+
+    def test_profile_and_source_do_not_affect_global_resolution(self, db):
+        """resolve_session_by_title is a global title lookup; it does not
+        scope by source or profile_name. Callers that need scoping apply it
+        after resolution."""
+        db.create_session("s1", "cli")
+        db.set_session_title("s1", "Shared Title")
+        db.create_session("s2", "telegram")
+        db.set_session_title("s2", "Shared Title #2")
+        assert db.resolve_session_by_title("Shared Title") == "s2"
+
+    def test_resolve_avoids_full_table_scan_latency(self, db):
+        """With thousands of unrelated sessions, a title continuation lookup
+        must not perform a full started_at scan. This is a regression guard
+        against the ~188 ms pathological resolve observed in production traces.
+        """
+        self._seed_many_sessions(db, total=3000, variant_count=5)
+        start = time.perf_counter()
+        for _ in range(100):
+            db.resolve_session_by_title("My Project")
+        elapsed = time.perf_counter() - start
+        # The indexed path is normally far faster, but keep a generous bound
+        # so noisy/coverage-enabled CI runners do not make this guard flaky.
+        assert elapsed < 0.500, f"100 resolves took {elapsed*1000:.1f} ms"
+
+    def test_resolve_query_plan_uses_title_index(self, db):
+        """The underlying query should seek on the title indexes, not fall
+        back to a full scan of the started_at index."""
+        self._seed_many_sessions(db, total=3000, variant_count=5)
+        title = "My Project"
+        lower = title + " #"
+        upper = title + " $"
+        plan = db._conn.execute(
+            "EXPLAIN QUERY PLAN "
+            "SELECT id FROM sessions INDEXED BY idx_sessions_title_started_at "
+            "WHERE title >= ? AND title < ? "
+            "ORDER BY started_at DESC LIMIT 1",
+            (lower, upper),
+        ).fetchall()
+        detail = " ".join(str(row["detail"]) for row in plan)
+        # Reject modern and legacy SQLite spellings for a full table scan.
+        assert "SCAN sessions" not in detail, f"query plan still scans: {detail}"
+        assert "SCAN TABLE sessions" not in detail, f"query plan still scans: {detail}"
+        assert "idx_sessions_title_started_at" in detail, f"expected range index use: {detail}"
+
+        exact_plan = db._conn.execute(
+            "EXPLAIN QUERY PLAN SELECT id FROM sessions WHERE title = ? LIMIT 1",
+            (title,),
+        ).fetchall()
+        exact_detail = " ".join(str(row["detail"]) for row in exact_plan)
+        assert "idx_sessions_title_unique" in exact_detail, f"expected exact index use: {exact_detail}"
+
+
 class TestSanitizeTitle:
     """Tests for SessionDB.sanitize_title() validation and cleaning."""
 
