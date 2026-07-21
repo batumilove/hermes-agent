@@ -9994,9 +9994,12 @@ def _record_git_update_result(
     completion_error=None,
 ):
     """Persist and print the authoritative Git update result before restart."""
-    from hermes_cli.update_verification import write_update_result
+    from hermes_cli.update_verification import redact_update_text, write_update_result
     from hermes_constants import get_hermes_home
 
+    safe_completion_error = (
+        redact_update_text(completion_error) if completion_error else None
+    )
     exact_remote_binding = bool(
         remote_verified
         and completed_sha
@@ -10006,7 +10009,7 @@ def _record_git_update_result(
     authoritative_success = bool(
         exact_remote_binding
         and upstream_comparison.verified
-        and not completion_error
+        and not safe_completion_error
     )
     payload = {
         "schema_version": 1,
@@ -10023,7 +10026,7 @@ def _record_git_update_result(
         "upstream_behind": upstream_comparison.behind,
         "carried_commits": upstream_comparison.carried,
         "upstream_verified": upstream_comparison.verified,
-        "completion_error": completion_error,
+        "completion_error": safe_completion_error,
     }
     result_path = write_update_result(get_hermes_home(), payload)
     print()
@@ -10053,8 +10056,8 @@ def _record_git_update_result(
         f"{'PASS' if upstream_comparison.verified else 'UNKNOWN'}"
     )
     print(f"  Verdict:   {payload['status'].upper()}")
-    if completion_error:
-        print(f"  Completion error: {completion_error}")
+    if payload["completion_error"]:
+        print(f"  Completion error: {payload['completion_error']}")
     print(f"  Result:   {result_path}")
     return payload
 
@@ -10643,7 +10646,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             )
             if noop_payload["status"] != "success":
                 if branch_restore_error:
-                    print(f"✗ {branch_restore_error}")
+                    print(f"✗ {noop_payload['completion_error']}")
                 elif not exact_target_match:
                     print(
                         "✗ No remote commits to pull, but local HEAD differs "

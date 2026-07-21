@@ -14,12 +14,12 @@ from typing import Any, Mapping, Sequence
 from agent.redact import redact_sensitive_text
 
 
-_GIT_ERROR_URL_USERINFO_RE = re.compile(
-    r"(?i)\b(?P<scheme>https?|ftp|ssh|git)://[^/\s'\"<>@]+@"
+_UPDATE_URL_USERINFO_RE = re.compile(
+    r"(?i)(?P<prefix>\b[a-z][a-z0-9+.-]*://|(?<!:)//)[^/\s'\"<>@]+@"
 )
 
 
-def _redact_update_text(value: str) -> str:
+def redact_update_text(value: str) -> str:
     """Remove credentials from text crossing update log/result boundaries."""
 
     redacted = redact_sensitive_text(
@@ -27,15 +27,15 @@ def _redact_update_text(value: str) -> str:
         force=True,
         redact_url_credentials=True,
     )
-    return _GIT_ERROR_URL_USERINFO_RE.sub(
-        lambda match: f"{match.group('scheme')}://***@",
+    return _UPDATE_URL_USERINFO_RE.sub(
+        lambda match: f"{match.group('prefix')}***@",
         redacted,
     )
 
 
 def _sanitize_update_result_value(value: Any) -> Any:
     if isinstance(value, str):
-        return _redact_update_text(value)
+        return redact_update_text(value)
     if isinstance(value, Mapping):
         return {key: _sanitize_update_result_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -70,7 +70,7 @@ class UpstreamComparison:
 def _first_error_line(result: subprocess.CompletedProcess[str]) -> str:
     text = (result.stderr or result.stdout or "").strip()
     line = text.splitlines()[0] if text else "git command failed"
-    return _redact_update_text(line)
+    return redact_update_text(line)
 
 
 def _is_object_id(value: str | None) -> bool:

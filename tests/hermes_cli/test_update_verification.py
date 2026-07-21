@@ -226,6 +226,41 @@ def test_remote_verification_redacts_url_credentials_from_git_errors(
     assert credential_url not in persisted
 
 
+@pytest.mark.parametrize(
+    "credential_url",
+    [
+        "ftps://edge-user:edge-secret@github.com/org/repo.git",
+        "sftp://edge-user:edge-secret@github.com/org/repo.git",
+        "wss://edge-user:edge-secret@github.com/org/repo.git",
+        "//edge-user:edge-secret@github.com/org/repo.git",
+    ],
+)
+def test_remote_verification_strips_complete_userinfo_for_supported_url_forms(
+    tmp_path, monkeypatch, credential_url
+):
+    from hermes_cli import update_verification as uv
+
+    monkeypatch.setattr(
+        uv.subprocess,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(
+            cmd,
+            128,
+            stdout="",
+            stderr=f"fatal: unable to access '{credential_url}/': HTTP 401\n",
+        ),
+    )
+
+    result = fetch_and_verify_remote_ref(["git"], tmp_path, "origin", "main")
+
+    assert result.verified is False
+    assert result.error is not None
+    assert "edge-secret" not in result.error
+    assert "edge-user" not in result.error
+    assert credential_url not in result.error
+    assert "github.com/org/repo.git" in result.error
+
+
 def test_upstream_comparison_redacts_url_credentials_from_fetch_error(
     tmp_path, monkeypatch
 ):

@@ -585,6 +585,42 @@ class TestCmdUpdateBranchFallback:
         assert payload["status"] == "unknown"
         assert write_result.call_args.args[1]["upstream_verified"] is False
 
+    def test_record_git_update_result_redacts_completion_error_payload_and_output(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        from hermes_cli import main as hm
+        from hermes_cli.update_verification import UpstreamComparison
+
+        secret = "completion-secret-token"
+        credential_url = f"https://completion-user:{secret}@github.com/org/repo.git"
+        upstream = UpstreamComparison("c" * 40, "c" * 40, 0, 0, True)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        with patch(
+            "hermes_cli.update_verification.write_update_result",
+            return_value=tmp_path / ".update_result.json",
+        ):
+            payload = hm._record_git_update_result(
+                started_sha="a" * 40,
+                completed_sha="b" * 40,
+                target_remote="myfork",
+                target_branch="batumi/live",
+                target_sha="b" * 40,
+                remote_verified=True,
+                restart_requested=False,
+                upstream_comparison=upstream,
+                completion_error=(
+                    f"checkout failed for '{credential_url}/': authentication failed"
+                ),
+            )
+
+        output = capsys.readouterr().out
+        for surface in (payload["completion_error"], output):
+            assert secret not in surface
+            assert "completion-user" not in surface
+            assert credential_url not in surface
+        assert "github.com/org/repo.git" in payload["completion_error"]
+
     def test_official_upstream_remote_is_bound_by_url_not_remote_name(self):
         from hermes_cli import main as hm
 
