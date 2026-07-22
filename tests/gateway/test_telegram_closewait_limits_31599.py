@@ -167,6 +167,64 @@ def test_plain_branch_general_pool_has_tight_keepalive(monkeypatch):
     _assert_keepalive_tight(instances)
 
 
+@pytest.mark.parametrize(
+    ("configured_value", "expected_enabled"),
+    [(None, False), (False, False), (True, True)],
+)
+def test_fallback_branch_labels_general_and_polling_socket_owners(
+    monkeypatch, configured_value, expected_enabled
+):
+    """Each owner label and opt-in value must reach the matching PTB slot."""
+    _RecordingHTTPXRequest.instances = []
+
+    class _RecordingFallbackTransport:
+        def __init__(self, _fallback_ips, **kwargs):
+            self.owner_role = kwargs.get("owner_role")
+            self.socket_diagnostics = kwargs.get("socket_diagnostics")
+
+    monkeypatch.setattr(tg_adapter, "HTTPXRequest", _RecordingHTTPXRequest)
+    monkeypatch.setattr(
+        tg_adapter, "TelegramFallbackTransport", _RecordingFallbackTransport
+    )
+    monkeypatch.setattr(
+        tg_adapter, "resolve_proxy_url", lambda *args, **kwargs: None
+    )
+
+    adapter = _make_adapter()
+    if configured_value is not None:
+        adapter.config.extra["socket_diagnostics"] = configured_value
+    monkeypatch.setattr(adapter, "_acquire_platform_lock", lambda *a, **k: True)
+    monkeypatch.setattr(adapter, "_fallback_ips", lambda: ["149.154.167.220"])
+
+    chainable = MagicMock()
+    chainable.token.return_value = chainable
+    chainable.base_url.return_value = chainable
+    chainable.base_file_url.return_value = chainable
+    chainable.local_mode.return_value = chainable
+    chainable.request.return_value = chainable
+    chainable.get_updates_request.return_value = chainable
+    chainable.build.side_effect = _StopConnect
+    builder_root = MagicMock()
+    builder_root.builder.return_value = chainable
+    monkeypatch.setattr(tg_adapter, "Application", builder_root)
+
+    try:
+        asyncio.run(adapter.connect())
+    except _StopConnect:
+        pass
+
+    assert chainable.request.call_count == 1
+    assert chainable.get_updates_request.call_count == 1
+    general_request = chainable.request.call_args.args[0]
+    polling_request = chainable.get_updates_request.call_args.args[0]
+    general_transport = general_request.kwargs["httpx_kwargs"]["transport"]
+    polling_transport = polling_request.kwargs["httpx_kwargs"]["transport"]
+    assert general_transport.owner_role == "general"
+    assert polling_transport.owner_role == "polling"
+    assert general_transport.socket_diagnostics is expected_enabled
+    assert polling_transport.socket_diagnostics is expected_enabled
+
+
 def test_limits_keepalive_below_ptb_default_is_the_contract():
     """Document the invariant independent of adapter wiring: the shared
     helper itself must tighten keepalive below httpx's 5.0 default."""
