@@ -10468,7 +10468,35 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print("✗ Failed to merge upstream/main into the current branch.")
                 if merge_result.stderr.strip():
                     print(f"  {merge_result.stderr.strip().splitlines()[0]}")
-                print("  Resolve conflicts manually, then rerun `hermes update --sync-fork`.")
+                abort_result = subprocess.run(
+                    git_cmd + ["merge", "--abort"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                )
+                if abort_result.returncode == 0:
+                    print("  ✓ Conflicted merge aborted and restored the pre-sync checkout.")
+                    print(
+                        "  Resolve the upstream conflicts in an isolated worktree, "
+                        "then rerun `hermes update --sync-fork`."
+                    )
+                else:
+                    print("  ⚠ Automatic `git merge --abort` failed; force-restoring the clean pre-sync backup.")
+                    if abort_result.stderr.strip():
+                        print(f"  {abort_result.stderr.strip().splitlines()[0]}")
+                    reset_result = subprocess.run(
+                        git_cmd + ["reset", "--hard", backup_name],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if reset_result.returncode == 0:
+                        print("  ✓ Checkout force-restored from the recovery backup.")
+                    else:
+                        print("  ✗ Recovery reset failed; the checkout may still be conflicted.")
+                        if reset_result.stderr.strip():
+                            print(f"  {reset_result.stderr.strip().splitlines()[0]}")
+                        print(f"  Recovery backup: {backup_name}")
                 sys.exit(1)
 
             push_result = subprocess.run(
