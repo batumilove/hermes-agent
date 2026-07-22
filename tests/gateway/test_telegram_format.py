@@ -231,6 +231,47 @@ async def test_final_send_does_not_retrigger_typing(adapter):
 
 
 @pytest.mark.asyncio
+async def test_run_message_separation_labels_progress_and_final_sends():
+    config = PlatformConfig(
+        enabled=True,
+        token="fake-token",
+        extra={"separate_run_messages": True},
+    )
+    adapter = TelegramAdapter(config)
+    adapter._bot = MagicMock()
+    adapter._bot.send_message = AsyncMock(
+        side_effect=[
+            SimpleNamespace(message_id=1),
+            SimpleNamespace(message_id=2),
+        ]
+    )
+    adapter._bot.send_chat_action = AsyncMock()
+    adapter._rich_messages_enabled = False
+
+    progress = await adapter.send(
+        "12345",
+        "Checking the repository.",
+        metadata={"message_phase": "progress"},
+    )
+    final = await adapter.send(
+        "12345",
+        "All done.",
+        metadata={"notify": True},
+    )
+
+    assert progress.success is True
+    assert final.success is True
+    sent = [
+        _strip_mdv2(call.kwargs["text"])
+        for call in adapter._bot.send_message.await_args_list
+    ]
+    assert sent == [
+        "⏳ Progress\n\nChecking the repository.",
+        "✅ Final\n\nAll done.",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_intermediate_send_still_retriggers_typing(adapter):
     """Intermediate/progress sends (no notify marker) keep re-triggering typing
     so the '...typing' bubble survives across progress messages while the agent
@@ -872,6 +913,29 @@ async def test_send_escapes_chunk_indicator_for_markdownv2(adapter):
 
 
 class TestEditMessageStreamingSafety:
+    @pytest.mark.asyncio
+    async def test_separated_turn_final_fallback_edit_keeps_final_label(self):
+        adapter = TelegramAdapter(PlatformConfig(
+            enabled=True,
+            token="fake-token",
+            extra={"separate_run_messages": True},
+        ))
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock()
+        adapter._rich_messages_enabled = False
+
+        result = await adapter.edit_message(
+            "123",
+            "456",
+            "Completed answer.",
+            finalize=True,
+            metadata={"turn_final": True},
+        )
+
+        assert result.success is True
+        sent = adapter._bot.edit_message_text.await_args.kwargs["text"]
+        assert _strip_mdv2(sent) == "✅ Final\n\nCompleted answer."
+
     @pytest.mark.asyncio
     async def test_non_final_edit_uses_plain_text_without_markdown(self):
         adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))

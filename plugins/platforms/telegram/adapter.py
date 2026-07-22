@@ -679,6 +679,13 @@ class TelegramAdapter(BasePlatformAdapter):
         # as plain text, which is worse than degraded table/task-list rendering
         # for command snippets and mobile handoffs.
         self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", False)
+        # Optional transport-enforced visual separation between assistant
+        # commentary emitted during a run and the completed response. Kept
+        # opt-in because fresh-final delivery briefly overlaps the preview
+        # until Telegram confirms the replacement send and cleanup succeeds.
+        self._separate_run_messages: bool = self._coerce_bool_extra(
+            "separate_run_messages", False
+        )
         # Rich draft previews use a separate opt-in. Telegram macOS / Desktop
         # can leave Bot API 10.1 rich draft frames visually overlaid until the
         # chat is redrawn, while final rich messages remain useful.
@@ -1608,17 +1615,34 @@ class TelegramAdapter(BasePlatformAdapter):
     def prefers_fresh_final_streaming(
         self, content: str, metadata: Optional[Dict[str, Any]] = None
     ) -> bool:
-        """Whether to replace a streamed preview with a fresh rich final.
+        """Whether to replace a streamed preview with a fresh final message.
 
-        Disabled for Telegram. The fresh-final path briefly shows two copies of
-        the final answer, then deletes the streaming preview after the rich send
-        succeeds — it looks like duplicate delivery at the end of every streamed
-        turn (the reason #46206 reverted it).  Rich finalize is instead handled
-        by editing the existing preview in place via Bot API 10.1's
-        ``editMessageText`` ``rich_message`` parameter (see
-        :meth:`_try_edit_rich`), so no fresh re-send / delete is needed.
+        Disabled by default because the fresh-final path briefly shows two
+        copies while Telegram confirms the replacement send and the gateway
+        deletes the preview. ``separate_run_messages`` explicitly accepts that
+        tradeoff so the completed response is always a distinct message.
         """
-        return False
+        return bool(
+            getattr(self, "_separate_run_messages", False) is True
+            and (metadata or {}).get("turn_final") is True
+        )
+
+    def _decorate_run_message(
+        self, content: str, metadata: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """Add an explicit phase label when run-message separation is enabled."""
+        if getattr(self, "_separate_run_messages", False) is not True:
+            return content
+        phase = (metadata or {}).get("message_phase")
+        if phase == "progress":
+            prefix = "⏳ Progress"
+        elif (metadata or {}).get("notify"):
+            prefix = "✅ Final"
+        else:
+            return content
+        if content == prefix or content.startswith(prefix + "\n"):
+            return content
+        return f"{prefix}\n\n{content}"
 
     def streaming_overflow_limit(self) -> Optional[int]:
         """Allow the stream consumer to accumulate up to the rich-message cap
@@ -4074,6 +4098,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
+
+        content = self._decorate_run_message(content, metadata)
         
         try:
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
@@ -4438,6 +4464,9 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+
+        if finalize and (metadata or {}).get("turn_final") is True:
+            content = self._decorate_run_message(content, {"notify": True})
 
         # Rich finalize (Bot API 10.1): when the completed content has
         # constructs the legacy MarkdownV2 edit degrades (tables → bullet

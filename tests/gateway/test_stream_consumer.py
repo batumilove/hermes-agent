@@ -1235,6 +1235,57 @@ class TestEditOverflowSplitAndDeliver:
 
 class TestInterimCommentaryMessages:
     @pytest.mark.asyncio
+    async def test_interim_first_send_is_not_marked_final(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True)
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+
+        delivered = await consumer._send_or_edit(
+            "Preamble before tools.",
+            finalize=True,
+            is_turn_final=False,
+        )
+
+        assert delivered is True
+        assert adapter.send.await_args.kwargs["metadata"] == {
+            "expect_edits": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_commentary_send_marks_progress_phase_in_metadata(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True)
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5),
+            metadata={"thread_id": "77"},
+        )
+
+        consumer.on_commentary("I'll inspect the repository first.")
+        consumer.finish()
+
+        await consumer.run()
+
+        assert adapter.send.await_args.kwargs["metadata"] == {
+            "thread_id": "77",
+            "message_phase": "progress",
+        }
+
+    @pytest.mark.asyncio
     async def test_commentary_message_stays_separate_from_final_stream(self):
         adapter = MagicMock()
         adapter.send = AsyncMock(side_effect=[

@@ -401,6 +401,34 @@ class TestAdapterPrefersFreshFinal:
 
         assert consumer.final_response_sent is True
 
+    @pytest.mark.asyncio
+    async def test_turn_only_preference_edits_interim_and_fresh_sends_final(self):
+        adapter = _make_fresh_final_adapter()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="final1")
+        )
+        adapter.prefers_fresh_final_streaming = lambda content, metadata=None: bool(
+            (metadata or {}).get("turn_final")
+        )
+        consumer = GatewayStreamConsumer(adapter, "12345")
+        consumer._message_id = "preview1"
+        consumer._track_preview_id("preview1")
+        consumer._last_sent_text = "Preamble"
+
+        interim = await consumer._send_or_edit(
+            "Preamble complete", finalize=True, is_turn_final=False,
+        )
+        final = await consumer._send_or_edit(
+            "Final answer", finalize=True, is_turn_final=True,
+        )
+
+        assert interim is True
+        adapter.edit_message.assert_awaited_once()
+        assert final is True
+        adapter.send.assert_awaited_once()
+        assert adapter.send.await_args.kwargs["metadata"]["notify"] is True
+        adapter.delete_message.assert_awaited_once_with("12345", "preview1")
+
 
 def _make_rich_capable_adapter(*, overflow_limit=32768, send_results=None):
     """Non-draft adapter that mimics Telegram rich messages: REQUIRES_EDIT_FINALIZE,

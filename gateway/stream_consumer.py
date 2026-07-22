@@ -289,6 +289,7 @@ class GatewayStreamConsumer:
         message_id: str,
         content: str,
         finalize: bool = False,
+        is_turn_final: bool = False,
     ):
         """Edit via the adapter, passing routing metadata when supported."""
         kwargs = {
@@ -300,14 +301,16 @@ class GatewayStreamConsumer:
         # must accept finalize= even when it is False (guarded by tests).
         kwargs["finalize"] = finalize
 
-        if self.metadata:
+        if self.metadata or is_turn_final:
             try:
                 params = inspect.signature(self.adapter.edit_message).parameters
                 if "metadata" in params or any(
                     param.kind is inspect.Parameter.VAR_KEYWORD
                     for param in params.values()
                 ):
-                    kwargs["metadata"] = self.metadata
+                    metadata = dict(self.metadata) if self.metadata else {}
+                    metadata["turn_final"] = is_turn_final
+                    kwargs["metadata"] = metadata
             except (TypeError, ValueError):
                 pass
         return await self.adapter.edit_message(**kwargs)
@@ -1400,11 +1403,13 @@ class GatewayStreamConsumer:
         text = self._clean_for_display(text)
         if not text.strip():
             return False
+        metadata = dict(self.metadata) if self.metadata else {}
+        metadata["message_phase"] = "progress"
         try:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
-                metadata=self.metadata,
+                metadata=metadata,
             )
             # Note: do NOT set _already_sent = True here.
             # Commentary messages are interim status updates (e.g. "Using browser
@@ -1489,7 +1494,9 @@ class GatewayStreamConsumer:
             for mid in (raw.get("message_ids") or ()):
                 self._track_preview_id(mid)
 
-    def _adapter_prefers_fresh_final(self, text: str) -> bool:
+    def _adapter_prefers_fresh_final(
+        self, text: str, *, is_turn_final: bool = True,
+    ) -> bool:
         """Return True when the adapter would rather finalize a streamed reply
         by sending a fresh message and deleting the preview than by editing the
         preview in place — e.g. Telegram, whose ``sendRichMessage`` send path
@@ -1504,9 +1511,11 @@ class GatewayStreamConsumer:
         fn = getattr(self.adapter, "prefers_fresh_final_streaming", None)
         if fn is None:
             return False
+        metadata = dict(self.metadata) if self.metadata else {}
+        metadata["turn_final"] = is_turn_final
         try:
             try:
-                result = fn(text, metadata=self.metadata)
+                result = fn(text, metadata=metadata)
             except TypeError:
                 # Adapter / test double whose hook doesn't accept the metadata
                 # keyword — fall back to the positional-only form.
@@ -1754,7 +1763,9 @@ class GatewayStreamConsumer:
                         or "prefers_fresh_final_streaming"
                             in getattr(self.adapter, "__dict__", {})
                     )
-                    _prefers_fresh = self._adapter_prefers_fresh_final(text)
+                    _prefers_fresh = self._adapter_prefers_fresh_final(
+                        text, is_turn_final=is_turn_final,
+                    )
                     if (
                         finalize
                         and (
@@ -1774,6 +1785,7 @@ class GatewayStreamConsumer:
                         message_id=self._message_id,
                         content=text,
                         finalize=finalize,
+                        is_turn_final=is_turn_final,
                     )
                     if result.success:
                         self._already_sent = True
@@ -1926,7 +1938,7 @@ class GatewayStreamConsumer:
                     content=text,
                     reply_to=self._initial_reply_to_id,
                     metadata=self._metadata_for_send(
-                        final=finalize,
+                        final=(finalize and is_turn_final),
                         expect_edits=True,
                     ),
                 )
