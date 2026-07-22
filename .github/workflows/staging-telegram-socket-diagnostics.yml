@@ -1,0 +1,751 @@
+name: Observe Telegram socket ownership on staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_source_sha:
+        description: Exact source SHA currently deployed to batumi-staging
+        required: true
+        type: string
+      observation_seconds:
+        description: Bounded diagnostic observation window
+        required: true
+        default: "90"
+        type: choice
+        options:
+          - "60"
+          - "90"
+          - "120"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hermes-staging-socket-diagnostics
+  cancel-in-progress: false
+
+jobs:
+  observe:
+    name: Enable, observe, and restore
+    if: >-
+      github.repository == 'batumilove/hermes-agent' &&
+      github.ref == 'refs/heads/batumi/live' &&
+      github.sha == inputs.expected_source_sha
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: batumi-staging
+    env:
+      EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+      OBSERVATION_SECONDS: ${{ inputs.observation_seconds }}
+      DEPLOY_HOST: hermes-staging-01
+      DEPLOY_USER: hermes-deploy
+      DEPLOY_ROOT: /opt/hermes-compose/staging
+      TAILSCALE_TAGS: ${{ vars.TAILSCALE_TAGS }}
+
+    steps:
+      - name: Validate fixed staging inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$OBSERVATION_SECONDS" =~ ^(60|90|120)$ ]]
+          [[ "$DEPLOY_HOST" == hermes-staging-01 ]]
+          [[ "$DEPLOY_USER" == hermes-deploy ]]
+          [[ "$DEPLOY_ROOT" == /opt/hermes-compose/staging ]]
+          [[ "$TAILSCALE_TAGS" =~ ^tag:[A-Za-z0-9,_:-]+$ ]]
+
+      - name: Join the deployment tailnet
+        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+          oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
+          tags: ${{ env.TAILSCALE_TAGS }}
+          hostname: gha-hermes-staging-socket-diag-${{ github.run_id }}
+
+      - name: Configure pinned SSH identity
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -m 0700 -d "$HOME/.ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/deploy_key"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 0600 "$HOME/.ssh/deploy_key" "$HOME/.ssh/known_hosts"
+
+      - name: Run bounded diagnostics and restore prior config
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${DEPLOY_USER}@${DEPLOY_HOST}"
+          ssh_opts=(
+            -i "$HOME/.ssh/deploy_key"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o ConnectTimeout=15
+          )
+
+          ssh "${ssh_opts[@]}" "$target" bash -s -- \
+            "$DEPLOY_ROOT" "$EXPECTED_SOURCE_SHA" \
+            "$OBSERVATION_SECONDS" "$GITHUB_RUN_ID" \
+            "$GITHUB_RUN_ATTEMPT" <<'REMOTE'
+          set -euo pipefail
+          umask 077
+          deploy_root=$1
+          expected_source_sha=$2
+          observation_seconds=$3
+          run_id=$4
+          run_attempt=$5
+          container=hermes-batumi-staging-gateway
+          restored=0
+
+          [[ $deploy_root == /opt/hermes-compose/staging ]]
+          [[ $(hostname -s) == hermes-staging-01 ]]
+          [[ $(readlink -f -- "$deploy_root") == /opt/hermes-compose/staging ]]
+          [[ $expected_source_sha =~ ^[0-9a-f]{40}$ ]]
+          [[ $observation_seconds =~ ^(60|90|120)$ ]]
+          [[ $run_id =~ ^[0-9]+$ ]]
+          [[ $run_attempt =~ ^[0-9]+$ ]]
+          [[ -f "$deploy_root/release.env" ]]
+          [[ -f "$deploy_root/runtime.env" ]]
+          grep -Fx "HERMES_SOURCE_SHA=$expected_source_sha" \
+            "$deploy_root/release.env" >/dev/null
+          [[ $(grep -Fxc "HERMES_SOURCE_SHA=$expected_source_sha" \
+            "$deploy_root/release.env") -eq 1 ]]
+          [[ $(grep -c '^HERMES_SOURCE_SHA=' "$deploy_root/release.env") -eq 1 ]]
+          [[ $(grep -Fxc 'HERMES_DEPLOY_ENV=batumi-staging' \
+            "$deploy_root/release.env") -eq 1 ]]
+          [[ $(grep -c '^HERMES_DEPLOY_ENV=' "$deploy_root/release.env") -eq 1 ]]
+
+          read_runtime_value() {
+            local key=$1
+            local value
+            value=$(sed -n "s/^${key}=//p" "$deploy_root/runtime.env")
+            [[ -n $value && $(printf '%s\n' "$value" | wc -l) -eq 1 ]]
+            printf '%s' "$value"
+          }
+          data_dir=$(read_runtime_value HERMES_DATA_DIR)
+          runtime_uid=$(read_runtime_value HERMES_UID)
+          runtime_gid=$(read_runtime_value HERMES_GID)
+          [[ $data_dir == /home/hermes-staging/.hermes-staging ]]
+          [[ $(readlink -f -- "$data_dir") == /home/hermes-staging/.hermes-staging ]]
+          [[ $runtime_uid =~ ^[0-9]+$ && $runtime_gid =~ ^[0-9]+$ ]]
+          [[ $(id -u) == "$runtime_uid" && $(id -g) == "$runtime_gid" ]]
+          [[ -d $data_dir && ! -L $data_dir ]]
+          [[ $(stat -c %u -- "$data_dir") == "$runtime_uid" ]]
+          [[ $(stat -c %g -- "$data_dir") == "$runtime_gid" ]]
+          [[ $(stat -c %a -- "$data_dir") == 700 ]]
+          command -v flock >/dev/null
+          command -v python3 >/dev/null
+          command -v setsid >/dev/null
+          python3 -c 'import os, signal; assert hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal")'
+          lock_path="$deploy_root/deploy.lock"
+          if [[ ! -e $lock_path ]]; then
+            LOCK_PATH="$lock_path" python3 -c '
+          import os
+          path = os.environ["LOCK_PATH"]
+          flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+          if hasattr(os, "O_NOFOLLOW"):
+              flags |= os.O_NOFOLLOW
+          fd = os.open(path, flags, 0o600)
+          os.fsync(fd)
+          os.close(fd)
+          '
+          fi
+          [[ -f $lock_path && ! -L $lock_path ]]
+          [[ $(stat -c %u -- "$lock_path") == "$runtime_uid" ]]
+          [[ $(stat -c %g -- "$lock_path") == "$runtime_gid" ]]
+          gateway_path="$data_dir/gateway.json"
+          backup_dir="$data_dir/.diagnostic-backups"
+          fsync_directory() {
+            DIRECTORY_PATH="$1" python3 -c '
+          import os
+          fd = os.open(os.environ["DIRECTORY_PATH"], os.O_RDONLY)
+          os.fsync(fd)
+          os.close(fd)
+          '
+          }
+          if [[ -e $backup_dir ]]; then
+            [[ -d $backup_dir && ! -L $backup_dir ]]
+            [[ $(stat -c %u -- "$backup_dir") == "$runtime_uid" ]]
+            [[ $(stat -c %g -- "$backup_dir") == "$runtime_gid" ]]
+            [[ $(stat -c %a -- "$backup_dir") == 700 ]]
+          else
+            install -d -m 0700 "$backup_dir"
+            fsync_directory "$data_dir"
+          fi
+          transaction_dir="$backup_dir/${run_id}-${run_attempt}"
+          mkdir -m 0700 -- "$transaction_dir"
+          fsync_directory "$backup_dir"
+          backup_path="$transaction_dir/gateway.json.pre"
+          missing_path="${backup_path}.missing"
+          active_path="${backup_path}.active"
+          watchdog_path="${backup_path}.watchdog.sh"
+          launcher_path="${backup_path}.watchdog-launch.py"
+          watchdog_log="${backup_path}.watchdog.log"
+          ready_path="${backup_path}.watchdog.ready"
+          [[ ! -e $backup_path && ! -e $missing_path && ! -e $active_path && \
+            ! -e $watchdog_path && ! -e $launcher_path && ! -e $watchdog_log && \
+            ! -e $ready_path ]]
+          if [[ -e $gateway_path ]]; then
+            [[ ! -L $gateway_path && -f $gateway_path ]]
+            [[ $(stat -c %u -- "$gateway_path") == "$runtime_uid" ]]
+            [[ $(stat -c %g -- "$gateway_path") == "$runtime_gid" ]]
+          fi
+
+          actual_source=$(timeout 15 docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' \
+            "$container" | sed -n 's/^HERMES_SOURCE_SHA=//p')
+          [[ $actual_source == "$expected_source_sha" ]]
+          actual_environment=$(timeout 15 docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' \
+            "$container" | sed -n 's/^HERMES_DEPLOY_ENV=//p')
+          [[ $actual_environment == batumi-staging ]]
+          mount_source=$(timeout 15 docker inspect --format '{{range .Mounts}}{{if eq .Destination "/opt/data"}}{{println .Source}}{{end}}{{end}}' \
+            "$container")
+          [[ $mount_source == "$data_dir" ]]
+          [[ $(readlink -f -- "$mount_source") == /home/hermes-staging/.hermes-staging ]]
+
+          wait_healthy() {
+            local deadline=$((SECONDS + 240))
+            while (( SECONDS < deadline )); do
+              status=$(timeout 15 docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+                "$container" 2>/dev/null || true)
+              [[ $status == healthy ]] && return 0
+              sleep 3
+            done
+            return 1
+          }
+
+          restart_gateway() {
+            timeout 120 docker restart --time 90 "$container" >/dev/null || return 1
+            wait_healthy
+          }
+
+          assert_diagnostics_disabled() {
+            timeout 60 docker exec --user hermes "$container" python -c '
+          from gateway.config import Platform, load_gateway_config
+          cfg = load_gateway_config()
+          value = cfg.platforms[Platform.TELEGRAM].extra.get("socket_diagnostics")
+          if value is True:
+              raise SystemExit("effective socket diagnostics are still enabled")
+          print("effective_socket_diagnostics=false")
+          '
+          }
+
+          assert_diagnostics_disabled
+
+          restore_config() {
+            (( restored == 0 )) || return 0
+            if [[ ! -e $active_path ]]; then
+              echo "restore_status=not-armed"
+              return 0
+            fi
+            if [[ ! -e $backup_path && ! -e $missing_path ]]; then
+              echo "restore_status=backup-missing" >&2
+              return 1
+            fi
+            GATEWAY_PATH="$gateway_path" BACKUP_PATH="$backup_path" \
+              MISSING_PATH="$missing_path" RESTORE_TAG="${run_id}-${run_attempt}" \
+              python3 -c '
+          import os, shutil
+          from pathlib import Path
+          dst = Path(os.environ["GATEWAY_PATH"])
+          backup = Path(os.environ["BACKUP_PATH"])
+          missing = Path(os.environ["MISSING_PATH"])
+          restore_tag = os.environ["RESTORE_TAG"]
+          if dst.is_symlink():
+              raise SystemExit("gateway.json symlink is not allowed")
+          def fsync_dir(directory):
+              fd = os.open(directory, os.O_RDONLY)
+              try:
+                  os.fsync(fd)
+              finally:
+                  os.close(fd)
+          if missing.exists():
+              dst.unlink(missing_ok=True)
+              fsync_dir(dst.parent)
+          else:
+              if not backup.is_file():
+                  raise SystemExit("diagnostic backup is missing")
+              source_stat = backup.stat()
+              tmp = dst.with_name(dst.name + ".restore-" + restore_tag + ".tmp")
+              fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+              os.fchown(fd, source_stat.st_uid, source_stat.st_gid)
+              os.fchmod(fd, source_stat.st_mode & 0o777)
+              with backup.open("rb") as source, os.fdopen(fd, "wb") as target:
+                  shutil.copyfileobj(source, target)
+                  target.flush()
+                  os.fsync(target.fileno())
+              os.replace(tmp, dst)
+              fsync_dir(dst.parent)
+          ' || return 1
+            restored=1
+            restart_gateway || return 1
+            assert_diagnostics_disabled || return 1
+            rm -f -- "$active_path" || return 1
+            echo "restore_status=healthy"
+          }
+
+          cleanup() {
+            rc=$?
+            trap - EXIT HUP INT TERM
+            set +e
+            restore_config
+            restore_rc=$?
+            if (( restore_rc != 0 )); then
+              echo "restore_status=failed" >&2
+            fi
+            if (( rc != 0 )); then
+              exit "$rc"
+            fi
+            exit "$restore_rc"
+          }
+          trap cleanup EXIT
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+
+          GATEWAY_PATH="$gateway_path" BACKUP_PATH="$backup_path" \
+            MISSING_PATH="$missing_path" python3 -c '
+          import json, os, shutil
+          from pathlib import Path
+
+          path = Path(os.environ["GATEWAY_PATH"])
+          backup = Path(os.environ["BACKUP_PATH"])
+          missing = Path(os.environ["MISSING_PATH"])
+          if path.is_symlink():
+              raise SystemExit("gateway.json symlink is not allowed")
+          backup.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+          def fsync_dir(directory):
+              fd = os.open(directory, os.O_RDONLY)
+              try:
+                  os.fsync(fd)
+              finally:
+                  os.close(fd)
+
+          if path.exists():
+              source_stat = path.stat()
+              tmp = backup.with_name(backup.name + ".tmp-" + str(os.getpid()))
+              fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+              os.fchown(fd, source_stat.st_uid, source_stat.st_gid)
+              os.fchmod(fd, source_stat.st_mode & 0o777)
+              with path.open("rb") as source, os.fdopen(fd, "wb") as target:
+                  shutil.copyfileobj(source, target)
+                  target.flush()
+                  os.fsync(target.fileno())
+              os.replace(tmp, backup)
+              fsync_dir(backup.parent)
+              missing.unlink(missing_ok=True)
+              data = json.loads(path.read_text(encoding="utf-8"))
+          else:
+              fd = os.open(missing, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+              os.fsync(fd)
+              os.close(fd)
+              fsync_dir(missing.parent)
+              data = {}
+          if not isinstance(data, dict):
+              raise SystemExit("gateway.json root is not an object")
+          platforms = data.setdefault("platforms", {})
+          if not isinstance(platforms, dict):
+              raise SystemExit("gateway.json platforms is not an object")
+          telegram = platforms.setdefault("telegram", {})
+          if not isinstance(telegram, dict):
+              raise SystemExit("gateway.json telegram is not an object")
+          extra = telegram.setdefault("extra", {})
+          if not isinstance(extra, dict):
+              raise SystemExit("gateway.json telegram.extra is not an object")
+          previous = extra.get("socket_diagnostics", "absent")
+          print("previous_socket_diagnostics=" + (str(previous).lower() if isinstance(previous, bool) else "absent-or-invalid"))
+          '
+
+          cat >"$watchdog_path" <<'WATCHDOG'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          umask 077
+          active_path=$1
+          gateway_path=$2
+          backup_path=$3
+          missing_path=$4
+          lock_path=$5
+          container=$6
+          ready_path=$7
+          parent_pid=$8
+          parent_start_time=$9
+          expected_source_sha=${10}
+          deploy_root=${11}
+          data_dir=${12}
+          lock_fd=${WATCHDOG_LOCK_FD:?missing inherited lock fd}
+
+          process_start_time() {
+            local pid=$1
+            python3 - "$pid" <<'PY'
+          import sys
+          from pathlib import Path
+          text = Path(f"/proc/{sys.argv[1]}/stat").read_text()
+          fields = text[text.rfind(")") + 2:].split()
+          print(fields[19])
+          PY
+          }
+
+          parent_is_same_process() {
+            [[ $(process_start_time "$parent_pid" 2>/dev/null || true) == "$parent_start_time" ]]
+          }
+
+          signal_parent() {
+            local signal_number=$1
+            python3 - "$parent_pid" "$parent_start_time" "$signal_number" <<'PY'
+          import os, signal, sys
+          from pathlib import Path
+          pid = int(sys.argv[1])
+          expected_start = sys.argv[2]
+          signal_number = int(sys.argv[3])
+          pidfd = os.pidfd_open(pid)
+          try:
+              text = Path(f"/proc/{pid}/stat").read_text()
+              fields = text[text.rfind(")") + 2:].split()
+              if fields[19] != expected_start:
+                  raise SystemExit("parent identity changed")
+              signal.pidfd_send_signal(pidfd, signal_number)
+          finally:
+              os.close(pidfd)
+          PY
+          }
+
+          lock_identity_matches() {
+            [[ ! -L $lock_path && -f $lock_path ]] &&
+              [[ $(stat -Lc '%d:%i' -- "/proc/$$/fd/$lock_fd") == \
+                 $(stat -c '%d:%i' -- "$lock_path") ]]
+          }
+
+          stop_parent_safely() {
+            signal_parent 15 || true
+            # Covers one bounded foreground operation plus the complete bounded
+            # EXIT restoration path before identity-bound KILL escalation.
+            local grace_deadline=$((SECONDS + 900))
+            while parent_is_same_process && (( SECONDS < grace_deadline )); do
+              sleep 3
+            done
+            parent_is_same_process && signal_parent 9 || true
+          }
+
+          validate_static_target() {
+            [[ $(hostname -s) == hermes-staging-01 ]]
+            [[ $(readlink -f -- "$deploy_root") == /opt/hermes-compose/staging ]]
+            [[ $(readlink -f -- "$data_dir") == /home/hermes-staging/.hermes-staging ]]
+            [[ $(grep -Fxc "HERMES_SOURCE_SHA=$expected_source_sha" \
+              "$deploy_root/release.env") -eq 1 ]]
+            [[ $(grep -c '^HERMES_SOURCE_SHA=' "$deploy_root/release.env") -eq 1 ]]
+            [[ $(grep -Fxc 'HERMES_DEPLOY_ENV=batumi-staging' \
+              "$deploy_root/release.env") -eq 1 ]]
+            [[ $(grep -c '^HERMES_DEPLOY_ENV=' "$deploy_root/release.env") -eq 1 ]]
+          }
+
+          validate_runtime_target() {
+            actual_source=$(timeout 15 docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' \
+              "$container" | sed -n 's/^HERMES_SOURCE_SHA=//p')
+            actual_environment=$(timeout 15 docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' \
+              "$container" | sed -n 's/^HERMES_DEPLOY_ENV=//p')
+            mount_source=$(timeout 15 docker inspect --format '{{range .Mounts}}{{if eq .Destination "/opt/data"}}{{println .Source}}{{end}}{{end}}' \
+              "$container")
+            [[ $actual_source == "$expected_source_sha" ]]
+            [[ $actual_environment == batumi-staging ]]
+            [[ $mount_source == "$data_dir" ]]
+          }
+
+          validate_staging_target() {
+            validate_static_target && validate_runtime_target
+          }
+
+          flock -w 25 "$lock_fd"
+          # The dedicated deploy account is the remote trust boundary: it already
+          # has Docker-equivalent control and owns the config. Bind and verify the
+          # existing deployment-lock inode before mutation; do not model a hostile
+          # same-UID process replacing that inode after acquisition.
+          lock_identity_matches
+          validate_staging_target
+          READY_PATH="$ready_path" python3 -c '
+          import os
+          from pathlib import Path
+          ready = Path(os.environ["READY_PATH"])
+          fd = os.open(ready, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          os.fsync(fd)
+          os.close(fd)
+          '
+
+          deadline=$((SECONDS + 1080))
+          while parent_is_same_process; do
+            if (( SECONDS >= deadline )); then
+              stop_parent_safely
+            fi
+            sleep 3
+          done
+          [[ -e $active_path ]] || exit 0
+
+          for retry in 1 2 3; do
+            if ! validate_static_target; then
+              sleep 15
+              continue
+            fi
+            if ! GATEWAY_PATH="$gateway_path" BACKUP_PATH="$backup_path" \
+              MISSING_PATH="$missing_path" RESTORE_RETRY="$retry" python3 -c '
+          import os, shutil
+          from pathlib import Path
+          dst = Path(os.environ["GATEWAY_PATH"])
+          backup = Path(os.environ["BACKUP_PATH"])
+          missing = Path(os.environ["MISSING_PATH"])
+          retry = os.environ["RESTORE_RETRY"]
+          if dst.is_symlink():
+              raise SystemExit("gateway.json symlink is not allowed")
+          def fsync_dir(directory):
+              fd = os.open(directory, os.O_RDONLY)
+              try:
+                  os.fsync(fd)
+              finally:
+                  os.close(fd)
+          if missing.exists():
+              dst.unlink(missing_ok=True)
+              fsync_dir(dst.parent)
+          else:
+              if not backup.is_file():
+                  raise SystemExit("diagnostic backup is missing")
+              source_stat = backup.stat()
+              tmp = dst.with_name(dst.name + ".watchdog-" + backup.name + "-" + retry + ".tmp")
+              fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+              os.fchown(fd, source_stat.st_uid, source_stat.st_gid)
+              os.fchmod(fd, source_stat.st_mode & 0o777)
+              with backup.open("rb") as source, os.fdopen(fd, "wb") as target:
+                  shutil.copyfileobj(source, target)
+                  target.flush()
+                  os.fsync(target.fileno())
+              os.replace(tmp, dst)
+              fsync_dir(dst.parent)
+          '; then
+              sleep 15
+              continue
+            fi
+            if ! validate_runtime_target; then
+              sleep 15
+              continue
+            fi
+            if timeout 120 docker restart --time 90 "$container" >/dev/null; then
+              deadline=$((SECONDS + 240))
+              while (( SECONDS < deadline )); do
+                status=$(timeout 15 docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+                  "$container" 2>/dev/null || true)
+                if [[ $status == healthy ]] && \
+                  timeout 60 docker exec --user hermes "$container" python -c '
+          from gateway.config import Platform, load_gateway_config
+          cfg = load_gateway_config()
+          if cfg.platforms[Platform.TELEGRAM].extra.get("socket_diagnostics") is True:
+              raise SystemExit(1)
+          ' >/dev/null; then
+                  rm -f -- "$active_path"
+                  echo "watchdog_restore_status=healthy"
+                  exit 0
+                fi
+                sleep 3
+              done
+            fi
+            sleep 15
+          done
+          echo "watchdog_restore_status=failed" >&2
+          exit 1
+          WATCHDOG
+          chmod 0700 "$watchdog_path"
+          cat >"$launcher_path" <<'PY'
+          import os, stat, sys
+
+          lock_path = sys.argv[1]
+          watchdog_path = sys.argv[2]
+          expected_uid = int(sys.argv[3])
+          expected_gid = int(sys.argv[4])
+          flags = os.O_RDWR
+          if hasattr(os, "O_NOFOLLOW"):
+              flags |= os.O_NOFOLLOW
+          fd = os.open(lock_path, flags)
+          opened = os.fstat(fd)
+          named = os.lstat(lock_path)
+          if not stat.S_ISREG(opened.st_mode):
+              raise SystemExit("deployment lock is not regular")
+          if stat.S_ISLNK(named.st_mode) or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
+              raise SystemExit("deployment lock identity mismatch")
+          if (opened.st_uid, opened.st_gid) != (expected_uid, expected_gid):
+              raise SystemExit("deployment lock ownership mismatch")
+          os.set_inheritable(fd, True)
+          env = os.environ.copy()
+          env["WATCHDOG_LOCK_FD"] = str(fd)
+          os.execve("/usr/bin/bash", ["bash", watchdog_path, *sys.argv[5:]], env)
+          PY
+          chmod 0500 "$launcher_path"
+          parent_pid=$$
+          parent_start_time=$(python3 - "$parent_pid" <<'PY'
+          import sys
+          from pathlib import Path
+          text = Path(f"/proc/{sys.argv[1]}/stat").read_text()
+          fields = text[text.rfind(")") + 2:].split()
+          print(fields[19])
+          PY
+          )
+          [[ $parent_start_time =~ ^[0-9]+$ ]]
+          nohup setsid python3 "$launcher_path" "$lock_path" "$watchdog_path" \
+            "$runtime_uid" "$runtime_gid" "$active_path" "$gateway_path" \
+            "$backup_path" "$missing_path" "$lock_path" "$container" \
+            "$ready_path" "$parent_pid" "$parent_start_time" "$expected_source_sha" \
+            "$deploy_root" "$data_dir" >"$watchdog_log" 2>&1 </dev/null &
+          watchdog_pid=$!
+          watchdog_start_time=$(python3 - "$watchdog_pid" <<'PY'
+          import sys
+          from pathlib import Path
+          text = Path(f"/proc/{sys.argv[1]}/stat").read_text()
+          fields = text[text.rfind(")") + 2:].split()
+          print(fields[19])
+          PY
+          )
+          [[ $watchdog_start_time =~ ^[0-9]+$ ]]
+          for _ in $(seq 1 90); do
+            [[ -e $ready_path ]] && break
+            [[ $(python3 - "$watchdog_pid" <<'PY'
+          import sys
+          from pathlib import Path
+          text = Path(f"/proc/{sys.argv[1]}/stat").read_text()
+          fields = text[text.rfind(")") + 2:].split()
+          print(fields[19])
+          PY
+          ) == "$watchdog_start_time" ]]
+            sleep 1
+          done
+          [[ -f $ready_path ]]
+          [[ $(python3 - "$watchdog_pid" <<'PY'
+          import sys
+          from pathlib import Path
+          text = Path(f"/proc/{sys.argv[1]}/stat").read_text()
+          fields = text[text.rfind(")") + 2:].split()
+          print(fields[19])
+          PY
+          ) == "$watchdog_start_time" ]]
+
+          # Revalidate under the watchdog-owned deployment lock.
+          [[ $(grep -Fxc "HERMES_SOURCE_SHA=$expected_source_sha" \
+            "$deploy_root/release.env") -eq 1 ]]
+          [[ $(grep -Fxc 'HERMES_DEPLOY_ENV=batumi-staging' \
+            "$deploy_root/release.env") -eq 1 ]]
+          actual_source=$(timeout 15 docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' \
+            "$container" | sed -n 's/^HERMES_SOURCE_SHA=//p')
+          actual_environment=$(timeout 15 docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' \
+            "$container" | sed -n 's/^HERMES_DEPLOY_ENV=//p')
+          mount_source=$(timeout 15 docker inspect --format '{{range .Mounts}}{{if eq .Destination "/opt/data"}}{{println .Source}}{{end}}{{end}}' \
+            "$container")
+          [[ $actual_source == "$expected_source_sha" ]]
+          [[ $actual_environment == batumi-staging ]]
+          [[ $mount_source == "$data_dir" ]]
+          ACTIVE_PATH="$active_path" python3 -c '
+          import os
+          from pathlib import Path
+          active = Path(os.environ["ACTIVE_PATH"])
+          fd = os.open(active, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          os.fsync(fd)
+          os.close(fd)
+          directory_fd = os.open(active.parent, os.O_RDONLY)
+          try:
+              os.fsync(directory_fd)
+          finally:
+              os.close(directory_fd)
+          '
+          echo "rollback_watchdog=armed"
+
+          GATEWAY_PATH="$gateway_path" python3 -c '
+          import json, os
+          from pathlib import Path
+          path = Path(os.environ["GATEWAY_PATH"])
+          if path.is_symlink():
+              raise SystemExit("gateway.json symlink is not allowed")
+          target_stat = path.stat() if path.exists() else None
+          data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+          platforms = data.setdefault("platforms", {})
+          telegram = platforms.setdefault("telegram", {})
+          extra = telegram.setdefault("extra", {})
+          if not all(isinstance(value, dict) for value in (data, platforms, telegram, extra)):
+              raise SystemExit("gateway diagnostic config path is not object-shaped")
+          extra["socket_diagnostics"] = True
+          payload = (json.dumps(data, indent=2, sort_keys=True) + "\n").encode()
+          tmp = path.with_name(path.name + ".diag.tmp-" + str(os.getpid()))
+          fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          if target_stat is not None:
+              os.fchown(fd, target_stat.st_uid, target_stat.st_gid)
+              os.fchmod(fd, target_stat.st_mode & 0o777)
+          with os.fdopen(fd, "wb") as target:
+              target.write(payload)
+              target.flush()
+              os.fsync(target.fileno())
+          os.replace(tmp, path)
+          directory_fd = os.open(path.parent, os.O_RDONLY)
+          try:
+              os.fsync(directory_fd)
+          finally:
+              os.close(directory_fd)
+          print("configured_socket_diagnostics=true")
+          '
+
+          restart_gateway
+          started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          pid=$(timeout 15 docker inspect --format '{{.State.Pid}}' "$container")
+          container_started=$(timeout 15 docker inspect --format '{{.State.StartedAt}}' "$container")
+          restart_count=$(timeout 15 docker inspect --format '{{.RestartCount}}' "$container")
+          printf 'diagnostic_pid=%s\ncontainer_started=%s\nrestart_count=%s\n' \
+            "$pid" "$container_started" "$restart_count"
+
+          timeout 60 docker exec --user hermes "$container" python -c '
+          from gateway.config import Platform, load_gateway_config
+          cfg = load_gateway_config()
+          value = cfg.platforms[Platform.TELEGRAM].extra.get("socket_diagnostics")
+          if value is not True:
+              raise SystemExit("effective socket diagnostics are not literal true")
+          print("effective_socket_diagnostics=true")
+          '
+
+          sleep "$observation_seconds"
+          timeout 60 docker logs --since "$started_at" "$container" 2>&1 | \
+            timeout 60 docker exec -i --user hermes "$container" python -c '
+          import collections, json, re, sys
+          pattern = re.compile(
+              r"\[Telegram socket\] event=(response-created|response-closed|response-close-error) "
+              r"owner=(general|polling) route=(primary|(?:[0-9]{1,3}\.){3}[0-9]{1,3}) "
+              r"local_port=([0-9]{1,5}|unknown)$"
+          )
+          counts = collections.Counter()
+          created = collections.Counter()
+          terminal = collections.Counter()
+          for line in sys.stdin:
+              match = pattern.search(line)
+              if not match:
+                  continue
+              event, owner, route, port = match.groups()
+              counts[(owner, route, event)] += 1
+              if port != "unknown":
+                  key = (owner, route, port)
+                  if event == "response-created":
+                      created[key] += 1
+                  else:
+                      terminal[key] += 1
+          if not counts:
+              raise SystemExit("no socket lifecycle events observed")
+          safe = {
+              "counts": [
+                  {"owner": owner, "route": route, "event": event, "count": count}
+                  for (owner, route, event), count in sorted(counts.items())
+              ],
+              "created_without_terminal": [
+                  {"owner": owner, "route": route, "local_port": port, "count": count - terminal[(owner, route, port)]}
+                  for (owner, route, port), count in sorted(created.items())
+                  if count > terminal[(owner, route, port)]
+              ],
+          }
+          print(json.dumps(safe, sort_keys=True))
+          '
+
+          echo "observation_collected=true"
+          REMOTE
