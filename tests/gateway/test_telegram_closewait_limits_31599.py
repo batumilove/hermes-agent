@@ -169,7 +169,16 @@ def test_plain_branch_general_pool_has_tight_keepalive(monkeypatch):
 
 @pytest.mark.parametrize(
     ("configured_value", "expected_enabled"),
-    [(None, False), (False, False), (True, True)],
+    [
+        (None, False),
+        (False, False),
+        (True, True),
+        ("false", False),
+        ("0", False),
+        ([], False),
+        ({}, False),
+        (1, False),
+    ],
 )
 def test_fallback_branch_labels_general_and_polling_socket_owners(
     monkeypatch, configured_value, expected_enabled
