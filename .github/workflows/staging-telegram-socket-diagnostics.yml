@@ -137,6 +137,8 @@ jobs:
           echo "remote_preflight_stage=runtime-identity"
           [[ $data_dir == /home/hermes-staging/.hermes-staging ]]
           echo "remote_runtime_identity=data-dir-exact"
+          [[ -d $data_dir && ! -L $data_dir ]]
+          echo "remote_runtime_identity=data-dir-direct-directory"
           [[ $(readlink -f -- "$data_dir") == /home/hermes-staging/.hermes-staging ]]
           echo "remote_runtime_identity=data-dir-canonical"
           [[ $runtime_uid =~ ^[0-9]+$ && $runtime_gid =~ ^[0-9]+$ ]]
