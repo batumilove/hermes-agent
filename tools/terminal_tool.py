@@ -3032,7 +3032,11 @@ def check_terminal_requirements() -> bool:
             return True
 
         elif env_type == "daytona":
-            from daytona import Daytona  # noqa: F401 — SDK presence check
+            # The pinned PyPI distribution is ``daytona-sdk`` and exports the
+            # ``daytona_sdk`` module.  Importing the legacy ``daytona`` module
+            # makes the terminal tool disappear even though the runtime backend
+            # in tools.environments.daytona can create a sandbox successfully.
+            from daytona_sdk import Daytona  # noqa: F401 — SDK presence check
             return os.getenv("DAYTONA_API_KEY") is not None
 
         elif env_type == "kata":

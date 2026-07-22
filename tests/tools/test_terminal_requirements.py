@@ -214,3 +214,19 @@ def test_kata_backend_with_kubectl_returns_true(monkeypatch):
 
     monkeypatch.setattr(terminal_tool_module.subprocess, "run", fake_run)
     assert terminal_tool_module.check_terminal_requirements() is True
+
+
+def test_daytona_backend_checks_installed_daytona_sdk_package(monkeypatch):
+    """The pinned PyPI package exports ``daytona_sdk``, not ``daytona``."""
+    import sys
+    import types
+
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "daytona")
+    monkeypatch.setenv("DAYTONA_API_KEY", "test-key")
+    monkeypatch.delitem(sys.modules, "daytona", raising=False)
+    sdk = types.ModuleType("daytona_sdk")
+    sdk.Daytona = object
+    monkeypatch.setitem(sys.modules, "daytona_sdk", sdk)
+
+    assert terminal_tool_module.check_terminal_requirements() is True
