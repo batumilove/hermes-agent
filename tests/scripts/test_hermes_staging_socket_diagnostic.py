@@ -6,6 +6,7 @@ import json
 import os
 import stat
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -258,6 +259,100 @@ def test_atomic_exchange_process_death_is_recoverable(diagnostic, tmp_path, phas
     assert list(root.glob(".gateway.json.tx-*.swap")) == []
 
 
+def test_guard_replacement_at_cleanup_is_preserved(diagnostic, tmp_path, monkeypatch):
+    root = _config_dir(tmp_path)
+    path = root / "gateway.json"
+    path.write_text('{"original":true}')
+    store = diagnostic.ConfigStore(root, expected_uid=os.getuid(), expected_gid=os.getgid())
+    snapshot = store.snapshot()
+    mutated_hash = store.enable(snapshot)
+    real_unlink = diagnostic.os.unlink
+    fired = False
+
+    def replace_then_unlink(name, *, dir_fd=None):
+        nonlocal fired
+        if not fired and name.endswith(".swap"):
+            fired = True
+            replacement = root / ".replacement"
+            replacement.write_text('{"concurrent":"preserved"}')
+            os.replace(replacement, root / name)
+        return real_unlink(name, dir_fd=dir_fd)
+
+    monkeypatch.setattr(diagnostic.os, "unlink", replace_then_unlink)
+    with pytest.raises(diagnostic.ConfigDriftError, match="concurrent"):
+        store.restore(snapshot, mutated_hash)
+    guards = list(root.glob(".gateway.json.tx-*.swap"))
+    assert len(guards) == 1
+    assert json.loads(guards[0].read_text()) == {"concurrent": "preserved"}
+    assert path.read_bytes() == snapshot.content
+
+
+def test_process_death_after_guard_quarantine_is_recoverable(diagnostic, tmp_path):
+    root = _config_dir(tmp_path)
+    path = root / "gateway.json"
+    original = b'{"original":true}\n'
+    path.write_bytes(original)
+    store = diagnostic.ConfigStore(root, expected_uid=os.getuid(), expected_gid=os.getgid())
+    snapshot = store.snapshot()
+    mutated_hash = store.enable(snapshot)
+
+    pid = os.fork()
+    if pid == 0:
+        real_rename = diagnostic._rename_noreplace
+
+        def die_after_quarantine(old_fd, old_name, new_fd, new_name):
+            real_rename(old_fd, old_name, new_fd, new_name)
+            if old_name.endswith(".swap") and old_fd != new_fd:
+                os._exit(75)
+
+        diagnostic._rename_noreplace = die_after_quarantine
+        store.restore(snapshot, mutated_hash)
+        os._exit(76)
+    waited, status = os.waitpid(pid, 0)
+    assert waited == pid and os.WIFEXITED(status) and os.WEXITSTATUS(status) == 75
+
+    store.restore(snapshot, mutated_hash)
+    assert path.read_bytes() == original
+    quarantine = root / store.quarantine_name
+    assert list(quarantine.iterdir()) == []
+
+
+def test_orphaned_command_retains_shared_lock_until_exit(diagnostic, tmp_path):
+    lock_path = tmp_path / "shared.lock"
+    lock_path.touch()
+    ready = tmp_path / "ready"
+    helper_pid = os.fork()
+    if helper_pid == 0:
+        lock_fd = os.open(lock_path, os.O_RDWR)
+        diagnostic.fcntl.flock(lock_fd, diagnostic.fcntl.LOCK_EX)
+        diagnostic.command_runner(
+            (
+                sys.executable,
+                "-c",
+                "import pathlib,time,sys;pathlib.Path(sys.argv[1]).write_text('ready');time.sleep(1)",
+                str(ready),
+            ),
+            timeout=5,
+            env=diagnostic.COMMAND_ENV,
+            lock_fd=lock_fd,
+        )
+        os._exit(0)
+    deadline = time.monotonic() + 2
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert ready.exists()
+    os.kill(helper_pid, diagnostic.signal.SIGKILL)
+    os.waitpid(helper_pid, 0)
+    probe = os.open(lock_path, os.O_RDWR)
+    try:
+        with pytest.raises(BlockingIOError):
+            diagnostic.fcntl.flock(probe, diagnostic.fcntl.LOCK_EX | diagnostic.fcntl.LOCK_NB)
+        time.sleep(1.1)
+        diagnostic.fcntl.flock(probe, diagnostic.fcntl.LOCK_EX | diagnostic.fcntl.LOCK_NB)
+    finally:
+        os.close(probe)
+
+
 def test_data_root_requires_exact_owner_and_mode(diagnostic, tmp_path):
     root = _config_dir(tmp_path)
     root.chmod(0o777)
@@ -314,9 +409,9 @@ class FakeRunner:
         self.fail_on = fail_on
         self.restarts = 0
 
-    def __call__(self, argv, *, timeout, env, input_data=None, max_output=None):
+    def __call__(self, argv, *, timeout, env, input_data=None, max_output=None, lock_fd=None):
         argv = tuple(argv)
-        self.calls.append((argv, timeout, dict(env), input_data, max_output))
+        self.calls.append((argv, timeout, dict(env), input_data, max_output, lock_fd))
         if self.fail_on and self.fail_on in argv:
             raise self.d.CommandError("command failed secret=/tmp/private")
         if argv[:2] == ("/usr/bin/docker", "restart"):
@@ -383,6 +478,7 @@ def test_executor_uses_fixed_vectors_scrubbed_environment_and_bounded_aggregate(
     assert result["counts"] == [{"count": 1, "event": "response-closed", "owner": "general", "route": "primary"}, {"count": 1, "event": "response-created", "owner": "general", "route": "primary"}]
     assert fake.restarts == 2  # one enable; one restore
     assert all(call[2] == diagnostic.COMMAND_ENV for call in fake.calls)
+    assert all(call[5] is not None for call in fake.calls)
     assert all(isinstance(call[0], tuple) and call[0][0].startswith("/") for call in fake.calls)
     assert not any("shell" in str(call).lower() for call in fake.calls)
     log_call = next(call for call in fake.calls if call[0][:2] == ("/usr/bin/docker", "logs"))
@@ -749,3 +845,20 @@ def test_installer_manifest_binds_all_root_owned_artifacts_and_shared_lock():
     assert "f /run/lock/hermes-staging-diagnostic.lock 0660 root hermes-deploy -" in tmpfiles
     assert "systemd-tmpfiles-setup.service" in service
     assert '""' in (REPO / "deploy/staging-diagnostics/hermes-staging-diagnostic.sudoers").read_text()
+
+
+def test_workflow_ssh_uses_only_pinned_identity_and_trust_store():
+    workflow = (REPO / ".github/workflows/staging-telegram-socket-diagnostics.yml").read_text()
+    for option in (
+        "-F /dev/null",
+        "IdentitiesOnly=yes",
+        "StrictHostKeyChecking=yes",
+        'UserKnownHostsFile=$HOME/.ssh/known_hosts',
+        "GlobalKnownHostsFile=/dev/null",
+        "PasswordAuthentication=no",
+        "KbdInteractiveAuthentication=no",
+        "ChallengeResponseAuthentication=no",
+        "PreferredAuthentications=publickey",
+        "NumberOfPasswordPrompts=0",
+    ):
+        assert option in workflow

@@ -260,6 +260,7 @@ class ConfigStore:
     """Operate on gateway.json relative to a verified directory descriptor."""
 
     name = "gateway.json"
+    quarantine_name = ".hermes-staging-diagnostic-quarantine"
 
     def __init__(self, root: Path, *, expected_uid: int, expected_gid: int):
         self.root = Path(root)
@@ -382,6 +383,62 @@ class ConfigStore:
             os.close(fd)
         _fsync_directory(dir_fd)
 
+    def _open_quarantine(self, dir_fd: int) -> int:
+        try:
+            os.mkdir(self.quarantine_name, 0o700, dir_fd=dir_fd)
+            _fsync_directory(dir_fd)
+        except FileExistsError:
+            pass
+        flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            quarantine_fd = os.open(self.quarantine_name, flags, dir_fd=dir_fd)
+        except OSError as exc:
+            raise ConfigError("guard quarantine cannot be opened safely") from exc
+        opened = os.fstat(quarantine_fd)
+        named = os.stat(self.quarantine_name, dir_fd=dir_fd, follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(opened.st_mode)
+            or stat.S_ISLNK(named.st_mode)
+            or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
+            or (opened.st_uid, opened.st_gid) != (os.geteuid(), os.getegid())
+            or stat.S_IMODE(opened.st_mode) != 0o700
+        ):
+            os.close(quarantine_fd)
+            raise ConfigError("guard quarantine identity is unsafe")
+        return quarantine_fd
+
+    def _cleanup_guard(self, dir_fd: int, guard_name: str, expected: ConfigSnapshot) -> None:
+        quarantine_fd = self._open_quarantine(dir_fd)
+        try:
+            in_data = self._read_named(dir_fd, guard_name, allow_absent=True)
+            quarantined = self._read_named(quarantine_fd, guard_name, allow_absent=True)
+            if in_data.existed and quarantined.existed:
+                raise ConfigDriftError("multiple transaction guards block cleanup")
+            if in_data.existed:
+                try:
+                    _rename_noreplace(dir_fd, guard_name, quarantine_fd, guard_name)
+                    _fsync_directory(dir_fd)
+                    _fsync_directory(quarantine_fd)
+                except OSError as exc:
+                    raise ConfigDriftError("transaction guard changed during quarantine") from exc
+                quarantined = self._read_named(quarantine_fd, guard_name, allow_absent=False)
+            if not quarantined.existed:
+                return
+            if not _same_snapshot(quarantined, expected):
+                try:
+                    _rename_noreplace(quarantine_fd, guard_name, dir_fd, guard_name)
+                    _fsync_directory(quarantine_fd)
+                    _fsync_directory(dir_fd)
+                except OSError:
+                    pass
+                raise ConfigDriftError("transaction guard drift blocks cleanup")
+            os.unlink(guard_name, dir_fd=quarantine_fd)
+            _fsync_directory(quarantine_fd)
+            if self._read_named(dir_fd, guard_name, allow_absent=True).existed:
+                raise ConfigDriftError("concurrent transaction guard drift was preserved")
+        finally:
+            os.close(quarantine_fd)
+
     def _exchange_checked(
         self,
         dir_fd: int,
@@ -475,12 +532,7 @@ class ConfigStore:
             restored = self._read_current(fd, allow_absent=True)
             if not _same_snapshot(restored, snapshot):
                 raise ConfigDriftError("gateway config exact restoration failed")
-            guard = self._read_named(fd, guard_name, allow_absent=True)
-            if guard.existed:
-                if not _same_snapshot(guard, expected_mutated):
-                    raise ConfigDriftError("transaction guard changed before cleanup")
-                os.unlink(guard_name, dir_fd=fd)
-                _fsync_directory(fd)
+            self._cleanup_guard(fd, guard_name, expected_mutated)
         finally:
             os.close(fd)
 
@@ -620,7 +672,15 @@ class TransactionStore:
         self._write(tx)
 
 
-def command_runner(argv, *, timeout: int, env: dict[str, str], input_data=None, max_output=None) -> str:
+def command_runner(
+    argv,
+    *,
+    timeout: int,
+    env: dict[str, str],
+    input_data=None,
+    max_output=None,
+    lock_fd: int | None = None,
+) -> str:
     if not argv or not os.path.isabs(argv[0]):
         raise CommandError("command vector is not absolute")
     if input_data is not None:
@@ -631,6 +691,7 @@ def command_runner(argv, *, timeout: int, env: dict[str, str], input_data=None, 
             list(argv), stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, close_fds=True,
             start_new_session=True,
+            pass_fds=() if lock_fd is None else (lock_fd,),
         )
     except OSError as exc:
         raise CommandError("bounded command execution failed") from exc
@@ -724,6 +785,7 @@ class DiagnosticExecutor:
         self.sleep = sleep
         self.hostname = hostname
         self.deadline = 0.0
+        self.active_lock_fd: int | None = None
 
     def _start_deadline(self, seconds: int) -> None:
         self.deadline = time.monotonic() + seconds
@@ -739,7 +801,7 @@ class DiagnosticExecutor:
     def _command(self, argv, timeout, max_output=65536):
         return self.runner(
             tuple(argv), timeout=self._remaining(timeout), env=COMMAND_ENV,
-            input_data=None, max_output=max_output,
+            input_data=None, max_output=max_output, lock_fd=self.active_lock_fd,
         )
 
     def _open_lock(self) -> int:
@@ -949,6 +1011,7 @@ class DiagnosticExecutor:
     def run(self, request: Request) -> dict[str, object]:
         self._start_deadline(FORWARD_DEADLINE_SECONDS)
         lock_fd = self._open_lock()
+        self.active_lock_fd = lock_fd
         try:
             self._preflight(request)
             tx = self.states.prepare(request)
@@ -991,11 +1054,13 @@ class DiagnosticExecutor:
             self.states._write(tx)
             return result
         finally:
+            self.active_lock_fd = None
             os.close(lock_fd)
 
     def recover(self) -> dict[str, int]:
         self._start_deadline(RESTORE_DEADLINE_SECONDS)
         lock_fd = self._open_lock()
+        self.active_lock_fd = lock_fd
         try:
             recovered = 0
             aborted = 0
@@ -1020,6 +1085,7 @@ class DiagnosticExecutor:
                 raise DiagnosticError("one or more recovery transactions failed")
             return {"recovered": recovered, "aborted": aborted}
         finally:
+            self.active_lock_fd = None
             os.close(lock_fd)
 
 

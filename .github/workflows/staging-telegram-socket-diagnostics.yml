@@ -107,10 +107,19 @@ jobs:
           ' >"$request_file"
           target="${DEPLOY_USER}@${DEPLOY_HOST}"
           ssh_opts=(
+            -F /dev/null
             -i "$HOME/.ssh/deploy_key"
             -o BatchMode=yes
             -o IdentitiesOnly=yes
             -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$HOME/.ssh/known_hosts"
+            -o GlobalKnownHostsFile=/dev/null
+            -o PasswordAuthentication=no
+            -o KbdInteractiveAuthentication=no
+            -o ChallengeResponseAuthentication=no
+            -o PreferredAuthentications=publickey
+            -o PubkeyAuthentication=yes
+            -o NumberOfPasswordPrompts=0
             -o ConnectTimeout=15
           )
           ssh "${ssh_opts[@]}" "$target" 'sudo -n /usr/local/libexec/hermes-staging-diagnostic' <"$request_file"
