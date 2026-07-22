@@ -200,6 +200,75 @@ def test_conflicting_pass_verdict_and_block_summary_is_rejected(kanban_home):
         conn.close()
 
 
+def test_pass_verdict_conflicts_with_blocking_result_when_summary_is_neutral(
+    kanban_home,
+):
+    conn = kb.connect()
+    try:
+        review = kb.create_task(conn, title="Review")
+
+        with pytest.raises(kb.VerdictConflictError):
+            kb.complete_task(
+                conn,
+                review,
+                summary="Reviewed exact candidate",
+                result="FAIL: runtime probe leaked sockets",
+                verdict="PASS",
+            )
+
+        assert kb.get_task(conn, review).status == "ready"
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        '{"passed": false, "logic_errors": ["unsafe"]}',
+        "Details follow. Verdict: FAIL — runtime probe leaked sockets",
+    ],
+)
+def test_pass_verdict_conflicts_with_structured_or_nonleading_failure_result(
+    kanban_home, result
+):
+    conn = kb.connect()
+    try:
+        review = kb.create_task(conn, title="Review")
+
+        with pytest.raises(kb.VerdictConflictError):
+            kb.complete_task(
+                conn,
+                review,
+                summary="Reviewed exact candidate",
+                result=result,
+                verdict="PASS",
+            )
+
+        assert kb.get_task(conn, review).status == "ready"
+    finally:
+        conn.close()
+
+
+def test_conflicting_summary_and_result_verdicts_are_rejected_without_structured_verdict(
+    kanban_home,
+):
+    conn = kb.connect()
+    try:
+        review = kb.create_task(conn, title="Review")
+
+        with pytest.raises(kb.VerdictConflictError):
+            kb.complete_task(
+                conn,
+                review,
+                summary="PASS: static review passed",
+                result="BLOCK: runtime evidence is missing",
+            )
+
+        assert kb.get_task(conn, review).status == "ready"
+    finally:
+        conn.close()
+
+
 def test_non_review_prose_is_not_misclassified_as_semantic_verdict(kanban_home):
     conn = kb.connect()
     try:
