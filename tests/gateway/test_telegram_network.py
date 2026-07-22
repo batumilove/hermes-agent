@@ -16,6 +16,7 @@ fallback IPs in order, then "stick" to whichever IP works.
 """
 
 import asyncio
+import logging
 import socket
 import threading
 
@@ -99,6 +100,46 @@ class _CancellationTrackingTransport(httpx.AsyncBaseTransport):
         return None
 
 
+class _DiagnosticSocket:
+    def getsockname(self):
+        return ("127.0.0.1", 43210)
+
+
+class _DiagnosticNetworkStream:
+    def get_extra_info(self, name):
+        if name == "socket":
+            return _DiagnosticSocket()
+        return None
+
+
+class _DiagnosticTrackingStream(_TrackingStream):
+    def __init__(self, *, close_error: Exception | None = None):
+        super().__init__()
+        self.close_error = close_error
+
+    async def aclose(self):
+        self.closed = True
+        if self.close_error is not None:
+            raise self.close_error
+
+
+class _DiagnosticTransport(httpx.AsyncBaseTransport):
+    def __init__(self, *, close_error: Exception | None = None):
+        self._pool = _FakePool()
+        self.stream = _DiagnosticTrackingStream(close_error=close_error)
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            stream=self.stream,
+            extensions={"network_stream": _DiagnosticNetworkStream()},
+        )
+
+    async def aclose(self) -> None:
+        return None
+
+
 def test_new_transport_wraps_expected_httpcore_backend():
     transport = tnet._new_async_http_transport()
     assert isinstance(
@@ -136,6 +177,211 @@ def _fake_transport_factory(calls, behavior):
 
 def _telegram_request(path="/botTOKEN/getMe"):
     return httpx.Request("GET", f"https://api.telegram.org{path}")
+
+
+class _LifecycleLogCapture(logging.Handler):
+    def __init__(self, stream_getter):
+        super().__init__(level=logging.NOTSET)
+        self.stream_getter = stream_getter
+        self.records = []
+        self._old_level = logging.NOTSET
+
+    def emit(self, record):
+        self.records.append((record, self.stream_getter().closed))
+
+    def __enter__(self):
+        self._old_level = tnet.logger.level
+        tnet.logger.setLevel(logging.DEBUG)
+        tnet.logger.addHandler(self)
+        return self
+
+    def __exit__(self, _exc_type, _exc_value, _traceback):
+        tnet.logger.removeHandler(self)
+        tnet.logger.setLevel(self._old_level)
+
+
+def _record_payload(record):
+    formatted = logging.Formatter(
+        "%(name)s %(levelname)s %(message)s"
+    ).format(record)
+    return "\n".join(
+        (
+            formatted,
+            repr(record.__dict__),
+            repr(record.args),
+            repr(record.exc_info),
+            repr(record.exc_text),
+        )
+    )
+
+
+def _assert_records_redacted(captured, forbidden):
+    for record, _stream_closed in captured:
+        payload = _record_payload(record)
+        assert all(value not in payload for value in forbidden)
+
+
+def _assert_lifecycle_record(record, *, event, owner, route):
+    fields = [part for part in record.getMessage().split() if "=" in part]
+    event_fields = [field for field in fields if field.startswith("event=")]
+    owner_fields = [field for field in fields if field.startswith("owner=")]
+    route_fields = [field for field in fields if field.startswith("route=")]
+    port_fields = [field for field in fields if field.startswith("local_port=")]
+    assert event_fields == [f"event={event}"]
+    assert owner_fields == [f"owner={owner}"]
+    assert route_fields == [f"route={route}"]
+    assert port_fields == ["local_port=43210"]
+
+
+def _diagnostic_request():
+    # Construct a syntactically realistic, inert token without storing a
+    # token-shaped literal that repository secret scanners would flag.
+    token = "1234567890:" + "AAE" + "abcdefghijklmnopqrstuvwxyz" + "123456"
+    query = "secret_query=QUERY_CANARY"
+    request = httpx.Request(
+        "GET", f"https://api.telegram.org/bot{token}/getUpdates?{query}"
+    )
+    forbidden = (
+        str(request.url),
+        request.url.host,
+        request.url.path,
+        request.url.query.decode(),
+        token,
+        query,
+        "getUpdates",
+    )
+    return request, forbidden
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sticky_ip", "expected_route", "selected_index"),
+    [
+        (None, "primary", 0),
+        ("149.154.167.220", "149.154.167.220", 1),
+    ],
+)
+async def test_socket_diagnostics_bind_owner_route_and_local_port_without_url(
+    monkeypatch, sticky_ip, expected_route, selected_index
+):
+    """Opt-in diagnostics must identify a socket without logging request data."""
+    instances = []
+
+    def factory(**_kwargs):
+        instance = _DiagnosticTransport()
+        instances.append(instance)
+        return instance
+
+    monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)
+    transport = tnet.TelegramFallbackTransport(
+        ["149.154.167.220"],
+        owner_role="general",
+        socket_diagnostics=True,
+    )
+    transport._sticky_ip = sticky_ip
+    request, forbidden = _diagnostic_request()
+    selected_stream = instances[selected_index].stream
+
+    with _LifecycleLogCapture(lambda: selected_stream) as capture:
+        response = await transport.handle_async_request(request)
+
+        assert selected_stream.closed is False
+        assert len(capture.records) == 1
+        created_record, created_closed_state = capture.records[0]
+        assert created_closed_state is False
+        _assert_lifecycle_record(
+            created_record,
+            event="response-created",
+            owner="general",
+            route=expected_route,
+        )
+        _assert_records_redacted(capture.records, forbidden)
+
+        await response.aclose()
+
+        assert selected_stream.closed is True
+        assert len(capture.records) == 2
+        closed_record, closed_state = capture.records[1]
+        assert closed_state is True
+        _assert_lifecycle_record(
+            closed_record,
+            event="response-closed",
+            owner="general",
+            route=expected_route,
+        )
+        _assert_records_redacted(capture.records, forbidden)
+
+
+@pytest.mark.asyncio
+async def test_socket_diagnostics_are_disabled_by_default(monkeypatch):
+    instances = []
+
+    def factory(**_kwargs):
+        instance = _DiagnosticTransport()
+        instances.append(instance)
+        return instance
+
+    monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)
+    transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
+    transport._sticky_ip = "149.154.167.220"
+    request, _forbidden = _diagnostic_request()
+    selected_stream = instances[1].stream
+
+    with _LifecycleLogCapture(lambda: selected_stream) as capture:
+        response = await transport.handle_async_request(request)
+        await response.aclose()
+
+    assert capture.records == []
+
+
+@pytest.mark.asyncio
+async def test_socket_close_error_diagnostic_redacts_request_and_exception(monkeypatch):
+    close_error = "SECRET_CLOSE_ERROR_CANARY"
+    instances = []
+
+    def factory(**_kwargs):
+        instance = _DiagnosticTransport(close_error=RuntimeError(close_error))
+        instances.append(instance)
+        return instance
+
+    monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)
+    transport = tnet.TelegramFallbackTransport(
+        ["149.154.167.220"],
+        owner_role="polling",
+        socket_diagnostics=True,
+    )
+    transport._sticky_ip = "149.154.167.220"
+    request, forbidden = _diagnostic_request()
+    selected_stream = instances[1].stream
+
+    with _LifecycleLogCapture(lambda: selected_stream) as capture:
+        response = await transport.handle_async_request(request)
+
+        assert selected_stream.closed is False
+        assert len(capture.records) == 1
+        created_record, created_closed_state = capture.records[0]
+        assert created_closed_state is False
+        _assert_lifecycle_record(
+            created_record,
+            event="response-created",
+            owner="polling",
+            route="149.154.167.220",
+        )
+
+        with pytest.raises(RuntimeError, match=close_error):
+            await response.aclose()
+
+        assert selected_stream.closed is True
+        assert len(capture.records) == 2
+        error_record, error_closed_state = capture.records[1]
+        assert error_closed_state is True
+        _assert_lifecycle_record(
+            error_record,
+            event="response-close-error",
+            owner="polling",
+            route="149.154.167.220",
+        )
+        _assert_records_redacted(capture.records, forbidden + (close_error,))
 
 
 class _SlowBodyServer:
