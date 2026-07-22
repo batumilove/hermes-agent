@@ -848,6 +848,93 @@ class TestCmdUpdateBranchFallback:
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
+    def test_sync_fork_aborts_failed_merge_before_returning(
+        self, mock_run, _mock_which, mock_args, capsys
+    ):
+        """A conflicted sync must not leave partially-updated source on disk.
+
+        The live gateway imports modules lazily, so an unresolved merge can splice
+        new consumer code together with stale cached dependencies and break active
+        turns.  The updater must restore the pre-merge checkout before it exits.
+        """
+        from hermes_cli import main as hm
+
+        mock_args.sync_fork = True
+        mock_args.yes = True
+        default_side_effect = _make_run_side_effect(
+            branch="batumi/live",
+            tracking_ref="myfork/batumi/live",
+            verify_ok=True,
+            commit_count="0",
+        )
+
+        def fail_merge(cmd, **kwargs):
+            if list(cmd[-3:]) == ["merge", "--no-edit", "upstream/main"]:
+                return subprocess.CompletedProcess(
+                    cmd, 1, stdout="", stderr="CONFLICT (content): merge conflict"
+                )
+            return default_side_effect(cmd, **kwargs)
+
+        mock_run.side_effect = fail_merge
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/batumilove/hermes-agent.git",
+        ), pytest.raises(SystemExit) as exc_info:
+            cmd_update(mock_args)
+
+        assert exc_info.value.code == 1
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        merge_index = next(i for i, c in enumerate(commands) if "merge --no-edit upstream/main" in c)
+        abort_index = next(i for i, c in enumerate(commands) if "merge --abort" in c)
+        assert abort_index > merge_index
+        assert not any("push myfork" in c for c in commands)
+        output = capsys.readouterr().out
+        assert "aborted and restored" in output
+        assert "Resolve conflicts manually" not in output
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_sync_fork_force_restores_backup_when_merge_abort_fails(
+        self, mock_run, _mock_which, mock_args, capsys
+    ):
+        from hermes_cli import main as hm
+
+        mock_args.sync_fork = True
+        mock_args.yes = True
+        default_side_effect = _make_run_side_effect(
+            branch="batumi/live",
+            tracking_ref="myfork/batumi/live",
+            verify_ok=True,
+            commit_count="0",
+        )
+
+        def fail_merge_and_abort(cmd, **kwargs):
+            joined = " ".join(str(part) for part in cmd)
+            if "merge --no-edit upstream/main" in joined:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="conflict")
+            if "merge --abort" in joined:
+                return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="abort failed")
+            return default_side_effect(cmd, **kwargs)
+
+        mock_run.side_effect = fail_merge_and_abort
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/batumilove/hermes-agent.git",
+        ), pytest.raises(SystemExit) as exc_info:
+            cmd_update(mock_args)
+
+        assert exc_info.value.code == 1
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert any("reset --hard backup/pre-sync-fork-" in c for c in commands)
+        assert not any("push myfork" in c for c in commands)
+        assert "force-restored from the recovery backup" in capsys.readouterr().out
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
     def test_sync_fork_rejects_official_upstream_tracking_branch(
         self, mock_run, _mock_which, mock_args, capsys
     ):
