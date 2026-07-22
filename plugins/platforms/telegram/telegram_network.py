@@ -152,6 +152,74 @@ def _close_response_on_task_done(task: asyncio.Task, response: httpx.Response) -
 
     task.add_done_callback(_on_done)
 
+
+def _log_socket_lifecycle(*, event: str, owner: str, route: str, local_port: str) -> None:
+    """Emit one deliberately request-free socket lifecycle record."""
+    logger.info(
+        "[Telegram socket] event=%s owner=%s route=%s local_port=%s",
+        event,
+        owner,
+        route,
+        local_port,
+    )
+
+
+def _response_local_port(response: httpx.Response) -> str:
+    """Return the response socket's local ephemeral port, or ``unknown``."""
+    try:
+        network_stream = response.extensions.get("network_stream")
+        if network_stream is None:
+            return "unknown"
+        get_extra_info = getattr(network_stream, "get_extra_info", None)
+        if get_extra_info is None:
+            return "unknown"
+        sock = get_extra_info("socket")
+        if sock is None:
+            return "unknown"
+        sockname = sock.getsockname()
+        if isinstance(sockname, tuple) and len(sockname) >= 2:
+            return str(sockname[1])
+    except Exception:
+        pass
+    return "unknown"
+
+
+class _DiagnosticResponseStream(httpx.AsyncByteStream):
+    """Observe response closure without changing stream semantics."""
+
+    def __init__(self, stream, *, owner: str, route: str, local_port: str):
+        self._stream = stream
+        self._owner = owner
+        self._route = route
+        self._local_port = local_port
+        self._close_reported = False
+
+    async def __aiter__(self):
+        async for chunk in self._stream:
+            yield chunk
+
+    async def aclose(self) -> None:
+        try:
+            await self._stream.aclose()
+        except BaseException:
+            if not self._close_reported:
+                self._close_reported = True
+                _log_socket_lifecycle(
+                    event="response-close-error",
+                    owner=self._owner,
+                    route=self._route,
+                    local_port=self._local_port,
+                )
+            raise
+        if not self._close_reported:
+            self._close_reported = True
+            _log_socket_lifecycle(
+                event="response-closed",
+                owner=self._owner,
+                route=self._route,
+                local_port=self._local_port,
+            )
+
 # DNS-over-HTTPS providers used to discover Telegram API IPs that may differ
 # from the (potentially unreachable) IP returned by the local system resolver.
 _DOH_TIMEOUT = 4.0  # seconds — bounded so connect() isn't noticeably delayed
@@ -189,7 +257,18 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
     ``curl --resolve api.telegram.org:443:<ip>``.
     """
 
-    def __init__(self, fallback_ips: Iterable[str], **transport_kwargs):
+    def __init__(
+        self,
+        fallback_ips: Iterable[str],
+        *,
+        owner_role: str = "unknown",
+        socket_diagnostics: bool = False,
+        **transport_kwargs,
+    ):
+        self._owner_role = (
+            owner_role if owner_role in {"general", "polling"} else "unknown"
+        )
+        self._socket_diagnostics = bool(socket_diagnostics)
         self._fallback_ips = list(dict.fromkeys(_normalize_fallback_ips(fallback_ips)))
         # Each logical PTB request owns a primary pool plus one pool per fallback
         # route. httpcore only reaps expired/peer-closed idle connections when
@@ -221,9 +300,33 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         self._sticky_ip: Optional[str] = None
         self._sticky_lock = asyncio.Lock()
 
+    async def _request_for_route(
+        self,
+        transport: httpx.AsyncBaseTransport,
+        request: httpx.Request,
+        route: str,
+    ) -> httpx.Response:
+        response = await _handle_transport_request(transport, request)
+        if not self._socket_diagnostics:
+            return response
+        local_port = _response_local_port(response)
+        response.stream = _DiagnosticResponseStream(
+            response.stream,
+            owner=self._owner_role,
+            route=route,
+            local_port=local_port,
+        )
+        _log_socket_lifecycle(
+            event="response-created",
+            owner=self._owner_role,
+            route=route,
+            local_port=local_port,
+        )
+        return response
+
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if request.url.host != _TELEGRAM_API_HOST or not self._fallback_ips:
-            return await self._primary.handle_async_request(request)
+            return await self._request_for_route(self._primary, request, "primary")
 
         sticky_ip = self._sticky_ip
         attempt_order: list[Optional[str]] = [sticky_ip] if sticky_ip else [None]
@@ -238,7 +341,11 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
             candidate = request if ip is None else _rewrite_request_for_ip(request, ip)
             transport = self._primary if ip is None else self._fallbacks[ip]
             try:
-                response = await _handle_transport_request(transport, candidate)
+                response = await self._request_for_route(
+                    transport,
+                    candidate,
+                    "primary" if ip is None else ip,
+                )
                 if ip is not None and self._sticky_ip != ip:
                     async with self._sticky_lock:
                         if self._sticky_ip != ip:
