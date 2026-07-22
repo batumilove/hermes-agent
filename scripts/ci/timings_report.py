@@ -242,6 +242,8 @@ def collect_timings(token: str, repo: str, run_id: str, head_sha: str) -> dict:
 
     # Orchestrator run info
     run_info = api_get(f"/repos/{owner}/{repo_name}/actions/runs/{run_id}", token)
+    if not isinstance(run_info, dict):
+        raise TimingsUnavailable(f"unexpected run metadata for {run_id}")
     created_at = run_info.get("created_at", "")
 
     # Orchestrator direct jobs
@@ -285,6 +287,7 @@ def collect_timings(token: str, repo: str, run_id: str, head_sha: str) -> dict:
     return {
         "run_id": run_id,
         "head_sha": head_sha,
+        "head_branch": run_info.get("head_branch", ""),
         "created_at": created_at,
         "jobs": all_jobs,
     }
@@ -819,7 +822,8 @@ def generate_html(timings: dict, baseline: dict | None = None) -> str:
     bl_info = ""
     if baseline:
         bl_sha = (baseline.get("head_sha") or "")[:7]
-        bl_info = f' | Baseline: <code>{bl_sha}</code> (main)'
+        bl_branch = baseline.get("head_branch") or "unknown branch"
+        bl_info = f' | Baseline: <code>{bl_sha}</code> ({escape(bl_branch)})'
 
     html = (
         f'<!DOCTYPE html>\n<html lang="en">\n<head>\n'
