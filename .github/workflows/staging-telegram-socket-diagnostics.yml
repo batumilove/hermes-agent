@@ -136,13 +136,21 @@ jobs:
           runtime_gid=$(read_runtime_value HERMES_GID)
           echo "remote_preflight_stage=runtime-identity"
           [[ $data_dir == /home/hermes-staging/.hermes-staging ]]
+          echo "remote_runtime_identity=data-dir-exact"
           [[ $(readlink -f -- "$data_dir") == /home/hermes-staging/.hermes-staging ]]
+          echo "remote_runtime_identity=data-dir-canonical"
           [[ $runtime_uid =~ ^[0-9]+$ && $runtime_gid =~ ^[0-9]+$ ]]
+          echo "remote_runtime_identity=ids-numeric"
           [[ $(id -u) == "$runtime_uid" && $(id -g) == "$runtime_gid" ]]
+          echo "remote_runtime_identity=ssh-user-matches-runtime"
           [[ -d $data_dir && ! -L $data_dir ]]
+          echo "remote_runtime_identity=data-dir-type"
           [[ $(stat -c %u -- "$data_dir") == "$runtime_uid" ]]
+          echo "remote_runtime_identity=data-dir-uid"
           [[ $(stat -c %g -- "$data_dir") == "$runtime_gid" ]]
+          echo "remote_runtime_identity=data-dir-gid"
           [[ $(stat -c %a -- "$data_dir") == 700 ]]
+          echo "remote_runtime_identity=data-dir-mode"
           echo "remote_preflight_stage=required-tools"
           command -v flock >/dev/null
           command -v python3 >/dev/null
