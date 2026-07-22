@@ -14,6 +14,14 @@ on:
   pull_request:
   push:
     branches: [main, batumi/live]
+  workflow_dispatch:
+    inputs:
+      python_slice_count:
+        description: Python test slices per interpreter (Phase 0 benchmark)
+        required: true
+        default: "8"
+        type: choice
+        options: ["8", "6", "5"]
 
 permissions:
   contents: read
@@ -68,7 +76,9 @@ jobs:
     if: needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/tests.yml
     with:
-      slice_count: 8
+      # Pull requests and pushes retain the required 8-slice default. Manual
+      # dispatches may select 8/6/5 for serial, exact-SHA Phase 0 benchmarks.
+      slice_count: ${{ fromJSON(inputs.python_slice_count || '8') }}
     secrets: inherit
 
   lint:
