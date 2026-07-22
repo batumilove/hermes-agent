@@ -112,6 +112,53 @@ class _DiagnosticNetworkStream:
         return None
 
 
+class _RawDiagnosticStream:
+    def __init__(
+        self,
+        *,
+        tls_error: BaseException | None = None,
+        close_error: BaseException | None = None,
+    ):
+        self.closed = False
+        self.tls_error = tls_error
+        self.close_error = close_error
+
+    async def read(self, _max_bytes, timeout=None):
+        return b""
+
+    async def write(self, _buffer, timeout=None):
+        return None
+
+    async def aclose(self):
+        self.closed = True
+        if self.close_error is not None:
+            raise self.close_error
+
+    async def start_tls(self, _ssl_context, _server_hostname=None, _timeout=None):
+        if self.tls_error is not None:
+            raise self.tls_error
+        return self
+
+    def get_extra_info(self, name):
+        if name == "socket":
+            return _DiagnosticSocket()
+        return None
+
+
+class _RawDiagnosticBackend:
+    def __init__(self, stream):
+        self.stream = stream
+
+    async def connect_tcp(self, *args, **kwargs):
+        return self.stream
+
+    async def connect_unix_socket(self, *args, **kwargs):
+        return self.stream
+
+    async def sleep(self, _seconds):
+        return None
+
+
 class _DiagnosticTrackingStream(_TrackingStream):
     def __init__(self, *, close_error: Exception | None = None):
         super().__init__()
@@ -251,6 +298,189 @@ def _diagnostic_request():
         "getUpdates",
     )
     return request, forbidden
+
+
+@pytest.mark.asyncio
+async def test_socket_diagnostics_cover_pre_response_network_lifecycle(monkeypatch):
+    """A socket must be attributable before any HTTP response exists."""
+    stream = _RawDiagnosticStream()
+    backend = _RawDiagnosticBackend(stream)
+
+    class Transport:
+        def __init__(self):
+            self._pool = _FakePool()
+            self._pool._network_backend = backend
+
+    monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", lambda **_kwargs: Transport())
+    transport = tnet._new_async_http_transport(
+        socket_diagnostics=True,
+        diagnostic_owner="polling",
+        diagnostic_route="primary",
+    )
+    wrapped_backend = transport._pool._network_backend
+
+    with _LifecycleLogCapture(lambda: stream) as capture:
+        raw_stream = await wrapped_backend.connect_tcp("api.telegram.org", 443)
+        tls_stream = await raw_stream.start_tls(object(), "api.telegram.org", 1.0)
+        await tls_stream.aclose()
+
+    assert [record.getMessage().split(" event=", 1)[1].split()[0] for record, _ in capture.records] == [
+        "socket-opened",
+        "socket-closed",
+    ]
+    for record, _closed in capture.records:
+        _assert_lifecycle_record(
+            record,
+            event="socket-opened" if "event=socket-opened" in record.getMessage() else "socket-closed",
+            owner="polling",
+            route="primary",
+        )
+    payload = "\n".join(_record_payload(record) for record, _ in capture.records)
+    assert "api.telegram.org" not in payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad_route",
+    [
+        "https://api.telegram.org/bot/endpoint?credential=CANARY",
+        "api.telegram.org?query=CANARY",
+        "primary\ncredential=CANARY",
+        "127.0.0.1",
+        "100.64.0.1",
+    ],
+)
+async def test_pre_response_diagnostic_route_is_allowlisted(bad_route):
+    stream = _RawDiagnosticStream()
+    backend = tnet._DiagnosticCancellationSafeNetworkBackend(
+        _RawDiagnosticBackend(stream), owner="general", route=bad_route
+    )
+
+    with _LifecycleLogCapture(lambda: stream) as capture:
+        wrapped = await backend.connect_tcp("api.telegram.org", 443)
+        await wrapped.aclose()
+
+    messages = [record.getMessage() for record, _ in capture.records]
+    assert messages
+    assert all("route=unknown" in message for message in messages)
+    assert bad_route not in "\n".join(messages)
+
+
+@pytest.mark.parametrize("invalid_port", [0, -1, 65536, "43210", True, None])
+def test_pre_response_diagnostic_local_port_requires_valid_integer(invalid_port):
+    class Socket:
+        def getsockname(self):
+            return ("127.0.0.1", invalid_port)
+
+    class Stream:
+        def get_extra_info(self, name):
+            return Socket() if name == "socket" else None
+
+    assert tnet._stream_local_port(Stream()) == "unknown"
+
+
+def test_pre_response_diagnostic_local_port_accepts_valid_integer():
+    class Socket:
+        def getsockname(self):
+            return ("127.0.0.1", 43210)
+
+    class Stream:
+        def get_extra_info(self, name):
+            return Socket() if name == "socket" else None
+
+    assert tnet._stream_local_port(Stream()) == "43210"
+
+
+@pytest.mark.asyncio
+async def test_socket_diagnostics_close_pre_response_socket_on_tls_cancellation(monkeypatch):
+    stream = _RawDiagnosticStream(tls_error=asyncio.CancelledError())
+    backend = _RawDiagnosticBackend(stream)
+
+    class Transport:
+        def __init__(self):
+            self._pool = _FakePool()
+            self._pool._network_backend = backend
+
+    monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", lambda **_kwargs: Transport())
+    transport = tnet._new_async_http_transport(
+        socket_diagnostics=True,
+        diagnostic_owner="general",
+        diagnostic_route="149.154.167.220",
+    )
+
+    with _LifecycleLogCapture(lambda: stream) as capture:
+        raw_stream = await transport._pool._network_backend.connect_tcp(
+            "149.154.167.220", 443
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await raw_stream.start_tls(object(), "api.telegram.org", 1.0)
+
+    assert stream.closed is True
+    assert [record.getMessage().split(" event=", 1)[1].split()[0] for record, _ in capture.records] == [
+        "socket-opened",
+        "socket-closed",
+    ]
+    for record, _closed in capture.records:
+        assert "owner=general" in record.getMessage()
+        assert "route=149.154.167.220" in record.getMessage()
+        assert "local_port=43210" in record.getMessage()
+
+
+@pytest.mark.asyncio
+async def test_pre_response_socket_close_error_is_logged_exactly_once(monkeypatch):
+    stream = _RawDiagnosticStream(close_error=RuntimeError("close canary"))
+    backend = _RawDiagnosticBackend(stream)
+
+    class Transport:
+        def __init__(self):
+            self._pool = _FakePool()
+            self._pool._network_backend = backend
+
+    monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", lambda **_kwargs: Transport())
+    transport = tnet._new_async_http_transport(
+        socket_diagnostics=True,
+        diagnostic_owner="general",
+        diagnostic_route="primary",
+    )
+
+    with _LifecycleLogCapture(lambda: stream) as capture:
+        raw_stream = await transport._pool._network_backend.connect_tcp(
+            "api.telegram.org", 443
+        )
+        with pytest.raises(RuntimeError, match="close canary"):
+            await raw_stream.aclose()
+        with pytest.raises(RuntimeError, match="close canary"):
+            await raw_stream.aclose()
+
+    messages = [record.getMessage() for record, _ in capture.records]
+    assert sum("event=socket-opened" in message for message in messages) == 1
+    assert sum("event=socket-close-error" in message for message in messages) == 1
+    assert "close canary" not in "\n".join(messages)
+
+
+@pytest.mark.asyncio
+async def test_pre_response_socket_diagnostics_are_default_off(monkeypatch):
+    stream = _RawDiagnosticStream()
+    backend = _RawDiagnosticBackend(stream)
+
+    class Transport:
+        def __init__(self):
+            self._pool = _FakePool()
+            self._pool._network_backend = backend
+
+    monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", lambda **_kwargs: Transport())
+    transport = tnet._new_async_http_transport()
+    assert type(transport._pool._network_backend) is tnet._CancellationSafeNetworkBackend
+
+    with _LifecycleLogCapture(lambda: stream) as capture:
+        raw_stream = await transport._pool._network_backend.connect_tcp(
+            "api.telegram.org", 443
+        )
+        assert type(raw_stream) is tnet._CancellationSafeNetworkStream
+        assert not hasattr(raw_stream, "_lifecycle")
+        await raw_stream.aclose()
+
+    assert capture.records == []
 
 
 @pytest.mark.asyncio

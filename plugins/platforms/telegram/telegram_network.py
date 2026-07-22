@@ -27,6 +27,66 @@ _TELEGRAM_API_HOST = "api.telegram.org"
 _abandoned_response_cleanups: set[asyncio.Task] = set()
 
 
+def _stream_local_port(stream: Any) -> str:
+    """Return a stream's local TCP port without exposing its peer or request."""
+    try:
+        get_extra_info = getattr(stream, "get_extra_info", None)
+        if get_extra_info is None:
+            return "unknown"
+        sock = get_extra_info("socket")
+        if sock is None:
+            return "unknown"
+        sockname = sock.getsockname()
+        if isinstance(sockname, tuple) and len(sockname) >= 2:
+            port = sockname[1]
+            if type(port) is int and 1 <= port <= 65535:
+                return str(port)
+    except Exception:
+        pass
+    return "unknown"
+
+
+def _normalize_diagnostic_route(route: Any) -> str:
+    """Return only the primary marker or a public IPv4 fallback route."""
+
+    if route == "primary":
+        return "primary"
+    try:
+        addr = ipaddress.ip_address(route)
+    except (TypeError, ValueError):
+        return "unknown"
+    if addr.version != 4 or not addr.is_global or addr.is_multicast:
+        return "unknown"
+    return str(addr)
+
+
+class _SocketLifecycleState:
+    """Shared lifecycle identity across raw and TLS wrappers for one socket."""
+
+    def __init__(self, *, owner: str, route: str, stream: Any):
+        self.owner = owner
+        self.route = route
+        self.local_port = _stream_local_port(stream)
+        self._closed_reported = False
+        _log_socket_lifecycle(
+            event="socket-opened",
+            owner=self.owner,
+            route=self.route,
+            local_port=self.local_port,
+        )
+
+    def report_closed(self, *, error: bool = False) -> None:
+        if self._closed_reported:
+            return
+        self._closed_reported = True
+        _log_socket_lifecycle(
+            event="socket-close-error" if error else "socket-closed",
+            owner=self.owner,
+            route=self.route,
+            local_port=self.local_port,
+        )
+
+
 class _CancellationSafeNetworkStream:
     """Close the raw TCP stream if TLS setup is cancelled.
 
@@ -69,6 +129,39 @@ class _CancellationSafeNetworkStream:
         return self._stream.get_extra_info(info)
 
 
+class _DiagnosticCancellationSafeNetworkStream(_CancellationSafeNetworkStream):
+    """Opt-in raw-stream wrapper that reports one socket lifecycle."""
+
+    def __init__(self, stream: Any, lifecycle: _SocketLifecycleState):
+        super().__init__(stream)
+        self._lifecycle = lifecycle
+
+    async def aclose(self) -> None:
+        try:
+            await self._stream.aclose()
+        except BaseException:
+            self._lifecycle.report_closed(error=True)
+            raise
+        self._lifecycle.report_closed()
+
+    async def start_tls(
+        self, ssl_context, server_hostname=None, timeout=None
+    ) -> "_DiagnosticCancellationSafeNetworkStream":
+        try:
+            stream = await self._stream.start_tls(
+                ssl_context, server_hostname, timeout
+            )
+        except BaseException:
+            try:
+                await self._stream.aclose()
+            except BaseException:
+                self._lifecycle.report_closed(error=True)
+            else:
+                self._lifecycle.report_closed()
+            raise
+        return _DiagnosticCancellationSafeNetworkStream(stream, self._lifecycle)
+
+
 class _CancellationSafeNetworkBackend:
     """Wrap httpcore-created streams with TLS cancellation cleanup."""
 
@@ -87,7 +180,42 @@ class _CancellationSafeNetworkBackend:
         await self._backend.sleep(seconds)
 
 
-def _new_async_http_transport(**kwargs) -> httpx.AsyncHTTPTransport:
+class _DiagnosticCancellationSafeNetworkBackend(_CancellationSafeNetworkBackend):
+    """Opt-in backend that binds raw sockets to a request owner and route."""
+
+    def __init__(self, backend: Any, *, owner: str, route: str):
+        super().__init__(backend)
+        self._owner = owner if owner in {"general", "polling"} else "unknown"
+        self._route = _normalize_diagnostic_route(route)
+
+    def _wrap(self, stream: Any) -> _DiagnosticCancellationSafeNetworkStream:
+        lifecycle = _SocketLifecycleState(
+            owner=self._owner,
+            route=self._route,
+            stream=stream,
+        )
+        return _DiagnosticCancellationSafeNetworkStream(stream, lifecycle)
+
+    async def connect_tcp(
+        self, *args, **kwargs
+    ) -> _DiagnosticCancellationSafeNetworkStream:
+        stream = await self._backend.connect_tcp(*args, **kwargs)
+        return self._wrap(stream)
+
+    async def connect_unix_socket(
+        self, *args, **kwargs
+    ) -> _DiagnosticCancellationSafeNetworkStream:
+        stream = await self._backend.connect_unix_socket(*args, **kwargs)
+        return self._wrap(stream)
+
+
+def _new_async_http_transport(
+    *,
+    socket_diagnostics: bool = False,
+    diagnostic_owner: str = "unknown",
+    diagnostic_route: str = "primary",
+    **kwargs,
+) -> httpx.AsyncHTTPTransport:
     """Build an HTTPX transport whose raw TLS sockets are cancellation-safe."""
     transport = httpx.AsyncHTTPTransport(**kwargs)
     pool = getattr(transport, "_pool", None)
@@ -97,7 +225,15 @@ def _new_async_http_transport(**kwargs) -> httpx.AsyncHTTPTransport:
             "Unsupported httpx/httpcore transport internals: expected "
             "AsyncHTTPTransport._pool._network_backend"
         )
-    pool._network_backend = _CancellationSafeNetworkBackend(backend)
+    if socket_diagnostics:
+        pool._network_backend = _DiagnosticCancellationSafeNetworkBackend(
+            backend,
+            owner=diagnostic_owner,
+            route=diagnostic_route,
+        )
+    else:
+        # Preserve the exact pre-diagnostics hot path when the opt-in is off.
+        pool._network_backend = _CancellationSafeNetworkBackend(backend)
     return transport
 
 
@@ -293,9 +429,20 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
         if proxy_url and "proxy" not in transport_kwargs:
             transport_kwargs["proxy"] = proxy_url
-        self._primary = _new_async_http_transport(**transport_kwargs)
+        self._primary = _new_async_http_transport(
+            socket_diagnostics=self._socket_diagnostics,
+            diagnostic_owner=self._owner_role,
+            diagnostic_route="primary",
+            **transport_kwargs,
+        )
         self._fallbacks = {
-            ip: _new_async_http_transport(**transport_kwargs) for ip in self._fallback_ips
+            ip: _new_async_http_transport(
+                socket_diagnostics=self._socket_diagnostics,
+                diagnostic_owner=self._owner_role,
+                diagnostic_route=ip,
+                **transport_kwargs,
+            )
+            for ip in self._fallback_ips
         }
         self._sticky_ip: Optional[str] = None
         self._sticky_lock = asyncio.Lock()

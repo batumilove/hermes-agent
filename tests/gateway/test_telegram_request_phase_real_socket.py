@@ -18,6 +18,7 @@ import gc
 import inspect
 import ipaddress
 import json
+import logging
 import os
 from pathlib import Path
 import ssl
@@ -62,6 +63,28 @@ _PTB_CASES = frozenset(
         "concurrent",
     }
 )
+
+
+class _SocketLifecycleCapture(logging.Handler):
+    def __init__(self):
+        super().__init__(level=logging.INFO)
+        self.messages: list[str] = []
+        self._old_level = logging.NOTSET
+
+    def emit(self, record: logging.LogRecord) -> None:
+        message = record.getMessage()
+        if message.startswith("[Telegram socket] "):
+            self.messages.append(message)
+
+    def __enter__(self):
+        self._old_level = tnet.logger.level
+        tnet.logger.setLevel(logging.INFO)
+        tnet.logger.addHandler(self)
+        return self
+
+    def __exit__(self, _exc_type, _exc_value, _traceback):
+        tnet.logger.removeHandler(self)
+        tnet.logger.setLevel(self._old_level)
 
 
 def _ptb_request_available() -> bool:
@@ -378,7 +401,10 @@ def _local_server_ssl_context(directory: str) -> ssl.SSLContext:
         check=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        timeout=10,
+        # RSA key generation can exceed 10s under the intentionally concurrent
+        # gateway test load; keep it bounded without creating a false harness
+        # failure before the network lifecycle case starts.
+        timeout=30,
     )
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(cert, key)
@@ -573,9 +599,16 @@ async def _proxy_tls_handshake_case() -> dict[str, Any]:
     """Cancel while real httpcore CONNECT traffic is blocked in TLS setup."""
     proxy = await _ConnectProxy().start()
     transport = tnet._new_async_http_transport(
-        proxy=proxy.url, http2=True, verify=False
+        proxy=proxy.url,
+        http2=True,
+        verify=False,
+        socket_diagnostics=True,
+        diagnostic_owner="polling",
+        diagnostic_route="primary",
     )
     client = httpx.AsyncClient(transport=transport, timeout=10.0)
+    capture = _SocketLifecycleCapture()
+    capture.__enter__()
     task = asyncio.create_task(client.get("https://localhost:443/stall"))
     started_task = asyncio.create_task(proxy.tls_started.wait())
     try:
@@ -592,6 +625,8 @@ async def _proxy_tls_handshake_case() -> dict[str, Any]:
             await task
         await _drain()
         leaks = _connections_to_port(proxy.port)
+        opened = [message for message in capture.messages if "event=socket-opened" in message]
+        closed = [message for message in capture.messages if "event=socket-closed" in message]
         result = {
             "case": "proxy_tls_handshake",
             "ok": (
@@ -599,6 +634,12 @@ async def _proxy_tls_handshake_case() -> dict[str, Any]:
                 and proxy.accepted == 1
                 and proxy.disconnects == 1
                 and proxy.connect_targets == ["localhost:443"]
+                and len(opened) == 1
+                and len(closed) == 1
+                and "owner=polling" in opened[0]
+                and "route=primary" in opened[0]
+                and opened[0].split("local_port=", 1)[1]
+                == closed[0].split("local_port=", 1)[1]
             ),
             "http2_requested": True,
             "proxy_url": proxy.url,
@@ -606,8 +647,10 @@ async def _proxy_tls_handshake_case() -> dict[str, Any]:
             "accepted": proxy.accepted,
             "disconnects": proxy.disconnects,
             "leaks": leaks,
+            "socket_events": capture.messages,
         }
     finally:
+        capture.__exit__(None, None, None)
         started_task.cancel()
         task.cancel()
         with contextlib.suppress(BaseException):
