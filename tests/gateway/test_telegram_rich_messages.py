@@ -783,6 +783,16 @@ def test_prefers_fresh_final_streaming_honors_rich_opt_out():
     assert adapter.prefers_fresh_final_streaming(RICH_CONTENT) is False
 
 
+def test_run_message_separation_prefers_fresh_streamed_final():
+    adapter = _make_adapter(extra={"separate_run_messages": True})
+    assert adapter.prefers_fresh_final_streaming(
+        RICH_CONTENT, metadata={"turn_final": True}
+    ) is True
+    assert adapter.prefers_fresh_final_streaming(
+        RICH_CONTENT, metadata={"turn_final": False}
+    ) is False
+
+
 # ----------------------------------------------------------------------
 # streaming_overflow_limit: with rich on, the stream consumer may accumulate up
 # to the 32,768-char rich cap before splitting, so a reply that fits one
