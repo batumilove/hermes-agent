@@ -227,6 +227,63 @@ def test_load_loop_lag_traceback_threshold_prefers_env_then_config_then_default(
     assert "Invalid gateway loop lag traceback threshold" in caplog.text
 
 
+def test_load_loop_lag_prestall_threshold_uses_config_and_default(
+    tmp_path, monkeypatch, caplog
+):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    assert gateway_run.GatewayRunner._load_loop_lag_prestall_threshold() == 5.0
+
+    (tmp_path / "config.yaml").write_text(
+        "gateway:\n  loop_lag_prestall_seconds: 2.5\n", encoding="utf-8"
+    )
+    assert gateway_run.GatewayRunner._load_loop_lag_prestall_threshold() == 2.5
+
+    (tmp_path / "config.yaml").write_text(
+        "gateway:\n  loop_lag_prestall_seconds: 0\n", encoding="utf-8"
+    )
+    assert gateway_run.GatewayRunner._load_loop_lag_prestall_threshold() == 0.0
+
+    (tmp_path / "config.yaml").write_text(
+        "gateway:\n  loop_lag_prestall_seconds: 0.5\n", encoding="utf-8"
+    )
+    assert gateway_run.GatewayRunner._load_loop_lag_prestall_threshold() == 5.0
+    assert "must exceed monitor interval" in caplog.text
+
+    (tmp_path / "config.yaml").write_text(
+        "gateway:\n  loop_lag_prestall_seconds: invalid\n", encoding="utf-8"
+    )
+    assert gateway_run.GatewayRunner._load_loop_lag_prestall_threshold() == 5.0
+    assert "Invalid gateway loop lag pre-stall threshold" in caplog.text
+
+
+def test_prestall_watchdog_runner_lifecycle(monkeypatch):
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner._loop_lag_prestall_threshold = 5.0
+    runner._loop_lag_monitor_interval = 1.0
+    runner._loop_lag_prestall_watchdog = None
+    calls = []
+
+    class DummyWatchdog:
+        def __init__(self, **kwargs):
+            calls.append(("init", kwargs))
+
+        def start(self):
+            calls.append(("start", None))
+            return True
+
+        def stop(self, *, timeout):
+            calls.append(("stop", timeout))
+            return True
+
+    monkeypatch.setattr(gateway_run, "PrestallLoopLagWatchdog", DummyWatchdog)
+
+    assert runner._start_loop_lag_prestall_watchdog() is True
+    assert runner._stop_loop_lag_prestall_watchdog() is True
+    assert [name for name, _ in calls] == ["init", "start", "stop"]
+    assert runner._loop_lag_prestall_watchdog is None
+
+
 @pytest.mark.asyncio
 async def test_gateway_loop_lag_monitor_logs_when_tick_lags(caplog):
     runner = object.__new__(gateway_run.GatewayRunner)
@@ -246,6 +303,35 @@ async def test_gateway_loop_lag_monitor_logs_when_tick_lags(caplog):
             await runner._gateway_loop_lag_monitor()
 
     assert "Gateway event loop lag" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_gateway_loop_lag_monitor_keeps_prestall_heartbeat_when_warnings_disabled(
+    monkeypatch,
+):
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner._loop_lag_warning_threshold = 0
+    runner._loop_lag_monitor_interval = 0.001
+
+    class Watchdog:
+        def __init__(self):
+            self.beats = 0
+
+        def beat(self):
+            self.beats += 1
+
+    watchdog = Watchdog()
+    runner._loop_lag_prestall_watchdog = watchdog
+
+    async def fake_sleep(_delay):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(gateway_run.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(gateway_run.time, "monotonic", lambda: 1.0)
+
+    await runner._gateway_loop_lag_monitor()
+
+    assert watchdog.beats == 1
 
 
 @pytest.mark.asyncio
