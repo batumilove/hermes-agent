@@ -260,7 +260,6 @@ class ConfigStore:
     """Operate on gateway.json relative to a verified directory descriptor."""
 
     name = "gateway.json"
-    quarantine_name = ".hermes-staging-diagnostic-quarantine"
 
     def __init__(self, root: Path, *, expected_uid: int, expected_gid: int):
         self.root = Path(root)
@@ -342,6 +341,13 @@ class ConfigStore:
         finally:
             os.close(fd)
 
+    def device(self) -> int:
+        fd = self._open_dir()
+        try:
+            return os.fstat(fd).st_dev
+        finally:
+            os.close(fd)
+
     @staticmethod
     def enabled_payload(snapshot: ConfigSnapshot) -> bytes:
         data = json.loads(snapshot.content.decode()) if snapshot.existed else {}
@@ -383,61 +389,39 @@ class ConfigStore:
             os.close(fd)
         _fsync_directory(dir_fd)
 
-    def _open_quarantine(self, dir_fd: int) -> int:
-        try:
-            os.mkdir(self.quarantine_name, 0o700, dir_fd=dir_fd)
-            _fsync_directory(dir_fd)
-        except FileExistsError:
-            pass
-        flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
-        try:
-            quarantine_fd = os.open(self.quarantine_name, flags, dir_fd=dir_fd)
-        except OSError as exc:
-            raise ConfigError("guard quarantine cannot be opened safely") from exc
-        opened = os.fstat(quarantine_fd)
-        named = os.stat(self.quarantine_name, dir_fd=dir_fd, follow_symlinks=False)
-        if (
-            not stat.S_ISDIR(opened.st_mode)
-            or stat.S_ISLNK(named.st_mode)
-            or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
-            or (opened.st_uid, opened.st_gid) != (os.geteuid(), os.getegid())
-            or stat.S_IMODE(opened.st_mode) != 0o700
-        ):
-            os.close(quarantine_fd)
-            raise ConfigError("guard quarantine identity is unsafe")
-        return quarantine_fd
-
-    def _cleanup_guard(self, dir_fd: int, guard_name: str, expected: ConfigSnapshot) -> None:
-        quarantine_fd = self._open_quarantine(dir_fd)
-        try:
-            in_data = self._read_named(dir_fd, guard_name, allow_absent=True)
-            quarantined = self._read_named(quarantine_fd, guard_name, allow_absent=True)
-            if in_data.existed and quarantined.existed:
-                raise ConfigDriftError("multiple transaction guards block cleanup")
-            if in_data.existed:
-                try:
-                    _rename_noreplace(dir_fd, guard_name, quarantine_fd, guard_name)
-                    _fsync_directory(dir_fd)
-                    _fsync_directory(quarantine_fd)
-                except OSError as exc:
-                    raise ConfigDriftError("transaction guard changed during quarantine") from exc
-                quarantined = self._read_named(quarantine_fd, guard_name, allow_absent=False)
-            if not quarantined.existed:
-                return
-            if not _same_snapshot(quarantined, expected):
-                try:
-                    _rename_noreplace(quarantine_fd, guard_name, dir_fd, guard_name)
-                    _fsync_directory(quarantine_fd)
-                    _fsync_directory(dir_fd)
-                except OSError:
-                    pass
-                raise ConfigDriftError("transaction guard drift blocks cleanup")
-            os.unlink(guard_name, dir_fd=quarantine_fd)
-            _fsync_directory(quarantine_fd)
-            if self._read_named(dir_fd, guard_name, allow_absent=True).existed:
-                raise ConfigDriftError("concurrent transaction guard drift was preserved")
-        finally:
-            os.close(quarantine_fd)
+    def _cleanup_guard(
+        self,
+        dir_fd: int,
+        quarantine_fd: int,
+        guard_name: str,
+        expected: ConfigSnapshot,
+    ) -> None:
+        in_data = self._read_named(dir_fd, guard_name, allow_absent=True)
+        quarantined = self._read_named(quarantine_fd, guard_name, allow_absent=True)
+        if in_data.existed and quarantined.existed:
+            raise ConfigDriftError("multiple transaction guards block cleanup")
+        if in_data.existed:
+            try:
+                _rename_noreplace(dir_fd, guard_name, quarantine_fd, guard_name)
+                _fsync_directory(dir_fd)
+                _fsync_directory(quarantine_fd)
+            except OSError as exc:
+                raise ConfigDriftError("transaction guard changed during quarantine") from exc
+            quarantined = self._read_named(quarantine_fd, guard_name, allow_absent=False)
+        if not quarantined.existed:
+            return
+        if not _same_snapshot(quarantined, expected):
+            try:
+                _rename_noreplace(quarantine_fd, guard_name, dir_fd, guard_name)
+                _fsync_directory(quarantine_fd)
+                _fsync_directory(dir_fd)
+            except OSError:
+                pass
+            raise ConfigDriftError("transaction guard drift blocks cleanup")
+        os.unlink(guard_name, dir_fd=quarantine_fd)
+        _fsync_directory(quarantine_fd)
+        if self._read_named(dir_fd, guard_name, allow_absent=True).existed:
+            raise ConfigDriftError("concurrent transaction guard drift was preserved")
 
     def _exchange_checked(
         self,
@@ -493,6 +477,7 @@ class ConfigStore:
         self,
         snapshot: ConfigSnapshot,
         expected_mutated_hash: str,
+        quarantine_fd: int,
         guard_name: str = _TEST_GUARD_NAME,
     ) -> None:
         self._validate_guard_name(guard_name)
@@ -532,7 +517,7 @@ class ConfigStore:
             restored = self._read_current(fd, allow_absent=True)
             if not _same_snapshot(restored, snapshot):
                 raise ConfigDriftError("gateway config exact restoration failed")
-            self._cleanup_guard(fd, guard_name, expected_mutated)
+            self._cleanup_guard(fd, quarantine_fd, guard_name, expected_mutated)
         finally:
             os.close(fd)
 
@@ -585,6 +570,34 @@ class TransactionStore:
             if state_file.exists():
                 result.append(Transaction(entry, self._read(state_file)))
         return result
+
+    def open_transaction(self, tx: Transaction) -> int:
+        if tx.path.parent != self.root or not tx.path.name:
+            raise StateError("transaction path is outside the state root")
+        flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+        root_fd = os.open(self.root, flags)
+        fd: int | None = None
+        try:
+            fd = os.open(tx.path.name, flags, dir_fd=root_fd)
+            opened = os.fstat(fd)
+            named = os.stat(tx.path.name, dir_fd=root_fd, follow_symlinks=False)
+            if (
+                not stat.S_ISDIR(opened.st_mode)
+                or stat.S_ISLNK(named.st_mode)
+                or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
+                or (opened.st_uid, opened.st_gid) != (os.geteuid(), os.getegid())
+                or stat.S_IMODE(opened.st_mode) != 0o700
+            ):
+                raise StateError("transaction directory identity is unsafe")
+            result = fd
+            fd = None
+            return result
+        except OSError as exc:
+            raise StateError("transaction directory cannot be opened safely") from exc
+        finally:
+            if fd is not None:
+                os.close(fd)
+            os.close(root_fd)
 
     def prepare(self, request: Request) -> Transaction:
         identity = f"{request.run_id}-{request.run_attempt}-{request.nonce}"
@@ -992,19 +1005,23 @@ class DiagnosticExecutor:
     def _restore(self, tx: Transaction, snapshot: ConfigSnapshot, mutated_hash: str) -> None:
         self.states.begin_restore(tx)
         guard_name = self.states.load_guard_name(tx)
+        quarantine_fd = self.states.open_transaction(tx)
         last_error: BaseException | None = None
-        for attempt in range(3):
-            try:
-                self._stop()
-                self.config.restore(snapshot, mutated_hash, guard_name)
-                self._restart()
-                self._effective(False)
-                self.states.transition(tx, "RESTORED")
-                return
-            except BaseException as exc:
-                last_error = exc
-                if attempt < 2:
-                    self._sleep_bounded(3)
+        try:
+            for attempt in range(3):
+                try:
+                    self._stop()
+                    self.config.restore(snapshot, mutated_hash, quarantine_fd, guard_name)
+                    self._restart()
+                    self._effective(False)
+                    self.states.transition(tx, "RESTORED")
+                    return
+                except BaseException as exc:
+                    last_error = exc
+                    if attempt < 2:
+                        self._sleep_bounded(3)
+        finally:
+            os.close(quarantine_fd)
         self.states.fail_restore(tx)
         raise DiagnosticError("bounded restore retries exhausted") from last_error
 
@@ -1023,6 +1040,13 @@ class DiagnosticExecutor:
             snapshot = self.config.snapshot()
             self.states.save_snapshot(tx, snapshot)
             guard_name = self.states.load_guard_name(tx)
+            quarantine_fd = self.states.open_transaction(tx)
+            try:
+                if os.fstat(quarantine_fd).st_dev != self.config.device():
+                    self.states.abort_prepared(tx)
+                    raise StateError("transaction and data directories are on different filesystems")
+            finally:
+                os.close(quarantine_fd)
             self.states.transition(tx, "ARMED")
             mutated_hash = _sha(self.config.enabled_payload(snapshot))
             result = None

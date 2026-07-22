@@ -116,6 +116,20 @@ def _config_dir(tmp_path: Path) -> Path:
     return root
 
 
+def _restore(store, snapshot, mutated_hash, tmp_path: Path, guard_name=None):
+    quarantine = tmp_path / "quarantine"
+    quarantine.mkdir(mode=0o700, exist_ok=True)
+    quarantine.chmod(0o700)
+    fd = os.open(quarantine, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        if guard_name is None:
+            store.restore(snapshot, mutated_hash, fd)
+        else:
+            store.restore(snapshot, mutated_hash, fd, guard_name)
+    finally:
+        os.close(fd)
+
+
 def test_regular_config_snapshot_enable_and_exact_restore(diagnostic, tmp_path):
     root = _config_dir(tmp_path)
     path = root / "gateway.json"
@@ -126,7 +140,7 @@ def test_regular_config_snapshot_enable_and_exact_restore(diagnostic, tmp_path):
     snapshot = store.snapshot()
     mutated_hash = store.enable(snapshot)
     assert json.loads(path.read_bytes())["platforms"]["telegram"]["extra"]["socket_diagnostics"] is True
-    store.restore(snapshot, mutated_hash)
+    _restore(store, snapshot, mutated_hash, tmp_path)
     st = path.stat()
     assert path.read_bytes() == original
     assert stat.S_IMODE(st.st_mode) == 0o640
@@ -140,7 +154,7 @@ def test_absent_config_is_removed_on_restore(diagnostic, tmp_path):
     assert snapshot.existed is False
     mutated_hash = store.enable(snapshot)
     assert (root / "gateway.json").is_file()
-    store.restore(snapshot, mutated_hash)
+    _restore(store, snapshot, mutated_hash, tmp_path)
     assert not (root / "gateway.json").exists()
 
 
@@ -176,7 +190,7 @@ def test_restore_refuses_compare_and_swap_drift(diagnostic, tmp_path):
     mutated_hash = store.enable(snap)
     path.write_text('{"operator":"drift"}')
     with pytest.raises(diagnostic.ConfigDriftError):
-        store.restore(snap, mutated_hash)
+        _restore(store, snap, mutated_hash, tmp_path)
     assert path.read_text() == '{"operator":"drift"}'
 
 
@@ -221,7 +235,7 @@ def test_restore_guarded_cas_preserves_drift_at_rename_boundary(diagnostic, tmp_
 
     monkeypatch.setattr(diagnostic, "_rename_exchange", race)
     with pytest.raises(diagnostic.ConfigDriftError):
-        store.restore(snapshot, mutated_hash)
+        _restore(store, snapshot, mutated_hash, tmp_path)
     assert json.loads(path.read_text()) == {"operator": "restore-drift"}
 
 
@@ -235,7 +249,7 @@ def test_atomic_exchange_process_death_is_recoverable(diagnostic, tmp_path, phas
     snapshot = store.snapshot()
     mutated_hash = store.enable(snapshot)
     if phase == "enable":
-        store.restore(snapshot, mutated_hash)
+        _restore(store, snapshot, mutated_hash, tmp_path)
 
     pid = os.fork()
     if pid == 0:
@@ -249,12 +263,12 @@ def test_atomic_exchange_process_death_is_recoverable(diagnostic, tmp_path, phas
         if phase == "enable":
             store.enable(snapshot)
         else:
-            store.restore(snapshot, mutated_hash)
+            _restore(store, snapshot, mutated_hash, tmp_path)
         os._exit(74)
     waited, status = os.waitpid(pid, 0)
     assert waited == pid and os.WIFEXITED(status) and os.WEXITSTATUS(status) == 73
 
-    store.restore(snapshot, mutated_hash)
+    _restore(store, snapshot, mutated_hash, tmp_path)
     assert path.read_bytes() == original
     assert list(root.glob(".gateway.json.tx-*.swap")) == []
 
@@ -280,7 +294,7 @@ def test_guard_replacement_at_cleanup_is_preserved(diagnostic, tmp_path, monkeyp
 
     monkeypatch.setattr(diagnostic.os, "unlink", replace_then_unlink)
     with pytest.raises(diagnostic.ConfigDriftError, match="concurrent"):
-        store.restore(snapshot, mutated_hash)
+        _restore(store, snapshot, mutated_hash, tmp_path)
     guards = list(root.glob(".gateway.json.tx-*.swap"))
     assert len(guards) == 1
     assert json.loads(guards[0].read_text()) == {"concurrent": "preserved"}
@@ -292,9 +306,13 @@ def test_process_death_after_guard_quarantine_is_recoverable(diagnostic, tmp_pat
     path = root / "gateway.json"
     original = b'{"original":true}\n'
     path.write_bytes(original)
+    transactions = diagnostic.TransactionStore(tmp_path / "state")
+    tx = transactions.prepare(diagnostic.parse_request(io.BytesIO(request())))
     store = diagnostic.ConfigStore(root, expected_uid=os.getuid(), expected_gid=os.getgid())
     snapshot = store.snapshot()
-    mutated_hash = store.enable(snapshot)
+    transactions.save_snapshot(tx, snapshot)
+    guard_name = transactions.load_guard_name(tx)
+    mutated_hash = store.enable(snapshot, guard_name)
 
     pid = os.fork()
     if pid == 0:
@@ -306,15 +324,21 @@ def test_process_death_after_guard_quarantine_is_recoverable(diagnostic, tmp_pat
                 os._exit(75)
 
         diagnostic._rename_noreplace = die_after_quarantine
-        store.restore(snapshot, mutated_hash)
+        quarantine_fd = transactions.open_transaction(tx)
+        store.restore(snapshot, mutated_hash, quarantine_fd, guard_name)
         os._exit(76)
     waited, status = os.waitpid(pid, 0)
     assert waited == pid and os.WIFEXITED(status) and os.WEXITSTATUS(status) == 75
+    assert (tx.path / guard_name).is_file()
+    assert not list(root.glob(".hermes-staging-diagnostic-quarantine*"))
 
-    store.restore(snapshot, mutated_hash)
+    quarantine_fd = transactions.open_transaction(tx)
+    try:
+        store.restore(snapshot, mutated_hash, quarantine_fd, guard_name)
+    finally:
+        os.close(quarantine_fd)
     assert path.read_bytes() == original
-    quarantine = root / store.quarantine_name
-    assert list(quarantine.iterdir()) == []
+    assert not (tx.path / guard_name).exists()
 
 
 def test_orphaned_command_retains_shared_lock_until_exit(diagnostic, tmp_path):
@@ -370,7 +394,7 @@ def test_atomic_config_operations_fsync_files_and_directories(diagnostic, tmp_pa
     store = diagnostic.ConfigStore(root, expected_uid=os.getuid(), expected_gid=os.getgid())
     snap = store.snapshot()
     mutated_hash = store.enable(snap)
-    store.restore(snap, mutated_hash)
+    _restore(store, snap, mutated_hash, tmp_path)
     assert len(calls) >= 4
 
 
@@ -485,6 +509,21 @@ def test_executor_uses_fixed_vectors_scrubbed_environment_and_bounded_aggregate(
     assert log_call[0][2] == "--since" and log_call[0][3].endswith("Z")
     assert "10m" not in log_call[0]
     assert json.loads((data / "gateway.json").read_text()).get("platforms") is None
+
+
+def test_cross_filesystem_quarantine_aborts_before_mutation(diagnostic, tmp_path, monkeypatch):
+    deploy, data, state = _target_tree(tmp_path)
+    original = (data / "gateway.json").read_bytes()
+    fake = FakeRunner(diagnostic, data)
+    executor = _executor(diagnostic, tmp_path, deploy, data, state, fake)
+    real_device = executor.config.device()
+    monkeypatch.setattr(executor.config, "device", lambda: real_device + 1)
+    with pytest.raises(diagnostic.StateError, match="different filesystems"):
+        executor.run(diagnostic.parse_request(io.BytesIO(request())))
+    assert (data / "gateway.json").read_bytes() == original
+    assert fake.restarts == 0
+    journal = next(state.glob("*/state.json"))
+    assert json.loads(journal.read_text())["state"] == "ABORTED"
 
 
 @pytest.mark.parametrize("fail_on", ["restart", "logs", "exec"])
@@ -653,7 +692,7 @@ def test_enable_and_restore_cas_include_mode_uid_gid(diagnostic, tmp_path):
     mutated_hash = store.enable(snapshot)
     path.chmod(0o600)
     with pytest.raises(diagnostic.ConfigDriftError):
-        store.restore(snapshot, mutated_hash)
+        _restore(store, snapshot, mutated_hash, tmp_path)
 
 
 def test_preflight_rejects_disk_true_even_when_runtime_false(diagnostic, tmp_path):
