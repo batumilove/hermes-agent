@@ -179,6 +179,59 @@ def test_restore_refuses_compare_and_swap_drift(diagnostic, tmp_path):
     assert path.read_text() == '{"operator":"drift"}'
 
 
+def test_enable_guarded_cas_preserves_drift_at_rename_boundary(diagnostic, tmp_path, monkeypatch):
+    root = _config_dir(tmp_path)
+    path = root / "gateway.json"
+    path.write_text("{}")
+    store = diagnostic.ConfigStore(root, expected_uid=os.getuid(), expected_gid=os.getgid())
+    snapshot = store.snapshot()
+    real_rename = diagnostic._rename_noreplace
+    fired = False
+
+    def race(old_fd, old_name, new_fd, new_name):
+        nonlocal fired
+        if not fired and old_name == "gateway.json" and new_name.endswith(".guard"):
+            fired = True
+            path.write_text('{"operator":"enable-drift"}')
+        return real_rename(old_fd, old_name, new_fd, new_name)
+
+    monkeypatch.setattr(diagnostic, "_rename_noreplace", race)
+    with pytest.raises(diagnostic.ConfigDriftError):
+        store.enable(snapshot)
+    assert json.loads(path.read_text()) == {"operator": "enable-drift"}
+
+
+def test_restore_guarded_cas_preserves_drift_at_rename_boundary(diagnostic, tmp_path, monkeypatch):
+    root = _config_dir(tmp_path)
+    path = root / "gateway.json"
+    path.write_text("{}")
+    store = diagnostic.ConfigStore(root, expected_uid=os.getuid(), expected_gid=os.getgid())
+    snapshot = store.snapshot()
+    mutated_hash = store.enable(snapshot)
+    real_rename = diagnostic._rename_noreplace
+    fired = False
+
+    def race(old_fd, old_name, new_fd, new_name):
+        nonlocal fired
+        if not fired and old_name == "gateway.json" and new_name.endswith(".guard"):
+            fired = True
+            path.write_text('{"operator":"restore-drift"}')
+        return real_rename(old_fd, old_name, new_fd, new_name)
+
+    monkeypatch.setattr(diagnostic, "_rename_noreplace", race)
+    with pytest.raises(diagnostic.ConfigDriftError):
+        store.restore(snapshot, mutated_hash)
+    assert json.loads(path.read_text()) == {"operator": "restore-drift"}
+
+
+def test_data_root_requires_exact_owner_and_mode(diagnostic, tmp_path):
+    root = _config_dir(tmp_path)
+    root.chmod(0o777)
+    store = diagnostic.ConfigStore(root, expected_uid=os.getuid(), expected_gid=os.getgid())
+    with pytest.raises(diagnostic.ConfigError, match="ownership or mode"):
+        store.snapshot()
+
+
 def test_atomic_config_operations_fsync_files_and_directories(diagnostic, tmp_path, monkeypatch):
     root = _config_dir(tmp_path)
     (root / "gateway.json").write_text("{}")
@@ -262,6 +315,7 @@ def _target_tree(tmp_path):
     state = tmp_path / "state"
     deploy.mkdir()
     data.mkdir()
+    data.chmod(0o700)
     (deploy / "release.env").write_text(
         "HERMES_IMAGE=ghcr.io/batumilove/hermes-agent-deploy@sha256:" + "1" * 64
         + "\nHERMES_DEPLOY_ENV=batumi-staging\nHERMES_SOURCE_SHA=" + "a" * 40 + "\n"
@@ -614,10 +668,27 @@ def test_forward_failure_starts_fresh_restore_reserve(diagnostic, tmp_path, monk
     assert diagnostic.RESTORE_DEADLINE_SECONDS - 1 < reserves[0] <= diagnostic.RESTORE_DEADLINE_SECONDS
 
 
-def test_incomplete_socket_lifecycle_fails_canary(diagnostic):
-    raw = "[Telegram socket] event=response-created owner=general route=primary local_port=1234\n"
+@pytest.mark.parametrize("raw", [
+    "[Telegram socket] event=response-created owner=general route=primary local_port=1234\n",
+    "[Telegram socket] event=response-closed owner=general route=primary local_port=1234\n",
+    "[Telegram socket] event=response-created owner=general route=primary local_port=unknown\n",
+    "[Telegram socket] event=response-created owner=general route=primary local_port=unknown\n"
+    "[Telegram socket] event=response-closed owner=general route=primary local_port=unknown\n",
+])
+def test_incomplete_socket_lifecycle_fails_canary(diagnostic, raw):
     with pytest.raises(diagnostic.DiagnosticError, match="incomplete"):
         diagnostic.DiagnosticExecutor._aggregate(raw)
+
+
+def test_container_identity_change_during_logs_fails_and_restores(diagnostic, tmp_path, monkeypatch):
+    deploy, data, state = _target_tree(tmp_path)
+    original = (data / "gateway.json").read_bytes()
+    executor = _executor(diagnostic, tmp_path, deploy, data, state)
+    identities = iter(["stable", "stable", "changed"])
+    monkeypatch.setattr(executor, "_container_identity", lambda: next(identities))
+    with pytest.raises(diagnostic.DiagnosticError, match="log collection"):
+        executor.run(diagnostic.parse_request(io.BytesIO(request())))
+    assert (data / "gateway.json").read_bytes() == original
 
 
 def test_installer_manifest_binds_all_root_owned_artifacts_and_shared_lock():

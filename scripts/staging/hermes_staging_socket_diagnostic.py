@@ -7,8 +7,11 @@ import fcntl
 import hashlib
 import io
 import json
+import ctypes
+import errno
 import os
 import re
+import secrets
 import selectors
 import signal
 import socket
@@ -220,6 +223,24 @@ def _fsync_directory(fd: int) -> None:
     os.fsync(fd)
 
 
+_LIBC = ctypes.CDLL(None, use_errno=True)
+_RENAMEAT2 = getattr(_LIBC, "renameat2", None)
+_RENAME_NOREPLACE = 1
+
+
+def _rename_noreplace(old_dir_fd: int, old_name: str, new_dir_fd: int, new_name: str) -> None:
+    if _RENAMEAT2 is None:
+        raise OSError(errno.ENOSYS, "renameat2 unavailable")
+    result = _RENAMEAT2(
+        ctypes.c_int(old_dir_fd), ctypes.c_char_p(os.fsencode(old_name)),
+        ctypes.c_int(new_dir_fd), ctypes.c_char_p(os.fsencode(new_name)),
+        ctypes.c_uint(_RENAME_NOREPLACE),
+    )
+    if result != 0:
+        value = ctypes.get_errno()
+        raise OSError(value, os.strerror(value), old_name, new_name)
+
+
 class ConfigStore:
     """Operate on gateway.json relative to a verified directory descriptor."""
 
@@ -239,19 +260,23 @@ class ConfigStore:
         except OSError as exc:
             raise ConfigError("data directory cannot be opened safely") from exc
         st = os.fstat(fd)
-        if not stat.S_ISDIR(st.st_mode):
+        if (
+            not stat.S_ISDIR(st.st_mode)
+            or (st.st_uid, st.st_gid) != (self.expected_uid, self.expected_gid)
+            or stat.S_IMODE(st.st_mode) != 0o700
+        ):
             os.close(fd)
-            raise ConfigError("data root is not a directory")
+            raise ConfigError("data root ownership or mode mismatch")
         return fd
 
-    def _read_current(self, dir_fd: int, *, allow_absent: bool) -> ConfigSnapshot:
+    def _read_named(self, dir_fd: int, name: str, *, allow_absent: bool) -> ConfigSnapshot:
         # A hostile runtime path may be a FIFO. Open non-blocking so we can
         # inspect and reject its type instead of hanging the privileged helper.
         flags = os.O_RDONLY | os.O_NONBLOCK
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
         try:
-            fd = os.open(self.name, flags, dir_fd=dir_fd)
+            fd = os.open(name, flags, dir_fd=dir_fd)
         except FileNotFoundError:
             if allow_absent:
                 return ConfigSnapshot(False, b"", 0o600, self.expected_uid, self.expected_gid, _sha(b""))
@@ -260,7 +285,7 @@ class ConfigStore:
             raise ConfigError("gateway config cannot be opened safely") from exc
         try:
             st = os.fstat(fd)
-            named = os.stat(self.name, dir_fd=dir_fd, follow_symlinks=False)
+            named = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
             if not stat.S_ISREG(st.st_mode) or stat.S_ISLNK(named.st_mode):
                 raise ConfigError("gateway config is not regular")
             if (st.st_dev, st.st_ino) != (named.st_dev, named.st_ino) or st.st_nlink != 1:
@@ -291,6 +316,9 @@ class ConfigStore:
         finally:
             os.close(fd)
 
+    def _read_current(self, dir_fd: int, *, allow_absent: bool) -> ConfigSnapshot:
+        return self._read_named(dir_fd, self.name, allow_absent=allow_absent)
+
     def snapshot(self) -> ConfigSnapshot:
         fd = self._open_dir()
         try:
@@ -313,30 +341,80 @@ class ConfigStore:
         extra["socket_diagnostics"] = True
         return (json.dumps(data, indent=2, sort_keys=True) + "\n").encode()
 
-    def _atomic_write(self, dir_fd: int, content: bytes, mode: int, uid: int, gid: int, tag: str) -> None:
-        temp_name = f".{self.name}.{tag}.{os.getpid()}"
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        fd = os.open(temp_name, flags, 0o600, dir_fd=dir_fd)
-        try:
-            os.fchown(fd, uid, gid)
-            os.fchmod(fd, mode)
-            view = memoryview(content)
-            while view:
-                written = os.write(fd, view)
-                view = view[written:]
-            os.fsync(fd)
-        except BaseException:
+    def _guarded_update(
+        self, dir_fd: int, expected: ConfigSnapshot, replacement: ConfigSnapshot | None, tag: str
+    ) -> None:
+        suffix = secrets.token_hex(16)
+        temp_name = f".{self.name}.{tag}.{suffix}.tmp" if replacement is not None else ""
+        guard_name = f".{self.name}.{tag}.{suffix}.guard"
+        if replacement is not None:
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            fd = os.open(temp_name, flags, 0o600, dir_fd=dir_fd)
             try:
-                os.unlink(temp_name, dir_fd=dir_fd)
-            except OSError:
-                pass
-            raise
+                os.fchown(fd, replacement.uid, replacement.gid)
+                os.fchmod(fd, replacement.mode)
+                view = memoryview(replacement.content)
+                while view:
+                    written = os.write(fd, view)
+                    view = view[written:]
+                os.fsync(fd)
+            except BaseException:
+                try:
+                    os.unlink(temp_name, dir_fd=dir_fd)
+                except OSError:
+                    pass
+                raise
+            finally:
+                os.close(fd)
+
+        guard_moved = False
+        installed = False
+        try:
+            if expected.existed:
+                try:
+                    _rename_noreplace(dir_fd, self.name, dir_fd, guard_name)
+                except FileNotFoundError as exc:
+                    raise ConfigDriftError("gateway config disappeared before guarded update") from exc
+                guard_moved = True
+                captured = self._read_named(dir_fd, guard_name, allow_absent=False)
+                if not _same_snapshot(captured, expected):
+                    try:
+                        _rename_noreplace(dir_fd, guard_name, dir_fd, self.name)
+                        guard_moved = False
+                    except OSError:
+                        pass
+                    raise ConfigDriftError("gateway config drift captured by guarded update")
+            if replacement is not None:
+                try:
+                    _rename_noreplace(dir_fd, temp_name, dir_fd, self.name)
+                except OSError as exc:
+                    if guard_moved:
+                        try:
+                            _rename_noreplace(dir_fd, guard_name, dir_fd, self.name)
+                            guard_moved = False
+                        except OSError:
+                            pass
+                    raise ConfigDriftError("gateway config pathname changed during guarded update") from exc
+                installed = True
+                temp_name = ""
+            _fsync_directory(dir_fd)
+            if guard_moved:
+                os.unlink(guard_name, dir_fd=dir_fd)
+                guard_moved = False
+                _fsync_directory(dir_fd)
         finally:
-            os.close(fd)
-        os.replace(temp_name, self.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
-        _fsync_directory(dir_fd)
+            if temp_name:
+                try:
+                    os.unlink(temp_name, dir_fd=dir_fd)
+                except OSError:
+                    pass
+            if guard_moved and not installed:
+                try:
+                    _rename_noreplace(dir_fd, guard_name, dir_fd, self.name)
+                except OSError:
+                    pass
 
     def enable(self, snapshot: ConfigSnapshot) -> str:
         content = self.enabled_payload(snapshot)
@@ -345,7 +423,10 @@ class ConfigStore:
             current = self._read_current(fd, allow_absent=True)
             if not _same_snapshot(current, snapshot):
                 raise ConfigDriftError("gateway config drift before mutation")
-            self._atomic_write(fd, content, snapshot.mode, snapshot.uid, snapshot.gid, "enable")
+            replacement = ConfigSnapshot(
+                True, content, snapshot.mode, snapshot.uid, snapshot.gid, _sha(content)
+            )
+            self._guarded_update(fd, snapshot, replacement, "enable")
             return _sha(content)
         finally:
             os.close(fd)
@@ -362,10 +443,9 @@ class ConfigStore:
             if not _same_snapshot(current, expected_mutated):
                 raise ConfigDriftError("gateway config drift blocks restore")
             if snapshot.existed:
-                self._atomic_write(fd, snapshot.content, snapshot.mode, snapshot.uid, snapshot.gid, "restore")
+                self._guarded_update(fd, expected_mutated, snapshot, "restore")
             else:
-                os.unlink(self.name, dir_fd=fd)
-                _fsync_directory(fd)
+                self._guarded_update(fd, expected_mutated, None, "restore")
             restored = self._read_current(fd, allow_absent=True)
             if not _same_snapshot(restored, snapshot):
                 raise ConfigDriftError("gateway config exact restoration failed")
@@ -752,6 +832,9 @@ class DiagnosticExecutor:
         self._command((DOCKER, "restart", "--time", "90", CONTAINER), 120)
         self._wait_healthy()
 
+    def _stop(self) -> None:
+        self._command((DOCKER, "stop", "--time", "90", CONTAINER), 120)
+
     def _container_identity(self) -> str:
         value = self._command(
             (DOCKER, "inspect", "--format", "{{.Id}} {{.State.StartedAt}}", CONTAINER), 15
@@ -778,19 +861,16 @@ class DiagnosticExecutor:
             event, owner, route, port = match.groups()
             key = (owner, route, event)
             counts[key] = min(counts.get(key, 0) + 1, 2**31 - 1)
-            if port != "unknown":
-                port_key = (owner, route, port)
-                target = created if event == "response-created" else terminal
-                target[port_key] = min(target.get(port_key, 0) + 1, 2**31 - 1)
+            if port == "unknown":
+                raise DiagnosticError("socket lifecycle events are incomplete: unknown local port")
+            port_key = (owner, route, port)
+            target = created if event == "response-created" else terminal
+            target[port_key] = min(target.get(port_key, 0) + 1, 2**31 - 1)
         if not counts:
             raise DiagnosticError("no socket lifecycle events observed")
         if len(counts) > 256 or len(created) > 4096:
             raise DiagnosticError("diagnostic aggregate exceeds bound")
-        missing = [
-            {"owner": o, "route": r, "local_port": p, "count": c - terminal.get((o, r, p), 0)}
-            for (o, r, p), c in sorted(created.items()) if c > terminal.get((o, r, p), 0)
-        ]
-        if missing:
+        if not created or created != terminal:
             raise DiagnosticError("socket lifecycle events are incomplete")
         return {
             "counts": [{"owner": o, "route": r, "event": e, "count": c} for (o, r, e), c in sorted(counts.items())],
@@ -800,20 +880,18 @@ class DiagnosticExecutor:
     def _restore(self, tx: Transaction, snapshot: ConfigSnapshot, mutated_hash: str) -> None:
         self.states.begin_restore(tx)
         last_error: BaseException | None = None
-        try:
-            self.config.restore(snapshot, mutated_hash)
-            for attempt in range(3):
-                try:
-                    self._restart()
-                    self._effective(False)
-                    self.states.transition(tx, "RESTORED")
-                    return
-                except DiagnosticError as exc:
-                    last_error = exc
-                    if attempt < 2:
-                        self._sleep_bounded(3)
-        except BaseException as exc:
-            last_error = exc
+        for attempt in range(3):
+            try:
+                self._stop()
+                self.config.restore(snapshot, mutated_hash)
+                self._restart()
+                self._effective(False)
+                self.states.transition(tx, "RESTORED")
+                return
+            except BaseException as exc:
+                last_error = exc
+                if attempt < 2:
+                    self._sleep_bounded(3)
         self.states.fail_restore(tx)
         raise DiagnosticError("bounded restore retries exhausted") from last_error
 
@@ -834,6 +912,7 @@ class DiagnosticExecutor:
             mutated_hash = _sha(self.config.enabled_payload(snapshot))
             result = None
             try:
+                self._stop()
                 actual_hash = self.config.enable(snapshot)
                 if actual_hash != mutated_hash:
                     raise StateError("mutated config hash mismatch")
@@ -849,6 +928,8 @@ class DiagnosticExecutor:
                 if self._container_identity() != container_identity:
                     raise DiagnosticError("container identity changed during observation")
                 raw = self._command((DOCKER, "logs", "--since", observation_since, CONTAINER), 60, MAX_COMMAND_OUTPUT_BYTES)
+                if self._container_identity() != container_identity:
+                    raise DiagnosticError("container identity changed during log collection")
                 result = self._aggregate(raw)
                 result["observation_collected"] = True
             finally:
