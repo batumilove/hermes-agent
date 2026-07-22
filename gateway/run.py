@@ -57,6 +57,7 @@ from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import consume_detached_task_result, safe_schedule_threadsafe
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
+from gateway.loop_lag_watchdog import PrestallLoopLagWatchdog
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -71,6 +72,7 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _GATEWAY_LOOP_LAG_WARNING_SECONDS_DEFAULT = 5.0
 _GATEWAY_LOOP_LAG_TRACEBACK_SECONDS_DEFAULT = 30.0
+_GATEWAY_LOOP_LAG_PRESTALL_SECONDS_DEFAULT = 5.0
 _GATEWAY_LOOP_LAG_MONITOR_INTERVAL_SECONDS = 1.0
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
@@ -3168,7 +3170,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._loop_lag_warning_threshold = self._load_loop_lag_warning_threshold()
         self._loop_lag_traceback_threshold = self._load_loop_lag_traceback_threshold()
+        self._loop_lag_prestall_threshold = self._load_loop_lag_prestall_threshold()
         self._loop_lag_monitor_interval = _GATEWAY_LOOP_LAG_MONITOR_INTERVAL_SECONDS
+        self._loop_lag_prestall_watchdog: Optional[PrestallLoopLagWatchdog] = None
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
 
@@ -5565,6 +5569,89 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return _GATEWAY_LOOP_LAG_TRACEBACK_SECONDS_DEFAULT
 
     @staticmethod
+    def _load_loop_lag_prestall_threshold() -> float:
+        """Load in-stall main-thread sample threshold; 0 disables it."""
+        cfg = _load_gateway_runtime_config()
+        configured = cfg_get(
+            cfg, "gateway", "loop_lag_prestall_seconds", default=""
+        )
+        raw = "" if configured is None else str(configured).strip()
+        if not raw:
+            return _GATEWAY_LOOP_LAG_PRESTALL_SECONDS_DEFAULT
+        try:
+            value = float(raw)
+            if value == 0:
+                return 0.0
+            if value > _GATEWAY_LOOP_LAG_MONITOR_INTERVAL_SECONDS:
+                return value
+            if value > 0:
+                logger.warning(
+                    "Gateway loop lag pre-stall threshold %.3fs must exceed "
+                    "monitor interval %.3fs; using default %.1fs",
+                    value,
+                    _GATEWAY_LOOP_LAG_MONITOR_INTERVAL_SECONDS,
+                    _GATEWAY_LOOP_LAG_PRESTALL_SECONDS_DEFAULT,
+                )
+                return _GATEWAY_LOOP_LAG_PRESTALL_SECONDS_DEFAULT
+        except (TypeError, ValueError):
+            pass
+        logger.warning(
+            "Invalid gateway loop lag pre-stall threshold '%s', using default %.1fs",
+            raw,
+            _GATEWAY_LOOP_LAG_PRESTALL_SECONDS_DEFAULT,
+        )
+        return _GATEWAY_LOOP_LAG_PRESTALL_SECONDS_DEFAULT
+
+    def _start_loop_lag_prestall_watchdog(self) -> bool:
+        """Start one bounded thread that samples the main thread during stalls."""
+        threshold = float(
+            getattr(
+                self,
+                "_loop_lag_prestall_threshold",
+                _GATEWAY_LOOP_LAG_PRESTALL_SECONDS_DEFAULT,
+            )
+            or 0
+        )
+        if threshold <= 0:
+            return False
+        existing = getattr(self, "_loop_lag_prestall_watchdog", None)
+        if existing is not None:
+            return existing.start()
+        interval = min(
+            1.0,
+            max(
+                0.1,
+                float(
+                    getattr(
+                        self,
+                        "_loop_lag_monitor_interval",
+                        _GATEWAY_LOOP_LAG_MONITOR_INTERVAL_SECONDS,
+                    )
+                    or _GATEWAY_LOOP_LAG_MONITOR_INTERVAL_SECONDS
+                ),
+            ),
+        )
+        watchdog = PrestallLoopLagWatchdog(
+            threshold=threshold,
+            poll_interval=interval,
+            logger=logger,
+        )
+        self._loop_lag_prestall_watchdog = watchdog
+        return watchdog.start()
+
+    def _stop_loop_lag_prestall_watchdog(self) -> bool:
+        """Stop the pre-stall sampler without delaying shutdown indefinitely."""
+        watchdog = getattr(self, "_loop_lag_prestall_watchdog", None)
+        if watchdog is None:
+            return True
+        stopped = watchdog.stop(timeout=2.0)
+        if stopped:
+            self._loop_lag_prestall_watchdog = None
+        else:
+            logger.warning("Gateway loop lag pre-stall watchdog did not stop cleanly")
+        return stopped
+
+    @staticmethod
     def _format_thread_tracebacks() -> str:
         max_threads = 64
         max_frames = 32
@@ -5680,10 +5767,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     async def _gateway_loop_lag_monitor(self) -> None:
         """Log when the gateway asyncio loop is too delayed to service tasks."""
-        threshold = float(getattr(self, "_loop_lag_warning_threshold", _GATEWAY_LOOP_LAG_WARNING_SECONDS_DEFAULT) or 0)
+        warning_threshold = float(
+            getattr(
+                self,
+                "_loop_lag_warning_threshold",
+                _GATEWAY_LOOP_LAG_WARNING_SECONDS_DEFAULT,
+            )
+            or 0
+        )
         interval = float(getattr(self, "_loop_lag_monitor_interval", _GATEWAY_LOOP_LAG_MONITOR_INTERVAL_SECONDS) or _GATEWAY_LOOP_LAG_MONITOR_INTERVAL_SECONDS)
-        if threshold <= 0:
+        prestall_watchdog = getattr(self, "_loop_lag_prestall_watchdog", None)
+        if warning_threshold <= 0 and prestall_watchdog is None:
             return
+        if prestall_watchdog is not None:
+            prestall_watchdog.beat()
         expected = time.monotonic() + interval
         while True:
             try:
@@ -5694,13 +5791,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # races can hide the exact stall we are trying to catch.
                 now = time.monotonic()
                 lag = now - expected
-                if lag >= threshold:
-                    self._log_loop_lag(lag, threshold)
+                if warning_threshold > 0 and lag >= warning_threshold:
+                    self._log_loop_lag(lag, warning_threshold)
                 return
             now = time.monotonic()
+            if prestall_watchdog is not None:
+                prestall_watchdog.beat()
             lag = now - expected
-            if lag >= threshold:
-                self._log_loop_lag(lag, threshold)
+            if warning_threshold > 0 and lag >= warning_threshold:
+                self._log_loop_lag(lag, warning_threshold)
             expected = now + interval
 
     @staticmethod
@@ -8324,8 +8423,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Start low-overhead event-loop lag monitor. Cron delivery from the
         # scheduler thread uses run_coroutine_threadsafe(); if the gateway loop
         # is blocked, delivery can time out before the coroutine even starts.
-        # Logging lag gives us a timestamped root-cause breadcrumb instead of
-        # only seeing the downstream cron delivery failure.
+        # A plain watchdog thread samples the main-thread stack while a stale
+        # heartbeat is still in progress; the asyncio task below keeps that
+        # heartbeat fresh and retains the existing post-recovery lag logging.
+        try:
+            self._start_loop_lag_prestall_watchdog()
+        except Exception:
+            logger.warning(
+                "Gateway loop lag pre-stall watchdog could not start",
+                exc_info=True,
+            )
         loop_lag_task = asyncio.create_task(self._gateway_loop_lag_monitor())
         self._background_tasks.add(loop_lag_task)
         loop_lag_task.add_done_callback(self._background_tasks.discard)
@@ -9298,6 +9405,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             self._running = False
             self._draining = True
+
+            try:
+                self._stop_loop_lag_prestall_watchdog()
+            except Exception:
+                logger.warning(
+                    "Gateway loop lag pre-stall watchdog stop failed",
+                    exc_info=True,
+                )
 
             stop_watchdog = getattr(self, "_stop_systemd_watchdog", None)
             if callable(stop_watchdog):

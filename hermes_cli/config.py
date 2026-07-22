@@ -3114,6 +3114,11 @@ DEFAULT_CONFIG = {
         # not even be dispatched from a worker thread. Set 0 to disable.
         "loop_lag_warning_seconds": 5,
 
+        # Sample the main-thread stack from one daemon watchdog while a loop
+        # heartbeat is still stale. One bounded sample is logged per stall and
+        # re-armed only after event-loop progress. Set 0 to disable.
+        "loop_lag_prestall_seconds": 5,
+
         # Dump all Python thread stacks when event-loop lag reaches this many
         # seconds. This turns multi-minute loop stalls from an ambiguous symptom
         # into a log sample showing the blocking call path. Set 0 to disable.
