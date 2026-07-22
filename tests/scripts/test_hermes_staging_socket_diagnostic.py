@@ -239,6 +239,8 @@ class FakeRunner:
             return "[Telegram socket] event=response-created owner=general route=primary local_port=1234\n[Telegram socket] event=response-closed owner=general route=primary local_port=1234\n"
         if argv[:2] == ("/usr/bin/docker", "inspect"):
             fmt = argv[3]
+            if ".Id" in fmt and ".State.StartedAt" in fmt:
+                return "b" * 64 + " 2026-07-22T20:00:00.123456789Z\n"
             if "Config.Env" in fmt:
                 return "HERMES_SOURCE_SHA=" + "a" * 40 + "\nHERMES_DEPLOY_ENV=batumi-staging\n"
             if "Config.Image" in fmt:
@@ -296,7 +298,7 @@ def test_executor_uses_fixed_vectors_scrubbed_environment_and_bounded_aggregate(
     assert all(isinstance(call[0], tuple) and call[0][0].startswith("/") for call in fake.calls)
     assert not any("shell" in str(call).lower() for call in fake.calls)
     log_call = next(call for call in fake.calls if call[0][:2] == ("/usr/bin/docker", "logs"))
-    assert log_call[0][2] == "--since" and log_call[0][3].isdigit()
+    assert log_call[0][2] == "--since" and log_call[0][3].endswith("Z")
     assert "10m" not in log_call[0]
     assert json.loads((data / "gateway.json").read_text()).get("platforms") is None
 
@@ -364,6 +366,9 @@ def test_installation_artifacts_are_dormant_exact_and_warn_about_containment():
     assert "--recover" in service and "WantedBy=" not in service
     assert "OnBootSec=" in timer and "OnUnitActiveSec=" in timer
     assert "--stage" in installer and "--authorize" in installer
+    assert "/usr/local/sbin/hermes-staging-diagnostic-installer" in installer
+    assert "run only the externally verified root-owned installer copy" in installer
+    assert "installed installer digest mismatch" in installer
     assert "visudo -c -f" in installer
     assert "usermod" not in installer and "gpasswd" not in installer
     assert "docker group" in installer.lower() and "containment remains fail" in installer.lower()
@@ -374,9 +379,29 @@ def test_helper_and_installer_do_not_use_shell_execution(diagnostic):
     source = HELPER.read_text()
     assert "shell=True" not in source
     assert "os.system" not in source
-    assert "subprocess.Popen" not in source
+    assert "start_new_session=True" in source and "os.killpg" in source
     assert diagnostic.MAX_COMMAND_OUTPUT_BYTES <= 2 * 1024 * 1024
     assert diagnostic.MAX_OUTPUT_BYTES <= 16 * 1024
+
+
+def test_command_runner_terminates_immediately_at_output_bound(diagnostic):
+    started = time.monotonic()
+    with pytest.raises(diagnostic.CommandError, match="output exceeded bound"):
+        diagnostic.command_runner(
+            ("/usr/bin/python3", "-c", "import os,time; os.write(1,b'x'*(3*1024*1024)); time.sleep(10)"),
+            timeout=15, env=diagnostic.COMMAND_ENV, max_output=1024,
+        )
+    assert time.monotonic() - started < 5
+
+
+def test_installer_layout_keeps_manifest_outside_transaction_root(diagnostic, tmp_path):
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    (state_root / "artifact-manifest.json").write_text("{}")
+    states = diagnostic.TransactionStore(state_root / "transactions")
+    tx = states.prepare(diagnostic.parse_request(io.BytesIO(request())))
+    assert tx.path.parent == state_root / "transactions"
+    assert diagnostic.TRANSACTION_ROOT == diagnostic.STATE_ROOT / "transactions"
 
 
 def _executor(diagnostic, tmp_path, deploy, data, state, runner=None, **kwargs):
@@ -398,6 +423,7 @@ def _executor(diagnostic, tmp_path, deploy, data, state, runner=None, **kwargs):
 def test_release_metadata_uses_real_three_field_format_and_pinned_container_image(diagnostic, tmp_path):
     deploy, data, state = _target_tree(tmp_path)
     executor = _executor(diagnostic, tmp_path, deploy, data, state)
+    executor._start_deadline(diagnostic.FORWARD_DEADLINE_SECONDS)
     executor._preflight(diagnostic.parse_request(io.BytesIO(request())))
 
     (deploy / "release.env").write_text(
@@ -452,6 +478,7 @@ def test_preflight_rejects_disk_true_even_when_runtime_false(diagnostic, tmp_pat
         '{"platforms":{"telegram":{"extra":{"socket_diagnostics":true}}}}'
     )
     executor = _executor(diagnostic, tmp_path, deploy, data, state)
+    executor._start_deadline(diagnostic.FORWARD_DEADLINE_SECONDS)
     with pytest.raises(diagnostic.ConfigError, match="on-disk"):
         executor._preflight(diagnostic.parse_request(io.BytesIO(request())))
 
@@ -561,9 +588,36 @@ def test_restore_guard_starts_at_armed_and_handles_mutation_unknown(diagnostic, 
 
 
 def test_global_deadline_and_service_timeout_fit_workflow(diagnostic):
+    assert diagnostic.TOTAL_DEADLINE_SECONDS == (
+        diagnostic.FORWARD_DEADLINE_SECONDS + diagnostic.RESTORE_DEADLINE_SECONDS
+    )
     assert 0 < diagnostic.TOTAL_DEADLINE_SECONDS < 20 * 60
+    assert diagnostic.RESTORE_DEADLINE_SECONDS >= 240
     service = (REPO / "deploy/staging-diagnostics/hermes-staging-diagnostic-recovery.service").read_text()
-    assert f"TimeoutStartSec={diagnostic.TOTAL_DEADLINE_SECONDS + 30}" in service
+    assert f"TimeoutStartSec={diagnostic.RESTORE_DEADLINE_SECONDS + 30}" in service
+
+
+def test_forward_failure_starts_fresh_restore_reserve(diagnostic, tmp_path, monkeypatch):
+    deploy, data, state = _target_tree(tmp_path)
+    executor = _executor(diagnostic, tmp_path, deploy, data, state)
+    reserves = []
+
+    monkeypatch.setattr(executor.config, "enable", lambda _snapshot: (_ for _ in ()).throw(OSError("forward failure")))
+    monkeypatch.setattr(
+        executor,
+        "_restore",
+        lambda _tx, _snapshot, _digest: reserves.append(executor.deadline - time.monotonic()),
+    )
+    with pytest.raises(OSError, match="forward failure"):
+        executor.run(diagnostic.parse_request(io.BytesIO(request())))
+    assert len(reserves) == 1
+    assert diagnostic.RESTORE_DEADLINE_SECONDS - 1 < reserves[0] <= diagnostic.RESTORE_DEADLINE_SECONDS
+
+
+def test_incomplete_socket_lifecycle_fails_canary(diagnostic):
+    raw = "[Telegram socket] event=response-created owner=general route=primary local_port=1234\n"
+    with pytest.raises(diagnostic.DiagnosticError, match="incomplete"):
+        diagnostic.DiagnosticExecutor._aggregate(raw)
 
 
 def test_installer_manifest_binds_all_root_owned_artifacts_and_shared_lock():
@@ -571,14 +625,15 @@ def test_installer_manifest_binds_all_root_owned_artifacts_and_shared_lock():
     deployer = (REPO / "scripts/deploy/hermes-compose-deploy.sh").read_text()
     tmpfiles = (REPO / "deploy/staging-diagnostics/hermes-staging-diagnostic.tmpfiles").read_text()
     service = (REPO / "deploy/staging-diagnostics/hermes-staging-diagnostic-recovery.service").read_text()
-    for value in ("reviewed_commit", "reviewed_tree", "helper", "sudoers", "service", "timer", "tmpfiles", "lock"):
+    for value in ("reviewed_commit", "reviewed_tree", "installer", "helper", "sudoers", "service", "timer", "tmpfiles", "lock"):
         assert value in installer
-    assert "status --porcelain --untracked-files=all" in installer
+    assert "status --porcelain" not in installer
+    assert "cat-file blob" in installer
     assert "artifact-manifest.json" in installer
     assert "staged/hermes-staging-diagnostic.sudoers" in installer
     assert "/run/lock/hermes-staging-diagnostic.lock" in installer
     assert "/run/lock/hermes-staging-diagnostic.lock" in deployer
-    assert "git -C \"$repo_root\" show \"$reviewed_commit:$repository_path\"" in installer
+    assert "/usr/bin/git --no-replace-objects -c safe.directory=\"$repo_root\"" in installer
     assert "systemd-tmpfiles --create" in installer
     assert "f /run/lock/hermes-staging-diagnostic.lock 0660 root hermes-deploy -" in tmpfiles
     assert "systemd-tmpfiles-setup.service" in service

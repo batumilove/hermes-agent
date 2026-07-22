@@ -9,12 +9,14 @@ import io
 import json
 import os
 import re
+import selectors
+import signal
 import socket
 import stat
 import subprocess
 import sys
-import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO, NamedTuple
 
@@ -22,6 +24,7 @@ DEPLOY_HOST = "hermes-staging-01"
 DEPLOY_ROOT = Path("/opt/hermes-compose/staging")
 DATA_ROOT = Path("/home/hermes-staging/.hermes-staging")
 STATE_ROOT = Path("/var/lib/hermes-staging-diagnostics")
+TRANSACTION_ROOT = STATE_ROOT / "transactions"
 LOCK_PATH = Path("/run/lock/hermes-staging-diagnostic.lock")
 RUNTIME_UID = 1001
 RUNTIME_GID = 1001
@@ -34,7 +37,9 @@ MAX_CONFIG_BYTES = 1024 * 1024
 MAX_METADATA_BYTES = 4096
 MAX_COMMAND_OUTPUT_BYTES = 2 * 1024 * 1024
 MAX_OUTPUT_BYTES = 16 * 1024
-TOTAL_DEADLINE_SECONDS = 900
+FORWARD_DEADLINE_SECONDS = 600
+RESTORE_DEADLINE_SECONDS = 240
+TOTAL_DEADLINE_SECONDS = FORWARD_DEADLINE_SECONDS + RESTORE_DEADLINE_SECONDS
 LOCK_WAIT_SECONDS = 60
 COMMAND_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "TZ": "UTC"}
 STATE_ORDER = ("PREPARED", "ARMED", "MUTATED", "ENABLED", "OBSERVING", "RESTORING", "RESTORED")
@@ -493,26 +498,73 @@ class TransactionStore:
 def command_runner(argv, *, timeout: int, env: dict[str, str], input_data=None, max_output=None) -> str:
     if not argv or not os.path.isabs(argv[0]):
         raise CommandError("command vector is not absolute")
+    if input_data is not None:
+        raise CommandError("subprocess stdin is not permitted")
     limit = min(max_output or MAX_COMMAND_OUTPUT_BYTES, MAX_COMMAND_OUTPUT_BYTES)
-    with tempfile.TemporaryFile() as output:
-        try:
-            completed = subprocess.run(
-                list(argv), stdin=subprocess.PIPE if input_data is not None else subprocess.DEVNULL,
-                stdout=output, stderr=subprocess.STDOUT, input=input_data, timeout=timeout,
-                check=False, env=env, close_fds=True,
-            )
-        except (subprocess.TimeoutExpired, OSError) as exc:
-            raise CommandError("bounded command execution failed") from exc
-        output.seek(0, io.SEEK_END)
-        size = output.tell()
-        if size > limit:
-            raise CommandError("command output exceeded bound")
-        output.seek(0)
-        raw = output.read(limit + 1)
-    if completed.returncode != 0:
-        raise CommandError(f"command failed with status {completed.returncode}")
     try:
-        return raw.decode("utf-8", "strict")
+        process = subprocess.Popen(
+            list(argv), stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, close_fds=True,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        raise CommandError("bounded command execution failed") from exc
+
+    def terminate() -> None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+
+    raw = bytearray()
+    deadline = time.monotonic() + timeout
+    try:
+        assert process.stdout is not None
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    terminate()
+                    raise CommandError("bounded command execution timed out")
+                events = selector.select(min(0.2, remaining))
+                if not events:
+                    if process.poll() is None:
+                        continue
+                    chunk = os.read(process.stdout.fileno(), 65536)
+                    if not chunk:
+                        break
+                else:
+                    chunk = os.read(process.stdout.fileno(), 65536)
+                    if not chunk:
+                        break
+                if len(raw) + len(chunk) > limit:
+                    terminate()
+                    raise CommandError("command output exceeded bound")
+                raw.extend(chunk)
+        try:
+            returncode = process.wait(timeout=max(0.001, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired as exc:
+            terminate()
+            raise CommandError("bounded command execution timed out") from exc
+    except BaseException:
+        if process.poll() is None:
+            terminate()
+        raise
+    finally:
+        if process.stdout is not None:
+            process.stdout.close()
+        if process.stdin is not None and not process.stdin.closed:
+            process.stdin.close()
+    if returncode != 0:
+        raise CommandError(f"command failed with status {returncode}")
+    try:
+        return bytes(raw).decode("utf-8", "strict")
     except UnicodeDecodeError as exc:
         raise CommandError("command output was not UTF-8") from exc
 
@@ -530,7 +582,7 @@ print("false")
 
 
 class DiagnosticExecutor:
-    def __init__(self, *, deploy_root=DEPLOY_ROOT, data_root=DATA_ROOT, state_root=STATE_ROOT,
+    def __init__(self, *, deploy_root=DEPLOY_ROOT, data_root=DATA_ROOT, state_root=TRANSACTION_ROOT,
                  lock_path=LOCK_PATH,
                  lock_uid=0,
                  expected_uid=RUNTIME_UID, expected_gid=RUNTIME_GID, runner=command_runner,
@@ -548,12 +600,12 @@ class DiagnosticExecutor:
         self.hostname = hostname
         self.deadline = 0.0
 
-    def _start_deadline(self) -> None:
-        self.deadline = time.monotonic() + TOTAL_DEADLINE_SECONDS
+    def _start_deadline(self, seconds: int) -> None:
+        self.deadline = time.monotonic() + seconds
 
     def _remaining(self, cap: int) -> int:
         if not self.deadline:
-            self._start_deadline()
+            raise CommandError("diagnostic deadline was not initialized")
         remaining = int(self.deadline - time.monotonic())
         if remaining <= 0:
             raise CommandError("global diagnostic deadline expired")
@@ -700,6 +752,15 @@ class DiagnosticExecutor:
         self._command((DOCKER, "restart", "--time", "90", CONTAINER), 120)
         self._wait_healthy()
 
+    def _container_identity(self) -> str:
+        value = self._command(
+            (DOCKER, "inspect", "--format", "{{.Id}} {{.State.StartedAt}}", CONTAINER), 15
+        ).strip()
+        container_id, separator, started_at = value.partition(" ")
+        if not separator or not re.fullmatch(r"[0-9a-f]{64}", container_id) or not started_at.endswith("Z"):
+            raise CommandError("container start identity is invalid")
+        return value
+
     def _sleep_bounded(self, seconds: float) -> None:
         if time.monotonic() + seconds >= self.deadline:
             raise CommandError("global diagnostic deadline cannot fit requested wait")
@@ -725,12 +786,15 @@ class DiagnosticExecutor:
             raise DiagnosticError("no socket lifecycle events observed")
         if len(counts) > 256 or len(created) > 4096:
             raise DiagnosticError("diagnostic aggregate exceeds bound")
+        missing = [
+            {"owner": o, "route": r, "local_port": p, "count": c - terminal.get((o, r, p), 0)}
+            for (o, r, p), c in sorted(created.items()) if c > terminal.get((o, r, p), 0)
+        ]
+        if missing:
+            raise DiagnosticError("socket lifecycle events are incomplete")
         return {
             "counts": [{"owner": o, "route": r, "event": e, "count": c} for (o, r, e), c in sorted(counts.items())],
-            "created_without_terminal": [
-                {"owner": o, "route": r, "local_port": p, "count": c - terminal.get((o, r, p), 0)}
-                for (o, r, p), c in sorted(created.items()) if c > terminal.get((o, r, p), 0)
-            ],
+            "created_without_terminal": [],
         }
 
     def _restore(self, tx: Transaction, snapshot: ConfigSnapshot, mutated_hash: str) -> None:
@@ -754,7 +818,7 @@ class DiagnosticExecutor:
         raise DiagnosticError("bounded restore retries exhausted") from last_error
 
     def run(self, request: Request) -> dict[str, object]:
-        self._start_deadline()
+        self._start_deadline(FORWARD_DEADLINE_SECONDS)
         lock_fd = self._open_lock()
         try:
             self._preflight(request)
@@ -775,16 +839,20 @@ class DiagnosticExecutor:
                     raise StateError("mutated config hash mismatch")
                 self.states.record_mutated_hash(tx, mutated_hash)
                 self.states.transition(tx, "MUTATED")
-                observation_since = str(int(time.time()))
                 self._restart()
                 self.states.transition(tx, "ENABLED")
                 self._effective(True)
+                container_identity = self._container_identity()
+                observation_since = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
                 self.states.transition(tx, "OBSERVING")
                 self._sleep_bounded(request.observation_seconds)
+                if self._container_identity() != container_identity:
+                    raise DiagnosticError("container identity changed during observation")
                 raw = self._command((DOCKER, "logs", "--since", observation_since, CONTAINER), 60, MAX_COMMAND_OUTPUT_BYTES)
                 result = self._aggregate(raw)
                 result["observation_collected"] = True
             finally:
+                self._start_deadline(RESTORE_DEADLINE_SECONDS)
                 self._restore(tx, snapshot, mutated_hash)
             tx.record["result"] = result
             self.states._write(tx)
@@ -793,7 +861,7 @@ class DiagnosticExecutor:
             os.close(lock_fd)
 
     def recover(self) -> dict[str, int]:
-        self._start_deadline()
+        self._start_deadline(RESTORE_DEADLINE_SECONDS)
         lock_fd = self._open_lock()
         try:
             recovered = 0

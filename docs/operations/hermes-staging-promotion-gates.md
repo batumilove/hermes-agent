@@ -221,7 +221,8 @@ Execution/post-restart evidence:
 
 The root-owned staging diagnostic transaction helper must remain dormant until
 all of these independent gates pass: exact commit/tree manifest and staged
-helper/unit/tmpfiles hash and mode readback; boot-recreated shared-lock proof;
+root-owned installer/helper/unit/tmpfiles hash and mode readback; external
+installer-digest verification before first privileged execution; boot-recreated shared-lock proof;
 explicit sudo authorization; no-mutation request rejection; crash/reboot
 restore canaries for every durable state; one 60-second live diagnostic gate;
 and only then workflow activation. Activation requires both the default-off
