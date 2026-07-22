@@ -767,6 +767,36 @@ def resolve_provider_full(
         if user_pdef is not None:
             return user_pdef
 
+    # 0.5 Exact Hermes provider IDs must win over LOSSY models.dev collapsing.
+    # Example: kimi-coding and kimi-coding-cn both map to the shared
+    # "kimi-for-coding" catalog, but have distinct endpoints and credentials.
+    # A collapse is lossy only when MULTIPLE registry providers share one
+    # models.dev target. Single-entry aliases (e.g. copilot → github-copilot)
+    # must keep resolving through the built-in chain so overlays still apply.
+    try:
+        from agent.models_dev import PROVIDER_TO_MODELS_DEV as _MDEV_PROVIDER_MAP
+        from hermes_cli.auth import PROVIDER_REGISTRY as _AUTH_PROVIDER_REGISTRY
+
+        _pcfg = _AUTH_PROVIDER_REGISTRY.get(raw)
+        _mdev_id = _MDEV_PROVIDER_MAP.get(raw)
+        if _pcfg is not None and _mdev_id:
+            _collapsed_siblings = [
+                _rid
+                for _rid in _AUTH_PROVIDER_REGISTRY
+                if _MDEV_PROVIDER_MAP.get(_rid) == _mdev_id
+            ]
+            if len(_collapsed_siblings) > 1:
+                return ProviderDef(
+                    id=_pcfg.id,
+                    name=_pcfg.name,
+                    transport="openai_chat",
+                    api_key_env_vars=tuple(_pcfg.api_key_env_vars or ()),
+                    base_url=_pcfg.inference_base_url or "",
+                    source="hermes-auth-registry",
+                )
+    except Exception:
+        pass
+
     # 1. Built-in (models.dev + overlays)
     pdef = get_provider(canonical)
     if pdef is not None:

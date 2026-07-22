@@ -406,6 +406,11 @@ def _handle_show(args: dict, **kw) -> str:
                     "status": r.status, "outcome": r.outcome,
                     "summary": r.summary, "error": r.error,
                     "metadata": r.metadata,
+                    "verdict": (
+                        (r.metadata or {}).get("verdict")
+                        if isinstance(r.metadata, dict)
+                        else None
+                    ),
                     "started_at": r.started_at, "ended_at": r.ended_at,
                 }
 
@@ -514,11 +519,18 @@ def _handle_complete(args: dict, **kw) -> str:
     summary = args.get("summary")
     metadata = args.get("metadata")
     result = args.get("result")
+    semantic_verdict = args.get("verdict")
+    if semantic_verdict is None or not str(semantic_verdict).strip():
+        return tool_error("verdict is required; pass PASS, BLOCK, or FAIL")
     if summary:
         summary = redact_sensitive_text(str(summary), force=True)
     if result:
         result = redact_sensitive_text(str(result), force=True)
     if metadata is not None and isinstance(metadata, dict):
+        if "verdict" in metadata:
+            return tool_error(
+                "metadata.verdict is reserved; pass the top-level verdict argument"
+            )
         meta_json = json.dumps(metadata)
         meta_json = redact_sensitive_text(meta_json, force=True)
         try:
@@ -603,11 +615,11 @@ def _handle_complete(args: dict, **kw) -> str:
                 reason = ""
                 try:
                     # judge_goal returns (verdict, reason, parse_failed,
-                    # wait_directive) — see hermes_cli/goals.py. Unpacking
-                    # fewer raises ValueError, which the defensive handler
-                    # below swallows, leaving verdict="done" and silently
-                    # disabling the gate.
-                    verdict, reason, _, _ = judge_goal(
+                    # wait_directive, transport_failed) — see
+                    # hermes_cli/goals.py. Unpacking fewer raises ValueError,
+                    # which the defensive handler below swallows, leaving
+                    # verdict="done" and silently disabling the gate.
+                    verdict, reason, _, _, _ = judge_goal(
                         goal=f"{task.title}\n\n{task.body or ''}".strip(),
                         last_response=(summary or result or "").strip(),
                     )
@@ -633,6 +645,7 @@ def _handle_complete(args: dict, **kw) -> str:
                     conn, tid,
                     result=result, summary=summary, metadata=metadata,
                     created_cards=created_cards,
+                    verdict=semantic_verdict,
                     expected_run_id=_worker_run_id(tid),
                 )
             except kb.ArtifactPreservationError as artifact_err:
@@ -667,7 +680,13 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"could not complete {tid} (unknown id or already terminal)"
                 )
             run = kb.latest_run(conn, tid)
-            return _ok(task_id=tid, run_id=run.id if run else None)
+            completed_task = kb.get_task(conn, tid)
+            return _ok(
+                task_id=tid,
+                run_id=run.id if run else None,
+                status=completed_task.status if completed_task else None,
+                verdict=(run.metadata or {}).get("verdict") if run and isinstance(run.metadata, dict) else None,
+            )
         finally:
             conn.close()
     except ValueError as e:
@@ -1478,6 +1497,16 @@ KANBAN_COMPLETE_SCHEMA = {
                     "callers that still set --result on the CLI."
                 ),
             },
+            "verdict": {
+                "type": "string",
+                "enum": ["PASS", "BLOCK", "FAIL"],
+                "description": (
+                    "Structured semantic review verdict. PASS marks the task done. "
+                    "BLOCK or FAIL ends this worker run but leaves the task blocked, "
+                    "so dependents cannot promote. Required for every model-tool completion; "
+                    "never infer PASS from lifecycle status=done."
+                ),
+            },
             "created_cards": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -1517,7 +1546,7 @@ KANBAN_COMPLETE_SCHEMA = {
             },
             "board": _board_schema_prop(),
         },
-        "required": [],
+        "required": ["verdict"],
     },
 }
 

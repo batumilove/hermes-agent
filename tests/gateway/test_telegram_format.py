@@ -231,7 +231,7 @@ async def test_final_send_does_not_retrigger_typing(adapter):
 
 
 @pytest.mark.asyncio
-async def test_run_message_separation_labels_progress_and_final_sends():
+async def test_run_message_separation_distinguishes_dispatched_work_from_final():
     config = PlatformConfig(
         enabled=True,
         token="fake-token",
@@ -243,6 +243,7 @@ async def test_run_message_separation_labels_progress_and_final_sends():
         side_effect=[
             SimpleNamespace(message_id=1),
             SimpleNamespace(message_id=2),
+            SimpleNamespace(message_id=3),
         ]
     )
     adapter._bot.send_chat_action = AsyncMock()
@@ -253,6 +254,11 @@ async def test_run_message_separation_labels_progress_and_final_sends():
         "Checking the repository.",
         metadata={"message_phase": "progress"},
     )
+    dispatched = await adapter.send(
+        "12345",
+        "Two reviewers are still running.",
+        metadata={"message_phase": "dispatched", "notify": True},
+    )
     final = await adapter.send(
         "12345",
         "All done.",
@@ -260,6 +266,7 @@ async def test_run_message_separation_labels_progress_and_final_sends():
     )
 
     assert progress.success is True
+    assert dispatched.success is True
     assert final.success is True
     sent = [
         _strip_mdv2(call.kwargs["text"])
@@ -267,6 +274,7 @@ async def test_run_message_separation_labels_progress_and_final_sends():
     ]
     assert sent == [
         "⏳ Progress\n\nChecking the repository.",
+        "↪️ Dispatched\n\nTwo reviewers are still running.",
         "✅ Final\n\nAll done.",
     ]
 

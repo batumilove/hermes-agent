@@ -361,7 +361,7 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch, heartbeat_run_claim
+from cron.jobs import get_due_jobs, load_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch, heartbeat_run_claim
 from cron.executions import create_execution, finish_execution, mark_execution_running
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
@@ -1665,12 +1665,53 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     if wrap_response:
         task_name = job.get("name", job["id"])
         job_id = job.get("id", "")
+        # A job may be edited while its run is in flight. Use the current store
+        # record for lifecycle wording so a stale dispatched snapshot does not
+        # claim that an active/reconfigured schedule has ended. Scan defensively:
+        # due-job recovery tolerates malformed siblings without an ``id``. If the
+        # store itself cannot be read, preserve delivery via the run snapshot.
+        footer_job = job
+        try:
+            for stored_job in load_jobs():
+                if isinstance(stored_job, dict) and stored_job.get("id") == job_id:
+                    footer_job = stored_job
+                    break
+        except Exception:
+            logger.debug(
+                "Job '%s': could not refresh lifecycle state for delivery footer",
+                job_id,
+                exc_info=True,
+            )
+        schedule = footer_job.get("schedule")
+        repeat = footer_job.get("repeat")
+        is_one_shot = isinstance(schedule, dict) and schedule.get("kind") == "once"
+        is_final_repeat = False
+        if isinstance(repeat, dict):
+            times = repeat.get("times")
+            completed = repeat.get("completed", 0)
+            is_final_repeat = (
+                isinstance(times, int)
+                and times > 0
+                and isinstance(completed, int)
+                and completed + 1 >= times
+            )
+
+        if is_one_shot:
+            footer = "This one-shot job is complete; no active schedule remains."
+        elif is_final_repeat:
+            footer = "This job has completed its final scheduled run; no active schedule remains."
+        else:
+            footer = (
+                f'To stop or manage this job, send me a new message '
+                f'(e.g. "stop reminder {task_name}").'
+            )
+
         delivery_content = (
             f"Cronjob Response: {task_name}\n"
             f"(job_id: {job_id})\n"
             f"-------------\n\n"
             f"{content}\n\n"
-            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
+            f"{footer}"
         )
     else:
         delivery_content = content

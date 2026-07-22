@@ -4989,6 +4989,17 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     except Exception as _be:
         logger.debug("respawn-storm breaker check failed (non-fatal): %s", _be)
 
+    def _hard_exit_after_gateway_teardown(code: int) -> None:
+        # ``hermes gateway run`` enters through this CLI wrapper, not through
+        # ``gateway.run.main()``.  Mirror that module's wedge-proof exit path:
+        # once start_gateway() has completed graceful teardown, bypass Python
+        # finalization so non-daemon worker threads (notably in-flight cron
+        # ThreadPoolExecutor jobs) cannot keep the old gateway alive and delay a
+        # service-managed /restart by minutes.
+        from gateway.run import _exit_after_graceful_shutdown
+
+        _exit_after_graceful_shutdown(code)
+
     success = False
     try:
         success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
@@ -5001,7 +5012,8 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
             traceback=_traceback.format_exc(),
         )
         print("\nGateway stopped.")
-        return
+        _hard_exit_after_gateway_teardown(0)
+        return  # unreachable in production (os._exit); guard for test stubs
     except SystemExit as e:
         _exit_diag(
             "asyncio.run.SystemExit",
@@ -5009,18 +5021,12 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
             traceback=_traceback.format_exc(),
         )
         if e.code is None:
-            exit_code = 0
+            _code = 0
         elif isinstance(e.code, int):
-            exit_code = e.code
+            _code = e.code
         else:
-            exit_code = 1
-        # ``start_gateway`` has already completed graceful teardown. Route
-        # planned restart/fatal-config exits through the same hard-exit
-        # backstop as ``python -m gateway.run`` so CPython finalization cannot
-        # wait indefinitely for a wedged non-daemon tool worker while launchd
-        # still considers the old gateway PID alive.
-        _exit_after_graceful_shutdown(exit_code)
-        return
+            _code = 1
+        _hard_exit_after_gateway_teardown(_code)
     except BaseException as e:
         # Absolutely everything else: Exception, asyncio.CancelledError,
         # even exotic BaseException subclasses. We want the cause logged.
@@ -5033,8 +5039,9 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
         raise
     if not success:
         _exit_diag("gateway.exit_nonzero")
-        sys.exit(1)
+        _hard_exit_after_gateway_teardown(1)
     _exit_diag("gateway.exit_clean")
+    _hard_exit_after_gateway_teardown(0)
 
 
 # =============================================================================
@@ -5383,7 +5390,11 @@ def _platform_status(platform: dict) -> str:
 def _runtime_health_lines() -> list[str]:
     """Summarize the latest persisted gateway runtime health state."""
     try:
-        from gateway.status import read_runtime_status
+        from gateway.status import (
+            read_runtime_status,
+            runtime_status_is_stale,
+            runtime_status_pid_is_live,
+        )
     except Exception:
         return []
 
@@ -5402,6 +5413,22 @@ def _runtime_health_lines() -> list[str]:
         if pdata.get("state") == "fatal":
             message = pdata.get("error_message") or "unknown error"
             lines.append(f"⚠ {platform}: {message}")
+
+    # A persisted snapshot that still claims liveness can outlive an
+    # ungracefully-killed gateway (taskkill /F, OOM, power loss) whose shutdown
+    # handler never ran.  When the record is past its freshness TTL AND the
+    # recorded PID is gone, the file is contradicting reality — surface that
+    # explicitly instead of rendering the misleading live-state summary.
+    if (
+        gateway_state in ("running", "starting", "draining")
+        and runtime_status_is_stale(state)
+        and not runtime_status_pid_is_live(state)
+    ):
+        lines.append(
+            f"⚠ Stale gateway_state.json: recorded state '{gateway_state}' but the "
+            "recorded process is gone (likely an ungraceful shutdown)"
+        )
+        return lines
 
     if gateway_state == "startup_failed" and exit_reason:
         lines.append(f"⚠ Last startup issue: {exit_reason}")

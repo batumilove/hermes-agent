@@ -453,11 +453,11 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
     # --- Direct providers: repair matching provider prefixes only ---
     if provider in _MATCHING_PREFIX_STRIP_PROVIDERS:
         result = _strip_matching_provider_prefix(name, provider)
-        if provider in {"kimi-coding", "kimi-coding-cn"}:
-            # Kimi Coding's API returns the canonical runtime model id
-            # ``kimi-for-coding`` for the coding-plan surface.  Accept the
-            # marketing name ``kimi-k2.6`` from the picker/docs, but normalize
-            # it to the actual model identifier the endpoint serves.
+        if provider == "kimi-coding":
+            # The international Kimi Coding endpoint returns the canonical
+            # runtime model id ``kimi-for-coding`` for the coding-plan surface.
+            # The distinct China endpoint now serves ``kimi-k2.6`` directly,
+            # so do not collapse its live model id through this legacy alias.
             if result.lower() == "kimi-k2.6":
                 return "kimi-for-coding"
         # Some providers require lowercase model IDs (e.g. Xiaomi's API

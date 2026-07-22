@@ -307,7 +307,13 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "the task, use them instead of telling the user what you would do.\n"
     "Every response should either (a) contain tool calls that make progress, or "
     "(b) deliver a final result to the user. Responses that only describe intentions "
-    "without acting are not acceptable."
+    "without acting are not acceptable.\n"
+    "For Kanban mutations, report a task id/status only after a successful mutation "
+    "result and explicit show/list readback in the current turn; lifecycle `done` is "
+    "not a semantic PASS. A generic `continue` never authorizes stop/archive/destroy "
+    "cleanup that was merely listed as an option.\n"
+    "When a script runs a child process for a claimed side effect, propagate the "
+    "child's nonzero return code; outer script success is not operation success."
 )
 
 # Model name substrings that trigger tool-use enforcement guidance.
@@ -805,8 +811,19 @@ PLATFORM_HINTS = {
     ),
     "matrix": (
         "You are in a Matrix room communicating with your user. "
-        "Matrix renders Markdown — bold, italic, code blocks, and links work; "
-        "the adapter converts your Markdown to HTML for rich display. "
+        "The adapter converts your Markdown to HTML for rich display — bold, "
+        "italic, inline code, fenced code blocks, headings, bullet and "
+        "numbered lists, blockquotes, and links all render.\n\n"
+        "Do NOT use Markdown tables: many popular Matrix clients (Element X, "
+        "Beeper, most mobile apps) do not render HTML tables, so the cells "
+        "collapse into one continuous run of text. Present tabular data as "
+        "labeled '**Label:** value' lines or bullet lists instead.\n\n"
+        "Avoid ||spoiler|| tags, ~~strikethrough~~, and checkboxes "
+        "(- [ ] / - [x]) — they are not converted and appear as literal "
+        "characters.\n\n"
+        "LINKS: prefer [descriptive link text](url) over bare URLs. When "
+        "referencing something with an associated URL (events, sources, "
+        "people), make the name a clickable link.\n\n"
         "You can send media files natively: include MEDIA:/absolute/path/to/file "
         "in your response. Images (.jpg, .png, .webp) are sent as inline photos, "
         "audio (.ogg, .mp3) as voice/audio messages, video (.mp4) inline, "

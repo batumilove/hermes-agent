@@ -44,6 +44,9 @@ def test_sequential_executor_records_context_efficiency_for_runtime_tool(monkeyp
         def _record_file_mutation_result(self, *args, **kwargs):
             pass
 
+        def _record_detached_tool_result(self, *args, **kwargs):
+            pass
+
         def _should_emit_quiet_tool_messages(self):
             return False
 

@@ -28,6 +28,13 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Get GitHub App token
+        id: app-token
+        uses: ./.github/actions/get-app-token
+        with:
+          client-id: ${{ secrets.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.11"
@@ -39,7 +46,7 @@ jobs:
 
       - name: Build skills index
         env:
-          GITHUB_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: python scripts/build_skills_index.py
 
       - name: Upload index artifact
@@ -62,9 +69,15 @@ jobs:
     # Only deploy on schedule or manual trigger (not on every push to the script)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
+      - name: Get GitHub App token
+        id: app-token
+        uses: ./.github/actions/get-app-token
+        with:
+          client-id: ${{ secrets.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
       - name: Trigger Deploy Site workflow
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPOSITORY: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
         run: gh workflow run deploy-site.yml --repo "$REPOSITORY" -f "skills_index_run_id=$RUN_ID"

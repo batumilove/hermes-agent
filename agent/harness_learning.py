@@ -118,9 +118,19 @@ class EvidenceDecision:
     message: str = ""
 
 
+@dataclass(frozen=True)
+class KanbanClaimDecision:
+    """Fail-closed decision for ordinary-controller Kanban state claims."""
+
+    rejected: bool
+    task_ids: list[str] = field(default_factory=list)
+    missing_evidence: list[str] = field(default_factory=list)
+    message: str = ""
+
+
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?;])\s+|\n+")
 _ACTION_CLAUSE_SPLIT_RE = re.compile(
-    r"(?:,\s*)?\b(?:and(?:\s+then)?|but|however|yet)\b\s*"
+    r"(?:,\s*)?\b(?:and(?:\s+then)?|but|however|yet|though|although)\b\s*"
 )
 _HISTORICAL_CLAIM_RE = re.compile(
     r"(?:^\s*(?:earlier|previously|historically|last\s+(?:week|month|year|night))\b|"
@@ -136,6 +146,25 @@ _REPORTING_CLAIM_RE = re.compile(
     r"readback|observed|found|logs?\s+(?:show|shows|showed))\b"
 )
 _FIRST_PERSON_RE = re.compile(r"\b(?:i|we|i've|we've|i have|we have)\b")
+_KANBAN_TASK_ID_RE = re.compile(r"\bt_[0-9a-f]{8,}\b", re.IGNORECASE)
+_KANBAN_STATUS_RE = re.compile(
+    r"\b(?:ready|running|todo|blocked|scheduled|done|archived|crashed|failed)\b",
+    re.IGNORECASE,
+)
+_KANBAN_FORENSIC_RE = re.compile(
+    r"\b(?:previous|prior|earlier|historical)\s+(?:assistant|agent|report)|"
+    r"\b(?:assistant|agent)\s+(?:claimed|reported)|\bnever existed\b|"
+    r"\bphantom(?:\s+(?:task|card|id))?\b",
+    re.IGNORECASE,
+)
+_FENCED_CODE_RE = re.compile(r"```.*?```|~~~.*?~~~", re.DOTALL)
+_BLOCKQUOTE_LINE_RE = re.compile(r"(?m)^\s*>.*$")
+_KANBAN_NONASSERTIVE_RE = re.compile(
+    r"\b(?:if|hypothetically|would|could|might)\b|"
+    r"\b(?:does not|doesn't|is not|isn't|was not|wasn't|never)\b|"
+    r"\b(?:does not mean|is not equivalent to|for example|example:)\b",
+    re.IGNORECASE,
+)
 
 
 def _has_unnegated_verb(clause: str, verb: str) -> bool:
@@ -374,6 +403,330 @@ def _compact_text(value: Any) -> str:
 def _looks_like_error(text: str) -> bool:
     lower = str(text or "").lower()
     return '"error"' in lower or "error:" in lower or "failed" in lower
+
+
+def _tool_result_succeeded(tool_name: str, result: Any) -> bool:
+    """Require the current tool's documented top-level success contract."""
+
+    text = _compact_text(result)
+    try:
+        parsed = json.loads(text) if isinstance(text, str) else result
+    except Exception:
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    if parsed.get("error") not in (None, "", False):
+        return False
+
+    tool = str(tool_name or "").lower()
+    if tool.startswith("kanban_"):
+        succeeded = parsed.get("ok") is True or parsed.get("success") is True
+    elif tool == "terminal":
+        try:
+            succeeded = int(parsed.get("exit_code")) == 0
+        except (TypeError, ValueError):
+            succeeded = False
+    elif tool == "execute_code":
+        succeeded = str(parsed.get("status") or "").lower() == "success"
+    else:
+        return False
+    if not succeeded:
+        return False
+
+    lower = text.lower()
+    return not any(
+        marker in lower
+        for marker in (
+            "traceback (most recent call last)",
+            "unrecognized arguments",
+            "invalid choice:",
+            "command not found",
+            "no such file or directory",
+            "stderr: hermes: error:",
+            '"status":"error"',
+            '"status": "error"',
+        )
+    )
+
+
+def _current_turn_tool_records(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Pair current-turn tool results with the arguments that produced them."""
+
+    start = 0
+    for idx, msg in enumerate(messages or []):
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            start = idx + 1
+    calls: dict[str, tuple[str, str]] = {}
+    records: list[dict[str, str]] = []
+    for msg in (messages or [])[start:]:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "assistant":
+            for call in msg.get("tool_calls") or []:
+                if not isinstance(call, dict):
+                    continue
+                fn = call.get("function") or {}
+                calls[str(call.get("id") or "")] = (
+                    str(fn.get("name") or ""),
+                    _compact_text(fn.get("arguments") or ""),
+                )
+        elif msg.get("role") == "tool":
+            call_id = str(msg.get("tool_call_id") or "")
+            if not call_id or call_id not in calls:
+                continue
+            call_name, call_args = calls[call_id]
+            records.append(
+                {
+                    "name": call_name,
+                    "args": call_args,
+                    "result": _compact_text(msg.get("content")),
+                }
+            )
+    return records
+
+
+def _kanban_operation_kind(name: str, args: str) -> str:
+    haystack = f"{name} {args}".lower().replace("_", " ")
+    for kind in (
+        "create", "show", "list", "edit", "complete", "link", "unlink",
+        "block", "unblock", "comment", "claim", "promote", "schedule",
+        "archive", "assign", "dispatch",
+    ):
+        if re.search(rf"\bkanban\b[^\n]{{0,120}}\b{kind}\b", haystack) or re.search(
+            rf"\bkanban\s+{kind}\b", haystack
+        ):
+            return kind
+    return ""
+
+
+def _claimed_kanban_operation(fresh_action: re.Match[str] | None) -> set[str]:
+    if fresh_action is None:
+        return set()
+    action = fresh_action.group(0).lower()
+    if re.search(r"\b(?:create|created|add|added)\b", action):
+        return {"create"}
+    if re.search(r"\b(?:queue|queued|start|started)\b", action):
+        return {"create", "dispatch"}
+    if re.search(r"\b(?:assign|assigned|reassign|reassigned)\b", action):
+        return {"assign", "edit"}
+    for stem, operation in (
+        ("edit", "edit"),
+        ("unlink", "unlink"),
+        ("link", "link"),
+        ("unblock", "unblock"),
+        ("block", "block"),
+        ("comment", "comment"),
+        ("claim", "claim"),
+        ("complet", "complete"),
+        ("promot", "promote"),
+        ("schedul", "schedule"),
+        ("archiv", "archive"),
+    ):
+        if stem in action:
+            return {operation}
+    return set()
+
+
+def _claimed_statuses_for_task(text: str, task_id: str) -> set[str]:
+    """Bind statuses to an exact task id while ignoring nonassertive clauses."""
+
+    task_id_lower = task_id.lower()
+    statuses: set[str] = set()
+    for sentence in _SENTENCE_SPLIT_RE.split(text.lower()):
+        if not re.search(rf"(?<![0-9a-f]){re.escape(task_id_lower)}(?![0-9a-f])", sentence):
+            continue
+        for clause in _ACTION_CLAUSE_SPLIT_RE.split(sentence):
+            if _KANBAN_NONASSERTIVE_RE.search(clause):
+                continue
+            statuses.update(
+                status.group(0).lower() for status in _KANBAN_STATUS_RE.finditer(clause)
+            )
+    return statuses
+
+
+def _iter_nested_values(value: Any):
+    """Yield decoded JSON containers, including JSON embedded in wrapper strings."""
+
+    yield value
+    if isinstance(value, dict):
+        for child in value.values():
+            yield from _iter_nested_values(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _iter_nested_values(child)
+    elif isinstance(value, str):
+        candidate = value.strip()
+        if candidate and candidate[0] in "[{\"":
+            try:
+                decoded = json.loads(candidate)
+            except (json.JSONDecodeError, TypeError):
+                return
+            if decoded != value:
+                yield from _iter_nested_values(decoded)
+
+
+def _result_task_evidence(result: str) -> tuple[set[str], dict[str, set[str]]]:
+    """Extract exact task ids and statuses structurally, then from plain rows."""
+
+    try:
+        root: Any = json.loads(str(result or ""))
+    except (json.JSONDecodeError, TypeError):
+        root = str(result or "")
+
+    task_ids: set[str] = set()
+    statuses: dict[str, set[str]] = {}
+    for value in _iter_nested_values(root):
+        if not isinstance(value, dict):
+            continue
+        ids = {
+            str(value[key]).lower()
+            for key in ("id", "task_id")
+            if isinstance(value.get(key), str)
+            and _KANBAN_TASK_ID_RE.fullmatch(str(value[key]))
+        }
+        task_ids.update(ids)
+        status = value.get("status")
+        if isinstance(status, str) and _KANBAN_STATUS_RE.fullmatch(status.strip()):
+            for exact_id in ids:
+                statuses.setdefault(exact_id, set()).add(status.strip().lower())
+
+    for value in _iter_nested_values(root):
+        if not isinstance(value, str):
+            continue
+        candidate = value.strip()
+        if candidate and candidate[0] in "[{":
+            try:
+                if isinstance(json.loads(candidate), (dict, list)):
+                    continue
+            except (json.JSONDecodeError, TypeError):
+                pass
+        for line in value.replace("\\\"", '"').splitlines():
+            line_ids = {
+                match.group(0).lower() for match in _KANBAN_TASK_ID_RE.finditer(line)
+            }
+            task_ids.update(line_ids)
+            if len(line_ids) != 1:
+                continue
+            line_statuses = {
+                match.group(0).lower() for match in _KANBAN_STATUS_RE.finditer(line)
+            }
+            exact_id = next(iter(line_ids))
+            statuses.setdefault(exact_id, set()).update(line_statuses)
+    return task_ids, statuses
+
+
+def _result_has_task_id(result: str, task_id: str) -> bool:
+    task_ids, _ = _result_task_evidence(result)
+    return task_id.lower() in task_ids
+
+
+def _result_has_status(result: str, task_id: str, status: str) -> bool:
+    _, statuses = _result_task_evidence(result)
+    return status.lower() in statuses.get(task_id.lower(), set())
+
+
+def evaluate_controller_kanban_claims(
+    messages: list[dict[str, Any]], final_response: str
+) -> KanbanClaimDecision:
+    """Reject fresh controller Kanban claims without mutation and readback proof.
+
+    This guard intentionally operates only on explicit ``t_<hex>`` references.
+    Historical/forensic discussion is excluded.  Creation/mutation claims need
+    a successful current-turn mutation result *and* a separate show/list
+    readback; status-only claims need the readback.
+    """
+
+    text = str(final_response or "")
+    scan_text = _BLOCKQUOTE_LINE_RE.sub("", _FENCED_CODE_RE.sub("", text))
+    fresh_action = re.search(
+        r"(?:^|[.!?]\s+|\n\s*(?:[-*]\s*)?)"
+        r"(?:(?:i|we)\s+(?:have\s+)?)?"
+        r"(?:created?|added?|queued?|started?|assigned?|reassigned?|edited?|linked?|"
+        r"unblocked?|blocked?|commented?|claimed?|completed?|promoted?|scheduled?|archived?)\b",
+        scan_text,
+        re.IGNORECASE,
+    )
+    relevant_segments = []
+    for segment in _SENTENCE_SPLIT_RE.split(scan_text):
+        if not _KANBAN_TASK_ID_RE.search(segment):
+            continue
+        assertive_id_clause = any(
+            _KANBAN_TASK_ID_RE.search(clause)
+            and not _KANBAN_NONASSERTIVE_RE.search(clause)
+            for clause in _ACTION_CLAUSE_SPLIT_RE.split(segment)
+        )
+        if not assertive_id_clause:
+            continue
+        if _KANBAN_FORENSIC_RE.search(segment) and not re.search(
+            r"\b(?:i|we)\s+(?:have\s+)?(?:created?|added?|queued?|started?|"
+            r"assigned?|reassigned?|edited?|linked?|unblocked?|blocked?|"
+            r"commented?|claimed?|completed?|promoted?|scheduled?|archived?)\b",
+            segment,
+            re.IGNORECASE,
+        ):
+            continue
+        relevant_segments.append(segment)
+    task_ids = _dedupe(
+        match.group(0).lower()
+        for segment in relevant_segments
+        for match in _KANBAN_TASK_ID_RE.finditer(segment)
+    )
+    if not task_ids:
+        return KanbanClaimDecision(rejected=False)
+
+    has_action = bool(fresh_action)
+    has_status = any(_claimed_statuses_for_task(scan_text, task_id) for task_id in task_ids)
+    if not has_action and not has_status:
+        return KanbanClaimDecision(rejected=False)
+
+    expected_operations = _claimed_kanban_operation(fresh_action)
+    records = _current_turn_tool_records(messages)
+    missing: list[str] = []
+    for task_id in task_ids:
+        matching = [
+            record for record in records
+            if record["name"].lower() != "execute_code"
+            and _result_has_task_id(record["result"], task_id)
+            and _tool_result_succeeded(record["name"], record["result"])
+        ]
+        if has_action and not any(
+            _kanban_operation_kind(record["name"], record["args"])
+            in expected_operations
+            for record in matching
+        ):
+            missing.append(f"{task_id}:mutation")
+        claimed_statuses = _claimed_statuses_for_task(scan_text, task_id)
+        if has_action or claimed_statuses:
+            readbacks = [
+                record
+                for record in matching
+                if _kanban_operation_kind(record["name"], record["args"])
+                in {"show", "list"}
+            ]
+            status_matches = bool(readbacks) and (
+                not claimed_statuses
+                or all(
+                    any(
+                        _result_has_status(record["result"], task_id, status)
+                        for record in readbacks
+                    )
+                    for status in claimed_statuses
+                )
+            )
+            if not status_matches:
+                missing.append(f"{task_id}:readback")
+
+    if not missing:
+        return KanbanClaimDecision(rejected=False, task_ids=task_ids)
+    return KanbanClaimDecision(
+        rejected=True,
+        task_ids=task_ids,
+        missing_evidence=missing,
+        message=(
+            "Kanban claim rejected: current-turn mutation evidence and explicit "
+            "show/list status readback are required before reporting task state."
+        ),
+    )
 
 
 def _looks_like_positive_handle(text: str) -> bool:

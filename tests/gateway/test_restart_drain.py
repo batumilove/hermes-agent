@@ -1,7 +1,9 @@
 import asyncio
 import shutil
 import subprocess
+import threading
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -246,16 +248,140 @@ async def test_gateway_loop_lag_monitor_logs_when_tick_lags(caplog):
     assert "Gateway event loop lag" in caplog.text
 
 
-def test_gateway_loop_lag_logger_dumps_thread_stacks_over_traceback_threshold(caplog):
+@pytest.mark.asyncio
+async def test_gateway_loop_lag_logger_dumps_thread_stacks_over_traceback_threshold(caplog):
     runner = object.__new__(gateway_run.GatewayRunner)
     runner._loop_lag_traceback_threshold = 0.5
+    runner._background_tasks = set()
+
+    with caplog.at_level("WARNING", logger="gateway.run"):
+        runner._log_loop_lag(1.0, 0.001)
+        await asyncio.to_thread(runner._loop_lag_traceback_worker.join, 2.0)
+
+    assert "exceeded traceback threshold" in caplog.text
+    assert "thread" in caplog.text
+    assert "_format_thread_tracebacks" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_severe_loop_lag_traceback_formatting_does_not_block_event_loop(
+    monkeypatch, caplog
+):
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner._loop_lag_traceback_threshold = 0.5
+    runner._background_tasks = set()
+    release = threading.Event()
+    formatter_started = threading.Event()
+    formatter_timed_out = threading.Event()
+    loop_progressed = asyncio.Event()
+
+    def slow_formatter():
+        formatter_started.set()
+        if not release.wait(timeout=1.0):
+            formatter_timed_out.set()
+        return "--- thread bounded-test ---\nstack"
+
+    monkeypatch.setattr(runner, "_format_thread_tracebacks", slow_formatter)
+    try:
+        loop = asyncio.get_running_loop()
+        loop.call_soon(loop_progressed.set)
+        loop.call_soon(release.set)
+        with caplog.at_level("WARNING", logger="gateway.run"):
+            runner._log_loop_lag(1.0, 0.001)
+        await asyncio.wait_for(loop_progressed.wait(), timeout=2.0)
+
+        assert not formatter_timed_out.is_set(), (
+            "severe-lag diagnostics blocked the event loop until the formatter "
+            "timed out instead of allowing the scheduled loop callback to run"
+        )
+        assert "Gateway event loop lag 1.000s" in caplog.text
+        for _ in range(100):
+            if formatter_started.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert formatter_started.is_set()
+        await asyncio.to_thread(runner._loop_lag_traceback_worker.join, 2.0)
+        assert not runner._loop_lag_traceback_worker.is_alive()
+        assert "thread stacks follow" in caplog.text
+        assert "bounded-test" in caplog.text
+    finally:
+        release.set()
+
+
+def test_loop_lag_worker_construction_failure_is_contained(monkeypatch, caplog):
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner._loop_lag_traceback_threshold = 0.5
+
+    class BrokenThread:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("synthetic thread construction failure")
+
+    monkeypatch.setattr(gateway_run.threading, "Thread", BrokenThread)
 
     with caplog.at_level("WARNING", logger="gateway.run"):
         runner._log_loop_lag(1.0, 0.001)
 
-    assert "exceeded traceback threshold" in caplog.text
-    assert "thread" in caplog.text
-    assert "test_gateway_loop_lag_logger_dumps_thread_stacks" in caplog.text
+    assert "thread stack capture could not start" in caplog.text
+
+
+def test_thread_traceback_dump_groups_duplicate_stacks_and_is_bounded(monkeypatch):
+    frames = {ident: object() for ident in range(100)}
+    threads = [
+        SimpleNamespace(ident=ident, name=("MainThread" if ident == 0 else f"worker-{ident}"))
+        for ident in frames
+    ]
+
+    monkeypatch.setattr(gateway_run.sys, "_current_frames", lambda: frames)
+    monkeypatch.setattr(gateway_run.threading, "enumerate", lambda: threads)
+
+    def fake_format_stack(frame, *, limit=None):
+        assert limit is not None and limit <= 32
+        group = "alpha" if id(frame) % 2 else "beta"
+        return [f"  File synthetic.py, in {group}\n"] * 64
+
+    monkeypatch.setattr(gateway_run.traceback, "format_stack", fake_format_stack)
+
+    dump = gateway_run.GatewayRunner._format_thread_tracebacks()
+
+    assert "threads=" in dump
+    assert "duplicate stack" in dump
+    assert "thread capture truncated" in dump
+    assert len(dump.encode("utf-8")) <= 256 * 1024
+
+
+@pytest.mark.asyncio
+async def test_severe_loop_lag_uses_single_daemon_capture_worker(monkeypatch):
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner._loop_lag_traceback_threshold = 0.5
+    release = threading.Event()
+    started = threading.Event()
+
+    def slow_formatter():
+        started.set()
+        release.wait(timeout=2.0)
+        return "bounded stack"
+
+    monkeypatch.setattr(runner, "_format_thread_tracebacks", slow_formatter)
+    try:
+        runner._log_loop_lag(1.0, 0.001)
+        for _ in range(100):
+            worker = getattr(runner, "_loop_lag_traceback_worker", None)
+            if worker is not None and started.is_set():
+                break
+            await asyncio.sleep(0.01)
+
+        assert worker is not None
+        assert worker.daemon is True
+        assert worker.is_alive()
+
+        first_worker = worker
+        runner._log_loop_lag(1.1, 0.001)
+        assert runner._loop_lag_traceback_worker is first_worker
+    finally:
+        release.set()
+        worker = getattr(runner, "_loop_lag_traceback_worker", None)
+        if worker is not None:
+            await asyncio.to_thread(worker.join, 2.0)
 
 
 
