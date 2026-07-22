@@ -224,3 +224,39 @@ The workflow concurrency group serializes publication runs without cancellation,
 preventing two reruns from racing to publish the same source tag. Queued stale
 runs fail the protected-branch SHA check. The host deployment lock separately
 prevents overlapping remote changes.
+
+## Staging socket diagnostic transaction helper
+
+The staging-only socket diagnostic workflow delegates the privileged transaction
+to `/usr/local/libexec/hermes-staging-diagnostic`. GitHub can send only a UTF-8
+JSON request of at most 4096 bytes on stdin to the exact no-argument sudo
+command. Paths, host, environment, container, image, commands, recovery mode,
+and duration choices are fixed in the root-owned helper. Durable transaction
+state is root-owned under `/var/lib/hermes-staging-diagnostics`; interrupted or
+ambiguous transactions are restore-only and never resume diagnostics.
+
+Rollout is intentionally split and fail-closed:
+
+1. Run `scripts/deploy/install-staging-diagnostic-helper.sh --stage` to install
+   the helper and recovery units without sudo authorization or timer activation.
+2. Read back helper hash, root ownership/mode, unit contents, and state-directory
+   mode. Verify the installed hash against the reviewed artifact.
+3. Run the separate `--authorize` phase. It substitutes the verified SHA-256
+   into the exact no-argument sudo rule and validates it with `visudo -c -f`.
+4. Run a no-mutation invalid-request canary, then crash canaries at each durable
+   boundary. Verify byte-for-byte config restoration, healthy runtime, and
+   effective `socket_diagnostics=false` after every case.
+5. Enable the recovery timer only through a separate approved host operation.
+6. Run one 60-second live gate and verify only bounded aggregate evidence is
+   returned. Activate the workflow only after all earlier gates pass.
+
+**Security boundary:** this correctness helper does not create least privilege.
+`hermes-deploy` Docker-group membership remains root-equivalent, so privilege
+containment remains **FAIL** until a separately reviewed deployment-helper
+migration removes Docker access. This candidate deliberately does not change
+users or groups.
+
+Rollback order: revoke the diagnostic sudoers rule first; preserve recovery
+until every transaction is terminal; force and verify exact restoration; revert
+the workflow; then disable/remove the timer, service, and helper. Never restore
+Docker-group membership as a rollback convenience.

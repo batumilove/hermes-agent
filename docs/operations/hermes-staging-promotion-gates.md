@@ -216,3 +216,30 @@ Execution/post-restart evidence:
 - Approved narrow production restart: **EXECUTED; service active/running afterward**
 - Telegram after restart: **RECOVERED, but not clean-green because transient polling/send degradation was observed**
 - Further production action: **BLOCKED pending separate explicit human approval**
+
+## Staging diagnostic helper promotion boundary
+
+The root-owned staging diagnostic transaction helper must remain dormant until
+all of these independent gates pass: staged helper/unit hash and mode readback;
+explicit sudo authorization; no-mutation request rejection; crash/reboot
+restore canaries for every durable state; one 60-second live diagnostic gate;
+and only then workflow activation. The workflow supplies bounded JSON on stdin
+to one exact no-argument sudo command. It cannot select paths, commands,
+container/image identity, recovery mode, or an unbounded duration.
+
+Recovery state remains under `/var/lib/hermes-staging-diagnostics` and is never
+stored in runtime-owned Hermes data. `ARMED` is durable before mutation. Any
+interruption or ambiguous journal state is restore-only: restore exact original
+bytes/existence/uid/gid/mode, restart with bounded retries, verify health and
+effective diagnostics false, and never resume collection.
+
+This is a correctness remediation, not a least-privilege completion.
+`hermes-deploy` remains in the Docker group, which is root-equivalent; therefore
+privilege containment remains **FAIL** until a separate reviewed deployment
+helper replaces direct Docker access and removes that membership. No group
+change is part of this candidate.
+
+Rollback order is mandatory: revoke sudoers first; keep recovery available until
+all transactions are terminal; restore and verify; revert workflow activation;
+then remove timer/unit/helper. Docker-group access must not be added back as a
+rollback convenience.
