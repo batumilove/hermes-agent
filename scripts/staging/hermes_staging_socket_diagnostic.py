@@ -585,7 +585,7 @@ class TransactionStore:
                 not stat.S_ISDIR(opened.st_mode)
                 or stat.S_ISLNK(named.st_mode)
                 or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
-                or (opened.st_uid, opened.st_gid) != (os.geteuid(), os.getegid())
+                or (opened.st_uid, opened.st_gid) != (os.geteuid(), os.getegid())  # windows-footgun: ok
                 or stat.S_IMODE(opened.st_mode) != 0o700
             ):
                 raise StateError("transaction directory identity is unsafe")
@@ -711,7 +711,7 @@ def command_runner(
 
     def terminate() -> None:
         try:
-            os.killpg(process.pid, signal.SIGKILL)
+            os.killpg(process.pid, signal.SIGKILL)  # windows-footgun: ok
         except ProcessLookupError:
             pass
         try:
@@ -1117,12 +1117,12 @@ def main(argv: list[str] | None = None) -> int:
     os.umask(0o077)
     argv = list(sys.argv[1:] if argv is None else argv)
     try:
-        mode = parse_cli(argv, dict(os.environ), os.geteuid())
+        mode = parse_cli(argv, dict(os.environ), os.geteuid())  # windows-footgun: ok
         executor = DiagnosticExecutor()
         if mode == "recover":
             result = executor.recover()
         else:
-            authorize_caller(dict(os.environ), os.geteuid())
+            authorize_caller(dict(os.environ), os.geteuid())  # windows-footgun: ok
             request = parse_request(sys.stdin.buffer)
             result = executor.run(request)
         rendered = json.dumps({"ok": True, **result}, sort_keys=True, separators=(",", ":"))
