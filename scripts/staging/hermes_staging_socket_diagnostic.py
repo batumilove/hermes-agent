@@ -22,6 +22,7 @@ DEPLOY_HOST = "hermes-staging-01"
 DEPLOY_ROOT = Path("/opt/hermes-compose/staging")
 DATA_ROOT = Path("/home/hermes-staging/.hermes-staging")
 STATE_ROOT = Path("/var/lib/hermes-staging-diagnostics")
+LOCK_PATH = Path("/run/lock/hermes-staging-diagnostic.lock")
 RUNTIME_UID = 1001
 RUNTIME_GID = 1001
 SUDO_UID = 1002
@@ -30,15 +31,19 @@ ENVIRONMENT = "batumi-staging"
 DOCKER = "/usr/bin/docker"
 MAX_REQUEST_BYTES = 4096
 MAX_CONFIG_BYTES = 1024 * 1024
+MAX_METADATA_BYTES = 4096
 MAX_COMMAND_OUTPUT_BYTES = 2 * 1024 * 1024
 MAX_OUTPUT_BYTES = 16 * 1024
+TOTAL_DEADLINE_SECONDS = 900
+LOCK_WAIT_SECONDS = 60
 COMMAND_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "TZ": "UTC"}
 STATE_ORDER = ("PREPARED", "ARMED", "MUTATED", "ENABLED", "OBSERVING", "RESTORING", "RESTORED")
-TERMINAL_STATES = {"RESTORED", "RESTORE_FAILED"}
+TERMINAL_STATES = {"RESTORED", "ABORTED"}
 _TRANSITIONS = {a: b for a, b in zip(STATE_ORDER, STATE_ORDER[1:])}
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _DECIMAL = re.compile(r"(?:0|[1-9][0-9]{0,19})\Z")
 _NONCE = re.compile(r"[A-Za-z0-9_-]{16,64}\Z")
+_IMAGE = re.compile(r"ghcr\.io/batumilove/hermes-agent-deploy@sha256:[0-9a-f]{64}\Z")
 _EVENT = re.compile(
     r"\[Telegram socket\] event=(response-created|response-closed|response-close-error) "
     r"owner=(general|polling) route=(primary|(?:[0-9]{1,3}\.){3}[0-9]{1,3}) "
@@ -190,6 +195,22 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _same_snapshot(left: ConfigSnapshot, right: ConfigSnapshot) -> bool:
+    return (
+        left.existed,
+        left.sha256,
+        left.mode,
+        left.uid,
+        left.gid,
+    ) == (
+        right.existed,
+        right.sha256,
+        right.mode,
+        right.uid,
+        right.gid,
+    )
+
+
 def _fsync_directory(fd: int) -> None:
     os.fsync(fd)
 
@@ -317,7 +338,7 @@ class ConfigStore:
         fd = self._open_dir()
         try:
             current = self._read_current(fd, allow_absent=True)
-            if current.existed != snapshot.existed or current.sha256 != snapshot.sha256:
+            if not _same_snapshot(current, snapshot):
                 raise ConfigDriftError("gateway config drift before mutation")
             self._atomic_write(fd, content, snapshot.mode, snapshot.uid, snapshot.gid, "enable")
             return _sha(content)
@@ -328,15 +349,21 @@ class ConfigStore:
         fd = self._open_dir()
         try:
             current = self._read_current(fd, allow_absent=True)
-            if current.existed == snapshot.existed and current.sha256 == snapshot.sha256:
+            if _same_snapshot(current, snapshot):
                 return
-            if not current.existed or current.sha256 != expected_mutated_hash:
+            expected_mutated = ConfigSnapshot(
+                True, b"", snapshot.mode, snapshot.uid, snapshot.gid, expected_mutated_hash
+            )
+            if not _same_snapshot(current, expected_mutated):
                 raise ConfigDriftError("gateway config drift blocks restore")
             if snapshot.existed:
                 self._atomic_write(fd, snapshot.content, snapshot.mode, snapshot.uid, snapshot.gid, "restore")
             else:
                 os.unlink(self.name, dir_fd=fd)
                 _fsync_directory(fd)
+            restored = self._read_current(fd, allow_absent=True)
+            if not _same_snapshot(restored, snapshot):
+                raise ConfigDriftError("gateway config exact restoration failed")
         finally:
             os.close(fd)
 
@@ -373,7 +400,7 @@ class TransactionStore:
             value = json.loads(raw)
         except (OSError, json.JSONDecodeError) as exc:
             raise StateError("transaction state is unreadable") from exc
-        if not isinstance(value, dict) or value.get("state") not in set(STATE_ORDER) | {"RESTORE_FAILED"}:
+        if not isinstance(value, dict) or value.get("state") not in set(STATE_ORDER) | {"RESTORE_FAILED", "ABORTED"}:
             raise StateError("transaction state is invalid")
         return value
 
@@ -422,6 +449,19 @@ class TransactionStore:
 
     def fail_restore(self, tx: Transaction) -> None:
         tx.record["state"] = "RESTORE_FAILED"
+        self._write(tx)
+
+    def begin_restore(self, tx: Transaction) -> None:
+        if tx.state not in {"ARMED", "MUTATED", "ENABLED", "OBSERVING", "RESTORING", "RESTORE_FAILED"}:
+            raise StateError("transaction cannot begin restoration")
+        if tx.state != "RESTORING":
+            tx.record["state"] = "RESTORING"
+            self._write(tx)
+
+    def abort_prepared(self, tx: Transaction) -> None:
+        if tx.state != "PREPARED":
+            raise StateError("only a prepared transaction can be aborted")
+        tx.record["state"] = "ABORTED"
         self._write(tx)
 
     def save_snapshot(self, tx: Transaction, snapshot: ConfigSnapshot) -> None:
@@ -491,6 +531,8 @@ print("false")
 
 class DiagnosticExecutor:
     def __init__(self, *, deploy_root=DEPLOY_ROOT, data_root=DATA_ROOT, state_root=STATE_ROOT,
+                 lock_path=LOCK_PATH,
+                 lock_uid=0,
                  expected_uid=RUNTIME_UID, expected_gid=RUNTIME_GID, runner=command_runner,
                  sleep=time.sleep, hostname=lambda: socket.gethostname().split(".")[0]):
         self.deploy_root = Path(deploy_root)
@@ -499,19 +541,102 @@ class DiagnosticExecutor:
         self.config = ConfigStore(Path(data_root), expected_uid=expected_uid, expected_gid=expected_gid)
         self.expected_uid = expected_uid
         self.expected_gid = expected_gid
+        self.lock_path = Path(lock_path)
+        self.lock_uid = lock_uid
         self.runner = runner
         self.sleep = sleep
         self.hostname = hostname
+        self.deadline = 0.0
+
+    def _start_deadline(self) -> None:
+        self.deadline = time.monotonic() + TOTAL_DEADLINE_SECONDS
+
+    def _remaining(self, cap: int) -> int:
+        if not self.deadline:
+            self._start_deadline()
+        remaining = int(self.deadline - time.monotonic())
+        if remaining <= 0:
+            raise CommandError("global diagnostic deadline expired")
+        return max(1, min(cap, remaining))
 
     def _command(self, argv, timeout, max_output=65536):
-        return self.runner(tuple(argv), timeout=timeout, env=COMMAND_ENV, input_data=None, max_output=max_output)
+        return self.runner(
+            tuple(argv), timeout=self._remaining(timeout), env=COMMAND_ENV,
+            input_data=None, max_output=max_output,
+        )
 
-    @staticmethod
-    def _exact_env(path: Path) -> dict[str, str]:
+    def _open_lock(self) -> int:
+        flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
         try:
-            lines = path.read_text(encoding="utf-8").splitlines()
+            fd = os.open(self.lock_path, flags)
+        except OSError as exc:
+            raise DiagnosticError("deployment lock unavailable") from exc
+        try:
+            st = os.fstat(fd)
+            named = os.stat(self.lock_path, follow_symlinks=False)
+            if (
+                not stat.S_ISREG(st.st_mode)
+                or st.st_nlink != 1
+                or st.st_uid != self.lock_uid
+                or stat.S_IMODE(st.st_mode) != 0o660
+                or (st.st_dev, st.st_ino) != (named.st_dev, named.st_ino)
+            ):
+                raise DiagnosticError("deployment lock identity mismatch")
+            lock_deadline = min(self.deadline, time.monotonic() + LOCK_WAIT_SECONDS)
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= lock_deadline:
+                        raise DiagnosticError("deployment lock deadline expired")
+                    self.sleep(0.05)
+            final = os.fstat(fd)
+            named = os.stat(self.lock_path, follow_symlinks=False)
+            if (final.st_dev, final.st_ino) != (named.st_dev, named.st_ino):
+                raise DiagnosticError("deployment lock changed while acquiring")
+            return fd
+        except BaseException:
+            os.close(fd)
+            raise
+
+    def _exact_env(self, name: str) -> dict[str, str]:
+        dir_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            dir_fd = os.open(self.deploy_root, dir_flags)
+        except OSError as exc:
+            raise DiagnosticError("fixed metadata directory is unavailable") from exc
+        try:
+            flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(name, flags, dir_fd=dir_fd)
+            try:
+                st = os.fstat(fd)
+                named = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                root_st = os.fstat(dir_fd)
+                if (
+                    not stat.S_ISREG(st.st_mode)
+                    or stat.S_ISLNK(named.st_mode)
+                    or st.st_nlink != 1
+                    or (st.st_dev, st.st_ino) != (named.st_dev, named.st_ino)
+                    or (st.st_uid, st.st_gid) != (root_st.st_uid, root_st.st_gid)
+                    or st.st_mode & 0o022
+                    or st.st_size > MAX_METADATA_BYTES
+                ):
+                    raise DiagnosticError("fixed metadata file is unsafe")
+                raw = os.read(fd, MAX_METADATA_BYTES + 1)
+                final = os.fstat(fd)
+                if len(raw) > MAX_METADATA_BYTES or (final.st_dev, final.st_ino, final.st_size) != (st.st_dev, st.st_ino, st.st_size):
+                    raise DiagnosticError("fixed metadata file changed while reading")
+            finally:
+                os.close(fd)
         except OSError as exc:
             raise DiagnosticError("fixed metadata file is unavailable") from exc
+        finally:
+            os.close(dir_fd)
+        try:
+            lines = raw.decode("utf-8", "strict").splitlines()
+        except UnicodeDecodeError as exc:
+            raise DiagnosticError("fixed metadata file is invalid") from exc
         result = {}
         for line in lines:
             if not line or line.startswith("#"):
@@ -525,10 +650,15 @@ class DiagnosticExecutor:
     def _preflight(self, request: Request) -> None:
         if self.hostname() != DEPLOY_HOST:
             raise DiagnosticError("host identity mismatch")
-        release = self._exact_env(self.deploy_root / "release.env")
-        if release != {"HERMES_SOURCE_SHA": request.expected_source_sha, "HERMES_DEPLOY_ENV": ENVIRONMENT}:
+        release = self._exact_env("release.env")
+        image = release.get("HERMES_IMAGE")
+        if release != {
+            "HERMES_IMAGE": image,
+            "HERMES_DEPLOY_ENV": ENVIRONMENT,
+            "HERMES_SOURCE_SHA": request.expected_source_sha,
+        } or not isinstance(image, str) or not _IMAGE.fullmatch(image):
             raise DiagnosticError("release metadata mismatch")
-        runtime = self._exact_env(self.deploy_root / "runtime.env")
+        runtime = self._exact_env("runtime.env")
         expected_runtime = {"HERMES_DATA_DIR": str(self.data_root), "HERMES_UID": str(self.expected_uid), "HERMES_GID": str(self.expected_gid)}
         if runtime != expected_runtime:
             raise DiagnosticError("runtime metadata mismatch")
@@ -536,14 +666,23 @@ class DiagnosticExecutor:
         env_lines = env_output.splitlines()
         if env_lines.count("HERMES_SOURCE_SHA=" + request.expected_source_sha) != 1 or env_lines.count("HERMES_DEPLOY_ENV=" + ENVIRONMENT) != 1:
             raise DiagnosticError("container environment mismatch")
+        configured_image = self._command((DOCKER, "inspect", "--format", "{{.Config.Image}}", CONTAINER), 15).strip()
+        if configured_image != image:
+            raise DiagnosticError("container image mismatch")
         mount = self._command((DOCKER, "inspect", "--format", '{{range .Mounts}}{{if eq .Destination "/opt/data"}}{{println .Source}}{{end}}{{end}}', CONTAINER), 15).strip()
         if mount != str(self.data_root):
             raise DiagnosticError("container mount mismatch")
         self._wait_healthy()
         self._effective(False)
+        snapshot = self.config.snapshot()
+        if snapshot.existed:
+            parsed = json.loads(snapshot.content.decode("utf-8"))
+            value = parsed.get("platforms", {}).get("telegram", {}).get("extra", {}).get("socket_diagnostics")
+            if value is True:
+                raise ConfigError("on-disk diagnostics are already literal true")
 
     def _wait_healthy(self) -> None:
-        deadline = time.monotonic() + 240
+        deadline = min(self.deadline, time.monotonic() + 120)
         while time.monotonic() < deadline:
             status = self._command((DOCKER, "inspect", "--format", "{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}", CONTAINER), 15).strip()
             if status == "healthy":
@@ -560,6 +699,11 @@ class DiagnosticExecutor:
     def _restart(self) -> None:
         self._command((DOCKER, "restart", "--time", "90", CONTAINER), 120)
         self._wait_healthy()
+
+    def _sleep_bounded(self, seconds: float) -> None:
+        if time.monotonic() + seconds >= self.deadline:
+            raise CommandError("global diagnostic deadline cannot fit requested wait")
+        self.sleep(seconds)
 
     @staticmethod
     def _aggregate(raw: str) -> dict[str, object]:
@@ -590,43 +734,29 @@ class DiagnosticExecutor:
         }
 
     def _restore(self, tx: Transaction, snapshot: ConfigSnapshot, mutated_hash: str) -> None:
-        if tx.state != "RESTORING":
-            while tx.state in {"ARMED", "MUTATED", "ENABLED", "OBSERVING"}:
-                next_state = _TRANSITIONS[tx.state]
-                if next_state == "RESTORING" or tx.state == "OBSERVING":
-                    self.states.transition(tx, "RESTORING")
-                    break
-                # Recovery skips enable/observe work but records restore intent directly.
-                tx.record["state"] = "RESTORING"
-                self.states._write(tx)
-                break
-        self.config.restore(snapshot, mutated_hash)
-        last_error = None
-        for _ in range(3):
-            try:
-                self._restart()
-                self._effective(False)
-                self.states.transition(tx, "RESTORED")
-                return
-            except DiagnosticError as exc:
-                last_error = exc
-                self.sleep(3)
+        self.states.begin_restore(tx)
+        last_error: BaseException | None = None
+        try:
+            self.config.restore(snapshot, mutated_hash)
+            for attempt in range(3):
+                try:
+                    self._restart()
+                    self._effective(False)
+                    self.states.transition(tx, "RESTORED")
+                    return
+                except DiagnosticError as exc:
+                    last_error = exc
+                    if attempt < 2:
+                        self._sleep_bounded(3)
+        except BaseException as exc:
+            last_error = exc
         self.states.fail_restore(tx)
         raise DiagnosticError("bounded restore retries exhausted") from last_error
 
     def run(self, request: Request) -> dict[str, object]:
-        lock_path = self.deploy_root / "deploy.lock"
-        flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+        self._start_deadline()
+        lock_fd = self._open_lock()
         try:
-            lock_fd = os.open(lock_path, flags)
-        except OSError as exc:
-            raise DiagnosticError("deployment lock unavailable") from exc
-        try:
-            lock_stat = os.fstat(lock_fd)
-            named = os.stat(lock_path, follow_symlinks=False)
-            if not stat.S_ISREG(lock_stat.st_mode) or lock_stat.st_nlink != 1 or (lock_stat.st_dev, lock_stat.st_ino) != (named.st_dev, named.st_ino):
-                raise DiagnosticError("deployment lock identity mismatch")
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
             self._preflight(request)
             tx = self.states.prepare(request)
             if tx.state == "RESTORED":
@@ -637,17 +767,21 @@ class DiagnosticExecutor:
             snapshot = self.config.snapshot()
             self.states.save_snapshot(tx, snapshot)
             self.states.transition(tx, "ARMED")
-            mutated_hash = self.config.enable(snapshot)
-            self.states.record_mutated_hash(tx, mutated_hash)
-            self.states.transition(tx, "MUTATED")
+            mutated_hash = _sha(self.config.enabled_payload(snapshot))
             result = None
             try:
+                actual_hash = self.config.enable(snapshot)
+                if actual_hash != mutated_hash:
+                    raise StateError("mutated config hash mismatch")
+                self.states.record_mutated_hash(tx, mutated_hash)
+                self.states.transition(tx, "MUTATED")
+                observation_since = str(int(time.time()))
                 self._restart()
                 self.states.transition(tx, "ENABLED")
                 self._effective(True)
                 self.states.transition(tx, "OBSERVING")
-                self.sleep(request.observation_seconds)
-                raw = self._command((DOCKER, "logs", "--since", "10m", CONTAINER), 60, MAX_COMMAND_OUTPUT_BYTES)
+                self._sleep_bounded(request.observation_seconds)
+                raw = self._command((DOCKER, "logs", "--since", observation_since, CONTAINER), 60, MAX_COMMAND_OUTPUT_BYTES)
                 result = self._aggregate(raw)
                 result["observation_collected"] = True
             finally:
@@ -659,23 +793,33 @@ class DiagnosticExecutor:
             os.close(lock_fd)
 
     def recover(self) -> dict[str, int]:
-        recovered = 0
-        failed = 0
-        for tx in self.states.transactions():
-            if tx.state in TERMINAL_STATES or tx.state == "PREPARED":
-                continue
-            try:
-                snapshot = self.states.load_snapshot(tx)
-                mutated_hash = str(tx.record.get("mutated_sha256") or _sha(self.config.enabled_payload(snapshot)))
-                self._restore(tx, snapshot, mutated_hash)
-                recovered += 1
-            except DiagnosticError:
-                if tx.state != "RESTORE_FAILED":
-                    self.states.fail_restore(tx)
-                failed += 1
-        if failed:
-            raise DiagnosticError("one or more recovery transactions failed")
-        return {"recovered": recovered}
+        self._start_deadline()
+        lock_fd = self._open_lock()
+        try:
+            recovered = 0
+            aborted = 0
+            failed = 0
+            for tx in self.states.transactions():
+                if tx.state in TERMINAL_STATES:
+                    continue
+                if tx.state == "PREPARED":
+                    self.states.abort_prepared(tx)
+                    aborted += 1
+                    continue
+                try:
+                    snapshot = self.states.load_snapshot(tx)
+                    mutated_hash = str(tx.record.get("mutated_sha256") or _sha(self.config.enabled_payload(snapshot)))
+                    self._restore(tx, snapshot, mutated_hash)
+                    recovered += 1
+                except DiagnosticError:
+                    if tx.state != "RESTORE_FAILED":
+                        self.states.fail_restore(tx)
+                    failed += 1
+            if failed:
+                raise DiagnosticError("one or more recovery transactions failed")
+            return {"recovered": recovered, "aborted": aborted}
+        finally:
+            os.close(lock_fd)
 
 
 def main(argv: list[str] | None = None) -> int:

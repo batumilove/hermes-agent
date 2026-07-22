@@ -220,10 +220,13 @@ Execution/post-restart evidence:
 ## Staging diagnostic helper promotion boundary
 
 The root-owned staging diagnostic transaction helper must remain dormant until
-all of these independent gates pass: staged helper/unit hash and mode readback;
+all of these independent gates pass: exact commit/tree manifest and staged
+helper/unit/tmpfiles hash and mode readback; boot-recreated shared-lock proof;
 explicit sudo authorization; no-mutation request rejection; crash/reboot
 restore canaries for every durable state; one 60-second live diagnostic gate;
-and only then workflow activation. The workflow supplies bounded JSON on stdin
+and only then workflow activation. Activation requires both the default-off
+`HERMES_STAGING_DIAGNOSTICS_ENABLED=true` environment variable and a per-run
+`activation_ack=enabled`. The workflow supplies bounded JSON on stdin
 to one exact no-argument sudo command. It cannot select paths, commands,
 container/image identity, recovery mode, or an unbounded duration.
 
@@ -240,6 +243,6 @@ helper replaces direct Docker access and removes that membership. No group
 change is part of this candidate.
 
 Rollback order is mandatory: revoke sudoers first; keep recovery available until
-all transactions are terminal; restore and verify; revert workflow activation;
+all transactions are `RESTORED` or safely `ABORTED`; restore and verify; revert workflow activation;
 then remove timer/unit/helper. Docker-group access must not be added back as a
 rollback convenience.

@@ -152,10 +152,20 @@ def test_staging_diagnostic_workflow_delegates_exact_bounded_json_only() -> None
     assert workflow["on"]["workflow_dispatch"]["inputs"]["observation_seconds"]["options"] == ["60", "90", "120"]
     job = workflow["jobs"]["observe"]
     assert job["if"] == (
+        "vars.HERMES_STAGING_DIAGNOSTICS_ENABLED == 'true' && "
+        "inputs.activation_ack == 'enabled' && "
         "github.repository == 'batumilove/hermes-agent' && "
         "github.ref == 'refs/heads/batumi/live' && "
         "github.sha == inputs.expected_source_sha"
     )
+    assert workflow["on"]["workflow_dispatch"]["inputs"]["activation_ack"] == {
+        "description": "Explicit activation acknowledgement (must be enabled)",
+        "required": "true",
+        "default": "disabled",
+        "type": "choice",
+        "options": ["disabled", "enabled"],
+    }
+    assert "inputs.activation_ack == 'enabled'" in job["if"]
     assert job["environment"]["name"] == "batumi-staging"
     assert job["timeout-minutes"] == "20"
     assert workflow["concurrency"] == {

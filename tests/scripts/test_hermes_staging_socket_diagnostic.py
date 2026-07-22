@@ -6,6 +6,8 @@ import json
 import os
 import stat
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -239,6 +241,8 @@ class FakeRunner:
             fmt = argv[3]
             if "Config.Env" in fmt:
                 return "HERMES_SOURCE_SHA=" + "a" * 40 + "\nHERMES_DEPLOY_ENV=batumi-staging\n"
+            if "Config.Image" in fmt:
+                return "ghcr.io/batumilove/hermes-agent-deploy@sha256:" + "1" * 64 + "\n"
             if "Mounts" in fmt:
                 return self.mount_source + "\n"
             if "Health" in fmt:
@@ -256,9 +260,16 @@ def _target_tree(tmp_path):
     state = tmp_path / "state"
     deploy.mkdir()
     data.mkdir()
-    (deploy / "release.env").write_text("HERMES_SOURCE_SHA=" + "a" * 40 + "\nHERMES_DEPLOY_ENV=batumi-staging\n")
+    (deploy / "release.env").write_text(
+        "HERMES_IMAGE=ghcr.io/batumilove/hermes-agent-deploy@sha256:" + "1" * 64
+        + "\nHERMES_DEPLOY_ENV=batumi-staging\nHERMES_SOURCE_SHA=" + "a" * 40 + "\n"
+    )
     (deploy / "runtime.env").write_text(f"HERMES_DATA_DIR={data}\nHERMES_UID={os.getuid()}\nHERMES_GID={os.getgid()}\n")
+    (deploy / "release.env").chmod(0o600)
+    (deploy / "runtime.env").chmod(0o600)
     (deploy / "deploy.lock").touch()
+    (tmp_path / "shared.lock").touch()
+    (tmp_path / "shared.lock").chmod(0o660)
     (data / "gateway.json").write_text("{}")
     return deploy, data, state
 
@@ -269,7 +280,8 @@ def test_executor_uses_fixed_vectors_scrubbed_environment_and_bounded_aggregate(
     executor = diagnostic.DiagnosticExecutor(
         deploy_root=deploy,
         data_root=data,
-        state_root=state,
+        state_root=state, lock_path=tmp_path / "shared.lock",
+        lock_uid=os.getuid(),
         expected_uid=os.getuid(),
         expected_gid=os.getgid(),
         runner=fake,
@@ -283,6 +295,9 @@ def test_executor_uses_fixed_vectors_scrubbed_environment_and_bounded_aggregate(
     assert all(call[2] == diagnostic.COMMAND_ENV for call in fake.calls)
     assert all(isinstance(call[0], tuple) and call[0][0].startswith("/") for call in fake.calls)
     assert not any("shell" in str(call).lower() for call in fake.calls)
+    log_call = next(call for call in fake.calls if call[0][:2] == ("/usr/bin/docker", "logs"))
+    assert log_call[0][2] == "--since" and log_call[0][3].isdigit()
+    assert "10m" not in log_call[0]
     assert json.loads((data / "gateway.json").read_text()).get("platforms") is None
 
 
@@ -292,7 +307,8 @@ def test_every_runtime_failure_converges_to_restore_only(diagnostic, tmp_path, f
     original = (data / "gateway.json").read_bytes()
     fake = FakeRunner(diagnostic, data, fail_on=fail_on)
     executor = diagnostic.DiagnosticExecutor(
-        deploy_root=deploy, data_root=data, state_root=state,
+        deploy_root=deploy, data_root=data, state_root=state, lock_path=tmp_path / "shared.lock",
+        lock_uid=os.getuid(),
         expected_uid=os.getuid(), expected_gid=os.getgid(), runner=fake,
         sleep=lambda _: None, hostname=lambda: "hermes-staging-01",
     )
@@ -322,7 +338,8 @@ def test_recovery_after_each_durable_mutation_state_is_restore_only(diagnostic, 
             store.transition(tx, state_name)
     fake = FakeRunner(diagnostic, data)
     executor = diagnostic.DiagnosticExecutor(
-        deploy_root=deploy, data_root=data, state_root=state,
+        deploy_root=deploy, data_root=data, state_root=state, lock_path=tmp_path / "shared.lock",
+        lock_uid=os.getuid(),
         expected_uid=os.getuid(), expected_gid=os.getgid(), runner=fake,
         sleep=lambda _: None, hostname=lambda: "hermes-staging-01",
     )
@@ -360,3 +377,209 @@ def test_helper_and_installer_do_not_use_shell_execution(diagnostic):
     assert "subprocess.Popen" not in source
     assert diagnostic.MAX_COMMAND_OUTPUT_BYTES <= 2 * 1024 * 1024
     assert diagnostic.MAX_OUTPUT_BYTES <= 16 * 1024
+
+
+def _executor(diagnostic, tmp_path, deploy, data, state, runner=None, **kwargs):
+    return diagnostic.DiagnosticExecutor(
+        deploy_root=deploy,
+        data_root=data,
+        state_root=state,
+        lock_path=tmp_path / "shared.lock",
+        lock_uid=os.getuid(),
+        expected_uid=os.getuid(),
+        expected_gid=os.getgid(),
+        runner=runner or FakeRunner(diagnostic, data),
+        sleep=kwargs.pop("sleep", lambda _: None),
+        hostname=lambda: "hermes-staging-01",
+        **kwargs,
+    )
+
+
+def test_release_metadata_uses_real_three_field_format_and_pinned_container_image(diagnostic, tmp_path):
+    deploy, data, state = _target_tree(tmp_path)
+    executor = _executor(diagnostic, tmp_path, deploy, data, state)
+    executor._preflight(diagnostic.parse_request(io.BytesIO(request())))
+
+    (deploy / "release.env").write_text(
+        "HERMES_IMAGE=ghcr.io/batumilove/hermes-agent-deploy:latest\n"
+        "HERMES_DEPLOY_ENV=batumi-staging\nHERMES_SOURCE_SHA=" + "a" * 40 + "\n"
+    )
+    with pytest.raises(diagnostic.DiagnosticError, match="release metadata"):
+        executor._preflight(diagnostic.parse_request(io.BytesIO(request())))
+
+
+@pytest.mark.parametrize("name,kind", [("release.env", "symlink"), ("runtime.env", "fifo"), ("release.env", "oversize")])
+def test_metadata_reads_are_descriptor_relative_bounded_and_nofollow(diagnostic, tmp_path, name, kind):
+    deploy, data, state = _target_tree(tmp_path)
+    path = deploy / name
+    path.unlink()
+    if kind == "symlink":
+        target = tmp_path / "outside"
+        target.write_text("HERMES_SOURCE_SHA=" + "a" * 40)
+        path.symlink_to(target)
+    elif kind == "fifo":
+        os.mkfifo(path)
+    else:
+        path.write_bytes(b"x" * (diagnostic.MAX_METADATA_BYTES + 1))
+    executor = _executor(diagnostic, tmp_path, deploy, data, state)
+    started = time.monotonic()
+    with pytest.raises(diagnostic.DiagnosticError):
+        executor._preflight(diagnostic.parse_request(io.BytesIO(request())))
+    assert time.monotonic() - started < 2
+
+
+def test_enable_and_restore_cas_include_mode_uid_gid(diagnostic, tmp_path):
+    root = _config_dir(tmp_path)
+    path = root / "gateway.json"
+    path.write_text("{}")
+    path.chmod(0o640)
+    store = diagnostic.ConfigStore(root, expected_uid=os.getuid(), expected_gid=os.getgid())
+    snapshot = store.snapshot()
+    path.chmod(0o600)
+    with pytest.raises(diagnostic.ConfigDriftError):
+        store.enable(snapshot)
+
+    path.chmod(0o640)
+    mutated_hash = store.enable(snapshot)
+    path.chmod(0o600)
+    with pytest.raises(diagnostic.ConfigDriftError):
+        store.restore(snapshot, mutated_hash)
+
+
+def test_preflight_rejects_disk_true_even_when_runtime_false(diagnostic, tmp_path):
+    deploy, data, state = _target_tree(tmp_path)
+    (data / "gateway.json").write_text(
+        '{"platforms":{"telegram":{"extra":{"socket_diagnostics":true}}}}'
+    )
+    executor = _executor(diagnostic, tmp_path, deploy, data, state)
+    with pytest.raises(diagnostic.ConfigError, match="on-disk"):
+        executor._preflight(diagnostic.parse_request(io.BytesIO(request())))
+
+
+def _armed_transaction(diagnostic, state, data, *, mutate=False):
+    store = diagnostic.TransactionStore(state)
+    tx = store.prepare(diagnostic.parse_request(io.BytesIO(request())))
+    config = diagnostic.ConfigStore(data, expected_uid=os.getuid(), expected_gid=os.getgid())
+    snapshot = config.snapshot()
+    store.save_snapshot(tx, snapshot)
+    store.transition(tx, "ARMED")
+    if mutate:
+        config.enable(snapshot)
+    return tx, snapshot
+
+
+def test_true_armed_before_mutation_recovers_exactly(diagnostic, tmp_path):
+    deploy, data, state = _target_tree(tmp_path)
+    tx, snapshot = _armed_transaction(diagnostic, state, data, mutate=False)
+    result = _executor(diagnostic, tmp_path, deploy, data, state).recover()
+    assert result == {"recovered": 1, "aborted": 0}
+    assert (data / "gateway.json").read_bytes() == snapshot.content
+    assert json.loads((tx.path / "state.json").read_text())["state"] == "RESTORED"
+
+
+def test_replacement_before_mutated_hash_journal_recovers(diagnostic, tmp_path):
+    deploy, data, state = _target_tree(tmp_path)
+    tx, snapshot = _armed_transaction(diagnostic, state, data, mutate=True)
+    assert "mutated_sha256" not in tx.record
+    _executor(diagnostic, tmp_path, deploy, data, state).recover()
+    assert (data / "gateway.json").read_bytes() == snapshot.content
+    assert json.loads((tx.path / "state.json").read_text())["state"] == "RESTORED"
+
+
+def test_prepared_recovery_aborts_under_lock_and_unblocks_future_run(diagnostic, tmp_path):
+    deploy, data, state = _target_tree(tmp_path)
+    store = diagnostic.TransactionStore(state)
+    tx = store.prepare(diagnostic.parse_request(io.BytesIO(request())))
+    executor = _executor(diagnostic, tmp_path, deploy, data, state)
+    assert executor.recover() == {"recovered": 0, "aborted": 1}
+    assert json.loads((tx.path / "state.json").read_text())["state"] == "ABORTED"
+    other = diagnostic.parse_request(io.BytesIO(request(run_id="9876", nonce="nonce_9876543210123456")))
+    assert executor.run(other)["observation_collected"] is True
+
+
+def test_restore_failed_remains_blocking_and_retries_until_verified(diagnostic, tmp_path):
+    deploy, data, state = _target_tree(tmp_path)
+    tx, _ = _armed_transaction(diagnostic, state, data, mutate=True)
+    failing = FakeRunner(diagnostic, data, fail_on="restart")
+    executor = _executor(diagnostic, tmp_path, deploy, data, state, failing)
+    with pytest.raises(diagnostic.DiagnosticError):
+        executor.recover()
+    assert json.loads((tx.path / "state.json").read_text())["state"] == "RESTORE_FAILED"
+    other = diagnostic.parse_request(io.BytesIO(request(run_id="9876", nonce="nonce_9876543210123456")))
+    with pytest.raises(diagnostic.TransactionConflictError):
+        executor.run(other)
+
+    succeeding = FakeRunner(diagnostic, data)
+    assert _executor(diagnostic, tmp_path, deploy, data, state, succeeding).recover()["recovered"] == 1
+    assert json.loads((tx.path / "state.json").read_text())["state"] == "RESTORED"
+    assert succeeding.restarts >= 1
+
+
+def test_original_absent_executor_recovery_removes_config(diagnostic, tmp_path):
+    deploy, data, state = _target_tree(tmp_path)
+    (data / "gateway.json").unlink()
+    tx, snapshot = _armed_transaction(diagnostic, state, data, mutate=True)
+    assert snapshot.existed is False
+    _executor(diagnostic, tmp_path, deploy, data, state).recover()
+    assert not (data / "gateway.json").exists()
+    assert json.loads((tx.path / "state.json").read_text())["state"] == "RESTORED"
+
+
+def test_recovery_waits_for_same_shared_lock(diagnostic, tmp_path):
+    deploy, data, state = _target_tree(tmp_path)
+    _armed_transaction(diagnostic, state, data, mutate=True)
+    lock_fd = os.open(tmp_path / "shared.lock", os.O_RDWR)
+    diagnostic.fcntl.flock(lock_fd, diagnostic.fcntl.LOCK_EX)
+    executor = _executor(diagnostic, tmp_path, deploy, data, state, sleep=time.sleep)
+    outcome = []
+    worker = threading.Thread(target=lambda: outcome.append(executor.recover()), daemon=True)
+    worker.start()
+    time.sleep(0.1)
+    assert worker.is_alive() and outcome == []
+    diagnostic.fcntl.flock(lock_fd, diagnostic.fcntl.LOCK_UN)
+    os.close(lock_fd)
+    worker.join(timeout=2)
+    assert outcome == [{"recovered": 1, "aborted": 0}]
+
+
+def test_restore_guard_starts_at_armed_and_handles_mutation_unknown(diagnostic, tmp_path, monkeypatch):
+    deploy, data, state = _target_tree(tmp_path)
+    original = (data / "gateway.json").read_bytes()
+    executor = _executor(diagnostic, tmp_path, deploy, data, state)
+    real_enable = executor.config.enable
+
+    def replace_then_fail(snapshot):
+        real_enable(snapshot)
+        raise OSError("journal-adjacent simulated failure")
+
+    monkeypatch.setattr(executor.config, "enable", replace_then_fail)
+    with pytest.raises(OSError):
+        executor.run(diagnostic.parse_request(io.BytesIO(request())))
+    assert (data / "gateway.json").read_bytes() == original
+    journal = next(state.glob("*/state.json"))
+    assert json.loads(journal.read_text())["state"] == "RESTORED"
+
+
+def test_global_deadline_and_service_timeout_fit_workflow(diagnostic):
+    assert 0 < diagnostic.TOTAL_DEADLINE_SECONDS < 20 * 60
+    service = (REPO / "deploy/staging-diagnostics/hermes-staging-diagnostic-recovery.service").read_text()
+    assert f"TimeoutStartSec={diagnostic.TOTAL_DEADLINE_SECONDS + 30}" in service
+
+
+def test_installer_manifest_binds_all_root_owned_artifacts_and_shared_lock():
+    installer = (REPO / "scripts/deploy/install-staging-diagnostic-helper.sh").read_text()
+    deployer = (REPO / "scripts/deploy/hermes-compose-deploy.sh").read_text()
+    tmpfiles = (REPO / "deploy/staging-diagnostics/hermes-staging-diagnostic.tmpfiles").read_text()
+    service = (REPO / "deploy/staging-diagnostics/hermes-staging-diagnostic-recovery.service").read_text()
+    for value in ("reviewed_commit", "reviewed_tree", "helper", "sudoers", "service", "timer", "tmpfiles", "lock"):
+        assert value in installer
+    assert "status --porcelain --untracked-files=all" in installer
+    assert "artifact-manifest.json" in installer
+    assert "staged/hermes-staging-diagnostic.sudoers" in installer
+    assert "/run/lock/hermes-staging-diagnostic.lock" in installer
+    assert "/run/lock/hermes-staging-diagnostic.lock" in deployer
+    assert "git -C \"$repo_root\" show \"$reviewed_commit:$repository_path\"" in installer
+    assert "systemd-tmpfiles --create" in installer
+    assert "f /run/lock/hermes-staging-diagnostic.lock 0660 root hermes-deploy -" in tmpfiles
+    assert "systemd-tmpfiles-setup.service" in service
+    assert '""' in (REPO / "deploy/staging-diagnostics/hermes-staging-diagnostic.sudoers").read_text()

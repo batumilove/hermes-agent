@@ -16,6 +16,14 @@ on:
           - "60"
           - "90"
           - "120"
+      activation_ack:
+        description: Explicit activation acknowledgement (must be enabled)
+        required: true
+        default: disabled
+        type: choice
+        options:
+          - disabled
+          - enabled
 
 permissions:
   contents: read
@@ -28,6 +36,8 @@ jobs:
   observe:
     name: Enable, observe, and restore
     if: >-
+      vars.HERMES_STAGING_DIAGNOSTICS_ENABLED == 'true' &&
+      inputs.activation_ack == 'enabled' &&
       github.repository == 'batumilove/hermes-agent' &&
       github.ref == 'refs/heads/batumi/live' &&
       github.sha == inputs.expected_source_sha
