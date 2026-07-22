@@ -3617,8 +3617,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 _transport_kwargs: dict = {}
                 if _pool_limits is not None:
                     _transport_kwargs["limits"] = _pool_limits
-                socket_diagnostics = bool(
-                    self.config.extra.get("socket_diagnostics", False)
+                socket_diagnostics = (
+                    self.config.extra.get("socket_diagnostics", False) is True
                 )
                 request = HTTPXRequest(
                     **request_kwargs,
