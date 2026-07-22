@@ -780,6 +780,14 @@ class GatewayStreamConsumer:
                             # edit here would duplicate the message / re-delete,
                             # so just record delivery and stop.
                             self._final_content_delivered = True
+                        elif self._final_content_delivered:
+                            # The finalize tick above reached an ambiguous send
+                            # outcome.  It may already have delivered the fresh
+                            # final, so a second explicit finalize would risk a
+                            # duplicate.  Keep _final_response_sent false because
+                            # delivery was not confirmed, while preserving the
+                            # duplicate-suppression marker.
+                            pass
                         elif (
                             current_update_visible
                             and (
@@ -1552,12 +1560,35 @@ class GatewayStreamConsumer:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
-                metadata=self._metadata_for_send(final=True),
+                metadata=self._metadata_for_send(final=is_turn_final),
             )
         except Exception as e:
+            if self._send_failure_may_have_delivered(e):
+                if is_turn_final:
+                    self._final_content_delivered = True
+                logger.debug(
+                    "Fresh-final send outcome ambiguous; preserving preview "
+                    "and suppressing duplicate edit: %s",
+                    e,
+                )
+                return True
             logger.debug("Fresh-final send failed, falling back to edit: %s", e)
             return False
         if not getattr(result, "success", False):
+            if self._send_failure_may_have_delivered(result):
+                # Telegram may accept a fresh final even when the client times
+                # out waiting for the response.  Editing the preview after that
+                # uncertain outcome would leave two persistent final messages.
+                # Preserve the preview and suppress duplicate fallback delivery;
+                # do not claim a confirmed fresh-final response or delete any
+                # message whose replacement is uncertain.
+                if is_turn_final:
+                    self._final_content_delivered = True
+                logger.debug(
+                    "Fresh-final send outcome ambiguous; preserving preview "
+                    "and suppressing duplicate edit"
+                )
+                return True
             return False
         # Adopt the new message id as the current message so subsequent
         # callers (e.g. overflow split loops, finalize retries) see a

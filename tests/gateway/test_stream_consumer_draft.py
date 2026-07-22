@@ -429,6 +429,122 @@ class TestAdapterPrefersFreshFinal:
         assert adapter.send.await_args.kwargs["metadata"]["notify"] is True
         adapter.delete_message.assert_awaited_once_with("12345", "preview1")
 
+    @pytest.mark.asyncio
+    async def test_ambiguous_fresh_final_timeout_does_not_duplicate_via_edit(self):
+        from gateway.platforms.base import SendResult
+
+        adapter = _make_fresh_final_adapter()
+        adapter.send = AsyncMock(
+            return_value=SendResult(
+                success=False,
+                error="Timed out waiting for Telegram",
+                retryable=False,
+            )
+        )
+        consumer = GatewayStreamConsumer(adapter, "12345")
+        consumer._message_id = "preview1"
+        consumer._track_preview_id("preview1")
+        consumer._last_sent_text = "Progress preview"
+
+        delivered = await consumer._send_or_edit(
+            "Final answer", finalize=True, is_turn_final=True,
+        )
+
+        assert delivered is True
+        adapter.edit_message.assert_not_awaited()
+        adapter.delete_message.assert_not_awaited()
+        assert consumer._message_id == "preview1"
+        assert consumer.final_response_sent is False
+        assert consumer.final_content_delivered is True
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_fresh_final_exception_does_not_duplicate_via_edit(self):
+        adapter = _make_fresh_final_adapter()
+        adapter.send = AsyncMock(side_effect=TimeoutError("Timed out waiting for Telegram"))
+        consumer = GatewayStreamConsumer(adapter, "12345")
+        consumer._message_id = "preview1"
+        consumer._track_preview_id("preview1")
+        consumer._last_sent_text = "Progress preview"
+
+        delivered = await consumer._send_or_edit(
+            "Final answer", finalize=True, is_turn_final=True,
+        )
+
+        assert delivered is True
+        adapter.edit_message.assert_not_awaited()
+        adapter.delete_message.assert_not_awaited()
+        assert consumer._message_id == "preview1"
+        assert consumer.final_response_sent is False
+        assert consumer.final_content_delivered is True
+
+    @pytest.mark.asyncio
+    async def test_interim_fresh_final_send_does_not_use_final_notify_metadata(self):
+        from gateway.platforms.base import SendResult
+
+        adapter = _make_fresh_final_adapter()
+        adapter.send = AsyncMock(
+            return_value=SendResult(success=True, message_id="interim1")
+        )
+        consumer = GatewayStreamConsumer(
+            adapter, "12345", metadata={"message_thread_id": 42},
+        )
+        consumer._message_id = "preview1"
+        consumer._track_preview_id("preview1")
+
+        delivered = await consumer._try_fresh_final(
+            "Interim segment", is_turn_final=False,
+        )
+
+        assert delivered is True
+        metadata = adapter.send.await_args.kwargs["metadata"]
+        assert metadata["message_thread_id"] == 42
+        assert metadata.get("notify", False) is False
+        assert consumer.final_response_sent is False
+
+    @pytest.mark.parametrize("outcome_kind", ["send-result", "exception"])
+    @pytest.mark.asyncio
+    async def test_run_ambiguous_fresh_final_attempts_only_once(
+        self, outcome_kind,
+    ):
+        from gateway.platforms.base import SendResult
+
+        if outcome_kind == "send-result":
+            ambiguous_outcome = SendResult(
+                success=False,
+                error="Timed out waiting for Telegram",
+                retryable=False,
+            )
+        else:
+            ambiguous_outcome = TimeoutError("Timed out waiting for Telegram")
+
+        adapter = _make_fresh_final_adapter()
+        adapter.send = AsyncMock(
+            side_effect=[
+                SendResult(success=True, message_id="preview1"),
+                ambiguous_outcome,
+                ambiguous_outcome,
+            ]
+        )
+        cfg = StreamConsumerConfig(
+            transport="auto", chat_type="dm",
+            edit_interval=0.01, buffer_threshold=5, cursor="",
+            fresh_final_after_seconds=0.0,
+        )
+        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+
+        consumer.on_delta("Full answer here")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        assert adapter.send.await_count == 2
+        adapter.edit_message.assert_not_awaited()
+        adapter.delete_message.assert_not_awaited()
+        assert consumer._message_id == "preview1"
+        assert consumer.final_response_sent is False
+        assert consumer.final_content_delivered is True
+
 
 def _make_rich_capable_adapter(*, overflow_limit=32768, send_results=None):
     """Non-draft adapter that mimics Telegram rich messages: REQUIRES_EDIT_FINALIZE,
