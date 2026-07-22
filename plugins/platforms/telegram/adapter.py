@@ -3617,11 +3617,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 _transport_kwargs: dict = {}
                 if _pool_limits is not None:
                     _transport_kwargs["limits"] = _pool_limits
+                socket_diagnostics = bool(
+                    self.config.extra.get("socket_diagnostics", False)
+                )
                 request = HTTPXRequest(
                     **request_kwargs,
                     httpx_kwargs={
                         "transport": TelegramFallbackTransport(
-                            fallback_ips, **_transport_kwargs
+                            fallback_ips,
+                            owner_role="general",
+                            socket_diagnostics=socket_diagnostics,
+                            **_transport_kwargs,
                         )
                     },
                 )
@@ -3629,7 +3635,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     **request_kwargs,
                     httpx_kwargs={
                         "transport": TelegramFallbackTransport(
-                            fallback_ips, **_transport_kwargs
+                            fallback_ips,
+                            owner_role="polling",
+                            socket_diagnostics=socket_diagnostics,
+                            **_transport_kwargs,
                         )
                     },
                 )
