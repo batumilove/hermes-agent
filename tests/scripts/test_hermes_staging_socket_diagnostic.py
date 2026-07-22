@@ -185,17 +185,17 @@ def test_enable_guarded_cas_preserves_drift_at_rename_boundary(diagnostic, tmp_p
     path.write_text("{}")
     store = diagnostic.ConfigStore(root, expected_uid=os.getuid(), expected_gid=os.getgid())
     snapshot = store.snapshot()
-    real_rename = diagnostic._rename_noreplace
+    real_exchange = diagnostic._rename_exchange
     fired = False
 
-    def race(old_fd, old_name, new_fd, new_name):
+    def race(first_fd, first_name, second_fd, second_name):
         nonlocal fired
-        if not fired and old_name == "gateway.json" and new_name.endswith(".guard"):
+        if not fired:
             fired = True
             path.write_text('{"operator":"enable-drift"}')
-        return real_rename(old_fd, old_name, new_fd, new_name)
+        return real_exchange(first_fd, first_name, second_fd, second_name)
 
-    monkeypatch.setattr(diagnostic, "_rename_noreplace", race)
+    monkeypatch.setattr(diagnostic, "_rename_exchange", race)
     with pytest.raises(diagnostic.ConfigDriftError):
         store.enable(snapshot)
     assert json.loads(path.read_text()) == {"operator": "enable-drift"}
@@ -208,20 +208,54 @@ def test_restore_guarded_cas_preserves_drift_at_rename_boundary(diagnostic, tmp_
     store = diagnostic.ConfigStore(root, expected_uid=os.getuid(), expected_gid=os.getgid())
     snapshot = store.snapshot()
     mutated_hash = store.enable(snapshot)
-    real_rename = diagnostic._rename_noreplace
+    real_exchange = diagnostic._rename_exchange
     fired = False
 
-    def race(old_fd, old_name, new_fd, new_name):
+    def race(first_fd, first_name, second_fd, second_name):
         nonlocal fired
-        if not fired and old_name == "gateway.json" and new_name.endswith(".guard"):
+        if not fired:
             fired = True
             path.write_text('{"operator":"restore-drift"}')
-        return real_rename(old_fd, old_name, new_fd, new_name)
+        return real_exchange(first_fd, first_name, second_fd, second_name)
 
-    monkeypatch.setattr(diagnostic, "_rename_noreplace", race)
+    monkeypatch.setattr(diagnostic, "_rename_exchange", race)
     with pytest.raises(diagnostic.ConfigDriftError):
         store.restore(snapshot, mutated_hash)
     assert json.loads(path.read_text()) == {"operator": "restore-drift"}
+
+
+@pytest.mark.parametrize("phase", ["enable", "restore"])
+def test_atomic_exchange_process_death_is_recoverable(diagnostic, tmp_path, phase):
+    root = _config_dir(tmp_path)
+    path = root / "gateway.json"
+    original = b'{"operator":"original"}\n'
+    path.write_bytes(original)
+    store = diagnostic.ConfigStore(root, expected_uid=os.getuid(), expected_gid=os.getgid())
+    snapshot = store.snapshot()
+    mutated_hash = store.enable(snapshot)
+    if phase == "enable":
+        store.restore(snapshot, mutated_hash)
+
+    pid = os.fork()
+    if pid == 0:
+        real_exchange = diagnostic._rename_exchange
+
+        def die_after_exchange(first_fd, first_name, second_fd, second_name):
+            real_exchange(first_fd, first_name, second_fd, second_name)
+            os._exit(73)
+
+        diagnostic._rename_exchange = die_after_exchange
+        if phase == "enable":
+            store.enable(snapshot)
+        else:
+            store.restore(snapshot, mutated_hash)
+        os._exit(74)
+    waited, status = os.waitpid(pid, 0)
+    assert waited == pid and os.WIFEXITED(status) and os.WEXITSTATUS(status) == 73
+
+    store.restore(snapshot, mutated_hash)
+    assert path.read_bytes() == original
+    assert list(root.glob(".gateway.json.tx-*.swap")) == []
 
 
 def test_data_root_requires_exact_owner_and_mode(diagnostic, tmp_path):
@@ -386,7 +420,7 @@ def test_recovery_after_each_durable_mutation_state_is_restore_only(diagnostic, 
     snap = config.snapshot()
     store.save_snapshot(tx, snap)
     store.transition(tx, "ARMED")
-    mutated_hash = config.enable(snap)
+    mutated_hash = config.enable(snap, store.load_guard_name(tx))
     store.record_mutated_hash(tx, mutated_hash)
     store.transition(tx, "MUTATED")
     for state_name in ["ENABLED", "OBSERVING", "RESTORING"]:
@@ -545,7 +579,7 @@ def _armed_transaction(diagnostic, state, data, *, mutate=False):
     store.save_snapshot(tx, snapshot)
     store.transition(tx, "ARMED")
     if mutate:
-        config.enable(snapshot)
+        config.enable(snapshot, store.load_guard_name(tx))
     return tx, snapshot
 
 
@@ -629,8 +663,8 @@ def test_restore_guard_starts_at_armed_and_handles_mutation_unknown(diagnostic, 
     executor = _executor(diagnostic, tmp_path, deploy, data, state)
     real_enable = executor.config.enable
 
-    def replace_then_fail(snapshot):
-        real_enable(snapshot)
+    def replace_then_fail(snapshot, guard_name):
+        real_enable(snapshot, guard_name)
         raise OSError("journal-adjacent simulated failure")
 
     monkeypatch.setattr(executor.config, "enable", replace_then_fail)
@@ -656,7 +690,11 @@ def test_forward_failure_starts_fresh_restore_reserve(diagnostic, tmp_path, monk
     executor = _executor(diagnostic, tmp_path, deploy, data, state)
     reserves = []
 
-    monkeypatch.setattr(executor.config, "enable", lambda _snapshot: (_ for _ in ()).throw(OSError("forward failure")))
+    monkeypatch.setattr(
+        executor.config,
+        "enable",
+        lambda _snapshot, _guard_name: (_ for _ in ()).throw(OSError("forward failure")),
+    )
     monkeypatch.setattr(
         executor,
         "_restore",
@@ -671,6 +709,8 @@ def test_forward_failure_starts_fresh_restore_reserve(diagnostic, tmp_path, monk
 @pytest.mark.parametrize("raw", [
     "[Telegram socket] event=response-created owner=general route=primary local_port=1234\n",
     "[Telegram socket] event=response-closed owner=general route=primary local_port=1234\n",
+    "[Telegram socket] event=response-closed owner=general route=primary local_port=1234\n"
+    "[Telegram socket] event=response-created owner=general route=primary local_port=1234\n",
     "[Telegram socket] event=response-created owner=general route=primary local_port=unknown\n",
     "[Telegram socket] event=response-created owner=general route=primary local_port=unknown\n"
     "[Telegram socket] event=response-closed owner=general route=primary local_port=unknown\n",

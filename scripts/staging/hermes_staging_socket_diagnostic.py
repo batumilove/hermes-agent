@@ -11,7 +11,7 @@ import ctypes
 import errno
 import os
 import re
-import secrets
+
 import selectors
 import signal
 import socket
@@ -226,6 +226,8 @@ def _fsync_directory(fd: int) -> None:
 _LIBC = ctypes.CDLL(None, use_errno=True)
 _RENAMEAT2 = getattr(_LIBC, "renameat2", None)
 _RENAME_NOREPLACE = 1
+_RENAME_EXCHANGE = 2
+_TEST_GUARD_NAME = ".gateway.json.tx-00000000000000000000000000000000.swap"
 
 
 def _rename_noreplace(old_dir_fd: int, old_name: str, new_dir_fd: int, new_name: str) -> None:
@@ -239,6 +241,19 @@ def _rename_noreplace(old_dir_fd: int, old_name: str, new_dir_fd: int, new_name:
     if result != 0:
         value = ctypes.get_errno()
         raise OSError(value, os.strerror(value), old_name, new_name)
+
+
+def _rename_exchange(first_dir_fd: int, first_name: str, second_dir_fd: int, second_name: str) -> None:
+    if _RENAMEAT2 is None:
+        raise OSError(errno.ENOSYS, "renameat2 unavailable")
+    result = _RENAMEAT2(
+        ctypes.c_int(first_dir_fd), ctypes.c_char_p(os.fsencode(first_name)),
+        ctypes.c_int(second_dir_fd), ctypes.c_char_p(os.fsencode(second_name)),
+        ctypes.c_uint(_RENAME_EXCHANGE),
+    )
+    if result != 0:
+        value = ctypes.get_errno()
+        raise OSError(value, os.strerror(value), first_name, second_name)
 
 
 class ConfigStore:
@@ -341,82 +356,54 @@ class ConfigStore:
         extra["socket_diagnostics"] = True
         return (json.dumps(data, indent=2, sort_keys=True) + "\n").encode()
 
-    def _guarded_update(
-        self, dir_fd: int, expected: ConfigSnapshot, replacement: ConfigSnapshot | None, tag: str
-    ) -> None:
-        suffix = secrets.token_hex(16)
-        temp_name = f".{self.name}.{tag}.{suffix}.tmp" if replacement is not None else ""
-        guard_name = f".{self.name}.{tag}.{suffix}.guard"
-        if replacement is not None:
-            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-            if hasattr(os, "O_NOFOLLOW"):
-                flags |= os.O_NOFOLLOW
-            fd = os.open(temp_name, flags, 0o600, dir_fd=dir_fd)
-            try:
-                os.fchown(fd, replacement.uid, replacement.gid)
-                os.fchmod(fd, replacement.mode)
-                view = memoryview(replacement.content)
-                while view:
-                    written = os.write(fd, view)
-                    view = view[written:]
-                os.fsync(fd)
-            except BaseException:
-                try:
-                    os.unlink(temp_name, dir_fd=dir_fd)
-                except OSError:
-                    pass
-                raise
-            finally:
-                os.close(fd)
+    @staticmethod
+    def _validate_guard_name(guard_name: str) -> None:
+        if not re.fullmatch(r"\.gateway\.json\.tx-[0-9a-f]{32}\.swap", guard_name):
+            raise ConfigError("transaction guard name is invalid")
 
-        guard_moved = False
-        installed = False
+    def _write_named(self, dir_fd: int, name: str, value: ConfigSnapshot) -> None:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(name, flags, 0o600, dir_fd=dir_fd)
         try:
-            if expected.existed:
-                try:
-                    _rename_noreplace(dir_fd, self.name, dir_fd, guard_name)
-                except FileNotFoundError as exc:
-                    raise ConfigDriftError("gateway config disappeared before guarded update") from exc
-                guard_moved = True
-                captured = self._read_named(dir_fd, guard_name, allow_absent=False)
-                if not _same_snapshot(captured, expected):
-                    try:
-                        _rename_noreplace(dir_fd, guard_name, dir_fd, self.name)
-                        guard_moved = False
-                    except OSError:
-                        pass
-                    raise ConfigDriftError("gateway config drift captured by guarded update")
-            if replacement is not None:
-                try:
-                    _rename_noreplace(dir_fd, temp_name, dir_fd, self.name)
-                except OSError as exc:
-                    if guard_moved:
-                        try:
-                            _rename_noreplace(dir_fd, guard_name, dir_fd, self.name)
-                            guard_moved = False
-                        except OSError:
-                            pass
-                    raise ConfigDriftError("gateway config pathname changed during guarded update") from exc
-                installed = True
-                temp_name = ""
-            _fsync_directory(dir_fd)
-            if guard_moved:
-                os.unlink(guard_name, dir_fd=dir_fd)
-                guard_moved = False
-                _fsync_directory(dir_fd)
+            os.fchown(fd, value.uid, value.gid)
+            os.fchmod(fd, value.mode)
+            view = memoryview(value.content)
+            while view:
+                written = os.write(fd, view)
+                view = view[written:]
+            os.fsync(fd)
+        except BaseException:
+            try:
+                os.unlink(name, dir_fd=dir_fd)
+            except OSError:
+                pass
+            raise
         finally:
-            if temp_name:
-                try:
-                    os.unlink(temp_name, dir_fd=dir_fd)
-                except OSError:
-                    pass
-            if guard_moved and not installed:
-                try:
-                    _rename_noreplace(dir_fd, guard_name, dir_fd, self.name)
-                except OSError:
-                    pass
+            os.close(fd)
+        _fsync_directory(dir_fd)
 
-    def enable(self, snapshot: ConfigSnapshot) -> str:
+    def _exchange_checked(
+        self,
+        dir_fd: int,
+        guard_name: str,
+        expected_current: ConfigSnapshot,
+        expected_guard: ConfigSnapshot,
+    ) -> None:
+        _rename_exchange(dir_fd, guard_name, dir_fd, self.name)
+        _fsync_directory(dir_fd)
+        current = self._read_current(dir_fd, allow_absent=False)
+        guard = self._read_named(dir_fd, guard_name, allow_absent=False)
+        if _same_snapshot(current, expected_guard) and _same_snapshot(guard, expected_current):
+            return
+        try:
+            _rename_exchange(dir_fd, guard_name, dir_fd, self.name)
+            _fsync_directory(dir_fd)
+        except OSError:
+            pass
+        raise ConfigDriftError("gateway config drift captured by atomic exchange")
+
+    def enable(self, snapshot: ConfigSnapshot, guard_name: str = _TEST_GUARD_NAME) -> str:
+        self._validate_guard_name(guard_name)
         content = self.enabled_payload(snapshot)
         fd = self._open_dir()
         try:
@@ -426,29 +413,74 @@ class ConfigStore:
             replacement = ConfigSnapshot(
                 True, content, snapshot.mode, snapshot.uid, snapshot.gid, _sha(content)
             )
-            self._guarded_update(fd, snapshot, replacement, "enable")
+            guard = self._read_named(fd, guard_name, allow_absent=True)
+            if guard.existed:
+                raise ConfigDriftError("transaction guard already exists")
+            self._write_named(fd, guard_name, replacement)
+            if snapshot.existed:
+                self._exchange_checked(fd, guard_name, snapshot, replacement)
+            else:
+                try:
+                    _rename_noreplace(fd, guard_name, fd, self.name)
+                    _fsync_directory(fd)
+                except OSError as exc:
+                    raise ConfigDriftError("gateway config pathname changed during install") from exc
+                installed = self._read_current(fd, allow_absent=False)
+                if not _same_snapshot(installed, replacement):
+                    raise ConfigDriftError("gateway config install verification failed")
             return _sha(content)
         finally:
             os.close(fd)
 
-    def restore(self, snapshot: ConfigSnapshot, expected_mutated_hash: str) -> None:
+    def restore(
+        self,
+        snapshot: ConfigSnapshot,
+        expected_mutated_hash: str,
+        guard_name: str = _TEST_GUARD_NAME,
+    ) -> None:
+        self._validate_guard_name(guard_name)
         fd = self._open_dir()
         try:
             current = self._read_current(fd, allow_absent=True)
-            if _same_snapshot(current, snapshot):
-                return
             expected_mutated = ConfigSnapshot(
                 True, b"", snapshot.mode, snapshot.uid, snapshot.gid, expected_mutated_hash
             )
-            if not _same_snapshot(current, expected_mutated):
-                raise ConfigDriftError("gateway config drift blocks restore")
+            guard = self._read_named(fd, guard_name, allow_absent=True)
             if snapshot.existed:
-                self._guarded_update(fd, expected_mutated, snapshot, "restore")
+                if _same_snapshot(current, snapshot):
+                    if guard.existed and not _same_snapshot(guard, expected_mutated):
+                        raise ConfigDriftError("transaction guard drift blocks cleanup")
+                elif _same_snapshot(current, expected_mutated) and _same_snapshot(guard, snapshot):
+                    self._exchange_checked(fd, guard_name, expected_mutated, snapshot)
+                    current = self._read_current(fd, allow_absent=False)
+                    guard = self._read_named(fd, guard_name, allow_absent=False)
+                else:
+                    raise ConfigDriftError("gateway config drift blocks restore")
             else:
-                self._guarded_update(fd, expected_mutated, None, "restore")
+                if not current.existed:
+                    if guard.existed and not _same_snapshot(guard, expected_mutated):
+                        raise ConfigDriftError("transaction guard drift blocks cleanup")
+                elif _same_snapshot(current, expected_mutated) and not guard.existed:
+                    try:
+                        _rename_noreplace(fd, self.name, fd, guard_name)
+                        _fsync_directory(fd)
+                    except OSError as exc:
+                        raise ConfigDriftError("gateway config pathname changed during removal") from exc
+                    current = self._read_current(fd, allow_absent=True)
+                    guard = self._read_named(fd, guard_name, allow_absent=False)
+                    if current.existed or not _same_snapshot(guard, expected_mutated):
+                        raise ConfigDriftError("gateway config removal verification failed")
+                else:
+                    raise ConfigDriftError("gateway config drift blocks restore")
             restored = self._read_current(fd, allow_absent=True)
             if not _same_snapshot(restored, snapshot):
                 raise ConfigDriftError("gateway config exact restoration failed")
+            guard = self._read_named(fd, guard_name, allow_absent=True)
+            if guard.existed:
+                if not _same_snapshot(guard, expected_mutated):
+                    raise ConfigDriftError("transaction guard changed before cleanup")
+                os.unlink(guard_name, dir_fd=fd)
+                _fsync_directory(fd)
         finally:
             os.close(fd)
 
@@ -558,7 +590,20 @@ class TransactionStore:
             "existed": snapshot.existed, "mode": snapshot.mode, "uid": snapshot.uid,
             "gid": snapshot.gid, "sha256": snapshot.sha256,
         }
+        request_digest = tx.record.get("request_digest")
+        if not isinstance(request_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", request_digest):
+            raise StateError("transaction request digest is invalid")
+        tx.record["config_guard"] = f".gateway.json.tx-{request_digest[:32]}.swap"
         self._write(tx)
+
+    @staticmethod
+    def load_guard_name(tx: Transaction) -> str:
+        guard_name = tx.record.get("config_guard")
+        if not isinstance(guard_name, str) or not re.fullmatch(
+            r"\.gateway\.json\.tx-[0-9a-f]{32}\.swap", guard_name
+        ):
+            raise StateError("transaction config guard is invalid")
+        return guard_name
 
     def load_snapshot(self, tx: Transaction) -> ConfigSnapshot:
         value = tx.record.get("snapshot")
@@ -852,25 +897,30 @@ class DiagnosticExecutor:
     @staticmethod
     def _aggregate(raw: str) -> dict[str, object]:
         counts: dict[tuple[str, str, str], int] = {}
-        created: dict[tuple[str, str, str], int] = {}
-        terminal: dict[tuple[str, str, str], int] = {}
+        balances: dict[tuple[str, str, str], int] = {}
+        total_created = 0
         for line in raw.splitlines():
             match = _EVENT.search(line)
             if not match:
                 continue
             event, owner, route, port = match.groups()
-            key = (owner, route, event)
-            counts[key] = min(counts.get(key, 0) + 1, 2**31 - 1)
             if port == "unknown":
                 raise DiagnosticError("socket lifecycle events are incomplete: unknown local port")
             port_key = (owner, route, port)
-            target = created if event == "response-created" else terminal
-            target[port_key] = min(target.get(port_key, 0) + 1, 2**31 - 1)
+            if event == "response-created":
+                balances[port_key] = balances.get(port_key, 0) + 1
+                total_created += 1
+            else:
+                if balances.get(port_key, 0) <= 0:
+                    raise DiagnosticError("socket lifecycle events are causally incomplete")
+                balances[port_key] -= 1
+            key = (owner, route, event)
+            counts[key] = min(counts.get(key, 0) + 1, 2**31 - 1)
         if not counts:
             raise DiagnosticError("no socket lifecycle events observed")
-        if len(counts) > 256 or len(created) > 4096:
+        if len(counts) > 256 or len(balances) > 4096:
             raise DiagnosticError("diagnostic aggregate exceeds bound")
-        if not created or created != terminal:
+        if total_created == 0 or any(balance != 0 for balance in balances.values()):
             raise DiagnosticError("socket lifecycle events are incomplete")
         return {
             "counts": [{"owner": o, "route": r, "event": e, "count": c} for (o, r, e), c in sorted(counts.items())],
@@ -879,11 +929,12 @@ class DiagnosticExecutor:
 
     def _restore(self, tx: Transaction, snapshot: ConfigSnapshot, mutated_hash: str) -> None:
         self.states.begin_restore(tx)
+        guard_name = self.states.load_guard_name(tx)
         last_error: BaseException | None = None
         for attempt in range(3):
             try:
                 self._stop()
-                self.config.restore(snapshot, mutated_hash)
+                self.config.restore(snapshot, mutated_hash, guard_name)
                 self._restart()
                 self._effective(False)
                 self.states.transition(tx, "RESTORED")
@@ -908,12 +959,13 @@ class DiagnosticExecutor:
                 raise TransactionConflictError("active transaction requires recovery")
             snapshot = self.config.snapshot()
             self.states.save_snapshot(tx, snapshot)
+            guard_name = self.states.load_guard_name(tx)
             self.states.transition(tx, "ARMED")
             mutated_hash = _sha(self.config.enabled_payload(snapshot))
             result = None
             try:
                 self._stop()
-                actual_hash = self.config.enable(snapshot)
+                actual_hash = self.config.enable(snapshot, guard_name)
                 if actual_hash != mutated_hash:
                     raise StateError("mutated config hash mismatch")
                 self.states.record_mutated_hash(tx, mutated_hash)
