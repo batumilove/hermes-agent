@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-07-20T15:54:55Z",
+  "updated_at": "2026-07-22T16:10:34Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -531,6 +531,9 @@
       },
       "models": [
         {
+          "id": "kimi-k3"
+        },
+        {
           "id": "kimi-k2.7-code"
         },
         {
@@ -571,7 +574,16 @@
       },
       "models": [
         {
-          "id": "kimi-for-coding"
+          "id": "kimi-k3"
+        },
+        {
+          "id": "kimi-k2.7-code"
+        },
+        {
+          "id": "kimi-k2.7-code-highspeed"
+        },
+        {
+          "id": "kimi-k2.6"
         },
         {
           "id": "kimi-k2.5"
@@ -1053,6 +1065,9 @@
         "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
       },
       "models": [
+        {
+          "id": "kimi-k3"
+        },
         {
           "id": "kimi-k2.7-code"
         },

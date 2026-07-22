@@ -797,6 +797,62 @@ def test_run_agent_dispatch_forces_background():
         assert captured["background"] is False
 
 
+def test_run_agent_dispatch_records_detached_work_for_this_turn():
+    """A successful top-level dispatch must leave an operation-scoped marker
+    for the gateway; ending the parent model turn is not task completion."""
+    from unittest.mock import patch
+    import run_agent
+
+    class _FakeAgent:
+        _delegate_depth = 0
+
+    with patch(
+        "tools.delegate_tool.delegate_task",
+        return_value='{"status":"dispatched","delegation_id":"deleg_test"}',
+    ):
+        agent = _FakeAgent()
+        result = run_agent.AIAgent._dispatch_delegate_task(agent, {"goal": "review"})
+
+    assert '"status":"dispatched"' in result
+    assert agent._turn_detached_work == [
+        {"kind": "delegation", "id": "deleg_test"}
+    ]
+
+
+def test_subagent_synchronous_dispatch_does_not_mark_detached_work():
+    from unittest.mock import patch
+    import run_agent
+
+    class _FakeAgent:
+        _delegate_depth = 1
+
+    with patch(
+        "tools.delegate_tool.delegate_task",
+        return_value='{"status":"completed","summary":"done"}',
+    ):
+        agent = _FakeAgent()
+        run_agent.AIAgent._dispatch_delegate_task(agent, {"goal": "review"})
+
+    assert getattr(agent, "_turn_detached_work", []) == []
+
+
+def test_dispatch_without_a_durable_handle_does_not_mark_detached_work():
+    from unittest.mock import patch
+    import run_agent
+
+    class _FakeAgent:
+        _delegate_depth = 0
+
+    with patch(
+        "tools.delegate_tool.delegate_task",
+        return_value='{"status":"dispatched"}',
+    ):
+        agent = _FakeAgent()
+        run_agent.AIAgent._dispatch_delegate_task(agent, {"goal": "review"})
+
+    assert getattr(agent, "_turn_detached_work", []) == []
+
+
 def test_dispatch_never_forwards_model_toolsets():
     """The model has no toolsets argument — subagents always inherit the
     parent's toolsets. Even if a model smuggles a `toolsets` key into the

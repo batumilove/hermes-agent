@@ -42,6 +42,30 @@ def _is_pure_tool_call_tail(msg: dict) -> bool:
     return not flatten_message_text(msg.get("content")).strip()
 
 
+# Verification continuation scaffolding flags: verify-on-stop / pre_verify
+# inject a synthetic user nudge to keep the agent going one more turn.
+# These nudges must be stripped from returned/live history to avoid
+# role-alternation breaks and poisoning the resumed transcript. The
+# assistant response is real content and is not flagged. (#65919 §7)
+_VERIFICATION_CONTINUATION_FLAGS = (
+    "_verification_stop_synthetic",
+    "_pre_verify_synthetic",
+)
+
+
+def _drop_verification_continuation_scaffolding(messages) -> None:
+    """Remove verification-continuation nudge messages from *messages* in place.
+
+    Only the synthetic nudges carry these flags, so this strips just the
+    nudges while preserving the real attempted-final-answer that was
+    persisted to state.db.
+    """
+    messages[:] = [
+        m for m in messages
+        if not (isinstance(m, dict) and any(m.get(f) for f in _VERIFICATION_CONTINUATION_FLAGS))
+    ]
+
+
 def finalize_turn(
     agent,
     *,
@@ -58,6 +82,7 @@ def finalize_turn(
     _should_review_memory,
     _turn_exit_reason,
     _pending_verification_response=None,
+    _pending_verification_response_previewed=False,
 ):
     """Run the post-loop finalization and return the turn ``result`` dict.
 
@@ -91,6 +116,11 @@ def finalize_turn(
         # fallible model call. The explicit pending value is the provenance
         # guard: unrelated error/recovery exits can never enter this branch.
         final_response = _pending_verification_response
+        # Mark the turn as previewed only when the reused candidate was
+        # actually streamed to the user as interim content. (#65919 review:
+        # response-loss blocker)
+        if _pending_verification_response_previewed:
+            agent._response_was_previewed = True
         _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
         iteration_limit_fallback = True
         preserved_verification_fallback = True
@@ -160,6 +190,61 @@ def finalize_turn(
                     exc_info=True,
                 )
 
+    # Ordinary controller responses do not pass through the worker-only
+    # ``created_cards`` gate. Reject fresh Kanban mutation/status claims here,
+    # before persistence, unless the current turn contains both successful
+    # mutation evidence and an explicit show/list readback for every claimed id.
+    _kanban_claim_verification = None
+    if final_response and not interrupted and not os.environ.get("HERMES_KANBAN_TASK"):
+        try:
+            from agent.harness_learning import evaluate_controller_kanban_claims
+
+            _kanban_decision = evaluate_controller_kanban_claims(messages, final_response)
+            if _kanban_decision.task_ids:
+                _kanban_claim_verification = {
+                    "verified": not _kanban_decision.rejected,
+                    "task_ids": list(_kanban_decision.task_ids),
+                    "missing_evidence": list(_kanban_decision.missing_evidence),
+                }
+            if _kanban_decision.rejected:
+                _ids = ", ".join(_kanban_decision.task_ids)
+                _missing = ", ".join(_kanban_decision.missing_evidence)
+                _unverified_kanban_claim = (
+                    f"{_kanban_decision.message} Tasks: {_ids}. Missing: {_missing}."
+                )
+                _old_final_response = final_response
+                final_response = _unverified_kanban_claim
+                failed = True
+                _turn_exit_reason = "kanban_claim_evidence_rejected"
+                if messages and messages[-1].get("role") == "assistant":
+                    if flatten_message_text(messages[-1].get("content")).strip() == str(
+                        _old_final_response
+                    ).strip():
+                        messages[-1]["content"] = final_response
+                        messages[-1].pop("_db_persisted", None)
+                logger.error(
+                    "Rejected unverified controller Kanban claim: %s",
+                    _unverified_kanban_claim,
+                )
+        except Exception as _kanban_claim_err:
+            # The guard itself must fail closed for explicit task-id state
+            # claims: never let a validator bug restore the model's assertion.
+            if "t_" in str(final_response).lower():
+                final_response = (
+                    "Kanban claim rejected: verification failed internally; "
+                    "treat every referenced task state as unverified."
+                )
+                _kanban_claim_verification = {
+                    "verified": False,
+                    "task_ids": [],
+                    "missing_evidence": ["internal_verifier_error"],
+                }
+                failed = True
+                _turn_exit_reason = "kanban_claim_evidence_rejected"
+            logger.exception(
+                "Controller Kanban claim verifier failed: %s", _kanban_claim_err
+            )
+
     # Determine if conversation completed successfully
     normal_text_response = str(_turn_exit_reason).startswith("text_response(")
     completed = (
@@ -206,6 +291,12 @@ def finalize_turn(
     try:
         agent._drop_trailing_empty_response_scaffolding(messages)
 
+        # Drop verification-continuation nudges (synthetic user messages)
+        # from the live history before the tail-assistant check — only the
+        # nudges need stripping; the assistant candidate persists in
+        # state.db. (#65919 §7)
+        _drop_verification_continuation_scaffolding(messages)
+
         # When the turn was interrupted and the last message is a tool
         # result, append a synthetic assistant message to close the
         # tool-call sequence. Without this, the session persists a
@@ -235,6 +326,10 @@ def finalize_turn(
         # single chokepoint every recovery ``break`` flows through, so the
         # invariant "delivered final_response ⇒ assistant row in transcript"
         # holds regardless of which path produced it. (#43849 / #44100)
+        #
+        # Compare content (not just role) so a verification candidate that
+        # matches the final response is not duplicated at budget
+        # exhaustion. (#65919 §7)
         if final_response and not interrupted:
             try:
                 _tail = messages[-1] if messages else None
@@ -242,8 +337,10 @@ def finalize_turn(
                 _tail = None
             _tail_role = _tail.get("role") if isinstance(_tail, dict) else None
             if _tail_role != "assistant":
+                # Tail is not an assistant row — append the final response
+                # so the durable turn closes with the answer (#43849/#44100).
                 messages.append({"role": "assistant", "content": final_response})
-            elif isinstance(_tail, dict) and _is_pure_tool_call_tail(_tail):
+            elif isinstance(_tail, dict) and _tail.get("content") != final_response and _is_pure_tool_call_tail(_tail):
                 # The tail IS an assistant row, but a *pure tool-call turn*:
                 # tool_calls with no text of its own. The role check alone
                 # leaves the #43849/#44100 invariant unmet — the user saw a
@@ -253,6 +350,11 @@ def finalize_turn(
                 # instead of appending, so the durable turn ends with the answer
                 # without disturbing the tool-call structure or creating an
                 # assistant→assistant pair.
+                #
+                # The ``content != final_response`` guard prevents filling when
+                # the tail already carries the final response text (verification
+                # candidate collapse — the provisional answer was persisted and
+                # reused as the terminal response, #65919 §7).
                 _tail["content"] = final_response
                 # The row may have already been flushed to SQLite by the
                 # incremental tool-call persist (conversation_loop.py:4990),
@@ -507,6 +609,7 @@ def finalize_turn(
         "partial": False,  # True only when stopped due to invalid tool calls
         "interrupted": interrupted,
         "response_transformed": _response_transformed,
+        "claim_verification": _kanban_claim_verification,
         "response_previewed": getattr(agent, "_response_was_previewed", False),
         "model": agent.model,
         "provider": agent.provider,

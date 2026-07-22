@@ -546,6 +546,8 @@ class TestAdapterPrefersFreshFinal:
         assert consumer.final_content_delivered is True
 
 
+
+
 def _make_rich_capable_adapter(*, overflow_limit=32768, send_results=None):
     """Non-draft adapter that mimics Telegram rich messages: REQUIRES_EDIT_FINALIZE,
     prefers a fresh (rich) final send, and reports a 32,768 streaming overflow

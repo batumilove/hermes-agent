@@ -790,8 +790,8 @@ class TestDeliverResultWrapping:
         )
         return media_file.resolve()
 
-    def test_delivery_wraps_content_with_header_and_footer(self):
-        """Delivered content should include task name header and agent-invisible note."""
+    def test_delivery_wraps_recurring_job_with_manage_footer(self):
+        """A recurring job should keep the stop/manage guidance."""
         from gateway.config import Platform
 
         pconfig = MagicMock()
@@ -806,6 +806,8 @@ class TestDeliverResultWrapping:
                 "name": "daily-report",
                 "deliver": "origin",
                 "origin": {"platform": "telegram", "chat_id": "123"},
+                "schedule": {"kind": "cron", "expression": "0 9 * * *"},
+                "repeat": {"times": None, "completed": 3},
             }
             _deliver_result(job, "Here is today's summary.")
 
@@ -816,6 +818,146 @@ class TestDeliverResultWrapping:
         assert "-------------" in sent_content
         assert "Here is today's summary." in sent_content
         assert "To stop or manage this job" in sent_content
+        assert "no active schedule remains" not in sent_content
+
+    def test_delivery_wraps_one_shot_job_with_terminal_footer(self):
+        """A completed one-shot must not claim that the removed job can be stopped."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            job = {
+                "id": "one-shot-job",
+                "name": "temporary smoke test",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+                "schedule": {"kind": "once", "run_at": "2026-07-22T13:05:51+00:00"},
+                "repeat": {"times": 1, "completed": 0},
+            }
+            _deliver_result(job, "Smoke test passed.")
+
+        send_mock.assert_called_once()
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert "Smoke test passed." in sent_content
+        assert "This one-shot job is complete; no active schedule remains." in sent_content
+        assert "To stop or manage this job" not in sent_content
+
+    def test_delivery_wraps_final_repeat_with_terminal_footer(self):
+        """The final run of a finite repeat must not advertise a removed schedule."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            job = {
+                "id": "finite-job",
+                "name": "four-run report",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+                "schedule": {"kind": "interval", "seconds": 3600},
+                "repeat": {"times": 4, "completed": 3},
+            }
+            _deliver_result(job, "Fourth report.")
+
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert "This job has completed its final scheduled run; no active schedule remains." in sent_content
+        assert "To stop or manage this job" not in sent_content
+
+    def test_delivery_uses_current_store_when_repeat_changes_during_run(self):
+        """An in-flight edit to infinite repeats must prevent a stale terminal claim."""
+        from cron.jobs import save_jobs
+        from gateway.config import Platform
+
+        stale_job = {
+            "id": "edited-job",
+            "name": "edited report",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+            "schedule": {"kind": "interval", "minutes": 60},
+            "repeat": {"times": 1, "completed": 0},
+        }
+        current_job = {
+            **stale_job,
+            "repeat": {"times": None, "completed": 0},
+        }
+        save_jobs([current_job])
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            _deliver_result(stale_job, "Report after edit.")
+
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert "To stop or manage this job" in sent_content
+        assert "no active schedule remains" not in sent_content
+
+    def test_delivery_matches_bool_repeat_semantics_used_by_job_store(self):
+        """Bool repeat limits must match mark_job_run's current int-compatible behavior."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        job = {
+            "id": "bool-repeat-job",
+            "name": "bool repeat",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+            "schedule": {"kind": "interval", "minutes": 60},
+            "repeat": {"times": True, "completed": 0},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            _deliver_result(job, "Only report.")
+
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert "This job has completed its final scheduled run; no active schedule remains." in sent_content
+        assert "To stop or manage this job" not in sent_content
+
+    def test_delivery_tolerates_idless_sibling_when_reading_current_job(self):
+        """A malformed sibling record must not break or stale the target's footer."""
+        from cron.jobs import save_jobs
+        from gateway.config import Platform
+
+        stale_job = {
+            "id": "healthy-job",
+            "name": "healthy report",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+            "schedule": {"kind": "interval", "minutes": 60},
+            "repeat": {"times": 1, "completed": 0},
+        }
+        current_job = {**stale_job, "repeat": {"times": None, "completed": 0}}
+        save_jobs([{"name": "malformed sibling"}, current_job])
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            error = _deliver_result(stale_job, "Report despite sibling.")
+
+        assert error is None
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert "To stop or manage this job" in sent_content
+        assert "no active schedule remains" not in sent_content
 
     def test_delivery_uses_job_id_when_no_name(self):
         """When a job has no name, the wrapper should fall back to job id."""

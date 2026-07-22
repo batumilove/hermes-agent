@@ -81,7 +81,7 @@ def test_kanban_complete_summary_scrubbed(worker_env):
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
     secret = "sk-ant-" + "A" * 40
-    kt._handle_complete({"summary": f"done, key={secret}"})
+    kt._handle_complete({"verdict": "PASS", "summary": f"done, key={secret}"})
     conn = kb.connect()
     try:
         run = kb.latest_run(conn, worker_env)
@@ -98,7 +98,7 @@ def test_kanban_complete_metadata_scrubbed(worker_env):
     from hermes_cli import kanban_db as kb
     secret = "ghp_" + "B" * 40
     metadata = {"token": secret, "count": 5}
-    kt._handle_complete({"summary": "done", "metadata": metadata})
+    kt._handle_complete({"verdict": "PASS", "summary": "done", "metadata": metadata})
     conn = kb.connect()
     try:
         run = kb.latest_run(conn, worker_env)
@@ -180,7 +180,7 @@ def test_kanban_complete_result_field_scrubbed(worker_env):
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
     secret = "sk-" + "D" * 48
-    kt._handle_complete({"result": f"finished with key={secret}"})
+    kt._handle_complete({"verdict": "PASS", "result": f"finished with key={secret}"})
     conn = kb.connect()
     try:
         run = kb.latest_run(conn, worker_env)

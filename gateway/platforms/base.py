@@ -17,6 +17,7 @@ import subprocess
 import sys
 import time
 import uuid
+import weakref
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
@@ -1187,8 +1188,9 @@ def _media_delivery_denied_paths() -> List[Path]:
         os.path.join("auth", "google_oauth.json"),
         # Webhook subscription HMAC secrets.
         "webhook_subscriptions.json",
-        # Bitwarden Secrets Manager plaintext disk cache.
+        # Bitwarden Secrets Manager plaintext and encrypted disk caches.
         os.path.join("cache", "bws_cache.json"),
+        os.path.join("cache", "bws_cache.enc.json"),
     )
     # Directory trees whose every child is credential material.
     #
@@ -2109,6 +2111,23 @@ class EphemeralReply(str):
         return str.__str__(self)
 
 
+class RunPhaseReply(str):
+    """Assistant reply carrying a user-visible operation phase.
+
+    ``dispatched`` means this turn returned control to the user after starting
+    detached work. It is deliberately distinct from a completed/final task.
+    """
+
+    message_phase: str
+
+    def __new__(cls, text: str, message_phase: str):
+        if message_phase != "dispatched":
+            raise ValueError(f"Unsupported run message phase: {message_phase}")
+        instance = super().__new__(cls, text)
+        instance.message_phase = message_phase
+        return instance
+
+
 def _invalidate_pending_stt_cache(event: MessageEvent) -> None:
     """Clear gateway-side STT cache attrs when media is merged into an event.
 
@@ -2453,6 +2472,12 @@ class BasePlatformAdapter(ABC):
         self._fatal_error_message: Optional[str] = None
         self._fatal_error_retryable = True
         self._fatal_error_handler: Optional[Callable[["BasePlatformAdapter"], Awaitable[None] | None]] = None
+        # Cross-HERMES_HOME token takeover is armed by GatewayRunner only for
+        # an adapter's initial connect during an explicit ``gateway run
+        # --replace`` startup.  Ordinary starts and every reconnect fail safe
+        # through the existing retryable conflict path.
+        self._platform_lock_takeover_allowed = False
+        self._platform_lock_takeover_attempted = False
         
         # Track active message handlers per session for interrupt support.
         # _active_sessions stores the per-session interrupt Event; _session_tasks
@@ -2852,8 +2877,18 @@ class BasePlatformAdapter(ABC):
             await result
 
     def _acquire_platform_lock(self, scope: str, identity: str, resource_desc: str) -> bool:
-        """Acquire a scoped lock for this adapter. Returns True on success."""
-        from gateway.status import acquire_scoped_lock
+        """Acquire a scoped lock for this adapter. Returns True on success.
+
+        A live cross-HERMES_HOME holder may be replaced only when the runner
+        explicitly arms this adapter for its initial ``--replace`` connect.
+        The status module validates PID/start-time/home ownership, places the
+        marker in the target's home, and performs the bounded termination.
+        """
+        from gateway.status import (
+            acquire_scoped_lock,
+            take_over_scoped_lock_holder,
+        )
+
         self._platform_lock_scope = scope
         self._platform_lock_identity = identity
         acquired, existing = acquire_scoped_lock(
@@ -2861,6 +2896,42 @@ class BasePlatformAdapter(ABC):
         )
         if acquired:
             return True
+
+        takeover_allowed = bool(
+            getattr(self, "_platform_lock_takeover_allowed", False)
+        )
+        takeover_attempted = bool(
+            getattr(self, "_platform_lock_takeover_attempted", False)
+        )
+        if takeover_allowed and not takeover_attempted and isinstance(existing, dict):
+            # Consume the authority before doing any I/O: one adapter connect
+            # gets at most one termination attempt, even if lock re-acquire or
+            # later initialization fails.
+            self._platform_lock_takeover_allowed = False
+            self._platform_lock_takeover_attempted = True
+            owner_pid = take_over_scoped_lock_holder(existing)
+            if owner_pid is not None:
+                logger.warning(
+                    "[%s] %s was held by gateway PID %d — explicit --replace "
+                    "handoff completed",
+                    self.name,
+                    resource_desc,
+                    owner_pid,
+                )
+                acquired, existing = acquire_scoped_lock(
+                    scope,
+                    identity,
+                    metadata={"platform": self.platform.value},
+                )
+                if acquired:
+                    logger.info(
+                        "[%s] Acquired %s after taking over PID %d",
+                        self.name,
+                        resource_desc,
+                        owner_pid,
+                    )
+                    return True
+
         owner_pid = existing.get('pid') if isinstance(existing, dict) else None
         message = (
             f'{resource_desc} already in use'
@@ -5046,6 +5117,13 @@ class BasePlatformAdapter(ABC):
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
             is_ephemeral_response = isinstance(response, EphemeralReply)
+            # A str-compatible handler response may carry a user-visible run
+            # phase. Preserve only the explicit detached-work phase: ordinary
+            # strings remain final replies, while a dispatch acknowledgement
+            # must not be relabelled as task completion by Telegram.
+            _response_message_phase = getattr(response, "message_phase", None)
+            if _response_message_phase not in {"dispatched"}:
+                _response_message_phase = None
 
             # Slash-command handlers may return an EphemeralReply sentinel to
             # request that their reply message auto-delete after a TTL (used
@@ -5136,6 +5214,8 @@ class BasePlatformAdapter(ABC):
                 # metadata stays unmarked and progress bubbles remain
                 # thread-strict.
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+                if _response_message_phase:
+                    _final_thread_metadata["message_phase"] = _response_message_phase
 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
@@ -5746,7 +5826,7 @@ class BasePlatformAdapter(ABC):
                     self.platform, chat_id, exc_info=True,
                 )
 
-        return SessionSource(
+        source = SessionSource(
             platform=self.platform,
             chat_id=str(chat_id),
             chat_name=chat_name,
@@ -5767,6 +5847,11 @@ class BasePlatformAdapter(ABC):
             auto_thread_created=auto_thread_created,
             auto_thread_initial_name=auto_thread_initial_name,
         )
+        # In-process transport provenance is deliberately not serialized by
+        # SessionSource.to_dict(). The live receiving adapter is authoritative
+        # for this turn even when profile_routes selects a different runtime.
+        source._transport_adapter_ref = weakref.ref(self)
+        return source
     
     @abstractmethod
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:

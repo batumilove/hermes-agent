@@ -143,6 +143,21 @@ def test_run_slash_create_with_parent_and_cascade(kanban_home):
     assert "child" in ready_list
 
 
+def test_run_slash_complete_block_verdict_reports_blocked_state(kanban_home):
+    import re
+
+    created = kc.run_slash("create 'production review gate'")
+    tid = re.search(r"(t_[a-f0-9]+)", created).group(1)
+
+    output = kc.run_slash(
+        f"complete {tid} --summary 'BLOCK verdict: evidence missing' --verdict BLOCK"
+    )
+
+    assert f"Recorded BLOCK verdict for {tid}; task remains blocked" in output
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
 def test_run_slash_show_includes_comments(kanban_home):
     out = kc.run_slash("create 'x'")
     import re

@@ -528,6 +528,7 @@ async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path, m
     os.environ["HERMES_KANBAN_TASK"] = tid
     try:
         out = kt._handle_complete({
+            "verdict": "PASS",
             "summary": "rendered the chart",
             "artifacts": [str(chart_path), str(report_path)],
         })
@@ -614,6 +615,7 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     os.environ["HERMES_KANBAN_TASK"] = tid
     try:
         kt._handle_complete({
+            "verdict": "PASS",
             "summary": "one real, one ghost",
             "artifacts": [str(real_pdf), "/tmp/definitely-does-not-exist.pdf"],
         })

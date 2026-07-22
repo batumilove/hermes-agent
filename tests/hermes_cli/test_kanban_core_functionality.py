@@ -90,6 +90,152 @@ def test_no_idempotency_key_never_collides(kanban_home):
 
 
 # ---------------------------------------------------------------------------
+# Structured semantic verdicts
+# ---------------------------------------------------------------------------
+
+
+def test_block_verdict_completes_run_but_keeps_task_and_children_blocked(
+    kanban_home, monkeypatch
+):
+    """Lifecycle completion must not turn a semantic BLOCK into approval."""
+    hooks = []
+    monkeypatch.setattr(
+        kb,
+        "_fire_kanban_lifecycle_hook",
+        lambda event, *args, **kwargs: hooks.append(event),
+    )
+    conn = kb.connect()
+    try:
+        review = kb.create_task(conn, title="Review production readiness")
+        child = kb.create_task(conn, title="Deploy", parents=[review])
+
+        assert kb.complete_task(
+            conn,
+            review,
+            summary="BLOCK verdict: watchdog path is invalid",
+            verdict="BLOCK",
+        )
+
+        assert kb.get_task(conn, review).status == "blocked"
+        assert kb.get_task(conn, child).status == "todo"
+        task = kb.get_task(conn, review)
+        assert task.completed_at is None
+        run = kb.latest_run(conn, review)
+        assert run.outcome == "blocked"
+        event_kinds = [
+            row[0]
+            for row in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id=? ORDER BY id",
+                (review,),
+            ).fetchall()
+        ]
+        assert "blocked" in event_kinds
+        assert "completed" not in event_kinds
+        assert "kanban_task_blocked" in hooks
+        assert "kanban_task_completed" not in hooks
+    finally:
+        conn.close()
+
+
+def test_explicit_pass_verdict_promotes_children(kanban_home):
+    conn = kb.connect()
+    try:
+        review = kb.create_task(conn, title="Review production readiness")
+        child = kb.create_task(conn, title="Deploy", parents=[review])
+
+        assert kb.complete_task(conn, review, summary="PASS: verified", verdict="PASS")
+
+        assert kb.get_task(conn, review).status == "done"
+        assert kb.get_task(conn, child).status == "ready"
+    finally:
+        conn.close()
+
+
+def test_legacy_block_summary_is_inferred_and_does_not_promote(kanban_home):
+    """Old workers that omit the structured field must still fail closed."""
+    conn = kb.connect()
+    try:
+        review = kb.create_task(conn, title="Final review gate")
+        child = kb.create_task(conn, title="Deploy", parents=[review])
+
+        assert kb.complete_task(conn, review, summary="NOT READY — two blockers remain")
+
+        assert kb.get_task(conn, review).status == "blocked"
+        assert kb.get_task(conn, child).status == "todo"
+    finally:
+        conn.close()
+
+
+def test_legacy_block_summary_is_inferred_without_review_title_keywords(kanban_home):
+    """An explicit leading BLOCK must fail closed regardless of task naming."""
+    conn = kb.connect()
+    try:
+        review = kb.create_task(conn, title="Independent exact-candidate inspection")
+        child = kb.create_task(conn, title="Deploy", parents=[review])
+
+        assert kb.complete_task(conn, review, summary="BLOCK: unsafe candidate")
+
+        assert kb.get_task(conn, review).status == "blocked"
+        assert kb.get_task(conn, child).status == "todo"
+        assert kb.latest_run(conn, review).metadata["verdict"] == "BLOCK"
+    finally:
+        conn.close()
+
+
+def test_conflicting_pass_verdict_and_block_summary_is_rejected(kanban_home):
+    conn = kb.connect()
+    try:
+        review = kb.create_task(conn, title="Review")
+
+        with pytest.raises(kb.VerdictConflictError):
+            kb.complete_task(
+                conn,
+                review,
+                summary="BLOCK: unsafe default registration",
+                verdict="PASS",
+            )
+
+        assert kb.get_task(conn, review).status == "ready"
+    finally:
+        conn.close()
+
+
+def test_non_review_prose_is_not_misclassified_as_semantic_verdict(kanban_home):
+    conn = kb.connect()
+    try:
+        task = kb.create_task(conn, title="Document networking behavior")
+
+        assert kb.complete_task(conn, task, summary="PASS through the proxy is documented")
+
+        assert kb.get_task(conn, task).status == "done"
+        event = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='completed' ORDER BY id DESC LIMIT 1",
+            (task,),
+        ).fetchone()
+        assert "verdict" not in json.loads(event[0])
+    finally:
+        conn.close()
+
+
+def test_direct_completion_metadata_cannot_spoof_verdict(kanban_home):
+    conn = kb.connect()
+    try:
+        task = kb.create_task(conn, title="Ordinary task")
+
+        assert kb.complete_task(
+            conn,
+            task,
+            summary="ordinary completion",
+            metadata={"verdict": "PASS", "files": 1},
+        )
+
+        run = kb.latest_run(conn, task)
+        assert run.metadata == {"files": 1}
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Spawn-failure circuit breaker
 # ---------------------------------------------------------------------------
 

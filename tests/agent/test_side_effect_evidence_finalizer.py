@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from tests.agent.test_turn_finalizer_final_response_persistence import FakeAgent
 from agent.turn_finalizer import finalize_turn
 
@@ -69,6 +71,323 @@ def test_finalizer_does_not_warn_when_current_turn_tool_evidence_exists(monkeypa
     result = _run_finalizer(agent, messages, "I sent the message successfully.")
 
     assert "Side-effect evidence regulator" not in result["final_response"]
+
+
+def test_finalizer_rejects_unverified_controller_kanban_creation_and_status_claims(monkeypatch):
+    """Regression for the controller-chat phantom-card incident."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "Continue"}]
+    claim = (
+        "Continued. Added the Kanban branch:\n"
+        "- t_5c8e72a4 — running\n"
+        "- t_3b7e19d6 — todo\n"
+        "- t_8f9a4c2b — blocked"
+    )
+
+    result = _run_finalizer(agent, messages, claim)
+
+    assert result["final_response"].startswith("Kanban claim rejected:")
+    assert "t_5c8e72a4" in result["final_response"]
+    assert claim not in result["final_response"]
+    assert result["completed"] is False
+    assert result["turn_exit_reason"] == "kanban_claim_evidence_rejected"
+    assert result["claim_verification"] == {
+        "verified": False,
+        "task_ids": ["t_5c8e72a4", "t_3b7e19d6", "t_8f9a4c2b"],
+        "missing_evidence": [
+            "t_5c8e72a4:mutation",
+            "t_5c8e72a4:readback",
+            "t_3b7e19d6:mutation",
+            "t_3b7e19d6:readback",
+            "t_8f9a4c2b:mutation",
+            "t_8f9a4c2b:readback",
+        ],
+    }
+    assert agent.persisted_messages[-1]["content"] == result["final_response"]
+
+
+def test_finalizer_accepts_controller_kanban_claim_after_create_and_readback(monkeypatch):
+    """Creation claims require both a successful create result and readback."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [
+        {"role": "user", "content": "Create and start it"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "create-1", "function": {"name": "kanban_create", "arguments": '{"title":"x"}'}}],
+        },
+        {"role": "tool", "tool_call_id": "create-1", "name": "kanban_create", "content": '{"success":true,"task_id":"t_5c8e72a4"}'},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "show-1", "function": {"name": "kanban_show", "arguments": '{"task_id":"t_5c8e72a4"}'}}],
+        },
+        {"role": "tool", "tool_call_id": "show-1", "name": "kanban_show", "content": '{"success":true,"id":"t_5c8e72a4","status":"running"}'},
+    ]
+    claim = "Created Kanban task t_5c8e72a4; readback confirms it is running."
+
+    result = _run_finalizer(agent, messages, claim)
+
+    assert result["final_response"] == claim
+    assert result["completed"] is True
+
+
+def test_status_only_claim_accepts_successful_terminal_show_readback(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [
+        {"role": "user", "content": "Update"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "show-1", "function": {"name": "terminal", "arguments": '{"command":"hermes kanban --board ops show t_5c8e72a4 --json"}'}}],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "show-1",
+            "name": "terminal",
+            "content": '{"output":"{\\"id\\":\\"t_5c8e72a4\\",\\"status\\":\\"blocked\\"}","exit_code":0,"error":null}',
+        },
+    ]
+    claim = "Task t_5c8e72a4 is blocked."
+
+    result = _run_finalizer(agent, messages, claim)
+
+    assert result["final_response"] == claim
+
+
+def test_status_claim_rejects_readback_with_different_status(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [
+        {"role": "user", "content": "Update"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "show-1", "function": {"name": "kanban_show", "arguments": '{"task_id":"t_5c8e72a4"}'}}]},
+        {"role": "tool", "tool_call_id": "show-1", "name": "kanban_show", "content": '{"ok":true,"task":{"id":"t_5c8e72a4","status":"blocked"}}'},
+    ]
+
+    result = _run_finalizer(agent, messages, "Task t_5c8e72a4 is running.")
+
+    assert result["final_response"].startswith("Kanban claim rejected:")
+
+
+def test_status_claim_rejects_prefix_task_id_readback(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [
+        {"role": "user", "content": "Update"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "show-1", "function": {"name": "kanban_show", "arguments": '{"task_id":"t_12345678ff"}'}}]},
+        {"role": "tool", "tool_call_id": "show-1", "name": "kanban_show", "content": '{"ok":true,"task":{"id":"t_12345678ff","status":"blocked"}}'},
+    ]
+
+    result = _run_finalizer(agent, messages, "Task t_12345678 is blocked.")
+
+    assert result["final_response"].startswith("Kanban claim rejected:")
+
+
+def test_status_claim_rejects_status_from_different_list_task(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [
+        {"role": "user", "content": "Update"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "list-1", "function": {"name": "kanban_list", "arguments": '{"board":"ops"}'}}]},
+        {"role": "tool", "tool_call_id": "list-1", "name": "kanban_list", "content": '{"ok":true,"tasks":[{"id":"t_12345678","status":"running"},{"id":"t_deadbeef","status":"blocked"}]}'},
+    ]
+
+    result = _run_finalizer(agent, messages, "Task t_12345678 is blocked.")
+
+    assert result["final_response"].startswith("Kanban claim rejected:")
+
+
+def test_status_claim_rejects_status_from_different_terminal_json_row(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [
+        {"role": "user", "content": "Update"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "list-1", "function": {"name": "terminal", "arguments": '{"command":"hermes kanban list --board ops --json"}'}}]},
+        {"role": "tool", "tool_call_id": "list-1", "name": "terminal", "content": '{"output":"{\\"tasks\\":[{\\"id\\":\\"t_12345678\\",\\"status\\":\\"running\\"},{\\"id\\":\\"t_deadbeef\\",\\"status\\":\\"blocked\\"}]}","exit_code":0,"error":null}'},
+    ]
+
+    result = _run_finalizer(agent, messages, "Task t_12345678 is blocked.")
+
+    assert result["final_response"].startswith("Kanban claim rejected:")
+
+
+def test_status_claim_rejects_orphan_tool_result_without_matching_call(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [
+        {"role": "user", "content": "Update"},
+        {"role": "tool", "tool_call_id": "missing-call", "name": "kanban_show", "content": '{"ok":true,"task":{"id":"t_5c8e72a4","status":"blocked"}}'},
+    ]
+
+    result = _run_finalizer(agent, messages, "Task t_5c8e72a4 is blocked.")
+
+    assert result["final_response"].startswith("Kanban claim rejected:")
+
+
+@pytest.mark.parametrize(
+    "tool_name,arguments,content",
+    [
+        (
+            "terminal",
+            '{"command":"hermes kanban show t_5c8e72a4 --json"}',
+            '{"output":"{\\"id\\":\\"t_5c8e72a4\\",\\"status\\":\\"blocked\\"}","error":null}',
+        ),
+        (
+            "kanban_show",
+            '{"task_id":"t_5c8e72a4"}',
+            'task t_5c8e72a4 status: blocked',
+        ),
+        (
+            "terminal",
+            '{"command":"hermes kanban show t_5c8e72a4 --json"}',
+            '{"output":"t_5c8e72a4 status: blocked","exit_code":1,"error":null}',
+        ),
+    ],
+)
+def test_status_claim_rejects_missing_malformed_or_nonzero_tool_outcome(
+    monkeypatch, tool_name, arguments, content
+):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [
+        {"role": "user", "content": "Update"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "show-1", "function": {"name": tool_name, "arguments": arguments}}]},
+        {"role": "tool", "tool_call_id": "show-1", "name": tool_name, "content": content},
+    ]
+
+    result = _run_finalizer(agent, messages, "Task t_5c8e72a4 is blocked.")
+
+    assert result["final_response"].startswith("Kanban claim rejected:")
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        "```text\nCreated Kanban task t_5c8e72a4; it is running.\n```",
+        "> Created Kanban task t_5c8e72a4; it is running.",
+        "Task t_5c8e72a4 is not running.",
+        "If task t_5c8e72a4 were running, I would inspect it.",
+        "For example: status=done on t_5c8e72a4 does not mean PASS.",
+    ],
+)
+def test_nonassertive_or_quoted_kanban_examples_are_not_rejected(monkeypatch, response):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "Explain the policy"}]
+
+    result = _run_finalizer(agent, messages, response)
+
+    assert result["final_response"] == response
+
+
+def test_finalizer_rejects_kanban_claim_when_nested_subprocess_failed(monkeypatch):
+    """Outer execute_code success must not bless a failed inner CLI command."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [
+        {"role": "user", "content": "Create it"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "exec-1", "function": {"name": "execute_code", "arguments": '{"code":"subprocess.run(...)"}'}}],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "exec-1",
+            "name": "execute_code",
+            "content": '{"status":"success","output":"stderr: hermes: error: unrecognized arguments: --title","exit_code":0}',
+        },
+    ]
+
+    result = _run_finalizer(agent, messages, "Created Kanban task t_5c8e72a4 and it is running.")
+
+    assert result["final_response"].startswith("Kanban claim rejected:")
+
+
+def test_finalizer_rejects_execute_code_completed_process_failure(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [
+        {"role": "user", "content": "Create it"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "exec-create", "function": {"name": "execute_code", "arguments": '{"code":"terminal(\u0027hermes kanban create\u0027)"}'}}]},
+        {"role": "tool", "tool_call_id": "exec-create", "name": "execute_code", "content": '{"status":"success","output":"t_5c8e72a4 created"}'},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "exec-show", "function": {"name": "execute_code", "arguments": '{"code":"terminal(\u0027hermes kanban show t_5c8e72a4\u0027)"}'}}]},
+        {"role": "tool", "tool_call_id": "exec-show", "name": "execute_code", "content": '{"status":"success","output":"CompletedProcess(args=[\u0027hermes\u0027], returncode=1, stdout=\u0027t_5c8e72a4 status: running\u0027)"}'},
+    ]
+
+    result = _run_finalizer(agent, messages, "Created Kanban task t_5c8e72a4 and it is running.")
+
+    assert result["final_response"].startswith("Kanban claim rejected:")
+
+
+def test_modal_suffix_does_not_suppress_affirmative_creation_claim(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "Create it"}]
+
+    result = _run_finalizer(
+        agent,
+        messages,
+        "I created t_5c8e72a4 and it is running, though it could fail later.",
+    )
+
+    assert result["final_response"].startswith("Kanban claim rejected:")
+
+
+@pytest.mark.parametrize("claim", ["I unblocked t_5c8e72a4.", "I commented on t_5c8e72a4."])
+def test_unsupported_mutation_verbs_cannot_pass_as_prose(monkeypatch, claim):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "Continue"}]
+
+    result = _run_finalizer(agent, messages, claim)
+
+    assert result["final_response"].startswith("Kanban claim rejected:")
+
+
+def test_finalizer_allows_forensic_description_of_historical_phantom_claim(monkeypatch):
+    """Quoting an old false report is analysis, not a fresh state claim."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "Investigate the old report"}]
+    response = (
+        "The previous assistant claimed that t_5c8e72a4 was running, "
+        "but the board database proved that task never existed."
+    )
+
+    result = _run_finalizer(agent, messages, response)
+
+    assert result["final_response"] == response
+
+
+def test_forensic_context_does_not_mask_a_fresh_unverified_claim(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "Repair the old report"}]
+    response = (
+        "The previous assistant claimed t_5c8e72a4 existed. "
+        "I created Kanban task t_3b7e19d6 and it is running."
+    )
+
+    result = _run_finalizer(agent, messages, response)
+
+    assert result["final_response"].startswith("Kanban claim rejected:")
+    assert "t_3b7e19d6" in result["final_response"]
+
+
+def test_worker_completion_response_uses_worker_manifest_gate_not_controller_guard(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_deadbeef")
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "worker task"}]
+    response = "Created child t_5c8e72a4; it is ready."
+
+    result = _run_finalizer(agent, messages, response)
+
+    assert result["final_response"] == response
 
 
 def test_finalizer_ignores_prior_turn_side_effect_evidence(monkeypatch):
