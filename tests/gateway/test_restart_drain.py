@@ -1,3 +1,4 @@
+import ast
 import asyncio
 import shutil
 import subprocess
@@ -494,6 +495,51 @@ async def test_request_restart_is_idempotent():
 
 
 @pytest.mark.asyncio
+async def test_pending_detached_restart_upgrades_to_service_recycle():
+    """Owner fencing monotonically upgrades a queued restart before launch."""
+    runner, _adapter = make_restart_runner()
+    runner.stop = AsyncMock()
+    runner._launch_detached_restart_command = AsyncMock()
+
+    restart_task = None
+    completed = False
+    cleanup_completed = False
+    results = []
+    try:
+        accepted = runner.request_restart(detached=True, via_service=False)
+        restart_task = runner._restart_task
+        assert accepted is True
+        assert restart_task is not None
+
+        # No event-loop turn has occurred, so the detached helper is not yet
+        # irreversibly launched. The stronger ownership fence must become the
+        # authoritative request even though request_restart remains one-shot.
+        assert runner.request_restart(detached=False, via_service=True) is False
+        # A later weaker duplicate must not downgrade the ownership boundary.
+        assert runner.request_restart(detached=True, via_service=False) is False
+    finally:
+        if restart_task is not None:
+            done, pending = await asyncio.wait({restart_task}, timeout=2.0)
+            completed = restart_task in done
+            for task in pending:
+                task.cancel()
+            if pending:
+                cancelled_done, pending = await asyncio.wait(pending, timeout=2.0)
+                done |= cancelled_done
+            cleanup_completed = not pending
+            if restart_task in done:
+                results = await asyncio.gather(restart_task, return_exceptions=True)
+
+    assert completed is True
+    assert cleanup_completed is True
+    assert not any(isinstance(result, BaseException) for result in results)
+    runner._launch_detached_restart_command.assert_not_awaited()
+    runner.stop.assert_awaited_once_with(
+        restart=True, detached_restart=False, service_restart=True
+    )
+
+
+@pytest.mark.asyncio
 async def test_run_restart_excluded_from_stop_cancel_loop():
     """Regression for #12875: _run_restart is held on self._restart_task and
     kept OUT of _background_tasks, and the _stop_impl cancel loop explicitly
@@ -583,6 +629,103 @@ async def test_detached_restart_helper_is_idempotent(monkeypatch):
     await runner._launch_detached_restart_command()
 
     assert len(popen_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_detached_helper_never_restarts_while_old_pid_survives_deadline(monkeypatch):
+    """The helper deadline bounds waiting, not the old process ownership fence."""
+    runner, _adapter = make_restart_runner()
+    popen_calls = []
+
+    monkeypatch.setattr(gateway_run.sys, "platform", "linux")
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["/usr/bin/hermes"])
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+    monkeypatch.setattr(
+        shutil, "which", lambda cmd: "/usr/bin/setsid" if cmd == "setsid" else None
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda cmd, **kwargs: popen_calls.append((cmd, kwargs)),
+    )
+
+    await runner._launch_detached_restart_command()
+
+    assert len(popen_calls) == 1
+    shell_cmd = popen_calls[0][0][-1]
+    normalized = " ".join(shell_cmd.split())
+    restart_after_s = max(float(runner._restart_drain_timeout) + 5.0, 5.0)
+    expected = (
+        f"deadline=$(( $(date +%s) + {int(restart_after_s)} )); "
+        "while kill -0 321 2>/dev/null && [ $(date +%s) -lt $deadline ]; "
+        "do sleep 0.2; done; if kill -0 321 2>/dev/null; then exit 1; fi; "
+        "/usr/bin/hermes gateway restart"
+    )
+    assert normalized == expected
+    assert normalized.count("/usr/bin/hermes gateway restart") == 1
+
+
+@pytest.mark.asyncio
+async def test_windows_detached_helper_fences_surviving_old_pid(monkeypatch, tmp_path):
+    """The Windows watcher must exit before respawn when the old PID stays live."""
+    runner, _adapter = make_restart_runner()
+    popen_calls = []
+    venv_dir = tmp_path / "venv"
+    (venv_dir / "Lib" / "site-packages").mkdir(parents=True)
+
+    monkeypatch.setattr(gateway_run.sys, "platform", "win32")
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["hermes"])
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+    monkeypatch.setenv("VIRTUAL_ENV", str(venv_dir))
+
+    import hermes_cli._subprocess_compat as subprocess_compat
+
+    monkeypatch.setattr(subprocess_compat, "windows_detach_popen_kwargs", lambda: {})
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda cmd, **kwargs: popen_calls.append((cmd, kwargs)),
+    )
+
+    await runner._launch_detached_restart_command()
+
+    assert len(popen_calls) == 1
+    watcher = popen_calls[0][0][2]
+    normalized = "\n".join(line.rstrip() for line in watcher.splitlines())
+    guard = "if _alive(pid):\n    sys.exit(1)"
+    assert guard in normalized
+    assert normalized.index(guard) < normalized.index("subprocess.Popen(")
+    assert normalized.count("subprocess.Popen(") == 1
+    assert normalized.count("cmd = sys.argv[3:]") == 1
+
+    tree = ast.parse(watcher)
+    top_level_guard = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Call)
+        and isinstance(node.test.func, ast.Name)
+        and node.test.func.id == "_alive"
+        and any(
+            isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Attribute)
+            and isinstance(child.func.value, ast.Name)
+            and child.func.value.id == "sys"
+            and child.func.attr == "exit"
+            for child in ast.walk(node)
+        )
+    )
+    top_level_launch = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Attribute)
+        and isinstance(node.value.func.value, ast.Name)
+        and node.value.func.value.id == "subprocess"
+        and node.value.func.attr == "Popen"
+    )
+    assert tree.body.index(top_level_guard) < tree.body.index(top_level_launch)
 
 
 def test_windows_gateway_venv_imports_add_site_packages(monkeypatch, tmp_path):

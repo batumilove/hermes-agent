@@ -1275,3 +1275,408 @@ async def test_unterminated_polling_owner_requests_process_recycle(tmp_path):
     adapter.disconnect.assert_not_awaited()
     assert runner.adapters == {Platform.TELEGRAM: adapter}
     assert Platform.TELEGRAM not in runner._failed_platforms
+
+
+@pytest.mark.asyncio
+async def test_updater_stop_hard_deadline_tracks_cancellation_suppressing_task(monkeypatch):
+    """A stop coroutine that suppresses cancellation cannot hold recovery open."""
+    adapter = _make_adapter()
+    app, polling_request = _make_mock_app()
+    adapter._app = app
+    adapter._drain_polling_connections = AsyncMock()
+    adapter._start_polling_once = AsyncMock()
+    release_stop = asyncio.Event()
+    stop_suppressed_cancellation = asyncio.Event()
+    stop_tasks = []
+
+    async def _cancellation_suppressing_stop():
+        stop_tasks.append(asyncio.current_task())
+        try:
+            await release_stop.wait()
+        except asyncio.CancelledError:
+            stop_suppressed_cancellation.set()
+            await release_stop.wait()
+
+    app.updater.stop = AsyncMock(side_effect=_cancellation_suppressing_stop)
+    generation_before = adapter._polling_generation
+    monkeypatch.setattr(tg_adapter, "_UPDATER_STOP_TIMEOUT", 0.01)
+    real_sleep = asyncio.sleep
+
+    async def _yielding_sleep(*_args, **_kwargs):
+        await real_sleep(0)
+
+    recovery = None
+    observed_bounded_completion = False
+    results = []
+    try:
+        with patch("asyncio.sleep", new=AsyncMock(side_effect=_yielding_sleep)):
+            recovery = asyncio.create_task(
+                adapter._handle_polling_network_error(OSError("owner stuck"))
+            )
+            done, _pending = await asyncio.wait({recovery}, timeout=2.0)
+            observed_bounded_completion = recovery in done
+
+        await asyncio.wait_for(stop_suppressed_cancellation.wait(), timeout=2.0)
+        app.updater.stop.assert_awaited_once()
+        adapter._drain_polling_connections.assert_not_awaited()
+        polling_request.shutdown.assert_not_awaited()
+        adapter._start_polling_once.assert_not_awaited()
+        assert adapter._polling_generation == generation_before
+        assert adapter.fatal_error_code == "telegram_polling_owner_unterminated"
+        assert adapter._polling_teardown_started is True
+        assert not stop_tasks[0].done()
+    finally:
+        release_stop.set()
+        pending = [task for task in ([recovery] + stop_tasks) if task is not None]
+        if pending:
+            results = await asyncio.gather(*pending, return_exceptions=True)
+
+    assert observed_bounded_completion is True
+    assert not any(isinstance(result, BaseException) for result in results)
+    await asyncio.sleep(0)
+    assert stop_tasks[0].done()
+
+
+@pytest.mark.asyncio
+async def test_updater_stop_cancelled_error_distinguishes_internal_from_external(monkeypatch):
+    """Internal CancelledError fences ownership; caller cancellation still propagates."""
+    monkeypatch.setattr(tg_adapter, "_UPDATER_STOP_TIMEOUT", 0.05)
+
+    externally_cancelled = _make_adapter()
+    external_app, _ = _make_mock_app()
+    stop_entered = asyncio.Event()
+    release_stop = asyncio.Event()
+    stop_suppressed_cancellation = asyncio.Event()
+    stop_tasks = []
+
+    async def _blocked_stop():
+        stop_tasks.append(asyncio.current_task())
+        stop_entered.set()
+        try:
+            await release_stop.wait()
+        except asyncio.CancelledError:
+            stop_suppressed_cancellation.set()
+            await release_stop.wait()
+
+    external_app.updater.stop = AsyncMock(side_effect=_blocked_stop)
+    externally_cancelled._app = external_app
+    real_sleep = asyncio.sleep
+
+    async def _yielding_sleep(*_args, **_kwargs):
+        await real_sleep(0)
+
+    recovery = None
+    suppression_waiter = None
+    suppression_observed = False
+    external_cancel_propagated = False
+    cleanup_completed = False
+    results = []
+    with patch("asyncio.sleep", new=AsyncMock(side_effect=_yielding_sleep)):
+        try:
+            recovery = asyncio.create_task(
+                externally_cancelled._handle_polling_network_error(OSError("cancel me"))
+            )
+            await asyncio.wait_for(stop_entered.wait(), timeout=2.0)
+            recovery.cancel()
+            suppression_waiter = asyncio.create_task(
+                stop_suppressed_cancellation.wait()
+            )
+            done, _pending = await asyncio.wait({suppression_waiter}, timeout=2.0)
+            suppression_observed = suppression_waiter in done
+        finally:
+            release_stop.set()
+            cleanup_tasks = {
+                task
+                for task in ([recovery, suppression_waiter] + stop_tasks)
+                if task is not None
+            }
+            if cleanup_tasks:
+                done, pending = await asyncio.wait(cleanup_tasks, timeout=2.0)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    cancelled_done, pending = await asyncio.wait(pending, timeout=2.0)
+                    done |= cancelled_done
+                cleanup_completed = not pending
+                if done:
+                    results = await asyncio.gather(*done, return_exceptions=True)
+            external_cancel_propagated = (
+                recovery is not None and recovery.done() and recovery.cancelled()
+            )
+
+    assert suppression_observed is True
+    assert external_cancel_propagated is True
+    assert cleanup_completed is True
+    assert any(isinstance(result, asyncio.CancelledError) for result in results)
+    assert externally_cancelled.fatal_error_code is None
+
+    internally_cancelled = _make_adapter()
+    internal_app, _ = _make_mock_app()
+    internal_app.updater.stop = AsyncMock(side_effect=asyncio.CancelledError())
+    internally_cancelled._app = internal_app
+    internally_cancelled._drain_polling_connections = AsyncMock()
+    internally_cancelled._start_polling_once = AsyncMock()
+    internally_cancelled._handoff_polling_fatal_error = AsyncMock()
+
+    with patch("asyncio.sleep", new=AsyncMock(side_effect=_yielding_sleep)):
+        await internally_cancelled._handle_polling_network_error(
+            OSError("stop cancelled itself")
+        )
+
+    assert internally_cancelled.fatal_error_code == "telegram_polling_owner_unterminated"
+    internally_cancelled._drain_polling_connections.assert_not_awaited()
+    internally_cancelled._start_polling_once.assert_not_awaited()
+    internally_cancelled._handoff_polling_fatal_error.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_stop_exception_retains_unterminated_owner(tmp_path):
+    """A generic stop failure is not a clean Telegram disconnect."""
+    adapter = _make_adapter()
+    app, _ = _make_mock_app()
+    app.updater.stop = AsyncMock(side_effect=RuntimeError("PTB stop exploded"))
+    app.running = True
+    app.stop = AsyncMock()
+    app.shutdown = AsyncMock()
+    adapter._app = app
+    adapter._bot = app.bot
+
+    await adapter.disconnect()
+
+    app.updater.stop.assert_awaited_once()
+    assert adapter.fatal_error_code == "telegram_polling_owner_unterminated"
+
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="test-token")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.delivery_router.adapters = runner.adapters
+    runner.request_restart = MagicMock(return_value=True)
+    await runner._handle_adapter_fatal_error_impl(adapter)
+
+    assert runner.adapters == {Platform.TELEGRAM: adapter}
+    assert Platform.TELEGRAM not in runner._failed_platforms
+    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+
+
+@pytest.mark.asyncio
+async def test_runner_cleanup_timeout_preserves_retryable_adapter_owner(tmp_path):
+    """An outer cleanup deadline cannot authorize removal or retry queuing."""
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="test-token")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapter = _make_adapter()
+    adapter._set_fatal_error("telegram_network_error", "ordinary retry", retryable=True)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.delivery_router.adapters = runner.adapters
+    runner.request_restart = MagicMock(return_value=True)
+    runner._adapter_disconnect_timeout_secs = lambda: 0.01
+    disconnect_started = asyncio.Event()
+    release_disconnect = asyncio.Event()
+    disconnect_tasks = []
+
+    async def _blocked_disconnect():
+        disconnect_tasks.append(asyncio.current_task())
+        disconnect_started.set()
+        try:
+            await release_disconnect.wait()
+        except asyncio.CancelledError:
+            await release_disconnect.wait()
+
+    adapter.disconnect = AsyncMock(side_effect=_blocked_disconnect)
+    handler = None
+    observed_bounded_completion = False
+    results = []
+    try:
+        handler = asyncio.create_task(
+            runner._handle_adapter_fatal_error_impl(adapter)
+        )
+        done, _pending = await asyncio.wait({handler}, timeout=2.0)
+        observed_bounded_completion = handler in done
+        await asyncio.wait_for(disconnect_started.wait(), timeout=2.0)
+
+        assert runner.adapters == {Platform.TELEGRAM: adapter}
+        assert Platform.TELEGRAM not in runner._failed_platforms
+        runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+        assert disconnect_tasks and not disconnect_tasks[0].done()
+    finally:
+        release_disconnect.set()
+        pending = [task for task in ([handler] + disconnect_tasks) if task is not None]
+        if pending:
+            results = await asyncio.gather(*pending, return_exceptions=True)
+
+    assert observed_bounded_completion is True
+    assert not any(isinstance(result, BaseException) for result in results)
+
+
+@pytest.mark.asyncio
+async def test_polling_fatal_handoff_is_adapter_level_one_shot():
+    """Changing fatal codes cannot make concurrent paths notify the runner twice."""
+    adapter = _make_adapter()
+    handler_entered = asyncio.Event()
+    release_handler = asyncio.Event()
+    calls = 0
+
+    async def _fatal_handler(_adapter):
+        nonlocal calls
+        calls += 1
+        handler_entered.set()
+        await release_handler.wait()
+
+    adapter.set_fatal_error_handler(_fatal_handler)
+    adapter._set_fatal_error("telegram_network_error", "network", retryable=True)
+    first = None
+    second = None
+    results = []
+    try:
+        first = asyncio.create_task(adapter._handoff_polling_fatal_error())
+        await asyncio.wait_for(handler_entered.wait(), timeout=2.0)
+        adapter._set_fatal_error(
+            "telegram_polling_conflict", "conflict", retryable=False
+        )
+        second = asyncio.create_task(adapter._handoff_polling_fatal_error())
+        await asyncio.sleep(0)
+    finally:
+        release_handler.set()
+        pending = [task for task in (first, second) if task is not None]
+        if pending:
+            results = await asyncio.gather(*pending, return_exceptions=True)
+
+    assert not any(isinstance(result, BaseException) for result in results)
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_polling_owner_stop_is_serialized_and_rechecked(monkeypatch):
+    """Concurrent recoveries may never overlap updater.stop calls."""
+    adapter = _make_adapter()
+    app, _ = _make_mock_app()
+    adapter._app = app
+    adapter._drain_polling_connections = AsyncMock()
+    adapter._start_polling_once = AsyncMock()
+    first_stop_entered = asyncio.Event()
+    release_first_stop = asyncio.Event()
+    stop_call_count = 0
+    concurrent_stops = 0
+    max_concurrent_stops = 0
+
+    async def _serialized_stop():
+        nonlocal stop_call_count, concurrent_stops, max_concurrent_stops
+        stop_call_count += 1
+        concurrent_stops += 1
+        max_concurrent_stops = max(max_concurrent_stops, concurrent_stops)
+        first_stop_entered.set()
+        await release_first_stop.wait()
+        concurrent_stops -= 1
+        app.updater.running = False
+
+    app.updater.stop = AsyncMock(side_effect=_serialized_stop)
+    monkeypatch.setattr(tg_adapter, "_UPDATER_STOP_TIMEOUT", 0.2)
+
+    network = None
+    conflict = None
+    observed_before_release = None
+    results = []
+    real_sleep = asyncio.sleep
+
+    async def _yielding_sleep(*_args, **_kwargs):
+        await real_sleep(0)
+
+    try:
+        with patch("asyncio.sleep", new=AsyncMock(side_effect=_yielding_sleep)):
+            network = asyncio.create_task(
+                adapter._handle_polling_network_error(OSError("network"))
+            )
+            await asyncio.wait_for(first_stop_entered.wait(), timeout=2.0)
+            conflict = asyncio.create_task(
+                adapter._handle_polling_conflict(RuntimeError("conflict"))
+            )
+            await real_sleep(0)
+            await real_sleep(0)
+            observed_before_release = app.updater.stop.await_count
+            assert not conflict.done()
+    finally:
+        release_first_stop.set()
+        pending = [task for task in (network, conflict) if task is not None]
+        if pending:
+            results = await asyncio.wait_for(
+                asyncio.gather(*pending, return_exceptions=True), timeout=2.0
+            )
+
+    assert not any(isinstance(result, BaseException) for result in results)
+    assert observed_before_release == 1
+    assert stop_call_count == 1
+    assert max_concurrent_stops == 1
+
+
+@pytest.mark.asyncio
+async def test_polling_owner_stop_serialized_caller_rechecks_still_running(monkeypatch):
+    """A queued recovery retries stop, without overlap, if ownership remains live."""
+    adapter = _make_adapter()
+    app, _ = _make_mock_app()
+    adapter._app = app
+    adapter._drain_polling_connections = AsyncMock()
+    adapter._start_polling_once = AsyncMock()
+    first_stop_entered = asyncio.Event()
+    release_first_stop = asyncio.Event()
+    stop_call_count = 0
+    concurrent_stops = 0
+    max_concurrent_stops = 0
+
+    async def _serialized_stop():
+        nonlocal stop_call_count, concurrent_stops, max_concurrent_stops
+        stop_call_count += 1
+        concurrent_stops += 1
+        max_concurrent_stops = max(max_concurrent_stops, concurrent_stops)
+        if stop_call_count == 1:
+            first_stop_entered.set()
+            await release_first_stop.wait()
+            # First clean return did not change PTB's externally observed owner state.
+            app.updater.running = True
+        else:
+            app.updater.running = False
+        concurrent_stops -= 1
+
+    app.updater.stop = AsyncMock(side_effect=_serialized_stop)
+    monkeypatch.setattr(tg_adapter, "_UPDATER_STOP_TIMEOUT", 0.2)
+
+    network = None
+    conflict = None
+    results = []
+    real_sleep = asyncio.sleep
+
+    async def _yielding_sleep(*_args, **_kwargs):
+        await real_sleep(0)
+
+    try:
+        with patch("asyncio.sleep", new=AsyncMock(side_effect=_yielding_sleep)):
+            network = asyncio.create_task(
+                adapter._handle_polling_network_error(OSError("network"))
+            )
+            await asyncio.wait_for(first_stop_entered.wait(), timeout=2.0)
+            conflict = asyncio.create_task(
+                adapter._handle_polling_conflict(RuntimeError("conflict"))
+            )
+            await real_sleep(0)
+            await real_sleep(0)
+            assert app.updater.stop.await_count == 1
+            assert not conflict.done()
+    finally:
+        release_first_stop.set()
+        pending = [task for task in (network, conflict) if task is not None]
+        if pending:
+            results = await asyncio.wait_for(
+                asyncio.gather(*pending, return_exceptions=True), timeout=2.0
+            )
+
+    assert not any(isinstance(result, BaseException) for result in results)
+    assert stop_call_count == 2
+    assert max_concurrent_stops == 1

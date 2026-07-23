@@ -3,7 +3,7 @@ import logging
 import asyncio
 from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -225,6 +225,33 @@ def _install_secondary_reconnect_context(monkeypatch, runner, adapter, scoped_ho
 
 
 class TestSecondaryProfileFatalRecovery:
+    @pytest.mark.asyncio
+    async def test_unterminated_secondary_owner_requests_service_recycle(self):
+        """Multiplex ownership failure retains the profile slot and never reconnects."""
+        runner = _secondary_recovery_runner()
+        adapter = _SecondaryRecoveryAdapter()
+        adapter.platform = Platform.TELEGRAM
+        adapter.fatal_error_code = "telegram_polling_owner_unterminated"
+        adapter.fatal_error_message = "Telegram polling owner still alive"
+        adapter.disconnect = AsyncMock()
+        runner._profile_adapters = {"reviewer": {Platform.TELEGRAM: adapter}}
+        runner._schedule_secondary_profile_reconnect = MagicMock()
+        runner.request_restart = MagicMock(return_value=True)
+
+        await runner._handle_profile_adapter_fatal_error(
+            "reviewer", Platform.TELEGRAM, adapter
+        )
+
+        assert runner._profile_adapters == {
+            "reviewer": {Platform.TELEGRAM: adapter}
+        }
+        adapter.disconnect.assert_not_awaited()
+        runner._schedule_secondary_profile_reconnect.assert_not_called()
+        assert runner._profile_failed_platforms == {}
+        runner.request_restart.assert_called_once_with(
+            detached=False, via_service=True
+        )
+
     @pytest.mark.asyncio
     async def test_retryable_secondary_fatal_reconnects_with_its_profile_scope(
         self, monkeypatch
