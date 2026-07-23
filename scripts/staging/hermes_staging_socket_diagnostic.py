@@ -659,6 +659,13 @@ class ConfigStore:
         finally:
             os.close(fd)
 
+    def matches(self, snapshot: ConfigSnapshot) -> bool:
+        fd = self._open_dir()
+        try:
+            return _same_snapshot(self._read_current(fd, allow_absent=True), snapshot)
+        finally:
+            os.close(fd)
+
 
 def _atomic_path_write(path: Path, content: bytes, mode: int = 0o600) -> None:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1058,7 +1065,15 @@ class DiagnosticExecutor:
             raise DiagnosticError("runtime metadata mismatch")
         env_output = self._command((DOCKER, "inspect", "--format", "{{range .Config.Env}}{{println .}}{{end}}", CONTAINER), 15)
         env_lines = env_output.splitlines()
-        if env_lines.count("HERMES_SOURCE_SHA=" + request.expected_source_sha) != 1 or env_lines.count("HERMES_DEPLOY_ENV=" + ENVIRONMENT) != 1:
+        expected_env = {
+            "HERMES_SOURCE_SHA": request.expected_source_sha,
+            "HERMES_DEPLOY_ENV": ENVIRONMENT,
+            "HERMES_HOME": "/opt/data",
+        }
+        if any(
+            [line for line in env_lines if line.startswith(name + "=")] != [name + "=" + value]
+            for name, value in expected_env.items()
+        ):
             raise DiagnosticError("container environment mismatch")
         configured_image = self._command((DOCKER, "inspect", "--format", "{{.Config.Image}}", CONTAINER), 15).strip()
         if configured_image != image:
@@ -1075,23 +1090,42 @@ class DiagnosticExecutor:
             if value is True:
                 raise ConfigError("on-disk diagnostics are already literal true")
 
+    def _health_status(self) -> str:
+        return self._command(
+            (
+                DOCKER, "inspect", "--format",
+                "{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}",
+                CONTAINER,
+            ),
+            15,
+        ).strip()
+
     def _wait_healthy(self) -> None:
         deadline = min(self.deadline, time.monotonic() + 120)
         while time.monotonic() < deadline:
-            status = self._command((DOCKER, "inspect", "--format", "{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}", CONTAINER), 15).strip()
-            if status == "healthy":
+            if self._health_status() == "healthy":
                 return
             self.sleep(3)
         raise CommandError("gateway health deadline expired")
 
     def _effective(self, enabled: bool) -> None:
         script = _EFFECTIVE_TRUE if enabled else _EFFECTIVE_FALSE
-        result = self._command((DOCKER, "exec", "--user", "hermes", CONTAINER, CONTAINER_PYTHON, "-c", script), 60).strip()
+        result = self._command(
+            (
+                DOCKER, "exec", "--env", "HERMES_HOME=/opt/data", "--user", "hermes",
+                CONTAINER, CONTAINER_PYTHON, "-c", script,
+            ),
+            60,
+        ).strip()
         if result != ("true" if enabled else "false"):
             raise CommandError("effective diagnostic verification failed")
 
     def _restart(self) -> None:
         self._command((DOCKER, "restart", "--time", "90", CONTAINER), 120)
+        self._wait_healthy()
+
+    def _start(self) -> None:
+        self._command((DOCKER, "start", CONTAINER), 120)
         self._wait_healthy()
 
     def _stop(self) -> None:
@@ -1181,18 +1215,31 @@ class DiagnosticExecutor:
         quarantine_fd = self.states.open_transaction(tx)
         last_error: BaseException | None = None
         try:
-            for attempt in range(3):
-                try:
-                    self._stop()
-                    self.config.restore(snapshot, mutated_hash, quarantine_fd, guard_name)
-                    self._restart()
-                    self._effective(False)
-                    self.states.transition(tx, "RESTORED")
-                    return
-                except BaseException as exc:
-                    last_error = exc
-                    if attempt < 2:
-                        self._sleep_bounded(3)
+            try:
+                settled = self.config.matches(snapshot) and self._health_status() == "healthy"
+            except BaseException as exc:
+                last_error = exc
+            else:
+                if settled:
+                    try:
+                        self.config.restore(snapshot, mutated_hash, quarantine_fd, guard_name)
+                        self._effective(False)
+                        self.states.transition(tx, "RESTORED")
+                        return
+                    except BaseException as exc:
+                        last_error = exc
+                for attempt in range(3):
+                    try:
+                        self._stop()
+                        self.config.restore(snapshot, mutated_hash, quarantine_fd, guard_name)
+                        self._start()
+                        self._effective(False)
+                        self.states.transition(tx, "RESTORED")
+                        return
+                    except BaseException as exc:
+                        last_error = exc
+                        if attempt < 2:
+                            self._sleep_bounded(3)
         finally:
             os.close(quarantine_fd)
         self.states.fail_restore(tx)

@@ -451,7 +451,10 @@ class FakeRunner:
             if ".Id" in fmt and ".State.StartedAt" in fmt:
                 return "b" * 64 + " 2026-07-22T20:00:00.123456789Z\n"
             if "Config.Env" in fmt:
-                return "HERMES_SOURCE_SHA=" + "a" * 40 + "\nHERMES_DEPLOY_ENV=batumi-staging\n"
+                return (
+                    "HERMES_SOURCE_SHA=" + "a" * 40
+                    + "\nHERMES_DEPLOY_ENV=batumi-staging\nHERMES_HOME=/opt/data\n"
+                )
             if "Config.Image" in fmt:
                 return "ghcr.io/batumilove/hermes-agent-deploy@sha256:" + "1" * 64 + "\n"
             if "Mounts" in fmt:
@@ -474,8 +477,74 @@ def test_effective_check_uses_the_container_application_venv(diagnostic, tmp_pat
     executor._effective(False)
 
     call = fake.calls[-1][0]
-    assert call[:5] == ("/usr/bin/docker", "exec", "--user", "hermes", diagnostic.CONTAINER)
-    assert call[5] == "/opt/hermes/.venv/bin/python"
+    assert call == (
+        "/usr/bin/docker", "exec", "--env", "HERMES_HOME=/opt/data",
+        "--user", "hermes", diagnostic.CONTAINER,
+        "/opt/hermes/.venv/bin/python", "-c", diagnostic._EFFECTIVE_FALSE,
+    )
+
+
+def test_loader_observes_temporary_gateway_json_fallback_without_changing_primary_yaml(diagnostic, tmp_path):
+    root = _config_dir(tmp_path)
+    config_yaml = root / "config.yaml"
+    config_yaml.write_bytes(b"_config_version: 1\n")
+    config_yaml.chmod(0o640)
+    before = config_yaml.read_bytes(), config_yaml.stat()
+    store = diagnostic.ConfigStore(root, expected_uid=os.getuid(), expected_gid=os.getgid())
+    snapshot = store.snapshot()
+
+    env = {
+        "HOME": str(tmp_path),
+        "HERMES_HOME": str(root),
+        "PATH": os.environ["PATH"],
+        "PYTHONPATH": str(REPO),
+    }
+    probe = (
+        "from gateway.config import Platform,load_gateway_config;"
+        "p=load_gateway_config().platforms.get(Platform.TELEGRAM);"
+        "v=None if p is None else p.extra.get('socket_diagnostics');"
+        "print('true' if v is True else 'false')"
+    )
+
+    assert subprocess.check_output([sys.executable, "-c", probe], env=env, text=True).strip() == "false"
+    mutated_hash = store.enable(snapshot)
+    assert subprocess.check_output([sys.executable, "-c", probe], env=env, text=True).strip() == "true"
+    _restore(store, snapshot, mutated_hash, tmp_path)
+    assert subprocess.check_output([sys.executable, "-c", probe], env=env, text=True).strip() == "false"
+    assert not (root / "gateway.json").exists()
+
+    after = config_yaml.stat()
+    assert config_yaml.read_bytes() == before[0]
+    assert (
+        after.st_dev, after.st_ino, after.st_nlink, after.st_mode,
+        after.st_uid, after.st_gid, after.st_size, after.st_mtime_ns, after.st_ctime_ns,
+    ) == (
+        before[1].st_dev, before[1].st_ino, before[1].st_nlink, before[1].st_mode,
+        before[1].st_uid, before[1].st_gid, before[1].st_size, before[1].st_mtime_ns,
+        before[1].st_ctime_ns,
+    )
+
+
+def test_primary_yaml_socket_diagnostic_setting_overrides_gateway_json_fallback(diagnostic, tmp_path):
+    root = _config_dir(tmp_path)
+    (root / "config.yaml").write_text(
+        "platforms:\n  telegram:\n    extra:\n      socket_diagnostics: false\n"
+    )
+    (root / "gateway.json").write_text(
+        '{"platforms":{"telegram":{"extra":{"socket_diagnostics":true}}}}\n'
+    )
+    env = {
+        "HOME": str(tmp_path),
+        "HERMES_HOME": str(root),
+        "PATH": os.environ["PATH"],
+        "PYTHONPATH": str(REPO),
+    }
+    probe = (
+        "from gateway.config import Platform,load_gateway_config;"
+        "p=load_gateway_config().platforms.get(Platform.TELEGRAM);"
+        "print('true' if p and p.extra.get('socket_diagnostics') is True else 'false')"
+    )
+    assert subprocess.check_output([sys.executable, "-c", probe], env=env, text=True).strip() == "false"
 
 
 def test_effective_false_accepts_an_absent_telegram_platform(diagnostic, monkeypatch, capsys):
@@ -741,7 +810,8 @@ def test_executor_uses_fixed_vectors_scrubbed_environment_and_bounded_aggregate(
     result = executor.run(diagnostic.parse_request(io.BytesIO(request())))
     assert result["observation_collected"] is True
     assert result["counts"] == [{"count": 1, "event": "response-closed", "owner": "general", "route": "primary"}, {"count": 1, "event": "response-created", "owner": "general", "route": "primary"}]
-    assert fake.restarts == 2  # one enable; one restore
+    assert fake.restarts == 1  # enable restarts; restore starts the explicitly stopped container
+    assert [call[0][1] for call in fake.calls if call[0][:2] == ("/usr/bin/docker", "start")] == ["start"]
     assert all(call[2] == diagnostic.COMMAND_ENV for call in fake.calls)
     assert all(call[5] is not None for call in fake.calls)
     assert all(isinstance(call[0], tuple) and call[0][0].startswith("/") for call in fake.calls)
@@ -820,6 +890,97 @@ def test_recovery_after_each_durable_mutation_state_is_restore_only(diagnostic, 
     assert (data / "gateway.json").read_bytes() == snap.content
     assert json.loads((tx.path / "state.json").read_text())["state"] == "RESTORED"
     assert not any(call[0][:2] == ("/usr/bin/docker", "logs") for call in fake.calls)
+
+
+def test_restore_starts_the_container_after_an_explicit_stop(diagnostic, tmp_path):
+    deploy, data, state = _target_tree(tmp_path)
+    store = diagnostic.TransactionStore(state)
+    request_value = diagnostic.parse_request(io.BytesIO(request()))
+    tx = store.prepare(request_value)
+    config = diagnostic.ConfigStore(data, expected_uid=os.getuid(), expected_gid=os.getgid())
+    snapshot = config.snapshot()
+    store.save_snapshot(tx, snapshot)
+    store.transition(tx, "ARMED")
+    mutated_hash = config.enable(snapshot, store.load_guard_name(tx))
+    store.record_mutated_hash(tx, mutated_hash)
+    store.transition(tx, "MUTATED")
+    fake = FakeRunner(diagnostic, data)
+    executor = _executor(diagnostic, tmp_path, deploy, data, state, fake)
+
+    assert executor.recover()["recovered"] == 1
+
+    runtime_actions = [
+        call[0][1]
+        for call in fake.calls
+        if call[0][0] == "/usr/bin/docker" and call[0][1] in {"stop", "start", "restart"}
+    ]
+    assert runtime_actions == ["stop", "start"]
+
+
+def test_exact_restored_config_with_unhealthy_runtime_still_stops_then_starts(
+    diagnostic, tmp_path, monkeypatch
+):
+    deploy, data, state = _target_tree(tmp_path)
+    tx, snapshot = _armed_transaction(diagnostic, state, data, mutate=True)
+    config = diagnostic.ConfigStore(data, expected_uid=os.getuid(), expected_gid=os.getgid())
+    mutated_hash = diagnostic._sha((data / "gateway.json").read_bytes())
+    quarantine_fd = diagnostic.TransactionStore(state).open_transaction(tx)
+    try:
+        config.restore(
+            snapshot,
+            mutated_hash,
+            quarantine_fd,
+            diagnostic.TransactionStore(state).load_guard_name(tx),
+        )
+    finally:
+        os.close(quarantine_fd)
+    assert config.matches(snapshot)
+
+    fake = FakeRunner(diagnostic, data)
+    executor = _executor(diagnostic, tmp_path, deploy, data, state, fake)
+    health_states = iter(["unhealthy", "healthy"])
+    monkeypatch.setattr(executor, "_health_status", lambda: next(health_states, "healthy"))
+
+    assert executor.recover() == {"recovered": 1, "aborted": 0}
+    runtime_actions = [
+        call[0][1]
+        for call in fake.calls
+        if call[0][0] == "/usr/bin/docker" and call[0][1] in {"stop", "start", "restart"}
+    ]
+    assert runtime_actions == ["stop", "start"]
+    assert json.loads((tx.path / "state.json").read_text())["state"] == "RESTORED"
+
+
+@pytest.mark.parametrize("precheck", ["matches", "health"])
+def test_restore_precheck_failure_is_durably_restore_failed(
+    diagnostic, tmp_path, monkeypatch, precheck
+):
+    deploy, data, state = _target_tree(tmp_path)
+    tx, snapshot = _armed_transaction(diagnostic, state, data, mutate=True)
+    mutated_hash = diagnostic._sha((data / "gateway.json").read_bytes())
+    executor = _executor(diagnostic, tmp_path, deploy, data, state)
+    if precheck == "matches":
+        monkeypatch.setattr(
+            executor.config,
+            "matches",
+            lambda _snapshot: (_ for _ in ()).throw(diagnostic.ConfigDriftError("precheck drift")),
+        )
+    else:
+        monkeypatch.setattr(executor.config, "matches", lambda _snapshot: True)
+        monkeypatch.setattr(
+            executor,
+            "_health_status",
+            lambda: (_ for _ in ()).throw(diagnostic.CommandError("health inspect failed")),
+        )
+
+    with pytest.raises(diagnostic.DiagnosticError, match="bounded restore retries exhausted"):
+        executor._restore(tx, snapshot, mutated_hash)
+
+    assert json.loads((tx.path / "state.json").read_text())["state"] == "RESTORE_FAILED"
+    assert not any(
+        call[0][0] == "/usr/bin/docker" and call[0][1] in {"stop", "start", "restart"}
+        for call in executor.runner.calls
+    )
 
 
 def test_installation_artifacts_are_dormant_exact_and_warn_about_containment():
@@ -949,6 +1110,49 @@ def test_preflight_rejects_disk_true_even_when_runtime_false(diagnostic, tmp_pat
         executor._preflight(diagnostic.parse_request(io.BytesIO(request())))
 
 
+def test_preflight_requires_container_root_hermes_home(diagnostic, tmp_path):
+    deploy, data, state = _target_tree(tmp_path)
+
+    class MissingRootHome(FakeRunner):
+        def __call__(self, argv, **kwargs):
+            if tuple(argv[:2]) == ("/usr/bin/docker", "inspect") and "Config.Env" in argv[3]:
+                return "HERMES_SOURCE_SHA=" + "a" * 40 + "\nHERMES_DEPLOY_ENV=batumi-staging\n"
+            return super().__call__(argv, **kwargs)
+
+    executor = _executor(diagnostic, tmp_path, deploy, data, state, MissingRootHome(diagnostic, data))
+    executor._start_deadline(diagnostic.FORWARD_DEADLINE_SECONDS)
+    with pytest.raises(diagnostic.DiagnosticError, match="container environment"):
+        executor._preflight(diagnostic.parse_request(io.BytesIO(request())))
+
+
+@pytest.mark.parametrize(
+    ("key", "conflict"),
+    [
+        ("HERMES_HOME", "/wrong"),
+        ("HERMES_SOURCE_SHA", "b" * 40),
+        ("HERMES_DEPLOY_ENV", "wrong-staging"),
+    ],
+)
+def test_preflight_rejects_duplicate_conflicting_bound_environment(
+    diagnostic, tmp_path, key, conflict
+):
+    deploy, data, state = _target_tree(tmp_path)
+
+    class ConflictingEnvironment(FakeRunner):
+        def __call__(self, argv, **kwargs):
+            result = super().__call__(argv, **kwargs)
+            if tuple(argv[:2]) == ("/usr/bin/docker", "inspect") and "Config.Env" in argv[3]:
+                return result + f"{key}={conflict}\n"
+            return result
+
+    executor = _executor(
+        diagnostic, tmp_path, deploy, data, state, ConflictingEnvironment(diagnostic, data)
+    )
+    executor._start_deadline(diagnostic.FORWARD_DEADLINE_SECONDS)
+    with pytest.raises(diagnostic.DiagnosticError, match="container environment"):
+        executor._preflight(diagnostic.parse_request(io.BytesIO(request())))
+
+
 def _armed_transaction(diagnostic, state, data, *, mutate=False):
     store = diagnostic.TransactionStore(state)
     tx = store.prepare(diagnostic.parse_request(io.BytesIO(request())))
@@ -993,7 +1197,7 @@ def test_prepared_recovery_aborts_under_lock_and_unblocks_future_run(diagnostic,
 def test_restore_failed_remains_blocking_and_retries_until_verified(diagnostic, tmp_path):
     deploy, data, state = _target_tree(tmp_path)
     tx, _ = _armed_transaction(diagnostic, state, data, mutate=True)
-    failing = FakeRunner(diagnostic, data, fail_on="restart")
+    failing = FakeRunner(diagnostic, data, fail_on="start")
     executor = _executor(diagnostic, tmp_path, deploy, data, state, failing)
     with pytest.raises(diagnostic.DiagnosticError):
         executor.recover()
@@ -1005,7 +1209,9 @@ def test_restore_failed_remains_blocking_and_retries_until_verified(diagnostic, 
     succeeding = FakeRunner(diagnostic, data)
     assert _executor(diagnostic, tmp_path, deploy, data, state, succeeding).recover()["recovered"] == 1
     assert json.loads((tx.path / "state.json").read_text())["state"] == "RESTORED"
-    assert succeeding.restarts >= 1
+    assert succeeding.timeline.count("stop") == 0
+    assert succeeding.restarts == 0
+    assert any(call[0][:2] == ("/usr/bin/docker", "exec") for call in succeeding.calls)
 
 
 def test_original_absent_executor_recovery_removes_config(diagnostic, tmp_path):
