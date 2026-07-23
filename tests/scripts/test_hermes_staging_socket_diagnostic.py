@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -462,6 +463,46 @@ class FakeRunner:
             script = argv[-1]
             return "true\n" if 'print("true")' in script else "false\n"
         return ""
+
+
+def test_effective_check_uses_the_container_application_venv(diagnostic, tmp_path):
+    deploy, data, state = _target_tree(tmp_path)
+    fake = FakeRunner(diagnostic, data)
+    executor = _executor(diagnostic, tmp_path, deploy, data, state, fake)
+    executor._start_deadline(60)
+
+    executor._effective(False)
+
+    call = fake.calls[-1][0]
+    assert call[:5] == ("/usr/bin/docker", "exec", "--user", "hermes", diagnostic.CONTAINER)
+    assert call[5] == "/opt/hermes/.venv/bin/python"
+
+
+def test_effective_false_accepts_an_absent_telegram_platform(diagnostic, monkeypatch, capsys):
+    gateway = types.ModuleType("gateway")
+    gateway.__path__ = []
+    config = types.ModuleType("gateway.config")
+    setattr(config, "Platform", types.SimpleNamespace(TELEGRAM="telegram"))
+    setattr(config, "load_gateway_config", lambda: types.SimpleNamespace(platforms={}))
+    monkeypatch.setitem(sys.modules, "gateway", gateway)
+    monkeypatch.setitem(sys.modules, "gateway.config", config)
+
+    exec(diagnostic._EFFECTIVE_FALSE, {})
+
+    assert capsys.readouterr().out == "false\n"
+
+
+def test_effective_true_fails_generically_when_telegram_platform_is_absent(diagnostic, monkeypatch):
+    gateway = types.ModuleType("gateway")
+    gateway.__path__ = []
+    config = types.ModuleType("gateway.config")
+    setattr(config, "Platform", types.SimpleNamespace(TELEGRAM="telegram"))
+    setattr(config, "load_gateway_config", lambda: types.SimpleNamespace(platforms={}))
+    monkeypatch.setitem(sys.modules, "gateway", gateway)
+    monkeypatch.setitem(sys.modules, "gateway.config", config)
+
+    with pytest.raises(SystemExit, match="effective value is not literal true"):
+        exec(diagnostic._EFFECTIVE_TRUE, {})
 
 
 def _target_tree(tmp_path):

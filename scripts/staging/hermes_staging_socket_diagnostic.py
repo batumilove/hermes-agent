@@ -36,6 +36,7 @@ SUDO_UID = 1002
 CONTAINER = "hermes-batumi-staging-gateway"
 ENVIRONMENT = "batumi-staging"
 DOCKER = "/usr/bin/docker"
+CONTAINER_PYTHON = "/opt/hermes/.venv/bin/python"
 MAX_REQUEST_BYTES = 4096
 MAX_CONFIG_BYTES = 1024 * 1024
 MAX_METADATA_BYTES = 4096
@@ -772,12 +773,14 @@ def command_runner(
 
 
 _EFFECTIVE_TRUE = """from gateway.config import Platform, load_gateway_config
-value = load_gateway_config().platforms[Platform.TELEGRAM].extra.get("socket_diagnostics")
+platform = load_gateway_config().platforms.get(Platform.TELEGRAM)
+value = None if platform is None else platform.extra.get("socket_diagnostics")
 if value is not True: raise SystemExit("effective value is not literal true")
 print("true")
 """
 _EFFECTIVE_FALSE = """from gateway.config import Platform, load_gateway_config
-value = load_gateway_config().platforms[Platform.TELEGRAM].extra.get("socket_diagnostics")
+platform = load_gateway_config().platforms.get(Platform.TELEGRAM)
+value = None if platform is None else platform.extra.get("socket_diagnostics")
 if value is True: raise SystemExit("effective value is literal true")
 print("false")
 """
@@ -947,7 +950,7 @@ class DiagnosticExecutor:
 
     def _effective(self, enabled: bool) -> None:
         script = _EFFECTIVE_TRUE if enabled else _EFFECTIVE_FALSE
-        result = self._command((DOCKER, "exec", "--user", "hermes", CONTAINER, "/usr/bin/python", "-c", script), 60).strip()
+        result = self._command((DOCKER, "exec", "--user", "hermes", CONTAINER, CONTAINER_PYTHON, "-c", script), 60).strip()
         if result != ("true" if enabled else "false"):
             raise CommandError("effective diagnostic verification failed")
 
