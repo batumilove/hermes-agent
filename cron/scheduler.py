@@ -1484,13 +1484,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     from gateway.config import load_gateway_config, Platform
 
     # Optionally wrap the content with a header/footer so the user knows this
-    # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
-    # in config.yaml for clean output.
-    wrap_response = True
+    # is a cron delivery. Wrapping is on by default for agent jobs; script-only
+    # no_agent jobs keep their documented verbatim stdout contract.
+    wrap_response = not bool(job.get("no_agent"))
     user_cfg = None
     try:
         user_cfg = load_config()
-        wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
+        wrap_response = wrap_response and user_cfg.get("cron", {}).get(
+            "wrap_response", True
+        )
     except Exception:
         pass
 
