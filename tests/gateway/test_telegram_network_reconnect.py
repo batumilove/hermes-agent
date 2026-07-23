@@ -1278,6 +1278,7 @@ async def test_unterminated_polling_owner_requests_process_recycle(tmp_path):
 
 
 @pytest.mark.asyncio
+
 async def test_updater_stop_hard_deadline_tracks_cancellation_suppressing_task(monkeypatch):
     """A stop coroutine that suppresses cancellation cannot hold recovery open."""
     adapter = _make_adapter()
@@ -1680,3 +1681,102 @@ async def test_polling_owner_stop_serialized_caller_rechecks_still_running(monke
     assert not any(isinstance(result, BaseException) for result in results)
     assert stop_call_count == 2
     assert max_concurrent_stops == 1
+
+async def test_cancellation_resistant_updater_stop_cannot_defeat_owner_deadline():
+    """A stop coroutine that suppresses cancellation must not strand recovery."""
+    adapter = _make_adapter()
+    release_stop = asyncio.Event()
+    stop_started = asyncio.Event()
+    stop_cancelled = asyncio.Event()
+    stop_finished = asyncio.Event()
+    cancellation_count = 0
+
+    async def _cancellation_resistant_stop():
+        nonlocal cancellation_count
+        stop_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancellation_count += 1
+            stop_cancelled.set()
+            while not release_stop.is_set():
+                try:
+                    await release_stop.wait()
+                except asyncio.CancelledError:
+                    cancellation_count += 1
+        finally:
+            stop_finished.set()
+
+    updater = MagicMock()
+    updater.running = True
+    updater.stop = AsyncMock(side_effect=_cancellation_resistant_stop)
+    updater.start_polling = AsyncMock()
+    app = MagicMock()
+    app.updater = updater
+    adapter._app = app
+    adapter._drain_polling_connections = AsyncMock()
+    adapter._handoff_polling_fatal_error = AsyncMock()
+
+    with patch.object(tg_adapter, "_UPDATER_STOP_TIMEOUT", 0.01):
+        handler_task = asyncio.create_task(
+            adapter._handle_polling_network_error(Exception("CLOSE-WAIT test"))
+        )
+        try:
+            # The production path has a real five-second first-retry backoff.
+            # Do not patch the singleton asyncio module: the hard deadline and
+            # detached cleanup must execute against the real event loop.
+            await asyncio.wait_for(stop_started.wait(), timeout=6.0)
+            await asyncio.wait_for(stop_cancelled.wait(), timeout=0.5)
+            for _ in range(100):
+                if handler_task.done():
+                    break
+                await asyncio.sleep(0.001)
+            completed_by_deadline = handler_task.done()
+            remained_pending = not stop_finished.is_set()
+            cancellations_before_release = cancellation_count
+        finally:
+            release_stop.set()
+            await asyncio.wait_for(stop_finished.wait(), timeout=0.5)
+            await asyncio.wait_for(handler_task, timeout=0.5)
+
+    assert completed_by_deadline, "cancellation-resistant stop defeated the deadline"
+    assert remained_pending, "owner task was discarded before explicit release"
+    assert cancellations_before_release == 1
+    updater.stop.assert_awaited_once()
+    assert adapter.fatal_error_code == "telegram_polling_owner_unterminated"
+    adapter._drain_polling_connections.assert_not_awaited()
+    updater.start_polling.assert_not_awaited()
+    adapter._handoff_polling_fatal_error.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_retains_owner_references_after_stop_timeout():
+    """Shutdown may not claim/discard ownership that it could not terminate."""
+    adapter = _make_adapter()
+    never_finishes = asyncio.Event()
+
+    updater = MagicMock()
+    updater.running = True
+    updater.stop = AsyncMock(side_effect=never_finishes.wait)
+    app = MagicMock()
+    app.updater = updater
+    app.running = True
+    app.stop = AsyncMock()
+    app.shutdown = AsyncMock()
+    bot = MagicMock()
+    adapter._app = app
+    adapter._bot = bot
+    adapter._set_status_indicator = AsyncMock()
+    adapter._cancel_pending_delivery_tasks = AsyncMock()
+    adapter._release_platform_lock = MagicMock()
+
+    with patch.object(tg_adapter, "_UPDATER_STOP_TIMEOUT", 0.01):
+        await asyncio.wait_for(adapter.disconnect(), timeout=0.5)
+
+    assert adapter.fatal_error_code == "telegram_polling_owner_unterminated"
+    updater.stop.assert_awaited_once()
+    assert adapter._app is app
+    assert adapter._bot is bot
+    app.stop.assert_awaited_once()
+    app.shutdown.assert_awaited_once()
+
