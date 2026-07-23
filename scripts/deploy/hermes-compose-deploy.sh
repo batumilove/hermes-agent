@@ -59,7 +59,7 @@ runtime_mode=$(stat -c '%a' "$runtime_env")
 
 if [[ $environment == batumi-staging && -e $shared_staging_lock ]]; then
   [[ -f $shared_staging_lock && ! -L $shared_staging_lock ]] || die "unsafe shared staging lock"
-  [[ $(stat -c '%U:%a:%h' -- "$shared_staging_lock") == root:660:1 ]] || die "shared staging lock metadata mismatch"
+  [[ $(stat -c '%U:%G:%a:%h:%s' -- "$shared_staging_lock") == root:hermes-deploy:660:1:0 ]] || die "shared staging lock metadata mismatch"
   exec 9<>"$shared_staging_lock"
 else
   # Compatibility until the dormant helper is explicitly staged. Once staged,

@@ -26,7 +26,7 @@ lock=/run/lock/hermes-staging-diagnostic.lock
 service=/etc/systemd/system/hermes-staging-diagnostic-recovery.service
 timer=/etc/systemd/system/hermes-staging-diagnostic-recovery.timer
 tmpfiles=/etc/tmpfiles.d/hermes-staging-diagnostic.conf
-staged_sudoers=/var/lib/hermes-staging-diagnostics/staged/hermes-staging-diagnostic.sudoers
+staged_sudoers="$staged_root/hermes-staging-diagnostic.sudoers"
 
 atomic_install() {
   local source=$1 target=$2 mode_bits=$3

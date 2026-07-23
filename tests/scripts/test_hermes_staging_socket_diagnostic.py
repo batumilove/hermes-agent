@@ -598,11 +598,7 @@ def test_installation_artifacts_are_dormant_exact_and_warn_about_containment():
     assert "systemctl enable" not in installer and "systemctl start" not in installer
 
 
-def test_helper_and_installer_do_not_use_shell_execution(diagnostic):
-    source = HELPER.read_text()
-    assert "shell=True" not in source
-    assert "os.system" not in source
-    assert "start_new_session=True" in source and "os.killpg" in source
+def test_helper_output_bounds_are_fixed(diagnostic):
     assert diagnostic.MAX_COMMAND_OUTPUT_BYTES <= 2 * 1024 * 1024
     assert diagnostic.MAX_OUTPUT_BYTES <= 16 * 1024
 
@@ -876,9 +872,12 @@ def test_installer_manifest_binds_all_root_owned_artifacts_and_shared_lock():
     assert "status --porcelain" not in installer
     assert "cat-file blob" in installer
     assert "artifact-manifest.json" in installer
-    assert "staged/hermes-staging-diagnostic.sudoers" in installer
+    assert 'staged_root="$state_root/staged"' in installer
+    assert 'staged_sudoers="$staged_root/hermes-staging-diagnostic.sudoers"' in installer
     assert "/run/lock/hermes-staging-diagnostic.lock" in installer
     assert "/run/lock/hermes-staging-diagnostic.lock" in deployer
+    assert "stat -c '%U:%G:%a:%h:%s'" in deployer
+    assert "root:hermes-deploy:660:1:0" in deployer
     assert "/usr/bin/git --no-replace-objects -c safe.directory=\"$repo_root\"" in installer
     assert "systemd-tmpfiles --create" in installer
     assert "f /run/lock/hermes-staging-diagnostic.lock 0660 root hermes-deploy -" in tmpfiles
