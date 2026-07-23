@@ -734,13 +734,10 @@ def build_resume_recovery_note(
     startup auto-resume turn synthesized by
     ``_schedule_resume_pending_sessions`` with no human message attached.
 
-    ``interactive`` selects the empty-message guidance: on interactive
-    platforms a human is present, so "report the restore and ask what next"
-    is right.  On non-interactive event platforms (webhook, API server —
-    adapters with ``interactive_resume = False``) nobody can answer; the
-    resumed turn must instead complete the interrupted work, or the task is
-    silently abandoned behind a "restored" acknowledgement that goes
-    nowhere (#57056).
+    ``interactive`` is retained for API compatibility. Startup recovery now
+    autonomously continues interrupted work on every platform: restoring only
+    the transcript and asking an interactive user what to do next loses task
+    continuity after a restart.
     """
     reason_phrase = (
         "a gateway restart"
@@ -758,21 +755,10 @@ def build_resume_recovery_note(
             "Do NOT re-execute old tool calls — skip any "
             "unfinished work from the conversation history."
         )
-    elif interactive:
-        resume_guidance = (
-            "Report to the user that the session was restored "
-            "successfully and ask what they would like to do next."
-        )
-        tail_guidance = (
-            "Do NOT re-execute old tool calls — skip any "
-            "unfinished work from the conversation history."
-        )
     else:
         resume_guidance = (
-            "No user is present on this non-interactive platform, "
-            "so do NOT emit a 'session restored' acknowledgement "
-            "or ask questions. Review the conversation history and "
-            "CONTINUE the interrupted task to completion."
+            "Review the conversation history and CONTINUE the interrupted "
+            "task to completion."
         )
         tail_guidance = (
             "Do NOT re-run tool calls whose results already "
@@ -6619,7 +6605,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         action = "restarting" if self._restart_requested else "shutting down"
         hint = (
             "Your current task will be interrupted. "
-            "Send any message after restart and I'll try to resume where you left off."
+            "I'll automatically try to resume it after restart."
             if self._restart_requested
             else "Your current task will be interrupted."
         )
@@ -21786,19 +21772,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _persist_user_message_override = message
                 # The empty-message case is the auto-resume startup turn
                 # synthesized by _schedule_resume_pending_sessions — there is
-                # no NEW user message to address.  Guidance is adapter-aware:
-                # interactive platforms report the restore and ask what next;
-                # non-interactive event platforms (webhook, API server)
-                # continue the interrupted work instead, because nobody is
-                # present to answer and an acknowledgement would silently
-                # abandon the task (#57056).
-                _resume_adapter = self._adapter_for_source(source)
-                _interactive_resume = bool(
-                    getattr(_resume_adapter, "interactive_resume", True)
-                )
-                message = build_resume_recovery_note(
-                    _reason, message, interactive=_interactive_resume,
-                )
+                # no NEW user message to address. Every platform continues the
+                # interrupted task from the first step without a recorded result.
+                message = build_resume_recovery_note(_reason, message)
             elif _has_fresh_tool_tail:
                 _persist_user_message_override = message
                 message = (
@@ -21838,13 +21814,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _sn_reason = (
                     getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
                 )
-                _sn_adapter = self._adapter_for_source(source)
                 message = build_resume_recovery_note(
                     _sn_reason,
                     "",
-                    interactive=bool(
-                        getattr(_sn_adapter, "interactive_resume", True)
-                    ),
                 )
 
             _approval_session_key = session_key or ""

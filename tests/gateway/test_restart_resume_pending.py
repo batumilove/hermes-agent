@@ -483,13 +483,18 @@ class TestResumePendingSystemNote:
         )
         assert "gateway shutdown" in result
 
-    def test_empty_message_interactive_note_asks_what_next(self):
-        """Interactive platforms: the startup auto-resume turn reports the
-        restore and asks the (present) human what to do next."""
+    def test_empty_message_interactive_note_continues_task(self):
+        """Interactive platforms must autonomously continue interrupted work.
+
+        Restoring only the transcript and asking the user what to do next loses
+        task continuity after a gateway restart.
+        """
         note = build_resume_recovery_note("restart_timeout", "", interactive=True)
-        assert "session was restored" in note
-        assert "ask what they would like to do next" in note
-        assert "skip any unfinished work" in note
+        assert "CONTINUE the interrupted task" in note
+        assert "session was restored" not in note
+        assert "ask what they would like to do next" not in note
+        assert "skip any unfinished work" not in note
+        assert "already appear in the history" in note
 
     def test_empty_message_noninteractive_note_continues_task(self):
         """Non-interactive platforms (webhook, API server): nobody can answer
@@ -791,10 +796,9 @@ class TestResumePendingSystemNote:
         assert "already" in result and "do NOT re-execute or verify" in result
         assert "restarted!" in result
 
-    def test_resume_pending_empty_message_reports_recovery(self):
-        """On the empty-message auto-resume startup turn there is no NEW user
-        message, so the note instructs the model to report recovery and ask
-        for instructions rather than 'address the user's NEW message'.
+    def test_resume_pending_empty_message_continues_recovery(self):
+        """An empty startup-resume event continues the interrupted task without
+        fabricating a new user message or replaying completed/restart tools.
         """
         entry = self._pending_entry(reason="restart_timeout")
         result = _simulate_note_injection(
@@ -806,8 +810,9 @@ class TestResumePendingSystemNote:
         )
         assert "[System note:" in result
         assert "gateway restart" in result
-        assert "restored successfully" in result
-        assert "ask what they would like to do next" in result
+        assert "CONTINUE the interrupted task" in result
+        assert "first step that has no recorded result" in result
+        assert "ask what they would like to do next" not in result
         assert "do NOT re-execute or verify" in result
         # No phantom "NEW message" instruction when there is no new message.
         assert "NEW message" not in result
@@ -1550,7 +1555,7 @@ async def test_restart_notifies_home_channel_even_without_active_sessions():
 
     assert adapter.sent == [
         "⚠️ Gateway restarting — Your current task will be interrupted. "
-        "Send any message after restart and I'll try to resume where you left off."
+        "I'll automatically try to resume it after restart."
     ]
 
 
