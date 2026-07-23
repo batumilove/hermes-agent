@@ -851,6 +851,59 @@ def test_incomplete_socket_lifecycle_fails_canary(diagnostic, raw):
         diagnostic.DiagnosticExecutor._aggregate(raw)
 
 
+def test_balanced_pre_response_lifecycle_is_aggregated(diagnostic):
+    raw = (
+        "[Telegram socket] event=socket-opened owner=general route=primary local_port=1234\n"
+        "[Telegram socket] event=socket-closed owner=general route=primary local_port=1234\n"
+    )
+    result = diagnostic.DiagnosticExecutor._aggregate(raw)
+    assert result == {
+        "counts": [
+            {"count": 1, "event": "socket-closed", "owner": "general", "route": "primary"},
+            {"count": 1, "event": "socket-opened", "owner": "general", "route": "primary"},
+        ],
+        "created_without_terminal": [],
+    }
+
+
+def test_interleaved_socket_and_response_lifecycles_balance_separately(diagnostic):
+    raw = (
+        "[Telegram socket] event=socket-opened owner=general route=primary local_port=1234\n"
+        "[Telegram socket] event=response-created owner=general route=primary local_port=1234\n"
+        "[Telegram socket] event=socket-closed owner=general route=primary local_port=1234\n"
+        "[Telegram socket] event=response-closed owner=general route=primary local_port=1234\n"
+    )
+    result = diagnostic.DiagnosticExecutor._aggregate(raw)
+    assert {item["event"] for item in result["counts"]} == {
+        "socket-opened", "socket-closed", "response-created", "response-closed",
+    }
+    assert result["created_without_terminal"] == []
+
+
+@pytest.mark.parametrize("raw", [
+    "[Telegram socket] event=socket-opened owner=general route=primary local_port=1234\n"
+    "[Telegram socket] event=response-created owner=general route=primary local_port=5678\n"
+    "[Telegram socket] event=response-closed owner=general route=primary local_port=5678\n",
+    "[Telegram socket] event=socket-opened owner=general route=primary local_port=1234\n"
+    "[Telegram socket] event=socket-closed owner=general route=primary local_port=1234\n"
+    "[Telegram socket] event=socket-closed owner=general route=primary local_port=1234\n"
+    "[Telegram socket] event=response-created owner=general route=primary local_port=5678\n"
+    "[Telegram socket] event=response-closed owner=general route=primary local_port=5678\n",
+])
+def test_incomplete_pre_response_lifecycle_fails_canary(diagnostic, raw):
+    with pytest.raises(diagnostic.DiagnosticError, match="incomplete"):
+        diagnostic.DiagnosticExecutor._aggregate(raw)
+
+
+@pytest.mark.parametrize("line", [
+    "[Telegram socket] event=socket-unknown owner=general route=primary local_port=1234",
+    "[Telegram socket] event=socket-opened owner=general route=primary local_port=1234 extra=forbidden",
+])
+def test_malformed_socket_lifecycle_record_fails_closed(diagnostic, line):
+    with pytest.raises(diagnostic.DiagnosticError, match="malformed"):
+        diagnostic.DiagnosticExecutor._aggregate(line)
+
+
 def test_container_identity_change_during_logs_fails_and_restores(diagnostic, tmp_path, monkeypatch):
     deploy, data, state = _target_tree(tmp_path)
     original = (data / "gateway.json").read_bytes()

@@ -52,10 +52,12 @@ _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _DECIMAL = re.compile(r"(?:0|[1-9][0-9]{0,19})\Z")
 _NONCE = re.compile(r"[A-Za-z0-9_-]{16,64}\Z")
 _IMAGE = re.compile(r"ghcr\.io/batumilove/hermes-agent-deploy@sha256:[0-9a-f]{64}\Z")
+_EVENT_MARKER = "[Telegram socket] event="
 _EVENT = re.compile(
-    r"\[Telegram socket\] event=(response-created|response-closed|response-close-error) "
+    r"\[Telegram socket\] event=(socket-opened|socket-closed|socket-close-error|"
+    r"response-created|response-closed|response-close-error) "
     r"owner=(general|polling) route=(primary|(?:[0-9]{1,3}\.){3}[0-9]{1,3}) "
-    r"local_port=([0-9]{1,5}|unknown)(?:\s|$)"
+    r"local_port=([0-9]{1,5}|unknown)\s*\Z"
 )
 
 
@@ -972,19 +974,29 @@ class DiagnosticExecutor:
     @staticmethod
     def _aggregate(raw: str) -> dict[str, object]:
         counts: dict[tuple[str, str, str], int] = {}
-        balances: dict[tuple[str, str, str], int] = {}
-        total_created = 0
+        balances: dict[tuple[str, str, str, str], int] = {}
+        opening_events = {"socket-opened": "socket", "response-created": "response"}
+        terminal_events = {
+            "socket-closed": "socket",
+            "socket-close-error": "socket",
+            "response-closed": "response",
+            "response-close-error": "response",
+        }
+        total_opened = 0
         for line in raw.splitlines():
             match = _EVENT.search(line)
             if not match:
+                if _EVENT_MARKER in line:
+                    raise DiagnosticError("socket lifecycle record is malformed")
                 continue
             event, owner, route, port = match.groups()
             if port == "unknown":
                 raise DiagnosticError("socket lifecycle events are incomplete: unknown local port")
-            port_key = (owner, route, port)
-            if event == "response-created":
+            phase = opening_events.get(event) or terminal_events[event]
+            port_key = (phase, owner, route, port)
+            if event in opening_events:
                 balances[port_key] = balances.get(port_key, 0) + 1
-                total_created += 1
+                total_opened += 1
             else:
                 if balances.get(port_key, 0) <= 0:
                     raise DiagnosticError("socket lifecycle events are causally incomplete")
@@ -995,7 +1007,7 @@ class DiagnosticExecutor:
             raise DiagnosticError("no socket lifecycle events observed")
         if len(counts) > 256 or len(balances) > 4096:
             raise DiagnosticError("diagnostic aggregate exceeds bound")
-        if total_created == 0 or any(balance != 0 for balance in balances.values()):
+        if total_opened == 0 or any(balance != 0 for balance in balances.values()):
             raise DiagnosticError("socket lifecycle events are incomplete")
         return {
             "counts": [{"owner": o, "route": r, "event": e, "count": c} for (o, r, e), c in sorted(counts.items())],
