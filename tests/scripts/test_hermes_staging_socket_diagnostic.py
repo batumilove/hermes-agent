@@ -917,6 +917,72 @@ def test_restore_starts_the_container_after_an_explicit_stop(diagnostic, tmp_pat
     assert runtime_actions == ["stop", "start"]
 
 
+def test_exact_restored_config_with_unhealthy_runtime_still_stops_then_starts(
+    diagnostic, tmp_path, monkeypatch
+):
+    deploy, data, state = _target_tree(tmp_path)
+    tx, snapshot = _armed_transaction(diagnostic, state, data, mutate=True)
+    config = diagnostic.ConfigStore(data, expected_uid=os.getuid(), expected_gid=os.getgid())
+    mutated_hash = diagnostic._sha((data / "gateway.json").read_bytes())
+    quarantine_fd = diagnostic.TransactionStore(state).open_transaction(tx)
+    try:
+        config.restore(
+            snapshot,
+            mutated_hash,
+            quarantine_fd,
+            diagnostic.TransactionStore(state).load_guard_name(tx),
+        )
+    finally:
+        os.close(quarantine_fd)
+    assert config.matches(snapshot)
+
+    fake = FakeRunner(diagnostic, data)
+    executor = _executor(diagnostic, tmp_path, deploy, data, state, fake)
+    health_states = iter(["unhealthy", "healthy"])
+    monkeypatch.setattr(executor, "_health_status", lambda: next(health_states, "healthy"))
+
+    assert executor.recover() == {"recovered": 1, "aborted": 0}
+    runtime_actions = [
+        call[0][1]
+        for call in fake.calls
+        if call[0][0] == "/usr/bin/docker" and call[0][1] in {"stop", "start", "restart"}
+    ]
+    assert runtime_actions == ["stop", "start"]
+    assert json.loads((tx.path / "state.json").read_text())["state"] == "RESTORED"
+
+
+@pytest.mark.parametrize("precheck", ["matches", "health"])
+def test_restore_precheck_failure_is_durably_restore_failed(
+    diagnostic, tmp_path, monkeypatch, precheck
+):
+    deploy, data, state = _target_tree(tmp_path)
+    tx, snapshot = _armed_transaction(diagnostic, state, data, mutate=True)
+    mutated_hash = diagnostic._sha((data / "gateway.json").read_bytes())
+    executor = _executor(diagnostic, tmp_path, deploy, data, state)
+    if precheck == "matches":
+        monkeypatch.setattr(
+            executor.config,
+            "matches",
+            lambda _snapshot: (_ for _ in ()).throw(diagnostic.ConfigDriftError("precheck drift")),
+        )
+    else:
+        monkeypatch.setattr(executor.config, "matches", lambda _snapshot: True)
+        monkeypatch.setattr(
+            executor,
+            "_health_status",
+            lambda: (_ for _ in ()).throw(diagnostic.CommandError("health inspect failed")),
+        )
+
+    with pytest.raises(diagnostic.DiagnosticError, match="bounded restore retries exhausted"):
+        executor._restore(tx, snapshot, mutated_hash)
+
+    assert json.loads((tx.path / "state.json").read_text())["state"] == "RESTORE_FAILED"
+    assert not any(
+        call[0][0] == "/usr/bin/docker" and call[0][1] in {"stop", "start", "restart"}
+        for call in executor.runner.calls
+    )
+
+
 def test_installation_artifacts_are_dormant_exact_and_warn_about_containment():
     sudoers = (REPO / "deploy/staging-diagnostics/hermes-staging-diagnostic.sudoers").read_text()
     service = (REPO / "deploy/staging-diagnostics/hermes-staging-diagnostic-recovery.service").read_text()

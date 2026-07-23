@@ -1215,26 +1215,31 @@ class DiagnosticExecutor:
         quarantine_fd = self.states.open_transaction(tx)
         last_error: BaseException | None = None
         try:
-            if self.config.matches(snapshot) and self._health_status() == "healthy":
-                try:
-                    self.config.restore(snapshot, mutated_hash, quarantine_fd, guard_name)
-                    self._effective(False)
-                    self.states.transition(tx, "RESTORED")
-                    return
-                except BaseException as exc:
-                    last_error = exc
-            for attempt in range(3):
-                try:
-                    self._stop()
-                    self.config.restore(snapshot, mutated_hash, quarantine_fd, guard_name)
-                    self._start()
-                    self._effective(False)
-                    self.states.transition(tx, "RESTORED")
-                    return
-                except BaseException as exc:
-                    last_error = exc
-                    if attempt < 2:
-                        self._sleep_bounded(3)
+            try:
+                settled = self.config.matches(snapshot) and self._health_status() == "healthy"
+            except BaseException as exc:
+                last_error = exc
+            else:
+                if settled:
+                    try:
+                        self.config.restore(snapshot, mutated_hash, quarantine_fd, guard_name)
+                        self._effective(False)
+                        self.states.transition(tx, "RESTORED")
+                        return
+                    except BaseException as exc:
+                        last_error = exc
+                for attempt in range(3):
+                    try:
+                        self._stop()
+                        self.config.restore(snapshot, mutated_hash, quarantine_fd, guard_name)
+                        self._start()
+                        self._effective(False)
+                        self.states.transition(tx, "RESTORED")
+                        return
+                    except BaseException as exc:
+                        last_error = exc
+                        if attempt < 2:
+                            self._sleep_bounded(3)
         finally:
             os.close(quarantine_fd)
         self.states.fail_restore(tx)
