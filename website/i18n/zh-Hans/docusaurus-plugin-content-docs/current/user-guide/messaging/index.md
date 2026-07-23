@@ -520,7 +520,7 @@ gateway:
 
 ### 网关重启后的会话恢复
 
-当网关在工具调用或生成进行中时关闭，受影响的会话被标记为 `restart_interrupted`。下次启动时，网关为每个会话安排自动恢复——用户在聊天中收到简短提示（"Send any message after restart and I'll try to resume where you left off."），当他们回复时，会话从最后提交的轮次继续。
+当网关在工具调用或生成进行中时关闭，受影响的会话会被标记为 `restart_interrupted`。下次启动时，网关会为每个符合条件的会话安排自动恢复。聊天中会先显示一条尽力而为的提示（"I'll automatically try to resume it after restart."），随后会话会从第一个没有已记录结果的未完成步骤自动继续；无需用户发送新消息。已有结果的工具调用不会重复执行，重启或关机命令也不会被重放。
 
 此行为默认开启，并在网关启动时记录日志：
 
