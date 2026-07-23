@@ -159,6 +159,44 @@ class StaleTopicAdapter:
         return "38064" if force_create else "32343"
 
 
+class EphemeralRecordingAdapter(RecordingAdapter):
+    async def ensure_dm_topic(
+        self,
+        chat_id,
+        topic_name,
+        force_create=False,
+        persist=True,
+    ):
+        self.ensure_dm_topic_calls.append(
+            {
+                "chat_id": chat_id,
+                "topic_name": topic_name,
+                "force_create": force_create,
+                "persist": persist,
+            }
+        )
+        return "38049"
+
+
+class EphemeralStaleTopicAdapter(StaleTopicAdapter):
+    async def ensure_dm_topic(
+        self,
+        chat_id,
+        topic_name,
+        force_create=False,
+        persist=True,
+    ):
+        self.ensure_dm_topic_calls.append(
+            {
+                "chat_id": chat_id,
+                "topic_name": topic_name,
+                "force_create": force_create,
+                "persist": persist,
+            }
+        )
+        return "38064" if force_create else "32343"
+
+
 @pytest.mark.asyncio
 async def test_explicit_telegram_private_thread_requires_reply_anchor(tmp_path, monkeypatch):
     monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
@@ -197,6 +235,28 @@ async def test_named_telegram_private_topic_is_created_before_delivery(tmp_path,
 
 
 @pytest.mark.asyncio
+async def test_cron_looking_manual_named_topic_keeps_default_persistence_contract(
+    tmp_path,
+    monkeypatch,
+):
+    """Topic names are not ownership evidence; only the private marker is."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:722341991:Cron: Manual Operator Topic")
+
+    await router._deliver_to_platform(target, "hello", metadata=None)
+
+    assert adapter.ensure_dm_topic_calls == [
+        {
+            "chat_id": "722341991",
+            "topic_name": "Cron: Manual Operator Topic",
+            "force_create": False,
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_named_telegram_private_topic_refreshes_stale_thread_id(tmp_path, monkeypatch):
     monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
     adapter = StaleTopicAdapter()
@@ -212,6 +272,99 @@ async def test_named_telegram_private_topic_refreshes_stale_thread_id(tmp_path, 
     ]
     assert [call["metadata"]["thread_id"] for call in adapter.calls] == ["32343", "38064"]
     assert all(call["metadata"]["telegram_dm_topic_created_for_send"] is True for call in adapter.calls)
+
+
+@pytest.mark.asyncio
+async def test_ephemeral_named_private_topic_consumes_marker_and_disables_persistence(
+    tmp_path,
+    monkeypatch,
+):
+    """Cron-owned topic markers are internal and create no durable mapping."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = EphemeralRecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:722341991:Ephemeral Report Surface")
+
+    await router._deliver_to_platform(
+        target,
+        "hello",
+        metadata={"job_id": "job1", "_telegram_ephemeral_dm_topic": True},
+    )
+
+    assert adapter.ensure_dm_topic_calls == [
+        {
+            "chat_id": "722341991",
+            "topic_name": "Ephemeral Report Surface",
+            "force_create": False,
+            "persist": False,
+        }
+    ]
+    assert adapter.calls == [
+        {
+            "chat_id": "722341991",
+            "content": "hello",
+            "metadata": {
+                "job_id": "job1",
+                "thread_id": "38049",
+                "telegram_dm_topic_created_for_send": True,
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ephemeral_named_private_topic_refresh_remains_nonpersistent(
+    tmp_path,
+    monkeypatch,
+):
+    """A stale ephemeral topic retry must not persist either created thread id."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = EphemeralStaleTopicAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:722341991:Ephemeral Retry Surface")
+
+    result = await router._deliver_to_platform(
+        target,
+        "hello",
+        metadata={"_telegram_ephemeral_dm_topic": True},
+    )
+
+    assert getattr(result, "message_id", None) == "fresh-message"
+    assert adapter.ensure_dm_topic_calls == [
+        {
+            "chat_id": "722341991",
+            "topic_name": "Ephemeral Retry Surface",
+            "force_create": False,
+            "persist": False,
+        },
+        {
+            "chat_id": "722341991",
+            "topic_name": "Ephemeral Retry Surface",
+            "force_create": True,
+            "persist": False,
+        },
+    ]
+    assert all(
+        "_telegram_ephemeral_dm_topic" not in call["metadata"]
+        for call in adapter.calls
+    )
+
+
+@pytest.mark.asyncio
+async def test_ephemeral_marker_is_consumed_for_non_named_routes(tmp_path, monkeypatch):
+    """Internal cron ownership metadata must never leak to platform adapters."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:-100123:42")
+
+    await router._deliver_to_platform(
+        target,
+        "hello",
+        metadata={"_telegram_ephemeral_dm_topic": True},
+    )
+
+    assert adapter.calls[0]["metadata"] == {"thread_id": "42"}
 
 
 @pytest.mark.asyncio

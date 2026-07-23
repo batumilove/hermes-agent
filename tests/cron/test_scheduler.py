@@ -357,8 +357,14 @@ class TestResolveDeliveryTarget:
                 return True
 
         class FakeAdapter:
-            async def ensure_dm_topic(self, chat_id, topic_name, force_create=False):
-                self.created = (chat_id, topic_name, force_create)
+            async def ensure_dm_topic(
+                self,
+                chat_id,
+                topic_name,
+                force_create=False,
+                persist=True,
+            ):
+                self.created = (chat_id, topic_name, force_create, persist)
                 return "38049"
 
             async def send(self, chat_id, content, metadata=None):
@@ -385,11 +391,68 @@ class TestResolveDeliveryTarget:
         assert err is None
         assert adapter.created[0] == "722341991"
         assert adapter.created[1].startswith("Cron: Report · job1 · ")
+        assert adapter.created[2] is False
+        assert adapter.created[3] is False
         assert adapter.sent[0] == "722341991"
         assert adapter.sent[2] is not None
         assert adapter.sent[2]["thread_id"] == "38049"
         assert adapter.sent[2]["job_id"] == "job1"
         assert adapter.sent[2]["telegram_dm_topic_created_for_send"] is True
+
+    def test_deliver_result_marks_generated_private_topic_as_ephemeral(self):
+        """Scheduler ownership, not a Cron-looking name, controls persistence."""
+        from cron import scheduler
+        from gateway.config import Platform
+
+        pconfig = MagicMock(enabled=True)
+        gateway_config = MagicMock()
+        gateway_config.platforms = {Platform.TELEGRAM: pconfig}
+
+        class FakeLoop:
+            def is_running(self):
+                return True
+
+        class FakeFuture:
+            def __init__(self, coro):
+                self.coro = coro
+
+            def result(self, timeout=None):
+                import asyncio
+                return asyncio.run(self.coro)
+
+            def cancel(self):
+                return True
+
+        adapter = MagicMock()
+        deliver_mock = AsyncMock(
+            return_value=SimpleNamespace(success=True, raw_response=None)
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=gateway_config), \
+             patch.object(scheduler, "load_config", return_value={"cron": {"wrap_response": False, "telegram_new_thread_per_output": True}}), \
+             patch("gateway.delivery.DeliveryRouter._deliver_to_platform", new=deliver_mock), \
+             patch("agent.async_utils.safe_schedule_threadsafe", side_effect=lambda coro, loop: FakeFuture(coro)):
+            err = scheduler._deliver_result(
+                {
+                    "id": "job1",
+                    "name": "Report",
+                    "deliver": "origin",
+                    "origin": {
+                        "platform": "telegram",
+                        "chat_id": "722341991",
+                        "thread_id": "104564",
+                    },
+                },
+                "hello",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=FakeLoop(),
+            )
+
+        assert err is None
+        assert deliver_mock.await_count == 1
+        route_metadata = deliver_mock.await_args.args[2]
+        assert route_metadata["job_id"] == "job1"
+        assert route_metadata["_telegram_ephemeral_dm_topic"] is True
 
     def test_deliver_result_fresh_private_topic_does_not_fallback_to_standalone(self):
         """If fresh-topic live delivery fails, do not leak the message into the root DM."""

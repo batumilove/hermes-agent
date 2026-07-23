@@ -252,6 +252,133 @@ async def test_ensure_dm_topic_force_create_replaces_persisted_thread_id():
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("force_create", [False, True])
+async def test_ensure_dm_topic_persist_false_creates_without_mutating_local_or_file_state(
+    tmp_path,
+    monkeypatch,
+    force_create,
+):
+    """Ephemeral generated topics must never become durable named-topic mappings."""
+    import yaml
+
+    topic_name = "Cron: Report · job1 · 07-23 06:00:00 UTC"
+    original_topics = [
+        {
+            "chat_id": 111,
+            "topics": [
+                {"name": topic_name, "thread_id": 500},
+                {"name": "Manual", "thread_id": 600},
+            ],
+        }
+    ]
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        yaml.safe_dump(
+            {
+                "platforms": {
+                    "telegram": {"extra": {"dm_topics": original_topics}}
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    original_file = config_file.read_bytes()
+
+    adapter = _make_adapter(
+        [
+            {
+                "chat_id": 111,
+                "topics": [
+                    {"name": topic_name, "thread_id": 500},
+                    {"name": "Manual", "thread_id": 600},
+                ],
+            }
+        ]
+    )
+    adapter._dm_topics = {
+        f"111:{topic_name}": 500,
+        "111:Manual": 600,
+    }
+    original_cache = dict(adapter._dm_topics)
+    original_config = yaml.safe_load(yaml.safe_dump(adapter._dm_topics_config))
+    adapter._bot = AsyncMock()
+    adapter._bot.create_forum_topic.return_value = SimpleNamespace(message_thread_id=777)
+    adapter._persist_dm_topic_thread_id = MagicMock()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    result = await adapter.ensure_dm_topic(
+        "111",
+        topic_name,
+        force_create=force_create,
+        persist=False,
+    )
+
+    assert result == "777"
+    adapter._bot.create_forum_topic.assert_awaited_once_with(
+        chat_id=111,
+        name=topic_name,
+    )
+    assert adapter._dm_topics == original_cache
+    assert adapter._dm_topics_config == original_config
+    adapter._persist_dm_topic_thread_id.assert_not_called()
+    assert config_file.read_bytes() == original_file
+
+
+@pytest.mark.asyncio
+async def test_ensure_dm_topic_persist_false_failed_creation_leaves_state_unchanged(
+    tmp_path,
+    monkeypatch,
+):
+    """Failed ephemeral creation must not mutate cache, config, or config.yaml."""
+    import yaml
+
+    topic_name = "Cron: Failed · job1 · 07-23 06:01:00 UTC"
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        yaml.safe_dump(
+            {
+                "platforms": {
+                    "telegram": {
+                        "extra": {
+                            "dm_topics": [
+                                {
+                                    "chat_id": 111,
+                                    "topics": [
+                                        {"name": "Manual", "thread_id": 600}
+                                    ],
+                                }
+                            ]
+                        }
+                    }
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    original_file = config_file.read_bytes()
+    adapter = _make_adapter(
+        [{"chat_id": 111, "topics": [{"name": "Manual", "thread_id": 600}]}]
+    )
+    adapter._dm_topics = {"111:Manual": 600}
+    adapter._bot = AsyncMock()
+    adapter._bot.create_forum_topic.side_effect = RuntimeError("creation failed")
+    adapter._persist_dm_topic_thread_id = MagicMock()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    result = await adapter.ensure_dm_topic("111", topic_name, persist=False)
+
+    assert result is None
+    assert adapter._dm_topics == {"111:Manual": 600}
+    assert adapter._dm_topics_config == [
+        {"chat_id": 111, "topics": [{"name": "Manual", "thread_id": 600}]}
+    ]
+    adapter._persist_dm_topic_thread_id.assert_not_called()
+    assert config_file.read_bytes() == original_file
+
+
 # ── _persist_dm_topic_thread_id ──
 
 
