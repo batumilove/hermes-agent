@@ -797,6 +797,12 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         # DM Topics config from extra.dm_topics
         self._dm_topics_config: List[Dict[str, Any]] = self.config.extra.get("dm_topics", [])
+        # Identity of the config.yaml bytes most recently loaded by the hot
+        # reload path.  The file can be large, so unchanged topic lookups must
+        # not parse the whole document on the gateway event-loop thread.
+        self._dm_topics_config_file_identity: Optional[
+            tuple[int, int, int, int, int]
+        ] = None
         # Precomputed chat_ids that have DM topics configured (for O(1) root-DM ignore check)
         self._dm_topic_chat_ids: Set[str] = {
             str(e["chat_id"]) for e in self._dm_topics_config if "chat_id" in e
@@ -9141,8 +9147,30 @@ class TelegramAdapter(BasePlatformAdapter):
             if not config_path.exists():
                 return
 
+            path_stat = config_path.stat()
+            path_identity = (
+                path_stat.st_dev,
+                path_stat.st_ino,
+                path_stat.st_mtime_ns,
+                path_stat.st_ctime_ns,
+                path_stat.st_size,
+            )
+            if (
+                getattr(self, "_dm_topics_config_file_identity", None)
+                == path_identity
+            ):
+                return
+
             import yaml as _yaml
             with open(config_path, "r", encoding="utf-8") as f:
+                opened_stat = os.fstat(f.fileno())
+                opened_identity = (
+                    opened_stat.st_dev,
+                    opened_stat.st_ino,
+                    opened_stat.st_mtime_ns,
+                    opened_stat.st_ctime_ns,
+                    opened_stat.st_size,
+                )
                 config = _yaml.safe_load(f) or {}
 
             dm_topics = (
@@ -9155,6 +9183,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Clear both config and precomputed set when all topics are removed
                 self._dm_topics_config = []
                 self._dm_topic_chat_ids = set()
+                self._dm_topics_config_file_identity = opened_identity
                 return
 
             # Update in-memory config and cache any new thread_ids
@@ -9178,6 +9207,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 "[%s] Hot-loaded DM topic from config: %s -> thread_id=%s",
                                 self.name, cache_key, tid,
                             )
+            self._dm_topics_config_file_identity = opened_identity
         except Exception as e:
             logger.debug("[%s] Failed to reload dm_topics from config: %s", self.name, e)
 

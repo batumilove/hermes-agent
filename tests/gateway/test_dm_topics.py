@@ -1123,3 +1123,250 @@ def test_build_message_event_dm_from_user_present_uses_user():
     # Normal case — from_user is used directly
     assert event.source.user_id == "99999"
     assert event.source.user_name == "Bob"
+
+
+# ── _reload_dm_topics_from_config: mtime/size guard ──
+
+
+def _write_config(tmp_path, dm_topics_list):
+    """Write a config.yaml with the given dm_topics list and return the path."""
+    import yaml
+
+    config_file = tmp_path / ".hermes" / "config.yaml"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_data = {
+        "platforms": {
+            "telegram": {
+                "extra": {
+                    "dm_topics": dm_topics_list,
+                }
+            }
+        }
+    }
+    with open(config_file, "w") as f:
+        yaml.dump(config_data, f)
+    return config_file
+
+
+def _hermes_home_ctx(tmp_path):
+    """Context manager pair for HERMES_HOME pointing at tmp_path/.hermes."""
+    return patch.object(Path, "home", return_value=tmp_path), \
+        patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")})
+
+
+def test_reload_skips_reparse_when_config_unchanged(tmp_path):
+    """_reload_dm_topics_from_config should not re-parse when mtime+size are unchanged."""
+    import yaml
+
+    adapter = _make_adapter([])
+    _write_config(tmp_path, [
+        {"chat_id": 111, "topics": [{"name": "General", "thread_id": 100}]}
+    ])
+
+    with patch.object(Path, "home", return_value=tmp_path), \
+         patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}):
+        # First reload: parses and caches
+        adapter._reload_dm_topics_from_config()
+        assert adapter._dm_topics.get("111:General") == 100
+
+        # Patch yaml.safe_load to detect re-parse
+        original_safe_load = yaml.safe_load
+        call_count = {"n": 0}
+
+        def counting_safe_load(stream):
+            call_count["n"] += 1
+            return original_safe_load(stream)
+
+        with patch("yaml.safe_load", side_effect=counting_safe_load):
+            adapter._reload_dm_topics_from_config()
+
+        # Should NOT have re-parsed because config hasn't changed
+        assert call_count["n"] == 0
+        # Data is still correct
+        assert adapter._dm_topics.get("111:General") == 100
+
+
+def test_reload_reparses_when_mtime_changes(tmp_path):
+    """_reload_dm_topics_from_config should re-parse when config mtime changes."""
+    import time
+
+    adapter = _make_adapter([])
+    _write_config(tmp_path, [
+        {"chat_id": 111, "topics": [{"name": "General", "thread_id": 100}]}
+    ])
+
+    with patch.object(Path, "home", return_value=tmp_path), \
+         patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}):
+        adapter._reload_dm_topics_from_config()
+        assert adapter._dm_topics.get("111:General") == 100
+
+        # Modify config: new topic added
+        _write_config(tmp_path, [
+            {"chat_id": 111, "topics": [
+                {"name": "General", "thread_id": 100},
+                {"name": "Work", "thread_id": 200},
+            ]}
+        ])
+        # Ensure mtime is different even on fast filesystems
+        cf = tmp_path / ".hermes" / "config.yaml"
+        st = cf.stat()
+        os.utime(cf, (st.st_atime, st.st_mtime + 2))
+
+        adapter._reload_dm_topics_from_config()
+        # New topic should now be loaded
+        assert adapter._dm_topics.get("111:Work") == 200
+
+
+def test_reload_reparses_when_size_changes_same_mtime(tmp_path):
+    """Even if mtime is unchanged, a different file size should trigger re-parse."""
+    adapter = _make_adapter([])
+    _write_config(tmp_path, [
+        {"chat_id": 111, "topics": [{"name": "General", "thread_id": 100}]}
+    ])
+
+    with patch.object(Path, "home", return_value=tmp_path), \
+         patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}):
+        adapter._reload_dm_topics_from_config()
+
+        # Write a different-size config but preserve mtime
+        cf = tmp_path / ".hermes" / "config.yaml"
+        old_mtime = cf.stat().st_mtime
+
+        _write_config(tmp_path, [
+            {"chat_id": 111, "topics": [
+                {"name": "General", "thread_id": 100},
+                {"name": "Work", "thread_id": 200},
+            ]}
+        ])
+        # Force same mtime
+        os.utime(cf, (old_mtime, old_mtime))
+
+        adapter._reload_dm_topics_from_config()
+        assert adapter._dm_topics.get("111:Work") == 200
+
+
+def test_reload_reparses_same_inode_size_and_mtime_when_ctime_changes(tmp_path):
+    """An in-place same-size rewrite must not evade the unchanged-file guard."""
+    adapter = _make_adapter([])
+    config_file = _write_config(tmp_path, [
+        {"chat_id": 111, "topics": [{"name": "General", "thread_id": 100}]}
+    ])
+
+    with patch.object(Path, "home", return_value=tmp_path), \
+         patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}):
+        adapter._reload_dm_topics_from_config()
+        original = config_file.stat()
+
+        _write_config(tmp_path, [
+            {"chat_id": 111, "topics": [{"name": "Special", "thread_id": 100}]}
+        ])
+        rewritten = config_file.stat()
+        assert rewritten.st_ino == original.st_ino
+        assert rewritten.st_size == original.st_size
+        os.utime(config_file, ns=(original.st_atime_ns, original.st_mtime_ns))
+
+        adapter._reload_dm_topics_from_config()
+
+    assert adapter._dm_topics.get("111:Special") == 100
+
+
+def test_reload_handles_missing_config(tmp_path):
+    """_reload_dm_topics_from_config should be a no-op when config.yaml is missing."""
+    adapter = _make_adapter([
+        {"chat_id": 111, "topics": [{"name": "General"}]}
+    ])
+
+    # No config.yaml in tmp_path
+    with patch.object(Path, "home", return_value=tmp_path), \
+         patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}):
+        # Should not raise
+        adapter._reload_dm_topics_from_config()
+        # Existing config should be preserved (not cleared)
+        assert len(adapter._dm_topics_config) == 1
+
+
+def test_reload_recovers_after_parse_failure(tmp_path):
+    """After a parse failure, the next call with valid config should succeed."""
+    import yaml
+
+    adapter = _make_adapter([])
+    config_file = tmp_path / ".hermes" / "config.yaml"
+    config_file.parent.mkdir(parents=True)
+
+    # Write invalid YAML
+    config_file.write_text("{{{{invalid yaml")
+
+    with patch.object(Path, "home", return_value=tmp_path), \
+         patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}):
+        # First call: parse fails, should not crash
+        adapter._reload_dm_topics_from_config()
+        # Should NOT have cached anything from the failed parse
+        assert "111:General" not in adapter._dm_topics
+
+        # Now write valid config with different mtime
+        _write_config(tmp_path, [
+            {"chat_id": 111, "topics": [{"name": "General", "thread_id": 100}]}
+        ])
+        cf = tmp_path / ".hermes" / "config.yaml"
+        st = cf.stat()
+        os.utime(cf, (st.st_atime, st.st_mtime + 2))
+
+        # Second call: should succeed
+        adapter._reload_dm_topics_from_config()
+        assert adapter._dm_topics.get("111:General") == 100
+
+
+def test_reload_clears_topics_when_config_emptied(tmp_path):
+    """When config goes from having topics to having none, cache should reflect that."""
+    adapter = _make_adapter([])
+    _write_config(tmp_path, [
+        {"chat_id": 111, "topics": [{"name": "General", "thread_id": 100}]}
+    ])
+
+    with patch.object(Path, "home", return_value=tmp_path), \
+         patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}):
+        adapter._reload_dm_topics_from_config()
+        assert len(adapter._dm_topics_config) == 1
+
+        # Write config with empty dm_topics
+        _write_config(tmp_path, [])
+        cf = tmp_path / ".hermes" / "config.yaml"
+        st = cf.stat()
+        os.utime(cf, (st.st_atime, st.st_mtime + 2))
+
+        adapter._reload_dm_topics_from_config()
+        assert adapter._dm_topics_config == []
+        assert adapter._dm_topic_chat_ids == set()
+
+
+def test_get_dm_topic_info_no_excessive_reload_on_miss(tmp_path):
+    """Multiple _get_dm_topic_info misses on unchanged config should parse only once."""
+    adapter = _make_adapter([
+        {"chat_id": 111, "topics": [{"name": "General", "thread_id": 100}]}
+    ])
+    _write_config(tmp_path, [
+        {"chat_id": 111, "topics": [{"name": "General", "thread_id": 100}]}
+    ])
+
+    with patch.object(Path, "home", return_value=tmp_path), \
+         patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}):
+        # First miss triggers a reload
+        result1 = adapter._get_dm_topic_info("111", "999")
+        assert result1 is None
+
+        # Second miss should NOT trigger another reload (config unchanged)
+        import yaml
+        original_safe_load = yaml.safe_load
+        call_count = {"n": 0}
+
+        def counting_safe_load(stream):
+            call_count["n"] += 1
+            return original_safe_load(stream)
+
+        with patch("yaml.safe_load", side_effect=counting_safe_load):
+            result2 = adapter._get_dm_topic_info("111", "998")
+            result3 = adapter._get_dm_topic_info("111", "997")
+
+        assert result2 is None
+        assert result3 is None
+        assert call_count["n"] == 0
