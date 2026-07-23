@@ -696,6 +696,92 @@ class TestDeliverResultWrapping:
         sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
         assert "Cronjob Response: abc-123" in sent_content
 
+    def test_agent_job_with_script_still_uses_global_wrapping(self):
+        """A data-collection script must not imply script-only no-agent semantics."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": True}}):
+            job = {
+                "id": "script-assisted-agent-job",
+                "name": "script-assisted report",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+                "schedule": {"kind": "cron", "expression": "0 9 * * *"},
+                "repeat": {"times": None, "completed": 3},
+                "script": "collect.py",
+                "no_agent": False,
+            }
+            _deliver_result(job, "Agent-written report.")
+
+        send_mock.assert_called_once()
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert "Cronjob Response: script-assisted report" in sent_content
+        assert "Agent-written report." in sent_content
+        assert "To stop or manage this job" in sent_content
+
+    def test_no_agent_delivery_is_verbatim_when_global_wrapping_enabled(self):
+        """Script-only jobs must honor the documented verbatim stdout contract."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": True}}):
+            job = {
+                "id": "script-only-job",
+                "name": "script-only alert",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+                "schedule": {"kind": "once", "run_at": "2026-07-23T09:19:43+00:00"},
+                "repeat": {"times": 1, "completed": 0},
+                "script": "alert.sh",
+                "no_agent": True,
+            }
+            _deliver_result(job, "SCRIPT_ALERT_OK")
+
+        send_mock.assert_called_once()
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert sent_content == "SCRIPT_ALERT_OK"
+
+    def test_no_agent_verbatim_delivery_still_extracts_media(self, tmp_path, monkeypatch):
+        """Verbatim text must not bypass the shared safe media-delivery path."""
+        from gateway.config import Platform
+
+        media_path = self._safe_media_path(tmp_path, monkeypatch, "script-alert.ogg")
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": True}}):
+            job = {
+                "id": "script-media-job",
+                "name": "script media alert",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+                "script": "alert.py",
+                "no_agent": True,
+            }
+            _deliver_result(job, f"Audio alert\nMEDIA:{media_path}")
+
+        send_mock.assert_called_once()
+        args, kwargs = send_mock.call_args
+        assert args[3] == "Audio alert"
+        assert kwargs["media_files"] == [(str(media_path), False)]
+
     def test_delivery_skips_wrapping_when_config_disabled(self):
         """When cron.wrap_response is false, deliver raw content without header/footer."""
         from gateway.config import Platform
