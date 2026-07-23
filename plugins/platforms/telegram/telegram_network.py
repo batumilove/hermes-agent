@@ -245,6 +245,79 @@ async def _close_response(response: httpx.Response) -> None:
         logger.debug("Failed to close abandoned Telegram response", exc_info=True)
 
 
+class _RetryingCloseResponseStream(httpx.AsyncByteStream):
+    """Retry an interrupted response close in a detached bounded task.
+
+    Telegram callers may catch ``CancelledError`` from response cleanup and
+    then finish normally. That defeats the caller-task done callback: the task
+    no longer looks cancelled or failed, while the response socket remains in
+    ``CLOSE_WAIT``. If the first stream close is interrupted or errors, retry
+    it once in an independently scheduled task. If that retry also fails or
+    times out, close the exact raw network stream as a bounded last resort.
+    """
+
+    def __init__(
+        self,
+        stream: httpx.AsyncByteStream,
+        *,
+        network_stream: Any | None = None,
+    ):
+        self._stream = stream
+        self._network_stream = network_stream
+        self._cleanup_scheduled = False
+
+    async def __aiter__(self):
+        async for chunk in self._stream:
+            yield chunk
+
+    async def aclose(self) -> None:
+        try:
+            await self._stream.aclose()
+        except asyncio.CancelledError:
+            self._schedule_detached_retry()
+            raise
+        except Exception:
+            self._schedule_detached_retry()
+            raise
+
+    def _schedule_detached_retry(self) -> None:
+        if self._cleanup_scheduled:
+            return
+        self._cleanup_scheduled = True
+        task = asyncio.create_task(self._retry_close())
+        _abandoned_response_cleanups.add(task)
+        task.add_done_callback(_abandoned_response_cleanups.discard)
+
+    async def _retry_close(self) -> None:
+        try:
+            await asyncio.wait_for(self._stream.aclose(), timeout=5.0)
+            return
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+        await self._force_close_network_stream()
+
+    async def _force_close_network_stream(self) -> None:
+        if self._network_stream is None:
+            return
+        try:
+            aclose = getattr(self._network_stream, "aclose", None)
+            if aclose is not None:
+                await asyncio.wait_for(aclose(), timeout=2.0)
+                return
+            close = getattr(self._network_stream, "close", None)
+            if close is not None:
+                close()
+        except asyncio.CancelledError:
+            logger.debug("Telegram response network-stream force-close cancelled")
+        except Exception:
+            logger.debug(
+                "Failed to force-close Telegram response network stream",
+                exc_info=True,
+            )
+
+
 async def _handle_transport_request(
     transport: httpx.AsyncBaseTransport, request: httpx.Request
 ) -> httpx.Response:
@@ -261,9 +334,15 @@ async def _handle_transport_request(
     reading the response body (e.g. PTB's
     ``HTTPXRequest.do_request`` awaiting ``res.content``) may abandon the
     response and leave its socket in CLOSE_WAIT. The caller-task done callback
-    closes that otherwise-unclaimed response.
+    closes that otherwise-unclaimed response, and the response stream wrapper
+    retries an interrupted close in a detached bounded task.
     """
     response = await transport.handle_async_request(request)
+    network_stream = response.extensions.get("network_stream")
+    response.stream = _RetryingCloseResponseStream(
+        response.stream,
+        network_stream=network_stream,
+    )
     # Guard the response against caller task cancellation/exception after
     # we have returned it. If the caller is cancelled while consuming the
     # body, its done callback will close the otherwise-abandoned response.
