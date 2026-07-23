@@ -775,6 +775,29 @@ def build_resume_recovery_note(
     )
 
 
+_EMPTY_USER_MESSAGE_PLACEHOLDER = (
+    "[The user sent an empty message. Ask them what they need help with.]"
+)
+
+
+def _normalize_empty_message_text(
+    message_text: str,
+    *,
+    startup_resume: bool = False,
+) -> str:
+    """Normalize a blank user turn without corrupting startup recovery.
+
+    Startup auto-resume deliberately dispatches an empty internal event so the
+    resume-pending branch can distinguish it from a real new user message.
+    Preserve that sentinel until the recovery note is injected.
+    """
+    if message_text and message_text.strip():
+        return message_text
+    if startup_resume:
+        return ""
+    return _EMPTY_USER_MESSAGE_PLACEHOLDER
+
+
 # Assistant-message fields that must survive transcript replay so multi-turn
 # reasoning context, prefix-cache hits, and provider-specific echo
 # requirements all behave the same on the gateway as they do in the CLI.
@@ -7645,6 +7668,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message_type=MessageType.TEXT,
                 source=source,
                 internal=True,
+                metadata={"startup_resume": True},
             )
             task = asyncio.create_task(
                 self._run_startup_resume_event(adapter, event, entry.session_key)
@@ -13485,8 +13509,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Validate message_text is not empty (GLM error 1213 fix). Some providers
         # (GLM/Zhipu) return error 1213 "prompt parameter was not received
         # normally" for empty messages.
-        if not message_text or not message_text.strip():
-            message_text = "[The user sent an empty message. Ask them what they need help with.]"
+        _startup_resume_event = bool(
+            event.internal
+            and (getattr(event, "metadata", None) or {}).get("startup_resume")
+        )
+        message_text = _normalize_empty_message_text(
+            message_text,
+            startup_resume=_startup_resume_event,
+        )
 
         # Capture the platform event time as message metadata and keep the
         # persisted transcript clean (strip any leading timestamp prefix).
