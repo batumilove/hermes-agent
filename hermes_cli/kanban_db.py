@@ -4432,24 +4432,77 @@ class VerdictConflictError(ValueError):
 VALID_COMPLETION_VERDICTS = frozenset({"PASS", "BLOCK", "FAIL"})
 
 
-def _infer_completion_verdict(summary: Optional[str], result: Optional[str]) -> Optional[str]:
-    """Infer only an explicit leading review verdict from legacy prose."""
+def _infer_text_verdict(text: Optional[str]) -> Optional[str]:
+    """Infer an explicit verdict from one handoff field, including review JSON."""
 
-    text = (summary if summary is not None else result) or ""
-    normalized = re.sub(r"^[\s#>*_`\-]+", "", text).strip().upper()
+    raw = (text or "").strip()
+    candidates: set[str] = set()
+    if raw.startswith("{"):
+        try:
+            payload = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            payload = None
+        if isinstance(payload, dict):
+            passed = payload.get("passed")
+            if isinstance(passed, bool):
+                candidates.add("PASS" if passed else "FAIL")
+            payload_verdict = payload.get("verdict")
+            if isinstance(payload_verdict, str):
+                normalized_verdict = payload_verdict.strip().upper()
+                if normalized_verdict in VALID_COMPLETION_VERDICTS:
+                    candidates.add(normalized_verdict)
+            if any(
+                isinstance(payload.get(key), list) and bool(payload[key])
+                for key in ("logic_errors", "security_concerns")
+            ):
+                candidates.add("FAIL")
+
+    normalized = re.sub(r"^[\s#>*_`\-]+", "", raw).strip().upper()
     if re.match(
         r"^(?:NOT\s+READY|BLOCK(?:ED)?)(?:\s+VERDICT\b|\s*[:—-]|$)", normalized
     ):
-        return "BLOCK"
-    if re.match(
+        candidates.add("BLOCK")
+    elif re.match(
         r"^FAIL(?:ED)?(?:\s+VERDICT\b|\s*[:—-]|$)", normalized
     ):
-        return "FAIL"
-    if re.match(
+        candidates.add("FAIL")
+    elif re.match(
         r"^PASS(?:ED)?(?:\s+(?:VERDICT|FOR)\b|\s*[:—-]|$)", normalized
     ):
-        return "PASS"
-    return None
+        candidates.add("PASS")
+
+    inline = re.search(
+        r"\bVERDICT\s*[:—-]\s*(NOT\s+READY|BLOCK(?:ED)?|FAIL(?:ED)?|PASS(?:ED)?)\b",
+        normalized,
+    )
+    if inline:
+        value = inline.group(1)
+        if value.startswith("PASS"):
+            candidates.add("PASS")
+        elif value.startswith("FAIL"):
+            candidates.add("FAIL")
+        else:
+            candidates.add("BLOCK")
+
+    if len(candidates) > 1:
+        raise VerdictConflictError(
+            "handoff field contains conflicting verdicts: "
+            + ", ".join(sorted(candidates))
+        )
+    return next(iter(candidates), None)
+
+
+def _infer_completion_verdict(summary: Optional[str], result: Optional[str]) -> Optional[str]:
+    """Resolve leading legacy verdicts across both handoff fields fail-closed."""
+
+    summary_verdict = _infer_text_verdict(summary)
+    result_verdict = _infer_text_verdict(result)
+    if summary_verdict and result_verdict and summary_verdict != result_verdict:
+        raise VerdictConflictError(
+            "summary verdict "
+            f"{summary_verdict} contradicts result verdict {result_verdict}"
+        )
+    return summary_verdict or result_verdict
 
 
 def _resolve_completion_verdict(

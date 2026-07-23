@@ -423,6 +423,8 @@ def finalize_turn(
     else:
         logger.info(_diag_msg, *_diag_args)
 
+    _delivery_only_footers: list[str] = []
+
     # Workspace diff sentinel footer.
     try:
         from agent.workspace_diff_sentinel import _sentinel_enabled, build_workspace_diff_footer, compute_workspace_diff_snapshot
@@ -433,6 +435,7 @@ def finalize_turn(
             )
             footer = build_workspace_diff_footer(before, after)
             if footer and final_response:
+                _delivery_only_footers.append(footer)
                 final_response = final_response.rstrip() + "\n\n" + footer
     except Exception as _ws_err:
         logger.debug("workspace diff sentinel failed: %s", _ws_err)
@@ -458,6 +461,7 @@ def finalize_turn(
             if _failed and agent._file_mutation_verifier_enabled():
                 footer = agent._format_file_mutation_failure_footer(_failed)
                 if footer:
+                    _delivery_only_footers.append(footer)
                     final_response = final_response.rstrip() + "\n\n" + footer
         except Exception as _ver_err:
             logger.debug("file-mutation verifier footer failed: %s", _ver_err)
@@ -474,6 +478,7 @@ def finalize_turn(
                 from agent.harness_learning import build_side_effect_evidence_footer
                 footer = build_side_effect_evidence_footer(messages, final_response)
                 if footer:
+                    _delivery_only_footers.append(footer)
                     final_response = final_response.rstrip() + "\n\n" + footer
         except Exception as _side_effect_err:
             logger.debug("side-effect evidence verifier footer failed: %s", _side_effect_err)
@@ -536,6 +541,13 @@ def finalize_turn(
             logger.debug("turn-completion explainer failed: %s", _exp_err)
 
     _response_transformed = False
+    _transform_core_response = str(final_response or "")
+    for _delivery_footer in reversed(_delivery_only_footers):
+        _transform_core_response = _transform_core_response.replace(
+            "\n\n" + _delivery_footer,
+            "",
+        )
+    _persisted_transform_response = _transform_core_response
 
     # Plugin hook: transform_llm_output
     # Fired once per turn after the tool-calling loop completes.
@@ -546,7 +558,7 @@ def finalize_turn(
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _transform_results = _invoke_hook(
                 "transform_llm_output",
-                response_text=final_response,
+                response_text=_transform_core_response,
                 session_id=agent.session_id or "",
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
@@ -558,6 +570,104 @@ def finalize_turn(
                     break  # First non-empty string wins
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
+
+    # The plugin transform runs after the first controller-claim gate and can
+    # replace the entire delivered response. Re-run the gate on that final text
+    # so a transform cannot inject or restore an unverified Kanban claim.
+    if (
+        _response_transformed
+        and final_response
+        and not interrupted
+        and not os.environ.get("HERMES_KANBAN_TASK")
+    ):
+        try:
+            from agent.harness_learning import evaluate_controller_kanban_claims
+
+            _post_transform_decision = evaluate_controller_kanban_claims(
+                messages, final_response
+            )
+            _kanban_claim_verification = (
+                {
+                    "verified": not _post_transform_decision.rejected,
+                    "task_ids": list(_post_transform_decision.task_ids),
+                    "missing_evidence": list(
+                        _post_transform_decision.missing_evidence
+                    ),
+                }
+                if _post_transform_decision.task_ids
+                else None
+            )
+            if _post_transform_decision.rejected:
+                _ids = ", ".join(_post_transform_decision.task_ids)
+                _missing = ", ".join(_post_transform_decision.missing_evidence)
+                final_response = (
+                    f"{_post_transform_decision.message} Tasks: {_ids}. "
+                    f"Missing: {_missing}."
+                )
+                failed = True
+                completed = False
+                _turn_exit_reason = "kanban_claim_evidence_rejected"
+        except Exception as _post_transform_claim_err:
+            if "t_" in str(final_response).lower():
+                final_response = (
+                    "Kanban claim rejected: verification failed internally; "
+                    "treat every referenced task state as unverified."
+                )
+                _kanban_claim_verification = {
+                    "verified": False,
+                    "task_ids": [],
+                    "missing_evidence": ["internal_verifier_error"],
+                }
+                failed = True
+                completed = False
+                _turn_exit_reason = "kanban_claim_evidence_rejected"
+            logger.exception(
+                "Post-transform controller Kanban claim verifier failed: %s",
+                _post_transform_claim_err,
+            )
+
+    if _response_transformed:
+        _persisted_transform_response = str(final_response or "")
+        for _delivery_footer in _delivery_only_footers:
+            if final_response:
+                final_response = final_response.rstrip() + "\n\n" + _delivery_footer
+
+    # A transform replaces the text that was persisted before output hooks ran.
+    # Rewrite only that transformed current-turn assistant row after its final
+    # claim check, preserving the cache-safe rule that ordinary regulator/workspace
+    # footers are not copied into durable model context.
+    if _response_transformed and not interrupted:
+        try:
+            _closing_assistant = None
+            for _message in reversed(messages):
+                if not isinstance(_message, dict):
+                    continue
+                if _message.get("role") == "user":
+                    break
+                if _message.get("role") == "assistant" and not _is_pure_tool_call_tail(
+                    _message
+                ):
+                    _closing_assistant = _message
+                    break
+            if _closing_assistant is None:
+                _closing_assistant = {
+                    "role": "assistant",
+                    "content": _persisted_transform_response,
+                }
+                messages.append(_closing_assistant)
+            else:
+                _closing_assistant["content"] = _persisted_transform_response
+                _closing_assistant.pop("_db_persisted", None)
+            agent._persist_session(messages, conversation_history)
+        except Exception as _transform_persist_err:
+            _cleanup_errors.append(
+                f"persist_transformed_response: {_transform_persist_err}"
+            )
+            logger.error(
+                "finalize_turn: transformed response persistence failed: %s",
+                _transform_persist_err,
+                exc_info=True,
+            )
 
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.

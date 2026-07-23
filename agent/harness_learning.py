@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
@@ -405,7 +406,7 @@ def _looks_like_error(text: str) -> bool:
     return '"error"' in lower or "error:" in lower or "failed" in lower
 
 
-def _tool_result_succeeded(tool_name: str, result: Any) -> bool:
+def _tool_result_succeeded(tool_name: str, result: Any, args: str = "") -> bool:
     """Require the current tool's documented top-level success contract."""
 
     text = _compact_text(result)
@@ -420,7 +421,36 @@ def _tool_result_succeeded(tool_name: str, result: Any) -> bool:
 
     tool = str(tool_name or "").lower()
     if tool.startswith("kanban_"):
-        succeeded = parsed.get("ok") is True or parsed.get("success") is True
+        operation = _kanban_operation_kind(tool, args)
+        if operation == "show":
+            # Native kanban_show returns the task object directly, without the
+            # mutation handlers' {ok:true} envelope.
+            task = parsed.get("task")
+            succeeded = (
+                isinstance(task, dict)
+                and isinstance(task.get("id"), str)
+                and bool(task["id"].strip())
+                and isinstance(task.get("status"), str)
+                and bool(task["status"].strip())
+            )
+        elif operation == "list":
+            # Native kanban_list likewise returns a bounded task collection.
+            tasks = parsed.get("tasks")
+            succeeded = (
+                isinstance(tasks, list)
+                and type(parsed.get("count")) is int
+                and parsed["count"] == len(tasks)
+                and all(
+                    isinstance(task, dict)
+                    and isinstance(task.get("id"), str)
+                    and bool(task["id"].strip())
+                    and isinstance(task.get("status"), str)
+                    and bool(task["status"].strip())
+                    for task in tasks
+                )
+            )
+        else:
+            succeeded = parsed.get("ok") is True or parsed.get("success") is True
     elif tool == "terminal":
         try:
             succeeded = int(parsed.get("exit_code")) == 0
@@ -446,6 +476,34 @@ def _tool_result_succeeded(tool_name: str, result: Any) -> bool:
             '"status":"error"',
             '"status": "error"',
         )
+    )
+
+
+def _terminal_is_direct_kanban_command(args: str) -> bool:
+    """Allow terminal evidence only from a direct first-party Kanban CLI call."""
+
+    try:
+        payload = json.loads(str(args or ""))
+    except (json.JSONDecodeError, TypeError):
+        return False
+    command = payload.get("command") if isinstance(payload, dict) else None
+    if not isinstance(command, str) or not command.strip():
+        return False
+    if "$" in command or "`" in command or "\n" in command:
+        return False
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        return False
+    if any(token and set(token) <= set(";&|()<> ") for token in tokens):
+        return False
+    return (
+        len(tokens) >= 3
+        and tokens[0] == "hermes"
+        and tokens[1].lower() == "kanban"
     )
 
 
@@ -528,14 +586,33 @@ def _claimed_kanban_operation(fresh_action: re.Match[str] | None) -> set[str]:
 
 
 def _claimed_statuses_for_task(text: str, task_id: str) -> set[str]:
-    """Bind statuses to an exact task id while ignoring nonassertive clauses."""
+    """Bind statuses to an exact task id, including an adjacent pronoun clause."""
 
     task_id_lower = task_id.lower()
     statuses: set[str] = set()
-    for sentence in _SENTENCE_SPLIT_RE.split(text.lower()):
-        if not re.search(rf"(?<![0-9a-f]){re.escape(task_id_lower)}(?![0-9a-f])", sentence):
+    sentences = _SENTENCE_SPLIT_RE.split(text.lower())
+    for index, sentence in enumerate(sentences):
+        if not re.search(
+            rf"(?<![0-9a-f]){re.escape(task_id_lower)}(?![0-9a-f])", sentence
+        ):
             continue
+        sentence_statuses: set[str] = set()
         for clause in _ACTION_CLAUSE_SPLIT_RE.split(sentence):
+            if _KANBAN_NONASSERTIVE_RE.search(clause):
+                continue
+            sentence_statuses.update(
+                status.group(0).lower() for status in _KANBAN_STATUS_RE.finditer(clause)
+            )
+        statuses.update(sentence_statuses)
+        if index + 1 >= len(sentences):
+            continue
+        following = sentences[index + 1].strip()
+        if _KANBAN_TASK_ID_RE.search(following) or not re.match(
+            r"^(?:they|both|all|these\s+tasks?|the\s+tasks?|it|this\s+task)\b",
+            following,
+        ):
+            continue
+        for clause in _ACTION_CLAUSE_SPLIT_RE.split(following):
             if _KANBAN_NONASSERTIVE_RE.search(clause):
                 continue
             statuses.update(
@@ -565,11 +642,64 @@ def _iter_nested_values(value: Any):
                 yield from _iter_nested_values(decoded)
 
 
-def _result_task_evidence(result: str) -> tuple[set[str], dict[str, set[str]]]:
-    """Extract exact task ids and statuses structurally, then from plain rows."""
+def _readback_root(result: str, *, terminal_envelope: bool = False) -> Any:
+    """Decode a native result or terminal JSON output without recursive descent."""
 
     try:
         root: Any = json.loads(str(result or ""))
+    except (json.JSONDecodeError, TypeError):
+        return None
+    # Only terminal wraps the CLI's JSON object in its top-level output string.
+    # Native show/list results must never let an unrelated ``output`` field
+    # override their documented top-level current-state rows.
+    if (
+        terminal_envelope
+        and isinstance(root, dict)
+        and isinstance(root.get("output"), str)
+    ):
+        try:
+            root = json.loads(root["output"])
+        except (json.JSONDecodeError, TypeError):
+            return None
+    return root
+
+
+def _result_task_evidence(
+    result: str, operation: str = "", *, terminal_envelope: bool = False
+) -> tuple[set[str], dict[str, set[str]]]:
+    """Extract task evidence, scoping readbacks to current-state rows only."""
+
+    if operation in {"show", "list"}:
+        root = _readback_root(result, terminal_envelope=terminal_envelope)
+        rows: list[Any]
+        if operation == "show":
+            if isinstance(root, dict) and isinstance(root.get("task"), dict):
+                rows = [root["task"]]
+            else:
+                rows = [root]
+        else:
+            if isinstance(root, list):
+                rows = root
+            elif isinstance(root, dict):
+                rows = root.get("tasks", [])
+            else:
+                rows = []
+        task_ids: set[str] = set()
+        statuses: dict[str, set[str]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            exact_id = str(row.get("id") or row.get("task_id") or "").lower()
+            status = row.get("status")
+            if not _KANBAN_TASK_ID_RE.fullmatch(exact_id):
+                continue
+            task_ids.add(exact_id)
+            if isinstance(status, str) and _KANBAN_STATUS_RE.fullmatch(status.strip()):
+                statuses.setdefault(exact_id, set()).add(status.strip().lower())
+        return task_ids, statuses
+
+    try:
+        root = json.loads(str(result or ""))
     except (json.JSONDecodeError, TypeError):
         root = str(result or "")
 
@@ -615,13 +745,30 @@ def _result_task_evidence(result: str) -> tuple[set[str], dict[str, set[str]]]:
     return task_ids, statuses
 
 
-def _result_has_task_id(result: str, task_id: str) -> bool:
-    task_ids, _ = _result_task_evidence(result)
+def _result_has_task_id(
+    result: str,
+    task_id: str,
+    operation: str = "",
+    *,
+    terminal_envelope: bool = False,
+) -> bool:
+    task_ids, _ = _result_task_evidence(
+        result, operation, terminal_envelope=terminal_envelope
+    )
     return task_id.lower() in task_ids
 
 
-def _result_has_status(result: str, task_id: str, status: str) -> bool:
-    _, statuses = _result_task_evidence(result)
+def _result_has_status(
+    result: str,
+    task_id: str,
+    status: str,
+    operation: str = "",
+    *,
+    terminal_envelope: bool = False,
+) -> bool:
+    _, statuses = _result_task_evidence(
+        result, operation, terminal_envelope=terminal_envelope
+    )
     return status.lower() in statuses.get(task_id.lower(), set())
 
 
@@ -686,8 +833,19 @@ def evaluate_controller_kanban_claims(
         matching = [
             record for record in records
             if record["name"].lower() != "execute_code"
-            and _result_has_task_id(record["result"], task_id)
-            and _tool_result_succeeded(record["name"], record["result"])
+            and (
+                record["name"].lower() != "terminal"
+                or _terminal_is_direct_kanban_command(record["args"])
+            )
+            and _result_has_task_id(
+                record["result"],
+                task_id,
+                _kanban_operation_kind(record["name"], record["args"]),
+                terminal_envelope=record["name"].lower() == "terminal",
+            )
+            and _tool_result_succeeded(
+                record["name"], record["result"], record["args"]
+            )
         ]
         if has_action and not any(
             _kanban_operation_kind(record["name"], record["args"])
@@ -707,7 +865,15 @@ def evaluate_controller_kanban_claims(
                 not claimed_statuses
                 or all(
                     any(
-                        _result_has_status(record["result"], task_id, status)
+                        _result_has_status(
+                            record["result"],
+                            task_id,
+                            status,
+                            _kanban_operation_kind(
+                                record["name"], record["args"]
+                            ),
+                            terminal_envelope=record["name"].lower() == "terminal",
+                        )
                         for record in readbacks
                     )
                     for status in claimed_statuses
