@@ -1065,7 +1065,9 @@ def test_restore_failed_remains_blocking_and_retries_until_verified(diagnostic, 
     succeeding = FakeRunner(diagnostic, data)
     assert _executor(diagnostic, tmp_path, deploy, data, state, succeeding).recover()["recovered"] == 1
     assert json.loads((tx.path / "state.json").read_text())["state"] == "RESTORED"
-    assert succeeding.restarts >= 1
+    assert succeeding.timeline.count("stop") == 0
+    assert succeeding.restarts == 0
+    assert any(call[0][:2] == ("/usr/bin/docker", "exec") for call in succeeding.calls)
 
 
 def test_original_absent_executor_recovery_removes_config(diagnostic, tmp_path):

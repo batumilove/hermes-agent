@@ -659,6 +659,13 @@ class ConfigStore:
         finally:
             os.close(fd)
 
+    def matches(self, snapshot: ConfigSnapshot) -> bool:
+        fd = self._open_dir()
+        try:
+            return _same_snapshot(self._read_current(fd, allow_absent=True), snapshot)
+        finally:
+            os.close(fd)
+
 
 def _atomic_path_write(path: Path, content: bytes, mode: int = 0o600) -> None:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1079,11 +1086,20 @@ class DiagnosticExecutor:
             if value is True:
                 raise ConfigError("on-disk diagnostics are already literal true")
 
+    def _health_status(self) -> str:
+        return self._command(
+            (
+                DOCKER, "inspect", "--format",
+                "{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}",
+                CONTAINER,
+            ),
+            15,
+        ).strip()
+
     def _wait_healthy(self) -> None:
         deadline = min(self.deadline, time.monotonic() + 120)
         while time.monotonic() < deadline:
-            status = self._command((DOCKER, "inspect", "--format", "{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}", CONTAINER), 15).strip()
-            if status == "healthy":
+            if self._health_status() == "healthy":
                 return
             self.sleep(3)
         raise CommandError("gateway health deadline expired")
@@ -1191,6 +1207,14 @@ class DiagnosticExecutor:
         quarantine_fd = self.states.open_transaction(tx)
         last_error: BaseException | None = None
         try:
+            if self.config.matches(snapshot) and self._health_status() == "healthy":
+                try:
+                    self.config.restore(snapshot, mutated_hash, quarantine_fd, guard_name)
+                    self._effective(False)
+                    self.states.transition(tx, "RESTORED")
+                    return
+                except BaseException as exc:
+                    last_error = exc
             for attempt in range(3):
                 try:
                     self._stop()
