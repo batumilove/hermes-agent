@@ -760,7 +760,7 @@ async def test_detached_helper_never_restarts_while_old_pid_survives_deadline(mo
     expected = (
         f"deadline=$(( $(date +%s) + {int(restart_after_s)} )); "
         "while kill -0 321 2>/dev/null && [ $(date +%s) -lt $deadline ]; "
-        "do sleep 0.2; done; if kill -0 321 2>/dev/null; then exit 1; fi; "
+        "do sleep 0.2; done; if kill -0 321 2>/dev/null; then exit 0; fi; "
         "/usr/bin/hermes gateway restart"
     )
     assert normalized == expected
@@ -794,7 +794,7 @@ async def test_windows_detached_helper_fences_surviving_old_pid(monkeypatch, tmp
     assert len(popen_calls) == 1
     watcher = popen_calls[0][0][2]
     normalized = "\n".join(line.rstrip() for line in watcher.splitlines())
-    guard = "if _alive(pid):\n    sys.exit(1)"
+    guard = "if _alive(pid):\n    sys.exit(0)"
     assert guard in normalized
     assert normalized.index(guard) < normalized.index("subprocess.Popen(")
     assert normalized.count("subprocess.Popen(") == 1
