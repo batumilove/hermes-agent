@@ -430,11 +430,13 @@ class FakeRunner:
         self.d = diagnostic
         self.mount_source = str(mount_source)
         self.calls = []
+        self.timeline = []
         self.fail_on = fail_on
         self.restarts = 0
 
     def __call__(self, argv, *, timeout, env, input_data=None, max_output=None, lock_fd=None):
         argv = tuple(argv)
+        self.timeline.append(argv[1])
         self.calls.append((argv, timeout, dict(env), input_data, max_output, lock_fd))
         if self.fail_on and self.fail_on in argv:
             raise self.d.CommandError("command failed secret=/tmp/private")
@@ -483,7 +485,7 @@ def _target_tree(tmp_path):
     return deploy, data, state
 
 
-def test_executor_uses_fixed_vectors_scrubbed_environment_and_bounded_aggregate(diagnostic, tmp_path):
+def test_executor_uses_fixed_vectors_scrubbed_environment_and_bounded_aggregate(diagnostic, tmp_path, monkeypatch):
     deploy, data, state = _target_tree(tmp_path)
     fake = FakeRunner(diagnostic, data)
     executor = diagnostic.DiagnosticExecutor(
@@ -497,6 +499,7 @@ def test_executor_uses_fixed_vectors_scrubbed_environment_and_bounded_aggregate(
         sleep=lambda _: None,
         hostname=lambda: "hermes-staging-01",
     )
+    monkeypatch.setattr(executor, "_observation_since", lambda: (fake.timeline.append("observation_since"), "2026-07-22T20:00:00.000000Z")[1])
     result = executor.run(diagnostic.parse_request(io.BytesIO(request())))
     assert result["observation_collected"] is True
     assert result["counts"] == [{"count": 1, "event": "response-closed", "owner": "general", "route": "primary"}, {"count": 1, "event": "response-created", "owner": "general", "route": "primary"}]
@@ -508,6 +511,11 @@ def test_executor_uses_fixed_vectors_scrubbed_environment_and_bounded_aggregate(
     log_call = next(call for call in fake.calls if call[0][:2] == ("/usr/bin/docker", "logs"))
     assert log_call[0][2] == "--since" and log_call[0][3].endswith("Z")
     assert "10m" not in log_call[0]
+    first_restart = fake.timeline.index("restart")
+    observation_since = fake.timeline.index("observation_since")
+    observation_stop = fake.timeline.index("stop", first_restart + 1)
+    logs = fake.timeline.index("logs")
+    assert observation_since < first_restart < observation_stop < logs
     assert json.loads((data / "gateway.json").read_text()).get("platforms") is None
 
 
@@ -904,11 +912,42 @@ def test_malformed_socket_lifecycle_record_fails_closed(diagnostic, line):
         diagnostic.DiagnosticExecutor._aggregate(line)
 
 
+@pytest.mark.parametrize("malformed", [
+    "https://127.0.0.1/path?token=forbidden [Telegram socket] event=socket-opened owner=general route=primary local_port=1234",
+    "[Telegram socket] event=bogus owner=general route=primary local_port=1234 [Telegram socket] event=socket-opened owner=general route=primary local_port=1234",
+    "[Telegram socket] owner=general event=socket-opened route=primary local_port=1234",
+    "[Telegram socket] extra=forbidden event=socket-opened owner=general route=primary local_port=1234",
+])
+def test_any_malformed_lifecycle_line_fails_even_with_valid_pair(diagnostic, malformed):
+    valid = (
+        "[Telegram socket] event=socket-opened owner=general route=primary local_port=5678\n"
+        "[Telegram socket] event=socket-closed owner=general route=primary local_port=5678\n"
+    )
+    with pytest.raises(diagnostic.DiagnosticError, match="malformed"):
+        diagnostic.DiagnosticExecutor._aggregate(malformed + "\n" + valid)
+
+
+@pytest.mark.parametrize("field", [
+    "route=127.0.0.1 local_port=1234",
+    "route=999.999.999.999 local_port=1234",
+    "route=primary local_port=0",
+    "route=primary local_port=65536",
+    "route=primary local_port=99999",
+])
+def test_producer_impossible_route_or_port_fails_closed(diagnostic, field):
+    raw = (
+        f"[Telegram socket] event=socket-opened owner=general {field}\n"
+        f"[Telegram socket] event=socket-closed owner=general {field}\n"
+    )
+    with pytest.raises(diagnostic.DiagnosticError, match="malformed"):
+        diagnostic.DiagnosticExecutor._aggregate(raw)
+
+
 def test_container_identity_change_during_logs_fails_and_restores(diagnostic, tmp_path, monkeypatch):
     deploy, data, state = _target_tree(tmp_path)
     original = (data / "gateway.json").read_bytes()
     executor = _executor(diagnostic, tmp_path, deploy, data, state)
-    identities = iter(["stable", "stable", "changed"])
+    identities = iter(["stable", "stable", "stable", "changed"])
     monkeypatch.setattr(executor, "_container_identity", lambda: next(identities))
     with pytest.raises(diagnostic.DiagnosticError, match="log collection"):
         executor.run(diagnostic.parse_request(io.BytesIO(request())))

@@ -6,6 +6,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import io
+import ipaddress
 import json
 import ctypes
 import errno
@@ -52,8 +53,9 @@ _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _DECIMAL = re.compile(r"(?:0|[1-9][0-9]{0,19})\Z")
 _NONCE = re.compile(r"[A-Za-z0-9_-]{16,64}\Z")
 _IMAGE = re.compile(r"ghcr\.io/batumilove/hermes-agent-deploy@sha256:[0-9a-f]{64}\Z")
-_EVENT_MARKER = "[Telegram socket] event="
 _EVENT = re.compile(
+    r"(?:[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3} "
+    r"INFO(?: \[[A-Za-z0-9_.:@-]{1,128}\])? [A-Za-z_][A-Za-z0-9_.]{0,127}: )?"
     r"\[Telegram socket\] event=(socket-opened|socket-closed|socket-close-error|"
     r"response-created|response-closed|response-close-error) "
     r"owner=(general|polling) route=(primary|(?:[0-9]{1,3}\.){3}[0-9]{1,3}) "
@@ -972,6 +974,10 @@ class DiagnosticExecutor:
         self.sleep(seconds)
 
     @staticmethod
+    def _observation_since() -> str:
+        return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+    @staticmethod
     def _aggregate(raw: str) -> dict[str, object]:
         counts: dict[tuple[str, str, str], int] = {}
         balances: dict[tuple[str, str, str, str], int] = {}
@@ -984,14 +990,23 @@ class DiagnosticExecutor:
         }
         total_opened = 0
         for line in raw.splitlines():
-            match = _EVENT.search(line)
+            match = _EVENT.fullmatch(line)
             if not match:
-                if _EVENT_MARKER in line:
+                if "[Telegram socket]" in line:
                     raise DiagnosticError("socket lifecycle record is malformed")
                 continue
             event, owner, route, port = match.groups()
             if port == "unknown":
                 raise DiagnosticError("socket lifecycle events are incomplete: unknown local port")
+            if not 1 <= int(port) <= 65535:
+                raise DiagnosticError("socket lifecycle record is malformed")
+            if route != "primary":
+                try:
+                    address = ipaddress.ip_address(route)
+                except ValueError as exc:
+                    raise DiagnosticError("socket lifecycle record is malformed") from exc
+                if address.version != 4 or not address.is_global or address.is_multicast:
+                    raise DiagnosticError("socket lifecycle record is malformed")
             phase = opening_events.get(event) or terminal_events[event]
             port_key = (phase, owner, route, port)
             if event in opening_events:
@@ -1069,15 +1084,18 @@ class DiagnosticExecutor:
                     raise StateError("mutated config hash mismatch")
                 self.states.record_mutated_hash(tx, mutated_hash)
                 self.states.transition(tx, "MUTATED")
+                observation_since = self._observation_since()
                 self._restart()
                 self.states.transition(tx, "ENABLED")
                 self._effective(True)
                 container_identity = self._container_identity()
-                observation_since = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
                 self.states.transition(tx, "OBSERVING")
                 self._sleep_bounded(request.observation_seconds)
                 if self._container_identity() != container_identity:
                     raise DiagnosticError("container identity changed during observation")
+                self._stop()
+                if self._container_identity() != container_identity:
+                    raise DiagnosticError("container identity changed during observation shutdown")
                 raw = self._command((DOCKER, "logs", "--since", observation_since, CONTAINER), 60, MAX_COMMAND_OUTPUT_BYTES)
                 if self._container_identity() != container_identity:
                     raise DiagnosticError("container identity changed during log collection")
