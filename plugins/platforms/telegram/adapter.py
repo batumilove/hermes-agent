@@ -4185,7 +4185,17 @@ class TelegramAdapter(BasePlatformAdapter):
         if app:
             try:
                 async with self._get_polling_recovery_lock():
-                    if app.updater and app.updater.running:
+                    pending_owner_stops = [
+                        t
+                        for t in getattr(self, "_polling_owner_stop_tasks", set())
+                        if not t.done()
+                    ]
+                    if pending_owner_stops:
+                        owner_terminated = False
+                        await self._fence_unterminated_polling_owner(
+                            context="adapter disconnect", notify=False
+                        )
+                    elif app.updater and app.updater.running:
                         owner_terminated = await self._stop_polling_owner(
                             app.updater, context="adapter disconnect"
                         )
