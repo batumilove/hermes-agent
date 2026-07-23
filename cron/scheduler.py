@@ -1957,6 +1957,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     and looks_like_telegram_private_chat_id(str(chat_id))
                     and not _looks_like_int(route_thread_id)
                 )
+                if fresh_telegram_topic_assigned and route_is_named_private_topic:
+                    route_metadata["_telegram_ephemeral_dm_topic"] = True
                 if route_thread_id and not route_is_named_private_topic:
                     route_metadata["thread_id"] = route_thread_id
                 media_metadata = None if route_is_named_private_topic else ({"thread_id": thread_id} if thread_id else None)

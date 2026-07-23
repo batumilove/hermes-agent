@@ -472,6 +472,9 @@ class DeliveryRouter:
             }
 
         send_metadata = dict(metadata or {})
+        ephemeral_dm_topic = (
+            send_metadata.pop("_telegram_ephemeral_dm_topic", False) is True
+        )
         is_named_telegram_private_topic = False
         named_telegram_private_topic_name: Optional[str] = None
         if target.thread_id:
@@ -495,7 +498,17 @@ class DeliveryRouter:
                     raise RuntimeError(
                         "Telegram adapter cannot create named private DM topics"
                     )
-                created_thread_id = await ensure_dm_topic(target.chat_id, target_thread_id)
+                if ephemeral_dm_topic:
+                    created_thread_id = await ensure_dm_topic(
+                        target.chat_id,
+                        target_thread_id,
+                        persist=False,
+                    )
+                else:
+                    created_thread_id = await ensure_dm_topic(
+                        target.chat_id,
+                        target_thread_id,
+                    )
                 if not created_thread_id:
                     raise RuntimeError(
                         f"Failed to create Telegram private DM topic '{target_thread_id}'"
@@ -536,11 +549,19 @@ class DeliveryRouter:
                     raise RuntimeError(
                         "Telegram adapter cannot refresh named private DM topics"
                     )
-                refreshed_thread_id = await ensure_dm_topic(
-                    target.chat_id,
-                    named_telegram_private_topic_name,
-                    force_create=True,
-                )
+                if ephemeral_dm_topic:
+                    refreshed_thread_id = await ensure_dm_topic(
+                        target.chat_id,
+                        named_telegram_private_topic_name,
+                        force_create=True,
+                        persist=False,
+                    )
+                else:
+                    refreshed_thread_id = await ensure_dm_topic(
+                        target.chat_id,
+                        named_telegram_private_topic_name,
+                        force_create=True,
+                    )
                 if not refreshed_thread_id:
                     raise RuntimeError(
                         f"Failed to refresh Telegram private DM topic '{named_telegram_private_topic_name}'"
