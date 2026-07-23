@@ -1058,7 +1058,11 @@ class DiagnosticExecutor:
             raise DiagnosticError("runtime metadata mismatch")
         env_output = self._command((DOCKER, "inspect", "--format", "{{range .Config.Env}}{{println .}}{{end}}", CONTAINER), 15)
         env_lines = env_output.splitlines()
-        if env_lines.count("HERMES_SOURCE_SHA=" + request.expected_source_sha) != 1 or env_lines.count("HERMES_DEPLOY_ENV=" + ENVIRONMENT) != 1:
+        if (
+            env_lines.count("HERMES_SOURCE_SHA=" + request.expected_source_sha) != 1
+            or env_lines.count("HERMES_DEPLOY_ENV=" + ENVIRONMENT) != 1
+            or env_lines.count("HERMES_HOME=/opt/data") != 1
+        ):
             raise DiagnosticError("container environment mismatch")
         configured_image = self._command((DOCKER, "inspect", "--format", "{{.Config.Image}}", CONTAINER), 15).strip()
         if configured_image != image:
@@ -1086,7 +1090,13 @@ class DiagnosticExecutor:
 
     def _effective(self, enabled: bool) -> None:
         script = _EFFECTIVE_TRUE if enabled else _EFFECTIVE_FALSE
-        result = self._command((DOCKER, "exec", "--user", "hermes", CONTAINER, CONTAINER_PYTHON, "-c", script), 60).strip()
+        result = self._command(
+            (
+                DOCKER, "exec", "--env", "HERMES_HOME=/opt/data", "--user", "hermes",
+                CONTAINER, CONTAINER_PYTHON, "-c", script,
+            ),
+            60,
+        ).strip()
         if result != ("true" if enabled else "false"):
             raise CommandError("effective diagnostic verification failed")
 

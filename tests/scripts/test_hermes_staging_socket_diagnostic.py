@@ -451,7 +451,10 @@ class FakeRunner:
             if ".Id" in fmt and ".State.StartedAt" in fmt:
                 return "b" * 64 + " 2026-07-22T20:00:00.123456789Z\n"
             if "Config.Env" in fmt:
-                return "HERMES_SOURCE_SHA=" + "a" * 40 + "\nHERMES_DEPLOY_ENV=batumi-staging\n"
+                return (
+                    "HERMES_SOURCE_SHA=" + "a" * 40
+                    + "\nHERMES_DEPLOY_ENV=batumi-staging\nHERMES_HOME=/opt/data\n"
+                )
             if "Config.Image" in fmt:
                 return "ghcr.io/batumilove/hermes-agent-deploy@sha256:" + "1" * 64 + "\n"
             if "Mounts" in fmt:
@@ -474,8 +477,50 @@ def test_effective_check_uses_the_container_application_venv(diagnostic, tmp_pat
     executor._effective(False)
 
     call = fake.calls[-1][0]
-    assert call[:5] == ("/usr/bin/docker", "exec", "--user", "hermes", diagnostic.CONTAINER)
-    assert call[5] == "/opt/hermes/.venv/bin/python"
+    assert call[:7] == (
+        "/usr/bin/docker", "exec", "--env", "HERMES_HOME=/opt/data",
+        "--user", "hermes", diagnostic.CONTAINER,
+    )
+    assert call[7] == "/opt/hermes/.venv/bin/python"
+
+
+def test_loader_observes_temporary_gateway_json_without_changing_primary_yaml(diagnostic, tmp_path):
+    root = _config_dir(tmp_path)
+    config_yaml = root / "config.yaml"
+    config_yaml.write_bytes(b"_config_version: 1\n")
+    config_yaml.chmod(0o640)
+    before = config_yaml.read_bytes(), config_yaml.stat()
+    store = diagnostic.ConfigStore(root, expected_uid=os.getuid(), expected_gid=os.getgid())
+    snapshot = store.snapshot()
+
+    env = {
+        "HOME": str(tmp_path),
+        "HERMES_HOME": str(root),
+        "PATH": os.environ["PATH"],
+        "PYTHONPATH": str(REPO),
+    }
+    probe = (
+        "from gateway.config import Platform,load_gateway_config;"
+        "p=load_gateway_config().platforms.get(Platform.TELEGRAM);"
+        "v=None if p is None else p.extra.get('socket_diagnostics');"
+        "print('true' if v is True else 'false')"
+    )
+
+    assert subprocess.check_output([sys.executable, "-c", probe], env=env, text=True).strip() == "false"
+    mutated_hash = store.enable(snapshot)
+    assert subprocess.check_output([sys.executable, "-c", probe], env=env, text=True).strip() == "true"
+    _restore(store, snapshot, mutated_hash, tmp_path)
+    assert subprocess.check_output([sys.executable, "-c", probe], env=env, text=True).strip() == "false"
+
+    after = config_yaml.stat()
+    assert config_yaml.read_bytes() == before[0]
+    assert (
+        after.st_dev, after.st_ino, after.st_nlink, after.st_mode,
+        after.st_uid, after.st_gid, after.st_size, after.st_mtime_ns,
+    ) == (
+        before[1].st_dev, before[1].st_ino, before[1].st_nlink, before[1].st_mode,
+        before[1].st_uid, before[1].st_gid, before[1].st_size, before[1].st_mtime_ns,
+    )
 
 
 def test_effective_false_accepts_an_absent_telegram_platform(diagnostic, monkeypatch, capsys):
@@ -946,6 +991,21 @@ def test_preflight_rejects_disk_true_even_when_runtime_false(diagnostic, tmp_pat
     executor = _executor(diagnostic, tmp_path, deploy, data, state)
     executor._start_deadline(diagnostic.FORWARD_DEADLINE_SECONDS)
     with pytest.raises(diagnostic.ConfigError, match="on-disk"):
+        executor._preflight(diagnostic.parse_request(io.BytesIO(request())))
+
+
+def test_preflight_requires_container_root_hermes_home(diagnostic, tmp_path):
+    deploy, data, state = _target_tree(tmp_path)
+
+    class MissingRootHome(FakeRunner):
+        def __call__(self, argv, **kwargs):
+            if tuple(argv[:2]) == ("/usr/bin/docker", "inspect") and "Config.Env" in argv[3]:
+                return "HERMES_SOURCE_SHA=" + "a" * 40 + "\nHERMES_DEPLOY_ENV=batumi-staging\n"
+            return super().__call__(argv, **kwargs)
+
+    executor = _executor(diagnostic, tmp_path, deploy, data, state, MissingRootHome(diagnostic, data))
+    executor._start_deadline(diagnostic.FORWARD_DEADLINE_SECONDS)
+    with pytest.raises(diagnostic.DiagnosticError, match="container environment"):
         executor._preflight(diagnostic.parse_request(io.BytesIO(request())))
 
 
