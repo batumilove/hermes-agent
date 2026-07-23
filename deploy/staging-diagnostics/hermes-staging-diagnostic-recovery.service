@@ -12,9 +12,14 @@ TimeoutStartSec=270
 UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=/opt/hermes-compose/staging /home/hermes-staging/.hermes-staging /var/lib/hermes-staging-diagnostics /run/lock/hermes-staging-diagnostic.lock
+# Recovery must atomically rename the transaction guard between DATA_ROOT
+# (/home) and TRANSACTION_ROOT (/var). ProtectSystem=strict with separate
+# ReadWritePaths bind mounts makes that rename fail with EXDEV. Keep executable
+# and configuration trees read-only without splitting the two state paths into
+# different mount points.
+ProtectSystem=full
+ProtectHome=false
+ReadOnlyPaths=/etc /opt/hermes-compose/staging
 IPAddressDeny=any
 RestrictAddressFamilies=AF_UNIX
 LockPersonality=yes

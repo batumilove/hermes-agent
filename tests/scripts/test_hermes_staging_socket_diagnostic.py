@@ -994,6 +994,14 @@ def test_installation_artifacts_are_dormant_exact_and_warn_about_containment():
     assert "--recover" not in sudoers
     assert "User=root" in service and "NetworkNamespacePath=" not in service
     assert "IPAddressDeny=any" in service
+    # Recovery atomically quarantines a guard from DATA_ROOT (/home) into
+    # TRANSACTION_ROOT (/var). ProtectSystem=strict plus per-path
+    # ReadWritePaths makes those locations separate bind mounts and turns the
+    # required renameat2 into EXDEV even when both paths share st_dev.
+    assert "ProtectSystem=full" in service
+    assert "ProtectHome=false" in service
+    assert "ReadWritePaths=" not in service
+    assert "ReadOnlyPaths=/etc /opt/hermes-compose/staging" in service
     assert "--recover" in service and "WantedBy=" not in service
     assert "OnBootSec=" in timer and "OnUnitActiveSec=" in timer
     assert "--stage" in installer and "--authorize" in installer
