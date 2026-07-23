@@ -25,6 +25,13 @@ from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
 
+# Scoped lock files are process-owned, but adapters are the actual resource
+# owners. Keep a process-local adapter lease so a second adapter in this same
+# gateway cannot inherit PID-level authority and later release the first
+# adapter's lock. Weak ownership avoids retaining cleanly abandoned adapters;
+# live polling owners retain themselves through their asyncio tasks/runner.
+_PLATFORM_LOCK_ADAPTER_OWNERS = weakref.WeakValueDictionary()
+
 # Audio file extensions Hermes recognizes for native audio delivery.
 # Kept in sync with tools/send_message_tool.py and cron/scheduler.py via
 # should_send_media_as_audio() below.
@@ -2877,12 +2884,33 @@ class BasePlatformAdapter(ABC):
             take_over_scoped_lock_holder,
         )
 
-        self._platform_lock_scope = scope
-        self._platform_lock_identity = identity
+        lease_key = (scope, identity)
+        local_owner = _PLATFORM_LOCK_ADAPTER_OWNERS.get(lease_key)
+        if local_owner is self:
+            self._platform_lock_scope = scope
+            self._platform_lock_identity = identity
+            self._platform_lock_lease_owned = True
+            return True
+        if local_owner is not None:
+            self._platform_lock_scope = None
+            self._platform_lock_identity = None
+            self._platform_lock_lease_owned = False
+            message = (
+                f"{resource_desc} already owned by another adapter in this "
+                "gateway process. Stop the current owner first."
+            )
+            logger.error("[%s] %s", self.name, message)
+            self._set_fatal_error(f"{scope}_lock", message, retryable=True)
+            return False
+
         acquired, existing = acquire_scoped_lock(
             scope, identity, metadata={'platform': self.platform.value}
         )
         if acquired:
+            self._platform_lock_scope = scope
+            self._platform_lock_identity = identity
+            self._platform_lock_lease_owned = True
+            _PLATFORM_LOCK_ADAPTER_OWNERS[lease_key] = self
             return True
 
         takeover_allowed = bool(
@@ -2912,6 +2940,10 @@ class BasePlatformAdapter(ABC):
                     metadata={"platform": self.platform.value},
                 )
                 if acquired:
+                    self._platform_lock_scope = scope
+                    self._platform_lock_identity = identity
+                    self._platform_lock_lease_owned = True
+                    _PLATFORM_LOCK_ADAPTER_OWNERS[lease_key] = self
                     logger.info(
                         "[%s] Acquired %s after taking over PID %d",
                         self.name,
@@ -2921,6 +2953,12 @@ class BasePlatformAdapter(ABC):
                     return True
 
         owner_pid = existing.get('pid') if isinstance(existing, dict) else None
+        # This adapter never acquired the lock. Clear its release handle so a
+        # later best-effort disconnect cannot remove a same-process owner's
+        # lock merely because PID/start-time match at process scope.
+        self._platform_lock_scope = None
+        self._platform_lock_identity = None
+        self._platform_lock_lease_owned = False
         message = (
             f'{resource_desc} already in use'
             + (f' (PID {owner_pid})' if owner_pid else '')
@@ -2931,12 +2969,27 @@ class BasePlatformAdapter(ABC):
         return False
 
     def _release_platform_lock(self) -> None:
-        """Release the scoped lock acquired by _acquire_platform_lock."""
+        """Release the scoped lock only when this adapter owns its local lease."""
         identity = getattr(self, '_platform_lock_identity', None)
-        if not identity:
+        scope = getattr(self, '_platform_lock_scope', None)
+        if not identity or not scope:
+            return
+        lease_key = (scope, identity)
+        local_owner = _PLATFORM_LOCK_ADAPTER_OWNERS.get(lease_key)
+        legacy_untracked_owner = (
+            local_owner is None
+            and not hasattr(self, "_platform_lock_lease_owned")
+        )
+        if local_owner is not self and not legacy_untracked_owner:
+            self._platform_lock_scope = None
+            self._platform_lock_identity = None
             return
         from gateway.status import release_scoped_lock
-        release_scoped_lock(self._platform_lock_scope, identity)
+        release_scoped_lock(scope, identity)
+        if local_owner is self:
+            _PLATFORM_LOCK_ADAPTER_OWNERS.pop(lease_key, None)
+        self._platform_lock_lease_owned = False
+        self._platform_lock_scope = None
         self._platform_lock_identity = None
 
     @property

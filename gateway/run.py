@@ -3378,6 +3378,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Strong refs to detached fatal-error handler tasks (see
         # _handle_adapter_fatal_error) so the event loop can't GC them mid-run.
         self._fatal_handler_tasks: set = set()
+        # Serialize fatal notifications per concrete adapter so one transport
+        # owner is disconnected at most once even when callbacks race.
+        self._fatal_adapter_locks = _weakref.WeakKeyDictionary()
+        # Telegram replacement is globally fenced from the moment disposal
+        # begins until ownership termination is proven. Unproven owners remain
+        # strongly referenced until supervised process replacement.
+        self._telegram_owner_disposals: set[BasePlatformAdapter] = set()
+        self._retained_unterminated_adapters: list[BasePlatformAdapter] = []
 
         # Track pending /update prompt responses per session.
         # Key: session_key, Value: True when a prompt is waiting for user input.
@@ -3763,18 +3771,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         task.add_done_callback(consume_detached_task_result)
         return False
 
-    async def _safe_adapter_disconnect(self, adapter, platform) -> None:
-        """Call adapter.disconnect() defensively, swallowing any error.
+    async def _safe_adapter_disconnect(self, adapter, platform) -> bool:
+        """Call adapter.disconnect() and prove Telegram owner release.
 
-        Used when adapter.connect() failed or raised — the adapter may
-        have allocated partial resources (aiohttp.ClientSession, poll
-        tasks, child subprocesses) that would otherwise leak and surface
-        as "Unclosed client session" warnings at process exit.
-
-        Must tolerate partial-init state and never raise, since callers
-        use it inside error-handling blocks.
+        Telegram disposal itself is a process-wide creation barrier: no primary
+        or multiplex profile may create a replacement while the old adapter is
+        still disconnecting. If cleanup times out, raises, or asserts its owner
+        fence, keep a strong reference and request supervised non-detached
+        process replacement.
         """
+        is_telegram = platform is Platform.TELEGRAM
+        disposals = getattr(self, "_telegram_owner_disposals", None)
+        if disposals is None:
+            disposals = self._telegram_owner_disposals = set()
+        retained = getattr(self, "_retained_unterminated_adapters", None)
+        if retained is None:
+            retained = self._retained_unterminated_adapters = []
+        if is_telegram:
+            disposals.add(adapter)
+
         timeout = self._adapter_disconnect_timeout_secs()
+        completed = False
         try:
             completed = await self._await_adapter_cleanup_with_timeout(
                 adapter.disconnect(), timeout
@@ -3785,12 +3802,68 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     timeout,
                     platform.value if platform is not None else "adapter",
                 )
-        except Exception as e:
+        except BaseException as e:
             logger.debug(
                 "Defensive %s disconnect after failed connect raised: %s",
                 platform.value if platform is not None else "adapter",
                 e,
             )
+            completed = False
+
+        if not is_telegram:
+            return completed
+
+        owner_unterminated = (
+            completed is False or self._is_unterminated_telegram_owner(adapter)
+        )
+        if owner_unterminated:
+            if adapter not in retained:
+                retained.append(adapter)
+            self._update_platform_runtime_status(
+                platform.value,
+                platform_state="retrying",
+                error_code=getattr(adapter, "fatal_error_code", None)
+                or "telegram_polling_owner_unterminated",
+                error_message=getattr(adapter, "fatal_error_message", None)
+                or "Telegram adapter cleanup did not prove polling-owner termination",
+            )
+            self.request_restart(detached=False, via_service=True)
+            return False
+
+        disposals.discard(adapter)
+        return True
+
+    async def _dispose_failed_adapter_or_recycle(
+        self,
+        adapter: BasePlatformAdapter,
+        platform: Platform,
+        *,
+        profile_name: Optional[str] = None,
+    ) -> bool:
+        """Dispose an uninstalled adapter or retain it and recycle fail-closed.
+
+        Returns True only when disposal completed without a Telegram owner
+        fence. False means the adapter is retained and process replacement has
+        been requested; callers must stop startup/reconnect attempts.
+        """
+        completed = await self._safe_adapter_disconnect(adapter, platform)
+        if completed or platform is not Platform.TELEGRAM:
+            return True
+
+        # The adapter never entered a live registry slot, so retain it only in
+        # the dedicated owner-fence list. Installing a failed startup adapter
+        # would make routing treat it as healthy. _safe_adapter_disconnect has
+        # already raised the global creation barrier and requested recycle.
+        failed_platforms = getattr(self, "_failed_platforms", None)
+        if profile_name is None and isinstance(failed_platforms, dict):
+            failed_platforms.pop(platform, None)
+        logger.error(
+            "Telegram startup/reconnect cleanup did not prove polling-owner "
+            "termination%s; retaining the adapter and awaiting supervised "
+            "process recycle",
+            f" (profile: {profile_name})" if profile_name else "",
+        )
+        return False
 
     async def _bounded_adapter_teardown(
         self, adapter, platform, *, profile: Optional[str] = None
@@ -4459,8 +4532,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         (not reconnected, not queued, not intentionally disabled), exit the
         gateway with failure so the service manager restarts it instead of
         leaving a silent partial outage."""
+        locks = getattr(self, "_fatal_adapter_locks", None)
+        if locks is None:
+            locks = self._fatal_adapter_locks = _weakref.WeakKeyDictionary()
+        lock = locks.setdefault(adapter, asyncio.Lock())
         try:
-            await self._handle_adapter_fatal_error_impl(adapter)
+            async with lock:
+                await self._handle_adapter_fatal_error_impl(adapter)
         except Exception:
             logger.exception(
                 "Fatal-error handling for %s raised unexpectedly",
@@ -4487,6 +4565,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._exit_with_failure = True
                 await self.stop()
 
+    @staticmethod
+    def _is_unterminated_telegram_owner(adapter: BasePlatformAdapter) -> bool:
+        """Return whether a Telegram adapter asserted the owner fence."""
+        return bool(
+            getattr(adapter, "platform", None) is Platform.TELEGRAM
+            and getattr(adapter, "fatal_error_code", None)
+            == "telegram_polling_owner_unterminated"
+            and getattr(adapter, "_polling_teardown_started", False)
+        )
+
     async def _handle_adapter_fatal_error_impl(self, adapter: BasePlatformAdapter) -> None:
         # Snapshot the current owner of this platform slot before doing
         # anything else. If it's neither this adapter nor empty, a different
@@ -4497,12 +4585,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # incorrectly re-queue it for reconnection, so bail out before any of
         # that happens.
         existing = self.adapters.get(adapter.platform)
-        if existing is not None and existing is not adapter:
+        if existing is not adapter:
             logger.debug(
-                "Ignoring stale fatal error from a superseded %s adapter instance: %s",
+                "Ignoring stale fatal error from a non-current %s adapter instance: %s",
                 adapter.platform.value,
                 adapter.fatal_error_code or "unknown",
             )
+            return
+
+        if self._is_unterminated_telegram_owner(adapter):
+            self._telegram_owner_disposals.add(adapter)
+            if adapter not in self._retained_unterminated_adapters:
+                self._retained_unterminated_adapters.append(adapter)
+            self._update_platform_runtime_status(
+                adapter.platform.value,
+                platform_state="retrying",
+                error_code=adapter.fatal_error_code,
+                error_message=adapter.fatal_error_message,
+            )
+            logger.error(
+                "Telegram polling owner termination is unproven; retaining the "
+                "installed adapter and requesting supervised process recycle"
+            )
+            self.request_restart(detached=False, via_service=True)
             return
 
         logger.error(
@@ -4529,17 +4634,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
         if existing is adapter:
-            # Claim this adapter for teardown before awaiting disconnect() —
-            # a second fatal-error notification for the same adapter (e.g.
-            # from a concurrent recovery path) would otherwise still see
-            # itself as "existing" during the await below and disconnect()
-            # the same object twice.
+            # Keep the registry slot until disconnect proves completion. A
+            # timed-out Telegram close may still own getUpdates; replacing it
+            # would overlap polling generations in one process.
+            disconnected = await self._safe_adapter_disconnect(
+                adapter, adapter.platform
+            )
+            if self._is_unterminated_telegram_owner(adapter) or (
+                adapter.platform is Platform.TELEGRAM and disconnected is False
+            ):
+                logger.error(
+                    "Telegram adapter cleanup did not prove owner termination; "
+                    "retaining the installed adapter while supervised process "
+                    "recycle is pending"
+                )
+                return
             self.adapters.pop(adapter.platform, None)
             self.delivery_router.adapters = self.adapters
-            # A half-closed transport can wedge an adapter's native close()
-            # indefinitely. Reuse the shutdown-path timeout so this runtime
-            # fatal handler always reaches the reconnect queue.
-            await self._safe_adapter_disconnect(adapter, adapter.platform)
 
         # Queue retryable failures for background reconnection
         if adapter.fatal_error_retryable:
@@ -7144,6 +7255,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if not _alive(pid):
                         break
                     time.sleep(0.2)
+                if _alive(pid):
+                    sys.exit(0)
                 subprocess.Popen(
                     cmd,
                     stdout=subprocess.DEVNULL,
@@ -7192,6 +7305,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         shell_cmd = (
             f"deadline=$(( $(date +%s) + {int(restart_after_s)} )); "
             f"while kill -0 {current_pid} 2>/dev/null && [ $(date +%s) -lt $deadline ]; do sleep 0.2; done; "
+            f"if kill -0 {current_pid} 2>/dev/null; then exit 0; fi; "
             f"{cmd} gateway restart"
         )
         # Same marker scrub as the Windows watcher above: this watcher runs
@@ -7316,6 +7430,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool:
         if self._restart_task_started:
+            # Restart intent is monotonic. An ownership fence may arrive after a
+            # weaker detached request was queued but before its worker gets an
+            # event-loop turn; upgrade that pending request, never downgrade it.
+            if via_service:
+                self._restart_via_service = True
+                self._restart_detached = False
             return False
         self._restart_requested = True
         self._restart_detached = detached
@@ -7323,13 +7443,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._restart_task_started = True
 
         async def _run_restart() -> None:
-            if detached:
-                try:
-                    await self._launch_detached_restart_command()
-                except Exception as e:
-                    logger.error("Failed to launch detached gateway restart helper: %s", e)
-            await asyncio.sleep(0.05)
-            await self.stop(restart=True, detached_restart=detached, service_restart=via_service)
+            try:
+                # Let same-turn callers monotonically strengthen the request
+                # before any detached helper is irreversibly launched.
+                await asyncio.sleep(0)
+                if self._restart_detached:
+                    try:
+                        await self._launch_detached_restart_command()
+                    except Exception as e:
+                        logger.error(
+                            "Failed to launch detached gateway restart helper: %s", e
+                        )
+                await asyncio.sleep(0.05)
+                await self.stop(
+                    restart=True,
+                    detached_restart=self._restart_detached,
+                    service_restart=self._restart_via_service,
+                )
+            except BaseException as e:
+                logger.error("Gateway restart worker failed: %s", e, exc_info=True)
+                self._exit_reason = f"Gateway restart worker failed: {e}"
+                self._exit_with_failure = True
+                self._exit_code = 75
+                self._shutdown_event.set()
 
         # _run_restart is a short-lived self-terminating task (calls stop()
         # then returns).  Don't add it to _background_tasks — _stop_impl
@@ -8131,8 +8267,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # and Python logs "Unclosed client session" at
                     # process exit. Adapter disconnect() implementations
                     # are expected to be idempotent and tolerate
-                    # partial-init state.
-                    await self._safe_adapter_disconnect(adapter, platform)
+                    # partial-init state. An unproven Telegram owner is retained
+                    # and escalated to supervised process recycle instead.
+                    released = await self._dispose_failed_adapter_or_recycle(
+                        adapter, platform
+                    )
+                    if not released:
+                        return True
                     if adapter.has_fatal_error:
                         self._update_platform_runtime_status(
                             platform.value,
@@ -8176,7 +8317,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Same defensive cleanup path for exceptions — an adapter
                 # that raised mid-connect may still have a live
                 # aiohttp.ClientSession or child subprocess.
-                await self._safe_adapter_disconnect(adapter, platform)
+                released = await self._dispose_failed_adapter_or_recycle(
+                    adapter, platform
+                )
+                if not released:
+                    return True
                 self._update_platform_runtime_status(
                     platform.value,
                     platform_state="retrying",
@@ -8200,6 +8345,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             _secondary_connected = await self._start_secondary_profile_adapters()
             connected_count += _secondary_connected
+            if self._restart_requested:
+                return True
         except MultiplexConfigError as e:
             # Invalid multiplexer config — abort startup cleanly so the operator
             # fixes config.yaml rather than running a half-wired gateway.
@@ -9156,7 +9303,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # APIServerAdapter, etc.) leak 2 fds each. The
                         # gateway hits the 2560-fd limit after ~12h of
                         # failed reconnects at the 300s backoff cap (#37011).
-                        await _dispose_unused_adapter(adapter)
+                        released = await self._dispose_failed_adapter_or_recycle(
+                            adapter, platform
+                        )
+                        if not released:
+                            return
                         del self._failed_platforms[platform]
                     else:
                         self._update_platform_runtime_status(
@@ -9179,7 +9330,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # the next GC pass — and aiohttp/SQLite handles
                         # don't get GC'd promptly, so 2 fds/retry leak at
                         # 300s backoff cap = ~12 fds/hour (#37011).
-                        await _dispose_unused_adapter(adapter)
+                        released = await self._dispose_failed_adapter_or_recycle(
+                            adapter, platform
+                        )
+                        if not released:
+                            return
                         # Retryable failures (network/DNS blips) keep retrying
                         # at the backoff cap indefinitely — they self-heal once
                         # connectivity returns. We do NOT auto-pause them: a
@@ -9196,7 +9351,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # the two branches above. Dispose so __init__
                         # resources don't accumulate while the watcher
                         # keeps retrying.
-                        await _dispose_unused_adapter(adapter)
+                        released = await self._dispose_failed_adapter_or_recycle(
+                            adapter, platform
+                        )
+                        if not released:
+                            return
                     self._update_platform_runtime_status(
                         platform.value,
                         platform_state="retrying",
@@ -9955,10 +10114,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.info("✓ %s connected (profile: %s)", platform.value, profile_name)
                 else:
                     logger.warning("✗ %s failed to connect (profile: %s)", platform.value, profile_name)
-                    await self._safe_adapter_disconnect(adapter, platform)
+                    released = await self._dispose_failed_adapter_or_recycle(
+                        adapter, platform, profile_name=profile_name
+                    )
+                    if not released:
+                        return connected
             except Exception as e:
                 logger.error("✗ %s error (profile: %s): %s", platform.value, profile_name, e)
-                await self._safe_adapter_disconnect(adapter, platform)
+                released = await self._dispose_failed_adapter_or_recycle(
+                    adapter, platform, profile_name=profile_name
+                )
+                if not released:
+                    return connected
         return connected
 
     def _configure_profile_adapter(
@@ -10036,7 +10203,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         await self._safe_adapter_disconnect(adapter, platform)
                         return
 
-                    await self._safe_adapter_disconnect(adapter, platform)
+                    released = await self._dispose_failed_adapter_or_recycle(
+                        adapter, platform, profile_name=profile_name
+                    )
+                    if not released:
+                        return
                     if (
                         getattr(adapter, "has_fatal_error", False)
                         and not getattr(adapter, "fatal_error_retryable", True)
@@ -10048,7 +10219,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     raise
                 except Exception:
                     if adapter is not None:
-                        await self._safe_adapter_disconnect(adapter, platform)
+                        released = await self._dispose_failed_adapter_or_recycle(
+                            adapter, platform, profile_name=profile_name
+                        )
+                        if not released:
+                            return
                     logger.debug(
                         "Secondary %s reconnect attempt failed (profile: %s)",
                         platform.value,
@@ -10133,8 +10308,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 profile_name,
             )
             return
+        if self._is_unterminated_telegram_owner(adapter):
+            disposals = getattr(self, "_telegram_owner_disposals", None)
+            if disposals is None:
+                disposals = self._telegram_owner_disposals = set()
+            disposals.add(adapter)
+            retained = getattr(self, "_retained_unterminated_adapters", None)
+            if retained is None:
+                retained = self._retained_unterminated_adapters = []
+            if adapter not in retained:
+                retained.append(adapter)
+            logger.error(
+                "Telegram polling owner termination is unproven for multiplexed "
+                "profile %s; retaining the adapter and requesting supervised "
+                "process recycle",
+                profile_name,
+            )
+            self.request_restart(detached=False, via_service=True)
+            return
+        disconnected = await self._safe_adapter_disconnect(adapter, platform)
+        if self._is_unterminated_telegram_owner(adapter) or (
+            platform is Platform.TELEGRAM and disconnected is False
+        ):
+            logger.error(
+                "Telegram adapter cleanup did not prove owner termination for "
+                "multiplexed profile %s; retaining the adapter and requesting "
+                "supervised process recycle",
+                profile_name,
+            )
+            self.request_restart(detached=False, via_service=True)
+            return
         profile_map.pop(platform, None)
-        await self._safe_adapter_disconnect(adapter, platform)
         if not self._running:
             return
         self._schedule_secondary_profile_reconnect(profile_name, platform, adapter)
@@ -10224,6 +10428,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Checks the platform_registry first (plugin adapters), then falls
         through to the built-in if/elif chain for core platforms.
         """
+        if platform is Platform.TELEGRAM and (
+            getattr(self, "_telegram_owner_disposals", None)
+            or getattr(self, "_retained_unterminated_adapters", None)
+        ):
+            logger.error(
+                "Refusing to create Telegram adapter while prior polling-owner "
+                "termination is unproven"
+            )
+            return None
+
         if hasattr(config, "extra") and isinstance(config.extra, dict):
             config.extra.setdefault(
                 "group_sessions_per_user",
