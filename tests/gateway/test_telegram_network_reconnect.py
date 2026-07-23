@@ -1198,57 +1198,80 @@ async def test_schedule_polling_recovery_tracks_background_task():
     adapter._handle_polling_network_error.assert_awaited_once()
 
 
-@pytest.mark.asyncio
-async def test_handle_polling_network_error_updater_stop_timeout():
-    """updater.stop() hanging (CLOSE-WAIT) must not block the reconnect ladder.
-
-    When the underlying TCP connection is in CLOSE-WAIT, PTB's polling task is
-    blocked on epoll on the dead socket.  updater.stop() awaits that task and
-    therefore hangs indefinitely.  The fix wraps stop() in asyncio.wait_for()
-    with a 15-second timeout so the reconnect always advances.
-
-    This test simulates the hang by making stop() sleep forever and verifies
-    that _drain_polling_connections() and start_polling() are still called
-    after the timeout fires.
-    Refs: NousResearch/hermes-agent#58270
-    """
+async def _assert_unterminated_owner_fences_recovery(handler_name: str) -> None:
+    """A timed-out PTB owner may not be overlapped by another generation."""
     adapter = _make_adapter()
-    adapter._polling_network_error_count = 0
-
-    # Build a fake app whose updater.stop() hangs forever.
     app = MagicMock()
     app.updater = MagicMock()
     app.updater.running = True
 
-    async def _hanging_stop():
-        await asyncio.sleep(9999)  # simulate CLOSE-WAIT block
+    never_finishes = asyncio.Event()
 
-    app.updater.stop = _hanging_stop
+    async def _hanging_stop() -> None:
+        await never_finishes.wait()
+
+    app.updater.stop = AsyncMock(side_effect=_hanging_stop)
     app.updater.start_polling = AsyncMock()
     adapter._app = app
+    adapter._drain_polling_connections = AsyncMock()
+    adapter._handoff_polling_fatal_error = AsyncMock()
+    generation_before = adapter._polling_generation
 
-    drain_called = []
-
-    async def _fake_drain():
-        drain_called.append(True)
-
-    adapter._drain_polling_connections = _fake_drain
-
-    start_polling_called = []
-
-    async def _fake_start_polling(**kwargs):
-        start_polling_called.append(True)
-
-    app.updater.start_polling = AsyncMock(side_effect=_fake_start_polling)
-
-    # Shrink the stop() watchdog bound so the test completes fast instead of
-    # waiting the full _UPDATER_STOP_TIMEOUT. Patching the named constant is
-    # cleaner than monkeypatching asyncio.wait_for process-wide.
     import plugins.platforms.telegram.adapter as _mod
 
-    with patch.object(_mod, "_UPDATER_STOP_TIMEOUT", 0.05):
-        await adapter._handle_polling_network_error(OSError("CLOSE-WAIT test"))
+    with (
+        patch.object(_mod, "_UPDATER_STOP_TIMEOUT", 0.01),
+        patch("asyncio.sleep", new_callable=AsyncMock),
+    ):
+        await asyncio.wait_for(
+            getattr(adapter, handler_name)(OSError("CLOSE-WAIT test")),
+            timeout=0.5,
+        )
 
-    # The reconnect ladder must have advanced past the hung stop().
-    assert drain_called, "_drain_polling_connections was not called after stop() timeout"
-    assert start_polling_called, "start_polling was not called after stop() timeout"
+    app.updater.stop.assert_awaited_once()
+    adapter._drain_polling_connections.assert_not_awaited()
+    app.updater.start_polling.assert_not_awaited()
+    assert adapter._polling_generation == generation_before
+    assert adapter.has_fatal_error
+    assert adapter.fatal_error_code == "telegram_polling_owner_unterminated"
+    assert adapter._polling_teardown_started is True
+    adapter._handoff_polling_fatal_error.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "handler_name",
+    ["_handle_polling_network_error", "_handle_polling_conflict"],
+)
+async def test_updater_stop_timeout_fences_all_polling_recovery(handler_name):
+    """Network and conflict recovery must fail closed on unproven teardown."""
+    await _assert_unterminated_owner_fences_recovery(handler_name)
+
+
+@pytest.mark.asyncio
+async def test_unterminated_polling_owner_requests_process_recycle(tmp_path):
+    """The runner must not replace an adapter whose old owner may still run."""
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="test-token")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapter = _make_adapter()
+    adapter._set_fatal_error(
+        "telegram_polling_owner_unterminated",
+        "Telegram polling owner did not terminate before its deadline.",
+        retryable=True,
+    )
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.delivery_router.adapters = runner.adapters
+    runner.request_restart = MagicMock(return_value=True)
+    adapter.disconnect = AsyncMock()
+
+    await runner._handle_adapter_fatal_error_impl(adapter)
+
+    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+    adapter.disconnect.assert_not_awaited()
+    assert runner.adapters == {Platform.TELEGRAM: adapter}
+    assert Platform.TELEGRAM not in runner._failed_platforms
