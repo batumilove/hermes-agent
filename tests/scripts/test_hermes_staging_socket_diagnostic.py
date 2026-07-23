@@ -526,6 +526,203 @@ def _target_tree(tmp_path):
     return deploy, data, state
 
 
+class _ObservedCrash(BaseException):
+    pass
+
+
+class _RecordingCrashBarrier:
+    def __init__(self, target, runner):
+        self.target = target
+        self.runner = runner
+        self.observations = []
+        self.triggered = False
+
+    def after_transition(self, tx, state_name):
+        self.observations.append((state_name, tuple(self.runner.timeline)))
+        if state_name == self.target and not self.triggered:
+            self.triggered = True
+            raise _ObservedCrash
+
+
+def _write_crash_token(path, diagnostic, tx, target, helper_path, **overrides):
+    payload = {
+        "version": 1,
+        "transaction": tx.path.name,
+        "target": target,
+        "helper_sha256": diagnostic._sha(helper_path.read_bytes()),
+        "expected_source_sha": tx.record["request"]["expected_source_sha"],
+    }
+    payload.update(overrides)
+    path.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n")
+    path.chmod(0o600)
+
+
+def test_crash_barrier_consumes_exact_token_before_signalling(diagnostic, tmp_path):
+    states = diagnostic.TransactionStore(tmp_path / "state")
+    tx = states.prepare(diagnostic.parse_request(io.BytesIO(request())))
+    helper_path = tmp_path / "helper"
+    helper_path.write_bytes(b"reviewed-helper")
+    helper_path.chmod(0o755)
+    token_path = tmp_path / "crash-token.json"
+    _write_crash_token(token_path, diagnostic, tx, "ARMED", helper_path)
+    signals = []
+
+    def signal_process(pid, sig):
+        record = json.loads((tx.path / "state.json").read_text())
+        signals.append((pid, sig, record["state"], record["crash_barrier"], token_path.exists()))
+        raise _ObservedCrash
+
+    barrier = diagnostic.CrashBarrier(
+        token_path=token_path,
+        helper_path=helper_path,
+        expected_uid=os.getuid(),
+        expected_gid=os.getgid(),
+        pid=lambda: 4242,
+        signal_process=signal_process,
+    )
+    states.transition(tx, "ARMED")
+
+    with pytest.raises(_ObservedCrash):
+        barrier.after_transition(tx, "ARMED")
+
+    assert signals == [(4242, diagnostic.signal.SIGKILL, "ARMED", {
+        "target": "ARMED", "helper_sha256": diagnostic._sha(helper_path.read_bytes()),
+        "expected_source_sha": "a" * 40, "consumed": True,
+    }, False)]
+    assert not token_path.exists()
+
+
+def test_crash_barrier_unlink_failure_does_not_record_consumption(diagnostic, tmp_path, monkeypatch):
+    states = diagnostic.TransactionStore(tmp_path / "state")
+    tx = states.prepare(diagnostic.parse_request(io.BytesIO(request())))
+    helper_path = tmp_path / "helper"
+    helper_path.write_bytes(b"reviewed-helper")
+    helper_path.chmod(0o755)
+    token_path = tmp_path / "crash-token.json"
+    _write_crash_token(token_path, diagnostic, tx, "ARMED", helper_path)
+    real_unlink = diagnostic.os.unlink
+
+    def fail_token_unlink(path, *args, **kwargs):
+        if path == token_path.name:
+            raise OSError("injected unlink failure")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(diagnostic.os, "unlink", fail_token_unlink)
+    barrier = diagnostic.CrashBarrier(
+        token_path=token_path, helper_path=helper_path,
+        expected_uid=os.getuid(), expected_gid=os.getgid(),
+        signal_process=lambda *_: pytest.fail("failed consumption must not signal"),
+    )
+    states.transition(tx, "ARMED")
+
+    with pytest.raises(OSError, match="injected unlink failure"):
+        barrier.after_transition(tx, "ARMED")
+
+    record = json.loads((tx.path / "state.json").read_text())
+    assert record["state"] == "ARMED"
+    assert "crash_barrier" not in record
+    assert token_path.exists()
+
+
+def test_crash_barrier_leaves_valid_later_target_armed(diagnostic, tmp_path):
+    states = diagnostic.TransactionStore(tmp_path / "state")
+    tx = states.prepare(diagnostic.parse_request(io.BytesIO(request())))
+    helper_path = tmp_path / "helper"
+    helper_path.write_bytes(b"reviewed-helper")
+    helper_path.chmod(0o755)
+    token_path = tmp_path / "crash-token.json"
+    _write_crash_token(token_path, diagnostic, tx, "MUTATED", helper_path)
+    barrier = diagnostic.CrashBarrier(
+        token_path=token_path, helper_path=helper_path, expected_uid=os.getuid(),
+        expected_gid=os.getgid(),
+        signal_process=lambda *_: pytest.fail("must not signal before the target state"),
+    )
+
+    barrier.after_transition(tx, "ARMED")
+
+    assert token_path.exists()
+
+
+@pytest.mark.parametrize("defect", ["mode", "helper-digest", "source-binding", "schema"])
+def test_crash_barrier_rejects_unsafe_or_malformed_token(diagnostic, tmp_path, defect):
+    states = diagnostic.TransactionStore(tmp_path / "state")
+    tx = states.prepare(diagnostic.parse_request(io.BytesIO(request())))
+    helper_path = tmp_path / "helper"
+    helper_path.write_bytes(b"reviewed-helper")
+    helper_path.chmod(0o755)
+    token_path = tmp_path / "crash-token.json"
+    overrides = {"helper_sha256": "0" * 64} if defect == "helper-digest" else {}
+    if defect == "source-binding":
+        overrides["expected_source_sha"] = "b" * 40
+    _write_crash_token(token_path, diagnostic, tx, "ARMED", helper_path, **overrides)
+    if defect == "mode":
+        token_path.chmod(0o644)
+    elif defect == "schema":
+        token_path.write_text('{"version":1,"version":1}\n')
+        token_path.chmod(0o600)
+    barrier = diagnostic.CrashBarrier(
+        token_path=token_path, helper_path=helper_path, expected_uid=os.getuid(),
+        expected_gid=os.getgid(),
+        signal_process=lambda *_: pytest.fail("unsafe token must not signal"),
+    )
+
+    with pytest.raises(diagnostic.StateError, match="crash token"):
+        barrier.after_transition(tx, "ARMED")
+
+    assert token_path.exists()
+
+
+@pytest.mark.parametrize(
+    "target,expected_stops,expected_restarts,expected_execs",
+    [
+        ("ARMED", 0, 0, 1),
+        ("MUTATED", 1, 0, 1),
+        ("ENABLED", 1, 1, 1),
+        ("OBSERVING", 1, 1, 2),
+        ("RESTORING", 2, 1, 2),
+    ],
+)
+def test_crash_barrier_runs_immediately_after_durable_state_and_before_next_command(
+    diagnostic, tmp_path, monkeypatch, target, expected_stops, expected_restarts, expected_execs
+):
+    deploy, data, state = _target_tree(tmp_path)
+    fake = FakeRunner(diagnostic, data)
+    barrier = _RecordingCrashBarrier(target, fake)
+    executor = _executor(
+        diagnostic, tmp_path, deploy, data, state, fake, crash_barrier=barrier,
+    )
+    monkeypatch.setattr(executor, "_observation_since", lambda: "2026-07-22T20:00:00.000000Z")
+
+    with pytest.raises(_ObservedCrash):
+        executor.run(diagnostic.parse_request(io.BytesIO(request())))
+
+    state_name, timeline = next(item for item in barrier.observations if item[0] == target)
+    assert state_name == target
+    assert timeline.count("stop") == expected_stops
+    assert timeline.count("restart") == expected_restarts
+    assert timeline.count("exec") == expected_execs
+
+
+def test_recovery_never_invokes_forward_crash_barrier(diagnostic, tmp_path):
+    deploy, data, state = _target_tree(tmp_path)
+    store = diagnostic.TransactionStore(state)
+    req = diagnostic.parse_request(io.BytesIO(request()))
+    tx = store.prepare(req)
+    config = diagnostic.ConfigStore(data, expected_uid=os.getuid(), expected_gid=os.getgid())
+    snapshot = config.snapshot()
+    store.save_snapshot(tx, snapshot)
+    store.transition(tx, "ARMED")
+    mutated_hash = config.enable(snapshot, store.load_guard_name(tx))
+    store.record_mutated_hash(tx, mutated_hash)
+    store.transition(tx, "MUTATED")
+    fake = FakeRunner(diagnostic, data)
+    barrier = _RecordingCrashBarrier("RESTORING", fake)
+    executor = _executor(diagnostic, tmp_path, deploy, data, state, fake, crash_barrier=barrier)
+
+    assert executor.recover()["recovered"] == 1
+    assert barrier.observations == []
+
+
 def test_executor_uses_fixed_vectors_scrubbed_environment_and_bounded_aggregate(diagnostic, tmp_path, monkeypatch):
     deploy, data, state = _target_tree(tmp_path)
     fake = FakeRunner(diagnostic, data)
@@ -604,12 +801,13 @@ def test_recovery_after_each_durable_mutation_state_is_restore_only(diagnostic, 
     snap = config.snapshot()
     store.save_snapshot(tx, snap)
     store.transition(tx, "ARMED")
-    mutated_hash = config.enable(snap, store.load_guard_name(tx))
-    store.record_mutated_hash(tx, mutated_hash)
-    store.transition(tx, "MUTATED")
-    for state_name in ["ENABLED", "OBSERVING", "RESTORING"]:
-        if diagnostic.STATE_ORDER.index(state_name) <= diagnostic.STATE_ORDER.index(crash_state):
-            store.transition(tx, state_name)
+    if crash_state != "ARMED":
+        mutated_hash = config.enable(snap, store.load_guard_name(tx))
+        store.record_mutated_hash(tx, mutated_hash)
+        store.transition(tx, "MUTATED")
+        for state_name in ["ENABLED", "OBSERVING", "RESTORING"]:
+            if diagnostic.STATE_ORDER.index(state_name) <= diagnostic.STATE_ORDER.index(crash_state):
+                store.transition(tx, state_name)
     fake = FakeRunner(diagnostic, data)
     executor = diagnostic.DiagnosticExecutor(
         deploy_root=deploy, data_root=data, state_root=state, lock_path=tmp_path / "shared.lock",
@@ -878,12 +1076,16 @@ def test_forward_failure_starts_fresh_restore_reserve(diagnostic, tmp_path, monk
     monkeypatch.setattr(
         executor,
         "_restore",
-        lambda _tx, _snapshot, _digest: reserves.append(executor.deadline - time.monotonic()),
+        lambda _tx, _snapshot, _digest, *, allow_crash=False: reserves.append(
+            (executor.deadline - time.monotonic(), allow_crash)
+        ),
     )
     with pytest.raises(OSError, match="forward failure"):
         executor.run(diagnostic.parse_request(io.BytesIO(request())))
     assert len(reserves) == 1
-    assert diagnostic.RESTORE_DEADLINE_SECONDS - 1 < reserves[0] <= diagnostic.RESTORE_DEADLINE_SECONDS
+    reserve, allow_crash = reserves[0]
+    assert diagnostic.RESTORE_DEADLINE_SECONDS - 1 < reserve <= diagnostic.RESTORE_DEADLINE_SECONDS
+    assert allow_crash is True
 
 
 @pytest.mark.parametrize("raw", [
