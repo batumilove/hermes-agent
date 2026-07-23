@@ -874,6 +874,16 @@ def test_balanced_pre_response_lifecycle_is_aggregated(diagnostic):
     }
 
 
+def test_default_gateway_warning_prefix_is_aggregated(diagnostic):
+    prefix = "WARNING plugins.platforms.telegram.telegram_network: "
+    raw = (
+        prefix + "[Telegram socket] event=socket-opened owner=general route=primary local_port=1234\n"
+        + prefix + "[Telegram socket] event=socket-closed owner=general route=primary local_port=1234\n"
+    )
+    result = diagnostic.DiagnosticExecutor._aggregate(raw)
+    assert {item["event"] for item in result["counts"]} == {"socket-opened", "socket-closed"}
+
+
 def test_interleaved_socket_and_response_lifecycles_balance_separately(diagnostic):
     raw = (
         "[Telegram socket] event=socket-opened owner=general route=primary local_port=1234\n"

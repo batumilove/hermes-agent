@@ -300,6 +300,21 @@ def _diagnostic_request():
     return request, forbidden
 
 
+def test_socket_lifecycle_is_visible_at_default_gateway_stderr_level(caplog):
+    with caplog.at_level(logging.WARNING, logger=tnet.logger.name):
+        tnet._log_socket_lifecycle(
+            event="socket-opened",
+            owner="general",
+            route="primary",
+            local_port="43210",
+        )
+    assert len(caplog.records) == 1
+    assert caplog.records[0].levelno == logging.WARNING
+    _assert_lifecycle_record(
+        caplog.records[0], event="socket-opened", owner="general", route="primary"
+    )
+
+
 @pytest.mark.asyncio
 async def test_socket_diagnostics_cover_pre_response_network_lifecycle(monkeypatch):
     """A socket must be attributable before any HTTP response exists."""

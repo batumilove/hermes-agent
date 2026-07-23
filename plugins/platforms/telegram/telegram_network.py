@@ -291,7 +291,9 @@ def _close_response_on_task_done(task: asyncio.Task, response: httpx.Response) -
 
 def _log_socket_lifecycle(*, event: str, owner: str, route: str, local_port: str) -> None:
     """Emit one deliberately request-free socket lifecycle record."""
-    logger.info(
+    # Diagnostics are explicitly opt-in and must remain visible at the gateway's
+    # default WARNING stderr level so bounded staging collection can use Docker logs.
+    logger.warning(
         "[Telegram socket] event=%s owner=%s route=%s local_port=%s",
         event,
         owner,
