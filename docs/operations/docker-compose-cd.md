@@ -224,3 +224,54 @@ The workflow concurrency group serializes publication runs without cancellation,
 preventing two reruns from racing to publish the same source tag. Queued stale
 runs fail the protected-branch SHA check. The host deployment lock separately
 prevents overlapping remote changes.
+
+## Staging socket diagnostic transaction helper
+
+The staging-only socket diagnostic workflow delegates the privileged transaction
+to `/usr/local/libexec/hermes-staging-diagnostic`. GitHub can send only a UTF-8
+JSON request of at most 4096 bytes on stdin to the exact no-argument sudo
+command. Paths, host, environment, container, image, commands, recovery mode,
+and duration choices are fixed in the root-owned helper. Durable transaction
+state is root-owned under `/var/lib/hermes-staging-diagnostics`; interrupted or
+ambiguous transactions are restore-only and never resume diagnostics.
+
+Rollout is intentionally split and fail-closed:
+
+1. Never execute the checkout installer as root. Export
+   `scripts/deploy/install-staging-diagnostic-helper.sh` from the exact reviewed
+   commit, verify its externally reviewed SHA-256 while unprivileged, copy it to
+   `/usr/local/sbin/hermes-staging-diagnostic-installer` as `root:root 0755`, and
+   read back that root-owned copy's SHA-256 **before first execution**. Any
+   mismatch is a hard stop.
+2. Run the verified root-owned copy as
+   `--stage REPO_ROOT COMMIT TREE INSTALLER_SHA256` against the clean exact
+   reviewed checkout. The installer refuses execution from any other path and
+   self-verifies its owner, mode, digest, and reviewed Git object. Staging verifies every artifact
+   against the named Git object before installing it, writes a root-owned
+   commit/tree/hash manifest, and installs the tmpfiles rule that recreates the
+   shared deployment/recovery lock after reboot. Sudo authorization and timer
+   activation remain disabled.
+3. Read back the manifest, installer/helper/unit/tmpfiles hashes and ownership/modes,
+   shared-lock metadata, and state-directory mode. Verify every value against
+   the reviewed commit/tree.
+4. Run the separate `--authorize` phase. It substitutes the verified SHA-256
+   into the exact no-argument sudo rule and validates it with `visudo -c -f`.
+5. Run a no-mutation invalid-request canary, then crash canaries at each durable
+   boundary. Verify byte-for-byte config restoration, healthy runtime, and
+   effective `socket_diagnostics=false` after every case.
+6. Enable the recovery timer only through a separate approved host operation.
+7. Run one 60-second live gate and verify only bounded aggregate evidence is
+   returned. Activate the workflow only after all earlier gates pass by setting
+   `HERMES_STAGING_DIAGNOSTICS_ENABLED=true`; each dispatch must separately set
+   `activation_ack=enabled` and remain bound to the exact deployed source SHA.
+
+**Security boundary:** this correctness helper does not create least privilege.
+`hermes-deploy` Docker-group membership remains root-equivalent, so privilege
+containment remains **FAIL** until a separately reviewed deployment-helper
+migration removes Docker access. This candidate deliberately does not change
+users or groups.
+
+Rollback order: revoke the diagnostic sudoers rule first; preserve recovery
+until every transaction is `RESTORED` or safely `ABORTED`; force and verify exact restoration; revert
+the workflow; then disable/remove the timer, service, and helper. Never restore
+Docker-group membership as a rollback convenience.

@@ -145,3 +145,53 @@ def test_compose_runtime_is_digest_driven_and_health_checked() -> None:
     assert gateway["healthcheck"]["test"][0] == "CMD-SHELL"
     assert "s6-svstat" in gateway["healthcheck"]["test"][1]
     assert gateway["logging"]["options"] == {"max-size": "20m", "max-file": "5"}
+
+
+def test_staging_diagnostic_workflow_delegates_exact_bounded_json_only() -> None:
+    workflow = _workflow("staging-telegram-socket-diagnostics.yml")
+    assert workflow["on"]["workflow_dispatch"]["inputs"]["observation_seconds"]["options"] == ["60", "90", "120"]
+    job = workflow["jobs"]["observe"]
+    assert job["if"] == (
+        "vars.HERMES_STAGING_DIAGNOSTICS_ENABLED == 'true' && "
+        "inputs.activation_ack == 'enabled' && "
+        "github.repository == 'batumilove/hermes-agent' && "
+        "github.ref == 'refs/heads/batumi/live' && "
+        "github.sha == inputs.expected_source_sha"
+    )
+    assert workflow["on"]["workflow_dispatch"]["inputs"]["activation_ack"] == {
+        "description": "Explicit activation acknowledgement (must be enabled)",
+        "required": "true",
+        "default": "disabled",
+        "type": "choice",
+        "options": ["disabled", "enabled"],
+    }
+    assert "inputs.activation_ack == 'enabled'" in job["if"]
+    assert job["environment"]["name"] == "batumi-staging"
+    assert job["timeout-minutes"] == "20"
+    assert workflow["concurrency"] == {
+        "group": "hermes-staging-socket-diagnostics",
+        "cancel-in-progress": "false",
+    }
+    run_step = next(step for step in job["steps"] if step["name"] == "Run bounded diagnostics")
+    script = run_step["run"]
+    assert "python3 -c" in script
+    assert "json.dumps" in script
+    assert "GITHUB_RUN_ID" in script and "GITHUB_RUN_ATTEMPT" in script
+    assert "nonce" in script
+    assert "sudo -n /usr/local/libexec/hermes-staging-diagnostic" in script
+    assert "ssh \"${ssh_opts[@]}\" \"$target\" 'sudo -n /usr/local/libexec/hermes-staging-diagnostic'" in script
+    assert "4096" in script
+
+
+def test_staging_diagnostic_workflow_has_no_remote_privileged_logic_or_raw_logs() -> None:
+    raw = (WORKFLOWS / "staging-telegram-socket-diagnostics.yml").read_text()
+    forbidden = [
+        "docker inspect", "docker restart", "docker exec", "docker logs",
+        "gateway.json", ".diagnostic-backups", "runtime_uid", "runtime_gid",
+        "sudo -n /usr/local/libexec/hermes-staging-diagnostic --", "bash -s --",
+        "watchdog", "readlink -f", "stat -c", "flock ",
+    ]
+    for value in forbidden:
+        assert value not in raw
+    assert "/home/hermes-staging/.hermes-staging" not in raw
+    assert "DEPLOY_ROOT" not in raw

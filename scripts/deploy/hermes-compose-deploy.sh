@@ -50,13 +50,22 @@ current_env="$deploy_root/release.env"
 previous_env="$deploy_root/release.previous.env"
 history_file="$deploy_root/releases/history.tsv"
 lock_file="$deploy_root/deploy.lock"
+shared_staging_lock=/run/lock/hermes-staging-diagnostic.lock
 
 [[ -f $compose_file ]] || die "missing $compose_file"
 [[ -f $runtime_env ]] || die "missing $runtime_env"
 runtime_mode=$(stat -c '%a' "$runtime_env")
 (( (8#$runtime_mode & 077) == 0 )) || die "$runtime_env must not be group/world accessible (expected mode 0600)"
 
-exec 9>"$lock_file"
+if [[ $environment == batumi-staging && -e $shared_staging_lock ]]; then
+  [[ -f $shared_staging_lock && ! -L $shared_staging_lock ]] || die "unsafe shared staging lock"
+  [[ $(stat -c '%U:%G:%a:%h:%s' -- "$shared_staging_lock") == root:hermes-deploy:660:1:0 ]] || die "shared staging lock metadata mismatch"
+  exec 9<>"$shared_staging_lock"
+else
+  # Compatibility until the dormant helper is explicitly staged. Once staged,
+  # its root-owned sticky-directory lock is authoritative for deploy/run/recover.
+  exec 9>"$lock_file"
+fi
 flock -w 300 9 || die "timed out waiting for deployment lock"
 
 compose() {
