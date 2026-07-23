@@ -924,6 +924,7 @@ def test_malformed_socket_lifecycle_record_fails_closed(diagnostic, line):
 
 @pytest.mark.parametrize("malformed", [
     "https://127.0.0.1/path?token=forbidden [Telegram socket] event=socket-opened owner=general route=primary local_port=1234",
+    "WARNING [TOKEN_CANARY_123] plugins.platforms.telegram.telegram_network: [Telegram socket] event=socket-opened owner=general route=primary local_port=1234",
     "[Telegram socket] event=bogus owner=general route=primary local_port=1234 [Telegram socket] event=socket-opened owner=general route=primary local_port=1234",
     "[Telegram socket] owner=general event=socket-opened route=primary local_port=1234",
     "[Telegram socket] extra=forbidden event=socket-opened owner=general route=primary local_port=1234",

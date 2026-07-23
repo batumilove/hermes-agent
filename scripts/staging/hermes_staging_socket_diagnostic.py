@@ -54,9 +54,7 @@ _DECIMAL = re.compile(r"(?:0|[1-9][0-9]{0,19})\Z")
 _NONCE = re.compile(r"[A-Za-z0-9_-]{16,64}\Z")
 _IMAGE = re.compile(r"ghcr\.io/batumilove/hermes-agent-deploy@sha256:[0-9a-f]{64}\Z")
 _EVENT = re.compile(
-    r"(?:(?:[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3} )?"
-    r"WARNING(?: \[[A-Za-z0-9_.:@-]{1,128}\])? "
-    r"plugins\.platforms\.telegram\.telegram_network: )?"
+    r"(?:WARNING plugins\.platforms\.telegram\.telegram_network: )?"
     r"\[Telegram socket\] event=(socket-opened|socket-closed|socket-close-error|"
     r"response-created|response-closed|response-close-error) "
     r"owner=(general|polling) route=(primary|(?:[0-9]{1,3}\.){3}[0-9]{1,3}) "
