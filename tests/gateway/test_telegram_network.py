@@ -106,10 +106,60 @@ class _DiagnosticSocket:
 
 
 class _DiagnosticNetworkStream:
+    def __init__(self):
+        self.closed = False
+
     def get_extra_info(self, name):
         if name == "socket":
             return _DiagnosticSocket()
         return None
+
+    async def aclose(self):
+        self.closed = True
+        return None
+
+
+class _CloseFailingByteStream(httpx.AsyncByteStream):
+    def __init__(self):
+        self.close_calls = 0
+
+    async def __aiter__(self):
+        yield b"ok"
+
+    async def aclose(self):
+        self.close_calls += 1
+        raise RuntimeError("stream close broken")
+
+
+class _CancelFirstSocketByteStream(httpx.AsyncByteStream):
+    """Own a real TCP socket; first close is cancelled, second closes it."""
+
+    def __init__(self, sock: socket.socket):
+        self.sock = sock
+        self.close_calls = 0
+
+    async def __aiter__(self):
+        if False:
+            yield b""
+
+    async def aclose(self):
+        self.close_calls += 1
+        if self.close_calls == 1:
+            raise asyncio.CancelledError
+        self.sock.close()
+
+    def get_extra_info(self, name):
+        if name == "socket":
+            return self.sock
+        return None
+
+
+class _SingleResponseTransport(httpx.AsyncBaseTransport):
+    def __init__(self, response: httpx.Response):
+        self.response = response
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        return self.response
 
 
 class _RawDiagnosticStream:
@@ -691,6 +741,76 @@ class _SlowBodyServer:
         self._connected.wait(timeout)
 
 
+class _PeerFinServer:
+    """Accept one real TCP connection, send FIN, and stop."""
+
+    def __init__(self):
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock.bind(("127.0.0.1", 0))
+        self._sock.listen(1)
+        self.port = self._sock.getsockname()[1]
+        self._closed_peer = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def connect(self) -> socket.socket:
+        client = socket.create_connection(("127.0.0.1", self.port), timeout=2.0)
+        assert self._closed_peer.wait(2.0)
+        client.settimeout(2.0)
+        assert client.recv(1) == b""
+        return client
+
+    def stop(self) -> None:
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+        self._thread.join(timeout=2.0)
+
+    def _serve(self) -> None:
+        try:
+            conn, _addr = self._sock.accept()
+            conn.close()
+        finally:
+            self._closed_peer.set()
+
+
+def _tcp_state_for_ports(local_port: int, remote_port: int) -> str | None:
+    """Read the kernel TCP state for one localhost connection from /proc."""
+    try:
+        with open("/proc/net/tcp", encoding="ascii") as proc_tcp:
+            rows = proc_tcp.readlines()[1:]
+    except OSError:
+        pytest.skip("Linux /proc/net/tcp is required for CLOSE_WAIT proof")
+    local_suffix = f":{local_port:04X}"
+    remote_suffix = f":{remote_port:04X}"
+    for row in rows:
+        fields = row.split()
+        if fields[1].endswith(local_suffix) and fields[2].endswith(remote_suffix):
+            return fields[3]
+    return None
+
+
+async def _wait_for_tcp_state(
+    local_port: int,
+    remote_port: int,
+    expected: str | None,
+    *,
+    timeout: float = 2.0,
+) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if _tcp_state_for_ports(local_port, remote_port) == expected:
+            return
+        await asyncio.sleep(0.01)
+    actual = _tcp_state_for_ports(local_port, remote_port)
+    assert actual == expected
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # IP parsing & validation
 # ═══════════════════════════════════════════════════════════════════════════
@@ -832,6 +952,76 @@ class TestFallbackTransport:
             await transport.aclose()
         finally:
             server.stop()
+
+    @pytest.mark.asyncio
+    async def test_caught_close_cancellation_retries_and_clears_real_close_wait(self):
+        """A caught first-close cancellation must not strand a real TCP socket."""
+        server = _PeerFinServer()
+        server.start()
+        client = server.connect()
+        local_port = client.getsockname()[1]
+        remote_port = client.getpeername()[1]
+        stream = _CancelFirstSocketByteStream(client)
+        request = _telegram_request()
+        response = httpx.Response(
+            200,
+            request=request,
+            stream=stream,
+            extensions={"network_stream": stream},
+        )
+        transport = _SingleResponseTransport(response)
+
+        try:
+            await _wait_for_tcp_state(local_port, remote_port, "08")
+
+            async def _caller_catches_close_cancellation():
+                owned_response = await tnet._handle_transport_request(
+                    transport, request
+                )
+                try:
+                    await owned_response.aclose()
+                except asyncio.CancelledError:
+                    return "cancelled-close-caught"
+
+            result = await asyncio.create_task(
+                _caller_catches_close_cancellation()
+            )
+            assert result == "cancelled-close-caught"
+
+            # The caller task completed normally, so its done callback cannot
+            # identify the abandoned response. The stream wrapper must retry.
+            await _wait_for_tcp_state(local_port, remote_port, None)
+            assert stream.close_calls == 2
+            assert client.fileno() == -1
+            for _ in range(20):
+                if not tnet._abandoned_response_cleanups:
+                    break
+                await asyncio.sleep(0)
+            assert not tnet._abandoned_response_cleanups
+        finally:
+            client.close()
+            server.stop()
+
+    @pytest.mark.asyncio
+    async def test_retry_failure_forces_network_stream_close(self):
+        """If both byte-stream closes fail, force-close the raw network stream."""
+        network_stream = _DiagnosticNetworkStream()
+        stream = _CloseFailingByteStream()
+        retrying = tnet._RetryingCloseResponseStream(
+            stream,
+            network_stream=network_stream,
+        )
+
+        with pytest.raises(RuntimeError, match="stream close broken"):
+            await retrying.aclose()
+
+        for _ in range(20):
+            if network_stream.closed and not tnet._abandoned_response_cleanups:
+                break
+            await asyncio.sleep(0)
+        assert stream.close_calls == 2
+        assert network_stream.closed is True
+        assert not tnet._abandoned_response_cleanups
 
     @pytest.mark.asyncio
     async def test_falls_back_on_connect_timeout_and_becomes_sticky(self, monkeypatch):
