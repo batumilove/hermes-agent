@@ -1094,6 +1094,10 @@ class DiagnosticExecutor:
         self._command((DOCKER, "restart", "--time", "90", CONTAINER), 120)
         self._wait_healthy()
 
+    def _start(self) -> None:
+        self._command((DOCKER, "start", CONTAINER), 120)
+        self._wait_healthy()
+
     def _stop(self) -> None:
         self._command((DOCKER, "stop", "--time", "90", CONTAINER), 120)
 
@@ -1185,7 +1189,7 @@ class DiagnosticExecutor:
                 try:
                     self._stop()
                     self.config.restore(snapshot, mutated_hash, quarantine_fd, guard_name)
-                    self._restart()
+                    self._start()
                     self._effective(False)
                     self.states.transition(tx, "RESTORED")
                     return

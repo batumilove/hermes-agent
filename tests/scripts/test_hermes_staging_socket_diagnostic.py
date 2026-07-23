@@ -741,7 +741,8 @@ def test_executor_uses_fixed_vectors_scrubbed_environment_and_bounded_aggregate(
     result = executor.run(diagnostic.parse_request(io.BytesIO(request())))
     assert result["observation_collected"] is True
     assert result["counts"] == [{"count": 1, "event": "response-closed", "owner": "general", "route": "primary"}, {"count": 1, "event": "response-created", "owner": "general", "route": "primary"}]
-    assert fake.restarts == 2  # one enable; one restore
+    assert fake.restarts == 1  # enable restarts the running container; restore starts the stopped container
+    assert [call[0][1] for call in fake.calls if call[0][:2] == ("/usr/bin/docker", "start")] == ["start"]
     assert all(call[2] == diagnostic.COMMAND_ENV for call in fake.calls)
     assert all(call[5] is not None for call in fake.calls)
     assert all(isinstance(call[0], tuple) and call[0][0].startswith("/") for call in fake.calls)
@@ -820,6 +821,31 @@ def test_recovery_after_each_durable_mutation_state_is_restore_only(diagnostic, 
     assert (data / "gateway.json").read_bytes() == snap.content
     assert json.loads((tx.path / "state.json").read_text())["state"] == "RESTORED"
     assert not any(call[0][:2] == ("/usr/bin/docker", "logs") for call in fake.calls)
+
+
+def test_restore_starts_the_container_after_an_explicit_stop(diagnostic, tmp_path):
+    deploy, data, state = _target_tree(tmp_path)
+    store = diagnostic.TransactionStore(state)
+    request_value = diagnostic.parse_request(io.BytesIO(request()))
+    tx = store.prepare(request_value)
+    config = diagnostic.ConfigStore(data, expected_uid=os.getuid(), expected_gid=os.getgid())
+    snapshot = config.snapshot()
+    store.save_snapshot(tx, snapshot)
+    store.transition(tx, "ARMED")
+    mutated_hash = config.enable(snapshot, store.load_guard_name(tx))
+    store.record_mutated_hash(tx, mutated_hash)
+    store.transition(tx, "MUTATED")
+    fake = FakeRunner(diagnostic, data)
+    executor = _executor(diagnostic, tmp_path, deploy, data, state, fake)
+
+    assert executor.recover()["recovered"] == 1
+
+    runtime_actions = [
+        call[0][1]
+        for call in fake.calls
+        if call[0][0] == "/usr/bin/docker" and call[0][1] in {"stop", "start", "restart"}
+    ]
+    assert runtime_actions == ["stop", "start"]
 
 
 def test_installation_artifacts_are_dormant_exact_and_warn_about_containment():
@@ -993,7 +1019,7 @@ def test_prepared_recovery_aborts_under_lock_and_unblocks_future_run(diagnostic,
 def test_restore_failed_remains_blocking_and_retries_until_verified(diagnostic, tmp_path):
     deploy, data, state = _target_tree(tmp_path)
     tx, _ = _armed_transaction(diagnostic, state, data, mutate=True)
-    failing = FakeRunner(diagnostic, data, fail_on="restart")
+    failing = FakeRunner(diagnostic, data, fail_on="start")
     executor = _executor(diagnostic, tmp_path, deploy, data, state, failing)
     with pytest.raises(diagnostic.DiagnosticError):
         executor.recover()
@@ -1005,7 +1031,7 @@ def test_restore_failed_remains_blocking_and_retries_until_verified(diagnostic, 
     succeeding = FakeRunner(diagnostic, data)
     assert _executor(diagnostic, tmp_path, deploy, data, state, succeeding).recover()["recovered"] == 1
     assert json.loads((tx.path / "state.json").read_text())["state"] == "RESTORED"
-    assert succeeding.restarts >= 1
+    assert any(call[0][:2] == ("/usr/bin/docker", "start") for call in succeeding.calls)
 
 
 def test_original_absent_executor_recovery_removes_config(diagnostic, tmp_path):
