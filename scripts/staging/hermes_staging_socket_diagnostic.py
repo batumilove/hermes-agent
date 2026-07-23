@@ -1065,10 +1065,14 @@ class DiagnosticExecutor:
             raise DiagnosticError("runtime metadata mismatch")
         env_output = self._command((DOCKER, "inspect", "--format", "{{range .Config.Env}}{{println .}}{{end}}", CONTAINER), 15)
         env_lines = env_output.splitlines()
-        if (
-            env_lines.count("HERMES_SOURCE_SHA=" + request.expected_source_sha) != 1
-            or env_lines.count("HERMES_DEPLOY_ENV=" + ENVIRONMENT) != 1
-            or env_lines.count("HERMES_HOME=/opt/data") != 1
+        expected_env = {
+            "HERMES_SOURCE_SHA": request.expected_source_sha,
+            "HERMES_DEPLOY_ENV": ENVIRONMENT,
+            "HERMES_HOME": "/opt/data",
+        }
+        if any(
+            [line for line in env_lines if line.startswith(name + "=")] != [name + "=" + value]
+            for name, value in expected_env.items()
         ):
             raise DiagnosticError("container environment mismatch")
         configured_image = self._command((DOCKER, "inspect", "--format", "{{.Config.Image}}", CONTAINER), 15).strip()
@@ -1118,6 +1122,10 @@ class DiagnosticExecutor:
 
     def _restart(self) -> None:
         self._command((DOCKER, "restart", "--time", "90", CONTAINER), 120)
+        self._wait_healthy()
+
+    def _start(self) -> None:
+        self._command((DOCKER, "start", CONTAINER), 120)
         self._wait_healthy()
 
     def _stop(self) -> None:
@@ -1219,7 +1227,7 @@ class DiagnosticExecutor:
                 try:
                     self._stop()
                     self.config.restore(snapshot, mutated_hash, quarantine_fd, guard_name)
-                    self._restart()
+                    self._start()
                     self._effective(False)
                     self.states.transition(tx, "RESTORED")
                     return
