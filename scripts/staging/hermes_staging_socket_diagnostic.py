@@ -30,6 +30,7 @@ DATA_ROOT = Path("/home/hermes-staging/.hermes-staging")
 STATE_ROOT = Path("/var/lib/hermes-staging-diagnostics")
 TRANSACTION_ROOT = STATE_ROOT / "transactions"
 LOCK_PATH = Path("/run/lock/hermes-staging-diagnostic.lock")
+CRASH_TOKEN_PATH = Path("/run/hermes-staging-diagnostic-crash-token.json")
 RUNTIME_UID = 1001
 RUNTIME_GID = 1001
 SUDO_UID = 1002
@@ -205,6 +206,139 @@ def render_error(error: BaseException) -> str:
 
 def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+class CrashBarrier:
+    """Root-armed one-shot crash barrier for exact staging recovery canaries."""
+
+    _TARGETS = {"ARMED", "MUTATED", "ENABLED", "OBSERVING", "RESTORING"}
+
+    def __init__(
+        self,
+        *,
+        token_path: Path = CRASH_TOKEN_PATH,
+        helper_path: Path = Path(__file__),
+        expected_uid: int = 0,
+        expected_gid: int = 0,
+        pid=os.getpid,
+        signal_process=os.kill,
+    ):
+        self.token_path = Path(token_path)
+        self.helper_path = Path(helper_path)
+        self.expected_uid = expected_uid
+        self.expected_gid = expected_gid
+        self.pid = pid
+        self.signal_process = signal_process
+
+    def _helper_sha256(self) -> str:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(self.helper_path, flags)
+        except OSError as exc:
+            raise StateError("crash token helper identity is unsafe") from exc
+        try:
+            info = os.fstat(fd)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_nlink != 1
+                or info.st_uid != self.expected_uid
+                or info.st_gid != self.expected_gid
+                or stat.S_IMODE(info.st_mode) != 0o755
+                or info.st_size > 256 * 1024
+            ):
+                raise StateError("crash token helper identity is unsafe")
+            data = b""
+            while len(data) <= 256 * 1024:
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    break
+                data += chunk
+            if len(data) != info.st_size:
+                raise StateError("crash token helper identity is unsafe")
+            return _sha(data)
+        finally:
+            os.close(fd)
+
+    def after_transition(self, tx: Transaction, state_name: str) -> None:
+        parent = self.token_path.parent
+        name = self.token_path.name
+        dir_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            dir_fd = os.open(parent, dir_flags)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise StateError("crash token directory is unsafe") from exc
+        fd = None
+        try:
+            try:
+                fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=dir_fd)
+            except FileNotFoundError:
+                return
+            except OSError as exc:
+                raise StateError("crash token is unsafe") from exc
+            opened = os.fstat(fd)
+            try:
+                named = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+            except OSError as exc:
+                raise StateError("crash token is unsafe") from exc
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or stat.S_ISLNK(named.st_mode)
+                or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
+                or opened.st_nlink != 1
+                or (opened.st_uid, opened.st_gid) != (self.expected_uid, self.expected_gid)
+                or stat.S_IMODE(opened.st_mode) != 0o600
+                or opened.st_size > 512
+            ):
+                raise StateError("crash token is unsafe")
+            raw = os.read(fd, 513)
+            if len(raw) != opened.st_size:
+                raise StateError("crash token is unsafe")
+            try:
+                text = raw.decode("utf-8", "strict")
+                token, end = json.JSONDecoder(object_pairs_hook=_object_no_duplicates).raw_decode(text)
+            except (UnicodeDecodeError, json.JSONDecodeError, _DuplicateKey, ValueError) as exc:
+                raise StateError("crash token schema is invalid") from exc
+            if text[end:].strip() or not isinstance(token, dict) or set(token) != {
+                "version", "transaction", "target", "helper_sha256", "expected_source_sha"
+            }:
+                raise StateError("crash token schema is invalid")
+            target = token.get("target")
+            request_value = tx.record.get("request")
+            expected_source = request_value.get("expected_source_sha") if isinstance(request_value, dict) else None
+            if (
+                type(token.get("version")) is not int
+                or token.get("version") != 1
+                or not isinstance(target, str)
+                or target not in self._TARGETS
+                or token.get("transaction") != tx.path.name
+                or token.get("expected_source_sha") != expected_source
+                or not isinstance(token.get("helper_sha256"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", str(token.get("helper_sha256")))
+                or token.get("helper_sha256") != self._helper_sha256()
+            ):
+                raise StateError("crash token binding is invalid")
+            if target != state_name:
+                return
+            current = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+            if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+                raise StateError("crash token identity changed")
+            os.unlink(name, dir_fd=dir_fd)
+            os.fsync(dir_fd)
+            tx.record["crash_barrier"] = {
+                "target": state_name,
+                "helper_sha256": token["helper_sha256"],
+                "expected_source_sha": expected_source,
+                "consumed": True,
+            }
+            _atomic_path_write(tx.path / "state.json", (json.dumps(tx.record, sort_keys=True) + "\n").encode())
+            self.signal_process(self.pid(), signal.SIGKILL)  # windows-footgun: ok
+            raise StateError("crash token signal unexpectedly returned")
+        finally:
+            if fd is not None:
+                os.close(fd)
+            os.close(dir_fd)
 
 
 def _same_snapshot(left: ConfigSnapshot, right: ConfigSnapshot) -> bool:
@@ -791,7 +925,8 @@ class DiagnosticExecutor:
                  lock_path=LOCK_PATH,
                  lock_uid=0,
                  expected_uid=RUNTIME_UID, expected_gid=RUNTIME_GID, runner=command_runner,
-                 sleep=time.sleep, hostname=lambda: socket.gethostname().split(".")[0]):
+                 sleep=time.sleep, hostname=lambda: socket.gethostname().split(".")[0],
+                 crash_barrier=None):
         self.deploy_root = Path(deploy_root)
         self.data_root = Path(data_root)
         self.states = TransactionStore(Path(state_root))
@@ -803,6 +938,7 @@ class DiagnosticExecutor:
         self.runner = runner
         self.sleep = sleep
         self.hostname = hostname
+        self.crash_barrier = crash_barrier
         self.deadline = 0.0
         self.active_lock_fd: int | None = None
 
@@ -1031,8 +1167,16 @@ class DiagnosticExecutor:
             "created_without_terminal": [],
         }
 
-    def _restore(self, tx: Transaction, snapshot: ConfigSnapshot, mutated_hash: str) -> None:
+    def _after_forward_transition(self, tx: Transaction, state_name: str) -> None:
+        if self.crash_barrier is not None:
+            self.crash_barrier.after_transition(tx, state_name)
+
+    def _restore(
+        self, tx: Transaction, snapshot: ConfigSnapshot, mutated_hash: str, *, allow_crash: bool = False
+    ) -> None:
         self.states.begin_restore(tx)
+        if allow_crash:
+            self._after_forward_transition(tx, "RESTORING")
         guard_name = self.states.load_guard_name(tx)
         quarantine_fd = self.states.open_transaction(tx)
         last_error: BaseException | None = None
@@ -1077,6 +1221,7 @@ class DiagnosticExecutor:
             finally:
                 os.close(quarantine_fd)
             self.states.transition(tx, "ARMED")
+            self._after_forward_transition(tx, "ARMED")
             mutated_hash = _sha(self.config.enabled_payload(snapshot))
             result = None
             try:
@@ -1086,12 +1231,15 @@ class DiagnosticExecutor:
                     raise StateError("mutated config hash mismatch")
                 self.states.record_mutated_hash(tx, mutated_hash)
                 self.states.transition(tx, "MUTATED")
+                self._after_forward_transition(tx, "MUTATED")
                 observation_since = self._observation_since()
                 self._restart()
                 self.states.transition(tx, "ENABLED")
+                self._after_forward_transition(tx, "ENABLED")
                 self._effective(True)
                 container_identity = self._container_identity()
                 self.states.transition(tx, "OBSERVING")
+                self._after_forward_transition(tx, "OBSERVING")
                 self._sleep_bounded(request.observation_seconds)
                 if self._container_identity() != container_identity:
                     raise DiagnosticError("container identity changed during observation")
@@ -1105,7 +1253,7 @@ class DiagnosticExecutor:
                 result["observation_collected"] = True
             finally:
                 self._start_deadline(RESTORE_DEADLINE_SECONDS)
-                self._restore(tx, snapshot, mutated_hash)
+                self._restore(tx, snapshot, mutated_hash, allow_crash=True)
             tx.record["result"] = result
             self.states._write(tx)
             return result
@@ -1150,12 +1298,13 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     try:
         mode = parse_cli(argv, dict(os.environ), os.geteuid())  # windows-footgun: ok
-        executor = DiagnosticExecutor()
         if mode == "recover":
+            executor = DiagnosticExecutor()
             result = executor.recover()
         else:
             authorize_caller(dict(os.environ), os.geteuid())  # windows-footgun: ok
             request = parse_request(sys.stdin.buffer)
+            executor = DiagnosticExecutor(crash_barrier=CrashBarrier())
             result = executor.run(request)
         rendered = json.dumps({"ok": True, **result}, sort_keys=True, separators=(",", ":"))
         if len(rendered.encode()) > MAX_OUTPUT_BYTES:
