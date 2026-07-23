@@ -1264,6 +1264,7 @@ async def test_unterminated_polling_owner_requests_process_recycle(tmp_path):
         "Telegram polling owner did not terminate before its deadline.",
         retryable=True,
     )
+    adapter._polling_teardown_started = True
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner.delivery_router.adapters = runner.adapters
     runner.request_restart = MagicMock(return_value=True)
@@ -1308,6 +1309,7 @@ async def test_updater_stop_hard_deadline_tracks_cancellation_suppressing_task(m
 
     recovery = None
     observed_bounded_completion = False
+    cleanup_completed = False
     results = []
     try:
         with patch("asyncio.sleep", new=AsyncMock(side_effect=_yielding_sleep)):
@@ -1328,11 +1330,22 @@ async def test_updater_stop_hard_deadline_tracks_cancellation_suppressing_task(m
         assert not stop_tasks[0].done()
     finally:
         release_stop.set()
-        pending = [task for task in ([recovery] + stop_tasks) if task is not None]
-        if pending:
-            results = await asyncio.gather(*pending, return_exceptions=True)
+        cleanup_tasks = {
+            task for task in ([recovery] + stop_tasks) if task is not None
+        }
+        if cleanup_tasks:
+            done, pending = await asyncio.wait(cleanup_tasks, timeout=2.0)
+            for task in pending:
+                task.cancel()
+            if pending:
+                cancelled_done, pending = await asyncio.wait(pending, timeout=2.0)
+                done |= cancelled_done
+            cleanup_completed = not pending
+            if done:
+                results = await asyncio.gather(*done, return_exceptions=True)
 
     assert observed_bounded_completion is True
+    assert cleanup_completed is True
     assert not any(isinstance(result, BaseException) for result in results)
     await asyncio.sleep(0)
     assert stop_tasks[0].done()
@@ -1495,6 +1508,7 @@ async def test_runner_cleanup_timeout_preserves_retryable_adapter_owner(tmp_path
     adapter.disconnect = AsyncMock(side_effect=_blocked_disconnect)
     handler = None
     observed_bounded_completion = False
+    cleanup_completed = False
     results = []
     try:
         handler = asyncio.create_task(
@@ -1510,11 +1524,22 @@ async def test_runner_cleanup_timeout_preserves_retryable_adapter_owner(tmp_path
         assert disconnect_tasks and not disconnect_tasks[0].done()
     finally:
         release_disconnect.set()
-        pending = [task for task in ([handler] + disconnect_tasks) if task is not None]
-        if pending:
-            results = await asyncio.gather(*pending, return_exceptions=True)
+        cleanup_tasks = {
+            task for task in ([handler] + disconnect_tasks) if task is not None
+        }
+        if cleanup_tasks:
+            done, pending = await asyncio.wait(cleanup_tasks, timeout=2.0)
+            for task in pending:
+                task.cancel()
+            if pending:
+                cancelled_done, pending = await asyncio.wait(pending, timeout=2.0)
+                done |= cancelled_done
+            cleanup_completed = not pending
+            if done:
+                results = await asyncio.gather(*done, return_exceptions=True)
 
     assert observed_bounded_completion is True
+    assert cleanup_completed is True
     assert not any(isinstance(result, BaseException) for result in results)
 
 
@@ -1682,6 +1707,7 @@ async def test_polling_owner_stop_serialized_caller_rechecks_still_running(monke
     assert stop_call_count == 2
     assert max_concurrent_stops == 1
 
+@pytest.mark.asyncio
 async def test_cancellation_resistant_updater_stop_cannot_defeat_owner_deadline():
     """A stop coroutine that suppresses cancellation must not strand recovery."""
     adapter = _make_adapter()
@@ -1780,3 +1806,198 @@ async def test_disconnect_retains_owner_references_after_stop_timeout():
     app.stop.assert_awaited_once()
     app.shutdown.assert_awaited_once()
 
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "handler_name",
+    ["_handle_polling_network_error", "_handle_polling_conflict"],
+)
+async def test_updater_stop_exception_fences_recovery(handler_name):
+    """A stop exception is also unproven ownership, never permission to restart."""
+    adapter = _make_adapter()
+    app = MagicMock()
+    app.updater = MagicMock()
+    app.updater.running = True
+    app.updater.stop = AsyncMock(side_effect=RuntimeError("stop failed"))
+    adapter._app = app
+    adapter._drain_polling_connections = AsyncMock()
+    adapter._start_polling_once = AsyncMock()
+    adapter._handoff_polling_fatal_error = AsyncMock()
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await getattr(adapter, handler_name)(OSError("polling failed"))
+
+    app.updater.stop.assert_awaited_once()
+    adapter._drain_polling_connections.assert_not_awaited()
+    adapter._start_polling_once.assert_not_awaited()
+    assert adapter.fatal_error_code == "telegram_polling_owner_unterminated"
+    assert adapter._polling_teardown_started is True
+    adapter._handoff_polling_fatal_error.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_network_and_conflict_recovery_share_one_generation_owner():
+    """Mixed recovery callbacks may execute only one stop/drain/start sequence."""
+    adapter = _make_adapter()
+    app = MagicMock()
+    updater = MagicMock()
+    updater.running = True
+    app.updater = updater
+    adapter._app = app
+    adapter._drain_polling_connections = AsyncMock()
+    adapter._handoff_polling_fatal_error = AsyncMock()
+    stop_entered = asyncio.Event()
+    release_stop = asyncio.Event()
+    active_stops = 0
+    max_active_stops = 0
+
+    async def _stop():
+        nonlocal active_stops, max_active_stops
+        active_stops += 1
+        max_active_stops = max(max_active_stops, active_stops)
+        stop_entered.set()
+        try:
+            await release_stop.wait()
+        finally:
+            active_stops -= 1
+
+    async def _start(*_args, **_kwargs):
+        adapter._polling_generation += 1
+
+    updater.stop = AsyncMock(side_effect=_stop)
+    adapter._start_polling_once = AsyncMock(side_effect=_start)
+    real_sleep = asyncio.sleep
+
+    async def _yielding_sleep(*_args, **_kwargs):
+        await real_sleep(0)
+
+    with patch("asyncio.sleep", new=AsyncMock(side_effect=_yielding_sleep)):
+        network_task = asyncio.create_task(
+            adapter._handle_polling_network_error(OSError("network"))
+        )
+        conflict_task = asyncio.create_task(
+            adapter._handle_polling_conflict(RuntimeError("conflict"))
+        )
+        try:
+            await asyncio.wait_for(stop_entered.wait(), timeout=1.5)
+            for _ in range(20):
+                await real_sleep(0)
+            overlap_before_release = max_active_stops
+        finally:
+            release_stop.set()
+            await asyncio.wait_for(
+                asyncio.gather(network_task, conflict_task), timeout=2.0
+            )
+
+    assert overlap_before_release == 1
+    updater.stop.assert_awaited_once()
+    adapter._drain_polling_connections.assert_awaited_once()
+    adapter._start_polling_once.assert_awaited_once()
+    assert adapter._polling_generation == 1
+    adapter._handoff_polling_fatal_error.assert_not_awaited()
+
+
+def _owner_fatal_runner(tmp_path):
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="test-token")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    runner.request_restart = MagicMock(return_value=True)
+    return runner
+
+
+@pytest.mark.asyncio
+async def test_stale_owner_fatal_callback_cannot_request_recycle(tmp_path):
+    """Only the currently installed Telegram owner may recycle the process."""
+    runner = _owner_fatal_runner(tmp_path)
+    adapter = _make_adapter()
+    adapter._set_fatal_error(
+        "telegram_polling_owner_unterminated", "stale", retryable=True
+    )
+    adapter._polling_teardown_started = True
+    runner.adapters = {}
+    runner.delivery_router.adapters = runner.adapters
+    runner._update_platform_runtime_status = MagicMock()
+
+    await runner._handle_adapter_fatal_error_impl(adapter)
+
+    runner.request_restart.assert_not_called()
+    runner._update_platform_runtime_status.assert_not_called()
+    assert runner.adapters == {}
+    assert Platform.TELEGRAM not in runner._failed_platforms
+
+
+@pytest.mark.asyncio
+async def test_owner_fatal_code_on_nontelegram_adapter_cannot_recycle(tmp_path):
+    """The recycle trust boundary requires the current Telegram adapter type."""
+    config = GatewayConfig(
+        platforms={
+            Platform.DISCORD: PlatformConfig(enabled=True, token="test-token")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapter = MagicMock()
+    adapter.platform = Platform.DISCORD
+    adapter.fatal_error_code = "telegram_polling_owner_unterminated"
+    adapter.fatal_error_message = "spoofed"
+    adapter.fatal_error_retryable = True
+    adapter._polling_teardown_started = True
+    runner.adapters = {Platform.DISCORD: adapter}
+    runner.delivery_router.adapters = runner.adapters
+    runner.request_restart = MagicMock(return_value=True)
+    runner._safe_adapter_disconnect = AsyncMock(return_value=True)
+
+    await runner._handle_adapter_fatal_error_impl(adapter)
+
+    runner.request_restart.assert_not_called()
+    runner._safe_adapter_disconnect.assert_awaited_once_with(
+        adapter, Platform.DISCORD
+    )
+    assert Platform.DISCORD in runner._failed_platforms
+
+
+@pytest.mark.asyncio
+async def test_owner_fatal_code_without_teardown_fence_cannot_recycle(tmp_path):
+    """The dedicated code alone is not authority without adapter fence state."""
+    runner = _owner_fatal_runner(tmp_path)
+    adapter = _make_adapter()
+    adapter._set_fatal_error(
+        "telegram_polling_owner_unterminated", "untrusted code only", retryable=True
+    )
+    assert adapter._polling_teardown_started is False
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.delivery_router.adapters = runner.adapters
+    runner._safe_adapter_disconnect = AsyncMock(return_value=True)
+
+    await runner._handle_adapter_fatal_error_impl(adapter)
+
+    runner.request_restart.assert_not_called()
+    runner._safe_adapter_disconnect.assert_awaited_once_with(
+        adapter, Platform.TELEGRAM
+    )
+    assert Platform.TELEGRAM in runner._failed_platforms
+
+
+@pytest.mark.asyncio
+async def test_telegram_disconnect_timeout_recycles_instead_of_replacing(tmp_path):
+    """An outer cleanup timeout is unproven ownership and must fail closed."""
+    runner = _owner_fatal_runner(tmp_path)
+    adapter = _make_adapter()
+    adapter._set_fatal_error("telegram_network_error", "network", retryable=True)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.delivery_router.adapters = runner.adapters
+    runner._safe_adapter_disconnect = AsyncMock(return_value=False)
+
+    await runner._handle_adapter_fatal_error_impl(adapter)
+
+    runner._safe_adapter_disconnect.assert_awaited_once_with(
+        adapter, Platform.TELEGRAM
+    )
+    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+    assert runner.adapters == {Platform.TELEGRAM: adapter}
+    assert Platform.TELEGRAM not in runner._failed_platforms

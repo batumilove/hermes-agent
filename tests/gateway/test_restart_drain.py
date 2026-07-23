@@ -540,6 +540,44 @@ async def test_pending_detached_restart_upgrades_to_service_recycle():
 
 
 @pytest.mark.asyncio
+async def test_restart_worker_failure_forces_shutdown_signal():
+    """A failed restart worker may not leave the gateway alive and fenced."""
+    runner, _adapter = make_restart_runner()
+    runner.stop = AsyncMock(side_effect=RuntimeError("shutdown failed"))
+    restart_task = None
+    completed = False
+    cleanup_completed = False
+    results = []
+
+    try:
+        accepted = runner.request_restart(detached=False, via_service=True)
+        restart_task = runner._restart_task
+        assert accepted is True
+        assert restart_task is not None
+    finally:
+        if restart_task is not None:
+            done, pending = await asyncio.wait({restart_task}, timeout=2.0)
+            completed = restart_task in done
+            for task in pending:
+                task.cancel()
+            if pending:
+                cancelled_done, pending = await asyncio.wait(pending, timeout=2.0)
+                done |= cancelled_done
+            cleanup_completed = not pending
+            if restart_task in done:
+                results = await asyncio.gather(restart_task, return_exceptions=True)
+
+    assert completed is True
+    assert cleanup_completed is True
+    assert not any(isinstance(result, BaseException) for result in results)
+    runner.stop.assert_awaited_once_with(
+        restart=True, detached_restart=False, service_restart=True
+    )
+    assert runner._shutdown_event.is_set()
+    assert runner._exit_code == 75
+
+
+@pytest.mark.asyncio
 async def test_run_restart_excluded_from_stop_cancel_loop():
     """Regression for #12875: _run_restart is held on self._restart_task and
     kept OUT of _background_tasks, and the _stop_impl cancel loop explicitly

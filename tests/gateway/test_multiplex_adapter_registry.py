@@ -233,8 +233,10 @@ class TestSecondaryProfileFatalRecovery:
         adapter.platform = Platform.TELEGRAM
         adapter.fatal_error_code = "telegram_polling_owner_unterminated"
         adapter.fatal_error_message = "Telegram polling owner still alive"
+        adapter._polling_teardown_started = True
         adapter.disconnect = AsyncMock()
         runner._profile_adapters = {"reviewer": {Platform.TELEGRAM: adapter}}
+        runner._safe_adapter_disconnect = AsyncMock()
         runner._schedule_secondary_profile_reconnect = MagicMock()
         runner.request_restart = MagicMock(return_value=True)
 
@@ -246,6 +248,7 @@ class TestSecondaryProfileFatalRecovery:
             "reviewer": {Platform.TELEGRAM: adapter}
         }
         adapter.disconnect.assert_not_awaited()
+        runner._safe_adapter_disconnect.assert_not_awaited()
         runner._schedule_secondary_profile_reconnect.assert_not_called()
         assert runner._profile_failed_platforms == {}
         runner.request_restart.assert_called_once_with(
