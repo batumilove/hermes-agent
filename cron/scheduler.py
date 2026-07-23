@@ -1244,6 +1244,63 @@ def _normalize_deliver_value(deliver) -> str:
     return str(deliver)
 
 
+def _cron_new_telegram_thread_per_output_enabled(config: Optional[dict]) -> bool:
+    """Return whether cron should create a fresh Telegram DM topic per output."""
+    try:
+        return bool(
+            (config or {})
+            .get("cron", {})
+            .get("telegram_new_thread_per_output", False)
+        )
+    except (AttributeError, TypeError):
+        return False
+
+
+def _cron_output_topic_name(job: dict) -> str:
+    """Build a Telegram-safe topic name for one cron output."""
+    raw_name = str(job.get("name") or job.get("id") or "cron")
+    clean_name = re.sub(r"\s+", " ", raw_name).strip() or "cron"
+    job_id = str(job.get("id") or "")[:8]
+    try:
+        timestamp = _hermes_now().astimezone().strftime("%m-%d %H:%M:%S UTC")
+    except Exception:
+        timestamp = "now UTC"
+    prefix = "Cron: "
+    suffix = f" · {job_id} · {timestamp}" if job_id else f" · {timestamp}"
+    room = max(8, 128 - len(prefix) - len(suffix))
+    if len(clean_name) > room:
+        clean_name = clean_name[: max(0, room - 1)].rstrip() + "…"
+    return f"{prefix}{clean_name}{suffix}"[:128]
+
+
+def _maybe_assign_fresh_telegram_cron_thread(
+    job: dict,
+    target: dict,
+    config: Optional[dict],
+    *,
+    can_create_named_dm_topic: bool = True,
+) -> dict:
+    """Replace a private Telegram target's thread with a fresh topic name."""
+    if not can_create_named_dm_topic:
+        return target
+    if not _cron_new_telegram_thread_per_output_enabled(config):
+        return target
+    if str(target.get("platform", "")).lower() != "telegram":
+        return target
+
+    from gateway.delivery import looks_like_telegram_private_chat_id
+
+    chat_id = target.get("chat_id")
+    if not looks_like_telegram_private_chat_id(
+        str(chat_id) if chat_id is not None else None
+    ):
+        return target
+
+    adjusted = dict(target)
+    adjusted["thread_id"] = _cron_output_topic_name(job)
+    return adjusted
+
+
 # Routing intent tokens — resolved at fire time, not create time, so a
 # job created before Telegram was wired up will pick up Telegram once it
 # comes online.  ``all`` expands into the set of connected platforms
@@ -1609,6 +1666,25 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             and loop is not None
             and getattr(loop, "is_running", lambda: False)()
         )
+        fresh_telegram_topic_assigned = False
+        adjusted_target = _maybe_assign_fresh_telegram_cron_thread(
+            job,
+            target,
+            user_cfg,
+            can_create_named_dm_topic=live_adapter_ready,
+        )
+        if adjusted_target is not target:
+            target = adjusted_target
+            chat_id = target["chat_id"]
+            thread_id = target.get("thread_id")
+            fresh_telegram_topic_assigned = True
+            logger.info(
+                "Job '%s': using fresh Telegram cron topic %r for %s:%s",
+                job.get("id", "?"),
+                thread_id,
+                platform_name,
+                chat_id,
+            )
         delivered = False
         target_errors = []
 
@@ -1770,7 +1846,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # adapter route via a plain message_thread_id.
                 route_thread_id = str(thread_id) if thread_id is not None else None
                 route_metadata = {"job_id": job["id"]}
-                if route_thread_id:
+                route_is_named_private_topic = (
+                    platform == Platform.TELEGRAM
+                    and route_thread_id is not None
+                    and looks_like_telegram_private_chat_id(str(chat_id))
+                    and not _looks_like_int(route_thread_id)
+                )
+                if fresh_telegram_topic_assigned and route_is_named_private_topic:
+                    route_metadata["_telegram_ephemeral_dm_topic"] = True
+                if route_thread_id and not route_is_named_private_topic:
                     route_metadata["thread_id"] = route_thread_id
                 media_metadata = {"thread_id": thread_id} if thread_id else None
 

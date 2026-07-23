@@ -3225,8 +3225,19 @@ class TelegramAdapter(BasePlatformAdapter):
         thread_id = await self._create_dm_topic(chat_id_int, name=name)
         return str(thread_id) if thread_id else None
 
-    async def ensure_dm_topic(self, chat_id: str, topic_name: str, force_create: bool = False) -> Optional[str]:
-        """Return a private DM topic thread id, creating and persisting it if needed."""
+    async def ensure_dm_topic(
+        self,
+        chat_id: str,
+        topic_name: str,
+        force_create: bool = False,
+        persist: bool = True,
+    ) -> Optional[str]:
+        """Return a private DM topic thread id, creating it if needed.
+
+        ``persist=False`` is reserved for caller-owned ephemeral surfaces such as
+        per-output cron topics.  Those topics are created without consulting or
+        mutating the named-topic cache, config object, or config.yaml.
+        """
         name = str(topic_name or "").strip()
         if not name:
             return None
@@ -3234,6 +3245,10 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_id_int = int(chat_id)
         except (TypeError, ValueError):
             return None
+
+        if not persist:
+            thread_id = await self._create_dm_topic(chat_id_int, name=name)
+            return str(thread_id) if thread_id else None
 
         cache_key = f"{chat_id_int}:{name}"
         cached = self._dm_topics.get(cache_key)
