@@ -7,7 +7,7 @@ import pytest
 
 import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.base import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource
 from gateway.response_filters import (
     is_intentional_silence_agent_result,
@@ -74,6 +74,74 @@ def _runner(monkeypatch, tmp_path):
         lambda *_args, **_kwargs: 100_000,
     )
     return runner
+
+
+def _successful_agent_result(user_content: str) -> dict:
+    return {
+        "final_response": "done",
+        "messages": [
+            {"role": "user", "content": user_content},
+            {"role": "assistant", "content": "done"},
+        ],
+        "tools": [],
+        "history_offset": 0,
+        "last_prompt_tokens": 0,
+        "api_calls": 1,
+        "failed": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_real_handler_preserves_marked_startup_resume_empty_text(monkeypatch, tmp_path):
+    """Exercise the production handler ordering that live acceptance exposed."""
+    runner = _runner(monkeypatch, tmp_path)
+    entry = runner.session_store.get_or_create_session.return_value
+    entry.resume_pending = True
+    entry.resume_reason = "restart_timeout"
+    entry.last_resume_marked_at = datetime.now()
+    runner._run_agent = AsyncMock(return_value=_successful_agent_result(""))
+    event = MessageEvent(
+        text="",
+        source=_source(),
+        internal=True,
+        metadata={"startup_resume": True},
+    )
+
+    await runner._handle_message_with_agent(
+        event, _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert runner._run_agent.await_args.kwargs["message"] == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("internal", "message_type"),
+    [
+        (False, MessageType.TEXT),
+        (False, MessageType.PHOTO),
+        (True, MessageType.TEXT),
+    ],
+    ids=["ordinary-empty-user", "uncaptioned-image", "unrelated-internal-event"],
+)
+async def test_real_handler_keeps_placeholder_for_other_empty_events(
+    monkeypatch, tmp_path, internal, message_type
+):
+    runner = _runner(monkeypatch, tmp_path)
+    placeholder = "[The user sent an empty message. Ask them what they need help with.]"
+    runner._run_agent = AsyncMock(return_value=_successful_agent_result(placeholder))
+    event = MessageEvent(
+        text="",
+        source=_source(),
+        internal=internal,
+        message_type=message_type,
+    )
+
+    await runner._handle_message_with_agent(
+        event, _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert runner._run_agent.await_args.kwargs["message"] == placeholder
 
 
 def test_exact_silence_tokens_are_intentional_silence():

@@ -32,6 +32,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import gateway.run as gateway_run
 from gateway.config import GatewayConfig, HomeChannel, Platform
 from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.run import (
@@ -819,6 +820,15 @@ class TestResumePendingSystemNote:
         # Nothing appended after the closing bracket (no empty user text).
         assert result.rstrip().endswith("]")
 
+    def test_startup_resume_empty_text_is_not_rewritten_as_a_user_message(self):
+        """The real normalization path must preserve synthetic startup text
+        until the resume-recovery note is injected.
+
+        Production dogfood exposed that the generic empty-user placeholder was
+        applied first, causing startup recovery to look like a new user turn.
+        """
+        assert gateway_run._normalize_empty_message_text("", startup_resume=True) == ""
+
 
 # ---------------------------------------------------------------------------
 # Freshness helpers
@@ -1066,6 +1076,7 @@ async def test_startup_auto_resume_schedules_fresh_pending_sessions():
     assert event.internal is True
     assert event.message_type == MessageType.TEXT
     assert event.source == source
+    assert event.metadata.get("startup_resume") is True
     # Text is empty — the existing _is_resume_pending branch in
     # _handle_message_with_agent owns the system-note injection so we don't
     # double it up.
