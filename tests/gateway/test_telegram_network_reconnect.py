@@ -1272,7 +1272,9 @@ async def test_unterminated_polling_owner_requests_process_recycle(tmp_path):
 
     await runner._handle_adapter_fatal_error_impl(adapter)
 
-    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+    getattr(runner, "request_restart").assert_called_once_with(
+        detached=False, via_service=True
+    )
     adapter.disconnect.assert_not_awaited()
     assert runner.adapters == {Platform.TELEGRAM: adapter}
     assert Platform.TELEGRAM not in runner._failed_platforms
@@ -1809,6 +1811,81 @@ async def test_disconnect_retains_owner_references_after_stop_timeout():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure_site", ["app_stop", "app_shutdown"])
+async def test_disconnect_retains_owner_after_terminal_app_failure(failure_site):
+    """App/transport teardown failure cannot be reported as ownership proof."""
+    adapter = _make_adapter()
+    updater = MagicMock()
+    updater.running = True
+    updater.stop = AsyncMock()
+    app = MagicMock()
+    app.updater = updater
+    app.running = True
+    app.stop = AsyncMock()
+    app.shutdown = AsyncMock()
+    if failure_site == "app_stop":
+        app.stop.side_effect = RuntimeError("app stop failed")
+    else:
+        app.shutdown.side_effect = RuntimeError("app shutdown failed")
+    bot = MagicMock()
+    adapter._app = app
+    adapter._bot = bot
+    adapter._set_status_indicator = AsyncMock()
+    adapter._cancel_pending_delivery_tasks = AsyncMock()
+    adapter._release_platform_lock = MagicMock()
+
+    await adapter.disconnect()
+
+    assert adapter.fatal_error_code == "telegram_polling_owner_unterminated"
+    assert adapter._polling_teardown_started is True
+    assert adapter._app is app
+    assert adapter._bot is bot
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "handler_name",
+    ["_handle_polling_network_error", "_handle_polling_conflict"],
+)
+async def test_owner_stop_baseexception_fences_recovery(handler_name):
+    """Detached stop-task BaseException outcomes must fail closed."""
+    class OwnerStopBaseFailure(BaseException):
+        pass
+
+    adapter = _make_adapter()
+    app = MagicMock()
+    app.updater = MagicMock()
+    app.updater.running = True
+    app.updater.stop = AsyncMock(side_effect=OwnerStopBaseFailure("owner failed"))
+    adapter._app = app
+    adapter._drain_polling_connections = AsyncMock()
+    adapter._start_polling_once = AsyncMock()
+    adapter._handoff_polling_fatal_error = AsyncMock()
+    real_sleep = asyncio.sleep
+
+    async def yielding_sleep(_delay):
+        await real_sleep(0)
+
+    with patch("asyncio.sleep", side_effect=yielding_sleep):
+        await getattr(adapter, handler_name)(OSError("polling failed"))
+
+    assert adapter.fatal_error_code == "telegram_polling_owner_unterminated"
+    adapter._drain_polling_connections.assert_not_awaited()
+    adapter._start_polling_once.assert_not_awaited()
+    adapter._handoff_polling_fatal_error.assert_awaited_once()
+
+
+def test_abandoned_stop_task_baseexception_is_observed():
+    class DetachedTaskBaseFailure(BaseException):
+        pass
+
+    task = MagicMock()
+    task.exception.side_effect = DetachedTaskBaseFailure("detached failure")
+    tg_adapter._consume_abandoned_task(task)
+    task.exception.assert_called_once_with()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "handler_name",
     ["_handle_polling_network_error", "_handle_polling_conflict"],
@@ -1824,8 +1901,12 @@ async def test_updater_stop_exception_fences_recovery(handler_name):
     adapter._drain_polling_connections = AsyncMock()
     adapter._start_polling_once = AsyncMock()
     adapter._handoff_polling_fatal_error = AsyncMock()
+    real_sleep = asyncio.sleep
 
-    with patch("asyncio.sleep", new_callable=AsyncMock):
+    async def yielding_sleep(_delay):
+        await real_sleep(0)
+
+    with patch("asyncio.sleep", side_effect=yielding_sleep):
         await getattr(adapter, handler_name)(OSError("polling failed"))
 
     app.updater.stop.assert_awaited_once()
@@ -1998,6 +2079,68 @@ async def test_telegram_disconnect_timeout_recycles_instead_of_replacing(tmp_pat
     runner._safe_adapter_disconnect.assert_awaited_once_with(
         adapter, Platform.TELEGRAM
     )
-    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+    getattr(runner, "request_restart").assert_called_once_with(
+        detached=False, via_service=True
+    )
     assert runner.adapters == {Platform.TELEGRAM: adapter}
     assert Platform.TELEGRAM not in runner._failed_platforms
+
+
+@pytest.mark.asyncio
+async def test_primary_rechecks_owner_fence_set_during_disconnect(tmp_path):
+    """A normal coroutine return can still carry indeterminate ownership."""
+    runner = _owner_fatal_runner(tmp_path)
+    adapter = _make_adapter()
+    adapter._set_fatal_error("telegram_network_error", "network", retryable=True)
+
+    async def _disconnect_sets_owner_fence():
+        adapter._polling_teardown_started = True
+        adapter._set_fatal_error(
+            "telegram_polling_owner_unterminated", "disconnect lost owner", retryable=True
+        )
+
+    adapter.disconnect = AsyncMock(side_effect=_disconnect_sets_owner_fence)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.delivery_router.adapters = runner.adapters
+
+    await runner._handle_adapter_fatal_error_impl(adapter)
+
+    getattr(runner, "request_restart").assert_called_once_with(
+        detached=False, via_service=True
+    )
+    assert runner.adapters == {Platform.TELEGRAM: adapter}
+    assert Platform.TELEGRAM not in runner._failed_platforms
+
+
+@pytest.mark.asyncio
+async def test_safe_disconnect_globally_fences_future_telegram_creation(tmp_path):
+    """Every cleanup caller inherits one ownership-aware replacement barrier."""
+    runner = _owner_fatal_runner(tmp_path)
+    adapter = _make_adapter()
+
+    async def _disconnect_sets_owner_fence():
+        adapter._polling_teardown_started = True
+        adapter._set_fatal_error(
+            "telegram_polling_owner_unterminated", "disconnect lost owner", retryable=True
+        )
+
+    adapter.disconnect = AsyncMock(side_effect=_disconnect_sets_owner_fence)
+
+    completed = await runner._safe_adapter_disconnect(adapter, Platform.TELEGRAM)
+
+    assert completed is False
+    getattr(runner, "request_restart").assert_called_once_with(
+        detached=False, via_service=True
+    )
+    from gateway.platform_registry import platform_registry
+
+    replacement = MagicMock()
+    with patch.object(platform_registry, "is_registered", return_value=True), patch.object(
+        platform_registry, "create_adapter", return_value=replacement
+    ) as create_adapter:
+        created = runner._create_adapter(
+            Platform.TELEGRAM, PlatformConfig(enabled=True, token="test-token")
+        )
+
+    assert created is None
+    create_adapter.assert_not_called()
