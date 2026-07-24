@@ -1240,17 +1240,6 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
             existing_pid = None
 
         if existing_pid == os.getpid() and existing.get("start_time") == record.get("start_time"):
-            existing_lease = (existing.get("metadata") or {}).get("adapter_lease")
-            requested_lease = (record.get("metadata") or {}).get("adapter_lease")
-            if (
-                existing_lease
-                and requested_lease
-                and existing_lease != requested_lease
-            ):
-                # The OS lock is process-owned, but two adapters in that process
-                # are distinct external-resource owners. Never let a second
-                # adapter inherit or later release the first adapter's lock.
-                return False, existing
             _write_json_file(lock_path, record)
             return True, existing
 

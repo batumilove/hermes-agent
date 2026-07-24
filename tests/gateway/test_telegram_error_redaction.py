@@ -81,7 +81,7 @@ async def test_disconnect_failure_redacts_token_in_log(monkeypatch, caplog):
 
     logged = "\n".join(r.getMessage() for r in caplog.records)
     assert _SECRET_TOKEN not in logged
-    assert "Error during Telegram disconnect" in logged
+    assert "Error shutting down Telegram application" in logged
 
 
 @pytest.mark.asyncio

@@ -14,7 +14,6 @@ Regression tests for two bugs in WhatsAppAdapter.connect():
 
 import asyncio
 import signal
-import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -49,7 +48,7 @@ def _make_adapter():
     adapter.config = MagicMock()
     adapter._bridge_port = 19876
     adapter._bridge_script = "/tmp/test-bridge.js"
-    adapter._session_path = Path(f"/tmp/test-wa-session-{uuid.uuid4().hex}")
+    adapter._session_path = Path("/tmp/test-wa-session")
     adapter._bridge_log_fh = None
     adapter._bridge_log = None
     adapter._bridge_process = None

@@ -546,11 +546,8 @@ async def test_pending_detached_restart_upgrades_to_service_recycle():
 @pytest.mark.asyncio
 async def test_restart_worker_failure_forces_shutdown_signal():
     """A failed restart worker may not leave the gateway alive and fenced."""
-    class RestartWorkerFailure(BaseException):
-        pass
-
     runner, _adapter = make_restart_runner()
-    runner.stop = AsyncMock(side_effect=RestartWorkerFailure("shutdown failed"))
+    runner.stop = AsyncMock(side_effect=RuntimeError("shutdown failed"))
     restart_task = None
     completed = False
     cleanup_completed = False

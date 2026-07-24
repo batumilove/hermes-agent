@@ -138,7 +138,7 @@ async def test_primary_startup_owner_fence_suppresses_retry(monkeypatch, tmp_pat
         runner.request_restart.assert_called_once_with(
             detached=False, via_service=True
         )
-        assert runner.adapters[Platform.TELEGRAM] is adapter
+        assert Platform.TELEGRAM not in runner.adapters
         assert Platform.TELEGRAM not in runner._failed_platforms
         assert abort_after_primary.await_count == 4
     finally:
