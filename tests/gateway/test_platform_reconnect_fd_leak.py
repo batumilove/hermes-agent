@@ -50,10 +50,7 @@ def _make_runner() -> GatewayRunner:
     runner._exit_cleanly = False
     runner._failed_platforms = {}
     runner.adapters = {}
-    runner._telegram_owner_disposals = set()
-    runner._retained_telegram_owner_adapters = set()
-    runner._telegram_owner_replacement_fenced = False
-    runner._telegram_owner_recycle_requested = False
+    runner.session_store = MagicMock()
     return runner
 
 
@@ -244,6 +241,41 @@ class TestReconnectFDLeakRegression:
             f"got {adapter._disconnect_calls} calls. This is the hot path "
             "for the fd leak in #37011."
         )
+
+    @pytest.mark.asyncio
+    async def test_retryable_unterminated_owner_is_retained_and_not_retried(self):
+        """Reconnect cleanup must recycle instead of replacing a fenced owner."""
+        runner = _make_runner()
+        _seed_runner_with_one_failure(runner)
+        runner._profile_adapters = {}
+        runner.delivery_router = MagicMock(adapters=runner.adapters)
+        runner._update_platform_runtime_status = MagicMock()
+        runner.request_restart = MagicMock()
+        adapter = _CountingAdapter(
+            succeed=False, fatal_error="dns timeout", fatal_retryable=True,
+        )
+
+        async def fence_disconnect():
+            adapter._disconnect_calls += 1
+            adapter._polling_teardown_started = True
+            adapter._set_fatal_error(
+                "telegram_polling_owner_unterminated",
+                "polling owner did not stop",
+                retryable=True,
+            )
+
+        adapter.disconnect = fence_disconnect
+        with patch.object(runner, "_create_adapter", return_value=adapter), \
+             patch.object(runner, "_connect_adapter_with_timeout",
+                          new=AsyncMock(return_value=False)):
+            await _run_watcher_one_iteration(runner)
+
+        assert runner.adapters[Platform.TELEGRAM] is adapter
+        assert Platform.TELEGRAM not in runner._failed_platforms
+        runner.request_restart.assert_called_once_with(
+            detached=False, via_service=True
+        )
+        assert adapter._disconnect_calls == 1
 
     @pytest.mark.asyncio
     async def test_exception_during_connect_disposes_unowned_adapter(self):

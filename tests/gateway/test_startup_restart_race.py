@@ -130,6 +130,52 @@ def patch_startup_side_effects(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_failed_start_unterminated_owner_aborts_before_retry_setup(
+    tmp_path, monkeypatch
+):
+    """Startup must retain an unproven owner and recycle, never arm retries."""
+    patch_startup_side_effects(monkeypatch, tmp_path)
+    runner = make_startup_runner(tmp_path)
+    runner.config.platforms = {
+        Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")
+    }
+    adapter = StartupRaceAdapter(Platform.TELEGRAM)
+
+    async def fail_connect(*, is_reconnect=False):
+        return False
+
+    async def fence_disconnect():
+        adapter.disconnected = True
+        adapter._polling_teardown_started = True
+        adapter._set_fatal_error(
+            "telegram_polling_owner_unterminated",
+            "polling owner did not stop",
+            retryable=True,
+        )
+
+    class ContinuedAfterOwnerFence(BaseException):
+        pass
+
+    adapter.connect = fail_connect
+    adapter.disconnect = fence_disconnect
+    runner._create_adapter = MagicMock(return_value=adapter)
+    runner.request_restart = MagicMock()
+    runner._start_secondary_profile_adapters = AsyncMock(
+        side_effect=ContinuedAfterOwnerFence("startup continued")
+    )
+
+    result = await asyncio.wait_for(runner.start(), timeout=2)
+
+    assert result is True
+    assert runner.adapters[Platform.TELEGRAM] is adapter
+    assert Platform.TELEGRAM not in runner._failed_platforms
+    runner.request_restart.assert_called_once_with(
+        detached=False, via_service=True
+    )
+    runner._start_secondary_profile_adapters.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_startup_aborts_when_restart_requested_before_start(tmp_path, monkeypatch):
     patch_startup_side_effects(monkeypatch, tmp_path)
     runner = make_startup_runner(tmp_path)
