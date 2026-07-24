@@ -44,7 +44,7 @@ def _consume_abandoned_task(task: asyncio.Task) -> None:
         task.exception()
     except asyncio.CancelledError:
         pass
-    except Exception:
+    except BaseException:
         logger.debug("Abandoned Telegram init task failed after timeout", exc_info=True)
 
 
@@ -744,6 +744,12 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_progress_accepting: bool = False
         self._polling_progress_verifier_task: Optional[asyncio.Task] = None
         self._polling_teardown_started: bool = False
+        # One lifecycle lock owns stop -> drain -> start across all recovery
+        # causes. A stop task is observed with a hard asyncio.wait deadline so a
+        # coroutine that suppresses cancellation cannot hold recovery open.
+        self._polling_recovery_lock = asyncio.Lock()
+        self._polling_owner_stop_tasks: set[asyncio.Task] = set()
+        self._polling_fatal_handoff_started: bool = False
         self._polling_error_callback_ref = None
         self._polling_heartbeat_task: Optional[asyncio.Task] = None
         # Consecutive heartbeat probes that saw queued updates the running
@@ -2223,6 +2229,149 @@ class TelegramAdapter(BasePlatformAdapter):
 
         task.add_done_callback(_clear_finished_verifier)
 
+    def _get_polling_recovery_lock(self) -> asyncio.Lock:
+        lock = getattr(self, "_polling_recovery_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._polling_recovery_lock = lock
+        return lock
+
+    def _track_polling_owner_stop_task(self, task: asyncio.Task) -> None:
+        tasks = getattr(self, "_polling_owner_stop_tasks", None)
+        if not isinstance(tasks, set):
+            tasks = set()
+            self._polling_owner_stop_tasks = tasks
+        tasks.add(task)
+
+        def _consume(finished: asyncio.Task) -> None:
+            tasks.discard(finished)
+            try:
+                finished.exception()
+            except BaseException:
+                pass
+
+        task.add_done_callback(_consume)
+
+    async def _stop_polling_owner(self, updater, *, context: str) -> bool:
+        """Stop one PTB polling owner under a hard, cancellation-safe deadline."""
+        pending_owners = {
+            task
+            for task in (getattr(self, "_polling_owner_stop_tasks", None) or set())
+            if not task.done()
+        }
+        if pending_owners:
+            logger.warning(
+                "[%s] Refusing a second updater.stop() during %s while a retained "
+                "owner-stop task is still pending",
+                self.name,
+                context,
+            )
+            return False
+        task = asyncio.create_task(updater.stop())
+        self._track_polling_owner_stop_task(task)
+        try:
+            done, _pending = await asyncio.wait(
+                {task}, timeout=_UPDATER_STOP_TIMEOUT
+            )
+        except asyncio.CancelledError:
+            # Caller cancellation is external authority: forward it to the
+            # child but do not wait for a cancellation-suppressing stop task.
+            task.cancel()
+            raise
+
+        if task not in done:
+            task.cancel()
+            logger.warning(
+                "[%s] updater.stop() exceeded %.1fs during %s; polling owner "
+                "termination is unproven",
+                self.name,
+                _UPDATER_STOP_TIMEOUT,
+                context,
+            )
+            return False
+        if task.cancelled():
+            logger.warning(
+                "[%s] updater.stop() cancelled itself during %s; polling owner "
+                "termination is unproven",
+                self.name,
+                context,
+            )
+            return False
+        try:
+            task.result()
+        except BaseException as exc:
+            logger.warning(
+                "[%s] updater.stop() failed during %s: %s",
+                self.name,
+                context,
+                _redact_telegram_error_text(exc),
+            )
+            return False
+        return True
+
+    def _polling_owner_context_current(self, app, expected_generation: int) -> bool:
+        return bool(
+            not getattr(self, "_polling_teardown_started", False)
+            and not self.has_fatal_error
+            and getattr(self, "_app", None) is app
+            and expected_generation == getattr(self, "_polling_generation", 0)
+        )
+
+    async def _fence_unterminated_polling_owner(
+        self, *, context: str, notify: bool = True
+    ) -> None:
+        self._polling_teardown_started = True
+        self._polling_progress_accepting = False
+        self._send_path_degraded = True
+        message = (
+            "Telegram polling owner did not terminate before its deadline "
+            f"during {context}; supervised process recycle required."
+        )
+        self._set_fatal_error(
+            "telegram_polling_owner_unterminated", message, retryable=True
+        )
+        if notify:
+            await self._handoff_polling_fatal_error()
+
+    async def _restart_polling_owner(
+        self,
+        app,
+        *,
+        expected_generation: int,
+        context: str,
+        delay_after_stop: float = 0.0,
+    ) -> bool:
+        """Own one serialized stop/drain/start lifecycle transaction.
+
+        Conflict backoff happens before taking the owner lock. This avoids
+        blocking unrelated network recovery during a long Telegram server-side
+        lease-expiry wait and lets the generation recheck suppress stale work.
+        """
+        if delay_after_stop:
+            await asyncio.sleep(delay_after_stop)
+        async with self._get_polling_recovery_lock():
+            if not self._polling_owner_context_current(app, expected_generation):
+                return False
+            updater = getattr(app, "updater", None) if app is not None else None
+            if updater is None:
+                raise RuntimeError("Telegram application/updater was torn down")
+            if getattr(updater, "running", False):
+                stopped = await self._stop_polling_owner(updater, context=context)
+                if not stopped:
+                    await self._fence_unterminated_polling_owner(context=context)
+                    return False
+            if not self._polling_owner_context_current(app, expected_generation):
+                return False
+            await self._drain_polling_connections()
+            if not self._polling_owner_context_current(app, expected_generation):
+                return False
+            await self._start_polling_once(
+                app,
+                drop_pending_updates=False,
+                error_callback=self._polling_error_callback_ref,
+            )
+            return True
+
     def _get_general_request_drain_lock(self) -> asyncio.Lock:
         lock = getattr(self, "_general_request_drain_lock", None)
         if lock is None:
@@ -2402,6 +2551,8 @@ class TelegramAdapter(BasePlatformAdapter):
             return
 
         delay = min(BASE_DELAY * (2 ** (attempt - 1)), MAX_DELAY)
+        expected_generation = getattr(self, "_polling_generation", 0)
+        app = self._app
         safe_error = _redact_telegram_error_text(error)
         logger.warning(
             "[%s] Telegram network error (attempt %d/%d), reconnecting in %ds. Error: %s",
@@ -2412,51 +2563,14 @@ class TelegramAdapter(BasePlatformAdapter):
         if getattr(self, "_polling_teardown_started", False):
             return
 
-        # Capture a stable local reference: self._app can be reassigned to None
-        # by a concurrent disconnect() while we're suspended across the awaits
-        # below, and re-reading self._app after that point would silently swap
-        # in None mid-sequence instead of failing fast in one place.
-        app = self._app
-
         try:
-            if app and app.updater and app.updater.running:
-                try:
-                    # Guard stop() with a timeout: when the underlying TCP
-                    # connection is in CLOSE-WAIT the PTB polling task is
-                    # blocked on epoll on the dead socket and never wakes up,
-                    # so an unguarded stop() hangs indefinitely.  The result
-                    # is that _polling_error_task stays alive-but-blocked
-                    # forever, every subsequent heartbeat probe sees it as
-                    # "in-flight" and skips triggering a new reconnect, and
-                    # the gateway silently drops messages for hours.
-                    # Bounding stop() lets the reconnect ladder always advance.
-                    # Refs: NousResearch/hermes-agent#58270
-                    await asyncio.wait_for(app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT)
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        "[%s] updater.stop() timed out during network-error "
-                        "reconnect (likely CLOSE-WAIT socket); forcing drain "
-                        "and restart without clean stop",
-                        self.name,
-                    )
-        except Exception:
-            pass
-
-        if getattr(self, "_polling_teardown_started", False):
-            return
-        await self._drain_polling_connections()
-
-        if getattr(self, "_polling_teardown_started", False):
-            return
-
-        try:
-            if not app:
-                raise RuntimeError("Telegram application was torn down during reconnect")
-            await self._start_polling_once(
+            restarted = await self._restart_polling_owner(
                 app,
-                drop_pending_updates=False,
-                error_callback=self._polling_error_callback_ref,
+                expected_generation=expected_generation,
+                context="network-error recovery",
             )
+            if not restarted:
+                return
             logger.info(
                 "[%s] Telegram polling restarted after network error (attempt %d); "
                 "health pending getUpdates progress",
@@ -2880,6 +2994,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # nor fatal — messages are silently dropped.  We schedule another
         # retry attempt instead of returning silently, and only escalate to
         # fatal after all retries are exhausted.
+        expected_generation = getattr(self, "_polling_generation", 0)
+        app = self._app
         self._polling_conflict_count += 1
 
         MAX_CONFLICT_RETRIES = 5
@@ -2897,46 +3013,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES,
                 RETRY_DELAY, _redact_telegram_error_text(error),
             )
-            # Stop the local updater cleanly before sleeping.  If it's already
-            # stopped (e.g. PTB raised before updater.running was set) this is
-            # a no-op.  Bounded with a timeout for the same reason as the
-            # network-error path: a CLOSE-WAIT socket can wedge stop() on epoll
-            # forever, which would stall the conflict-retry ladder.
             try:
-                if self._app and self._app.updater and self._app.updater.running:
-                    try:
-                        await asyncio.wait_for(self._app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT)
-                    except asyncio.TimeoutError:
-                        logger.warning(
-                            "[%s] updater.stop() timed out during conflict "
-                            "retry (likely CLOSE-WAIT socket); continuing",
-                            self.name,
-                        )
-            except Exception:
-                pass
-
-            await asyncio.sleep(RETRY_DELAY)
-            if getattr(self, "_polling_teardown_started", False):
-                return
-            await self._drain_polling_connections()
-            if getattr(self, "_polling_teardown_started", False):
-                return
-
-            # Capture a stable local reference: self._app can be reassigned to
-            # None by a concurrent disconnect() while we're suspended across
-            # the awaits above (same race #55992 fixed on the network path).
-            # Re-reading self._app after that point would raise
-            # AttributeError deep inside start_polling instead of failing fast
-            # here, where the except below reschedules or escalates to fatal.
-            app = self._app
-            try:
-                if not app:
-                    raise RuntimeError("Telegram application was torn down during conflict reconnect")
-                await self._start_polling_once(
+                restarted = await self._restart_polling_owner(
                     app,
-                    drop_pending_updates=False,
-                    error_callback=self._polling_error_callback_ref,
+                    expected_generation=expected_generation,
+                    context="conflict recovery",
+                    delay_after_stop=RETRY_DELAY,
                 )
+                if not restarted:
+                    return
                 logger.info(
                     "[%s] Telegram polling restarted after conflict retry %d/%d; "
                     "health pending getUpdates progress",
@@ -3004,20 +3089,15 @@ class TelegramAdapter(BasePlatformAdapter):
             and self.fatal_error_code == "telegram_polling_conflict"
         )
         self._set_fatal_error("telegram_polling_conflict", message, retryable=False)
-        try:
-            if self._app and self._app.updater:
-                await asyncio.wait_for(self._app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT)
-        except asyncio.TimeoutError:
-            logger.warning(
-                "[%s] updater.stop() timed out after exhausting conflict "
-                "retries (likely CLOSE-WAIT socket); proceeding to fatal notify",
-                self.name,
+        if self._app and self._app.updater:
+            stopped = await self._stop_polling_owner(
+                self._app.updater, context="exhausted conflict recovery"
             )
-        except Exception as stop_error:
-            logger.warning(
-                "[%s] Failed stopping Telegram updater after exhausting conflict retries: %s",
-                self.name, stop_error, exc_info=True,
-            )
+            if not stopped:
+                await self._fence_unterminated_polling_owner(
+                    context="exhausted conflict recovery"
+                )
+                return
         if not _already_fatal:
             await self._handoff_polling_fatal_error()
 
@@ -3029,8 +3109,13 @@ class TelegramAdapter(BasePlatformAdapter):
         retaining the current notifier in either field would cancel the fatal
         callback before the runner can finish its reconnect or shutdown
         decision.  Release only the current owner from whichever field tracks
-        it; unrelated tasks remain under teardown control.
+        it; unrelated tasks remain under teardown control. The handoff latch is
+        set before awaiting the runner so concurrent fatal paths cannot notify
+        twice.
         """
+        if getattr(self, "_polling_fatal_handoff_started", False):
+            return
+        self._polling_fatal_handoff_started = True
         current_task = asyncio.current_task()
         if self._polling_error_task is current_task:
             self._polling_error_task = None
@@ -3519,9 +3604,17 @@ class TelegramAdapter(BasePlatformAdapter):
             TELEGRAM_WEBHOOK_PORT   Local listen port (default 8443)
             TELEGRAM_WEBHOOK_SECRET Secret token for update verification
         """
-        # Explicit connect() is the only operation allowed to reopen polling
-        # after a completed, serialized teardown. Background recovery never
-        # clears this fence.
+        # Explicit connect() may reopen polling only after a completed teardown.
+        # An adapter that still retains an unterminated owner must survive until
+        # supervised process recycle; reconnecting it would overlap generations.
+        if (
+            getattr(self, "_polling_teardown_started", False)
+            and self.fatal_error_code == "telegram_polling_owner_unterminated"
+        ):
+            raise RuntimeError(
+                "Cannot reconnect Telegram adapter while polling-owner termination "
+                "is unproven"
+            )
         self._polling_teardown_started = False
         # Mode selection is re-evaluated on every explicit connection. Keep
         # webhook state false unless this connection starts its webhook.
@@ -3919,7 +4012,11 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
             
         except Exception as e:
-            self._release_platform_lock()
+            # Once an Application exists, leave the token lock attached until
+            # disconnect proves polling-owner termination. Releasing it here
+            # would let startup/reconnect overlap a partially-started owner.
+            if self._app is None:
+                self._release_platform_lock()
             safe_error = _redact_telegram_error_text(e)
             message = f"Telegram startup failed: {safe_error}"
             self._set_fatal_error("telegram_connect_error", message, retryable=True)
@@ -4012,9 +4109,11 @@ class TelegramAdapter(BasePlatformAdapter):
         # from being scheduled by late update handlers.
         self._mark_disconnected()
         self._polling_teardown_started = True
-        self._polling_progress_accepting = False
+        # Invalidate every captured recovery/progress context immediately; a
+        # delayed callback from the retired owner must never satisfy a future
+        # generation's health fence.
         self._polling_generation = getattr(self, "_polling_generation", 0) + 1
-        self._polling_progress_event = asyncio.Event()
+        self._polling_progress_accepting = False
         self._send_path_degraded = True
 
         # Recovery can be suspended in stop/drain/start while disconnect begins.
@@ -4081,32 +4180,50 @@ class TelegramAdapter(BasePlatformAdapter):
 
         await self._cancel_pending_delivery_tasks()
 
-        if self._app:
+        owner_terminated = True
+        app = self._app
+        if app:
             try:
-                # Only stop the updater if it's running.  Bounded with a
-                # timeout: a CLOSE-WAIT socket can wedge stop() on epoll
-                # indefinitely, which would hang disconnect() (and any
-                # gateway shutdown/restart waiting on it) forever.  On timeout
-                # we fall through to app.stop()/shutdown() to force teardown.
-                if self._app.updater and self._app.updater.running:
-                    try:
-                        await asyncio.wait_for(self._app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT)
-                    except asyncio.TimeoutError:
-                        logger.warning(
-                            "[%s] updater.stop() timed out during disconnect "
-                            "(likely CLOSE-WAIT socket); forcing app shutdown",
-                            self.name,
+                async with self._get_polling_recovery_lock():
+                    pending_owner_stops = [
+                        t
+                        for t in getattr(self, "_polling_owner_stop_tasks", set())
+                        if not t.done()
+                    ]
+                    if pending_owner_stops:
+                        owner_terminated = False
+                        await self._fence_unterminated_polling_owner(
+                            context="adapter disconnect", notify=False
                         )
-                if self._app.running:
-                    await self._app.stop()
-                await self._app.shutdown()
+                    elif app.updater and app.updater.running:
+                        owner_terminated = await self._stop_polling_owner(
+                            app.updater, context="adapter disconnect"
+                        )
+                        if not owner_terminated:
+                            await self._fence_unterminated_polling_owner(
+                                context="adapter disconnect", notify=False
+                            )
+                if app.running:
+                    await app.stop()
+                await app.shutdown()
             except Exception as e:
+                owner_terminated = False
+                await self._fence_unterminated_polling_owner(
+                    context="adapter disconnect", notify=False
+                )
                 logger.warning(
                     "[%s] Error during Telegram disconnect: %s",
                     self.name, _redact_telegram_error_text(e),
                 )
-        self._release_platform_lock()
+        if not owner_terminated:
+            logger.error(
+                "[%s] Retaining Telegram application ownership after incomplete "
+                "disconnect; supervised process recycle is required",
+                self.name,
+            )
+            return
 
+        self._release_platform_lock()
         self._app = None
         self._bot = None
         logger.info("[%s] Disconnected from Telegram", self.name)

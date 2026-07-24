@@ -50,6 +50,7 @@ def _make_runner() -> GatewayRunner:
     runner._exit_cleanly = False
     runner._failed_platforms = {}
     runner.adapters = {}
+    runner.session_store = MagicMock()
     return runner
 
 
@@ -127,6 +128,17 @@ class _CountingAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
+class _IndeterminateOwnerAdapter(_CountingAdapter):
+    async def disconnect(self) -> None:
+        await super().disconnect()
+        self._polling_teardown_started = True
+        self._set_fatal_error(
+            "telegram_polling_owner_unterminated",
+            "owner remained alive after reconnect cleanup",
+            retryable=True,
+        )
+
+
 def _seed_runner_with_one_failure(runner: GatewayRunner) -> None:
     """Queue a single platform for the reconnect watcher to pick up."""
     runner._failed_platforms[Platform.TELEGRAM] = {
@@ -144,6 +156,27 @@ class TestReconnectFDLeakRegression:
     2 fds per retry (for ``APIServerAdapter``) at the 300s backoff cap,
     exhausting the 2560-fd ulimit in ~12h of continuous failure (#37011).
     """
+
+    @pytest.mark.asyncio
+    async def test_reconnect_cleanup_owner_fence_suppresses_future_retry(self):
+        """Reconnect disposal must use the runner's ownership-aware contract."""
+        runner = _make_runner()
+        runner.request_restart = MagicMock(return_value=True)
+        runner._adapter_disconnect_timeout_secs = lambda: 1.0
+        _seed_runner_with_one_failure(runner)
+        adapter = _IndeterminateOwnerAdapter(
+            succeed=False, fatal_error="dns timeout", fatal_retryable=True,
+        )
+
+        with patch.object(runner, "_create_adapter", return_value=adapter), \
+             patch.object(runner, "_connect_adapter_with_timeout",
+                          new=AsyncMock(return_value=False)):
+            await _run_watcher_one_iteration(runner)
+
+        runner.request_restart.assert_called_once_with(
+            detached=False, via_service=True
+        )
+        assert Platform.TELEGRAM not in runner._failed_platforms
 
     @pytest.mark.asyncio
     async def test_nonretryable_failure_disposes_unowned_adapter(self):
@@ -208,6 +241,41 @@ class TestReconnectFDLeakRegression:
             f"got {adapter._disconnect_calls} calls. This is the hot path "
             "for the fd leak in #37011."
         )
+
+    @pytest.mark.asyncio
+    async def test_retryable_unterminated_owner_is_retained_and_not_retried(self):
+        """Reconnect cleanup must recycle instead of replacing a fenced owner."""
+        runner = _make_runner()
+        _seed_runner_with_one_failure(runner)
+        runner._profile_adapters = {}
+        runner.delivery_router = MagicMock(adapters=runner.adapters)
+        runner._update_platform_runtime_status = MagicMock()
+        runner.request_restart = MagicMock()
+        adapter = _CountingAdapter(
+            succeed=False, fatal_error="dns timeout", fatal_retryable=True,
+        )
+
+        async def fence_disconnect():
+            adapter._disconnect_calls += 1
+            adapter._polling_teardown_started = True
+            adapter._set_fatal_error(
+                "telegram_polling_owner_unterminated",
+                "polling owner did not stop",
+                retryable=True,
+            )
+
+        adapter.disconnect = fence_disconnect
+        with patch.object(runner, "_create_adapter", return_value=adapter), \
+             patch.object(runner, "_connect_adapter_with_timeout",
+                          new=AsyncMock(return_value=False)):
+            await _run_watcher_one_iteration(runner)
+
+        assert runner.adapters[Platform.TELEGRAM] is adapter
+        assert Platform.TELEGRAM not in runner._failed_platforms
+        runner.request_restart.assert_called_once_with(
+            detached=False, via_service=True
+        )
+        assert adapter._disconnect_calls == 1
 
     @pytest.mark.asyncio
     async def test_exception_during_connect_disposes_unowned_adapter(self):

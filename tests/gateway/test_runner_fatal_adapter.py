@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -29,6 +29,22 @@ class _FatalAdapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id):
         return {"id": chat_id}
+
+
+class _StartupOwnerFenceAdapter(_FatalAdapter):
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        self._set_fatal_error(
+            "telegram_network_error", "initial polling failed", retryable=True
+        )
+        return False
+
+    async def disconnect(self) -> None:
+        self._polling_teardown_started = True
+        self._set_fatal_error(
+            "telegram_polling_owner_unterminated",
+            "startup cleanup could not prove owner termination",
+            retryable=True,
+        )
 
 
 class _RuntimeRetryableAdapter(BasePlatformAdapter):
@@ -93,6 +109,40 @@ async def test_runner_requests_clean_exit_for_nonretryable_startup_conflict(monk
     assert ok is True
     assert runner.should_exit_cleanly is True
     assert "already using this Telegram bot token" in runner.exit_reason
+
+
+@pytest.mark.asyncio
+async def test_primary_startup_owner_fence_suppresses_retry(monkeypatch, tmp_path):
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="token")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapter = _StartupOwnerFenceAdapter()
+    runner.request_restart = MagicMock(return_value=True)
+    monkeypatch.setattr(
+        runner, "_create_adapter", lambda platform, platform_config: adapter
+    )
+    # Return immediately after the primary startup boundary so this test never
+    # enters the later watcher/heartbeat spawning phase of GatewayRunner.start.
+    abort_after_primary = AsyncMock(side_effect=[False, False, False, True])
+    monkeypatch.setattr(
+        runner, "_abort_startup_if_shutdown_requested", abort_after_primary
+    )
+
+    try:
+        await runner.start()
+
+        runner.request_restart.assert_called_once_with(
+            detached=False, via_service=True
+        )
+        assert runner.adapters[Platform.TELEGRAM] is adapter
+        assert Platform.TELEGRAM not in runner._failed_platforms
+        assert abort_after_primary.await_count == 4
+    finally:
+        await runner.stop()
 
 
 @pytest.mark.asyncio

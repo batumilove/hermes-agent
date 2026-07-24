@@ -2877,12 +2877,21 @@ class BasePlatformAdapter(ABC):
             take_over_scoped_lock_holder,
         )
 
-        self._platform_lock_scope = scope
-        self._platform_lock_identity = identity
+        adapter_lease = getattr(self, "_platform_lock_adapter_lease", None)
+        if not adapter_lease:
+            adapter_lease = uuid.uuid4().hex
+            self._platform_lock_adapter_lease = adapter_lease
+        lock_metadata = {
+            "platform": self.platform.value,
+            "adapter_lease": adapter_lease,
+        }
         acquired, existing = acquire_scoped_lock(
-            scope, identity, metadata={'platform': self.platform.value}
+            scope, identity, metadata=lock_metadata
         )
         if acquired:
+            self._platform_lock_scope = scope
+            self._platform_lock_identity = identity
+            self._platform_lock_lease_owned = True
             return True
 
         takeover_allowed = bool(
@@ -2909,9 +2918,12 @@ class BasePlatformAdapter(ABC):
                 acquired, existing = acquire_scoped_lock(
                     scope,
                     identity,
-                    metadata={"platform": self.platform.value},
+                    metadata=lock_metadata,
                 )
                 if acquired:
+                    self._platform_lock_scope = scope
+                    self._platform_lock_identity = identity
+                    self._platform_lock_lease_owned = True
                     logger.info(
                         "[%s] Acquired %s after taking over PID %d",
                         self.name,
@@ -2921,6 +2933,12 @@ class BasePlatformAdapter(ABC):
                     return True
 
         owner_pid = existing.get('pid') if isinstance(existing, dict) else None
+        # This adapter never acquired the lock. Clear its release handle so a
+        # later best-effort disconnect cannot remove a same-process owner's
+        # lock merely because PID/start-time match at process scope.
+        self._platform_lock_scope = None
+        self._platform_lock_identity = None
+        self._platform_lock_lease_owned = False
         message = (
             f'{resource_desc} already in use'
             + (f' (PID {owner_pid})' if owner_pid else '')
@@ -2931,12 +2949,20 @@ class BasePlatformAdapter(ABC):
         return False
 
     def _release_platform_lock(self) -> None:
-        """Release the scoped lock acquired by _acquire_platform_lock."""
+        """Release the scoped lock only when this adapter owns its local lease."""
         identity = getattr(self, '_platform_lock_identity', None)
-        if not identity:
+        scope = getattr(self, '_platform_lock_scope', None)
+        if not identity or not scope:
+            return
+        lease_owned = getattr(self, "_platform_lock_lease_owned", None)
+        if lease_owned is False:
+            self._platform_lock_scope = None
+            self._platform_lock_identity = None
             return
         from gateway.status import release_scoped_lock
-        release_scoped_lock(self._platform_lock_scope, identity)
+        release_scoped_lock(scope, identity)
+        self._platform_lock_lease_owned = False
+        self._platform_lock_scope = None
         self._platform_lock_identity = None
 
     @property

@@ -1,7 +1,12 @@
+import ast
 import asyncio
+import os
+import shlex
 import shutil
 import subprocess
+import sys
 import threading
+import time
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -494,6 +499,108 @@ async def test_request_restart_is_idempotent():
 
 
 @pytest.mark.asyncio
+async def test_pending_detached_restart_upgrades_to_service_recycle():
+    """Owner fencing monotonically upgrades a queued restart before launch."""
+    runner, _adapter = make_restart_runner()
+    runner.stop = AsyncMock()
+    runner._launch_detached_restart_command = AsyncMock()
+
+    restart_task = None
+    completed = False
+    cleanup_completed = False
+    results = []
+    try:
+        accepted = runner.request_restart(detached=True, via_service=False)
+        restart_task = runner._restart_task
+        assert accepted is True
+        assert restart_task is not None
+
+        # No event-loop turn has occurred, so the detached helper is not yet
+        # irreversibly launched. The stronger ownership fence must become the
+        # authoritative request even though request_restart remains one-shot.
+        assert runner.request_restart(detached=False, via_service=True) is False
+        # A later weaker duplicate must not downgrade the ownership boundary.
+        assert runner.request_restart(detached=True, via_service=False) is False
+    finally:
+        if restart_task is not None:
+            done, pending = await asyncio.wait({restart_task}, timeout=2.0)
+            completed = restart_task in done
+            for task in pending:
+                task.cancel()
+            if pending:
+                cancelled_done, pending = await asyncio.wait(pending, timeout=2.0)
+                done |= cancelled_done
+            cleanup_completed = not pending
+            if restart_task in done:
+                results = await asyncio.gather(restart_task, return_exceptions=True)
+
+    assert completed is True
+    assert cleanup_completed is True
+    assert not any(isinstance(result, BaseException) for result in results)
+    runner._launch_detached_restart_command.assert_not_awaited()
+    runner.stop.assert_awaited_once_with(
+        restart=True, detached_restart=False, service_restart=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_restart_worker_failure_forces_shutdown_signal():
+    """A failed restart worker may not leave the gateway alive and fenced."""
+    class RestartWorkerFailure(BaseException):
+        pass
+
+    runner, _adapter = make_restart_runner()
+    runner.stop = AsyncMock(side_effect=RestartWorkerFailure("shutdown failed"))
+    restart_task = None
+    completed = False
+    cleanup_completed = False
+    results = []
+
+    try:
+        accepted = runner.request_restart(detached=False, via_service=True)
+        restart_task = runner._restart_task
+        assert accepted is True
+        assert restart_task is not None
+    finally:
+        if restart_task is not None:
+            done, pending = await asyncio.wait({restart_task}, timeout=2.0)
+            completed = restart_task in done
+            for task in pending:
+                task.cancel()
+            if pending:
+                cancelled_done, pending = await asyncio.wait(pending, timeout=2.0)
+                done |= cancelled_done
+            cleanup_completed = not pending
+            if restart_task in done:
+                results = await asyncio.gather(restart_task, return_exceptions=True)
+
+    assert completed is True
+    assert cleanup_completed is True
+    assert not any(isinstance(result, BaseException) for result in results)
+    runner.stop.assert_awaited_once_with(
+        restart=True, detached_restart=False, service_restart=True
+    )
+    assert runner._shutdown_event.is_set()
+    assert runner._exit_code == 75
+
+
+@pytest.mark.asyncio
+async def test_restart_worker_baseexception_forces_shutdown_signal():
+    """A non-Exception task failure must still force terminal shutdown."""
+    class RestartWorkerBaseFailure(BaseException):
+        pass
+
+    runner, _adapter = make_restart_runner()
+    runner.stop = AsyncMock(side_effect=RestartWorkerBaseFailure("fatal worker"))
+
+    assert runner.request_restart(detached=False, via_service=True) is True
+    await runner._restart_task
+
+    assert runner._shutdown_event.is_set()
+    assert runner._exit_code == 75
+
+
+@pytest.mark.asyncio
 async def test_run_restart_excluded_from_stop_cancel_loop():
     """Regression for #12875: _run_restart is held on self._restart_task and
     kept OUT of _background_tasks, and the _stop_impl cancel loop explicitly
@@ -537,36 +644,77 @@ async def test_run_restart_excluded_from_stop_cancel_loop():
 
 
 @pytest.mark.asyncio
-async def test_launch_detached_restart_command_uses_setsid(monkeypatch):
-    runner, _adapter = make_restart_runner()
-    popen_calls = []
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX detached watcher")
+async def test_launch_detached_restart_command_uses_setsid(monkeypatch, tmp_path):
+    """Execute the generated watcher for both owner-liveness outcomes."""
+    actual_pid = os.getpid()
+    calls_file = tmp_path / "calls"
+    hermes = tmp_path / "hermes"
+    hermes.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$HERMES_CALLS"\n',
+        encoding="utf-8",
+    )
+    hermes.chmod(0o755)
+    counter = tmp_path / "date-counter"
+    counter.write_text("0", encoding="utf-8")
+    setsid_bin = shutil.which("setsid")
+    if not setsid_bin:
+        pytest.skip("setsid is unavailable")
 
-    monkeypatch.setattr(gateway_run.sys, "platform", "linux")
-    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["/usr/bin/hermes"])
-    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
-    monkeypatch.setenv("_HERMES_GATEWAY", "1")
-    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/setsid" if cmd == "setsid" else None)
+    async def capture_watcher(pid):
+        runner, _adapter = make_restart_runner()
+        popen_calls = []
+        with monkeypatch.context() as scoped:
+            scoped.setenv("_HERMES_GATEWAY", "1")
+            scoped.setattr(gateway_run.sys, "platform", "linux")
+            scoped.setattr(gateway_run, "_resolve_hermes_bin", lambda: [str(hermes)])
+            scoped.setattr(gateway_run.os, "getpid", lambda: pid)
+            scoped.setattr(
+                shutil, "which", lambda cmd: setsid_bin if cmd == "setsid" else None
+            )
+            scoped.setattr(
+                subprocess,
+                "Popen",
+                lambda cmd, **kwargs: popen_calls.append((cmd, kwargs)) or MagicMock(),
+            )
+            await runner._launch_detached_restart_command()
+        assert len(popen_calls) == 1
+        cmd, kwargs = popen_calls[0]
+        assert cmd[:2] == [setsid_bin, "bash"]
+        assert kwargs["start_new_session"] is True
+        assert kwargs["stdout"] is subprocess.DEVNULL
+        assert kwargs["stderr"] is subprocess.DEVNULL
+        assert kwargs["env"].get("_HERMES_GATEWAY") is None
+        return cmd, kwargs
 
-    def fake_popen(cmd, **kwargs):
-        popen_calls.append((cmd, kwargs))
-        return MagicMock()
+    def instrumented_launch(cmd, kwargs):
+        counter.write_text("0", encoding="utf-8")
+        counter_q = shlex.quote(str(counter))
+        fake_date = (
+            f'date() {{ n=$(cat {counter_q}); n=$((n + 10)); '
+            f'printf "%s" "$n" > {counter_q}; printf "%s\\n" "$n"; }}; '
+        )
+        env = dict(kwargs["env"])
+        env["HERMES_CALLS"] = str(calls_file)
+        return [*cmd[:-1], fake_date + cmd[-1]], env
 
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    alive_cmd, alive_kwargs = await capture_watcher(actual_pid)
+    alive_launch, alive_env = instrumented_launch(alive_cmd, alive_kwargs)
+    subprocess.run(alive_launch, check=True, env=alive_env, timeout=2)
+    alive_calls = (
+        calls_file.read_text(encoding="utf-8").splitlines()
+        if calls_file.exists()
+        else []
+    )
+    calls_file.unlink(missing_ok=True)
 
-    await runner._launch_detached_restart_command()
+    dead_cmd, dead_kwargs = await capture_watcher(999_999_999)
+    dead_launch, dead_env = instrumented_launch(dead_cmd, dead_kwargs)
+    subprocess.run(dead_launch, check=True, env=dead_env, timeout=2)
+    dead_calls = calls_file.read_text(encoding="utf-8").splitlines()
 
-    assert len(popen_calls) == 1
-    cmd, kwargs = popen_calls[0]
-    assert cmd[:2] == ["/usr/bin/setsid", "bash"]
-    assert "gateway restart" in cmd[-1]
-    assert "kill -0 321" in cmd[-1]
-    assert "deadline=$(( $(date +%s) +" in cmd[-1]
-    assert kwargs["start_new_session"] is True
-    assert kwargs["stdout"] is subprocess.DEVNULL
-    assert kwargs["stderr"] is subprocess.DEVNULL
-    # The watcher must NOT inherit the gateway marker, or the CLI's
-    # self-restart loop guard refuses to run `hermes gateway restart`.
-    assert kwargs["env"].get("_HERMES_GATEWAY") is None
+    assert alive_calls == []
+    assert dead_calls == ["gateway restart"]
 
 
 @pytest.mark.asyncio
@@ -583,6 +731,103 @@ async def test_detached_restart_helper_is_idempotent(monkeypatch):
     await runner._launch_detached_restart_command()
 
     assert len(popen_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_detached_helper_never_restarts_while_old_pid_survives_deadline(monkeypatch):
+    """The helper deadline bounds waiting, not the old process ownership fence."""
+    runner, _adapter = make_restart_runner()
+    popen_calls = []
+
+    monkeypatch.setattr(gateway_run.sys, "platform", "linux")
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["/usr/bin/hermes"])
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+    monkeypatch.setattr(
+        shutil, "which", lambda cmd: "/usr/bin/setsid" if cmd == "setsid" else None
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda cmd, **kwargs: popen_calls.append((cmd, kwargs)),
+    )
+
+    await runner._launch_detached_restart_command()
+
+    assert len(popen_calls) == 1
+    shell_cmd = popen_calls[0][0][-1]
+    normalized = " ".join(shell_cmd.split())
+    restart_after_s = max(float(runner._restart_drain_timeout) + 5.0, 5.0)
+    expected = (
+        f"deadline=$(( $(date +%s) + {int(restart_after_s)} )); "
+        "while kill -0 321 2>/dev/null && [ $(date +%s) -lt $deadline ]; "
+        "do sleep 0.2; done; if kill -0 321 2>/dev/null; then exit 0; fi; "
+        "/usr/bin/hermes gateway restart"
+    )
+    assert normalized == expected
+    assert normalized.count("/usr/bin/hermes gateway restart") == 1
+
+
+@pytest.mark.asyncio
+async def test_windows_detached_helper_fences_surviving_old_pid(monkeypatch, tmp_path):
+    """The Windows watcher must exit before respawn when the old PID stays live."""
+    runner, _adapter = make_restart_runner()
+    popen_calls = []
+    venv_dir = tmp_path / "venv"
+    (venv_dir / "Lib" / "site-packages").mkdir(parents=True)
+
+    monkeypatch.setattr(gateway_run.sys, "platform", "win32")
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["hermes"])
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+    monkeypatch.setenv("VIRTUAL_ENV", str(venv_dir))
+
+    import hermes_cli._subprocess_compat as subprocess_compat
+
+    monkeypatch.setattr(subprocess_compat, "windows_detach_popen_kwargs", lambda: {})
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda cmd, **kwargs: popen_calls.append((cmd, kwargs)),
+    )
+
+    await runner._launch_detached_restart_command()
+
+    assert len(popen_calls) == 1
+    watcher = popen_calls[0][0][2]
+    normalized = "\n".join(line.rstrip() for line in watcher.splitlines())
+    guard = "if _alive(pid):\n    sys.exit(0)"
+    assert guard in normalized
+    assert normalized.index(guard) < normalized.index("subprocess.Popen(")
+    assert normalized.count("subprocess.Popen(") == 1
+    assert normalized.count("cmd = sys.argv[3:]") == 1
+
+    tree = ast.parse(watcher)
+    top_level_guard = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Call)
+        and isinstance(node.test.func, ast.Name)
+        and node.test.func.id == "_alive"
+        and any(
+            isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Attribute)
+            and isinstance(child.func.value, ast.Name)
+            and child.func.value.id == "sys"
+            and child.func.attr == "exit"
+            for child in ast.walk(node)
+        )
+    )
+    top_level_launch = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Attribute)
+        and isinstance(node.value.func.value, ast.Name)
+        and node.value.func.value.id == "subprocess"
+        and node.value.func.attr == "Popen"
+    )
+    assert tree.body.index(top_level_guard) < tree.body.index(top_level_launch)
 
 
 def test_windows_gateway_venv_imports_add_site_packages(monkeypatch, tmp_path):
@@ -641,11 +886,52 @@ async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_p
     assert len(popen_calls) == 1
     cmd, kwargs = popen_calls[0]
     assert cmd[-3:] == ["hermes", "gateway", "restart"]
+    watcher = cmd[2]
     assert kwargs["env"].get("_HERMES_GATEWAY") is None
     assert kwargs["env"]["VIRTUAL_ENV"] == str(venv_dir)
     assert str(site_packages) in kwargs["env"]["PYTHONPATH"].split(gateway_run.os.pathsep)
     assert kwargs["stdout"] is subprocess.DEVNULL
     assert kwargs["stderr"] is subprocess.DEVNULL
+
+    monkeypatch.setattr(
+        subprocess_compat,
+        "windows_detach_flags_without_breakaway",
+        lambda: 0,
+    )
+
+    def execute_watcher(*, owner_alive):
+        launches = []
+        monotonic = MagicMock(side_effect=[0.0, 999.0])
+
+        def fake_kill(_pid, _signal):
+            if not owner_alive:
+                raise ProcessLookupError
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(time, "monotonic", monotonic)
+            scoped.setattr(time, "sleep", lambda _delay: None)
+            scoped.setattr(os, "kill", fake_kill)
+            scoped.setattr(
+                subprocess,
+                "Popen",
+                lambda argv, **popen_kwargs: launches.append((argv, popen_kwargs))
+                or MagicMock(),
+            )
+            scoped.setattr(sys, "argv", ["watcher", *cmd[3:]])
+            exited = False
+            try:
+                exec(compile(watcher, "<windows-restart-watcher>", "exec"), {})
+            except SystemExit:
+                exited = True
+        return exited, launches
+
+    alive_exited, alive_launches = execute_watcher(owner_alive=True)
+    dead_exited, dead_launches = execute_watcher(owner_alive=False)
+    assert alive_exited is True
+    assert alive_launches == []
+    assert dead_exited is False
+    assert len(dead_launches) == 1
+    assert dead_launches[0][0] == ["hermes", "gateway", "restart"]
 
 
 @pytest.mark.asyncio

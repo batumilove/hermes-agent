@@ -3,7 +3,8 @@ import logging
 import asyncio
 from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import AsyncMock
+from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -225,6 +226,270 @@ def _install_secondary_reconnect_context(monkeypatch, runner, adapter, scoped_ho
 
 
 class TestSecondaryProfileFatalRecovery:
+    @pytest.mark.asyncio
+    async def test_unterminated_secondary_owner_requests_service_recycle(self):
+        """Multiplex ownership failure retains the profile slot and never reconnects."""
+        runner = _secondary_recovery_runner()
+        adapter = _SecondaryRecoveryAdapter()
+        adapter.platform = Platform.TELEGRAM
+        adapter.fatal_error_code = "telegram_polling_owner_unterminated"
+        adapter.fatal_error_message = "Telegram polling owner still alive"
+        adapter._polling_teardown_started = True
+        adapter.disconnect = AsyncMock()
+        runner._profile_adapters = {"reviewer": {Platform.TELEGRAM: adapter}}
+        runner._safe_adapter_disconnect = AsyncMock()
+        runner._schedule_secondary_profile_reconnect = MagicMock()
+        runner.request_restart = MagicMock(return_value=True)
+
+        await runner._handle_profile_adapter_fatal_error(
+            "reviewer", Platform.TELEGRAM, adapter
+        )
+
+        assert runner._profile_adapters == {
+            "reviewer": {Platform.TELEGRAM: adapter}
+        }
+        adapter.disconnect.assert_not_awaited()
+        runner._safe_adapter_disconnect.assert_not_awaited()
+        runner._schedule_secondary_profile_reconnect.assert_not_called()
+        assert runner._profile_failed_platforms == {}
+        runner.request_restart.assert_called_once_with(
+            detached=False, via_service=True
+        )
+
+    @pytest.mark.asyncio
+    async def test_secondary_rechecks_owner_fence_set_during_disconnect(self):
+        """Secondary teardown may become indeterminate after its initial fatal."""
+        runner = _secondary_recovery_runner()
+        runner._adapter_disconnect_timeout_secs = lambda: 1.0
+        stale = _SecondaryRecoveryAdapter()
+        stale.platform = Platform.TELEGRAM
+        stale.fatal_error_code = "telegram_network_error"
+        stale._polling_teardown_started = False
+
+        async def disconnect_sets_owner_fence():
+            stale.disconnected = True
+            stale.fatal_error_code = "telegram_polling_owner_unterminated"
+            stale._polling_teardown_started = True
+
+        stale.disconnect = AsyncMock(side_effect=disconnect_sets_owner_fence)
+        runner._profile_adapters["reviewer"] = {Platform.TELEGRAM: stale}
+        runner.request_restart = MagicMock(return_value=True)
+        runner._schedule_secondary_profile_reconnect = MagicMock()
+
+        await runner._handle_profile_adapter_fatal_error(
+            "reviewer", Platform.TELEGRAM, stale
+        )
+
+        assert runner._profile_adapters["reviewer"][Platform.TELEGRAM] is stale
+        runner.request_restart.assert_called_once_with(
+            detached=False, via_service=True
+        )
+        runner._schedule_secondary_profile_reconnect.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_primary_disposal_fence_blocks_racing_secondary_start(
+        self, monkeypatch, tmp_path
+    ):
+        """No profile may start polling while global owner disposal is unresolved."""
+        runner = GatewayRunner(
+            GatewayConfig(
+                multiplex_profiles=True,
+                platforms={},
+                sessions_dir=tmp_path / "sessions",
+            )
+        )
+        runner._running = True
+        old = _SecondaryRecoveryAdapter()
+        old.platform = Platform.TELEGRAM
+        old.fatal_error_code = "telegram_network_error"
+        old.fatal_error_message = "network failed"
+        old.fatal_error_retryable = True
+        disconnect_started = asyncio.Event()
+        release_disconnect = asyncio.Event()
+
+        async def blocked_disconnect():
+            disconnect_started.set()
+            await release_disconnect.wait()
+            old.fatal_error_code = "telegram_polling_owner_unterminated"
+            setattr(old, "_polling_teardown_started", True)
+
+        old.disconnect = AsyncMock(side_effect=blocked_disconnect)
+        old_adapter = cast(Any, old)
+        runner.adapters = {Platform.TELEGRAM: old_adapter}
+        runner.delivery_router.adapters = runner.adapters
+        runner.request_restart = MagicMock(return_value=True)
+        replacement = _SecondaryRecoveryAdapter()
+        replacement.platform = Platform.TELEGRAM
+        from gateway.platform_registry import platform_registry
+
+        monkeypatch.setattr(platform_registry, "is_registered", lambda _name: True)
+        create_replacement = MagicMock(return_value=replacement)
+        monkeypatch.setattr(platform_registry, "create_adapter", create_replacement)
+        connect_replacement = AsyncMock(return_value=True)
+        monkeypatch.setattr(
+            runner, "_connect_adapter_with_timeout", connect_replacement
+        )
+
+        @contextmanager
+        def fake_scope(_profile_home):
+            yield
+
+        monkeypatch.setattr(gateway_run, "_profile_runtime_scope", fake_scope)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_profile_dir",
+            lambda _name: Path("/profiles/reviewer"),
+        )
+        monkeypatch.setattr(
+            "gateway.config.load_gateway_config",
+            lambda: GatewayConfig(
+                multiplex_profiles=True,
+                platforms={
+                    Platform.TELEGRAM: PlatformConfig(
+                        enabled=True, token="profile-token"
+                    )
+                },
+            ),
+        )
+
+        primary_task = None
+        secondary_task = None
+        secondary_done = set()
+        results = []
+        cleanup_pending = set()
+        try:
+            primary_task = asyncio.create_task(
+                runner._handle_adapter_fatal_error_impl(old_adapter)
+            )
+            await asyncio.wait_for(disconnect_started.wait(), timeout=1.5)
+            secondary_task = asyncio.create_task(
+                runner._run_secondary_profile_reconnect(
+                    "reviewer", Platform.TELEGRAM
+                )
+            )
+            secondary_done, _ = await asyncio.wait(
+                {secondary_task}, timeout=1.5
+            )
+        finally:
+            release_disconnect.set()
+            tasks = [task for task in (primary_task, secondary_task) if task is not None]
+            if tasks:
+                cleanup_done, cleanup_pending = await asyncio.wait(
+                    set(tasks), timeout=1.5
+                )
+                for task in cleanup_pending:
+                    task.cancel()
+                if cleanup_pending:
+                    cancelled_done, cleanup_pending = await asyncio.wait(
+                        cleanup_pending, timeout=1.5
+                    )
+                else:
+                    cancelled_done = set()
+                cleanup_done |= cancelled_done
+                for task in cleanup_done:
+                    if task.cancelled():
+                        results.append(asyncio.CancelledError())
+                    else:
+                        error = task.exception()
+                        results.append(error if error is not None else task.result())
+
+        assert cleanup_pending == set()
+        assert all(not isinstance(result, BaseException) for result in results)
+        assert secondary_task in secondary_done
+        create_replacement.assert_not_called()
+        connect_replacement.assert_not_awaited()
+        assert Platform.TELEGRAM not in runner._profile_adapters.get("reviewer", {})
+        runner.request_restart.assert_called_once_with(
+            detached=False, via_service=True
+        )
+
+    @pytest.mark.asyncio
+    async def test_secondary_startup_owner_fence_suppresses_replacement(
+        self, monkeypatch
+    ):
+        runner = _secondary_recovery_runner()
+        runner._adapter_disconnect_timeout_secs = lambda: 1.0
+        adapter = _SecondaryRecoveryAdapter()
+        adapter.platform = Platform.TELEGRAM
+
+        async def disconnect_sets_owner_fence():
+            adapter.fatal_error_code = "telegram_polling_owner_unterminated"
+            setattr(adapter, "_polling_teardown_started", True)
+
+        adapter.disconnect = AsyncMock(side_effect=disconnect_sets_owner_fence)
+        _install_secondary_reconnect_context(monkeypatch, runner, adapter)
+        monkeypatch.setattr(
+            "gateway.config.load_gateway_config",
+            lambda: GatewayConfig(
+                multiplex_profiles=True,
+                platforms={
+                    Platform.TELEGRAM: PlatformConfig(
+                        enabled=True, token="profile-token"
+                    )
+                },
+            ),
+        )
+        monkeypatch.setattr(
+            runner, "_connect_initial_adapter_with_timeout", AsyncMock(return_value=False)
+        )
+        runner.request_restart = MagicMock(return_value=True)
+
+        connected = await runner._start_one_profile_adapters(
+            "reviewer", Path("/profiles/reviewer"), {}
+        )
+
+        assert connected == 0
+        runner.request_restart.assert_called_once_with(
+            detached=False, via_service=True
+        )
+        assert Platform.TELEGRAM not in runner._profile_adapters.get("reviewer", {})
+
+    @pytest.mark.asyncio
+    async def test_secondary_reconnect_owner_fence_stops_retry_loop(
+        self, monkeypatch
+    ):
+        runner = _secondary_recovery_runner()
+        runner._adapter_disconnect_timeout_secs = lambda: 1.0
+        runner._profile_failed_platforms["reviewer"] = {}
+        adapter = _SecondaryRecoveryAdapter()
+        adapter.platform = Platform.TELEGRAM
+
+        async def disconnect_sets_owner_fence():
+            adapter.fatal_error_code = "telegram_polling_owner_unterminated"
+            setattr(adapter, "_polling_teardown_started", True)
+
+        adapter.disconnect = AsyncMock(side_effect=disconnect_sets_owner_fence)
+        _install_secondary_reconnect_context(monkeypatch, runner, adapter)
+        monkeypatch.setattr(
+            "gateway.config.load_gateway_config",
+            lambda: GatewayConfig(
+                multiplex_profiles=True,
+                platforms={
+                    Platform.TELEGRAM: PlatformConfig(
+                        enabled=True, token="profile-token"
+                    )
+                },
+            ),
+        )
+        monkeypatch.setattr(
+            runner, "_connect_adapter_with_timeout", AsyncMock(return_value=False)
+        )
+        async def stop_after_retry_sleep(_delay):
+            runner._running = False
+
+        retry_sleep = AsyncMock(side_effect=stop_after_retry_sleep)
+        monkeypatch.setattr(gateway_run.asyncio, "sleep", retry_sleep)
+        runner.request_restart = MagicMock(return_value=True)
+
+        await runner._run_secondary_profile_reconnect(
+            "reviewer", Platform.TELEGRAM
+        )
+
+        runner.request_restart.assert_called_once_with(
+            detached=False, via_service=True
+        )
+        retry_sleep.assert_not_awaited()
+
+
     @pytest.mark.asyncio
     async def test_retryable_secondary_fatal_reconnects_with_its_profile_scope(
         self, monkeypatch
