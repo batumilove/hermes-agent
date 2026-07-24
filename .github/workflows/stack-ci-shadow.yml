@@ -1,0 +1,126 @@
+name: Running stack CI shadow
+
+# Measurement-only candidate for replacing the broad compatibility matrix.
+# This workflow is intentionally not referenced by branch protection or CD.
+on:
+  pull_request:
+  push:
+    branches: [batumi/live]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stack-ci-shadow-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  policy:
+    name: Policy and lock contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      - name: Check repository contracts
+        run: |
+          set -euo pipefail
+          python3 scripts/check_agents_context.py
+          uv lock --check
+          uv tool run ruff check .
+          python3 scripts/audit_github_workflows.py
+
+  runtime-tests:
+    name: Running-stack contract tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Python 3.13
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v5
+        with:
+          python-version: "3.13"
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      - name: Install locked dependencies
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.13 --extra dev
+      - name: Run running-stack contract tests
+        run: |
+          scripts/run_tests.sh \
+            tests/gateway/test_telegram_connect.py \
+            tests/gateway/test_telegram_polling_progress.py \
+            tests/gateway/test_webhook_integration.py \
+            tests/gateway/test_systemd_watchdog_lifecycle.py \
+            tests/cron/test_scheduler.py \
+            tests/cron/test_cron_no_agent.py \
+            tests/tools/test_gateway_cwd_contract.py \
+            tests/plugins/test_provider_telemetry_plugin.py \
+            tests/scripts/test_hermes_compose_deploy.py \
+            tests/scripts/test_verify_running_stack.py
+
+  image:
+    name: Deployed AMD64 image contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - name: Build exact deployed architecture
+        id: build
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: hermes-stack-shadow:${{ github.sha }}
+          build-args: |
+            HERMES_GIT_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=hermes-deploy-amd64
+      - name: Exercise image runtime contract
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint python \
+            "hermes-stack-shadow:${GITHUB_SHA}" \
+            -c 'import cron.scheduler; import gateway.run; import tools.registry'
+
+  shadow:
+    name: Stack integration shadow (non-required)
+    needs: [policy, runtime-tests, image]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Evaluate shadow lanes
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          results = json.loads(os.environ["RESULTS"])
+          failed = {
+              name: value.get("result")
+              for name, value in results.items()
+              if value.get("result") != "success"
+          }
+          print(json.dumps({"jobs": results, "failed": failed}, sort_keys=True))
+          raise SystemExit(1 if failed else 0)
+          PY

@@ -119,6 +119,7 @@ jobs:
           scp "${ssh_opts[@]}" \
             deploy/compose.yml \
             scripts/deploy/hermes-compose-deploy.sh \
+            scripts/deploy/verify_running_stack.py \
             "$target:$DEPLOY_ROOT/$incoming/"
 
           ssh "${ssh_opts[@]}" "$target" bash -s -- \
@@ -138,6 +139,9 @@ jobs:
           install -m 0755 \
             "$deploy_root/$incoming/hermes-compose-deploy.sh" \
             "$deploy_root/hermes-compose-deploy.sh"
+          install -m 0755 \
+            "$deploy_root/$incoming/verify_running_stack.py" \
+            "$deploy_root/verify-running-stack.py"
           exec "$deploy_root/hermes-compose-deploy.sh" \
             "$operation" "$environment" "$image" "$digest" "$source_sha" "$deploy_root"
           REMOTE

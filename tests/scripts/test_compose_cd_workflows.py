@@ -104,6 +104,24 @@ def test_deployment_uses_environment_scoped_reusable_workflow() -> None:
     assert reusable["on"]["workflow_call"]["secrets"]["TAILSCALE_AUTHKEY"]["required"] == "false"
 
 
+def test_deployment_installs_exact_running_stack_acceptance_helper() -> None:
+    reusable = _workflow("_deploy-compose.yml")
+    run = next(
+        step["run"]
+        for step in reusable["jobs"]["deploy"]["steps"]
+        if step["name"] == "Install deployment tooling and apply release"
+    )
+    deployer = (REPO / "scripts" / "deploy" / "hermes-compose-deploy.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "scripts/deploy/verify_running_stack.py" in run
+    assert 'install -m 0755' in run
+    assert 'verify-running-stack.py' in run
+    assert 'verify-running-stack.py' in deployer
+    assert deployer.index('verify-running-stack.py') < deployer.index('record_evidence deployed')
+
+
 def test_manual_promotion_verifies_digest_without_rebuilding() -> None:
     workflow = _workflow("promote-compose.yml")
     verify = workflow["jobs"]["verify-candidate"]
