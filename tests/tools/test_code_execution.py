@@ -15,6 +15,7 @@ Run with:  python -m pytest tests/test_code_execution.py -v
 import pytest
 # pytestmark removed — tests run fine (61 pass, ~99s)
 
+import io
 import json
 import os
 import socket
@@ -37,6 +38,7 @@ import threading
 import unittest
 from unittest.mock import patch, MagicMock
 
+import tools.code_execution_tool as code_execution_tool
 from tools.code_execution_tool import (
     SANDBOX_ALLOWED_TOOLS,
     execute_code,
@@ -138,6 +140,75 @@ class TestHermesToolsGeneration(unittest.TestCase):
         src = generate_hermes_tools_module(["terminal"], transport="file")
         self.assertIn("_seq_lock = threading.Lock()", src)
         self.assertIn("with _seq_lock:", src)
+
+
+class TestSilentToolDispatch(unittest.TestCase):
+    def test_concurrent_dispatch_is_thread_scoped_and_leaves_streams_open(self):
+        """Concurrent execute_code RPC dispatch must not replace process stdio.
+
+        Regression for a gateway race where overlapping dispatchers restored a
+        temporary stream that another thread had already closed, leaving a cron
+        thread to fail with ``ValueError: I/O operation on closed file``.
+        """
+        self.assertTrue(
+            hasattr(code_execution_tool, "_dispatch_tool_call_silently"),
+            "execute_code must provide a thread-scoped silent dispatcher",
+        )
+        real_out = io.StringIO()
+        real_err = io.StringIO()
+        original_out, original_err = sys.stdout, sys.stderr
+        both_inside = threading.Barrier(3)
+        release = threading.Event()
+        results = []
+
+        def dispatcher(tool_name, tool_args, task_id=None):
+            print(f"internal-out-{tool_name}")
+            print(f"internal-err-{tool_name}", file=sys.stderr)
+            both_inside.wait(timeout=2.0)
+            release.wait(timeout=2.0)
+            return json.dumps({"tool": tool_name, "task_id": task_id})
+
+        def worker(tool_name):
+            results.append(
+                code_execution_tool._dispatch_tool_call_silently(
+                    dispatcher, tool_name, {}, task_id="task-1"
+                )
+            )
+
+        sys.stdout, sys.stderr = real_out, real_err
+        try:
+            threads = [
+                threading.Thread(target=worker, args=("read_file",)),
+                threading.Thread(target=worker, args=("search_files",)),
+            ]
+            for thread in threads:
+                thread.start()
+
+            both_inside.wait(timeout=2.0)
+            print("outside-out")
+            print("outside-err", file=sys.stderr)
+            release.set()
+
+            for thread in threads:
+                thread.join(timeout=5.0)
+            self.assertFalse(any(thread.is_alive() for thread in threads))
+
+            # The process streams remain usable after overlapping dispatches.
+            print("post-out")
+            print("post-err", file=sys.stderr)
+            self.assertFalse(sys.stdout.closed)
+            self.assertFalse(sys.stderr.closed)
+        finally:
+            release.set()
+            sys.stdout, sys.stderr = original_out, original_err
+
+        self.assertEqual(len(results), 2)
+        self.assertNotIn("internal-out", real_out.getvalue())
+        self.assertNotIn("internal-err", real_err.getvalue())
+        self.assertIn("outside-out", real_out.getvalue())
+        self.assertIn("outside-err", real_err.getvalue())
+        self.assertIn("post-out", real_out.getvalue())
+        self.assertIn("post-err", real_err.getvalue())
 
 
 class TestExecuteCodeRemoteTempDir(unittest.TestCase):

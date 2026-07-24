@@ -47,6 +47,7 @@ import uuid
 _IS_WINDOWS = platform.system() == "Windows"
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.thread_scoped_output import thread_scoped_silence
 from tools.thread_context import propagate_context_to_thread
 
 # Availability gate.  On Windows we fall back to loopback TCP for the
@@ -541,6 +542,24 @@ def _call(tool_name, args):
 _TERMINAL_BLOCKED_PARAMS = {"background", "pty", "notify_on_complete", "watch_patterns"}
 
 
+def _dispatch_tool_call_silently(
+    dispatcher,
+    tool_name: str,
+    tool_args: dict,
+    *,
+    task_id: Optional[str],
+) -> str:
+    """Dispatch one RPC tool call without mutating process-global stdio.
+
+    execute_code RPC listeners run concurrently with cron and other gateway
+    threads. Rebinding ``sys.stdout``/``sys.stderr`` to a temporary devnull can
+    therefore restore and close another thread's stream. Route only this
+    dispatcher thread to the sink instead.
+    """
+    with thread_scoped_silence():
+        return dispatcher(tool_name, tool_args, task_id=task_id)
+
+
 def _rpc_server_loop(
     server_sock: socket.socket,
     task_id: str,
@@ -640,17 +659,12 @@ def _rpc_server_loop(
                 # Suppress stdout/stderr from internal tool handlers so
                 # their status prints don't leak into the CLI spinner.
                 try:
-                    _real_stdout, _real_stderr = sys.stdout, sys.stderr
-                    devnull = open(os.devnull, "w", encoding="utf-8")
-                    try:
-                        sys.stdout = devnull
-                        sys.stderr = devnull
-                        result = handle_function_call(
-                            tool_name, tool_args, task_id=task_id
-                        )
-                    finally:
-                        sys.stdout, sys.stderr = _real_stdout, _real_stderr
-                        devnull.close()
+                    result = _dispatch_tool_call_silently(
+                        handle_function_call,
+                        tool_name,
+                        tool_args,
+                        task_id=task_id,
+                    )
                 except Exception as exc:
                     logger.error("Tool call failed in sandbox: %s", exc, exc_info=True)
                     result = tool_error(str(exc))
@@ -925,17 +939,12 @@ def _rpc_poll_loop(
 
                     # Dispatch through the standard tool handler
                     try:
-                        _real_stdout, _real_stderr = sys.stdout, sys.stderr
-                        devnull = open(os.devnull, "w", encoding="utf-8")
-                        try:
-                            sys.stdout = devnull
-                            sys.stderr = devnull
-                            tool_result = handle_function_call(
-                                tool_name, tool_args, task_id=task_id
-                            )
-                        finally:
-                            sys.stdout, sys.stderr = _real_stdout, _real_stderr
-                            devnull.close()
+                        tool_result = _dispatch_tool_call_silently(
+                            handle_function_call,
+                            tool_name,
+                            tool_args,
+                            task_id=task_id,
+                        )
                     except Exception as exc:
                         logger.error("Tool call failed in remote sandbox: %s",
                                      exc, exc_info=True)
