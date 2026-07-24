@@ -34,9 +34,13 @@ def test_shadow_runtime_lane_matches_the_deployed_python_and_is_unsliced() -> No
     job = workflow["jobs"]["runtime-tests"]
     steps = job["steps"]
     setup = next(step for step in steps if str(step.get("uses", "")).startswith("actions/setup-python@"))
+    sync = next(step for step in steps if step.get("name") == "Install locked dependencies")
     run = next(step for step in steps if step.get("name") == "Run running-stack contract tests")
 
     assert setup["with"]["python-version"] == "3.13"
+    command = sync["with"]["command"]
+    assert "uv sync --locked --python 3.13 --extra dev" in command
+    assert "--extra messaging" in command
     assert "matrix" not in job
     assert "scripts/run_tests.sh" in run["run"]
     for required_path in (

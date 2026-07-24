@@ -53,7 +53,7 @@ jobs:
       - name: Install locked dependencies
         uses: ./.github/actions/retry
         with:
-          command: uv sync --locked --python 3.13 --extra dev
+          command: uv sync --locked --python 3.13 --extra dev --extra messaging
       - name: Run running-stack contract tests
         run: |
           scripts/run_tests.sh \
