@@ -290,9 +290,9 @@ variables are configured:
 
 Each dispatch must provide the same exact commit/tree, the exact Hermes source
 SHA already running in staging, and `activation_ack=enabled`. The workflow
-checks out the private source with a fine-grained `INFRA_OPS_READ_TOKEN` that
-has read-only Contents access to `batumilove/infra-ops`; do not substitute a
-classic or broad personal token.
+checks out the private source with an `INFRA_OPS_READ_KEY` GitHub deploy key
+registered read-only on `batumilove/infra-ops`. The private key exists only in
+the `batumi-staging` environment; do not substitute a personal token.
 
 Required `batumi-staging` secrets:
 
@@ -300,7 +300,8 @@ Required `batumi-staging` secrets:
   `hermes-deploy@hermes-staging-01`
 - `MONITORING_DEPLOY_SSH_KEY` and `MONITORING_KNOWN_HOSTS` for
   `ubuntu@monitoring-vm`
-- `INFRA_OPS_READ_TOKEN`
+- `INFRA_OPS_READ_KEY` (the private half of a read-only GitHub deploy key
+  registered only on `batumilove/infra-ops`)
 - the existing scoped Tailscale credential
 
 The transaction verifies the private Git commit and tree, creates a manifest

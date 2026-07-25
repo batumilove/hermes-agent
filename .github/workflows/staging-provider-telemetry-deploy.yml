@@ -81,7 +81,8 @@ jobs:
           repository: batumilove/infra-ops
           ref: ${{ inputs.infra_ops_sha }}
           path: infra-ops
-          token: ${{ secrets.INFRA_OPS_READ_TOKEN }}
+          ssh-key: ${{ secrets.INFRA_OPS_READ_KEY }}
+          ssh-strict: true
           persist-credentials: false
 
       - name: Verify immutable source and candidate manifest

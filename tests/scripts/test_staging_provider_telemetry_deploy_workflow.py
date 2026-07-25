@@ -47,7 +47,7 @@ def test_workflow_is_manual_staging_only_and_approval_gated() -> None:
     assert "production" not in (WORKFLOWS / "staging-provider-telemetry-deploy.yml").read_text().lower()
 
 
-def test_workflow_checks_out_exact_private_source_without_persisting_credentials() -> None:
+def test_workflow_checks_out_exact_private_source_with_repo_scoped_deploy_key() -> None:
     workflow = _workflow("staging-provider-telemetry-deploy.yml")
     job = workflow["jobs"]["deploy"]
     checkout = next(step for step in job["steps"] if step["name"] == "Check out exact infra-ops source")
@@ -56,9 +56,13 @@ def test_workflow_checks_out_exact_private_source_without_persisting_credentials
         "repository": "batumilove/infra-ops",
         "ref": "${{ inputs.infra_ops_sha }}",
         "path": "infra-ops",
-        "token": "${{ secrets.INFRA_OPS_READ_TOKEN }}",
+        "ssh-key": "${{ secrets.INFRA_OPS_READ_KEY }}",
+        "ssh-strict": "true",
         "persist-credentials": "false",
     }
+
+    raw = (WORKFLOWS / "staging-provider-telemetry-deploy.yml").read_text()
+    assert "INFRA_OPS_READ_TOKEN" not in raw
 
     verify = next(step for step in job["steps"] if step["name"] == "Verify immutable source and candidate manifest")
     script = verify["run"]
