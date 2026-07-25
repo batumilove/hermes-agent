@@ -424,12 +424,14 @@ async def test_socket_diagnostics_cover_pre_response_network_lifecycle(monkeypat
 
     assert [record.getMessage().split(" event=", 1)[1].split()[0] for record, _ in capture.records] == [
         "socket-opened",
+        "socket-close-started",
         "socket-closed",
     ]
     for record, _closed in capture.records:
+        event = record.getMessage().split(" event=", 1)[1].split()[0]
         _assert_lifecycle_record(
             record,
-            event="socket-opened" if "event=socket-opened" in record.getMessage() else "socket-closed",
+            event=event,
             owner="polling",
             route="primary",
         )
@@ -946,6 +948,48 @@ class TestFallbackTransport:
                 break
             await asyncio.sleep(0)
         assert not tnet._abandoned_response_cleanups
+
+    @pytest.mark.asyncio
+    async def test_pre_response_cancellation_has_correlated_request_terminal_telemetry(
+        self, monkeypatch
+    ):
+        """A socket opened before response creation must remain attributable.
+
+        The request identifier is deliberately opaque and the terminal record
+        must not contain URL, token, query, or exception contents.
+        """
+        inner = _CancellationTrackingTransport()
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", lambda **_kw: inner)
+        transport = tnet.TelegramFallbackTransport(
+            ["149.154.167.220"],
+            owner_role="general",
+            socket_diagnostics=True,
+        )
+        request, forbidden = _diagnostic_request()
+
+        with _LifecycleLogCapture(lambda: inner.stream) as capture:
+            request_task = asyncio.create_task(transport.handle_async_request(request))
+            await inner.started.wait()
+            request_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request_task
+
+        payloads = [_record_payload(record) for record, _ in capture.records]
+        events = [
+            payload.split(" event=", 1)[1].split()[0]
+            for payload in payloads
+            if " event=" in payload
+        ]
+        assert events == ["request-started", "request-cancelled"]
+        request_ids = {
+            token.split("=", 1)[1]
+            for payload in payloads
+            for token in payload.split()
+            if token.startswith("request_id=")
+        }
+        assert len(request_ids) == 1
+        assert request_ids != {"none"}
+        _assert_records_redacted(capture.records, forbidden)
 
     @pytest.mark.asyncio
     async def test_caller_body_read_cancellation_closes_real_socket_response(self):
