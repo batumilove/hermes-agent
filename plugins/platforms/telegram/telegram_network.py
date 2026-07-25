@@ -264,6 +264,7 @@ class _RetryingCloseResponseStream(httpx.AsyncByteStream):
     ):
         self._stream = stream
         self._network_stream = network_stream
+        self._close_task: asyncio.Task | None = None
         self._cleanup_scheduled = False
 
     async def __aiter__(self):
@@ -271,14 +272,18 @@ class _RetryingCloseResponseStream(httpx.AsyncByteStream):
             yield chunk
 
     async def aclose(self) -> None:
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._stream.aclose())
+            _abandoned_response_cleanups.add(self._close_task)
+            self._close_task.add_done_callback(self._initial_close_done)
+        await asyncio.shield(self._close_task)
+
+    def _initial_close_done(self, task: asyncio.Task) -> None:
+        _abandoned_response_cleanups.discard(task)
         try:
-            await self._stream.aclose()
-        except asyncio.CancelledError:
+            task.result()
+        except BaseException:
             self._schedule_detached_retry()
-            raise
-        except Exception:
-            self._schedule_detached_retry()
-            raise
 
     def _schedule_detached_retry(self) -> None:
         if self._cleanup_scheduled:
