@@ -4284,6 +4284,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         source: Optional[SessionSource] = None,
         session_key: Optional[str] = None,
         user_config: Optional[dict] = None,
+        _rehydrate_override: bool = True,
     ) -> tuple[str, dict]:
         """Resolve model/runtime for a session.
 
@@ -4299,7 +4300,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 resolved_session_key = None
 
         model = _resolve_gateway_model(user_config)
-        if resolved_session_key:
+        if resolved_session_key and _rehydrate_override:
             self._rehydrate_session_model_override(resolved_session_key)
         override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
         if override:
@@ -4425,6 +4426,58 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _last_good["*"] = model
 
         return model, runtime_kwargs
+
+    async def _resolve_session_agent_runtime_async(
+        self,
+        *,
+        source: Optional[SessionSource] = None,
+        session_key: Optional[str] = None,
+        user_config: Optional[dict] = None,
+    ) -> tuple[str, dict]:
+        """Resolve an event-loop turn without waiting on SessionStore locks."""
+        resolved_session_key = session_key
+        if not resolved_session_key and source is not None:
+            try:
+                resolved_session_key = self._session_key_for_source(source)
+            except Exception:
+                resolved_session_key = None
+        boundary_generations = self.__dict__.get(
+            "_conversation_scope_generation"
+        ) or {}
+        boundary_generation = int(
+            boundary_generations.get(resolved_session_key, 0)
+        )
+        loaded_override = None
+        if (
+            resolved_session_key
+            and resolved_session_key not in self._session_model_overrides
+        ):
+            loaded_override = await asyncio.to_thread(
+                self._load_persisted_session_model_override,
+                resolved_session_key,
+            )
+        current_generations = self.__dict__.get(
+            "_conversation_scope_generation"
+        ) or {}
+        if (
+            resolved_session_key
+            and loaded_override is not None
+            and int(current_generations.get(resolved_session_key, 0))
+            == boundary_generation
+        ):
+            # Installation happens back on the event loop. Cancellation cannot
+            # leave a worker thread that later resurrects stale conversation
+            # state, and setdefault keeps a concurrent live /model update
+            # authoritative.
+            self._install_rehydrated_session_model_override(
+                resolved_session_key, loaded_override
+            )
+        return self._resolve_session_agent_runtime(
+            source=source,
+            session_key=resolved_session_key,
+            user_config=user_config,
+            _rehydrate_override=False,
+        )
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         """Build the effective model/runtime config for a single turn.
@@ -12515,7 +12568,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # than consulting process-global compatibility mirrors.
                     vision_runtime = None
                     try:
-                        turn_model, runtime_kwargs = self._resolve_session_agent_runtime(
+                        turn_model, runtime_kwargs = await self._resolve_session_agent_runtime_async(
                             source=source,
                             session_key=session_key,
                         )
@@ -12735,7 +12788,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # self.model/self.base_url), so using them here always raised
                 # AttributeError, silently caught below, meaning this feature
                 # never ran.
-                _msg_model, _msg_runtime = self._resolve_session_agent_runtime(
+                _msg_model, _msg_runtime = await self._resolve_session_agent_runtime_async(
                     source=source,
                     session_key=session_key,
                     user_config=_msg_cfg,
@@ -13278,7 +13331,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _hyg_configured_base_url = _hyg_base_url
 
                 try:
-                    _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
+                    _hyg_model, _hyg_runtime = await self._resolve_session_agent_runtime_async(
                         source=source,
                         session_key=session_key,
                         user_config=_hyg_data if isinstance(_hyg_data, dict) else None,
@@ -13397,7 +13450,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     try:
                         from run_agent import AIAgent
 
-                        _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
+                        _hyg_model, _hyg_runtime = await self._resolve_session_agent_runtime_async(
                             source=source,
                             session_key=session_key,
                             user_config=_hyg_data if isinstance(_hyg_data, dict) else None,
@@ -15685,7 +15738,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         try:
             user_config = _load_gateway_config()
-            model, runtime_kwargs = self._resolve_session_agent_runtime(
+            model, runtime_kwargs = await self._resolve_session_agent_runtime_async(
                 source=source,
                 user_config=user_config,
             )
@@ -16057,13 +16110,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         future.add_done_callback(_log_rename_failure)
 
     async def _maybe_call_session_db(self, method_name: str, **kwargs):
-        """Call sync or async session-db methods without leaking coroutines."""
+        """Call sync or async session-db methods without blocking the event loop."""
         session_db = getattr(self, "_session_db", None)
         if session_db is None:
             return None
         session_db = getattr(session_db, "_db", session_db)
         method = getattr(session_db, method_name)
-        result = method(**kwargs)
+        if inspect.iscoroutinefunction(method):
+            return await method(**kwargs)
+        result = await asyncio.to_thread(method, **kwargs)
         if inspect.isawaitable(result):
             return await result
         return result
@@ -18672,34 +18727,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
-    def _rehydrate_session_model_override(self, session_key: str) -> None:
-        """Lazily restore a persisted /model override after a gateway restart.
-
-        ``_session_model_overrides`` is in-memory only, so before persistence
-        a restart silently reverted every session to the global default model.
-        The non-secret parts (model/provider/base_url) are written through to
-        the session store when /model runs (and cleared on /new); here we read
-        them back on first use and re-resolve credentials via the normal
-        runtime provider resolution — api_key is never persisted to disk.
-
-        No-op when an in-memory override already exists (live state wins) or
-        when the store has nothing persisted (e.g. the user ran /new, which
-        clears both the in-memory dict and the persisted field).
-        """
-        if session_key in self._session_model_overrides:
-            return
+    def _load_persisted_session_model_override(
+        self, session_key: str
+    ) -> Optional[dict]:
+        """Read and hydrate persisted override data without mutating runner state."""
         store = getattr(self, "session_store", None)
         if store is None:
-            return
+            return None
         try:
             persisted = store.get_model_override(session_key)
         except Exception:
             logger.debug(
                 "Failed to read persisted session model override", exc_info=True
             )
-            return
+            return None
         if not persisted:
-            return
+            return None
         override: Dict[str, Any] = {
             "model": persisted.get("model"),
             "provider": persisted.get("provider"),
@@ -18724,11 +18767,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "(provider=%s); using credential-less override",
                     provider, exc_info=True,
                 )
-        self._session_model_overrides[session_key] = override
+        return override
+
+    def _install_rehydrated_session_model_override(
+        self, session_key: str, override: dict
+    ) -> bool:
+        """Install persisted state only when no newer in-memory override won."""
+        installed = self._session_model_overrides.setdefault(session_key, override)
+        if installed is not override:
+            return False
         logger.info(
             "Rehydrated persisted /model override for session=%s: model=%s provider=%s",
-            session_key, override.get("model"), provider or "",
+            session_key,
+            override.get("model"),
+            override.get("provider") or "",
         )
+        return True
+
+    def _rehydrate_session_model_override(self, session_key: str) -> None:
+        """Lazily restore a persisted /model override after a gateway restart.
+
+        ``_session_model_overrides`` is in-memory only, so before persistence
+        a restart silently reverted every session to the global default model.
+        The non-secret parts (model/provider/base_url) are written through to
+        the session store when /model runs (and cleared on /new); here we read
+        them back on first use and re-resolve credentials via the normal
+        runtime provider resolution — api_key is never persisted to disk.
+
+        No-op when an in-memory override already exists (live state wins) or
+        when the store has nothing persisted (e.g. the user ran /new, which
+        clears both the in-memory dict and the persisted field).
+        """
+        if session_key in self._session_model_overrides:
+            return
+        override = self._load_persisted_session_model_override(session_key)
+        if override is None:
+            return
+        self._install_rehydrated_session_model_override(session_key, override)
 
     def _apply_session_model_override(
         self, session_key: str, model: str, runtime_kwargs: dict
@@ -18925,6 +19000,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if not session_key:
             return
+        generations = self.__dict__.get("_conversation_scope_generation")
+        if generations is None:
+            generations = {}
+            self._conversation_scope_generation = generations
+        generations[session_key] = int(generations.get(session_key, 0)) + 1
         for attr in _CONVERSATION_SCOPED_STATE:
             store = getattr(self, attr, None)
             if isinstance(store, dict):

@@ -35,6 +35,7 @@ import base64
 import binascii
 import hashlib
 import hmac
+import inspect
 import json
 import logging
 import re
@@ -910,7 +911,7 @@ class WebhookAdapter(BasePlatformAdapter):
             # predate the accessor.
             peek = getattr(store, "peek_session_id", None)
             if callable(peek):
-                session_id = peek(session_key)
+                session_id = await asyncio.to_thread(peek, session_key)
             else:
                 if hasattr(store, "_ensure_loaded"):
                     try:
@@ -927,12 +928,18 @@ class WebhookAdapter(BasePlatformAdapter):
                     session_key,
                 )
                 return
-            # AsyncSessionDB forwards end_session via asyncio.to_thread; a
-            # plain SessionDB exposes it synchronously.  Handle both.
+            # AsyncSessionDB already forwards end_session via asyncio.to_thread;
+            # a plain SessionDB exposes it synchronously, so offload that form
+            # here rather than waiting on its lock in the gateway event loop.
             _end = session_db.end_session
-            result = _end(session_id, "webhook_complete")
-            if asyncio.iscoroutine(result):
-                await result
+            if inspect.iscoroutinefunction(_end):
+                await _end(session_id, "webhook_complete")
+            else:
+                result = await asyncio.to_thread(
+                    _end, session_id, "webhook_complete"
+                )
+                if inspect.isawaitable(result):
+                    await result
             logger.debug(
                 "[webhook] Closed session %s for delivery %s",
                 session_id,
