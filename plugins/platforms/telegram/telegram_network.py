@@ -10,7 +10,9 @@ IPv4 addresses.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import ipaddress
+import itertools
 import logging
 import socket
 from typing import Any, Iterable, Optional
@@ -25,6 +27,10 @@ _TELEGRAM_API_HOST = "api.telegram.org"
 # only keeps weak references to tasks; without this set a cleanup can be
 # garbage-collected before it closes the response stream.
 _abandoned_response_cleanups: set[asyncio.Task] = set()
+_diagnostic_request_ids = itertools.count(1)
+_diagnostic_request_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "telegram_diagnostic_request_id", default="none"
+)
 
 
 def _stream_local_port(stream: Any) -> str:
@@ -66,13 +72,28 @@ class _SocketLifecycleState:
     def __init__(self, *, owner: str, route: str, stream: Any):
         self.owner = owner
         self.route = route
+        self.request_id = _diagnostic_request_id.get()
         self.local_port = _stream_local_port(stream)
+        self._close_started_reported = False
         self._closed_reported = False
         _log_socket_lifecycle(
             event="socket-opened",
             owner=self.owner,
             route=self.route,
             local_port=self.local_port,
+            request_id=self.request_id,
+        )
+
+    def report_close_started(self) -> None:
+        if self._close_started_reported:
+            return
+        self._close_started_reported = True
+        _log_socket_lifecycle(
+            event="socket-close-started",
+            owner=self.owner,
+            route=self.route,
+            local_port=self.local_port,
+            request_id=self.request_id,
         )
 
     def report_closed(self, *, error: bool = False) -> None:
@@ -84,6 +105,7 @@ class _SocketLifecycleState:
             owner=self.owner,
             route=self.route,
             local_port=self.local_port,
+            request_id=self.request_id,
         )
 
 
@@ -137,6 +159,7 @@ class _DiagnosticCancellationSafeNetworkStream(_CancellationSafeNetworkStream):
         self._lifecycle = lifecycle
 
     async def aclose(self) -> None:
+        self._lifecycle.report_close_started()
         try:
             await self._stream.aclose()
         except BaseException:
@@ -152,6 +175,7 @@ class _DiagnosticCancellationSafeNetworkStream(_CancellationSafeNetworkStream):
                 ssl_context, server_hostname, timeout
             )
         except BaseException:
+            self._lifecycle.report_close_started()
             try:
                 await self._stream.aclose()
             except BaseException:
@@ -441,15 +465,23 @@ def _close_response_on_task_done(task: asyncio.Task, response: httpx.Response) -
     task.add_done_callback(_on_done)
 
 
-def _log_socket_lifecycle(*, event: str, owner: str, route: str, local_port: str) -> None:
-    """Emit one deliberately request-free socket lifecycle record."""
+def _log_socket_lifecycle(
+    *,
+    event: str,
+    owner: str,
+    route: str,
+    local_port: str,
+    request_id: str = "none",
+) -> None:
+    """Emit one deliberately request-content-free socket lifecycle record."""
     # Diagnostics are explicitly opt-in and must remain visible at the gateway's
     # default WARNING stderr level so bounded staging collection can use Docker logs.
     logger.warning(
-        "[Telegram socket] event=%s owner=%s route=%s local_port=%s",
+        "[Telegram socket] event=%s owner=%s route=%s request_id=%s local_port=%s",
         event,
         owner,
         route,
+        request_id,
         local_port,
     )
 
@@ -477,11 +509,20 @@ def _response_local_port(response: httpx.Response) -> str:
 class _DiagnosticResponseStream(httpx.AsyncByteStream):
     """Observe response closure without changing stream semantics."""
 
-    def __init__(self, stream, *, owner: str, route: str, local_port: str):
+    def __init__(
+        self,
+        stream,
+        *,
+        owner: str,
+        route: str,
+        local_port: str,
+        request_id: str,
+    ):
         self._stream = stream
         self._owner = owner
         self._route = route
         self._local_port = local_port
+        self._request_id = request_id
         self._close_error_reported = False
         self._close_success_reported = False
 
@@ -500,6 +541,7 @@ class _DiagnosticResponseStream(httpx.AsyncByteStream):
                     owner=self._owner,
                     route=self._route,
                     local_port=self._local_port,
+                    request_id=self._request_id,
                 )
             raise
         if not self._close_success_reported:
@@ -509,6 +551,7 @@ class _DiagnosticResponseStream(httpx.AsyncByteStream):
                 owner=self._owner,
                 route=self._route,
                 local_port=self._local_port,
+                request_id=self._request_id,
             )
 
 # DNS-over-HTTPS providers used to discover Telegram API IPs that may differ
@@ -608,23 +651,58 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         request: httpx.Request,
         route: str,
     ) -> httpx.Response:
-        response = await _handle_transport_request(transport, request)
         if not self._socket_diagnostics:
-            return response
-        local_port = _response_local_port(response)
-        response.stream = _DiagnosticResponseStream(
-            response.stream,
-            owner=self._owner_role,
-            route=route,
-            local_port=local_port,
-        )
+            return await _handle_transport_request(transport, request)
+
+        request_id = str(next(_diagnostic_request_ids))
+        token = _diagnostic_request_id.set(request_id)
         _log_socket_lifecycle(
-            event="response-created",
+            event="request-started",
             owner=self._owner_role,
             route=route,
-            local_port=local_port,
+            request_id=request_id,
+            local_port="none",
         )
-        return response
+        try:
+            try:
+                response = await _handle_transport_request(transport, request)
+            except asyncio.CancelledError:
+                _log_socket_lifecycle(
+                    event="request-cancelled",
+                    owner=self._owner_role,
+                    route=route,
+                    request_id=request_id,
+                    local_port="none",
+                )
+                raise
+            except BaseException:
+                _log_socket_lifecycle(
+                    event="request-failed",
+                    owner=self._owner_role,
+                    route=route,
+                    request_id=request_id,
+                    local_port="none",
+                )
+                raise
+
+            local_port = _response_local_port(response)
+            response.stream = _DiagnosticResponseStream(
+                response.stream,
+                owner=self._owner_role,
+                route=route,
+                local_port=local_port,
+                request_id=request_id,
+            )
+            _log_socket_lifecycle(
+                event="response-created",
+                owner=self._owner_role,
+                route=route,
+                local_port=local_port,
+                request_id=request_id,
+            )
+            return response
+        finally:
+            _diagnostic_request_id.reset(token)
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if request.url.host != _TELEGRAM_API_HOST or not self._fallback_ips:
