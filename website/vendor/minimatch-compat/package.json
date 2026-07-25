@@ -1,0 +1,13 @@
+{
+  "name": "minimatch",
+  "version": "3.1.5-patched.1",
+  "private": true,
+  "description": "Callable CommonJS compatibility wrapper for patched minimatch",
+  "main": "index.cjs",
+  "dependencies": {
+    "minimatch-modern": "npm:minimatch@10.2.5"
+  },
+  "engines": {
+    "node": "20 || >=22"
+  }
+}

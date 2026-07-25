@@ -6,7 +6,7 @@
     "docusaurus": "docusaurus",
     "prestart": "node scripts/prebuild.mjs",
     "start": "docusaurus start",
-    "prebuild": "node scripts/prebuild.mjs",
+    "prebuild": "node --test scripts/minimatch-compat.test.cjs && node scripts/prebuild.mjs",
     "build": "docusaurus build",
     "swizzle": "docusaurus swizzle",
     "deploy": "docusaurus deploy",
@@ -25,6 +25,7 @@
     "@easyops-cn/docusaurus-search-local": "^0.55.1",
     "@mdx-js/react": "^3.0.0",
     "clsx": "^2.0.0",
+    "minimatch": "file:vendor/minimatch-compat",
     "prism-react-renderer": "^2.3.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
@@ -36,7 +37,12 @@
     "typescript": "^6.0.3"
   },
   "overrides": {
+    "dompurify": "3.4.12",
+    "postcss": "8.5.23",
     "serialize-javascript": "^7.0.5",
+    "serve-handler": {
+      "minimatch": "$minimatch"
+    },
     "uuid": "^14.0.0",
     "websocket-driver": "0.7.5"
   },
