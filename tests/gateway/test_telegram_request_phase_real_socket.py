@@ -45,6 +45,7 @@ _CASES = (
     "provenance",
     "tls_handshake",
     "response_headers",
+    "response_headers_peer_fin_race",
     "response_body",
     "peer_fin_idle",
     "repeated",
@@ -57,6 +58,7 @@ _PTB_CASES = frozenset(
         "provenance",
         "tls_handshake",
         "response_headers",
+        "response_headers_peer_fin_race",
         "response_body",
         "peer_fin_idle",
         "repeated",
@@ -197,6 +199,24 @@ class _ProtocolServer:
 
             request = await reader.readuntil(b"\r\n\r\n")
             first_line = request.split(b"\r\n", 1)[0]
+
+            if self.mode == "response_headers_peer_fin_race":
+                # Reproduce the production boundary: the peer queues a partial
+                # pre-response TLS/HTTP record and FIN while the caller is about
+                # to cancel.  The client has a live socket but no httpx.Response
+                # yet.  Queue exactly 631 bytes, matching the unread receive
+                # queue preserved from every affected Telegram socket.
+                payload = b"HTTP/1.1 200 OK\r\nX-Incomplete: " + b"x" * 600
+                assert len(payload) == 631
+                writer.write(payload)
+                writer.close()
+                self.started.set()
+                self.peer_fin_sent.set()
+                with contextlib.suppress(Exception):
+                    await writer.wait_closed()
+                self._writers.discard(writer)
+                self.disconnects += 1
+                return
             if self.mode == "concurrent" and b"/healthy" in first_line:
                 body = b'{"ok":true,"result":{}}'
                 writer.write(
@@ -704,7 +724,12 @@ async def _proxy_https_healthy_case() -> dict[str, Any]:
 async def _run_case(case: str) -> dict[str, Any]:
     if case == "provenance":
         return await _provenance_case()
-    if case in {"tls_handshake", "response_headers", "response_body"}:
+    if case in {
+        "tls_handshake",
+        "response_headers",
+        "response_headers_peer_fin_race",
+        "response_body",
+    }:
         return await _single_cancel_case(case)
     if case == "peer_fin_idle":
         return await _peer_fin_idle_case()
