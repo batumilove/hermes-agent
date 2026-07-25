@@ -13,9 +13,12 @@ These tests pin two fixes:
      announced when a fallback chain actually exists.
 """
 
+import asyncio
 import threading
+from types import SimpleNamespace
 
 import gateway.run as gateway_run
+import pytest
 
 
 def _make_runner():
@@ -109,6 +112,161 @@ def test_bare_runner_without_cache_attr_does_not_crash(monkeypatch):
     model, _ = runner._resolve_session_agent_runtime(session_key="x", user_config={"model": {}})
 
     assert model == "deepseek/deepseek-v4-flash"
+
+
+@pytest.mark.asyncio
+async def test_async_runtime_resolution_does_not_block_on_model_override_lookup(
+    monkeypatch,
+):
+    _patch_resolution(
+        monkeypatch, model_from_config="deepseek/deepseek-v4-flash"
+    )
+    runner = _make_runner()
+    heartbeat_ran = threading.Event()
+    heartbeat_seen_while_lookup_blocked = []
+
+    def get_model_override(_session_key: str):
+        heartbeat_seen_while_lookup_blocked.append(
+            heartbeat_ran.wait(timeout=0.5)
+        )
+        return None
+
+    runner.session_store = SimpleNamespace(get_model_override=get_model_override)
+
+    async def heartbeat() -> None:
+        await asyncio.sleep(0)
+        heartbeat_ran.set()
+
+    resolution_task = asyncio.create_task(
+        runner._resolve_session_agent_runtime_async(
+            session_key="agent:main:telegram:dm:123:456",
+            user_config={"model": {"default": "x"}},
+        )
+    )
+    heartbeat_task = asyncio.create_task(heartbeat())
+    (model, _runtime), _ = await asyncio.gather(
+        resolution_task, heartbeat_task
+    )
+
+    assert model == "deepseek/deepseek-v4-flash"
+    assert heartbeat_seen_while_lookup_blocked == [True]
+
+
+@pytest.mark.asyncio
+async def test_async_runtime_rehydrate_does_not_overwrite_live_model_override(
+    monkeypatch,
+):
+    _patch_resolution(
+        monkeypatch, model_from_config="deepseek/deepseek-v4-flash"
+    )
+    runner = _make_runner()
+    lookup_started = threading.Event()
+    allow_lookup_to_finish = threading.Event()
+    session_key = "agent:main:telegram:dm:123:456"
+
+    def get_model_override(_session_key: str):
+        lookup_started.set()
+        assert allow_lookup_to_finish.wait(timeout=2)
+        return {"model": "persisted-model", "provider": None, "base_url": None}
+
+    runner.session_store = SimpleNamespace(get_model_override=get_model_override)
+    resolution_task = asyncio.create_task(
+        runner._resolve_session_agent_runtime_async(
+            session_key=session_key,
+            user_config={"model": {"default": "x"}},
+        )
+    )
+    assert await asyncio.to_thread(lookup_started.wait, 1)
+
+    # A live /model update that lands while the persisted lookup is in flight
+    # must remain authoritative when the worker thread returns.
+    runner._session_model_overrides[session_key] = {
+        "model": "live-model",
+        "provider": None,
+        "base_url": None,
+        "api_key": "live-key",
+    }
+    allow_lookup_to_finish.set()
+
+    model, _runtime = await resolution_task
+
+    assert model == "live-model"
+    assert runner._session_model_overrides[session_key]["model"] == "live-model"
+
+
+@pytest.mark.asyncio
+async def test_async_runtime_rehydrate_drops_stale_override_after_session_boundary(
+    monkeypatch,
+):
+    _patch_resolution(
+        monkeypatch, model_from_config="deepseek/deepseek-v4-flash"
+    )
+    runner = _make_runner()
+    lookup_started = threading.Event()
+    allow_lookup_to_finish = threading.Event()
+    session_key = "agent:main:telegram:dm:123:456"
+
+    def get_model_override(_session_key: str):
+        lookup_started.set()
+        assert allow_lookup_to_finish.wait(timeout=2)
+        return {"model": "stale-model", "provider": None, "base_url": None}
+
+    runner.session_store = SimpleNamespace(get_model_override=get_model_override)
+    resolution_task = asyncio.create_task(
+        runner._resolve_session_agent_runtime_async(
+            session_key=session_key,
+            user_config={"model": {"default": "x"}},
+        )
+    )
+    assert await asyncio.to_thread(lookup_started.wait, 1)
+
+    # /new and every other conversation boundary clear this state while the
+    # persisted read can still be in flight.
+    runner._clear_conversation_scope(session_key, reason="test_reset")
+    allow_lookup_to_finish.set()
+
+    model, _runtime = await resolution_task
+
+    assert model == "deepseek/deepseek-v4-flash"
+    assert session_key not in runner._session_model_overrides
+
+
+@pytest.mark.asyncio
+async def test_cancelled_async_rehydrate_cannot_resurrect_boundary_state(monkeypatch):
+    _patch_resolution(
+        monkeypatch, model_from_config="deepseek/deepseek-v4-flash"
+    )
+    runner = _make_runner()
+    lookup_started = threading.Event()
+    allow_lookup_to_finish = threading.Event()
+    lookup_finished = threading.Event()
+    session_key = "agent:main:telegram:dm:123:456"
+
+    def get_model_override(_session_key: str):
+        lookup_started.set()
+        assert allow_lookup_to_finish.wait(timeout=2)
+        lookup_finished.set()
+        return {"model": "stale-model", "provider": None, "base_url": None}
+
+    runner.session_store = SimpleNamespace(get_model_override=get_model_override)
+    resolution_task = asyncio.create_task(
+        runner._resolve_session_agent_runtime_async(
+            session_key=session_key,
+            user_config={"model": {"default": "x"}},
+        )
+    )
+    assert await asyncio.to_thread(lookup_started.wait, 1)
+
+    resolution_task.cancel()
+    runner._clear_conversation_scope(session_key, reason="test_reset")
+    allow_lookup_to_finish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await resolution_task
+    assert await asyncio.to_thread(lookup_finished.wait, 1)
+    # Let the completed worker publish any shared-state mutation before checking.
+    await asyncio.sleep(0)
+
+    assert session_key not in runner._session_model_overrides
 
 
 # ── _has_pending_fallback gate ──────────────────────────────────────────────

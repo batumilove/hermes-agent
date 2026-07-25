@@ -23,6 +23,8 @@ masks exactly that bug (the first version of this fix shipped that way).
 """
 
 import asyncio
+import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -210,3 +212,73 @@ async def test_end_webhook_session_awaits_async_session_db(tmp_path):
     assert row["ended_at"] is not None
     assert row["end_reason"] == "webhook_complete"
     store._db.close()
+
+
+@pytest.mark.asyncio
+async def test_end_webhook_session_does_not_block_loop_while_peeking_session():
+    heartbeat_ran = threading.Event()
+    heartbeat_seen_while_peek_blocked = []
+
+    def peek_session_id(_session_key: str) -> str:
+        heartbeat_seen_while_peek_blocked.append(heartbeat_ran.wait(timeout=0.5))
+        return "session-1"
+
+    ended = []
+    runner = SimpleNamespace(
+        session_store=SimpleNamespace(peek_session_id=peek_session_id),
+        _session_db=SimpleNamespace(
+            end_session=lambda session_id, reason: ended.append((session_id, reason))
+        ),
+        _session_key_for_source=lambda _source: "session-key",
+    )
+    adapter = _make_adapter(
+        {"alerts": {"secret": _INSECURE_NO_AUTH, "prompt": "x", "deliver": "log"}}
+    )
+    adapter.gateway_runner = runner
+    event = _make_event(adapter, "alert-offloop-peek", "x")
+
+    async def heartbeat() -> None:
+        await asyncio.sleep(0)
+        heartbeat_ran.set()
+
+    close_task = asyncio.create_task(
+        adapter._end_webhook_session(event, event.source.chat_id)
+    )
+    heartbeat_task = asyncio.create_task(heartbeat())
+    await asyncio.gather(close_task, heartbeat_task)
+
+    assert heartbeat_seen_while_peek_blocked == [True]
+    assert ended == [("session-1", "webhook_complete")]
+
+
+@pytest.mark.asyncio
+async def test_end_webhook_session_does_not_block_loop_while_closing_session():
+    heartbeat_ran = threading.Event()
+    heartbeat_seen_while_end_blocked = []
+
+    def end_session(session_id: str, reason: str) -> None:
+        heartbeat_seen_while_end_blocked.append(heartbeat_ran.wait(timeout=0.5))
+        assert (session_id, reason) == ("session-1", "webhook_complete")
+
+    runner = SimpleNamespace(
+        session_store=SimpleNamespace(peek_session_id=lambda _key: "session-1"),
+        _session_db=SimpleNamespace(end_session=end_session),
+        _session_key_for_source=lambda _source: "session-key",
+    )
+    adapter = _make_adapter(
+        {"alerts": {"secret": _INSECURE_NO_AUTH, "prompt": "x", "deliver": "log"}}
+    )
+    adapter.gateway_runner = runner
+    event = _make_event(adapter, "alert-offloop-end", "x")
+
+    async def heartbeat() -> None:
+        await asyncio.sleep(0)
+        heartbeat_ran.set()
+
+    close_task = asyncio.create_task(
+        adapter._end_webhook_session(event, event.source.chat_id)
+    )
+    heartbeat_task = asyncio.create_task(heartbeat())
+    await asyncio.gather(close_task, heartbeat_task)
+
+    assert heartbeat_seen_while_end_blocked == [True]
