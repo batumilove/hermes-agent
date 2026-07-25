@@ -162,6 +162,7 @@ class _IdempotentInterruptedSocketByteStream(httpx.AsyncByteStream):
         self.close_calls = 0
         self.close_started = asyncio.Event()
         self.release_close = asyncio.Event()
+        self.cleanup_finished = asyncio.Event()
         self.cleanup_completed = False
         self._closed = False
 
@@ -178,6 +179,7 @@ class _IdempotentInterruptedSocketByteStream(httpx.AsyncByteStream):
         await self.release_close.wait()
         self.sock.close()
         self.cleanup_completed = True
+        self.cleanup_finished.set()
 
     def get_extra_info(self, name):
         if name == "socket":
@@ -1062,7 +1064,13 @@ class TestFallbackTransport:
                 await close_task
 
             stream.release_close.set()
-            await _wait_for_tcp_state(local_port, remote_port, None)
+            await asyncio.wait_for(stream.cleanup_finished.wait(), timeout=2.0)
+            await _wait_for_tcp_state(
+                local_port,
+                remote_port,
+                None,
+                timeout=5.0,
+            )
             assert stream.cleanup_completed is True
             assert stream.close_calls == 1
             for _ in range(20):
