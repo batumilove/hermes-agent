@@ -218,6 +218,50 @@ def _ensure_windows_gateway_venv_imports() -> None:
         return
 
 
+def _load_gateway_agent_class():
+    """Import ``AIAgent`` and its transitive local-runtime dependencies.
+
+    ``run_agent`` imports ``model_tools``, whose built-in tool discovery parses
+    the tool tree.  Doing that work on the first inbound-message callback blocks
+    the asyncio loop for seconds. Python's module cache makes subsequent imports
+    cheap without adding a second mutable class cache here.
+    """
+    from run_agent import AIAgent
+
+    return AIAgent
+
+
+def _preload_gateway_agent_runtime(runner: Any) -> bool:
+    """Load the local agent runtime before any platform accepts messages.
+
+    Proxy-only gateways never construct a local ``AIAgent`` and must retain
+    their lightweight startup path.
+    """
+    proxy_resolver = getattr(runner, "_get_proxy_url", None)
+    if not callable(proxy_resolver):
+        # Synthetic/minimal runners used by embedders and startup tests do not
+        # execute local conversations; preserve their lightweight path.
+        return False
+    if proxy_resolver():
+        return False
+    started = time.monotonic()
+    try:
+        _load_gateway_agent_class()
+    except Exception:
+        # Preserve the historical degraded-mode behavior: platform commands,
+        # cron, and reconnect handling can still run, while the first local
+        # conversation retries the import and reports its actual failure.
+        logger.exception(
+            "Local agent runtime preload failed; continuing gateway startup"
+        )
+        return False
+    logger.info(
+        "Preloaded local agent runtime before platform startup in %.3fs",
+        time.monotonic() - started,
+    )
+    return True
+
+
 def _gateway_platform_value(platform: Any) -> str:
     """Return a normalized gateway platform value for enums or raw strings."""
     return str(getattr(platform, "value", platform) or "").strip().lower()
@@ -8150,11 +8194,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return True
         
         # Discover Python plugins before shell hooks so plugin block
-        # decisions take precedence in tie cases.  The CLI startup path
-        # does this via an explicit call in hermes_cli/main.py; the
-        # gateway lazily imports run_agent inside per-request handlers,
-        # so the discover_plugins() side-effect in model_tools.py is NOT
-        # guaranteed to have run by the time we reach this point.
+        # decisions take precedence in tie cases. Local-runtime preload also
+        # discovers plugins, but proxy mode skips that preload and a degraded
+        # preload may fail; keep this explicit, idempotent startup gate.
         try:
             from hermes_cli.plugins import discover_plugins
             discover_plugins()
@@ -24160,6 +24202,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         logger.debug("Nous auth keepalive did not start: %s", exc)
 
     _ensure_windows_gateway_venv_imports()
+
+    # ``run_agent`` transitively discovers built-in tools. Keep that synchronous
+    # GIL-heavy cold import before ``runner.start()`` connects platform adapters;
+    # otherwise the first inbound message can freeze Telegram/Discord heartbeats.
+    _preload_gateway_agent_runtime(runner)
 
     # MCP tool discovery — run in an executor so the asyncio event loop
     # stays responsive even when a configured MCP server is slow or
