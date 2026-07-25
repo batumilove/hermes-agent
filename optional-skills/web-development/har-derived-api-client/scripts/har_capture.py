@@ -17,8 +17,6 @@ import os
 import sys
 import time
 
-from playwright.sync_api import sync_playwright
-
 
 def run_action(page, spec: str) -> None:
     parts = spec.split(":", 2)
@@ -47,6 +45,8 @@ def main() -> int:
                     help="fill:SEL:TEXT | press:SEL:KEY | click:SEL | goto:URL | sleep:SECS")
     ap.add_argument("--headed", action="store_true")
     args = ap.parse_args()
+
+    from playwright.sync_api import sync_playwright
 
     old_umask = os.umask(0o077)
     try:

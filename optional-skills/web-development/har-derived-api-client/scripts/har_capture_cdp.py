@@ -26,8 +26,6 @@ import sys
 import time
 from urllib.parse import parse_qsl, urlsplit
 
-from playwright.sync_api import sync_playwright
-
 MAX_RESPONSE_BODY_BYTES = 1_000_000
 
 
@@ -107,6 +105,8 @@ def main() -> int:
     ap.add_argument("--wait", type=float, default=3.0)
     ap.add_argument("--action", action="append", default=[])
     args = ap.parse_args()
+
+    from playwright.sync_api import sync_playwright
 
     entries = []
 
