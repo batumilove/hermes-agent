@@ -31,6 +31,7 @@ STATE_ROOT = Path("/var/lib/hermes-staging-diagnostics")
 TRANSACTION_ROOT = STATE_ROOT / "transactions"
 LOCK_PATH = Path("/run/lock/hermes-staging-diagnostic.lock")
 CRASH_TOKEN_PATH = Path("/run/hermes-staging-diagnostic-crash-token.json")
+INSTALLED_HELPER_PATH = Path("/usr/local/libexec/hermes-staging-diagnostic")
 RUNTIME_UID = 1001
 RUNTIME_GID = 1001
 SUDO_UID = 1002
@@ -217,7 +218,7 @@ class CrashBarrier:
         self,
         *,
         token_path: Path = CRASH_TOKEN_PATH,
-        helper_path: Path = Path(__file__),
+        helper_path: Path = INSTALLED_HELPER_PATH,
         expected_uid: int = 0,
         expected_gid: int = 0,
         pid=os.getpid,

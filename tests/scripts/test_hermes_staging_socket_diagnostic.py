@@ -626,6 +626,11 @@ def _write_crash_token(path, diagnostic, tx, target, helper_path, **overrides):
     path.chmod(0o600)
 
 
+def test_crash_barrier_defaults_to_canonical_installed_helper(diagnostic):
+    assert diagnostic.CrashBarrier().helper_path == Path("/usr/local/libexec/hermes-staging-diagnostic")
+    assert diagnostic.CrashBarrier().helper_path != Path(diagnostic.__file__)
+
+
 def test_crash_barrier_consumes_exact_token_before_signalling(diagnostic, tmp_path):
     states = diagnostic.TransactionStore(tmp_path / "state")
     tx = states.prepare(diagnostic.parse_request(io.BytesIO(request())))
