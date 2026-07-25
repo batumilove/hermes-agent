@@ -17,6 +17,7 @@ const consumers = [
   'eslint-plugin-react',
   'filelist',
   'glob',
+  'minimatch',
 ];
 
 function requireFrom(packageName) {
@@ -27,7 +28,7 @@ function packageVersion(req, packageName) {
   return require(req.resolve(`${packageName}/package.json`)).version;
 }
 
-test('installed legacy minimatch consumers use patched callable brace expansion', (t) => {
+test('installed minimatch consumers use patched brace expansion', (t) => {
   const repositoryRoot = path.join(__dirname, '..');
   const fullWorkspaceInstall = fs.existsSync(path.join(repositoryRoot, 'apps', 'desktop', 'package.json'));
   const availableConsumers = consumers.filter((consumer) => {
@@ -44,12 +45,12 @@ test('installed legacy minimatch consumers use patched callable brace expansion'
     assert.deepEqual(
       availableConsumers,
       consumers,
-      'a full repository install must include every protected legacy minimatch consumer',
+      'a full repository install must include every protected minimatch consumer',
     );
   }
 
   if (availableConsumers.length === 0) {
-    t.skip('partial install contains no legacy minimatch consumers');
+    t.skip('partial install contains no minimatch consumers');
     return;
   }
 
@@ -61,7 +62,7 @@ test('installed legacy minimatch consumers use patched callable brace expansion'
     const expansion = minimatchRequire('brace-expansion');
     const minimatchMajor = Number(packageVersion(consumerRequire, 'minimatch').split('.')[0]);
 
-    assert.ok([3, 5, 9].includes(minimatchMajor), `${consumer} unexpectedly changed minimatch major`);
+    assert.ok([3, 5, 9, 10].includes(minimatchMajor), `${consumer} unexpectedly changed minimatch major`);
     assert.equal(typeof expansion, 'function', `${consumer} lost the legacy callable expansion API`);
     assert.equal(expansion.__hermesPatchedVersion, '5.0.8', `${consumer} missed the patched adapter`);
     assert.deepEqual(expansion('artifact-{linux,windows}'), [
