@@ -1681,6 +1681,36 @@ def _acquire_checkpoint_coordinator(
         return key, coordinator
 
 
+class _ReplaceNoopSentinel:
+    """Private singleton returned by replace_messages' inner ``_do`` callback
+    when the replacement payload is structurally identical to what's stored.
+
+    :meth:`SessionDB._execute_write` recognises this exact object (identity
+    check, not equality) and responds by committing the transaction — which
+    opened with ``BEGIN IMMEDIATE`` and is thus still needed for multi-process
+    atomicity — but *without* incrementing ``_write_count`` or starting the
+    checkpoint coordinator, since no DML/FTS-trigger/chcheckpoint work was
+    performed.
+
+    This class is intentionally not exported and uses ``__slots__ = ()`` plus
+    ``__reduce__`` rejection to prevent a user callback from accidentally
+    returning an equivalent object (e.g. via ``copy`` or ``pickle``).
+    Only the single module-level ``_REPLACE_NOOP_SENTINEL`` instance has the
+    meaning; callers must test ``result is _REPLACE_NOOP_SENTINEL``.
+    """
+
+    __slots__ = ()
+
+    def __reduce__(self):
+        raise TypeError("_ReplaceNoopSentinel cannot be pickled or copied")
+
+    def __repr__(self):
+        return "<_REPLACE_NOOP_SENTINEL>"
+
+
+_REPLACE_NOOP_SENTINEL = _ReplaceNoopSentinel()
+
+
 class SessionDB:
     """
     SQLite-backed session storage with FTS5 search.
@@ -2281,12 +2311,22 @@ class SessionDB:
                         except Exception:
                             pass
                         raise
-                    # Start while holding the same lifecycle lock used by
-                    # close(), preventing a committed write from restarting a
-                    # coordinator after the instance has been closed.
-                    self._write_count += 1
-                    if not self.read_only:
-                        self._checkpoint_coordinator.start()
+                    # A callback may signal that no DML was performed (e.g.
+                    # replace_messages' no-op fast path) by returning the
+                    # private _REPLACE_NOOP_SENTINEL singleton.  The
+                    # transaction still committed (BEGIN IMMEDIATE was needed
+                    # for multi-process atomicity), but there is no reason to
+                    # advance the write counter or start the checkpoint
+                    # coordinator — no pages were dirtied and no FTS triggers
+                    # fired.  Identity check (not equality) so a user callback
+                    # cannot accidentally produce this signal.
+                    if result is not _REPLACE_NOOP_SENTINEL:
+                        # Start while holding the same lifecycle lock used by
+                        # close(), preventing a committed write from restarting
+                        # a coordinator after the instance has been closed.
+                        self._write_count += 1
+                        if not self.read_only:
+                            self._checkpoint_coordinator.start()
                 transaction_time = time.monotonic() - transaction_started
                 total_time = time.monotonic() - write_started
                 if (
@@ -6431,6 +6471,157 @@ class SessionDB:
             now_ts = max(now_ts + 1e-6, message_timestamp + 1e-6)
         return inserted, tool_calls_total
 
+    # Columns that _insert_message_rows writes, in the exact INSERT order
+    # from that method.  Used by _is_replace_noop to compare the incoming
+    # payload against what is already on disk without re-encoding.
+    _REPLACE_COMPARE_COLUMNS = (
+        "role", "content", "tool_call_id", "tool_calls", "tool_name",
+        "effect_disposition", "timestamp", "token_count", "finish_reason",
+        "reasoning", "reasoning_content", "reasoning_details",
+        "codex_reasoning_items", "codex_message_items", "platform_message_id",
+        "observed", "api_content",
+    )
+
+    @staticmethod
+    def _normalize_tool_calls_for_compare(value):
+        """Parse tool_calls to a canonical list for no-op comparison.
+
+        _insert_message_rows accepts tool_calls as a Python list (from the
+        live agent) or as a JSON string (from import/export).  We normalize
+        to a parsed list so both representations compare equal.
+        """
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                return []
+        return value
+
+    def _is_replace_noop(
+        self, conn, session_id: str, messages: List[Dict[str, Any]],
+        active_only: bool,
+    ) -> bool:
+        """Return True when *messages* is structurally identical to the stored rows.
+
+        Compares every column that :meth:`_insert_message_rows` writes, using
+        the same encoding (``_encode_content`` for content, ``json.dumps`` for
+        reasoning/tool metadata, ``_scrub_surrogates`` for text).  When the
+        stored active rows match the incoming payload exactly, the caller can
+        skip the destructive DELETE+INSERT cycle — avoiding 4N FTS5 trigger
+        operations (2N deletes + 2N inserts) that dominate write latency for
+        large transcripts.
+
+        This is a pure read that runs inside the caller's ``BEGIN IMMEDIATE``
+        transaction, so the comparison and the subsequent skip/rewrite decision
+        are atomic with respect to other processes.  It does not advance any
+        in-memory state.  Note: ``BEGIN IMMEDIATE`` still acquires the WAL
+        writer lock — the fast path avoids DML, FTS triggers, counter updates,
+        and checkpoint coordination, not lock acquisition itself.
+        """
+        active_clause = " AND active = 1" if active_only else ""
+        cursor = conn.execute(
+            f"SELECT {', '.join(self._REPLACE_COMPARE_COLUMNS)} "
+            f"FROM messages WHERE session_id = ?{active_clause} ORDER BY id",
+            (session_id,),
+        )
+        stored_rows = cursor.fetchall()
+        if len(stored_rows) != len(messages):
+            return False
+
+        for row, msg in zip(stored_rows, messages):
+            role = msg.get("role", "unknown")
+            # Content: apply the same encoding as the INSERT.
+            if row["content"] != self._encode_content(msg.get("content")):
+                return False
+            # Role.
+            if row["role"] != role:
+                return False
+            # tool_call_id
+            if row["tool_call_id"] != msg.get("tool_call_id"):
+                return False
+            # tool_calls: normalize both sides to parsed lists.
+            stored_tc = self._normalize_tool_calls_for_compare(row["tool_calls"])
+            incoming_tc = msg.get("tool_calls")
+            if isinstance(incoming_tc, str):
+                try:
+                    incoming_tc = json.loads(incoming_tc)
+                except (json.JSONDecodeError, TypeError):
+                    incoming_tc = []
+            stored_tc_json = json.dumps(stored_tc, sort_keys=True) if stored_tc else None
+            incoming_tc_json = json.dumps(incoming_tc, sort_keys=True) if incoming_tc else None
+            if stored_tc_json != incoming_tc_json:
+                return False
+            # tool_name: _scrub_surrogates is applied on write.
+            if row["tool_name"] != _scrub_surrogates(msg.get("tool_name")):
+                return False
+            # effect_disposition
+            if row["effect_disposition"] != msg.get("effect_disposition"):
+                return False
+            # timestamp: _insert_message_rows stamps time.time() when the
+            # caller doesn't provide one.  That auto-stamp is an insertion
+            # artifact, not caller intent, so we only compare when the
+            # incoming message explicitly carries a timestamp.  Without an
+            # explicit timestamp the stored value is whatever time.time()
+            # returned at the original INSERT — re-stamping on a rewrite
+            # would be invisible to the caller and harmless.
+            ts_raw = msg.get("timestamp")
+            if ts_raw is not None:
+                try:
+                    if hasattr(ts_raw, "timestamp"):
+                        message_timestamp = float(ts_raw.timestamp())
+                    else:
+                        message_timestamp = float(ts_raw)
+                    if row["timestamp"] != message_timestamp:
+                        return False
+                except (TypeError, ValueError):
+                    pass
+            # token_count
+            if row["token_count"] != msg.get("token_count"):
+                return False
+            # finish_reason
+            if row["finish_reason"] != msg.get("finish_reason"):
+                return False
+            # reasoning (assistant only)
+            safe_reasoning = _scrub_surrogates(msg.get("reasoning")) if role == "assistant" else None
+            if row["reasoning"] != safe_reasoning:
+                return False
+            safe_reasoning_content = (
+                _scrub_surrogates(msg.get("reasoning_content")) if role == "assistant" else None
+            )
+            if row["reasoning_content"] != safe_reasoning_content:
+                return False
+            # reasoning_details (assistant only, json.dumps)
+            reasoning_details = msg.get("reasoning_details") if role == "assistant" else None
+            reasoning_details_json = json.dumps(reasoning_details) if reasoning_details else None
+            if row["reasoning_details"] != reasoning_details_json:
+                return False
+            # codex_reasoning_items (assistant only, json.dumps)
+            codex_items = msg.get("codex_reasoning_items") if role == "assistant" else None
+            codex_items_json = json.dumps(codex_items) if codex_items else None
+            if row["codex_reasoning_items"] != codex_items_json:
+                return False
+            # codex_message_items (assistant only, json.dumps)
+            codex_msg_items = msg.get("codex_message_items") if role == "assistant" else None
+            codex_msg_items_json = json.dumps(codex_msg_items) if codex_msg_items else None
+            if row["codex_message_items"] != codex_msg_items_json:
+                return False
+            # platform_message_id
+            platform_msg_id = msg.get("platform_message_id") or msg.get("message_id")
+            if row["platform_message_id"] != platform_msg_id:
+                return False
+            # observed
+            if row["observed"] != (1 if msg.get("observed") else 0):
+                return False
+            # api_content
+            api_content = msg.get("api_content")
+            expected_api = (
+                _scrub_surrogates(api_content) if isinstance(api_content, str) else None
+            )
+            if row["api_content"] != expected_api:
+                return False
+
+        return True
+
     def replace_messages(
         self,
         session_id: str,
@@ -6456,11 +6647,45 @@ class SessionDB:
         full-history rewrite doesn't wipe the rows the agent deliberately
         archived. ``message_count``/``tool_call_count`` then track the live set,
         matching :meth:`archive_and_compact`.
+
+        **No-op fast path**: when the replacement payload is structurally
+        identical to the currently-stored active rows (same count, role,
+        content, and every metadata column that the INSERT writes), the
+        destructive DELETE+INSERT cycle is skipped entirely.  This avoids 4N
+        FTS5 trigger operations (2N deletes + 2N inserts across the standard
+        and trigram indexes) that dominate write latency for large transcripts
+        and cause a write-convoy that blocks all other writers.
+
+        The comparison runs inside the ``BEGIN IMMEDIATE`` transaction opened
+        by :meth:`_execute_write`, so it is atomic with respect to other
+        processes (no TOCTOU window).  ``BEGIN IMMEDIATE`` still acquires the
+        WAL writer lock — the fast path eliminates DML, FTS-trigger churn,
+        counter updates, and checkpoint-coordinator starts, not lock
+        acquisition.  When the no-op sentinel is returned, ``_write_count``
+        is not incremented and the checkpoint coordinator is not started.
         """
 
         active_clause = " AND active = 1" if active_only else ""
 
         def _do(conn):
+            # Fast path: if the replacement is byte-identical to what's stored,
+            # skip the destructive rewrite.  This eliminates the FTS5 trigger
+            # amplification (4N shadow-table ops) that caused the production
+            # write-convoy (732 warnings, 30 >=5s, max lock_wait 12.289s on
+            # 2026-07-25) when callers like rewrite_transcript /
+            # conversation_compression invoked replace_messages with unchanged
+            # payloads.
+            #
+            # We still open BEGIN IMMEDIATE (via _execute_write) for
+            # multi-process atomicity — another process cannot sneak in a
+            # conflicting write between our read and commit.  But the
+            # transaction body is pure read: no DELETE, no INSERT, no FTS
+            # trigger firing, no counter update, no checkpoint-worthy page
+            # writes.  The sentinel tells _execute_write to skip write_count
+            # increment and checkpoint-coordinator start.
+            if self._is_replace_noop(conn, session_id, messages, active_only):
+                return _REPLACE_NOOP_SENTINEL
+
             conn.execute(
                 f"DELETE FROM messages WHERE session_id = ?{active_clause}",
                 (session_id,),
