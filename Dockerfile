@@ -124,6 +124,12 @@ COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
 # apps/shared/ is copied IN FULL because web/package.json references it as a
 # `file:` workspace dependency (same pattern as hermes-ink above).
 COPY apps/shared/ apps/shared/
+# The root lockfile resolves brace-expansion through a reviewed local tarball,
+# and root postinstall verifies that tarball plus any consumers available in
+# this intentionally partial workspace install.  Both must exist before npm
+# resolves dependencies; the remaining source tree is copied later.
+COPY vendor/brace-expansion-compat/ vendor/brace-expansion-compat/
+COPY scripts/brace-expansion-compat.test.cjs scripts/
 
 # `npm_config_install_links=false` forces npm to install `file:` deps as
 # symlinks instead of copies.  This is the default since npm 10+, which is

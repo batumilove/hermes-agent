@@ -27,8 +27,33 @@ function packageVersion(req, packageName) {
   return require(req.resolve(`${packageName}/package.json`)).version;
 }
 
-test('legacy minimatch consumers use patched callable brace expansion', () => {
-  for (const consumer of consumers) {
+test('installed legacy minimatch consumers use patched callable brace expansion', (t) => {
+  const repositoryRoot = path.join(__dirname, '..');
+  const fullWorkspaceInstall = fs.existsSync(path.join(repositoryRoot, 'apps', 'desktop', 'package.json'));
+  const availableConsumers = consumers.filter((consumer) => {
+    try {
+      require.resolve(consumer);
+      return true;
+    } catch (error) {
+      if (error && error.code === 'MODULE_NOT_FOUND') return false;
+      throw error;
+    }
+  });
+
+  if (fullWorkspaceInstall) {
+    assert.deepEqual(
+      availableConsumers,
+      consumers,
+      'a full repository install must include every protected legacy minimatch consumer',
+    );
+  }
+
+  if (availableConsumers.length === 0) {
+    t.skip('partial install contains no legacy minimatch consumers');
+    return;
+  }
+
+  for (const consumer of availableConsumers) {
     const consumerRequire = requireFrom(consumer);
     const minimatchEntry = consumerRequire.resolve('minimatch');
     const minimatchRequire = createRequire(minimatchEntry);
@@ -76,4 +101,27 @@ test('vendored tarball is pinned and installs the reviewed adapter source', () =
     fs.readFileSync(path.join(vendorDirectory, 'index.cjs'), 'utf8'),
   );
   assert.equal(packageVersion(require, 'brace-expansion'), '5.0.8');
+});
+
+test('Docker dependency layer copies local adapter inputs before npm install', (t) => {
+  const dockerfilePath = path.join(__dirname, '..', 'Dockerfile');
+  if (!fs.existsSync(dockerfilePath)) {
+    t.skip('partial Docker dependency context does not include Dockerfile');
+    return;
+  }
+
+  const dockerfile = fs.readFileSync(dockerfilePath, 'utf8');
+  const installIndex = dockerfile.indexOf(
+    'RUN npm exec --package=npm@11.18.0 -- npm install --prefer-offline --no-audit',
+  );
+  assert.notEqual(installIndex, -1, 'Docker npm install step is missing');
+
+  for (const copyCommand of [
+    'COPY vendor/brace-expansion-compat/ vendor/brace-expansion-compat/',
+    'COPY scripts/brace-expansion-compat.test.cjs scripts/',
+  ]) {
+    const copyIndex = dockerfile.indexOf(copyCommand);
+    assert.notEqual(copyIndex, -1, `Dockerfile is missing: ${copyCommand}`);
+    assert.ok(copyIndex < installIndex, `${copyCommand} must run before npm install`);
+  }
 });
