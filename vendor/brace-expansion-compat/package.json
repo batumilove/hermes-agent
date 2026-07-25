@@ -1,0 +1,14 @@
+{
+  "name": "brace-expansion",
+  "version": "5.0.8",
+  "private": true,
+  "description": "Legacy callable compatibility adapter backed by patched brace-expansion 5",
+  "main": "index.cjs",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.22.0"
+  },
+  "dependencies": {
+    "brace-expansion-modern": "npm:brace-expansion@5.0.8"
+  }
+}
