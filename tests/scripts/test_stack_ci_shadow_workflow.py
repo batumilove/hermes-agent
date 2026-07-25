@@ -28,6 +28,11 @@ def test_shadow_workflow_is_small_read_only_and_non_required() -> None:
     assert set(shadow["needs"]) == {"policy", "runtime-tests", "image"}
     assert shadow["if"] == "always()"
 
+    policy = workflow["jobs"]["policy"]
+    contract = next(step for step in policy["steps"] if step["name"] == "Check repository contracts")
+    assert "uv run --locked --extra dev ruff check ." in contract["run"]
+    assert "uv tool run ruff" not in contract["run"]
+
 
 def test_shadow_runtime_lane_matches_the_deployed_python_and_is_unsliced() -> None:
     workflow = _workflow("stack-ci-shadow.yml")
@@ -48,6 +53,7 @@ def test_shadow_runtime_lane_matches_the_deployed_python_and_is_unsliced() -> No
         "tests/gateway/test_telegram_polling_progress.py",
         "tests/cron/test_scheduler.py",
         "tests/scripts/test_hermes_compose_deploy.py",
+        "tests/scripts/test_stack_ci_shadow_workflow.py",
         "tests/plugins/test_provider_telemetry_plugin.py",
     ):
         assert required_path in run["run"]

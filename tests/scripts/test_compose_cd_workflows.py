@@ -118,8 +118,20 @@ def test_deployment_installs_exact_running_stack_acceptance_helper() -> None:
     assert "scripts/deploy/verify_running_stack.py" in run
     assert 'install -m 0755' in run
     assert 'verify-running-stack.py' in run
-    assert 'verify-running-stack.py' in deployer
-    assert deployer.index('verify-running-stack.py') < deployer.index('record_evidence deployed')
+    invocation = 'python3 "$acceptance_helper"'
+    assert invocation in deployer
+    invocation_index = deployer.index(invocation)
+    evidence_index = deployer.index('record_evidence deployed')
+    assert invocation_index < evidence_index
+    invocation_block = deployer[invocation_index:evidence_index]
+    for required_argument in (
+        '--environment "$environment"',
+        '--image "$image"',
+        '--digest "$digest"',
+        '--source-sha "$source_sha"',
+        '--deploy-root "$deploy_root"',
+    ):
+        assert required_argument in invocation_block
 
 
 def test_manual_promotion_verifies_digest_without_rebuilding() -> None:

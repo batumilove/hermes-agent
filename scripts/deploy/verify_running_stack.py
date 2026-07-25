@@ -154,7 +154,13 @@ def accept_running_stack(
         raise AcceptanceError("invalid image digest")
     if not _SOURCE_SHA.fullmatch(source_sha):
         raise AcceptanceError("invalid source SHA")
-    if not deploy_root.is_absolute() or deploy_root == Path("/"):
+    if not deploy_root.is_absolute():
+        raise AcceptanceError("deployment root must be absolute and non-root")
+    try:
+        deploy_root = deploy_root.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise AcceptanceError(f"cannot resolve deployment root: {exc}") from exc
+    if deploy_root == Path("/"):
         raise AcceptanceError("deployment root must be absolute and non-root")
 
     verify_release_env(deploy_root / "release.env", environment, image, digest, source_sha)

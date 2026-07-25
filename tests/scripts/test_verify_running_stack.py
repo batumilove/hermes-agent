@@ -5,7 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from scripts.deploy.verify_running_stack import AcceptanceError, verify_inspect, verify_release_env
+from scripts.deploy.verify_running_stack import (
+    AcceptanceError,
+    accept_running_stack,
+    verify_inspect,
+    verify_release_env,
+)
 
 
 IMAGE = "ghcr.io/batumilove/hermes-agent-deploy"
@@ -76,6 +81,11 @@ def test_release_env_rejects_extra_or_mismatched_state(tmp_path: Path, bad_line:
 
     with pytest.raises(AcceptanceError):
         verify_release_env(release, ENVIRONMENT, IMAGE, DIGEST, SOURCE_SHA)
+
+
+def test_acceptance_rejects_a_deployment_root_that_resolves_to_root() -> None:
+    with pytest.raises(AcceptanceError, match="absolute and non-root"):
+        accept_running_stack(ENVIRONMENT, IMAGE, DIGEST, SOURCE_SHA, Path("/tmp/.."))
 
 
 def test_inspect_accepts_exact_healthy_fresh_runtime() -> None:
