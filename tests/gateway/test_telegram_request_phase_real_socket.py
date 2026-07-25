@@ -45,6 +45,8 @@ _CASES = (
     "provenance",
     "tls_handshake",
     "response_headers",
+    "response_headers_peer_fin_race",
+    "response_headers_peer_fin_wave",
     "response_body",
     "peer_fin_idle",
     "repeated",
@@ -57,6 +59,8 @@ _PTB_CASES = frozenset(
         "provenance",
         "tls_handshake",
         "response_headers",
+        "response_headers_peer_fin_race",
+        "response_headers_peer_fin_wave",
         "response_body",
         "peer_fin_idle",
         "repeated",
@@ -145,8 +149,9 @@ async def _drain() -> None:
 class _ProtocolServer:
     """Local server with deterministic TLS/header/body cancellation points."""
 
-    def __init__(self, mode: str):
+    def __init__(self, mode: str, *, target_connections: int = 1):
         self.mode = mode
+        self.target_connections = target_connections
         self.started = asyncio.Event()
         self.allow_peer_fin = asyncio.Event()
         self.peer_fin_sent = asyncio.Event()
@@ -156,6 +161,7 @@ class _ProtocolServer:
         self.server: asyncio.Server | None = None
         self.port = 0
         self._writers: set[asyncio.StreamWriter] = set()
+        self._peer_fin_writers: set[asyncio.StreamWriter] = set()
 
     def url(self, path: str = "/botTOKEN/getMe") -> str:
         scheme = "https" if self.mode == "tls_handshake" else "http"
@@ -197,6 +203,46 @@ class _ProtocolServer:
 
             request = await reader.readuntil(b"\r\n\r\n")
             first_line = request.split(b"\r\n", 1)[0]
+
+            if self.mode == "response_headers_peer_fin_race":
+                # Reproduce the production boundary: the peer queues a partial
+                # pre-response TLS/HTTP record and FIN while the caller is about
+                # to cancel.  The client has a live socket but no httpx.Response
+                # yet.  Queue exactly 631 bytes, matching the unread receive
+                # queue preserved from every affected Telegram socket.
+                payload = b"HTTP/1.1 200 OK\r\nX-Incomplete: " + b"x" * 600
+                assert len(payload) == 631
+                writer.write(payload)
+                writer.close()
+                self.started.set()
+                self.peer_fin_sent.set()
+                with contextlib.suppress(Exception):
+                    await writer.wait_closed()
+                self._writers.discard(writer)
+                self.disconnects += 1
+                return
+
+            if self.mode == "response_headers_peer_fin_wave":
+                # Hold a pool-width wave just before response creation. Once
+                # every request has 631 unread bytes queued, close all peers
+                # synchronously and wake the already-waiting canceller. This
+                # orders cancellation ahead of the clients' next socket read.
+                payload = b"HTTP/1.1 200 OK\r\nX-Incomplete: " + b"x" * 600
+                assert len(payload) == 631
+                writer.write(payload)
+                self._peer_fin_writers.add(writer)
+                if len(self._peer_fin_writers) == self.target_connections:
+                    for peer in tuple(self._peer_fin_writers):
+                        peer.close()
+                    self.started.set()
+                    self.peer_fin_sent.set()
+                await self.started.wait()
+                with contextlib.suppress(Exception):
+                    await writer.wait_closed()
+                self._writers.discard(writer)
+                self.disconnects += 1
+                return
+
             if self.mode == "concurrent" and b"/healthy" in first_line:
                 body = b'{"ok":true,"result":{}}'
                 writer.write(
@@ -511,6 +557,44 @@ async def _single_cancel_case(mode: str) -> dict[str, Any]:
     return result
 
 
+async def _peer_fin_cancel_wave_case() -> dict[str, Any]:
+    count = 8
+    runtime = _RealRuntime()
+    await runtime.initialize()
+    server = await _ProtocolServer(
+        "response_headers_peer_fin_wave", target_connections=count
+    ).start()
+    tasks = [
+        asyncio.create_task(runtime.request.retrieve(server.url(f"/botTOKEN/wave-{i}")))
+        for i in range(count)
+    ]
+    try:
+        await asyncio.wait_for(server.started.wait(), timeout=5.0)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await _drain()
+        leaks = _connections_to_port(server.port)
+        result = {
+            "case": "response_headers_peer_fin_wave",
+            "ok": (
+                not leaks
+                and server.accepted == count
+                and server.disconnects == count
+            ),
+            "accepted": server.accepted,
+            "disconnects": server.disconnects,
+            "leaks": leaks,
+        }
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await server.aclose()
+        await runtime.aclose()
+    return result
+
+
 async def _peer_fin_idle_case() -> dict[str, Any]:
     """A fully consumed response must not strand an idle CLOSE_WAIT socket."""
     runtime = _RealRuntime()
@@ -704,8 +788,15 @@ async def _proxy_https_healthy_case() -> dict[str, Any]:
 async def _run_case(case: str) -> dict[str, Any]:
     if case == "provenance":
         return await _provenance_case()
-    if case in {"tls_handshake", "response_headers", "response_body"}:
+    if case in {
+        "tls_handshake",
+        "response_headers",
+        "response_headers_peer_fin_race",
+        "response_body",
+    }:
         return await _single_cancel_case(case)
+    if case == "response_headers_peer_fin_wave":
+        return await _peer_fin_cancel_wave_case()
     if case == "peer_fin_idle":
         return await _peer_fin_idle_case()
     if case == "repeated":
