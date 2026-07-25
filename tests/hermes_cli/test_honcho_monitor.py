@@ -314,6 +314,65 @@ def test_queue_parse_totals_from_three_column_per_type_rows():
     assert parsed == {"pending": 22, "done": 130}
 
 
+def _spark_latency_snapshot(
+    *, latency_s: float, active_dream_count: int, active_dream_age_s: int | None = None
+) -> hm.HonchoSnapshot:
+    if active_dream_age_s is None:
+        active_dream_age_s = 14 * 60 if active_dream_count else 0
+    return hm.HonchoSnapshot(
+        services={"api_ok": True, "deriver_up": True, "db_ok": True, "redis_ok": True},
+        pipeline={
+            "embedding": {
+                "model": "qwen3-embedding-8b-1536",
+                "base_url": "http://192.168.10.211:11435/v1",
+                "dimensions_mode": "never",
+                "vector_dimensions": "1536",
+            }
+        },
+        db={"documents_dims": 1536, "messages_dims": 1536},
+        queue={},
+        queue_by_type={},
+        errors={"save_representation": 0, "four_oh_one": 0},
+        spark_goat={
+            "ok": True,
+            "latency_s": latency_s,
+            "thinking": False,
+            "model": "aeon-ultimate",
+        },
+        deriver={
+            "active_dream_count": active_dream_count,
+            "active_dream_oldest_age_s": active_dream_age_s,
+        },
+    )
+
+
+def test_spark_goat_latency_during_active_dream_is_classified_as_contention():
+    alerts = hm.build_alerts(_spark_latency_snapshot(latency_s=12.5, active_dream_count=1))
+
+    assert "spark-goat dream contention (chat latency 12.5s)" in alerts
+    assert "spark-goat chat latency degraded" not in alerts
+
+
+def test_spark_goat_latency_without_active_dream_remains_degradation_alert():
+    alerts = hm.build_alerts(_spark_latency_snapshot(latency_s=12.5, active_dream_count=0))
+
+    assert "spark-goat chat latency degraded" in alerts
+    assert not any("dream contention" in alert for alert in alerts)
+
+
+def test_stale_active_dream_does_not_mask_chat_degradation():
+    alerts = hm.build_alerts(
+        _spark_latency_snapshot(
+            latency_s=12.5,
+            active_dream_count=1,
+            active_dream_age_s=hm.DREAM_STALE_ACTIVE_SECONDS,
+        )
+    )
+
+    assert "spark-goat chat latency degraded" in alerts
+    assert not any("dream contention" in alert for alert in alerts)
+
+
 def test_spark_goat_failure_is_blocking_alert():
     snapshot = {
         "services": {"api_ok": True, "deriver_up": True, "db_ok": True, "redis_ok": True},

@@ -347,7 +347,16 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
     elif spark.get("thinking"):
         alerts.append("spark-goat thinking still enabled")
     elif float(spark.get("latency_s", 0.0) or 0.0) > 5.0:
-        alerts.append("spark-goat chat latency degraded")
+        deriver = snapshot.deriver or {}
+        active_dream_count = int(deriver.get("active_dream_count") or 0)
+        active_dream_age_s = int(float(deriver.get("active_dream_oldest_age_s") or 0))
+        if active_dream_count > 0 and active_dream_age_s < DREAM_STALE_ACTIVE_SECONDS:
+            alerts.append(
+                "spark-goat dream contention "
+                f"(chat latency {float(spark.get('latency_s') or 0.0):.1f}s)"
+            )
+        else:
+            alerts.append("spark-goat chat latency degraded")
 
     ingestion = snapshot.ingestion or {}
     if ingestion.get("source_fresh") and not ingestion.get("downstream_fresh"):
