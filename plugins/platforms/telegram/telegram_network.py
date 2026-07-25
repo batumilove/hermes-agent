@@ -283,11 +283,6 @@ class _RetryingCloseResponseStream(httpx.AsyncByteStream):
         try:
             task.result()
         except BaseException:
-            logger.debug(
-                "Telegram response stream close interrupted or failed; "
-                "scheduling retry",
-                exc_info=True,
-            )
             self._schedule_detached_retry()
 
     def _schedule_detached_retry(self) -> None:
