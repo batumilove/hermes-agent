@@ -139,6 +139,30 @@ async def test_gateway_stop_cancels_secondary_reconnects_before_session_drain():
 
 
 @pytest.mark.asyncio
+async def test_gateway_stop_bounds_shutdown_notifications_from_stuck_adapter():
+    """A stuck best-effort notification must not consume the stop deadline."""
+    runner, adapter = make_restart_runner()
+    runner._adapter_disconnect_timeout_secs = lambda: 0.01
+
+    source = make_restart_source()
+    session_key = build_session_key(source)
+    runner._running_agents = {session_key: MagicMock()}
+    runner._cache_session_source(session_key, source)
+
+    never = asyncio.Event()
+
+    async def stuck_send(*_args, **_kwargs):
+        await never.wait()
+
+    adapter.send = stuck_send
+    completed = await asyncio.wait_for(
+        runner._notify_active_sessions_with_timeout(), timeout=0.2
+    )
+
+    assert completed is False
+
+
+@pytest.mark.asyncio
 async def test_gateway_stop_interrupts_after_drain_timeout():
     runner, adapter = make_restart_runner()
     runner._restart_drain_timeout = 0.05

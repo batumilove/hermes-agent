@@ -6863,6 +6863,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as e:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
 
+    async def _notify_active_sessions_with_timeout(self) -> bool:
+        """Bound the best-effort notification phase and force progress on timeout."""
+        timeout = self._adapter_disconnect_timeout_secs()
+        completed = await self._await_adapter_cleanup_with_timeout(
+            self._notify_active_sessions_of_shutdown(), timeout
+        )
+        if not completed:
+            logger.warning(
+                "Shutdown notifications exceeded %.1fs; forcing shutdown forward progress",
+                timeout,
+            )
+        return completed
+
     async def _notify_active_sessions_of_shutdown(self) -> None:
         """Send shutdown/restart notifications to active chats and home channels.
 
@@ -9740,8 +9753,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await self._cancel_secondary_profile_reconnect_tasks()
 
             # Notify all chats with active agents BEFORE draining.
-            # Adapters are still connected here, so messages can be sent.
-            await self._notify_active_sessions_of_shutdown()
+            # Adapters are still connected here, so messages can be sent. The
+            # notification is best-effort and must not consume the stop budget
+            # if an adapter's network send wedges.
+            await self._notify_active_sessions_with_timeout()
             logger.info(
                 "Shutdown phase: notify_active_sessions done at +%.2fs",
                 _phase_elapsed(),
