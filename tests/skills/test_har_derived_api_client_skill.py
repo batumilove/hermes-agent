@@ -118,19 +118,23 @@ def _make_har() -> dict:
     }
 
 
+def _run_derive(mod, har: Path, *args: str) -> int:
+    import sys
+
+    argv = sys.argv
+    try:
+        sys.argv = ["har_to_client.py", str(har), *args]
+        return mod.main()
+    finally:
+        sys.argv = argv
+
+
 def test_derives_endpoint_and_filters_static(tmp_path, capsys):
     mod = _load_module(DERIVE, "har_to_client_undertest")
     har = tmp_path / "t.har"
     har.write_text(json.dumps(_make_har()), encoding="utf-8")
 
-    import sys
-
-    argv = sys.argv
-    try:
-        sys.argv = ["har_to_client.py", str(har), "--host", "example.com"]
-        rc = mod.main()
-    finally:
-        sys.argv = argv
+    rc = _run_derive(mod, har, "--host", "example.com")
     out = capsys.readouterr().out
 
     assert rc == 0
@@ -146,6 +150,45 @@ def test_derives_endpoint_and_filters_static(tmp_path, capsys):
     assert "User-Agent (send this): Mozilla/5.0 TestBrowser/1.0" in out
 
 
+def test_derives_query_from_url_and_redacts_sensitive_values(tmp_path, capsys):
+    mod = _load_module(DERIVE, "har_to_client_security_undertest")
+    fixture = _make_har()
+    request = fixture["log"]["entries"][0]["request"]
+    request["queryString"] = []  # shape emitted by the CDP capturer
+    request["headers"].extend([
+        {"name": "Authorization", "value": "Bearer live-secret"},
+        {"name": "X-Api-Key", "value": "api-key-secret"},
+    ])
+    fixture["log"]["entries"][0]["response"]["content"]["text"] = json.dumps(
+        {"reviews": [], "access_token": "body-secret", "nested": {"sessionId": "session-secret"}}
+    )
+    har = tmp_path / "cdp.har"
+    har.write_text(json.dumps(fixture), encoding="utf-8")
+
+    rc = _run_derive(mod, har, "--host", "example.com")
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "limit = 5" in out
+    assert "authorization: <redacted>" in out
+    assert "x-api-key: <redacted>" in out
+    for secret in ("live-secret", "api-key-secret", "body-secret", "session-secret"):
+        assert secret not in out
+
+
+def test_malformed_har_fails_cleanly(tmp_path, capsys):
+    mod = _load_module(DERIVE, "har_to_client_malformed_undertest")
+    har = tmp_path / "bad.har"
+    har.write_text("{}", encoding="utf-8")
+
+    rc = _run_derive(mod, har)
+    captured = capsys.readouterr()
+
+    assert rc == 2
+    assert "Not a valid HAR file" in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_path_template_collapses_ids():
     mod = _load_module(DERIVE, "har_to_client_undertest2")
     assert mod.path_template("/v1/items/12345/x") == "/v1/items/{id}/x"
@@ -159,6 +202,7 @@ def test_capture_actions_parse_ok():
     compile(src, str(CAPTURE), "exec")
     assert "def run_action(" in src
     assert 'record_har_content="embed"' in src
+    assert "os.umask(0o077)" in src
 
 
 def test_cdp_capture_is_valid_and_attaches_not_launches():
@@ -168,9 +212,39 @@ def test_cdp_capture_is_valid_and_attaches_not_launches():
     src = CAPTURE_CDP.read_text(encoding="utf-8")
     compile(src, str(CAPTURE_CDP), "exec")
     assert "connect_over_cdp(" in src
-    assert 'page.on("request"' in src and 'page.on("response"' in src
+    assert 'page.on("response"' in src
+    assert "MAX_RESPONSE_BODY_BYTES" in src
+    assert "0o600" in src
+    assert "pending" not in src
     # must not tear down a browser it merely attached to
     assert "browser.close()" not in src
+
+
+def test_cdp_entry_preserves_query_and_caps_large_bodies():
+    mod = _load_module(CAPTURE_CDP, "har_capture_cdp_undertest")
+
+    class Request:
+        resource_type = "fetch"
+        method = "GET"
+        url = "https://api.example.com/search?q=hello&empty="
+        headers = {"accept": "application/json"}
+        post_data = None
+
+    class Response:
+        status = 200
+        headers = {"content-type": "application/json", "content-length": "2000000"}
+
+        def body(self):
+            raise AssertionError("oversized declared response must not be loaded")
+
+    entry = mod._har_entry(Request(), Response())
+
+    assert entry["request"]["queryString"] == [
+        {"name": "q", "value": "hello"},
+        {"name": "empty", "value": ""},
+    ]
+    assert entry["response"]["content"]["text"] == ""
+    assert entry["response"]["content"]["_truncated"] is True
 
 
 def test_skill_documents_all_browser_pathways(skill_text: str):

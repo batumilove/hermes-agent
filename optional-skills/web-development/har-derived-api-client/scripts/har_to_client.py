@@ -17,7 +17,7 @@ import json
 import re
 import sys
 from collections import OrderedDict
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 BORING_HEADERS = {
     "accept-encoding", "accept-language", "connection", "content-length",
@@ -28,6 +28,36 @@ BORING_HEADERS = {
 }
 ID_SEG = re.compile(r"^(\d+|[0-9a-f]{8}-[0-9a-f-]{27,}|[0-9a-f]{16,})$", re.I)
 STATIC_EXT = re.compile(r"\.(js|css|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|mp4|map)$", re.I)
+SENSITIVE_MARKERS = {
+    "auth", "authorization", "credential", "cookie", "key", "password",
+    "secret", "session", "signature", "token",
+}
+
+
+def is_sensitive_name(name: str) -> bool:
+    """Recognize secret-bearing header/JSON keys, including camelCase names."""
+    snake = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name).lower()
+    return bool(SENSITIVE_MARKERS.intersection(re.findall(r"[a-z0-9]+", snake)))
+
+
+def redact_body(text: str, mime: str) -> str:
+    """Mask values of secret-shaped JSON keys while preserving payload shape."""
+    if not isinstance(text, str) or not text or "json" not in mime.lower():
+        return text
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        return text
+
+    def walk(value):
+        if isinstance(value, dict):
+            return {key: ("<redacted>" if is_sensitive_name(str(key)) else walk(item))
+                    for key, item in value.items()}
+        if isinstance(value, list):
+            return [walk(item) for item in value]
+        return value
+
+    return json.dumps(walk(payload), ensure_ascii=False)
 
 
 def path_template(path: str) -> str:
@@ -62,11 +92,18 @@ def main() -> int:
     ap.add_argument("--max-body", type=int, default=600)
     args = ap.parse_args()
 
-    with open(args.har, encoding="utf-8") as f:
-        har = json.load(f)
+    try:
+        with open(args.har, encoding="utf-8") as f:
+            har = json.load(f)
+        entries = har["log"]["entries"]
+        if not isinstance(entries, list):
+            raise TypeError("log.entries is not a list")
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        print(f"Not a valid HAR file: {exc}", file=sys.stderr)
+        return 2
 
     groups = OrderedDict()
-    for entry in har["log"]["entries"]:
+    for entry in entries:
         req = entry["request"]
         url = urlsplit(req["url"])
         if url.scheme not in ("http", "https"):
@@ -80,21 +117,28 @@ def main() -> int:
         g = groups.setdefault(key, {"count": 0, "queries": set(), "headers": {},
                                     "req_body": None, "resp": None})
         g["count"] += 1
-        for q in req.get("queryString", []):
-            g["queries"].add((q["name"], trunc(q["value"], 80)))
+        query_items = req.get("queryString") or [
+            {"name": name, "value": value}
+            for name, value in parse_qsl(url.query, keep_blank_values=True)
+        ]
+        for q in query_items:
+            value = "<redacted>" if is_sensitive_name(q["name"]) else trunc(q["value"], 80)
+            g["queries"].add((q["name"], value))
         for h in req.get("headers", []):
             name = h["name"].lower().lstrip(":")
             if name in BORING_HEADERS or name in ("method", "path", "scheme", "authority"):
                 continue
-            g["headers"][name] = trunc(h["value"], 120)
+            g["headers"][name] = "<redacted>" if is_sensitive_name(name) else trunc(h["value"], 120)
         post = req.get("postData", {})
         if post.get("text") and g["req_body"] is None:
-            g["req_body"] = (post.get("mimeType", ""), trunc(post["text"], args.max_body))
+            mime = post.get("mimeType", "")
+            g["req_body"] = (mime, trunc(redact_body(post["text"], mime), args.max_body))
         resp = entry.get("response", {})
         if g["resp"] is None and resp:
             content = resp.get("content", {})
-            g["resp"] = (resp.get("status"), content.get("mimeType", ""),
-                         trunc(content.get("text") or "", args.max_body))
+            mime = content.get("mimeType", "")
+            g["resp"] = (resp.get("status"), mime,
+                         trunc(redact_body(content.get("text") or "", mime), args.max_body))
 
     if not groups:
         print("No API-looking entries found. Re-run with --include-static to see everything.")
@@ -104,7 +148,7 @@ def main() -> int:
     # sites 403 a default library User-Agent).
     ua = None
     saw_cookie = saw_auth = False
-    for entry in har["log"]["entries"]:
+    for entry in entries:
         for h in entry["request"].get("headers", []):
             n = h["name"].lower()
             if n == "user-agent" and ua is None:

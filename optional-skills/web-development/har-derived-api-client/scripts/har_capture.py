@@ -13,6 +13,7 @@ NOTE: a failing action raises before the HAR is flushed -- you get no file.
 Fix the selector (try --headed to watch) and rerun.
 """
 import argparse
+import os
 import sys
 import time
 
@@ -47,23 +48,28 @@ def main() -> int:
     ap.add_argument("--headed", action="store_true")
     args = ap.parse_args()
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=not args.headed)
-        context = browser.new_context(
-            record_har_path=args.har_path,
-            record_har_content="embed",  # keep response bodies in the HAR
-        )
-        page = context.new_page()
-        page.goto(args.url, wait_until="domcontentloaded")
-        for spec in args.action:
-            run_action(page, spec)
-            try:
-                page.wait_for_load_state("networkidle", timeout=15000)
-            except Exception:
-                pass  # some pages never fully idle; the trailing --wait covers it
-        time.sleep(args.wait)
-        context.close()  # flushes the HAR
-        browser.close()
+    old_umask = os.umask(0o077)
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=not args.headed)
+            context = browser.new_context(
+                record_har_path=args.har_path,
+                record_har_content="embed",  # keep response bodies in the HAR
+            )
+            page = context.new_page()
+            page.goto(args.url, wait_until="domcontentloaded")
+            for spec in args.action:
+                run_action(page, spec)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=15000)
+                except Exception:
+                    pass  # some pages never fully idle; the trailing --wait covers it
+            time.sleep(args.wait)
+            context.close()  # flushes the HAR
+            browser.close()
+        os.chmod(args.har_path, 0o600)
+    finally:
+        os.umask(old_umask)
     print(f"HAR written: {args.har_path}")
     return 0
 

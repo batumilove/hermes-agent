@@ -8,8 +8,8 @@ Firecrawl), a Camofox session exposing CDP, or anything wired via
 
 Why this exists: Playwright's record_har_path only works on a context you
 launched locally. connect_over_cdp() attaches to an existing browser, so
-record_har is unavailable — we assemble the HAR from CDP Network.* events
-ourselves via page.on("request"/"response").
+record_har is unavailable — we assemble the HAR from Playwright response events
+ourselves, including each response's originating request.
 
 Usage:
   python3 har_capture_cdp.py <cdp_url> <output.har> [--wait S] \
@@ -21,10 +21,14 @@ Usage:
 import argparse
 import base64
 import json
+import os
 import sys
 import time
+from urllib.parse import parse_qsl, urlsplit
 
 from playwright.sync_api import sync_playwright
+
+MAX_RESPONSE_BODY_BYTES = 1_000_000
 
 
 def run_action(page, spec: str) -> None:
@@ -47,14 +51,25 @@ def run_action(page, spec: str) -> None:
 def _har_entry(req, resp):
     """Build a minimal HAR entry from a Playwright request/response pair."""
     body_text, encoding = "", ""
+    body_truncated = False
     if resp is not None:
         try:
-            raw = resp.body()
-            try:
-                body_text = raw.decode("utf-8")
-            except UnicodeDecodeError:
-                body_text = base64.b64encode(raw).decode("ascii")
-                encoding = "base64"
+            declared_size = int(resp.headers.get("content-length", "0"))
+        except (TypeError, ValueError):
+            declared_size = 0
+        try:
+            if declared_size > MAX_RESPONSE_BODY_BYTES:
+                body_truncated = True
+            else:
+                raw = resp.body()
+                if len(raw) > MAX_RESPONSE_BODY_BYTES:
+                    raw = raw[:MAX_RESPONSE_BODY_BYTES]
+                    body_truncated = True
+                try:
+                    body_text = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    body_text = base64.b64encode(raw).decode("ascii")
+                    encoding = "base64"
         except Exception:
             pass
     post = req.post_data
@@ -64,7 +79,10 @@ def _har_entry(req, resp):
             "method": req.method,
             "url": req.url,
             "headers": [{"name": k, "value": v} for k, v in req.headers.items()],
-            "queryString": [],  # har_to_client.py re-parses the URL, so leave empty
+            "queryString": [
+                {"name": name, "value": value}
+                for name, value in parse_qsl(urlsplit(req.url).query, keep_blank_values=True)
+            ],
             "postData": {"mimeType": req.headers.get("content-type", ""),
                          "text": post} if post else {},
         },
@@ -75,6 +93,7 @@ def _har_entry(req, resp):
                 "mimeType": (resp.headers.get("content-type", "") if resp else ""),
                 "text": body_text,
                 **({"encoding": encoding} if encoding else {}),
+                **({"_truncated": True} if body_truncated else {}),
             },
         },
     }
@@ -90,22 +109,15 @@ def main() -> int:
     args = ap.parse_args()
 
     entries = []
-    pending = {}  # id(request) -> request
 
     with sync_playwright() as p:
         browser = p.chromium.connect_over_cdp(args.cdp_url)
         context = browser.contexts[0] if browser.contexts else browser.new_context()
         page = context.pages[0] if context.pages else context.new_page()
 
-        def on_request(req):
-            pending[id(req)] = req
-
         def on_response(resp):
-            req = resp.request
-            pending.pop(id(req), None)
-            entries.append(_har_entry(req, resp))
+            entries.append(_har_entry(resp.request, resp))
 
-        page.on("request", on_request)
         page.on("response", on_response)
 
         if args.goto:
@@ -118,15 +130,21 @@ def main() -> int:
                 pass
         time.sleep(args.wait)
 
-        page.remove_listener("request", on_request)
         page.remove_listener("response", on_response)
         # Do NOT close: we connected to someone else's browser.
 
     har = {"log": {"version": "1.2",
                    "creator": {"name": "har_capture_cdp", "version": "0.1"},
                    "entries": entries}}
-    with open(args.har_path, "w", encoding="utf-8") as f:
-        json.dump(har, f)
+    fd = os.open(args.har_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            fd = -1
+            json.dump(har, f)
+    finally:
+        if fd >= 0:
+            os.close(fd)
     print(f"HAR written: {args.har_path} ({len(entries)} entries)")
     return 0
 
