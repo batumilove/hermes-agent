@@ -996,8 +996,8 @@ class TestFallbackTransport:
         assert events == ["request-started", "request-cancelled"]
         request_ids = {
             token.split("=", 1)[1]
-            for payload in payloads
-            for token in payload.split()
+            for record, _closed in capture.records
+            for token in record.getMessage().split()
             if token.startswith("request_id=")
         }
         assert len(request_ids) == 1
