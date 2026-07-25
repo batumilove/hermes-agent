@@ -43,6 +43,7 @@ _DRAIN_SECONDS = 0.5
 _LEAK_STATUSES = {"ESTABLISHED", "CLOSE_WAIT", "FIN_WAIT1", "FIN_WAIT2"}
 _CASES = (
     "provenance",
+    "pre_response_inactive_route",
     "tls_handshake",
     "response_headers",
     "response_headers_peer_fin_race",
@@ -138,6 +139,66 @@ def _connections_to_port(port: int) -> list[dict[str, Any]]:
                 }
             )
     return connections
+
+
+def _owned_connections_to_port(port: int) -> list[dict[str, Any]]:
+    """Return exact process-owned socket identity plus unread receive bytes."""
+    inode_by_fd: dict[int, int] = {}
+    for fd_name in os.listdir("/proc/self/fd"):
+        try:
+            target = os.readlink(f"/proc/self/fd/{fd_name}")
+        except OSError:
+            continue
+        if target.startswith("socket:[") and target.endswith("]"):
+            inode_by_fd[int(fd_name)] = int(target[8:-1])
+
+    recv_q_by_inode: dict[int, int] = {}
+    with open("/proc/net/tcp", encoding="ascii") as tcp_table:
+        next(tcp_table)
+        for row in tcp_table:
+            fields = row.split()
+            tx_q_hex, recv_q_hex = fields[4].split(":")
+            recv_q_by_inode[int(fields[9])] = int(recv_q_hex, 16)
+
+    owned: list[dict[str, Any]] = []
+    for connection in psutil.Process().net_connections(kind="tcp"):
+        if not connection.raddr or connection.raddr.port != port:
+            continue
+        inode = inode_by_fd.get(connection.fd)
+        owned.append(
+            {
+                "fd": connection.fd,
+                "inode": inode,
+                "local_port": connection.laddr.port,
+                "remote_port": connection.raddr.port,
+                "status": connection.status,
+                "recv_q": recv_q_by_inode.get(inode, 0),
+            }
+        )
+    return owned
+
+
+class _PauseBeforeSocketRead:
+    """Deterministically hold a real stream after peer FIN, before HTTP parsing."""
+
+    def __init__(self, stream: Any):
+        self._stream = stream
+        self.read_entered = asyncio.Event()
+        self.release_read = asyncio.Event()
+
+    async def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
+        self.read_entered.set()
+        await self.release_read.wait()
+        return await self._stream.read(max_bytes, timeout=timeout)
+
+    async def write(self, buffer: bytes, timeout: float | None = None) -> None:
+        await self._stream.write(buffer, timeout=timeout)
+
+    async def aclose(self) -> None:
+        await self._stream.aclose()
+
+    def get_extra_info(self, info: str) -> Any:
+        return self._stream.get_extra_info(info)
 
 
 async def _drain() -> None:
@@ -463,7 +524,11 @@ class _RealRuntime:
 
         self.HTTPXRequest = HTTPXRequest
         self.original_normalize = tnet._normalize_fallback_ips
+        self.original_resolve_proxy = tnet._resolve_proxy_url
         tnet._normalize_fallback_ips = _allow_loopback_fallback_ips
+        # The real transport remains in use; only host proxy discovery is
+        # disabled so this loopback protocol harness is hermetic.
+        tnet._resolve_proxy_url = lambda target_hosts=None: None
         self.transport = tnet.TelegramFallbackTransport(
             ["127.0.0.1"],
             limits=httpx.Limits(
@@ -488,6 +553,7 @@ class _RealRuntime:
     async def aclose(self) -> None:
         await self.request.shutdown()
         tnet._normalize_fallback_ips = self.original_normalize
+        tnet._resolve_proxy_url = self.original_resolve_proxy
 
 
 async def _cancel_request(runtime: _RealRuntime, server: _ProtocolServer, path: str = "/botTOKEN/getMe") -> None:
@@ -679,6 +745,123 @@ async def _concurrent_case() -> dict[str, Any]:
     return result
 
 
+async def _pre_response_inactive_route_case() -> dict[str, Any]:
+    """Cancellation after peer FIN must close the exact pre-response socket.
+
+    The read gate models an inactive route whose event-loop task is cancelled
+    after the kernel has accepted unread bytes plus FIN, but before httpcore can
+    create a response or run another request through that pool.  The underlying
+    stream and socket are real; only the scheduling boundary is controlled.
+    """
+    from httpcore._backends.auto import AutoBackend
+
+    payload = b"incomplete pre-response bytes" * 24
+    assert len(payload) > 0
+    peer_fin_sent = asyncio.Event()
+    client_eof = asyncio.Event()
+    writers: set[asyncio.StreamWriter] = set()
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        writers.add(writer)
+        try:
+            writer.write(payload)
+            await writer.drain()
+            writer.write_eof()
+            await writer.drain()
+            peer_fin_sent.set()
+            if not await reader.read(1):
+                client_eof.set()
+        finally:
+            writers.discard(writer)
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    raw_stream = None
+    read_task = None
+    capture = _SocketLifecycleCapture()
+    capture.__enter__()
+    try:
+        raw_stream = await AutoBackend().connect_tcp(
+            "127.0.0.1", port, timeout=5.0
+        )
+        paused_stream = _PauseBeforeSocketRead(raw_stream)
+        lifecycle = tnet._SocketLifecycleState(
+            owner="general", route="primary", stream=raw_stream
+        )
+        stream = tnet._DiagnosticCancellationSafeNetworkStream(
+            paused_stream, lifecycle
+        )
+        read_task = asyncio.create_task(stream.read(65536, timeout=20.0))
+        await asyncio.wait_for(paused_stream.read_entered.wait(), timeout=2.0)
+        await asyncio.wait_for(peer_fin_sent.wait(), timeout=2.0)
+
+        deadline = asyncio.get_running_loop().time() + 2.0
+        before_cancel: list[dict[str, Any]] = []
+        while asyncio.get_running_loop().time() < deadline:
+            before_cancel = _owned_connections_to_port(port)
+            if any(
+                item["status"] == "CLOSE_WAIT" and item["recv_q"] > 0
+                for item in before_cancel
+            ):
+                break
+            await asyncio.sleep(0.01)
+
+        read_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await read_task
+        await asyncio.sleep(0)
+        after_cancel = _owned_connections_to_port(port)
+
+        opened = [m for m in capture.messages if "event=socket-opened" in m]
+        closed = [m for m in capture.messages if "event=socket-closed" in m]
+        response_events = [m for m in capture.messages if "response-" in m]
+        pre_cancel_close_wait = [
+            item
+            for item in before_cancel
+            if item["status"] == "CLOSE_WAIT" and item["recv_q"] > 0
+        ]
+        retained_inodes = {
+            item["inode"] for item in after_cancel if item["inode"] is not None
+        }
+        result = {
+            "case": "pre_response_inactive_route",
+            "ok": (
+                len(pre_cancel_close_wait) == 1
+                and not after_cancel
+                and len(opened) == 1
+                and len(closed) == 1
+                and not response_events
+                and client_eof.is_set()
+            ),
+            "before_cancel": before_cancel,
+            "after_cancel": after_cancel,
+            "retained_inodes": sorted(retained_inodes),
+            "peer_fin_sent": peer_fin_sent.is_set(),
+            "client_eof": client_eof.is_set(),
+            "socket_events": capture.messages,
+        }
+    finally:
+        capture.__exit__(None, None, None)
+        if read_task is not None:
+            read_task.cancel()
+            with contextlib.suppress(BaseException):
+                await read_task
+        if raw_stream is not None:
+            with contextlib.suppress(BaseException):
+                await raw_stream.aclose()
+        server.close()
+        await server.wait_closed()
+        for writer in tuple(writers):
+            writer.close()
+        for writer in tuple(writers):
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+    return result
+
+
 async def _proxy_tls_handshake_case() -> dict[str, Any]:
     """Cancel while real httpcore CONNECT traffic is blocked in TLS setup."""
     proxy = await _ConnectProxy().start()
@@ -788,6 +971,8 @@ async def _proxy_https_healthy_case() -> dict[str, Any]:
 async def _run_case(case: str) -> dict[str, Any]:
     if case == "provenance":
         return await _provenance_case()
+    if case == "pre_response_inactive_route":
+        return await _pre_response_inactive_route_case()
     if case in {
         "tls_handshake",
         "response_headers",

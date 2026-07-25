@@ -122,7 +122,18 @@ class _CancellationSafeNetworkStream:
         self._stream = stream
 
     async def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
-        return await self._stream.read(max_bytes, timeout=timeout)
+        try:
+            return await self._stream.read(max_bytes, timeout=timeout)
+        except BaseException:
+            # A caller cancellation can arrive after the peer has queued bytes
+            # plus FIN but before httpcore creates a Response.  Close this exact
+            # stream while ownership is still local; no response-level cleanup
+            # exists yet, and an inactive pool route may never be reaped.
+            try:
+                await self.aclose()
+            except BaseException:
+                pass
+            raise
 
     async def write(self, buffer: bytes, timeout: float | None = None) -> None:
         await self._stream.write(buffer, timeout=timeout)
