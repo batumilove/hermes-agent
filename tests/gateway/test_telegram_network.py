@@ -222,6 +222,29 @@ class _IdempotentInterruptedSocketByteStream(httpx.AsyncByteStream):
         return None
 
 
+class _IdempotentLateFailingByteStream(httpx.AsyncByteStream):
+    """Mark closed, then fail after an externally-cancelled shield waiter left."""
+
+    def __init__(self):
+        self.close_calls = 0
+        self.close_started = asyncio.Event()
+        self.release_close = asyncio.Event()
+        self._closed = False
+
+    async def __aiter__(self):
+        if False:
+            yield b""
+
+    async def aclose(self):
+        self.close_calls += 1
+        if self._closed:
+            return
+        self._closed = True
+        self.close_started.set()
+        await self.release_close.wait()
+        raise RuntimeError("late close failure")
+
+
 class _SingleResponseTransport(httpx.AsyncBaseTransport):
     def __init__(self, response: httpx.Response):
         self.response = response
@@ -1224,6 +1247,43 @@ class TestFallbackTransport:
             stream.release_close.set()
             client.close()
             server.stop()
+
+    @pytest.mark.asyncio
+    async def test_shielded_close_late_failure_cannot_false_green_idempotent_retry(self):
+        """A late first-close failure must still close the exact raw socket."""
+        left, right = socket.socketpair()
+        tracked_socket = _RawSocketTracker(left)
+        network_stream = _AcloseFailingNetworkStream(tracked_socket)
+        stream = _IdempotentLateFailingByteStream()
+        retrying = tnet._RetryingCloseResponseStream(
+            stream,
+            network_stream=network_stream,
+        )
+        try:
+            waiter = asyncio.create_task(retrying.aclose())
+            await asyncio.wait_for(stream.close_started.wait(), timeout=1.0)
+            waiter.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiter
+
+            stream.release_close.set()
+            for _ in range(200):
+                if tracked_socket.close_calls == 1:
+                    break
+                await asyncio.sleep(0.01)
+
+            assert stream.close_calls == 2
+            assert network_stream.aclose_calls == 1
+            assert tracked_socket.close_calls == 1
+            assert tracked_socket.fileno() == -1
+            for _ in range(200):
+                if not tnet._abandoned_response_cleanups:
+                    break
+                await asyncio.sleep(0.01)
+            assert not tnet._abandoned_response_cleanups
+        finally:
+            left.close()
+            right.close()
 
     @pytest.mark.asyncio
     async def test_retry_failure_forces_network_stream_close(self):
