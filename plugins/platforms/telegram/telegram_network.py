@@ -287,6 +287,7 @@ class _RetryingCloseResponseStream(httpx.AsyncByteStream):
         close_task = asyncio.create_task(self._stream.aclose())
         _abandoned_response_cleanups.add(close_task)
         close_task.add_done_callback(_abandoned_response_cleanups.discard)
+        close_task.add_done_callback(self._observe_first_close)
         try:
             await asyncio.shield(close_task)
         except asyncio.CancelledError:
@@ -303,23 +304,55 @@ class _RetryingCloseResponseStream(httpx.AsyncByteStream):
             self._schedule_detached_retry()
             raise
 
+    def _observe_first_close(self, close_task: asyncio.Task) -> None:
+        """Recover a shielded close that fails after its waiter was cancelled."""
+        try:
+            close_task.result()
+        except BaseException:
+            self._schedule_detached_retry()
+
     def _schedule_detached_retry(self) -> None:
         if self._cleanup_scheduled:
             return
         self._cleanup_scheduled = True
-        task = asyncio.create_task(self._retry_close())
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # The response close has already failed and no event loop remains
+            # to drive async recovery. Close only its exact raw socket.
+            self._close_raw_socket_fallback()
+            return
+        task = loop.create_task(self._retry_close())
         _abandoned_response_cleanups.add(task)
         task.add_done_callback(_abandoned_response_cleanups.discard)
 
     async def _retry_close(self) -> None:
         try:
             await asyncio.wait_for(self._stream.aclose(), timeout=5.0)
-            return
         except asyncio.CancelledError:
             pass
         except Exception:
             pass
+        if self._raw_socket_is_closed():
+            return
+        # A response stream may mark itself closed before failing, making this
+        # retry return successfully without completing pool/socket cleanup.
+        # Once the first close failed, always drive the exact network-stream
+        # terminal path; a successful network close is left to its own pooling
+        # semantics, while its failure falls back to the exact raw OS socket.
         await self._force_close_network_stream()
+
+    def _raw_socket_is_closed(self) -> bool:
+        """Return true only when the exact exposed OS socket is already closed."""
+        try:
+            get_extra_info = getattr(self._network_stream, "get_extra_info", None)
+            if get_extra_info is None:
+                return False
+            raw_socket = get_extra_info("socket")
+            fileno = getattr(raw_socket, "fileno", None)
+            return fileno is not None and fileno() == -1
+        except Exception:
+            return False
 
     async def _force_close_network_stream(self) -> None:
         if self._network_stream is None:
