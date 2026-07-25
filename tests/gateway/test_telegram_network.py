@@ -154,6 +154,39 @@ class _CancelFirstSocketByteStream(httpx.AsyncByteStream):
         return None
 
 
+class _IdempotentInterruptedSocketByteStream(httpx.AsyncByteStream):
+    """Model httpcore: mark closed before cancellable pool/socket cleanup."""
+
+    def __init__(self, sock: socket.socket):
+        self.sock = sock
+        self.close_calls = 0
+        self.close_started = asyncio.Event()
+        self.release_close = asyncio.Event()
+        self.cleanup_finished = asyncio.Event()
+        self.cleanup_completed = False
+        self._closed = False
+
+    async def __aiter__(self):
+        if False:
+            yield b""
+
+    async def aclose(self):
+        self.close_calls += 1
+        if self._closed:
+            return
+        self._closed = True
+        self.close_started.set()
+        await self.release_close.wait()
+        self.sock.close()
+        self.cleanup_completed = True
+        self.cleanup_finished.set()
+
+    def get_extra_info(self, name):
+        if name == "socket":
+            return self.sock
+        return None
+
+
 class _SingleResponseTransport(httpx.AsyncBaseTransport):
     def __init__(self, response: httpx.Response):
         self.response = response
@@ -999,6 +1032,54 @@ class TestFallbackTransport:
                 await asyncio.sleep(0)
             assert not tnet._abandoned_response_cleanups
         finally:
+            client.close()
+            server.stop()
+
+    @pytest.mark.asyncio
+    async def test_caller_cancellation_cannot_interrupt_idempotent_stream_cleanup(self):
+        """External cancellation must not make an idempotent retry false-green.
+
+        httpcore marks ``PoolByteStream`` closed before its cancellable pool
+        bookkeeping completes. A second ``aclose()`` then returns successfully
+        without finishing the first cleanup. Keep that first close alive instead
+        of treating the no-op retry as proof that the real socket was released.
+        """
+        server = _PeerFinServer()
+        server.start()
+        client = server.connect()
+        local_port = client.getsockname()[1]
+        remote_port = client.getpeername()[1]
+        stream = _IdempotentInterruptedSocketByteStream(client)
+        retrying = tnet._RetryingCloseResponseStream(
+            stream,
+            network_stream=stream,
+        )
+
+        try:
+            await _wait_for_tcp_state(local_port, remote_port, "08")
+            close_task = asyncio.create_task(retrying.aclose())
+            await asyncio.wait_for(stream.close_started.wait(), timeout=1.0)
+            close_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await close_task
+
+            stream.release_close.set()
+            await asyncio.wait_for(stream.cleanup_finished.wait(), timeout=2.0)
+            await _wait_for_tcp_state(
+                local_port,
+                remote_port,
+                None,
+                timeout=5.0,
+            )
+            assert stream.cleanup_completed is True
+            assert stream.close_calls == 1
+            for _ in range(20):
+                if not tnet._abandoned_response_cleanups:
+                    break
+                await asyncio.sleep(0)
+            assert not tnet._abandoned_response_cleanups
+        finally:
+            stream.release_close.set()
             client.close()
             server.stop()
 
