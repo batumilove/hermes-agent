@@ -1436,6 +1436,25 @@ def test_correlated_cancelled_request_balances_socket_without_response(diagnosti
     assert result["created_without_terminal"] == []
 
 
+def test_correlated_failed_request_record_is_aggregated(diagnostic):
+    raw = (
+        "[Telegram socket] event=request-started owner=general route=primary request_id=21 local_port=none\n"
+        "[Telegram socket] event=socket-opened owner=general route=primary request_id=21 local_port=56841\n"
+        "[Telegram socket] event=socket-close-started owner=general route=primary request_id=21 local_port=56841\n"
+        "[Telegram socket] event=socket-closed owner=general route=primary request_id=21 local_port=56841\n"
+        "[Telegram socket] event=request-failed owner=general route=primary request_id=21 local_port=none\n"
+    )
+    result = diagnostic.DiagnosticExecutor._aggregate(raw)
+    assert {item["event"] for item in result["counts"]} == {
+        "request-started",
+        "socket-opened",
+        "socket-close-started",
+        "socket-closed",
+        "request-failed",
+    }
+    assert result["created_without_terminal"] == []
+
+
 def test_correlated_terminal_for_different_request_fails_canary(diagnostic):
     raw = (
         "[Telegram socket] event=request-started owner=polling route=primary request_id=19 local_port=none\n"
@@ -1450,8 +1469,10 @@ def test_correlated_terminal_for_different_request_fails_canary(diagnostic):
     "[Telegram socket] event=request-started owner=general route=primary local_port=none",
     "[Telegram socket] event=request-started owner=general route=primary request_id=1 local_port=1234",
     "[Telegram socket] event=socket-opened owner=general route=primary request_id=0 local_port=1234",
+    "[Telegram socket] event=socket-opened owner=general route=primary request_id=none local_port=1234",
     "[Telegram socket] event=socket-opened owner=general route=primary request_id=1 local_port=none",
     "[Telegram socket] event=request-cancelled owner=general route=primary request_id=1 local_port=1234",
+    "[Telegram socket] event=request-failed owner=general route=primary request_id=1 local_port=1234",
 ])
 def test_invalid_correlated_lifecycle_record_fails_closed(diagnostic, line):
     with pytest.raises(diagnostic.DiagnosticError, match="malformed"):
