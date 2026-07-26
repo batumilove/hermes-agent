@@ -9,8 +9,11 @@ Covers:
 - _build_message_event: DM topic resolution in message events
 """
 
+import asyncio
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1154,6 +1157,39 @@ def _hermes_home_ctx(tmp_path):
         patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")})
 
 
+def test_reload_uses_fast_yaml_loader(tmp_path):
+    adapter = _make_adapter([])
+    _write_config(
+        tmp_path,
+        [{"chat_id": 111, "topics": [{"name": "General", "thread_id": 100}]}],
+    )
+    parsed = {
+        "platforms": {
+            "telegram": {
+                "extra": {
+                    "dm_topics": [
+                        {
+                            "chat_id": 111,
+                            "topics": [{"name": "General", "thread_id": 100}],
+                        }
+                    ]
+                }
+            }
+        }
+    }
+
+    with (
+        patch.object(Path, "home", return_value=tmp_path),
+        patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}),
+        patch("utils.fast_safe_load", return_value=parsed) as fast_load,
+        patch("yaml.safe_load", side_effect=AssertionError("slow YAML loader used")),
+    ):
+        adapter._reload_dm_topics_from_config()
+
+    fast_load.assert_called_once()
+    assert adapter._dm_topics["111:General"] == 100
+
+
 def test_reload_skips_reparse_when_config_unchanged(tmp_path):
     """_reload_dm_topics_from_config should not re-parse when mtime+size are unchanged."""
     import yaml
@@ -1337,6 +1373,111 @@ def test_reload_clears_topics_when_config_emptied(tmp_path):
         adapter._reload_dm_topics_from_config()
         assert adapter._dm_topics_config == []
         assert adapter._dm_topic_chat_ids == set()
+
+
+@pytest.mark.asyncio
+async def test_get_dm_topic_info_schedules_reload_off_event_loop(monkeypatch):
+    adapter = _make_adapter([])
+    event_loop_thread = threading.get_ident()
+    read_threads = []
+    original_topics = adapter._dm_topics
+
+    def read_config_snapshot():
+        read_threads.append(threading.get_ident())
+        return (
+            (1, 2, 3, 4, 5),
+            [
+                {
+                    "chat_id": 111,
+                    "topics": [{"name": "General", "thread_id": 999}],
+                }
+            ],
+        )
+
+    monkeypatch.setattr(
+        adapter, "_read_dm_topics_config_snapshot", read_config_snapshot
+    )
+
+    assert adapter._get_dm_topic_info("111", "999") is None
+    task = adapter._dm_topics_config_reload_task
+    assert isinstance(task, asyncio.Task)
+    await task
+    assert read_threads and read_threads[0] != event_loop_thread
+    assert adapter._dm_topics is not original_topics
+    assert original_topics == {}
+    assert adapter._get_dm_topic_info("111", "999") == {
+        "name": "General",
+        "thread_id": 999,
+    }
+
+
+@pytest.mark.asyncio
+async def test_pre_message_refresh_routes_first_message_after_external_update(
+    monkeypatch,
+):
+    adapter = _make_adapter([])
+    event_loop_thread = threading.get_ident()
+    read_threads = []
+
+    def read_config_snapshot():
+        read_threads.append(threading.get_ident())
+        return (
+            (1, 2, 3, 4, 5),
+            [
+                {
+                    "chat_id": 111,
+                    "topics": [
+                        {
+                            "name": "NewProject",
+                            "thread_id": 555,
+                            "skill": "project-skill",
+                        }
+                    ],
+                }
+            ],
+        )
+
+    monkeypatch.setattr(
+        adapter, "_read_dm_topics_config_snapshot", read_config_snapshot
+    )
+
+    await adapter._refresh_dm_topics_before_update(None, None)
+
+    assert read_threads and read_threads[0] != event_loop_thread
+    assert adapter._get_dm_topic_info("111", "555") == {
+        "name": "NewProject",
+        "thread_id": 555,
+        "skill": "project-skill",
+    }
+
+
+@pytest.mark.asyncio
+async def test_concurrent_dm_topic_refreshes_serialize_worker_reads(monkeypatch):
+    adapter = _make_adapter([])
+    state_lock = threading.Lock()
+    active_reads = 0
+    max_active_reads = 0
+
+    def read_config_snapshot():
+        nonlocal active_reads, max_active_reads
+        with state_lock:
+            active_reads += 1
+            max_active_reads = max(max_active_reads, active_reads)
+        time.sleep(0.05)
+        with state_lock:
+            active_reads -= 1
+        return None
+
+    monkeypatch.setattr(
+        adapter, "_read_dm_topics_config_snapshot", read_config_snapshot
+    )
+
+    await asyncio.gather(
+        adapter._refresh_dm_topics_config_async(),
+        adapter._refresh_dm_topics_config_async(),
+    )
+
+    assert max_active_reads == 1
 
 
 def test_get_dm_topic_info_no_excessive_reload_on_miss(tmp_path):

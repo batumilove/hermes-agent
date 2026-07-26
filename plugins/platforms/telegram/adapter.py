@@ -20,7 +20,7 @@ import threading
 import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Set, Any
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -803,6 +803,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._dm_topics_config_file_identity: Optional[
             tuple[int, int, int, int, int]
         ] = None
+        self._dm_topics_config_reload_task: Optional[asyncio.Task] = None
+        self._dm_topics_config_refresh_lock = asyncio.Lock()
         # Precomputed chat_ids that have DM topics configured (for O(1) root-DM ignore check)
         self._dm_topic_chat_ids: Set[str] = {
             str(e["chat_id"]) for e in self._dm_topics_config if "chat_id" in e
@@ -3638,7 +3640,12 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.error("[%s] No bot token configured", self.name)
             self._set_fatal_error("missing_credentials", "No bot token configured", retryable=False)
             return False
-        
+
+        # Prime the DM-topic file identity and mapping before polling can deliver
+        # updates. Large YAML parsing runs off the event loop; later unchanged
+        # lookups reduce to the cached identity check.
+        await self._refresh_dm_topics_config_async()
+
         try:
             if not self._acquire_platform_lock('telegram-bot-token', self.config.token, 'Telegram bot token'):
                 return False
@@ -3804,6 +3811,17 @@ class TelegramAdapter(BasePlatformAdapter):
             self._app = builder.build()
             self._bot = self._app.bot
             
+            # Refresh config before the first matching message handler builds a
+            # session source. PTB processes lower groups first, so an externally
+            # added DM topic is routed correctly on its first message.
+            self._app.add_handler(
+                TelegramMessageHandler(
+                    filters.ALL,
+                    self._refresh_dm_topics_before_update,
+                ),
+                group=-1,
+            )
+
             # Register handlers
             self._app.add_handler(TelegramMessageHandler(
                 filters.TEXT & ~filters.COMMAND,
@@ -4162,6 +4180,20 @@ class TelegramAdapter(BasePlatformAdapter):
             post_connect_task.cancel()
             await asyncio.gather(post_connect_task, return_exceptions=True)
         self._post_connect_task = None
+
+        # A cache-miss refresh can still be awaiting its worker read. Cancel the
+        # loop owner before adapter state is torn down; the worker only returns an
+        # immutable snapshot and never mutates this adapter.
+        dm_topics_reload_task = getattr(self, "_dm_topics_config_reload_task", None)
+        if (
+            dm_topics_reload_task
+            and not dm_topics_reload_task.done()
+            and dm_topics_reload_task is not current_task
+        ):
+            dm_topics_reload_task.cancel()
+            await asyncio.gather(dm_topics_reload_task, return_exceptions=True)
+        if dm_topics_reload_task is not current_task:
+            self._dm_topics_config_reload_task = None
 
         # Cancel the heartbeat before tearing down the app so the probe task
         # cannot fire get_me() into a half-shutdown bot client.
@@ -9135,17 +9167,35 @@ class TelegramAdapter(BasePlatformAdapter):
                 emoji, set_name,
             )
 
-    def _reload_dm_topics_from_config(self) -> None:
-        """Re-read dm_topics from config.yaml and load any new thread_ids into cache.
+    def _schedule_dm_topics_config_reload(self) -> None:
+        """Refresh DM topics without parsing YAML on the event-loop thread."""
+        task = getattr(self, "_dm_topics_config_reload_task", None)
+        if task is not None and not task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # Synchronous callers (including maintenance/tests) retain the
+            # historical immediate-refresh contract.
+            self._reload_dm_topics_from_config()
+            return
+        self._dm_topics_config_reload_task = loop.create_task(
+            self._refresh_dm_topics_config_async(),
+            name="telegram-dm-topics-config-reload",
+        )
 
-        This allows topics created externally (e.g. by the agent via API) to be
-        recognized without a gateway restart.
-        """
+    def _read_dm_topics_config_snapshot(
+        self,
+    ) -> Optional[
+        Tuple[Tuple[int, int, int, int, int], List[Dict[str, Any]]]
+    ]:
+        """Read changed DM-topic config without mutating adapter state."""
         try:
             from hermes_constants import get_hermes_home
+
             config_path = get_hermes_home() / "config.yaml"
             if not config_path.exists():
-                return
+                return None
 
             path_stat = config_path.stat()
             path_identity = (
@@ -9159,9 +9209,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 getattr(self, "_dm_topics_config_file_identity", None)
                 == path_identity
             ):
-                return
+                return None
 
-            import yaml as _yaml
+            from utils import fast_safe_load
+
             with open(config_path, "r", encoding="utf-8") as f:
                 opened_stat = os.fstat(f.fileno())
                 opened_identity = (
@@ -9171,7 +9222,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     opened_stat.st_ctime_ns,
                     opened_stat.st_size,
                 )
-                config = _yaml.safe_load(f) or {}
+                config = fast_safe_load(f) or {}
 
             dm_topics = (
                 config.get("platforms", {})
@@ -9179,37 +9230,78 @@ class TelegramAdapter(BasePlatformAdapter):
                 .get("extra", {})
                 .get("dm_topics", [])
             )
-            if not dm_topics:
-                # Clear both config and precomputed set when all topics are removed
-                self._dm_topics_config = []
-                self._dm_topic_chat_ids = set()
-                self._dm_topics_config_file_identity = opened_identity
-                return
-
-            # Update in-memory config and cache any new thread_ids
-            self._dm_topics_config = dm_topics
-            # Rebuild the chat_id set for O(1) root-DM ignore lookup
-            self._dm_topic_chat_ids = {
-                str(chat_entry["chat_id"]) for chat_entry in dm_topics if "chat_id" in chat_entry
-            }
-            for chat_entry in dm_topics:
-                cid = chat_entry.get("chat_id")
-                if not cid:
-                    continue
-                for t in chat_entry.get("topics", []):
-                    tid = t.get("thread_id")
-                    name = t.get("name")
-                    if tid and name:
-                        cache_key = f"{cid}:{name}"
-                        if cache_key not in self._dm_topics:
-                            self._dm_topics[cache_key] = int(tid)
-                            logger.info(
-                                "[%s] Hot-loaded DM topic from config: %s -> thread_id=%s",
-                                self.name, cache_key, tid,
-                            )
-            self._dm_topics_config_file_identity = opened_identity
+            return opened_identity, dm_topics
         except Exception as e:
-            logger.debug("[%s] Failed to reload dm_topics from config: %s", self.name, e)
+            logger.debug(
+                "[%s] Failed to read dm_topics from config: %s", self.name, e
+            )
+            return None
+
+    def _apply_dm_topics_config_snapshot(
+        self,
+        snapshot: Tuple[Tuple[int, int, int, int, int], List[Dict[str, Any]]],
+    ) -> None:
+        """Publish a parsed DM-topic snapshot without yielding."""
+        opened_identity, dm_topics = snapshot
+        if not dm_topics:
+            self._dm_topics_config = []
+            self._dm_topic_chat_ids = set()
+            self._dm_topics_config_file_identity = opened_identity
+            return
+
+        new_topics = dict(self._dm_topics)
+        for chat_entry in dm_topics:
+            chat_id = str(chat_entry.get("chat_id", ""))
+            for topic in chat_entry.get("topics", []):
+                tid = topic.get("thread_id")
+                if tid is None:
+                    continue
+                cache_key = f"{chat_id}:{topic.get('name', '')}"
+                if cache_key not in new_topics:
+                    new_topics[cache_key] = int(tid)
+                    logger.info(
+                        "[%s] Hot-loaded DM topic from config: %s -> thread_id=%s",
+                        self.name,
+                        cache_key,
+                        tid,
+                    )
+
+        # Worker threads only construct snapshots. Complete replacement objects
+        # are published on the event loop, so readers cannot observe dict resize
+        # or a partially built cache.
+        self._dm_topics_config = dm_topics
+        self._dm_topic_chat_ids = {
+            str(chat_entry["chat_id"])
+            for chat_entry in dm_topics
+            if "chat_id" in chat_entry
+        }
+        self._dm_topics = new_topics
+        self._dm_topics_config_file_identity = opened_identity
+
+    async def _refresh_dm_topics_config_async(self) -> None:
+        """Read config in a worker, then publish the snapshot on this loop."""
+        refresh_lock = getattr(self, "_dm_topics_config_refresh_lock", None)
+        if refresh_lock is None:
+            refresh_lock = asyncio.Lock()
+            self._dm_topics_config_refresh_lock = refresh_lock
+        async with refresh_lock:
+            snapshot = await asyncio.to_thread(self._read_dm_topics_config_snapshot)
+            if snapshot is not None:
+                self._apply_dm_topics_config_snapshot(snapshot)
+
+    async def _refresh_dm_topics_before_update(self, update, context) -> None:
+        """Prime DM-topic routing before PTB dispatches an incoming message."""
+        await self._refresh_dm_topics_config_async()
+
+    def _reload_dm_topics_from_config(self) -> None:
+        """Synchronously refresh DM topics for non-event-loop callers.
+
+        This allows topics created externally (e.g. by the agent via API) to be
+        recognized without a gateway restart.
+        """
+        snapshot = self._read_dm_topics_config_snapshot()
+        if snapshot is not None:
+            self._apply_dm_topics_config_snapshot(snapshot)
 
     def _get_dm_topic_info(self, chat_id: str, thread_id: Optional[str]) -> Optional[Dict[str, Any]]:
         """Look up DM topic config by chat_id and thread_id.
@@ -9234,8 +9326,11 @@ class TelegramAdapter(BasePlatformAdapter):
                                 return t
                 return {"name": topic_name}
 
-        # Not in cache — hot-reload config in case topics were added externally
-        self._reload_dm_topics_from_config()
+        # Not in cache — hot-reload config in case topics were added externally.
+        # Parsing a large config synchronously here can stall every platform, so
+        # event-loop callers schedule it in a worker and use the refreshed cache
+        # on a subsequent message.
+        self._schedule_dm_topics_config_reload()
 
         # Check cache again after reload
         for key, cached_tid in self._dm_topics.items():
