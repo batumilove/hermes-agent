@@ -1360,6 +1360,104 @@ def test_interleaved_socket_and_response_lifecycles_balance_separately(diagnosti
     assert result["created_without_terminal"] == []
 
 
+def test_correlated_runtime_lifecycle_schema_is_aggregated(diagnostic):
+    raw = (
+        "[Telegram socket] event=request-started owner=polling route=primary request_id=5 local_port=none\n"
+        "[Telegram socket] event=socket-opened owner=polling route=primary request_id=5 local_port=43626\n"
+        "[Telegram socket] event=response-created owner=polling route=primary request_id=5 local_port=43626\n"
+        "[Telegram socket] event=socket-close-started owner=polling route=primary request_id=5 local_port=43626\n"
+        "[Telegram socket] event=socket-closed owner=polling route=primary request_id=5 local_port=43626\n"
+        "[Telegram socket] event=response-closed owner=polling route=primary request_id=5 local_port=43626\n"
+    )
+    result = diagnostic.DiagnosticExecutor._aggregate(raw)
+    assert {item["event"] for item in result["counts"]} == {
+        "request-started",
+        "socket-opened",
+        "response-created",
+        "socket-close-started",
+        "socket-closed",
+        "response-closed",
+    }
+    assert result["created_without_terminal"] == []
+
+
+def test_correlated_response_close_error_then_success_balances_once(diagnostic):
+    raw = (
+        "[Telegram socket] event=request-started owner=general route=primary request_id=42 local_port=none\n"
+        "[Telegram socket] event=socket-opened owner=general route=primary request_id=42 local_port=43210\n"
+        "[Telegram socket] event=response-created owner=general route=primary request_id=42 local_port=43210\n"
+        "[Telegram socket] event=socket-close-started owner=general route=primary request_id=42 local_port=43210\n"
+        "[Telegram socket] event=socket-closed owner=general route=primary request_id=42 local_port=43210\n"
+        "[Telegram socket] event=response-close-error owner=general route=primary request_id=42 local_port=43210\n"
+        "[Telegram socket] event=response-closed owner=general route=primary request_id=42 local_port=43210\n"
+    )
+    result = diagnostic.DiagnosticExecutor._aggregate(raw)
+    assert {item["event"] for item in result["counts"]} == {
+        "request-started",
+        "socket-opened",
+        "response-created",
+        "socket-close-started",
+        "socket-closed",
+        "response-close-error",
+        "response-closed",
+    }
+    assert result["created_without_terminal"] == []
+
+
+def test_correlated_response_close_error_without_success_fails_canary(diagnostic):
+    raw = (
+        "[Telegram socket] event=request-started owner=general route=primary request_id=42 local_port=none\n"
+        "[Telegram socket] event=socket-opened owner=general route=primary request_id=42 local_port=43210\n"
+        "[Telegram socket] event=response-created owner=general route=primary request_id=42 local_port=43210\n"
+        "[Telegram socket] event=socket-close-started owner=general route=primary request_id=42 local_port=43210\n"
+        "[Telegram socket] event=socket-closed owner=general route=primary request_id=42 local_port=43210\n"
+        "[Telegram socket] event=response-close-error owner=general route=primary request_id=42 local_port=43210\n"
+    )
+    with pytest.raises(diagnostic.DiagnosticError, match="incomplete"):
+        diagnostic.DiagnosticExecutor._aggregate(raw)
+
+
+def test_correlated_cancelled_request_balances_socket_without_response(diagnostic):
+    raw = (
+        "[Telegram socket] event=request-started owner=polling route=primary request_id=19 local_port=none\n"
+        "[Telegram socket] event=socket-opened owner=polling route=primary request_id=19 local_port=56840\n"
+        "[Telegram socket] event=socket-close-started owner=polling route=primary request_id=19 local_port=56840\n"
+        "[Telegram socket] event=socket-closed owner=polling route=primary request_id=19 local_port=56840\n"
+        "[Telegram socket] event=request-cancelled owner=polling route=primary request_id=19 local_port=none\n"
+    )
+    result = diagnostic.DiagnosticExecutor._aggregate(raw)
+    assert {item["event"] for item in result["counts"]} == {
+        "request-started",
+        "socket-opened",
+        "socket-close-started",
+        "socket-closed",
+        "request-cancelled",
+    }
+    assert result["created_without_terminal"] == []
+
+
+def test_correlated_terminal_for_different_request_fails_canary(diagnostic):
+    raw = (
+        "[Telegram socket] event=request-started owner=polling route=primary request_id=19 local_port=none\n"
+        "[Telegram socket] event=socket-opened owner=polling route=primary request_id=19 local_port=56840\n"
+        "[Telegram socket] event=socket-closed owner=polling route=primary request_id=20 local_port=56840\n"
+    )
+    with pytest.raises(diagnostic.DiagnosticError, match="incomplete"):
+        diagnostic.DiagnosticExecutor._aggregate(raw)
+
+
+@pytest.mark.parametrize("line", [
+    "[Telegram socket] event=request-started owner=general route=primary local_port=none",
+    "[Telegram socket] event=request-started owner=general route=primary request_id=1 local_port=1234",
+    "[Telegram socket] event=socket-opened owner=general route=primary request_id=0 local_port=1234",
+    "[Telegram socket] event=socket-opened owner=general route=primary request_id=1 local_port=none",
+    "[Telegram socket] event=request-cancelled owner=general route=primary request_id=1 local_port=1234",
+])
+def test_invalid_correlated_lifecycle_record_fails_closed(diagnostic, line):
+    with pytest.raises(diagnostic.DiagnosticError, match="malformed"):
+        diagnostic.DiagnosticExecutor._aggregate(line)
+
+
 @pytest.mark.parametrize("raw", [
     "[Telegram socket] event=socket-opened owner=general route=primary local_port=1234\n"
     "[Telegram socket] event=response-created owner=general route=primary local_port=5678\n"
