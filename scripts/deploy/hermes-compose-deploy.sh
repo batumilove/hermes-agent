@@ -49,11 +49,13 @@ runtime_env="$deploy_root/runtime.env"
 current_env="$deploy_root/release.env"
 previous_env="$deploy_root/release.previous.env"
 history_file="$deploy_root/releases/history.tsv"
+acceptance_helper="$deploy_root/verify-running-stack.py"
 lock_file="$deploy_root/deploy.lock"
 shared_staging_lock=/run/lock/hermes-staging-diagnostic.lock
 
 [[ -f $compose_file ]] || die "missing $compose_file"
 [[ -f $runtime_env ]] || die "missing $runtime_env"
+[[ -f $acceptance_helper && ! -L $acceptance_helper ]] || die "missing or unsafe $acceptance_helper"
 runtime_mode=$(stat -c '%a' "$runtime_env")
 (( (8#$runtime_mode & 077) == 0 )) || die "$runtime_env must not be group/world accessible (expected mode 0600)"
 
@@ -146,14 +148,23 @@ if ! compose pull gateway; then
   die "image pull failed; current release was left untouched"
 fi
 
+failure_result="health-failed"
 if verify_release; then
-  record_evidence deployed "$digest"
-  printf 'Deployment complete: environment=%s source=%s digest=%s\n' \
-    "$environment" "$source_sha" "$digest"
-  exit 0
+  if python3 "$acceptance_helper" \
+    --environment "$environment" \
+    --image "$image" \
+    --digest "$digest" \
+    --source-sha "$source_sha" \
+    --deploy-root "$deploy_root"; then
+    record_evidence deployed "$digest"
+    printf 'Deployment complete: environment=%s source=%s digest=%s\n' \
+      "$environment" "$source_sha" "$digest"
+    exit 0
+  fi
+  failure_result="acceptance-failed"
 fi
 
-record_evidence health-failed "$digest"
+record_evidence "$failure_result" "$digest"
 if [[ $had_current == true ]]; then
   cp -p "$previous_env" "$current_env"
   if verify_release; then

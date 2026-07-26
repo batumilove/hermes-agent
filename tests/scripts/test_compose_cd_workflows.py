@@ -104,6 +104,36 @@ def test_deployment_uses_environment_scoped_reusable_workflow() -> None:
     assert reusable["on"]["workflow_call"]["secrets"]["TAILSCALE_AUTHKEY"]["required"] == "false"
 
 
+def test_deployment_installs_exact_running_stack_acceptance_helper() -> None:
+    reusable = _workflow("_deploy-compose.yml")
+    run = next(
+        step["run"]
+        for step in reusable["jobs"]["deploy"]["steps"]
+        if step["name"] == "Install deployment tooling and apply release"
+    )
+    deployer = (REPO / "scripts" / "deploy" / "hermes-compose-deploy.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "scripts/deploy/verify_running_stack.py" in run
+    assert 'install -m 0755' in run
+    assert 'verify-running-stack.py' in run
+    invocation = 'python3 "$acceptance_helper"'
+    assert invocation in deployer
+    invocation_index = deployer.index(invocation)
+    evidence_index = deployer.index('record_evidence deployed')
+    assert invocation_index < evidence_index
+    invocation_block = deployer[invocation_index:evidence_index]
+    for required_argument in (
+        '--environment "$environment"',
+        '--image "$image"',
+        '--digest "$digest"',
+        '--source-sha "$source_sha"',
+        '--deploy-root "$deploy_root"',
+    ):
+        assert required_argument in invocation_block
+
+
 def test_manual_promotion_verifies_digest_without_rebuilding() -> None:
     workflow = _workflow("promote-compose.yml")
     verify = workflow["jobs"]["verify-candidate"]
