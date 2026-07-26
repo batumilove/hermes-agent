@@ -142,6 +142,11 @@ _STATUS_DESCRIPTION_RE = re.compile(
     r"\b(?:current (?:code(?: path)?|state|schema|configuration)|"
     r"inspection (?:shows|found)|readback (?:shows|found))\b"
 )
+_STATUS_HEADING_RE = re.compile(
+    r"^\s*(?:#{1,6}\s*)?(?:\d+[.)]\s*)?.*"
+    r"\b(?:status|state|parity|readback|verification)\b"
+    r"\s*(?:[-—:]+\s*)?(?:pass|fail|block(?:ed)?)\s*$"
+)
 _REPORTING_CLAIM_RE = re.compile(
     r"\b(?:inspect(?:ed|ion)|verif(?:y|ied|ication)|confirm(?:ed|ation)|"
     r"readback|observed|found|logs?\s+(?:show|shows|showed))\b"
@@ -229,6 +234,8 @@ def _has_affirmative_side_effect_claim(
             for term in context_terms
         ):
             continue
+        if _STATUS_HEADING_RE.search(sentence) and not _FIRST_PERSON_RE.search(sentence):
+            continue
 
         for raw_clause in _ACTION_CLAUSE_SPLIT_RE.split(sentence):
             clause = raw_clause.strip()
@@ -312,7 +319,9 @@ class SideEffectEvidenceRegulator:
             self._evidence.add("browser")
         if tool in {"image_generate", "text_to_speech"} and not _looks_like_error(text):
             self._evidence.add("media")
-        if tool in {"terminal", "process", "mcp_executor_execute"} and _looks_like_positive_handle(text):
+        if tool in {"terminal", "execute_code"} and _tool_result_succeeded(tool, result):
+            self._evidence.add("generic_side_effect")
+        if tool in {"process", "mcp_executor_execute"} and _looks_like_positive_handle(text):
             self._evidence.add("generic_side_effect")
 
     def evaluate_final_response(self, text: str) -> EvidenceDecision:
@@ -458,6 +467,12 @@ def _tool_result_succeeded(tool_name: str, result: Any, args: str = "") -> bool:
             succeeded = False
     elif tool == "execute_code":
         succeeded = str(parsed.get("status") or "").lower() == "success"
+        exit_code = parsed.get("exit_code")
+        if exit_code is not None:
+            try:
+                succeeded = succeeded and int(str(exit_code)) == 0
+            except (TypeError, ValueError):
+                succeeded = False
     else:
         return False
     if not succeeded:
