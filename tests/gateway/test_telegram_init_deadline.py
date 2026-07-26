@@ -1,4 +1,5 @@
 import sys
+import threading
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -65,6 +66,16 @@ async def test_connect_retries_when_initialize_wall_deadline_expires(monkeypatch
     monkeypatch.setattr(tg_adapter, "_await_with_thread_deadline", _fake_deadline)
 
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+    event_loop_thread = threading.get_ident()
+    dm_topic_read_threads = []
+
+    def read_dm_topics_snapshot():
+        dm_topic_read_threads.append(threading.get_ident())
+        return None
+
+    monkeypatch.setattr(
+        adapter, "_read_dm_topics_config_snapshot", read_dm_topics_snapshot
+    )
     monkeypatch.setattr(adapter, "_acquire_platform_lock", lambda *a, **k: True)
     monkeypatch.setattr(adapter, "_fallback_ips", lambda: [])
     monkeypatch.setattr(adapter, "_delete_webhook_best_effort", AsyncMock())
@@ -79,6 +90,12 @@ async def test_connect_retries_when_initialize_wall_deadline_expires(monkeypatch
     assert deadline_calls == 2
     tg_adapter.asyncio.sleep.assert_awaited_once_with(1)
     fake_app.start.assert_awaited_once()
+    assert dm_topic_read_threads
+    assert dm_topic_read_threads[0] != event_loop_thread
+    first_handler_call = fake_app.add_handler.call_args_list[0]
+    assert first_handler_call.kwargs["group"] == -1
+    pre_handler_ctor = tg_adapter.TelegramMessageHandler.call_args_list[0]
+    assert pre_handler_ctor.args[1] == adapter._refresh_dm_topics_before_update
 
 
 @pytest.mark.asyncio

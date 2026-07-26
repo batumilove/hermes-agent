@@ -53,6 +53,24 @@ def test_local_agent_preload_failure_preserves_degraded_gateway_startup(monkeypa
     assert gateway_run._preload_gateway_agent_runtime(runner) is False
 
 
+def test_startup_proxy_probe_caches_local_mode_for_message_hot_path(monkeypatch):
+    calls = 0
+
+    def load_config():
+        nonlocal calls
+        calls += 1
+        return {"gateway": {}}
+
+    runner = gateway_run.GatewayRunner.__new__(gateway_run.GatewayRunner)
+    monkeypatch.delenv("GATEWAY_PROXY_URL", raising=False)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", load_config)
+    monkeypatch.setattr(gateway_run, "_load_gateway_agent_class", lambda: object)
+
+    assert gateway_run._preload_gateway_agent_runtime(runner) is True
+    assert runner._get_proxy_url() is None
+    assert calls == 1
+
+
 @pytest.mark.asyncio
 async def test_start_gateway_preloads_agent_before_platform_start(
     monkeypatch, tmp_path

@@ -307,7 +307,7 @@ class TestTextBatching:
     async def test_disconnect_cancels_all_pending_delivery_task_maps(self):
         """Photo/media/polling delayed tasks are awaited and queues are cleared."""
         adapter = _make_adapter()
-        tasks = [asyncio.create_task(asyncio.sleep(60)) for _ in range(4)]
+        tasks = [asyncio.create_task(asyncio.sleep(60)) for _ in range(5)]
         adapter._pending_text_batches["text"] = _make_event("text")
         adapter._pending_text_batch_tasks["text"] = tasks[0]
         adapter._pending_photo_batches["photo"] = _make_event("photo")
@@ -315,6 +315,7 @@ class TestTextBatching:
         adapter._media_group_events["media"] = _make_event("media")
         adapter._media_group_tasks["media"] = tasks[2]
         adapter._polling_error_task = tasks[3]
+        adapter._dm_topics_config_reload_task = tasks[4]
 
         await adapter.disconnect()
 
@@ -326,3 +327,4 @@ class TestTextBatching:
         assert adapter._media_group_events == {}
         assert adapter._media_group_tasks == {}
         assert adapter._polling_error_task is None
+        assert adapter._dm_topics_config_reload_task is None

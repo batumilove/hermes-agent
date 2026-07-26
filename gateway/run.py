@@ -19818,20 +19818,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # ------------------------------------------------------------------
 
     def _get_proxy_url(self) -> Optional[str]:
-        """Return the proxy URL if proxy mode is configured, else None.
+        """Return the process-lifetime proxy URL resolved during startup.
 
         Checks GATEWAY_PROXY_URL env var first (convenient for Docker),
-        then ``gateway.proxy_url`` in config.yaml.
+        then ``gateway.proxy_url`` in config.yaml.  The startup preload probes
+        this method before adapters accept messages, so caching here keeps the
+        config lock and deepcopy work out of every inbound-message callback.
+        Proxy configuration changes take effect on the next gateway restart.
         """
+        cache_attr = "_resolved_gateway_proxy_url"
+        if hasattr(self, cache_attr):
+            return getattr(self, cache_attr)
+
         url = os.getenv("GATEWAY_PROXY_URL", "").strip()
-        if url:
-            return url.rstrip("/")
-        cfg = _load_gateway_config()
-        url = (cfg.get("gateway") or {}).get("proxy_url")
-        url = (url or "").strip()
-        if url:
-            return url.rstrip("/")
-        return None
+        if not url:
+            cfg = _load_gateway_config()
+            url = ((cfg.get("gateway") or {}).get("proxy_url") or "").strip()
+
+        resolved = url.rstrip("/") if url else None
+        setattr(self, cache_attr, resolved)
+        return resolved
 
     async def _run_agent_via_proxy(
         self,
