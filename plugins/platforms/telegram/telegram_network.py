@@ -416,7 +416,10 @@ class _RetryingCloseResponseStream(httpx.AsyncByteStream):
 
 
 async def _handle_transport_request(
-    transport: httpx.AsyncBaseTransport, request: httpx.Request
+    transport: httpx.AsyncBaseTransport,
+    request: httpx.Request,
+    *,
+    diagnostic_context: tuple[str, str, str] | None = None,
 ) -> httpx.Response:
     """Run one transport request without leaking sockets on caller cancellation.
 
@@ -436,8 +439,18 @@ async def _handle_transport_request(
     """
     response = await transport.handle_async_request(request)
     network_stream = response.extensions.get("network_stream")
+    response_stream = response.stream
+    if diagnostic_context is not None:
+        owner, route, request_id = diagnostic_context
+        response_stream = _DiagnosticResponseStream(
+            response_stream,
+            owner=owner,
+            route=route,
+            local_port=_response_local_port(response),
+            request_id=request_id,
+        )
     response.stream = _RetryingCloseResponseStream(
-        response.stream,
+        response_stream,
         network_stream=network_stream,
     )
     # Guard the response against caller task cancellation/exception after
@@ -668,7 +681,11 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         )
         try:
             try:
-                response = await _handle_transport_request(transport, request)
+                response = await _handle_transport_request(
+                    transport,
+                    request,
+                    diagnostic_context=(self._owner_role, route, request_id),
+                )
             except asyncio.CancelledError:
                 _log_socket_lifecycle(
                     event="request-cancelled",
@@ -689,13 +706,6 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                 raise
 
             local_port = _response_local_port(response)
-            response.stream = _DiagnosticResponseStream(
-                response.stream,
-                owner=self._owner_role,
-                route=route,
-                local_port=local_port,
-                request_id=request_id,
-            )
             _log_socket_lifecycle(
                 event="response-created",
                 owner=self._owner_role,

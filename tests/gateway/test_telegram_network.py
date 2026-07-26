@@ -836,6 +836,49 @@ async def test_diagnostic_response_close_error_then_success_logs_both_events():
     _assert_records_redacted(capture.records, ("transient close failure",))
 
 
+@pytest.mark.asyncio
+async def test_retrying_close_reports_terminal_success_through_diagnostics():
+    """The detached production retry must emit the terminal success event."""
+    inner = _ErrorThenSuccessInnerStream(RuntimeError("transient close failure"))
+    request = httpx.Request("POST", "https://api.telegram.org/botREDACTED/sendMessage")
+    raw_response = httpx.Response(200, request=request, stream=inner)
+    route_transport = _SingleResponseTransport(raw_response)
+    fallback_transport = tnet.TelegramFallbackTransport(
+        [],
+        owner_role="general",
+        socket_diagnostics=True,
+    )
+
+    try:
+        with _LifecycleLogCapture(lambda: inner) as capture:
+            response = await fallback_transport._request_for_route(
+                route_transport,
+                request,
+                "primary",
+            )
+            with pytest.raises(RuntimeError, match="transient close failure"):
+                await response.aclose()
+            for _ in range(20):
+                if not tnet._abandoned_response_cleanups:
+                    break
+                await asyncio.sleep(0)
+    finally:
+        await fallback_transport.aclose()
+
+    messages = [record.getMessage() for record, _ in capture.records]
+    request_ids = {
+        message.split("request_id=", 1)[1].split(" ", 1)[0]
+        for message in messages
+    }
+    assert inner.close_calls == 2
+    assert not tnet._abandoned_response_cleanups
+    assert sum("event=response-created" in message for message in messages) == 1
+    assert sum("event=response-close-error" in message for message in messages) == 1
+    assert sum("event=response-closed" in message for message in messages) == 1
+    assert len(request_ids) == 1
+    _assert_records_redacted(capture.records, ("REDACTED", "transient close failure"))
+
+
 class _SlowBodyServer:
     """Threaded TCP server that accepts one connection and stalls mid-body."""
 
