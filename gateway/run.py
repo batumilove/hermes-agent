@@ -7748,13 +7748,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             from gateway.delivery_ledger import (
                 RECOVERED_MARKER,
-                ledger_enabled,
                 mark_delivered,
                 mark_failed,
                 sweep_recoverable,
             )
 
-            if not ledger_enabled():
+            if not self.config.delivery_ledger_enabled:
                 return 0
             # Only claim rows we can actually send this boot: self.adapters
             # holds a platform only after its connect() succeeded, and each
@@ -10591,6 +10590,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return None
 
         if hasattr(config, "extra") and isinstance(config.extra, dict):
+            config.extra["_gateway_delivery_ledger_enabled"] = (
+                self.config.delivery_ledger_enabled
+            )
             config.extra.setdefault(
                 "group_sessions_per_user",
                 self.config.group_sessions_per_user,

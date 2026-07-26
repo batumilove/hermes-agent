@@ -304,12 +304,15 @@ def _prune(now: Optional[float] = None) -> None:
 
 
 def ledger_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
-    """Read the ``gateway.delivery_ledger`` config gate (default on)."""
+    """Resolve the delivery-ledger gate without implicit config I/O.
+
+    Gateway runtime callers use the value pre-resolved in ``GatewayConfig``.
+    ``None`` remains backward-compatible with the default-on policy, but no
+    longer loads and deep-copies the complete global configuration.
+    """
     try:
         if config is None:
-            from hermes_cli.config import load_config
-
-            config = load_config()
+            return True
         gw = config.get("gateway") or {}
         value = gw.get("delivery_ledger", True)
         if isinstance(value, str):

@@ -8,6 +8,8 @@ block the send.
 """
 
 import asyncio
+import threading
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -120,10 +122,51 @@ class TestProducerHook:
         assert _rows() == []
 
     @pytest.mark.asyncio
+    async def test_final_send_uses_pre_resolved_ledger_gate_without_blocking_loop(self):
+        adapter = _Adapter()
+        setattr(adapter, "delivery_ledger_enabled", True)
+        entered = threading.Event()
+        release = threading.Event()
+        heartbeat = threading.Event()
+        heartbeat_before_release = []
+
+        def _blocking_load_config():
+            entered.set()
+            release.wait(timeout=2)
+            return {}
+
+        async def _heartbeat():
+            await asyncio.sleep(0.01)
+            heartbeat.set()
+
+        def _release_loader():
+            if entered.wait(timeout=0.2):
+                time.sleep(0.1)
+            heartbeat_before_release.append(heartbeat.is_set())
+            release.set()
+
+        releaser = threading.Thread(target=_release_loader)
+        releaser.start()
+        heartbeat_task = asyncio.create_task(_heartbeat())
+        try:
+            with patch(
+                "hermes_cli.config.load_config", side_effect=_blocking_load_config
+            ):
+                await _run(adapter, _event())
+            await heartbeat_task
+        finally:
+            release.set()
+            releaser.join(timeout=1)
+
+        assert not releaser.is_alive()
+        assert heartbeat_before_release == [True]
+        assert adapter.sent == ["final answer"]
+
+    @pytest.mark.asyncio
     async def test_disabled_gate_skips_recording_but_sends(self):
         adapter = _Adapter()
-        with patch("gateway.delivery_ledger.ledger_enabled", return_value=False):
-            await _run(adapter, _event())
+        adapter.delivery_ledger_enabled = False
+        await _run(adapter, _event())
         assert adapter.sent == ["final answer"]
         assert _rows() == []
 
