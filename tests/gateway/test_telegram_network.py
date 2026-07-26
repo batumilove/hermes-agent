@@ -131,6 +131,41 @@ class _CloseFailingByteStream(httpx.AsyncByteStream):
         raise RuntimeError("stream close broken")
 
 
+class _RawSocketTracker:
+    """Wraps a real socket to count .close() calls without actually closing."""
+
+    def __init__(self, real_sock: socket.socket):
+        self._sock = real_sock
+        self.close_calls = 0
+
+    def getsockname(self):
+        return self._sock.getsockname()
+
+    def close(self):
+        self.close_calls += 1
+        self._sock.close()
+
+    def fileno(self):
+        return self._sock.fileno()
+
+
+class _AcloseFailingNetworkStream:
+    """Network stream whose aclose() always fails, exposing a raw socket."""
+
+    def __init__(self, raw_socket: _RawSocketTracker):
+        self.raw_socket = raw_socket
+        self.aclose_calls = 0
+
+    def get_extra_info(self, name):
+        if name == "socket":
+            return self.raw_socket
+        return None
+
+    async def aclose(self):
+        self.aclose_calls += 1
+        raise RuntimeError("network stream aclose broken")
+
+
 class _CancelFirstSocketByteStream(httpx.AsyncByteStream):
     """Own a real TCP socket; first close is cancelled, second closes it."""
 
@@ -185,6 +220,28 @@ class _IdempotentInterruptedSocketByteStream(httpx.AsyncByteStream):
         if name == "socket":
             return self.sock
         return None
+
+class _IdempotentLateFailingByteStream(httpx.AsyncByteStream):
+    """Mark closed, then fail after an externally-cancelled shield waiter left."""
+
+    def __init__(self):
+        self.close_calls = 0
+        self.close_started = asyncio.Event()
+        self.release_close = asyncio.Event()
+        self._closed = False
+
+    async def __aiter__(self):
+        if False:
+            yield b""
+
+    async def aclose(self):
+        self.close_calls += 1
+        if self._closed:
+            return
+        self._closed = True
+        self.close_started.set()
+        await self.release_close.wait()
+        raise RuntimeError("late close failure")
 
 
 class _SingleResponseTransport(httpx.AsyncBaseTransport):
@@ -727,6 +784,101 @@ async def test_socket_close_error_diagnostic_redacts_request_and_exception(monke
         _assert_records_redacted(capture.records, forbidden + (close_error,))
 
 
+class _ErrorThenSuccessInnerStream(httpx.AsyncByteStream):
+    """Inner stream: first aclose() raises, second succeeds."""
+
+    def __init__(self, error: Exception):
+        self._error = error
+        self.close_calls = 0
+        self.closed = False
+
+    async def __aiter__(self):
+        if False:
+            yield b""
+
+    async def aclose(self):
+        self.close_calls += 1
+        if self.close_calls == 1:
+            raise self._error
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_diagnostic_response_close_error_then_success_logs_both_events():
+    """A failed close followed by a successful retry must emit both events.
+
+    The _DiagnosticResponseStream must use separate bookkeeping for error
+    and closed so a later successful retry still reports response-closed.
+    Exactly one response-close-error and exactly one response-closed, with
+    no request data in the log.
+    """
+    inner = _ErrorThenSuccessInnerStream(RuntimeError("transient close failure"))
+    diag_stream = tnet._DiagnosticResponseStream(
+        inner,
+        owner="general",
+        route="primary",
+        local_port="43210",
+        request_id="42",
+    )
+
+    with _LifecycleLogCapture(lambda: inner) as capture:
+        # First close raises.
+        with pytest.raises(RuntimeError, match="transient close failure"):
+            await diag_stream.aclose()
+        # Second close succeeds.
+        await diag_stream.aclose()
+
+    messages = [record.getMessage() for record, _ in capture.records]
+    assert sum("event=response-close-error" in m for m in messages) == 1
+    assert sum("event=response-closed" in m for m in messages) == 1
+    assert all("request_id=42" in message for message in messages)
+    assert inner.close_calls == 2
+    _assert_records_redacted(capture.records, ("transient close failure",))
+
+
+@pytest.mark.asyncio
+async def test_retrying_close_reports_terminal_success_through_diagnostics():
+    """The detached production retry must emit the terminal success event."""
+    inner = _ErrorThenSuccessInnerStream(RuntimeError("transient close failure"))
+    request = httpx.Request("POST", "https://api.telegram.org/botREDACTED/sendMessage")
+    raw_response = httpx.Response(200, request=request, stream=inner)
+    route_transport = _SingleResponseTransport(raw_response)
+    fallback_transport = tnet.TelegramFallbackTransport(
+        [],
+        owner_role="general",
+        socket_diagnostics=True,
+    )
+
+    try:
+        with _LifecycleLogCapture(lambda: inner) as capture:
+            response = await fallback_transport._request_for_route(
+                route_transport,
+                request,
+                "primary",
+            )
+            with pytest.raises(RuntimeError, match="transient close failure"):
+                await response.aclose()
+            for _ in range(20):
+                if not tnet._abandoned_response_cleanups:
+                    break
+                await asyncio.sleep(0)
+    finally:
+        await fallback_transport.aclose()
+
+    messages = [record.getMessage() for record, _ in capture.records]
+    request_ids = {
+        message.split("request_id=", 1)[1].split(" ", 1)[0]
+        for message in messages
+    }
+    assert inner.close_calls == 2
+    assert not tnet._abandoned_response_cleanups
+    assert sum("event=response-created" in message for message in messages) == 1
+    assert sum("event=response-close-error" in message for message in messages) == 1
+    assert sum("event=response-closed" in message for message in messages) == 1
+    assert len(request_ids) == 1
+    _assert_records_redacted(capture.records, ("REDACTED", "transient close failure"))
+
+
 class _SlowBodyServer:
     """Threaded TCP server that accepts one connection and stalls mid-body."""
 
@@ -1141,6 +1293,43 @@ class TestFallbackTransport:
             server.stop()
 
     @pytest.mark.asyncio
+    async def test_shielded_close_late_failure_cannot_false_green_idempotent_retry(self):
+        """A late first-close failure must still close the exact raw socket."""
+        left, right = socket.socketpair()
+        tracked_socket = _RawSocketTracker(left)
+        network_stream = _AcloseFailingNetworkStream(tracked_socket)
+        stream = _IdempotentLateFailingByteStream()
+        retrying = tnet._RetryingCloseResponseStream(
+            stream,
+            network_stream=network_stream,
+        )
+        try:
+            waiter = asyncio.create_task(retrying.aclose())
+            await asyncio.wait_for(stream.close_started.wait(), timeout=1.0)
+            waiter.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiter
+
+            stream.release_close.set()
+            for _ in range(200):
+                if tracked_socket.close_calls == 1:
+                    break
+                await asyncio.sleep(0.01)
+
+            assert stream.close_calls == 2
+            assert network_stream.aclose_calls == 1
+            assert tracked_socket.close_calls == 1
+            assert tracked_socket.fileno() == -1
+            for _ in range(200):
+                if not tnet._abandoned_response_cleanups:
+                    break
+                await asyncio.sleep(0.01)
+            assert not tnet._abandoned_response_cleanups
+        finally:
+            left.close()
+            right.close()
+
+    @pytest.mark.asyncio
     async def test_retry_failure_forces_network_stream_close(self):
         """If both byte-stream closes fail, force-close the raw network stream."""
         network_stream = _DiagnosticNetworkStream()
@@ -1160,6 +1349,43 @@ class TestFallbackTransport:
         assert stream.close_calls == 2
         assert network_stream.closed is True
         assert not tnet._abandoned_response_cleanups
+
+    @pytest.mark.asyncio
+    async def test_force_close_falls_back_to_exact_raw_socket_on_network_aclose_failure(self):
+        """When network_stream.aclose() fails, close the exact raw OS socket.
+
+        The terminal fallback in _force_close_network_stream must close the
+        exact socket returned by get_extra_info('socket') — once, idempotently
+        — and no unrelated socket.
+        """
+        sock_a, sock_b = socket.socketpair()
+        try:
+            raw_tracker = _RawSocketTracker(sock_a)
+            network_stream = _AcloseFailingNetworkStream(raw_tracker)
+            stream = _CloseFailingByteStream()
+            retrying = tnet._RetryingCloseResponseStream(
+                stream,
+                network_stream=network_stream,
+            )
+
+            with pytest.raises(RuntimeError, match="stream close broken"):
+                await retrying.aclose()
+
+            for _ in range(30):
+                if raw_tracker.close_calls > 0 and not tnet._abandoned_response_cleanups:
+                    break
+                await asyncio.sleep(0)
+
+            # The exact raw socket was closed exactly once.
+            assert raw_tracker.close_calls == 1
+            # The network-stream aclose was attempted exactly once (idempotent).
+            assert network_stream.aclose_calls == 1
+            # The unrelated socket (sock_b) was never touched.
+            assert sock_b.fileno() != -1
+            assert not tnet._abandoned_response_cleanups
+        finally:
+            sock_a.close()
+            sock_b.close()
 
     @pytest.mark.asyncio
     async def test_falls_back_on_connect_timeout_and_becomes_sticky(self, monkeypatch):
