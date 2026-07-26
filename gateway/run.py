@@ -18008,7 +18008,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.warning("%s transcription failed: %s", log_context, trans_exc)
             return text, []
 
-    def _build_process_event_source(self, evt: dict):
+    def _lookup_process_event_origin(self, session_key: str):
+        """Read a process event's persisted origin under SessionStore locking."""
+        lookup = getattr(self.session_store, "peek_session_origin", None)
+        if callable(lookup):
+            return lookup(session_key)
+
+        # Compatibility for narrow test doubles and older external stores.
+        self.session_store._ensure_loaded()
+        entry = self.session_store._entries.get(session_key)
+        return getattr(entry, "origin", None) if entry else None
+
+    def _build_process_event_source(
+        self, evt: dict, *, lookup_persisted_origin: bool = True,
+    ):
         """Resolve the canonical source for a synthetic background-process event.
 
         Prefer the persisted session-store origin for the event's session key.
@@ -18023,17 +18036,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         derived_chat_id = ""
 
         if session_key:
-            try:
-                self.session_store._ensure_loaded()
-                entry = self.session_store._entries.get(session_key)
-                if entry and getattr(entry, "origin", None):
-                    return entry.origin
-            except Exception as exc:
-                logger.debug(
-                    "Synthetic process-event session-store lookup failed for %s: %s",
-                    session_key,
-                    exc,
-                )
+            if lookup_persisted_origin:
+                try:
+                    origin = self._lookup_process_event_origin(session_key)
+                    if origin is not None:
+                        return origin
+                except Exception as exc:
+                    logger.debug(
+                        "Synthetic process-event session-store lookup failed for %s: %s",
+                        session_key,
+                        exc,
+                    )
 
             cached_source = self._get_cached_session_source(session_key)
             if cached_source is not None:
@@ -18086,6 +18099,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_name=str(evt.get("user_name") or "").strip() or None,
         )
 
+    async def _build_process_event_source_async(self, evt: dict):
+        """Resolve persisted routing off-loop, then finish from loop-owned state."""
+        session_key = str(evt.get("session_key") or "").strip()
+        if session_key:
+            try:
+                origin = await asyncio.to_thread(
+                    self._lookup_process_event_origin, session_key,
+                )
+                if origin is not None:
+                    return origin
+            except Exception as exc:
+                logger.debug(
+                    "Synthetic process-event session-store lookup failed for %s: %s",
+                    session_key,
+                    exc,
+                )
+        return self._build_process_event_source(
+            evt, lookup_persisted_origin=False,
+        )
+
     async def _inject_watch_notification(
         self, synth_text: str, evt: dict,
     ) -> Optional[bool]:
@@ -18098,7 +18131,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         is not a transactional boundary: a process crash after adapter
         acceptance can still cause durable at-least-once replay.
         """
-        source = self._build_process_event_source(evt)
+        source = await self._build_process_event_source_async(evt)
         if not source:
             logger.warning(
                 "Dropping watch notification with no routing metadata for process %s",

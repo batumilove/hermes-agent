@@ -2640,6 +2640,20 @@ class SessionStore:
                     return entry
         return None
 
+    def peek_session_origin(self, session_key: str) -> Optional[SessionSource]:
+        """Return the canonical origin currently bound to a session key.
+
+        Public, lock-held accessor for synthetic-event routing. Callers should
+        use this instead of reading the private ``_entries`` mapping after a
+        separate load, which can race with routing updates.
+        """
+        if not session_key:
+            return None
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            return getattr(entry, "origin", None) if entry else None
+
     def peek_session_id(self, session_key: str) -> Optional[str]:
         """Return the persisted session_id currently bound to a session key.
 
