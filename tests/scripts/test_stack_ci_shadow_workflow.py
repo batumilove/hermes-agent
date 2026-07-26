@@ -177,10 +177,16 @@ def test_tests_workflow_generates_requested_python_matrix(
 
 
 def test_reused_workflows_scope_concurrency_to_the_calling_workflow() -> None:
-    for name in ("tests.yml", "lint.yml", "e2e-desktop.yml", "docker-lint.yml"):
+    for name in (
+        "tests.yml",
+        "lint.yml",
+        "e2e-desktop.yml",
+        "docker-lint.yml",
+        "uv-lockfile-check.yml",
+    ):
         group = _workflow(name)["concurrency"]["group"]
         assert "${{ github.workflow }}" in group, name
-        assert "${{ github.ref }}" in group, name
+        assert "github.ref" in group, name
 
 
 def _run_shadow_evaluator(needs: dict[str, str], **flags: str) -> subprocess.CompletedProcess[str]:
