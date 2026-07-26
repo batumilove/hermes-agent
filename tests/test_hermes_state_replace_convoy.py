@@ -163,6 +163,43 @@ class TestReplaceMessagesNoOpSkip:
         finally:
             db.close()
 
+    def test_full_replace_reactivates_matching_inactive_rows(self, tmp_path):
+        """A full replacement rewrites matching inactive rows as active."""
+        db = SessionDB(db_path=tmp_path / "test.db")
+        try:
+            db.create_session(session_id="s1", source="cli")
+            messages = [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "hi"},
+            ]
+            db.replace_messages("s1", messages)
+
+            with db._lock:
+                first_id = db._conn.execute(
+                    "SELECT MIN(id) FROM messages WHERE session_id = ?",
+                    ("s1",),
+                ).fetchone()[0]
+                db._conn.execute(
+                    "UPDATE messages SET active = 0 WHERE id = ?",
+                    (first_id,),
+                )
+                db._conn.commit()
+
+            db.replace_messages("s1", messages, active_only=False)
+
+            with db._lock:
+                active_flags = [
+                    row[0]
+                    for row in db._conn.execute(
+                        "SELECT active FROM messages WHERE session_id = ? ORDER BY id",
+                        ("s1",),
+                    ).fetchall()
+                ]
+            assert active_flags == [1, 1]
+            assert len(db.get_messages("s1")) == 2
+        finally:
+            db.close()
+
     def test_identical_replace_preserves_message_order(self, tmp_path):
         """After no-op replace, message order (by id) must be unchanged."""
         db = SessionDB(db_path=tmp_path / "test.db")

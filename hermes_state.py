@@ -6479,7 +6479,7 @@ class SessionDB:
         "effect_disposition", "timestamp", "token_count", "finish_reason",
         "reasoning", "reasoning_content", "reasoning_details",
         "codex_reasoning_items", "codex_message_items", "platform_message_id",
-        "observed", "api_content",
+        "observed", "active", "api_content",
     )
 
     @staticmethod
@@ -6611,6 +6611,12 @@ class SessionDB:
                 return False
             # observed
             if row["observed"] != (1 if msg.get("observed") else 0):
+                return False
+            # Every replacement INSERT writes active=1.  A full-session no-op
+            # must therefore reject matching inactive rows so the destructive
+            # path can restore them to the active transcript.  For
+            # active_only=True the SELECT already enforces this invariant.
+            if row["active"] != 1:
                 return False
             # api_content
             api_content = msg.get("api_content")
