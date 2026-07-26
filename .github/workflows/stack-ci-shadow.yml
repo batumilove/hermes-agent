@@ -144,14 +144,27 @@ jobs:
       contents: read
       pull-requests: read
 
-  osv-scanner:
+  dependency-gates:
     name: Read-only dependency gates
-    uses: ./.github/workflows/osv-scanner.yml
-    with:
-      upload_sarif: false
-    permissions:
-      actions: read
-      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Validate npm lockfiles
+        run: python3 scripts/validate_npm_lockfiles.py
+      - name: Block high npm advisories
+        env:
+          NPM_CONFIG_REGISTRY: https://registry.npmjs.org
+        run: |
+          set -euo pipefail
+          for dir in . website plugins/platforms/photon/sidecar scripts/whatsapp-bridge; do
+            echo "::group::npm audit ${dir}"
+            (cd "$dir" && npm audit --package-lock-only --audit-level=high --omit=dev)
+            echo "::endgroup::"
+          done
 
   runtime-tests:
     name: Running-stack contract tests
@@ -234,7 +247,7 @@ jobs:
       - docker-lint
       - supply-chain
       - review-labels
-      - osv-scanner
+      - dependency-gates
       - runtime-tests
       - image
     if: always()
@@ -269,7 +282,7 @@ jobs:
               "runtime-tests",
               "image",
               "uv-lockfile",
-              "osv-scanner",
+              "dependency-gates",
           }
           if event_name == "pull_request":
               required.add("history-check")

@@ -39,7 +39,7 @@ def test_shadow_workflow_is_small_read_only_and_non_required() -> None:
         "docker-lint",
         "supply-chain",
         "review-labels",
-        "osv-scanner",
+        "dependency-gates",
         "runtime-tests",
         "image",
         "shadow",
@@ -82,11 +82,33 @@ def test_shadow_v2_uses_full_deployed_python_and_path_gated_safety_workflows() -
     assert jobs["supply-chain"]["uses"] == "./.github/workflows/supply-chain-audit.yml"
     assert jobs["review-labels"]["uses"] == "./.github/workflows/review-labels.yml"
 
-    osv = jobs["osv-scanner"]
-    assert osv["uses"] == "./.github/workflows/osv-scanner.yml"
-    assert osv["with"] == {"upload_sarif": "false"}
-    assert osv["permissions"] == {"actions": "read", "contents": "read"}
-    assert "security-events" not in osv["permissions"]
+    dependency_gates = jobs["dependency-gates"]
+    assert dependency_gates["runs-on"] == "ubuntu-latest"
+    assert "uses" not in dependency_gates
+    dependency_steps = dependency_gates["steps"]
+    checkout = next(step for step in dependency_steps if step["name"] == "Checkout")
+    assert checkout["with"]["persist-credentials"] == "false"
+    lockfiles = next(
+        step for step in dependency_steps if step["name"] == "Validate npm lockfiles"
+    )
+    audit = next(
+        step for step in dependency_steps if step["name"] == "Block high npm advisories"
+    )
+    osv_jobs = _workflow("osv-scanner.yml")["jobs"]
+    required_lockfiles = next(
+        step
+        for step in osv_jobs["npm-lockfile-integrity"]["steps"]
+        if step["name"] == "Check npm lockfile resolved URLs and integrity hashes"
+    )
+    required_audit = next(
+        step
+        for step in osv_jobs["npm-audit-high"]["steps"]
+        if step["name"] == "Audit npm lockfiles for high/critical advisories"
+    )
+    assert lockfiles["run"] == required_lockfiles["run"]
+    assert audit["env"] == required_audit["env"]
+    assert audit["run"] == required_audit["run"]
+    assert "security-events" not in json.dumps(dependency_gates)
 
 
 def test_tests_workflow_defaults_remain_broad_but_accept_deployed_python_override() -> None:
@@ -154,17 +176,6 @@ def test_tests_workflow_generates_requested_python_matrix(
     assert len(matrix["slice"]) == 8
 
 
-def test_osv_workflow_supports_read_only_shadow_mode_without_weakening_default() -> None:
-    workflow = _workflow("osv-scanner.yml")
-    inputs = workflow["on"]["workflow_call"]["inputs"]
-
-    assert inputs["upload_sarif"]["type"] == "boolean"
-    assert inputs["upload_sarif"]["default"] == "true"
-    expected_if = "github.event_name != 'workflow_call' || inputs.upload_sarif"
-    assert workflow["jobs"]["scan"]["if"] == expected_if
-    assert workflow["jobs"]["emit-status"]["if"] == f"always() && ({expected_if})"
-
-
 def test_reused_workflows_scope_concurrency_to_the_calling_workflow() -> None:
     for name in ("tests.yml", "lint.yml", "e2e-desktop.yml", "docker-lint.yml"):
         group = _workflow(name)["concurrency"]["group"]
@@ -212,7 +223,7 @@ def _shadow_results(optional: str = "skipped") -> dict[str, str]:
         "runtime-tests",
         "image",
         "uv-lockfile",
-        "osv-scanner",
+        "dependency-gates",
         "history-check",
     }
     jobs = set(_workflow("stack-ci-shadow.yml")["jobs"]) - {"shadow"}
