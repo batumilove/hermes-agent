@@ -50,5 +50,9 @@
   },
   "engines": {
     "node": ">=22.22.0"
+  },
+  "devDependencies": {
+    "dompurify": "3.4.12",
+    "postcss": "8.5.23"
   }
 }

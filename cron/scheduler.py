@@ -47,69 +47,6 @@ from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
 
-# ActiveGraph event bridge — optional/user-plugin owned.
-# Keep this lazy and fail-open: cron must never depend on observability being
-# installed or initialized, and scheduler.py can be imported before the plugin
-# manager has loaded user plugins.
-_ag_emit = None
-_ag_import_attempted = False
-
-
-def _ag(event_type: str, payload: dict) -> None:
-    """Emit an ActiveGraph event when the optional activegraph plugin is loaded.
-
-    Directory plugins are importable as ``hermes_plugins.<slug>`` only after the
-    plugin manager has discovered them. Cron runs from scheduler threads where
-    this helper can be reached before that namespace exists, so fall back to a
-    best-effort plugin discovery before giving up.  Failure stays fail-open:
-    cron execution must not depend on observability.
-    """
-    global _ag_emit, _ag_import_attempted
-    if _ag_emit is None and not _ag_import_attempted:
-        _ag_import_attempted = True
-        try:
-            import importlib
-            try:
-                _plugin = importlib.import_module("hermes_plugins.activegraph")
-            except Exception:
-                from hermes_cli.plugins import discover_plugins
-
-                discover_plugins()
-                _plugin = importlib.import_module("hermes_plugins.activegraph")
-            _ag_emit = getattr(_plugin, "_emit")
-        except Exception:
-            _ag_emit = None
-    if _ag_emit is None:
-        return
-    try:
-        _ag_emit(event_type, payload)
-    except Exception:
-        logger.debug("ActiveGraph cron emit failed for %s", event_type, exc_info=True)
-
-
-def _cron_ag_job_name(job: dict) -> str:
-    return str(job.get("name") or str(job.get("prompt") or "")[:60] or job.get("id") or "cron job")
-
-
-def _cron_ag_schedule(job: dict) -> str:
-    display = str(job.get("schedule_display") or "").strip()
-    if display:
-        return display
-    schedule = job.get("schedule")
-    if isinstance(schedule, dict):
-        for key in ("display", "value", "expr", "run_at"):
-            value = str(schedule.get(key) or "").strip()
-            if value:
-                return value
-        kind = str(schedule.get("kind") or "").strip()
-        if kind == "interval" and schedule.get("minutes"):
-            return f"every {schedule.get('minutes')}m"
-        if kind:
-            return kind
-    if schedule is not None:
-        return str(schedule)
-    return ""
-
 
 def _set_cron_session_title(session_db, session_id, base_title):
     """Robustly title a finished cron session before it is closed.
@@ -420,8 +357,6 @@ def _is_cron_silence_response(text: str) -> bool:
 # ---------------------------------------------------------------------------
 _parallel_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _parallel_pool_max_workers: Optional[int] = None
-_script_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
-_script_pool_max_workers: Optional[int] = None
 _running_job_ids: set = set()
 _running_lock = threading.Lock()
 
@@ -585,7 +520,7 @@ _terminal_cwd_lock = _ReadWriteLock()
 
 
 def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadPoolExecutor:
-    """Return (or create) the persistent agent-job pool."""
+    """Return (or create) the persistent parallel pool."""
     global _parallel_pool, _parallel_pool_max_workers
     if _parallel_pool is None or _parallel_pool_max_workers != max_workers:
         if _parallel_pool is not None:
@@ -596,20 +531,6 @@ def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadP
         )
         _parallel_pool_max_workers = max_workers
     return _parallel_pool
-
-
-def _get_script_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadPoolExecutor:
-    """Return (or create) the persistent script-only job pool."""
-    global _script_pool, _script_pool_max_workers
-    if _script_pool is None or _script_pool_max_workers != max_workers:
-        if _script_pool is not None:
-            _script_pool.shutdown(wait=False, cancel_futures=False)
-        _script_pool = concurrent.futures.ThreadPoolExecutor(
-            max_workers=max_workers,
-            thread_name_prefix="cron-script",
-        )
-        _script_pool_max_workers = max_workers
-    return _script_pool
 
 
 def _get_sequential_pool() -> concurrent.futures.ThreadPoolExecutor:
@@ -631,16 +552,11 @@ def _get_sequential_pool() -> concurrent.futures.ThreadPoolExecutor:
 
 def _shutdown_parallel_pool() -> None:
     """Shut down the persistent pools on process exit."""
-    global _parallel_pool, _parallel_pool_max_workers
-    global _script_pool, _script_pool_max_workers, _sequential_pool
+    global _parallel_pool, _parallel_pool_max_workers, _sequential_pool
     if _parallel_pool is not None:
         _parallel_pool.shutdown(wait=True, cancel_futures=False)
         _parallel_pool = None
         _parallel_pool_max_workers = None
-    if _script_pool is not None:
-        _script_pool.shutdown(wait=True, cancel_futures=False)
-        _script_pool = None
-        _script_pool_max_workers = None
     if _sequential_pool is not None:
         _sequential_pool.shutdown(wait=True, cancel_futures=False)
         _sequential_pool = None
@@ -1297,6 +1213,16 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         except Exception:
             pass
 
+        if (
+            thread_id is None
+            and platform_key == "slack"
+            and origin
+            and str(origin.get("platform") or "").lower() == platform_key
+            and str(origin.get("chat_id")) == str(chat_id)
+            and origin.get("thread_id")
+        ):
+            thread_id = origin.get("thread_id")
+
         return {
             "platform": platform_name,
             "chat_id": chat_id,
@@ -1305,6 +1231,13 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
 
     platform_name = deliver_value
     if origin and origin.get("platform") == platform_name:
+        chat_id = _get_home_target_chat_id(platform_name)
+        if chat_id:
+            return {
+                "platform": platform_name,
+                "chat_id": chat_id,
+                "thread_id": _get_home_target_thread_id(platform_name),
+            }
         return {
             "platform": platform_name,
             "chat_id": str(origin["chat_id"]),
@@ -1366,13 +1299,10 @@ def _cron_output_topic_name(job: dict) -> str:
         ts = "now UTC"
     prefix = "Cron: "
     suffix = f" · {job_id} · {ts}" if job_id else f" · {ts}"
-    max_total = 128
-    room = max_total - len(prefix) - len(suffix)
-    if room < 8:
-        room = 8
+    room = max(8, 128 - len(prefix) - len(suffix))
     if len(clean_name) > room:
         clean_name = clean_name[: max(0, room - 1)].rstrip() + "…"
-    return f"{prefix}{clean_name}{suffix}"[:max_total]
+    return f"{prefix}{clean_name}{suffix}"[:128]
 
 
 def _maybe_assign_fresh_telegram_cron_thread(
@@ -1382,31 +1312,20 @@ def _maybe_assign_fresh_telegram_cron_thread(
     *,
     can_create_named_dm_topic: bool = True,
 ) -> dict:
-    """Replace a Telegram private-chat target's thread with a fresh topic name.
-
-    ``cron.telegram_new_thread_per_output`` is intentionally a live-gateway
-    feature: the standalone sender can only address existing numeric thread IDs;
-    it cannot create the named private DM topic first.  When no live Telegram
-    adapter is available, leave the target untouched so explicit/origin thread
-    delivery keeps its previous behavior instead of passing a non-numeric topic
-    name into the standalone path.
-    """
+    """Replace a Telegram private-chat target's thread with a fresh topic name."""
     if not can_create_named_dm_topic:
         return target
     if not _cron_new_telegram_thread_per_output_enabled(config):
         return target
     if str(target.get("platform", "")).lower() != "telegram":
         return target
-
     try:
         from gateway.delivery import looks_like_telegram_private_chat_id
     except Exception:
         return target
-
     chat_id = target.get("chat_id")
     if not looks_like_telegram_private_chat_id(str(chat_id) if chat_id is not None else None):
         return target
-
     adjusted = dict(target)
     adjusted["thread_id"] = _cron_output_topic_name(job)
     return adjusted
@@ -1651,27 +1570,19 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     from tools.send_message_tool import _send_to_platform
     from gateway.config import load_gateway_config, Platform
 
-    # Optionally wrap the content with a header/footer so the user knows this
-    # is a cron delivery. Wrapping is on by default for agent jobs; script-only
-    # no_agent jobs keep their documented verbatim stdout contract.
+    # Agent jobs are wrapped by default; no_agent/script jobs preserve their
+    # documented verbatim stdout delivery contract.
     wrap_response = not bool(job.get("no_agent"))
     user_cfg = None
     try:
         user_cfg = load_config()
-        wrap_response = wrap_response and user_cfg.get("cron", {}).get(
-            "wrap_response", True
-        )
+        wrap_response = wrap_response and user_cfg.get("cron", {}).get("wrap_response", True)
     except Exception:
         pass
 
     if wrap_response:
         task_name = job.get("name", job["id"])
         job_id = job.get("id", "")
-        # A job may be edited while its run is in flight. Use the current store
-        # record for lifecycle wording so a stale dispatched snapshot does not
-        # claim that an active/reconfigured schedule has ended. Scan defensively:
-        # due-job recovery tolerates malformed siblings without an ``id``. If the
-        # store itself cannot be read, preserve delivery via the run snapshot.
         footer_job = job
         try:
             for stored_job in load_jobs():
@@ -1697,7 +1608,6 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 and isinstance(completed, int)
                 and completed + 1 >= times
             )
-
         if is_one_shot:
             footer = "This one-shot job is complete; no active schedule remains."
         elif is_final_repeat:
@@ -1707,7 +1617,6 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 f'To stop or manage this job, send me a new message '
                 f'(e.g. "stop reminder {task_name}").'
             )
-
         delivery_content = (
             f"Cronjob Response: {task_name}\n"
             f"(job_id: {job_id})\n"
@@ -1785,27 +1694,45 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             delivery_errors.append(msg)
             continue
 
-        pconfig = config.platforms.get(platform)
+        from gateway.delivery import resolve_delivery_transport
+
+        transport = resolve_delivery_transport(platform, config, adapters)
+        if transport is not None:
+            pconfig = transport.config
+            runtime_adapter = transport.adapter
+        else:
+            # No live transport: preserve the existing standalone delivery path,
+            # which uses the logical platform's configured credential.
+            pconfig = config.platforms.get(platform)
+            runtime_adapter = None
+
         if not pconfig or not pconfig.enabled:
             msg = f"platform '{platform_name}' not configured/enabled"
             logger.warning("Job '%s': %s", job["id"], msg)
             delivery_errors.append(msg)
             continue
 
-        # Prefer the live adapter when the gateway is running — this supports E2EE
-        # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
-        runtime_adapter = (adapters or {}).get(platform)
-
-        # Optional Telegram fresh-topic routing must run after we know whether a
-        # live Telegram adapter is available.  The named-topic route relies on
-        # DeliveryRouter -> adapter.ensure_dm_topic(); standalone senders cannot
-        # create a topic and would otherwise misroute/fail.
+        # Prefer the resolved live transport when the gateway is running. This
+        # supports E2EE native adapters and relay-fronted logical platforms.
+        # The live-send path (which SEEDS the flat in_channel continuation
+        # session via _seed_cron_channel_session) needs not just a live adapter
+        # but a running event loop to schedule the async send onto. Compute that
+        # gate ONCE so the in_channel thread_id clear below stays in lockstep
+        # with the live-send/seed block further down (they used to drift): an
+        # adapter can be present while the loop is absent/not-running, in which
+        # case the live-send block is skipped and delivery falls through to the
+        # standalone path — which cannot seed the flat session (r3609147550).
+        live_adapter_ready = (
+            runtime_adapter is not None
+            and loop is not None
+            and getattr(loop, "is_running", lambda: False)()
+        )
         fresh_telegram_topic_assigned = False
         adjusted_target = _maybe_assign_fresh_telegram_cron_thread(
             job,
             target,
             user_cfg,
-            can_create_named_dm_topic=(runtime_adapter is not None and loop is not None),
+            can_create_named_dm_topic=live_adapter_ready,
         )
         if adjusted_target is not target:
             target = adjusted_target
@@ -1814,9 +1741,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             fresh_telegram_topic_assigned = True
             logger.info(
                 "Job '%s': using fresh Telegram cron topic %r for %s:%s",
-                job.get("id", "?"), thread_id, platform_name, chat_id,
+                job.get("id", "?"),
+                thread_id,
+                platform_name,
+                chat_id,
             )
-
         delivered = False
         target_errors = []
 
@@ -1849,6 +1778,33 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 job.get("id", "?"), platform_name,
             )
             in_channel_surface = False
+
+        if in_channel_surface and mirror_this_target and live_adapter_ready:
+            # Force flat delivery (D2): the continuable-channel target must
+            # ignore any inherited origin/target thread_id, or the flat
+            # continuable session seeded below (thread_id=None, via
+            # _seed_cron_channel_session) never matches where the brief is
+            # actually delivered — route_thread_id further down in this loop
+            # reads `thread_id` and would otherwise route into the origin
+            # thread instead of flat into the channel.
+            #
+            # Gated on `live_adapter_ready` (adapter present AND a running loop)
+            # so the clear fires ONLY on the live-send path that actually seeds
+            # the flat session — the SAME condition as the live-send block
+            # below. `runtime_adapter is not None` alone is broader than that
+            # path: an adapter can be present while the event loop is absent or
+            # not running, in which case the live-send/seed block is skipped and
+            # delivery falls through to the standalone path. Clearing thread_id
+            # there would flatten a brief into a channel with NO seeded
+            # continuable session behind it (and bypass the D6 capability
+            # check), so the standalone fallback must keep the origin thread
+            # (review r3609147550).
+            #
+            # Fan-out / broadcast / explicit-thread targets keep their thread_id
+            # (they are not continuable and are never seeded). Placed AFTER
+            # mirror_this_target / origin_user_id are computed above — those
+            # need the ORIGINAL thread_id to match the origin conversation.
+            thread_id = None
 
         # For an in_channel delivery the flat continuation session is created
         # explicitly below (the shipped mirror only APPENDS to an existing
@@ -1902,7 +1858,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 thread_id = new_thread_id
                 opened_thread_id = new_thread_id
 
-        if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
+        if live_adapter_ready:
             # Telegram topic routing (#22773, regression fixed #52060): a
             # ``telegram:<positive_chat_id>:<numeric_thread_id>`` cron target is
             # ambiguous — a forum-style topic in a private chat and a genuine
@@ -1942,28 +1898,20 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 media_metadata = {"direct_messages_topic_id": str(thread_id)}
             else:
                 # Forum-style topic (private chat / supergroup) or non-topic
-                # target: route via message_thread_id (#52060). Numeric existing
-                # topic IDs can be passed as metadata because cron deliveries
-                # have no inbound reply anchor.  Named private-DM topics are
-                # different: DeliveryRouter must see the non-numeric
-                # ``DeliveryTarget.thread_id`` WITHOUT a metadata ``thread_id``
-                # so it can call adapter.ensure_dm_topic() first and replace the
-                # name with the created numeric topic id.  Passing the generated
-                # name through metadata makes Telegram's adapter try int(name)
-                # and drops fresh cron-topic deliveries.
+                # target: route via message_thread_id (#52060).  Put thread_id in
+                # *route_metadata* (not just the DeliveryTarget) deliberately —
+                # the DeliveryRouter's private-chat topic detection
+                # (gateway/delivery.py) demands a reply anchor when thread_id is
+                # absent from metadata; cron deliveries have no inbound reply
+                # anchor, so the metadata key bypasses that check and lets the
+                # adapter route via a plain message_thread_id.
                 route_thread_id = str(thread_id) if thread_id is not None else None
                 route_metadata = {"job_id": job["id"]}
-                route_is_named_private_topic = (
-                    platform == Platform.TELEGRAM
-                    and route_thread_id is not None
-                    and looks_like_telegram_private_chat_id(str(chat_id))
-                    and not _looks_like_int(route_thread_id)
-                )
-                if fresh_telegram_topic_assigned and route_is_named_private_topic:
-                    route_metadata["_telegram_ephemeral_dm_topic"] = True
-                if route_thread_id and not route_is_named_private_topic:
+                if route_thread_id and not fresh_telegram_topic_assigned:
                     route_metadata["thread_id"] = route_thread_id
-                media_metadata = None if route_is_named_private_topic else ({"thread_id": thread_id} if thread_id else None)
+                if fresh_telegram_topic_assigned:
+                    route_metadata["_telegram_ephemeral_dm_topic"] = True
+                media_metadata = {"thread_id": thread_id} if thread_id else None
 
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content.
@@ -2005,9 +1953,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     else:
                         send_result = None
                         timeout_handled = False
-                        live_adapter_send_timeout = _get_live_adapter_send_timeout()
                         try:
-                            send_result = future.result(timeout=live_adapter_send_timeout)
+                            live_send_timeout = _get_live_adapter_send_timeout()
+                            send_result = future.result(timeout=live_send_timeout)
                         except TimeoutError:
                             # #38922: a slow confirmation does NOT necessarily
                             # mean the send failed — but we must distinguish two
@@ -2047,7 +1995,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                     "after %.1fs; already dispatched (in flight), "
                                     "assuming delivered (skipping standalone fallback "
                                     "to avoid duplicate)",
-                                    job["id"], platform_name, chat_id, live_adapter_send_timeout,
+                                    job["id"], platform_name, chat_id, live_send_timeout,
                                 )
                         except Exception as ex:
                             # A real send error (not a slow confirmation) — fall
@@ -2092,10 +2040,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                     f"live adapter send to {platform_name}:{chat_id} "
                                     f"returned unconfirmed result ({shape}, error={err})"
                                 )
-                                logger.warning(
-                                    "Job '%s': %s, falling back to standalone",
-                                    job["id"], msg,
-                                )
+                                if transport is not None and transport.is_relay:
+                                    logger.warning("Job '%s': %s", job["id"], msg)
+                                else:
+                                    logger.warning(
+                                        "Job '%s': %s, falling back to standalone",
+                                        job["id"], msg,
+                                    )
                                 target_errors.append(msg)
                                 adapter_ok = False  # fall through to standalone path
                             elif (
@@ -2121,11 +2072,20 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # skipped attachments so the drop is visible rather than silently
                 # lost.
                 if adapter_ok and not timed_out and media_files:
+                    routed_media_metadata = dict(media_metadata or {})
+                    if transport is not None and transport.is_relay:
+                        routed_media_metadata["_relay_logical_platform"] = platform.value
+                        logical_home = config.get_home_channel(platform)
+                        if logical_home is not None and logical_home.chat_id == chat_id:
+                            if logical_home.user_id:
+                                routed_media_metadata["user_id"] = logical_home.user_id
+                            if logical_home.scope_id:
+                                routed_media_metadata["scope_id"] = logical_home.scope_id
                     _send_media_via_adapter(
                         runtime_adapter,
                         chat_id,
                         media_files,
-                        media_metadata,
+                        routed_media_metadata or None,
                         loop,
                         job,
                         platform=platform,
@@ -2170,22 +2130,35 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 err_msg = f"live adapter delivery to {platform_name}:{chat_id} failed: {e}"
                 if not any(err_msg in err for err in target_errors):
                     target_errors.append(err_msg)
-                logger.warning(
-                    "Job '%s': %s, falling back to standalone",
-                    job["id"], err_msg,
-                )
-
-        if not delivered and fresh_telegram_topic_assigned:
-            msg = (
-                f"live adapter delivery to fresh Telegram cron topic failed for "
-                f"{platform_name}:{chat_id}; refusing standalone fallback because "
-                "standalone cannot create/address named DM topics safely"
-            )
-            logger.error("Job '%s': %s", job["id"], msg)
-            delivery_errors.extend(target_errors + [msg])
-            continue
+                if transport is not None and transport.is_relay:
+                    logger.warning("Job '%s': %s", job["id"], err_msg)
+                else:
+                    logger.warning(
+                        "Job '%s': %s, falling back to standalone",
+                        job["id"], err_msg,
+                    )
 
         if not delivered:
+            if fresh_telegram_topic_assigned:
+                target_errors.append(
+                    "refusing standalone fallback for fresh Telegram topic"
+                )
+                if not target_errors:
+                    target_errors.append(
+                        f"fresh Telegram topic delivery to {platform_name}:{chat_id} failed"
+                    )
+                delivery_errors.extend(target_errors)
+                continue
+            if transport is not None and transport.is_relay:
+                # Relay owns the logical destination and its connector owns the
+                # platform credential. A native retry could duplicate delivery
+                # and cannot be authenticated correctly, so fail closed.
+                if not target_errors:
+                    target_errors.append(
+                        f"relay delivery to {platform_name}:{chat_id} failed"
+                    )
+                delivery_errors.extend(target_errors)
+                continue
             # If the interpreter is finalizing (gateway SIGTERM / restart /
             # OOM), scheduling any new delivery is futile — asyncio.run and a
             # fresh ThreadPoolExecutor both raise "cannot schedule new futures
@@ -2275,8 +2248,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 _DEFAULT_SCRIPT_TIMEOUT = 3600  # seconds (1 hour)
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
-_LIVE_ADAPTER_SEND_TIMEOUT_SECONDS = 60.0
 _RUN_CLAIM_HEARTBEAT_SECONDS = 60.0
+_LIVE_ADAPTER_SEND_TIMEOUT_SECONDS = 60.0
 
 
 def _get_live_adapter_send_timeout() -> float:
@@ -2292,7 +2265,6 @@ def _get_live_adapter_send_timeout() -> float:
                 "Invalid HERMES_CRON_LIVE_ADAPTER_SEND_TIMEOUT=%r; using config/default",
                 env_value,
             )
-
     try:
         cfg = load_config() or {}
         cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
@@ -2303,7 +2275,6 @@ def _get_live_adapter_send_timeout() -> float:
                 return timeout
     except Exception as exc:
         logger.debug("Failed to load cron live adapter send timeout from config: %s", exc)
-
     return _LIVE_ADAPTER_SEND_TIMEOUT_SECONDS
 
 
@@ -2398,7 +2369,10 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
     return str(interpreter), env_overlay
 
 
-def _run_job_script(script_path: str) -> tuple[bool, str]:
+def _run_job_script(
+    script_path: str,
+    workdir: Optional[str] = None,
+) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
     Scripts must reside within HERMES_HOME/scripts/.  Both relative and
@@ -2424,6 +2398,12 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         script_path: Path to the script.  Relative paths are resolved
             against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
             are also validated to ensure they stay within the scripts dir.
+        workdir: Optional absolute path to use as the script's cwd.
+            When set, the subprocess runs in this directory instead of
+            the scripts-dir parent.  The Python process cwd is NEVER
+            mutated, avoiding the global-side-effect bug where a cron
+            job's ``os.chdir()`` leaks into concurrent gateway sessions
+            (#69396).
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
@@ -2494,12 +2474,17 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             }
         env = _sanitize_subprocess_env(os.environ.copy())
         env.update(env_overlay)
+        # Use the job's workdir as the subprocess cwd when configured,
+        # otherwise default to the scripts-dir parent (back-compat).
+        # NEVER mutate the Python process cwd — that would leak into
+        # concurrent gateway sessions (#69396).
+        _script_cwd = workdir or str(path.parent)
         result = subprocess.run(
             argv,
             capture_output=True,
             text=True,
             timeout=script_timeout,
-            cwd=str(path.parent),
+            cwd=_script_cwd,
             env=env,
             **popen_kwargs,
         )
@@ -2533,9 +2518,20 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
 
 def _run_job_script_with_claim_heartbeat(
-    job: dict, script_path: str
+    job: dict, script_path: str, workdir: Optional[str] = None,
 ) -> tuple[bool, str]:
-    """Run a cron script while keeping its owned one-shot claim fresh."""
+    """Run a cron script while keeping its owned one-shot claim fresh.
+
+    Script execution is synchronous and may legitimately outlive the stale
+    claim TTL.  Without a concurrent heartbeat, another scheduler process can
+    mistake the live run for a dead owner and dispatch the same one-shot again.
+    Recurring jobs and unclaimed/manual runs have no durable one-shot claim and
+    therefore use the ordinary script path without starting a thread.
+
+    The claim owner is captured from the dispatched job and never re-read from
+    storage.  ``heartbeat_run_claim`` compares that stable owner before every
+    refresh, so a stale runner cannot extend a replacement owner's claim.
+    """
     schedule = job.get("schedule")
     claim = job.get("run_claim")
     owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
@@ -2544,7 +2540,7 @@ def _run_job_script_with_claim_heartbeat(
         and schedule.get("kind") == "once"
         and owner
     ):
-        return _run_job_script(script_path)
+        return _run_job_script(script_path, workdir=workdir)
 
     job_id = str(job.get("id") or "")
     stop = threading.Event()
@@ -2575,12 +2571,14 @@ def _run_job_script_with_claim_heartbeat(
             job_id,
             exc_info=True,
         )
-        return _run_job_script(script_path)
+        return _run_job_script(script_path, workdir=workdir)
 
     try:
-        return _run_job_script(script_path)
+        return _run_job_script(script_path, workdir=workdir)
     finally:
         stop.set()
+        # Event.wait() wakes immediately.  Keep completion bounded if the
+        # heartbeat is already waiting on another process's jobs-file lock.
         heartbeat_thread.join(timeout=1.0)
 
 
@@ -2979,25 +2977,26 @@ def run_job(
             return False, "", "", err
 
         # Apply workdir if configured — lets scripts use predictable relative
-        # paths. For no_agent jobs this is just the subprocess cwd (not an
-        # agent TERMINAL_CWD bridge).
+        # paths. For no_agent jobs this is passed as the subprocess cwd so the
+        # Python process cwd is NEVER mutated — avoiding the global-side-effect
+        # bug where os.chdir() leaks into concurrent gateway sessions (#69396).
         _job_workdir = (job.get("workdir") or "").strip() or None
-        _prior_cwd = None
-        if _job_workdir and Path(_job_workdir).is_dir():
-            _prior_cwd = os.getcwd()
-            try:
-                os.chdir(_job_workdir)
-            except OSError:
-                _prior_cwd = None
+        if _job_workdir and not Path(_job_workdir).is_dir():
+            logger.warning(
+                "Job '%s': configured workdir %r no longer exists — running without it",
+                job_id, _job_workdir,
+            )
+            _job_workdir = None
 
         try:
-            ok, output = _run_job_script_with_claim_heartbeat(job, script_path)
-        finally:
-            if _prior_cwd is not None:
-                try:
-                    os.chdir(_prior_cwd)
-                except OSError:
-                    pass
+            ok, output = _run_job_script_with_claim_heartbeat(
+                job, script_path, workdir=_job_workdir,
+            )
+        except Exception as exc:
+            logger.exception(
+                "Job '%s': script execution raised unexpectedly", job_id,
+            )
+            ok, output = False, f"Script execution failed: {exc}"
 
         now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -3066,60 +3065,67 @@ def run_job(
 
     # Initialize SQLite session store so cron job messages are persisted
     # and discoverable via session_search (same pattern as gateway/run.py).
-    # Bound construction separately from HERMES_CRON_TIMEOUT: SessionDB opens
-    # and migrates state.db synchronously, so a wedged connect must not keep the
-    # dispatch guard occupied forever.
+    #
+    # Bounded with its own timeout (separate from HERMES_CRON_TIMEOUT, which
+    # only watches the agent's run_conversation below): SessionDB.__init__
+    # opens/migrates state.db synchronously and has no timeout of its own
+    # against a wedged sqlite3.connect (e.g. a stale flock left by a crashed
+    # sibling process). An unbounded hang here is invisible to every other
+    # cron safeguard, because it happens BEFORE _submit_with_guard's future
+    # exists — the finally block that releases the job from
+    # _running_job_ids never runs, so the job stays wedged "running" until
+    # the whole gateway process is restarted, silently skipping every
+    # scheduled fire in between with "already running — skipping".
     _session_db = None
-    _session_db_timeout = 10.0
     try:
         from hermes_state import SessionDB
 
-        # Resolution order: env override -> config.yaml -> 10s default.
+        # Resolve timeout: env override → config.yaml → default 10s.
+        # Mirrors the script_timeout_seconds resolution pattern.
+        _session_db_timeout: float | None = None
         _raw_env_timeout = os.getenv("HERMES_CRON_SESSION_DB_TIMEOUT", "").strip()
-        _resolved_timeout = None
         if _raw_env_timeout:
             try:
-                _resolved_timeout = float(_raw_env_timeout)
+                _session_db_timeout = float(_raw_env_timeout)
             except (ValueError, TypeError):
                 logger.warning(
                     "Invalid HERMES_CRON_SESSION_DB_TIMEOUT=%r; using config/default",
                     _raw_env_timeout,
                 )
-        if _resolved_timeout is None:
+        if _session_db_timeout is None:
             try:
                 from hermes_cli.config import load_config
-
                 _cfg = load_config() or {}
                 _cron_cfg = _cfg.get("cron", {}) if isinstance(_cfg, dict) else {}
-                _configured_timeout = _cron_cfg.get("session_db_timeout_seconds")
-                if _configured_timeout is not None:
-                    _resolved_timeout = float(_configured_timeout)
+                _configured = _cron_cfg.get("session_db_timeout_seconds")
+                if _configured is not None:
+                    _session_db_timeout = float(_configured)
             except Exception as exc:
                 logger.debug(
                     "Failed to load cron.session_db_timeout_seconds from config: %s",
                     exc,
                 )
-        if _resolved_timeout is not None:
-            _session_db_timeout = _resolved_timeout
+        if _session_db_timeout is None:
+            _session_db_timeout = 10.0
 
         if _session_db_timeout > 0:
             _session_db_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
             try:
-                _session_db = _session_db_pool.submit(SessionDB).result(
-                    timeout=_session_db_timeout
-                )
+                _session_db = _session_db_pool.submit(SessionDB).result(timeout=_session_db_timeout)
             finally:
-                # Do not wait for a wedged sqlite connect to unwind.
+                # Don't wait for a wedged connect() to unwind — abandon the
+                # worker thread (same pattern as the agent inactivity timeout
+                # further down) rather than blocking shutdown on it too.
                 _session_db_pool.shutdown(wait=False)
         else:
-            # 0 = unlimited, retained as an explicit debugging escape hatch.
+            # 0 = unlimited (legacy behavior, opt-in for debugging)
             _session_db = SessionDB()
     except concurrent.futures.TimeoutError:
         logger.error(
-            "Job '%s': SessionDB init did not return within %.3gs; proceeding "
-            "without a session store",
-            job.get("id", "?"),
-            _session_db_timeout,
+            "Job '%s': SessionDB init did not return within %.0fs — proceeding "
+            "without a session store for this run instead of blocking it "
+            "forever",
+            job.get("id", "?"), _session_db_timeout,
         )
     except Exception as e:
         logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
@@ -3212,6 +3218,18 @@ def run_job(
     # Cron output delivery itself reads job["origin"] directly via
     # _resolve_origin(job) and the HERMES_CRON_AUTO_DELIVER_* vars set
     # below, so clearing HERMES_SESSION_* here does not affect delivery.
+    # Resolve workdir BEFORE set_session_vars so we can pass it as cwd=,
+    # letting set_session_vars handle the _SESSION_CWD ContextVar set/clear
+    # via its existing machinery (clear_session_vars calls clear_session_cwd
+    # internally). This avoids a separate import/set/clear dance (#69396).
+    _job_workdir = (job.get("workdir") or "").strip() or None
+    if _job_workdir and not Path(_job_workdir).is_dir():
+        logger.warning(
+            "Job '%s': configured workdir %r no longer exists — running without it",
+            job_id, _job_workdir,
+        )
+        _job_workdir = None
+
     _ctx_tokens = set_session_vars(
         platform="",
         chat_id="",
@@ -3230,6 +3248,7 @@ def run_job(
         # inline/synchronous path, so results return within the job's own turn.
         # See declare_stateless_channel(). Upstream: #53027, #63142.
         async_delivery=False,
+        cwd=_job_workdir or "",
     )
     _cron_delivery_vars = (
         "HERMES_CRON_AUTO_DELIVER_PLATFORM",
@@ -3239,11 +3258,10 @@ def run_job(
     for _var_name in _cron_delivery_vars:
         _VAR_MAP[_var_name].set("")
 
-    # Per-job working directory.  When set (and validated at create/update
-    # time), we point TERMINAL_CWD at it so:
-    #   - build_context_files_prompt() picks up AGENTS.md / CLAUDE.md /
-    #     .cursorrules from the job's project dir, AND
-    #   - the terminal, file, and code-exec tools run commands from there.
+    # Per-job working directory — _SESSION_CWD was already set via
+    # set_session_vars(cwd=...) above. Here we only handle the
+    # process-global TERMINAL_CWD env var, which is serialized by
+    # _terminal_cwd_lock to avoid leaking into concurrent jobs.
     #
     # os.environ["TERMINAL_CWD"] is process-global, so this override is
     # serialized by _terminal_cwd_lock (acquired just below): a workdir job
@@ -3255,15 +3273,10 @@ def run_job(
     # file / code-exec commands in the wrong directory.  For workdir-less jobs
     # we leave TERMINAL_CWD untouched — preserves the original behaviour
     # (skip_context_files=True, tools use whatever cwd the scheduler has).
-    _job_workdir = (job.get("workdir") or "").strip() or None
-    if _job_workdir and not Path(_job_workdir).is_dir():
-        # Directory was removed between create-time validation and now.  Log
-        # and drop back to old behaviour rather than crashing the job.
-        logger.warning(
-            "Job '%s': configured workdir %r no longer exists — running without it",
-            job_id, _job_workdir,
-        )
-        _job_workdir = None
+    #
+    # The critical path (resolve_context_cwd / build_context_files_prompt)
+    # checks _SESSION_CWD first, so gateway sessions with no override see
+    # their own cwd, not the cron's workdir (#69396).
 
     # Snapshot the current env value BEFORE acquiring the lock so the finally
     # below can always restore it, even if an exception fires before we set the
@@ -3610,6 +3623,7 @@ def run_job(
             api_key=runtime.get("api_key"),
             base_url=runtime.get("base_url"),
             provider=runtime.get("provider"),
+            requested_provider=runtime.get("requested_provider"),
             api_mode=runtime.get("api_mode"),
             acp_command=runtime.get("command"),
             acp_args=runtime.get("args"),
@@ -3675,7 +3689,6 @@ def run_job(
         _run_claim_owner = (
             str(_run_claim.get("by") or "") if isinstance(_run_claim, dict) else ""
         )
-        _CLAIM_HEARTBEAT_SECONDS = 60.0
         _last_claim_heartbeat = time.monotonic()
 
         def _heartbeat_run_claim_if_due():
@@ -3683,7 +3696,7 @@ def run_job(
             if not _is_oneshot or not _run_claim_owner:
                 return
             _mono = time.monotonic()
-            if _mono - _last_claim_heartbeat < _CLAIM_HEARTBEAT_SECONDS:
+            if _mono - _last_claim_heartbeat < _RUN_CLAIM_HEARTBEAT_SECONDS:
                 return
             _last_claim_heartbeat = _mono
             try:
@@ -3892,10 +3905,36 @@ def run_job(
         else:
             _terminal_cwd_lock.release_read()
         # Clean up ContextVar session/delivery state for this job.
+        # clear_session_vars also clears _SESSION_CWD internally, so no
+        # separate clear_session_cwd() call is needed.
         clear_session_vars(_ctx_tokens)
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
         if _session_db:
+            # Compression can rotate the live agent onto a continuation while
+            # this run is in flight. Finalize that continuation, not the stale
+            # cron id captured before AIAgent started. SessionDB is the source
+            # of truth for the lineage; agent.session_id is only a fail-safe
+            # when the lookup itself is unavailable.
+            _final_cron_session_id = _cron_session_id
+            try:
+                _compression_tip = _session_db.get_compression_tip(
+                    _cron_session_id
+                )
+                if _compression_tip:
+                    _final_cron_session_id = _compression_tip
+            except (Exception, KeyboardInterrupt) as e:
+                try:
+                    _agent_session_id = getattr(agent, "session_id", None)
+                    if _agent_session_id:
+                        _final_cron_session_id = _agent_session_id
+                except (Exception, KeyboardInterrupt):
+                    pass
+                logger.debug(
+                    "Job '%s': failed to resolve cron compression tip: %s",
+                    job_id,
+                    e,
+                )
             # Title the cron session from the job (name -> id) and PERSIST it
             # BEFORE end_session()/close() tear the connection down, so the
             # close can never run over an in-flight title write (#50536). The
@@ -3905,10 +3944,12 @@ def run_job(
             try:
                 _title_base = " ".join(job_name.split())[:60].strip() or f"cron {job_id}"
                 _cron_title = f"{_title_base} · {_hermes_now().strftime('%b %d %H:%M')}"
-                if not _set_cron_session_title(_session_db, _cron_session_id, _cron_title):
+                if not _set_cron_session_title(
+                    _session_db, _final_cron_session_id, _cron_title
+                ):
                     # Helper returned None (blank base) -> use the id fallback.
                     _set_cron_session_title(
-                        _session_db, _cron_session_id, f"cron {job_id}"
+                        _session_db, _final_cron_session_id, f"cron {job_id}"
                     )
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug(
@@ -3920,17 +3961,19 @@ def run_job(
                     getattr(_session_db, "get_next_title_in_lineage", lambda b: b)(
                         f"cron {job_id}"
                     ),
-                    f"cron {job_id} {_cron_session_id[-6:]}",
+                    f"cron {job_id} {_final_cron_session_id[-6:]}",
                 ):
                     try:
                         if _set_cron_session_title(
-                            _session_db, _cron_session_id, _fallback
+                            _session_db, _final_cron_session_id, _fallback
                         ):
                             break
                     except (Exception, KeyboardInterrupt):
                         continue
             try:
-                _session_db.end_session(_cron_session_id, "cron_complete")
+                _session_db.end_session(
+                    _final_cron_session_id, "cron_complete"
+                )
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Job '%s': failed to end session: %s", job_id, e)
             try:
@@ -4014,19 +4057,6 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                 error="Dispatch claim rejected; execution was not started.",
             )
             return True  # not an error — already handled/removed
-
-        job_id = str(job.get("id", "?"))
-        job_name = _cron_ag_job_name(job)
-        _ag(
-            "hermes.cron.started",
-            {
-                "job_id": job_id,
-                "job_name": job_name,
-                "schedule": _cron_ag_schedule(job),
-                "no_agent": bool(job.get("no_agent", False)),
-                "has_script": bool(job.get("script")),
-            },
-        )
 
         # The attempt is claimed durably before executor/provider dispatch and
         # becomes running only immediately before the actual run.
@@ -4136,18 +4166,6 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             success = False
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
-        _ag(
-            "hermes.cron.completed" if success else "hermes.cron.failed",
-            {
-                "job_id": job_id,
-                "job_name": job_name,
-                "success": bool(success),
-                "output_len": len(output) if output else 0,
-                "response_len": len(final_response) if final_response else 0,
-                "error": (error or "")[:500],
-                "delivery_error": (delivery_error or "")[:500],
-            },
-        )
         if not _consume_interrupted_flag(job["id"]):
             mark_job_run(job["id"], success, error, delivery_error=delivery_error)
         finish_execution(execution_id, success=success, error=error)
@@ -4155,15 +4173,6 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
 
     except Exception as e:
         logger.error("Error processing job %s: %s", job['id'], e)
-        _ag(
-            "hermes.cron.failed",
-            {
-                "job_id": str(job.get("id", "?")),
-                "job_name": _cron_ag_job_name(job),
-                "success": False,
-                "error": f"{type(e).__name__}: {str(e)}"[:500],
-            },
-        )
         if not _consume_interrupted_flag(job["id"]):
             mark_job_run(job["id"], False, str(e))
         finish_execution(execution_id, success=False, error=str(e))
@@ -4195,7 +4204,7 @@ def tick(
     sync: bool = True,
     *,
     can_dispatch=None,
-) -> int:
+):
     """
     Check and run all due jobs.
     
@@ -4208,7 +4217,7 @@ def tick(
         loop: Optional asyncio event loop (from gateway) for live adapter sends
         can_dispatch: Optional synchronous gate; false leaves due jobs untouched
             for the next allowed tick
-    
+
     Returns:
         Number of jobs executed (0 if another tick is already running)
     """
@@ -4251,57 +4260,31 @@ def tick(
         for job in due_jobs:
             advance_next_run(job["id"])
 
-        # Resolve the legacy/shared limit first. Separate agent and script
-        # limits may override it below; when absent, both lanes retain the
-        # historical shared limit for backward compatibility.
+        # Resolve max parallel workers: env var > config.yaml > unbounded.
+        # Set HERMES_CRON_MAX_PARALLEL=1 to restore old serial behaviour.
         _max_workers: Optional[int] = None
-        _cron_cfg: dict = {}
         try:
             _env_par = os.getenv("HERMES_CRON_MAX_PARALLEL", "").strip()
             if _env_par:
                 _max_workers = int(_env_par) or None
         except (ValueError, TypeError):
             logger.warning("Invalid HERMES_CRON_MAX_PARALLEL value; defaulting to unbounded")
-        try:
-            _ucfg = load_config() or {}
-            _cron_cfg = (
-                _ucfg.get("cron", {}) if isinstance(_ucfg, dict) else {}
-            )
-            if _max_workers is None:
-                _cfg_par = _cron_cfg.get("max_parallel_jobs")
+        if _max_workers is None:
+            try:
+                _ucfg = load_config() or {}
+                _cfg_par = (
+                    _ucfg.get("cron", {}) if isinstance(_ucfg, dict) else {}
+                ).get("max_parallel_jobs")
                 if _cfg_par is not None:
                     _max_workers = int(_cfg_par) or None
-        except Exception:
-            pass
-
-        def _lane_limit(env_name: str, config_name: str) -> Optional[int]:
-            raw = os.getenv(env_name, "").strip()
-            if raw:
-                try:
-                    return int(raw) or None
-                except (ValueError, TypeError):
-                    logger.warning("Invalid %s value; using shared cron limit", env_name)
-            try:
-                configured = _cron_cfg.get(config_name)
-                if configured is not None:
-                    return int(configured) or None
-            except (ValueError, TypeError):
-                logger.warning("Invalid cron.%s value; using shared cron limit", config_name)
-            return _max_workers
-
-        _agent_max_workers = _lane_limit(
-            "HERMES_CRON_MAX_PARALLEL_AGENT", "max_parallel_agent_jobs"
-        )
-        _script_max_workers = _lane_limit(
-            "HERMES_CRON_MAX_PARALLEL_SCRIPT", "max_parallel_script_jobs"
-        )
+            except Exception:
+                pass
 
         if verbose:
             logger.info(
-                "Running %d job(s) (agent_workers=%s, script_workers=%s)",
+                "Running %d job(s) in parallel (max_workers=%s)",
                 len(due_jobs),
-                _agent_max_workers if _agent_max_workers else "unbounded",
-                _script_max_workers if _script_max_workers else "unbounded",
+                _max_workers if _max_workers else "unbounded",
             )
 
         def _process_job(job: dict) -> bool:
@@ -4319,8 +4302,6 @@ def tick(
         # firing workdir-less parallel-pool job from observing the override.
         sequential_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
         parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
-        script_jobs = [j for j in parallel_jobs if j.get("no_agent")]
-        agent_jobs = [j for j in parallel_jobs if not j.get("no_agent")]
 
         _results: list = []
         _all_futures: list = []
@@ -4403,24 +4384,15 @@ def tick(
                 if not sync:
                     _results.append(True)  # optimistically counted
 
-        # Agent pass — persistent pool, non-blocking dispatch. Jobs that are
-        # already running (from a previous tick) are skipped.
-        if agent_jobs:
-            pool = _get_parallel_pool(_agent_max_workers)
-            for job in agent_jobs:
+        # Parallel pass — persistent pool, non-blocking dispatch.
+        # Jobs that are already running (from a previous tick) are skipped.
+        # mark_job_run() updates next_run_at on completion, so the next tick
+        # after completion finds the job due again naturally.  No catch-up
+        # queue needed.
+        if parallel_jobs:
+            pool = _get_parallel_pool(_max_workers)
+            for job in parallel_jobs:
                 fut = _submit_with_guard(job, pool)
-                if fut is None:
-                    continue
-                _all_futures.append(fut)
-                if not sync:
-                    _results.append(True)  # optimistically counted
-
-        # Script-only pass — a separate pool prevents long LLM/agent jobs from
-        # starving deterministic watchdogs and maintenance scripts.
-        if script_jobs:
-            script_pool = _get_script_pool(_script_max_workers)
-            for job in script_jobs:
-                fut = _submit_with_guard(job, script_pool)
                 if fut is None:
                     continue
                 _all_futures.append(fut)

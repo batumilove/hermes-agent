@@ -105,6 +105,18 @@ def _reply_anchor_for_event(event) -> str | None:
     source = getattr(event, "source", None)
     platform = _platform_name(getattr(source, "platform", None))
     thread_id = getattr(source, "thread_id", None)
+    raw_message = getattr(event, "raw_message", None)
+    if (
+        platform == "slack"
+        and isinstance(raw_message, dict)
+        and raw_message.get("_hermes_no_thread_response")
+    ):
+        # Slack reaction handoffs into a configured target channel are meant
+        # to create a new top-level message there. Returning the synthetic
+        # event's message_id as reply_to would make
+        # SlackAdapter._resolve_thread_ts() treat it as a thread anchor and
+        # reply in a (nonexistent) thread anyway.
+        return None
     if platform == "telegram" and thread_id and getattr(source, "chat_type", None) == "dm":
         # Reply to the triggering user message. Replying to Telegram's earlier
         # topic seed/anchor can render the bot response outside the active lane.
@@ -238,7 +250,7 @@ def _detect_macos_system_proxy() -> str | None:
         return None
     try:
         out = subprocess.check_output(
-            ["scutil", "--proxy"], timeout=3, text=True, stderr=subprocess.DEVNULL,
+            ["scutil", "--proxy"], timeout=3, text=True, encoding='utf-8', errors='replace', stderr=subprocess.DEVNULL,
         )
     except Exception:
         return None
@@ -749,14 +761,14 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
     Raises:
         ValueError: If the URL targets a private/internal network (SSRF protection).
     """
-    from tools.url_safety import is_safe_url
+    from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
     if not is_safe_url(url):
         raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
 
     import httpx
     _log = logging.getLogger(__name__)
 
-    async with httpx.AsyncClient(
+    async with create_ssrf_safe_async_client(
         timeout=30.0,
         follow_redirects=True,
         event_hooks={"response": [_ssrf_redirect_guard]},
@@ -869,14 +881,14 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
     Raises:
         ValueError: If the URL targets a private/internal network (SSRF protection).
     """
-    from tools.url_safety import is_safe_url
+    from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
     if not is_safe_url(url):
         raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
 
     import httpx
     _log = logging.getLogger(__name__)
 
-    async with httpx.AsyncClient(
+    async with create_ssrf_safe_async_client(
         timeout=30.0,
         follow_redirects=True,
         event_hooks={"response": [_ssrf_redirect_guard]},
@@ -1792,11 +1804,6 @@ class MessageEvent:
     # Reply context
     reply_to_message_id: Optional[str] = None
     reply_to_text: Optional[str] = None  # Text of the replied-to message (for context injection)
-    # Full reply chain (list of dicts with 'text' and optional 'message_id'),
-    # ordered from immediate parent to root ancestor.  Platforms that walk the
-    # reply chain (e.g. Telegram) populate this; others leave it empty and
-    # fall back to the single-message reply_to_text field.
-    reply_chain: Optional[List[dict]] = None
     reply_to_author_id: Optional[str] = None
     reply_to_author_name: Optional[str] = None
     reply_to_is_own_message: bool = False  # True when the user replied to this bot/assistant's message
@@ -1831,14 +1838,15 @@ class MessageEvent:
     
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
-        return self.text.startswith("/")
+        return (self.text or "").lstrip().startswith("/")
     
     def get_command(self) -> Optional[str]:
         """Extract command name if this is a command message."""
         if not self.is_command():
             return None
         # Split on space and get first word, strip the /
-        parts = self.text.split(maxsplit=1)
+        command_text = (self.text or "").lstrip()
+        parts = command_text.split(maxsplit=1)
         raw = parts[0][1:].lower() if parts else None
         if raw and "@" in raw:
             raw = raw.split("@", 1)[0]
@@ -1851,7 +1859,8 @@ class MessageEvent:
         """Get the arguments after a command."""
         if not self.is_command():
             return self.text
-        parts = self.text.split(maxsplit=1)
+        command_text = (self.text or "").lstrip()
+        parts = command_text.split(maxsplit=1)
         args = parts[1] if len(parts) > 1 else ""
         # iOS auto-corrects -- to — (em dash) and - to – (en dash)
         args = args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
@@ -2109,23 +2118,6 @@ class EphemeralReply(str):
         is expected both work identically.
         """
         return str.__str__(self)
-
-
-class RunPhaseReply(str):
-    """Assistant reply carrying a user-visible operation phase.
-
-    ``dispatched`` means this turn returned control to the user after starting
-    detached work. It is deliberately distinct from a completed/final task.
-    """
-
-    message_phase: str
-
-    def __new__(cls, text: str, message_phase: str):
-        if message_phase != "dispatched":
-            raise ValueError(f"Unsupported run message phase: {message_phase}")
-        instance = super().__new__(cls, text)
-        instance.message_phase = message_phase
-        return instance
 
 
 def _invalidate_pending_stt_cache(event: MessageEvent) -> None:
@@ -2436,6 +2428,18 @@ class BasePlatformAdapter(ABC):
     # generic seam; Slack is merely the first consumer).
     supports_inchannel_continuable: bool = False
 
+    # Whether a human is interactively present on this platform to answer a
+    # "session restored — what next?" prompt.  The startup auto-resume turn
+    # (``_schedule_resume_pending_sessions`` → the ``_is_resume_pending``
+    # branch in ``_handle_message_with_agent``) reads this to pick its
+    # guidance: interactive platforms (Telegram, Slack, Discord DMs, …) get
+    # "report the restore and ask what the user wants next"; non-interactive
+    # event platforms (webhook) get "finish the interrupted work" because
+    # nobody is there to answer, and an acknowledgement would silently
+    # abandon the task (#57056).  Read generically via ``getattr(adapter,
+    # "interactive_resume", True)`` — no per-platform branching at the call
+    # site.
+    interactive_resume: bool = True
 
     # Back-reference to the running ``GatewayRunner``, injected by
     # ``gateway/run.py`` after the adapter is created. Adapters consume it via
@@ -2451,6 +2455,11 @@ class BasePlatformAdapter(ABC):
         self.config = config
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
+        # Optional gateway-supplied fan-out for platform-native emoji
+        # reaction events (see ``set_reaction_handler``).
+        self._reaction_handler: Optional[
+            Callable[[Dict[str, Any]], Awaitable[None]]
+        ] = None
         # Optional hook (e.g. Telegram DM topic recovery) that rewrites
         # ``event.source.thread_id`` before session keying. Returns the
         # corrected thread_id or None to leave the source untouched.
@@ -2877,21 +2886,12 @@ class BasePlatformAdapter(ABC):
             take_over_scoped_lock_holder,
         )
 
-        adapter_lease = getattr(self, "_platform_lock_adapter_lease", None)
-        if not adapter_lease:
-            adapter_lease = uuid.uuid4().hex
-            self._platform_lock_adapter_lease = adapter_lease
-        lock_metadata = {
-            "platform": self.platform.value,
-            "adapter_lease": adapter_lease,
-        }
+        self._platform_lock_scope = scope
+        self._platform_lock_identity = identity
         acquired, existing = acquire_scoped_lock(
-            scope, identity, metadata=lock_metadata
+            scope, identity, metadata={'platform': self.platform.value}
         )
         if acquired:
-            self._platform_lock_scope = scope
-            self._platform_lock_identity = identity
-            self._platform_lock_lease_owned = True
             return True
 
         takeover_allowed = bool(
@@ -2918,12 +2918,9 @@ class BasePlatformAdapter(ABC):
                 acquired, existing = acquire_scoped_lock(
                     scope,
                     identity,
-                    metadata=lock_metadata,
+                    metadata={"platform": self.platform.value},
                 )
                 if acquired:
-                    self._platform_lock_scope = scope
-                    self._platform_lock_identity = identity
-                    self._platform_lock_lease_owned = True
                     logger.info(
                         "[%s] Acquired %s after taking over PID %d",
                         self.name,
@@ -2933,12 +2930,6 @@ class BasePlatformAdapter(ABC):
                     return True
 
         owner_pid = existing.get('pid') if isinstance(existing, dict) else None
-        # This adapter never acquired the lock. Clear its release handle so a
-        # later best-effort disconnect cannot remove a same-process owner's
-        # lock merely because PID/start-time match at process scope.
-        self._platform_lock_scope = None
-        self._platform_lock_identity = None
-        self._platform_lock_lease_owned = False
         message = (
             f'{resource_desc} already in use'
             + (f' (PID {owner_pid})' if owner_pid else '')
@@ -2949,20 +2940,12 @@ class BasePlatformAdapter(ABC):
         return False
 
     def _release_platform_lock(self) -> None:
-        """Release the scoped lock only when this adapter owns its local lease."""
+        """Release the scoped lock acquired by _acquire_platform_lock."""
         identity = getattr(self, '_platform_lock_identity', None)
-        scope = getattr(self, '_platform_lock_scope', None)
-        if not identity or not scope:
-            return
-        lease_owned = getattr(self, "_platform_lock_lease_owned", None)
-        if lease_owned is False:
-            self._platform_lock_scope = None
-            self._platform_lock_identity = None
+        if not identity:
             return
         from gateway.status import release_scoped_lock
-        release_scoped_lock(scope, identity)
-        self._platform_lock_lease_owned = False
-        self._platform_lock_scope = None
+        release_scoped_lock(self._platform_lock_scope, identity)
         self._platform_lock_identity = None
 
     @property
@@ -3021,6 +3004,25 @@ class BasePlatformAdapter(ABC):
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
+
+    def set_reaction_handler(
+        self, handler: Optional[Callable[[Dict[str, Any]], Awaitable[None]]]
+    ) -> None:
+        """Set the handler for emoji-reaction events on platform messages.
+
+        Called by adapters that subscribe to platform-native reaction events
+        (currently the Slack adapter's ``reaction_added``/``reaction_removed``).
+        The handler receives a normalised event dict — ``platform``,
+        ``event_name`` ("reaction:added"/"reaction:removed"), ``reaction``,
+        ``user_id``, ``item_user_id``, ``channel_id``, ``message_ts``,
+        ``event_ts``, ``raw_event`` — and fans out via
+        ``HookRegistry.emit(event_name, ...)``.
+
+        Adapters without reaction support simply never call the handler.
+        """
+        # Assign defensively: subclasses initialized via ``object.__new__``
+        # in tests never run ``BasePlatformAdapter.__init__``.
+        self._reaction_handler = handler  # type: ignore[attr-defined]
 
     def set_authorization_check(
         self,
@@ -3712,12 +3714,7 @@ class BasePlatformAdapter(ABC):
             raw = str(media_path)
             safe_path = validate_media_delivery_path(raw)
             if safe_path:
-                # Validation resolves symlinks for safety, but delivery should
-                # preserve the caller's lexical absolute path when possible.
-                # On macOS, tempfile returns /var/... while Path.resolve() yields
-                # /private/var/...; preserving the original keeps adapter call
-                # metadata stable without weakening the validation decision.
-                safe_media.append((raw if os.path.isabs(raw) else safe_path, bool(is_voice)))
+                safe_media.append((safe_path, bool(is_voice)))
             else:
                 logger.warning("Skipping unsafe MEDIA directive path: %s", _log_safe_path(raw))
         return safe_media
@@ -5131,13 +5128,6 @@ class BasePlatformAdapter(ABC):
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
             is_ephemeral_response = isinstance(response, EphemeralReply)
-            # A str-compatible handler response may carry a user-visible run
-            # phase. Preserve only the explicit detached-work phase: ordinary
-            # strings remain final replies, while a dispatch acknowledgement
-            # must not be relabelled as task completion by Telegram.
-            _response_message_phase = getattr(response, "message_phase", None)
-            if _response_message_phase not in {"dispatched"}:
-                _response_message_phase = None
 
             # Slash-command handlers may return an EphemeralReply sentinel to
             # request that their reply message auto-delete after a TTL (used
@@ -5228,8 +5218,6 @@ class BasePlatformAdapter(ABC):
                 # metadata stays unmarked and progress bubbles remain
                 # thread-strict.
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
-                if _response_message_phase:
-                    _final_thread_metadata["message_phase"] = _response_message_phase
 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
@@ -5829,6 +5817,7 @@ class BasePlatformAdapter(ABC):
                         user_id_alt=user_id_alt,
                         chat_id_alt=chat_id_alt,
                         is_bot=is_bot,
+                        scope_id=str(scope_id) if scope_id else None,
                         guild_id=str(guild_id) if guild_id else None,
                         parent_chat_id=str(parent_chat_id) if parent_chat_id else None,
                         message_id=str(message_id) if message_id else None,
@@ -5943,7 +5932,26 @@ class BasePlatformAdapter(ABC):
 
             # Everything remaining fits in one final chunk
             if _len(prefix) + _len(remaining) <= max_length - INDICATOR_RESERVE:
-                chunks.append(prefix + remaining)
+                final_chunk = prefix + remaining
+                # Check fence balance: if carry_lang was set, the chunk
+                # starts with an opening fence.  Walk the remaining text
+                # to see if the code block was closed; if not, close it.
+                _final_in_code = carry_lang is not None
+                _final_lang = carry_lang or ""
+                if _final_in_code:
+                    for _line in remaining.split("\n"):
+                        _stripped = _line.strip()
+                        if _stripped.startswith("```"):
+                            if _final_in_code:
+                                _final_in_code = False
+                                _final_lang = ""
+                            else:
+                                _final_in_code = True
+                                _tag = _stripped[3:].strip()
+                                _final_lang = _tag.split()[0] if _tag else ""
+                    if _final_in_code:
+                        final_chunk += FENCE_CLOSE
+                chunks.append(final_chunk)
                 break
 
             # Find a natural split point (prefer newlines, then spaces).

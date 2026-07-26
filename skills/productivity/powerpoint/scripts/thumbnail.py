@@ -100,7 +100,7 @@ def _is_hidden(zf: zipfile.ZipFile, part: str) -> bool:
     try:
         with zf.open(part) as f:
             for _, root in ElementTree.iterparse(f, events=("start",)):
-                return root.get("show") in ("0", "false")
+                return root.get("show") in ("0", "false")  
     except (KeyError, ElementTree.ParseError):
         return False
     return False
@@ -192,6 +192,8 @@ def convert_to_images(pptx_path: Path, temp_dir: Path) -> list[Path]:
         ["--headless", "--convert-to", "pdf", "--outdir", str(temp_dir), str(pptx_path)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if result.returncode != 0 or not pdf_path.exists():
         detail = (result.stderr or result.stdout or "").strip()
@@ -207,7 +209,7 @@ def convert_to_images(pptx_path: Path, temp_dir: Path) -> list[Path]:
             str(temp_dir / "slide"),
         ],
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
         raise RuntimeError("Image conversion failed")

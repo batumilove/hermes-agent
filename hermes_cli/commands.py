@@ -69,8 +69,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("reset",), args_hint="[name]"),
     CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
                gateway_only=True, args_hint="[off|help|session-id]"),
-    CommandDef("topicicon", "Set/list the current Telegram topic icon", "Session",
-               gateway_only=True, args_hint="[custom_emoji_id|list|remove]"),
     CommandDef("clear", "Clear screen and start a new session", "Session",
                cli_only=True),
     CommandDef("redraw", "Force a full UI repaint (recovers from terminal drift)", "Session",
@@ -80,6 +78,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("save", "Save the current conversation", "Session",
                cli_only=True),
     CommandDef("retry", "Retry the last message (resend to agent)", "Session"),
+    CommandDef("prompt", "Compose your next prompt in $EDITOR (markdown), then send it", "Session",
+               cli_only=True, args_hint="[initial text]", aliases=("compose",)),
     CommandDef("undo", "Back up N user turns and re-prompt (default 1)", "Session",
                args_hint="[N]"),
     CommandDef("title", "Set a title for the current session", "Session",
@@ -118,6 +118,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("subgoal", "Add or manage extra criteria on the active goal", "Session",
                args_hint="[text | remove N | clear]"),
     CommandDef("status", "Show session, model, token, and context info", "Session"),
+    CommandDef("egress", "Show Docker egress proxy status", "Session",
+               args_hint="[status]", subcommands=("status",)),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
@@ -127,8 +129,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
 
     # Configuration
     CommandDef("sessions", "Browse and resume previous sessions", "Session"),
-    CommandDef("prompt", "Compose the next prompt in $EDITOR", "Session",
-               cli_only=True, aliases=("compose",), args_hint="[initial text]"),
 
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
@@ -140,8 +140,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[auto|codex_app_server]"),
     CommandDef("droidmodels", "Configure Factory Droid BYOK/inherit routing", "Configuration",
                gateway_only=True, aliases=("droid_models", "droid-models")),
-    CommandDef("gquota", "Show Google Gemini Code Assist quota usage", "Info",
-               cli_only=True),
 
     CommandDef("personality", "Set a predefined personality", "Configuration",
                args_hint="[name]"),
@@ -567,6 +565,7 @@ _TELEGRAM_MENU_PRIORITY = (
     "new",
     "stop",
     "status",
+    "egress",
     "resume",
     "sessions",
     "model",
@@ -973,7 +972,8 @@ def discord_skill_commands_by_category(
 
     Skills whose directory is nested at least 2 levels under a scan root
     (e.g. ``creative/ascii-art/SKILL.md``) are grouped by their top-level
-    category.  Root-level skills (e.g. ``dogfood/SKILL.md``) are returned as
+    category.  Root-level skills (e.g. ``some-skill/SKILL.md`` directly under a
+    scan root) are returned as
     *uncategorized*.
 
     Scan roots include the local ``SKILLS_DIR`` **and** any configured
@@ -1172,10 +1172,11 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     (the rehaul folded the old /credits + /billing surfaces into /topup.)
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
-#   - update/version/debug: low-frequency diagnostics/release surfaces; reached
-#     via /hermes <command> on Slack so the 50 native slots keep everyday
-#     session controls and aliases such as /btw.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "update", "version", "debug"})
+#   - debug: the log/report upload surface; reached via /hermes debug on Slack.
+#   - egress: Docker-only proxy status; reachable as /hermes egress on Slack.
+_SLACK_VIA_HERMES_ONLY = frozenset(
+    {"topup", "moa", "update", "version", "debug", "egress"}
+)
 
 
 def _sanitize_slack_name(raw: str) -> str:

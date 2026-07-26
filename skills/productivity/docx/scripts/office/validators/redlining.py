@@ -144,7 +144,7 @@ class RedliningValidator:
         for key, elems in by_group.items():
             rebuilt = text_of(elems)
             if rebuilt and rebuilt == text_of(unmatched_original.get(key, [])):
-                continue
+                continue  
             new.update(elems)
         return new
 
@@ -194,14 +194,14 @@ class RedliningValidator:
                         "git",
                         "diff",
                         "--word-diff=plain",
-                        "--word-diff-regex=.",
-                        "-U0",
+                        "--word-diff-regex=.",  
+                        "-U0",  
                         "--no-index",
                         str(original_file),
                         str(modified_file),
                     ],
                     capture_output=True,
-                    text=True,
+                    text=True, encoding="utf-8", errors="replace",
                 )
 
                 if result.stdout.strip():
@@ -223,13 +223,13 @@ class RedliningValidator:
                         "git",
                         "diff",
                         "--word-diff=plain",
-                        "-U0",
+                        "-U0",  
                         "--no-index",
                         str(original_file),
                         str(modified_file),
                     ],
                     capture_output=True,
-                    text=True,
+                    text=True, encoding="utf-8", errors="replace",
                 )
 
                 if result.stdout.strip():

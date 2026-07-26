@@ -16,7 +16,6 @@ call time (run.py fully loaded by then), avoiding an import cycle.
 from __future__ import annotations
 
 import asyncio
-import inspect
 import dataclasses
 import hashlib
 import inspect
@@ -33,7 +32,7 @@ from typing import Any, Optional, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
 from agent.turn_context import extract_api_content_sidecar
-from gateway.config import HomeChannel, Platform, PlatformConfig
+from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import (
     AsyncSessionStore,
@@ -1281,6 +1280,12 @@ class GatewaySlashCommandsMixin:
                 "chat_id": event.source.chat_id,
                 "chat_type": event.source.chat_type,
             }
+            if event.source.delivered_via_upstream_relay is True:
+                notify_data["delivered_via_upstream_relay"] = True
+                if event.source.user_id:
+                    notify_data["user_id"] = event.source.user_id
+                if event.source.scope_id:
+                    notify_data["scope_id"] = event.source.scope_id
             if event.source.thread_id:
                 notify_data["thread_id"] = event.source.thread_id
             if event.message_id:
@@ -2602,34 +2607,67 @@ class GatewaySlashCommandsMixin:
         platform_name = source.platform.value if source.platform else "unknown"
         chat_id = source.chat_id
         chat_name = source.chat_name or chat_id
+        if source.platform is None:
+            return t("gateway.set_home.save_failed", error="Missing logical platform")
 
-        env_key = _home_target_env_var(platform_name)
-        thread_env_key = _home_thread_env_var(platform_name)
+        via_relay = getattr(source, "delivered_via_upstream_relay", False) is True
+        if via_relay:
+            adapter_for_source = getattr(self, "_adapter_for_source", None)
+            relay_adapter = adapter_for_source(source) if callable(adapter_for_source) else None
+            fronts_platform = getattr(relay_adapter, "fronts_platform", None)
+            if (
+                source.platform in {None, Platform.LOCAL, Platform.RELAY}
+                or not getattr(source, "user_id", None)
+                or not callable(fronts_platform)
+                or not fronts_platform(source.platform)
+            ):
+                return t(
+                    "gateway.set_home.save_failed",
+                    error="Relay does not authenticate this logical home target",
+                )
+
         thread_id = source.thread_id
+        home = HomeChannel(
+            platform=source.platform,
+            chat_id=str(chat_id),
+            name=chat_name,
+            thread_id=str(thread_id) if thread_id else None,
+            user_id=(
+                str(source.user_id)
+                if getattr(source, "user_id", None)
+                else None
+            ),
+            scope_id=(
+                str(source.scope_id)
+                if getattr(source, "scope_id", None)
+                else None
+            ),
+        )
 
-        # Save to .env so it persists across restarts
+        # config.yaml is canonical because it can persist the authenticated
+        # logical-target provenance required by Relay after a restart.
         try:
-            from hermes_cli.config import save_env_value
-            save_env_value(env_key, str(chat_id))
-            # Keep thread/topic routing explicit and clear stale values when
-            # /sethome is run from the parent chat instead of a thread.
-            save_env_value(thread_env_key, str(thread_id or ""))
+            persist_home_channel(home, enabled_if_new=not via_relay)
         except Exception as e:
             return t("gateway.set_home.save_failed", error=e)
 
+        # Preserve legacy home env vars for existing cron/setup consumers.
+        env_key = _home_target_env_var(platform_name)
+        thread_env_key = _home_thread_env_var(platform_name)
+        try:
+            from hermes_cli.config import save_env_value
+            save_env_value(env_key, str(chat_id))
+            save_env_value(thread_env_key, str(thread_id or ""))
+        except Exception as e:
+            logger.warning("Home config saved but legacy env persistence failed: %s", e)
+
         # Keep the running gateway config in sync too. The pre-restart
-        # notification path reads self.config before the process reloads env.
-        if source.platform:
-            platform_config = self.config.platforms.setdefault(
-                source.platform,
-                PlatformConfig(enabled=True),
-            )
-            platform_config.home_channel = HomeChannel(
-                platform=source.platform,
-                chat_id=str(chat_id),
-                name=chat_name,
-                thread_id=str(thread_id) if thread_id else None,
-            )
+        # notification path reads self.config before the process reloads config.
+        platform_config = getattr(self, "config").platforms.setdefault(
+            source.platform,
+            PlatformConfig(enabled=not via_relay),
+        )
+        platform_config.home_channel = home
 
         return t("gateway.set_home.success", name=chat_name, chat_id=chat_id)
 
@@ -3564,6 +3602,22 @@ class GatewaySlashCommandsMixin:
                         defer_context_engine_notification=True,
                     )
                 )
+
+                # If _compress_context returned unchanged because a
+                # concurrent compression lock is held, tell the user
+                # clearly instead of showing the misleading
+                # "No changes from compression" no-op text. The wording
+                # distinguishes a confirmed holder from an unconfirmed
+                # acquisition failure (describe_compression_lock_skip).
+                # The deferred context-engine notification is discarded by
+                # the finally block below (finalize committed=False).
+                _lock_skipped = getattr(tmp_agent, "_compression_skipped_due_to_lock", None)
+                if _lock_skipped is True or isinstance(_lock_skipped, str):
+                    from agent.manual_compression_feedback import (
+                        describe_compression_lock_skip,
+                    )
+                    return describe_compression_lock_skip(_lock_skipped)
+
                 if partial and tail:
                     compressed = rejoin_compressed_head_and_tail(compressed, tail)
 
@@ -3731,24 +3785,6 @@ class GatewaySlashCommandsMixin:
         # /topic off — clean disable path so users don't have to edit the DB.
         if args.lower() in {"off", "disable", "stop"}:
             return await self._disable_telegram_topic_mode_for_chat(source)
-
-        # /topic lock|unlock — explicit title ownership escape hatch.
-        if args.lower() in {"lock", "manual"}:
-            if not source.thread_id:
-                return "Run /topic lock inside the topic whose title Hermes should leave alone."
-            await self._session_db.mark_telegram_topic_title_manual(
-                chat_id=str(source.chat_id),
-                thread_id=str(source.thread_id),
-            )
-            return "This topic title is now locked. Hermes will not auto-rename it."
-        if args.lower() in {"unlock", "auto", "auto-title on"}:
-            if not source.thread_id:
-                return "Run /topic unlock inside the topic where Hermes may auto-rename again."
-            await self._session_db.mark_telegram_topic_title_auto(
-                chat_id=str(source.chat_id),
-                thread_id=str(source.thread_id),
-            )
-            return "This topic title is back in auto mode. Hermes may rename it from future generated titles."
 
         if args:
             if not source.thread_id:
@@ -4927,7 +4963,7 @@ class GatewaySlashCommandsMixin:
         if event.message_id:
             pending["message_id"] = event.message_id
         _tmp_pending = pending_path.with_suffix(".tmp")
-        _tmp_pending.write_text(json.dumps(pending))
+        _tmp_pending.write_text(json.dumps(pending), encoding="utf-8")
         _tmp_pending.replace(pending_path)
         exit_code_path.unlink(missing_ok=True)
 

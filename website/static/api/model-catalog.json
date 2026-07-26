@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-07-22T16:10:34Z",
+  "updated_at": "2026-07-26T06:14:21Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -730,6 +730,9 @@
           "id": "anthropic/claude-fable-5"
         },
         {
+          "id": "anthropic/claude-opus-5"
+        },
+        {
           "id": "anthropic/claude-opus-4.8"
         },
         {
@@ -1368,6 +1371,33 @@
       },
       "models": []
     },
+    "vertex": {
+      "metadata": {
+        "display_name": "Google Vertex AI",
+        "auth_type": "vertex",
+        "env_vars": [],
+        "base_url": "https://aiplatform.googleapis.com",
+        "transport": "openai_chat",
+        "note": "Curated fallback list generated from hermes_cli.models._PROVIDER_MODELS."
+      },
+      "models": [
+        {
+          "id": "google/gemini-3.1-pro-preview"
+        },
+        {
+          "id": "google/gemini-3-pro-preview"
+        },
+        {
+          "id": "google/gemini-3.5-flash"
+        },
+        {
+          "id": "google/gemini-3-flash-preview"
+        },
+        {
+          "id": "google/gemini-3.1-flash-lite-preview"
+        }
+      ]
+    },
     "xai": {
       "metadata": {
         "display_name": "xAI",
@@ -1536,6 +1566,14 @@
         {
           "id": "anthropic/claude-fable-5",
           "description": ""
+        },
+        {
+          "id": "anthropic/claude-opus-5",
+          "description": ""
+        },
+        {
+          "id": "anthropic/claude-opus-5-fast",
+          "description": "2x price, higher output speed"
         },
         {
           "id": "anthropic/claude-opus-4.8",

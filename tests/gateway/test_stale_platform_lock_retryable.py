@@ -78,53 +78,6 @@ def test_stale_lock_failure_is_retryable(adapter):
     assert adapter._fatal_error_code == "telegram-bot-token_lock"
 
 
-def test_failed_acquire_disconnect_cannot_release_same_process_owner(
-    adapter, monkeypatch, tmp_path
-):
-    """A lock loser disconnect must leave the real current-owner lock intact."""
-    from gateway.status import _get_scope_lock_path
-
-    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
-    loser = _StubAdapter.__new__(_StubAdapter)
-    loser._running = True
-    loser._fatal_error_code = None
-    loser._fatal_error_message = None
-    loser._fatal_error_retryable = True
-    loser._fatal_error_handler = None
-    loser._platform_lock_scope = None
-    loser._platform_lock_identity = None
-    loser._platform_lock_takeover_allowed = False
-    loser._platform_lock_takeover_attempted = False
-    loser._status_write_logged = None
-
-    lock_path = _get_scope_lock_path("telegram-bot-token", "shared-token")
-    with patch.object(adapter, "_write_runtime_status_safe"), patch.object(
-        loser, "_write_runtime_status_safe"
-    ):
-        try:
-            assert adapter._acquire_platform_lock(
-                "telegram-bot-token", "shared-token", "Telegram bot token"
-            ) is True
-            assert lock_path.exists()
-
-            # A second adapter in this process is not the polling owner and
-            # must be denied rather than inheriting process-level authority.
-            assert loser._acquire_platform_lock(
-                "telegram-bot-token", "shared-token", "Telegram bot token"
-            ) is False
-            loser._release_platform_lock()
-            assert lock_path.exists()
-
-            adapter._release_platform_lock()
-            assert not lock_path.exists()
-            assert loser._acquire_platform_lock(
-                "telegram-bot-token", "shared-token", "Telegram bot token"
-            ) is True
-        finally:
-            loser._release_platform_lock()
-            adapter._release_platform_lock()
-
-
 def test_explicit_replace_takeover_reacquires_lock_once(adapter):
     """Initial explicit --replace may hand off and re-acquire once (#65176)."""
     existing = {

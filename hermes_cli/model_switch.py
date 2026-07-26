@@ -965,6 +965,38 @@ def _configured_provider_matches(
     return matches
 
 
+def _resolve_named_custom_model_id(
+    model_name: str,
+    target_provider: str,
+    custom_providers: Optional[list],
+) -> str:
+    """Map a picker-prefixed custom model selection to its configured ID."""
+    provider = str(target_provider or "").strip().lower()
+    if not provider.startswith("custom:") or "/" not in model_name:
+        return model_name
+
+    prefix, candidate = model_name.split("/", 1)
+    prefix = prefix.strip().lower()
+    candidate = candidate.strip()
+    if not prefix or not candidate:
+        return model_name
+
+    for entry in custom_providers or []:
+        if not isinstance(entry, dict):
+            continue
+        entry_slugs = {
+            custom_provider_slug(str(entry.get(key) or "")).lower()
+            for key in ("name", "provider_key")
+            if str(entry.get(key) or "").strip()
+        }
+        if provider not in entry_slugs or f"custom:{prefix}" not in entry_slugs:
+            continue
+        for model_id in _declared_model_ids(entry.get("models")):
+            if model_id.lower() == candidate.lower():
+                return model_id
+    return model_name
+
+
 # ---------------------------------------------------------------------------
 # Core model-switching pipeline
 # ---------------------------------------------------------------------------
@@ -1447,6 +1479,9 @@ def switch_model(
         api_mode = determine_api_mode(target_provider, base_url)
 
     # --- Normalize model name for target provider ---
+    new_model = _resolve_named_custom_model_id(
+        new_model, target_provider, custom_providers
+    )
     new_model = normalize_model_for_provider(new_model, target_provider)
 
     # --- Validate ---
@@ -1718,10 +1753,11 @@ def list_authenticated_providers(
     from agent.models_dev import (
         PROVIDER_TO_MODELS_DEV,
         fetch_models_dev,
+        get_provider_info as _mdev_pinfo,
     )
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.models import (
-        OPENROUTER_MODELS, _PROVIDER_MODELS, _PROVIDER_LABELS,
+        OPENROUTER_MODELS, _PROVIDER_MODELS,
         _MODELS_DEV_PREFERRED, _merge_with_models_dev, cached_provider_model_ids,
         clear_provider_models_cache, get_curated_nous_model_ids,
     )
@@ -1824,29 +1860,14 @@ def list_authenticated_providers(
 
     data = fetch_models_dev()
 
-    # Build curated model lists keyed by Hermes provider ID. Prefer the
-    # docs-hosted model catalog for every provider it contains so curated
-    # fallback updates can ship through the catalog instead of requiring a
-    # Hermes release. If the manifest/provider is unavailable, keep the
-    # in-repo snapshot.
+    # Build curated model lists keyed by hermes provider ID
     curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
-    try:
-        from hermes_cli.model_catalog import get_catalog, get_curated_provider_models
-        _manifest = get_catalog()
-        _manifest_providers = (_manifest.get("providers") or {}) if isinstance(_manifest, dict) else {}
-        if isinstance(_manifest_providers, dict):
-            for _provider in _manifest_providers:
-                if _provider == "openrouter":
-                    continue
-                _ids = get_curated_provider_models(_provider)
-                if _ids:
-                    curated[_provider] = _ids
-    except Exception:
-        pass
     curated["openrouter"] = [mid for mid, _ in OPENROUTER_MODELS]
-    # "nous" is included in the generic remote-catalog merge above; keep the
-    # dedicated accessor as a compatibility fallback and to preserve its Portal
-    # free/paid recommendation behavior below.
+    # "nous" pulls from the remote model-catalog manifest published at
+    # https://hermes-agent.nousresearch.com/docs/api/model-catalog.json so
+    # newly added Portal models surface in the /model picker without
+    # requiring a Hermes release. Falls back to the in-repo
+    # _PROVIDER_MODELS["nous"] snapshot when the manifest is unreachable.
     curated["nous"] = get_curated_nous_model_ids()
     # Ollama Cloud uses dynamic discovery (no static curated list)
     if "ollama-cloud" not in curated:
@@ -1882,16 +1903,24 @@ def list_authenticated_providers(
         curated["lmstudio"] = live
 
     # --- 1. Check Hermes-mapped providers ---
+    from hermes_cli.models import _AGGREGATOR_PROVIDERS as _AGG_PROVIDERS
+    from hermes_cli.models import _PROVIDER_ALIASES as _CANON_ALIASES
     from hermes_cli.providers import ALIASES as _PROVIDER_ALIAS_TABLE
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
-        # Skip vendor/provider-family names that are merely aliases routing
-        # through another Hermes provider. These are NOT directly-routable
-        # providers: emitting them as their own picker row produces duplicate
-        # or phantom entries (e.g. bare "kimi" / "moonshot" alongside the
-        # canonical "kimi-coding" row, or bare "openai" resolving through an
-        # aggregator). The canonical provider row covers the real target.
+        # Skip vendor names that are merely aliases routing through an
+        # aggregator (e.g. bare "openai" → "openrouter"). These are NOT
+        # directly-routable providers: emitting them as their own picker
+        # row produces a phantom entry that, when selected, resolves via
+        # resolve_provider_full() to the aggregator (OpenRouter) — silently
+        # switching a user off their real provider onto an endpoint they
+        # may have no key for (HTTP 401). The user's real provider (e.g.
+        # openai-api, or a providers.openai config row) covers this vendor.
         _alias_target = _PROVIDER_ALIAS_TABLE.get(hermes_id)
-        if _alias_target and _alias_target != hermes_id:
+        if (
+            _alias_target
+            and _alias_target != hermes_id
+            and _alias_target in _AGG_PROVIDERS
+        ):
             continue
         # Resolve the canonical provider profile name.  Skip hermes_ids
         # that are mere aliases resolving to a different canonical profile
@@ -1987,8 +2016,8 @@ def list_authenticated_providers(
         else:
             top = model_ids[:max_models] if max_models is not None else model_ids
 
-        slug = hermes_id
-        display_name = _PROVIDER_LABELS.get(hermes_id, get_label(hermes_id))
+        pinfo = _mdev_pinfo(mdev_id)
+        display_name = pconfig.name if pconfig and pconfig.name else (pinfo.name if pinfo else mdev_id)
 
         results.append({
             "slug": slug,
@@ -2030,6 +2059,16 @@ def list_authenticated_providers(
         has_creds = False
         if overlay.auth_type == "aws_sdk":
             has_creds = _has_aws_sdk_creds_for_listing(hermes_slug)
+        elif overlay.auth_type == "vertex":
+            # Vertex authenticates via OAuth2 (service-account JSON / ADC),
+            # not an API key — mirror the aws_sdk gate above, otherwise the
+            # provider is silently hidden from the /model picker even when
+            # fully configured.
+            try:
+                from agent.vertex_adapter import has_vertex_credentials
+                has_creds = has_vertex_credentials()
+            except Exception as exc:
+                logger.debug("Vertex credential check failed: %s", exc)
         elif overlay.extra_env_vars:
             has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)
         # Also check api_key_env_vars from PROVIDER_REGISTRY for api_key auth_type
@@ -2171,7 +2210,7 @@ def list_authenticated_providers(
 
         results.append({
             "slug": hermes_slug,
-            "name": _PROVIDER_LABELS.get(hermes_slug, get_label(hermes_slug)),
+            "name": get_label(hermes_slug),
             "is_current": hermes_slug == current_provider or pid == current_provider,
             "is_user_defined": False,
             "models": top,
@@ -2242,10 +2281,7 @@ def list_authenticated_providers(
             if not _cp_model_ids:
                 _cp_model_ids = curated.get(_cp.slug, [])
         _cp_total = len(_cp_model_ids)
-        if _cp.slug in _UNCAPPED_PICKER_PROVIDERS:
-            _cp_top = _cp_model_ids  # Aggregator: show full catalog regardless of max_models
-        else:
-            _cp_top = _cp_model_ids[:max_models] if max_models is not None else _cp_model_ids
+        _cp_top = _cp_model_ids[:max_models] if max_models is not None else _cp_model_ids
 
         results.append({
             "slug": _cp.slug,

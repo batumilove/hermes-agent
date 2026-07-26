@@ -176,13 +176,6 @@ def _ensure_builtin_sources() -> None:
         logger.warning("Failed to register bundled 1Password secret source",
                        exc_info=True)
     try:
-        from agent.secret_sources.systemd import SystemdSource
-
-        register_source(SystemdSource())
-    except Exception:  # noqa: BLE001 — never block startup
-        logger.warning("Failed to register bundled systemd secret source",
-                       exc_info=True)
-    try:
         from agent.secret_sources.command import CommandSource
 
         register_source(CommandSource())
