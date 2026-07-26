@@ -868,6 +868,21 @@ def test_finalizer_no_warning_for_inspected_historical_state(monkeypatch):
     assert "Side-effect evidence regulator" not in result["final_response"]
 
 
+def test_finalizer_no_warning_for_deployed_runtime_parity_status_heading(monkeypatch):
+    """A parity heading describes inspected state, not a deployment this turn."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "verify source/runtime parity"}]
+
+    result = _run_finalizer(
+        agent,
+        messages,
+        "## 7. Merged source and deployed runtime parity — PASS",
+    )
+
+    assert "Side-effect evidence regulator" not in result["final_response"]
+
+
 def test_finalizer_no_warning_when_response_has_no_side_effect_claims(monkeypatch):
     """A normal informational response should never get a footer."""
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
@@ -902,6 +917,76 @@ def test_terminal_positive_result_satisfies_generic_side_effect_claim(monkeypatc
     result = _run_finalizer(agent, messages, "I deployed the service successfully.")
 
     assert "Side-effect evidence regulator" not in result["final_response"]
+
+
+def test_terminal_real_success_envelope_satisfies_generic_side_effect_claim(monkeypatch):
+    """The live terminal envelope includes error:null and remains success evidence."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [
+        {"role": "user", "content": "deploy it"},
+        {
+            "role": "assistant",
+            "content": "Deploying.",
+            "tool_calls": [{"id": "call-1", "function": {"name": "terminal", "arguments": "{}"}}],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "name": "terminal",
+            "content": '{"output":"Deployed.","exit_code":0,"error":null}',
+        },
+    ]
+
+    result = _run_finalizer(agent, messages, "I deployed the service successfully.")
+
+    assert "Side-effect evidence regulator" not in result["final_response"]
+
+
+def test_execute_code_real_success_envelope_satisfies_generic_side_effect_claim(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [
+        {"role": "user", "content": "deploy it"},
+        {
+            "role": "assistant",
+            "content": "Deploying.",
+            "tool_calls": [{"id": "call-1", "function": {"name": "execute_code", "arguments": "{}"}}],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "name": "execute_code",
+            "content": '{"status":"success","output":"Deployed.","exit_code":0,"error":null}',
+        },
+    ]
+
+    result = _run_finalizer(agent, messages, "I deployed the service successfully.")
+
+    assert "Side-effect evidence regulator" not in result["final_response"]
+
+
+def test_execute_code_nonzero_inner_exit_does_not_satisfy_side_effect_claim(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [
+        {"role": "user", "content": "deploy it"},
+        {
+            "role": "assistant",
+            "content": "Deploying.",
+            "tool_calls": [{"id": "call-1", "function": {"name": "execute_code", "arguments": "{}"}}],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "name": "execute_code",
+            "content": '{"status":"success","output":"child failed","exit_code":1,"error":null}',
+        },
+    ]
+
+    result = _run_finalizer(agent, messages, "I deployed the service successfully.")
+
+    assert "Side-effect evidence regulator" in result["final_response"]
 
 
 def test_terminal_error_result_does_not_satisfy_side_effect_claim(monkeypatch):
