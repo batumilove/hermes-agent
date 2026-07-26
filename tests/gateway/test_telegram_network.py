@@ -818,6 +818,7 @@ async def test_diagnostic_response_close_error_then_success_logs_both_events():
         owner="general",
         route="primary",
         local_port="43210",
+        request_id="42",
     )
 
     with _LifecycleLogCapture(lambda: inner) as capture:
@@ -830,6 +831,7 @@ async def test_diagnostic_response_close_error_then_success_logs_both_events():
     messages = [record.getMessage() for record, _ in capture.records]
     assert sum("event=response-close-error" in m for m in messages) == 1
     assert sum("event=response-closed" in m for m in messages) == 1
+    assert all("request_id=42" in m for m in messages)
     assert inner.close_calls == 2
     _assert_records_redacted(capture.records, ("transient close failure",))
 
