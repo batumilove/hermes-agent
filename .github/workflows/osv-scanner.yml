@@ -26,6 +26,11 @@ name: OSV-Scanner
 
 on:
   workflow_call:
+    inputs:
+      upload_sarif:
+        description: Upload OSV SARIF to code scanning; disable for read-only shadow invocations.
+        type: boolean
+        default: true
   schedule:
     # Weekly scan against main — catches CVEs published after merge for
     # deps that haven't changed since.
@@ -73,6 +78,7 @@ jobs:
 
   scan:
     name: Scan lockfiles
+    if: github.event_name != 'workflow_call' || inputs.upload_sarif
     uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
     with:
       # Scan explicit lockfiles rather than recursing, so we only look at
@@ -90,7 +96,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: scan
-    if: always()
+    if: always() && (github.event_name != 'workflow_call' || inputs.upload_sarif)
     outputs:
       review_status: ${{ steps.emit.outputs.review_status }}
     steps:

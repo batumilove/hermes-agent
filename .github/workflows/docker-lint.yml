@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: docker-lint-${{ github.ref }}
+  group: ${{ github.workflow }}-docker-lint-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

@@ -7,13 +7,21 @@ on:
         description: Number of parallel test slices
         type: number
         default: 8
+      python_versions_json:
+        description: JSON array of Python versions for the unit-test matrix.
+        type: string
+        default: '["3.11","3.12","3.13"]'
+      e2e_python_version:
+        description: Python version for the dedicated E2E job.
+        type: string
+        default: "3.11"
 
 permissions:
   contents: read
 
 # Cancel in-progress runs for the same ref
 concurrency:
-  group: tests-${{ github.ref }}
+  group: ${{ github.workflow }}-tests-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -43,12 +51,17 @@ jobs:
         id: matrix
         env:
           SLICE_COUNT: ${{ inputs.slice_count }}
+          PYTHON_VERSIONS_JSON: ${{ inputs.python_versions_json }}
         run: |
           MATRIX=$(python3 scripts/run_tests_parallel.py --generate-slices "$SLICE_COUNT")
           MATRIX=$(python3 -c '
-          import json, sys
+          import json, os, sys
           matrix = json.loads(sys.argv[1])
-          matrix["python-version"] = ["3.11", "3.12", "3.13"]
+          versions = json.loads(os.environ["PYTHON_VERSIONS_JSON"])
+          allowed = {"3.11", "3.12", "3.13"}
+          if not isinstance(versions, list) or not versions or any(v not in allowed for v in versions):
+              raise SystemExit(f"invalid Python version matrix: {versions!r}")
+          matrix["python-version"] = versions
           print(json.dumps(matrix, separators=(",", ":")))
           ' "$MATRIX")
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
@@ -207,8 +220,10 @@ jobs:
             pyproject.toml
             uv.lock
 
-      - name: Set up Python 3.11
-        run: uv python install 3.11
+      - name: Set up Python for E2E
+        env:
+          E2E_PYTHON_VERSION: ${{ inputs.e2e_python_version }}
+        run: uv python install "$E2E_PYTHON_VERSION"
 
       - name: Install dependencies
         # `uv sync --locked` installs the exact pinned set from uv.lock (and
@@ -216,8 +231,10 @@ jobs:
         # reproducible env. It also creates .venv itself, so no separate
         # `uv venv` step is needed.
         uses: ./.github/actions/retry
+        env:
+          E2E_PYTHON_VERSION: ${{ inputs.e2e_python_version }}
         with:
-          command: uv sync --locked --python 3.11 --extra all --extra dev
+          command: uv sync --locked --python "$E2E_PYTHON_VERSION" --extra all --extra dev
 
       - name: Minimize uv cache
         # Optimized for CI: prunes pre-built wheels that are cheap to
