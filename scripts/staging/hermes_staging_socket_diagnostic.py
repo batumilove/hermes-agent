@@ -58,10 +58,11 @@ _NONCE = re.compile(r"[A-Za-z0-9_-]{16,64}\Z")
 _IMAGE = re.compile(r"ghcr\.io/batumilove/hermes-agent-deploy@sha256:[0-9a-f]{64}\Z")
 _EVENT = re.compile(
     r"(?:WARNING plugins\.platforms\.telegram\.telegram_network: )?"
-    r"\[Telegram socket\] event=(socket-opened|socket-closed|socket-close-error|"
-    r"response-created|response-closed|response-close-error) "
+    r"\[Telegram socket\] event=(request-started|request-cancelled|request-failed|socket-opened|"
+    r"socket-close-started|socket-closed|socket-close-error|response-created|"
+    r"response-closed|response-close-error) "
     r"owner=(general|polling) route=(primary|(?:[0-9]{1,3}\.){3}[0-9]{1,3}) "
-    r"local_port=([0-9]{1,5}|unknown)\s*\Z"
+    r"(?:request_id=(none|[1-9][0-9]{0,19}) )?local_port=([0-9]{1,5}|unknown|none)\s*\Z"
 )
 
 
@@ -1153,12 +1154,16 @@ class DiagnosticExecutor:
     @staticmethod
     def _aggregate(raw: str) -> dict[str, object]:
         counts: dict[tuple[str, str, str], int] = {}
-        balances: dict[tuple[str, str, str, str], int] = {}
+        balances: dict[tuple[str, str, str, str, str], int] = {}
+        requests: set[tuple[str, str, str]] = set()
         opening_events = {"socket-opened": "socket", "response-created": "response"}
         terminal_events = {
             "socket-closed": "socket",
             "socket-close-error": "socket",
             "response-closed": "response",
+        }
+        checkpoint_events = {
+            "socket-close-started": "socket",
             "response-close-error": "response",
         }
         total_opened = 0
@@ -1168,10 +1173,8 @@ class DiagnosticExecutor:
                 if "[Telegram socket]" in line:
                     raise DiagnosticError("socket lifecycle record is malformed")
                 continue
-            event, owner, route, port = match.groups()
-            if port == "unknown":
-                raise DiagnosticError("socket lifecycle events are incomplete: unknown local port")
-            if not 1 <= int(port) <= 65535:
+            event, owner, route, request_id, port = match.groups()
+            if request_id == "none":
                 raise DiagnosticError("socket lifecycle record is malformed")
             if route != "primary":
                 try:
@@ -1180,20 +1183,53 @@ class DiagnosticExecutor:
                     raise DiagnosticError("socket lifecycle record is malformed") from exc
                 if address.version != 4 or not address.is_global or address.is_multicast:
                     raise DiagnosticError("socket lifecycle record is malformed")
-            phase = opening_events.get(event) or terminal_events[event]
-            port_key = (phase, owner, route, port)
-            if event in opening_events:
-                balances[port_key] = balances.get(port_key, 0) + 1
-                total_opened += 1
-            else:
-                if balances.get(port_key, 0) <= 0:
+
+            request_key = (owner, route, request_id or "")
+            if event in {"request-started", "request-cancelled", "request-failed"}:
+                if request_id is None or port != "none":
+                    raise DiagnosticError("socket lifecycle record is malformed")
+                if event == "request-started":
+                    if request_key in requests:
+                        raise DiagnosticError("socket lifecycle events are causally incomplete")
+                    requests.add(request_key)
+                elif request_key not in requests:
                     raise DiagnosticError("socket lifecycle events are causally incomplete")
-                balances[port_key] -= 1
+            else:
+                if event == "socket-close-started" and request_id is None:
+                    raise DiagnosticError("socket lifecycle record is malformed")
+                if port == "none":
+                    raise DiagnosticError("socket lifecycle record is malformed")
+                if port == "unknown":
+                    raise DiagnosticError("socket lifecycle events are incomplete: unknown local port")
+                if not 1 <= int(port) <= 65535:
+                    raise DiagnosticError("socket lifecycle record is malformed")
+                if request_id is not None and request_key not in requests:
+                    raise DiagnosticError("socket lifecycle events are causally incomplete")
+
+                port_key = (
+                    opening_events.get(event)
+                    or terminal_events.get(event)
+                    or checkpoint_events[event],
+                    owner,
+                    route,
+                    request_id or "",
+                    port,
+                )
+                if event in opening_events:
+                    balances[port_key] = balances.get(port_key, 0) + 1
+                    total_opened += 1
+                elif event in checkpoint_events:
+                    if balances.get(port_key, 0) <= 0:
+                        raise DiagnosticError("socket lifecycle events are causally incomplete")
+                else:
+                    if balances.get(port_key, 0) <= 0:
+                        raise DiagnosticError("socket lifecycle events are causally incomplete")
+                    balances[port_key] -= 1
             key = (owner, route, event)
             counts[key] = min(counts.get(key, 0) + 1, 2**31 - 1)
         if not counts:
             raise DiagnosticError("no socket lifecycle events observed")
-        if len(counts) > 256 or len(balances) > 4096:
+        if len(counts) > 256 or len(balances) > 4096 or len(requests) > 4096:
             raise DiagnosticError("diagnostic aggregate exceeds bound")
         if total_opened == 0 or any(balance != 0 for balance in balances.values()):
             raise DiagnosticError("socket lifecycle events are incomplete")
