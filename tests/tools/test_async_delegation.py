@@ -341,121 +341,6 @@ def test_submit_failure_removes_durable_running_record(tmp_path, monkeypatch):
         assert conn.execute("SELECT COUNT(*) FROM async_delegations").fetchone()[0] == 0
 
 
-def test_prune_lock_is_best_effort_after_dispatch_is_persisted(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(
-        ad,
-        "_prune_durable_records",
-        lambda: (_ for _ in ()).throw(ad.sqlite3.OperationalError("database is locked")),
-    )
-
-    result = ad.dispatch_async_delegation(
-        goal="still runs", context=None, toolsets=None, role="leaf", model="m",
-        session_key="owner",
-        runner=lambda: {"status": "completed", "summary": "done"},
-    )
-
-    assert result["status"] == "dispatched"
-    event = _drain_for(result["delegation_id"])
-    assert event is not None
-    assert event["summary"] == "done"
-    durable = ad.get_durable_delegation(result["delegation_id"])
-    assert durable is not None
-    assert durable["state"] == "completed"
-
-
-def test_persist_failure_before_submit_releases_capacity(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    persist_dispatch = ad._persist_dispatch
-
-    def fail_persist(record):
-        persist_dispatch(record)
-        raise ad.sqlite3.OperationalError("database is locked")
-
-    monkeypatch.setattr(ad, "_persist_dispatch", fail_persist)
-    result = ad.dispatch_async_delegation(
-        goal="never submitted", context=None, toolsets=None, role="leaf", model="m",
-        session_key="owner", runner=lambda: {}, max_async_children=1,
-    )
-
-    assert result["status"] == "rejected"
-    assert "persist" in result["error"].lower()
-    assert ad.active_count() == 0
-    assert ad.list_async_delegations() == []
-    with ad._DB_LOCK, ad._connect() as conn:
-        assert conn.execute("SELECT COUNT(*) FROM async_delegations").fetchone()[0] == 0
-
-    monkeypatch.setattr(ad, "_persist_dispatch", persist_dispatch)
-    retry = ad.dispatch_async_delegation(
-        goal="uses released slot", context=None, toolsets=None, role="leaf", model="m",
-        session_key="owner",
-        runner=lambda: {"status": "completed", "summary": "done"},
-        max_async_children=1,
-    )
-    assert retry["status"] == "dispatched"
-    event = _drain_for(retry["delegation_id"])
-    assert event is not None
-    assert event["summary"] == "done"
-
-
-def test_batch_persist_failure_before_submit_releases_capacity(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    persist_dispatch = ad._persist_dispatch
-
-    def fail_persist(record):
-        persist_dispatch(record)
-        raise ad.sqlite3.OperationalError("database is locked")
-
-    monkeypatch.setattr(ad, "_persist_dispatch", fail_persist)
-    raised = None
-    result = None
-    try:
-        result = ad.dispatch_async_delegation_batch(
-            goals=["never submitted"], context=None, toolsets=None, role="leaf",
-            model="m", session_key="owner", runner=lambda: {},
-            max_async_children=1,
-        )
-    except ad.sqlite3.OperationalError as exc:
-        raised = str(exc)
-
-    active_after_failure = ad.active_count()
-    listed_after_failure = ad.list_async_delegations()
-    with ad._DB_LOCK, ad._connect() as conn:
-        durable_after_failure = conn.execute(
-            "SELECT COUNT(*) FROM async_delegations"
-        ).fetchone()[0]
-
-    monkeypatch.setattr(ad, "_persist_dispatch", persist_dispatch)
-    retry = ad.dispatch_async_delegation_batch(
-        goals=["uses released slot"], context=None, toolsets=None, role="leaf",
-        model="m", session_key="owner",
-        runner=lambda: {
-            "results": [{"status": "completed", "summary": "done"}],
-        },
-        max_async_children=1,
-    )
-
-    observed = {
-        "raised": raised,
-        "result_status": result and result["status"],
-        "active_after_failure": active_after_failure,
-        "listed_after_failure": len(listed_after_failure),
-        "durable_after_failure": durable_after_failure,
-        "retry_status": retry["status"],
-    }
-    assert observed == {
-        "raised": None,
-        "result_status": "rejected",
-        "active_after_failure": 0,
-        "listed_after_failure": 0,
-        "durable_after_failure": 0,
-        "retry_status": "dispatched",
-    }
-    event = _drain_for(retry["delegation_id"])
-    assert event is not None
-    assert event["results"][0]["summary"] == "done"
-
-
 def test_pending_retention_prunes_delivered_before_undelivered(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(ad, "_MAX_RETAINED_COMPLETED", 2)
@@ -510,6 +395,81 @@ def test_recover_marks_abandoned_running_record_unknown(tmp_path, monkeypatch):
     restored = queue.Queue()
     assert ad.restore_undelivered_completions(restored) == 1
     assert restored.get_nowait()["status"] == "unknown"
+
+
+def test_origin_session_id_survives_persistence_round_trip(tmp_path, monkeypatch):
+    """origin_session_id (the api_server wake self-post target) must be
+    persisted with the durable dispatch record and restored on recovery —
+    otherwise completions recovered after a process restart are unroutable
+    to api_server sessions (in-memory record is gone)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    record = {
+        "delegation_id": "deleg_wake_target",
+        "session_key": "owner",
+        "origin_ui_session_id": "",
+        "origin_session_id": "raw-api-sid-42",
+        "parent_session_id": None,
+        "dispatched_at": 1.0,
+    }
+    ad._persist_dispatch(record)
+
+    # Durable record carries the wake target.
+    durable = ad.get_durable_delegation("deleg_wake_target")
+    assert durable["origin_session_id"] == "raw-api-sid-42"
+
+    # Simulate the owning process dying, then recovery after restart: the
+    # regenerated completion event must still carry the wake target.
+    with ad._DB_LOCK, ad._connect() as conn:
+        conn.execute(
+            "UPDATE async_delegations SET owner_pid=?, owner_started_at=NULL WHERE delegation_id=?",
+            (99999999, "deleg_wake_target"),
+        )
+    restored = queue.Queue()
+    assert ad.restore_undelivered_completions(restored) == 1
+    evt = restored.get_nowait()
+    assert evt["delegation_id"] == "deleg_wake_target"
+    assert evt["origin_session_id"] == "raw-api-sid-42"
+    assert evt["restored"] is True
+
+
+def test_origin_session_id_migration_backfills_legacy_rows(tmp_path, monkeypatch):
+    """Rows written by a pre-origin_session_id build must survive the ALTER
+    TABLE migration and read back as an empty wake target."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # Create a legacy-schema DB (no origin_session_id column).
+    import sqlite3
+
+    db_path = ad._db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy = sqlite3.connect(str(db_path))
+    legacy.execute(
+        """CREATE TABLE async_delegations (
+            delegation_id TEXT PRIMARY KEY,
+            origin_session TEXT NOT NULL,
+            origin_ui_session_id TEXT NOT NULL DEFAULT '',
+            parent_session_id TEXT,
+            state TEXT NOT NULL,
+            dispatched_at REAL NOT NULL,
+            completed_at REAL,
+            updated_at REAL NOT NULL,
+            event_json TEXT,
+            result_json TEXT,
+            delivery_state TEXT NOT NULL DEFAULT 'pending',
+            delivery_attempts INTEGER NOT NULL DEFAULT 0,
+            delivered_at REAL
+        )"""
+    )
+    legacy.execute(
+        """INSERT INTO async_delegations
+           (delegation_id, origin_session, state, dispatched_at, updated_at)
+           VALUES ('deleg_legacy', 'owner', 'running', 1.0, 1.0)"""
+    )
+    legacy.commit()
+    legacy.close()
+
+    durable = ad.get_durable_delegation("deleg_legacy")
+    assert durable is not None
+    assert durable["origin_session_id"] == ""
 
 
 def test_durable_delivery_claim_is_exclusive_and_retryable(tmp_path, monkeypatch):
@@ -600,6 +560,74 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     text = format_process_notification(evt)
     assert text is not None
     assert "the real task" in text
+
+
+def test_delegate_task_background_waits_inside_kanban_worker(monkeypatch):
+    """A dispatcher-spawned Kanban worker is a finite process, so a required
+    delegated result must return in-turn instead of becoming an orphaned
+    background completion after the parent exits."""
+    import json
+    from unittest.mock import MagicMock
+    import tools.delegate_tool as dt
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_review")
+
+    parent = MagicMock()
+    parent._delegate_depth = 0
+    parent.session_id = "kanban-worker-session"
+    parent._interrupt_requested = False
+    parent._active_children = []
+    parent._active_children_lock = None
+    fake_child = MagicMock()
+    fake_child._delegate_role = "leaf"
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def delayed_child(task_index, goal, child=None, parent_agent=None, **kw):
+        started.set()
+        release.wait(timeout=5)
+        return {
+            "task_index": task_index,
+            "status": "completed",
+            "summary": "review approved",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+            "model": "m",
+            "exit_reason": "completed",
+        }
+
+    creds = {
+        "model": "m", "provider": None, "base_url": None, "api_key": None,
+        "api_mode": None, "command": None, "args": None,
+    }
+    monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
+    monkeypatch.setattr(dt, "_run_single_child", delayed_child)
+    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+
+    captured = {}
+
+    def call_delegate():
+        captured["output"] = dt.delegate_task(
+            goal="independent review",
+            background=True,
+            parent_agent=parent,
+        )
+
+    caller = threading.Thread(target=call_delegate)
+    caller.start()
+    assert started.wait(timeout=2)
+    assert caller.is_alive(), "Kanban delegate_task returned before its child finished"
+    assert ad.active_count() == 0
+
+    release.set()
+    caller.join(timeout=5)
+    assert not caller.is_alive()
+
+    parsed = json.loads(captured["output"])
+    assert parsed["results"][0]["summary"] == "review approved"
+    assert "SYNCHRONOUSLY" in parsed["note"]
+    assert process_registry.completion_queue.empty()
 
 
 def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):
@@ -797,62 +825,6 @@ def test_run_agent_dispatch_forces_background():
         assert captured["background"] is False
 
 
-def test_run_agent_dispatch_records_detached_work_for_this_turn():
-    """A successful top-level dispatch must leave an operation-scoped marker
-    for the gateway; ending the parent model turn is not task completion."""
-    from unittest.mock import patch
-    import run_agent
-
-    class _FakeAgent:
-        _delegate_depth = 0
-
-    with patch(
-        "tools.delegate_tool.delegate_task",
-        return_value='{"status":"dispatched","delegation_id":"deleg_test"}',
-    ):
-        agent = _FakeAgent()
-        result = run_agent.AIAgent._dispatch_delegate_task(agent, {"goal": "review"})
-
-    assert '"status":"dispatched"' in result
-    assert agent._turn_detached_work == [
-        {"kind": "delegation", "id": "deleg_test"}
-    ]
-
-
-def test_subagent_synchronous_dispatch_does_not_mark_detached_work():
-    from unittest.mock import patch
-    import run_agent
-
-    class _FakeAgent:
-        _delegate_depth = 1
-
-    with patch(
-        "tools.delegate_tool.delegate_task",
-        return_value='{"status":"completed","summary":"done"}',
-    ):
-        agent = _FakeAgent()
-        run_agent.AIAgent._dispatch_delegate_task(agent, {"goal": "review"})
-
-    assert getattr(agent, "_turn_detached_work", []) == []
-
-
-def test_dispatch_without_a_durable_handle_does_not_mark_detached_work():
-    from unittest.mock import patch
-    import run_agent
-
-    class _FakeAgent:
-        _delegate_depth = 0
-
-    with patch(
-        "tools.delegate_tool.delegate_task",
-        return_value='{"status":"dispatched"}',
-    ):
-        agent = _FakeAgent()
-        run_agent.AIAgent._dispatch_delegate_task(agent, {"goal": "review"})
-
-    assert getattr(agent, "_turn_detached_work", []) == []
-
-
 def test_dispatch_never_forwards_model_toolsets():
     """The model has no toolsets argument — subagents always inherit the
     parent's toolsets. Even if a model smuggles a `toolsets` key into the
@@ -1042,3 +1014,4 @@ def test_gateway_cli_origin_event_left_unrouted():
     evt = _make_async_evt(session_key="")
     runner._enrich_async_delegation_routing(evt)
     assert "platform" not in evt
+

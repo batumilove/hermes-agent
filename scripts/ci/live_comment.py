@@ -322,6 +322,13 @@ def _import_assembler():
     return asm
 
 
+def _commit_info_for_state(commit_info: str, pending: list[str]) -> str:
+    """Use past tense once all jobs have completed."""
+    if pending:
+        return commit_info
+    return commit_info.replace("<sub>running on ", "<sub>ran on ", 1)
+
+
 def build_comment_body(
     asm_mod,
     completed: dict[str, str],
@@ -340,7 +347,7 @@ def build_comment_body(
         job_urls=job_urls,
         review_statuses_json=review_statuses_json,
         pending_jobs=pending if pending else None,
-        commit_info=commit_info,
+        commit_info=_commit_info_for_state(commit_info, pending),
     )
 
 

@@ -244,7 +244,7 @@ def _write_metrics(*, available: bool) -> None:
                 f'hermes_rtk_rewrite_events_total{{command="{_escape_label(command)}",event="{_escape_label(event)}"}} {value}'
             )
         tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text("\n".join(lines) + "\n")
+        tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
         tmp.replace(path)
     except Exception:
         # Metrics must never interfere with command execution.

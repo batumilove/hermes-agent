@@ -921,7 +921,7 @@ def generate_review_status(
     stats = compute_stats(timings, baseline)
 
     if baseline is None:
-        severity = "info"
+        severity = "debug"
         summary = f"Wall time {fmt_dur(stats['wall'])} (no baseline yet)."
     else:
         wall = stats["wall"]
@@ -932,10 +932,10 @@ def generate_review_status(
             if pct > _TIMINGS_WARN_PCT * 100:
                 severity = "warning"
             else:
-                severity = "info"
+                severity = "debug"
         else:
             wall_str = f"Wall time {fmt_dur(wall)}."
-            severity = "info"
+            severity = "debug"
 
         if stats["slower"]:
             wall_str += f" {stats['slower']} job(s) slower,"

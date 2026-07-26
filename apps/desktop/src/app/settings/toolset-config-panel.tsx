@@ -243,6 +243,7 @@ function PostSetupRunner({ toolset, postSetupKey, installed = false, onComplete 
   // Guard against overlapping polls / state updates after unmount.
   const activeRef = useRef(false)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     return () => {
       activeRef.current = false
@@ -490,9 +491,13 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
   const [activeProvider, setActiveProvider] = useState<string | null>(null)
   // Live per-key set/unset state, seeded from the endpoint then patched locally.
   const [envState, setEnvState] = useState<Record<string, boolean>>({})
+  // Default-provider selection and a user click race just after config arrives:
+  // a stale initialization effect must never replace an explicit choice.
+  const providerChoiceClaimedRef = useRef(false)
   // Guard the Nous Portal sign-in poll loop against unmount/state updates.
   const mountedRef = useRef(true)
 
+  // eslint-disable-next-line no-restricted-syntax -- mount flag guarding an async poll loop, not an atom mirror
   useEffect(() => {
     mountedRef.current = true
 
@@ -516,18 +521,6 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
       }
 
       setEnvState(seeded)
-      // Initialize the expanded row in the same state transition that makes
-      // the fetched providers visible. A later effect can race with a quick
-      // provider click and overwrite that selection with the default row.
-      const selected =
-        next.providers.find(provider => provider.is_active) ??
-        (next.active_provider
-          ? next.providers.find(provider => provider.name === next.active_provider)
-          : undefined) ??
-        next.providers.find(provider => providerConfigured(provider, seeded)) ??
-        next.providers[0]
-
-      setActiveProvider(selected?.name ?? null)
     } catch (err) {
       notifyError(err, copy.failedLoad)
     } finally {
@@ -541,7 +534,36 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
 
   const providers = useMemo(() => cfg?.providers ?? [], [cfg])
 
+  // Default the expanded provider to the one actually active in config
+  // (`is_active` / `cfg.active_provider`, mirroring the CLI picker), then the
+  // first fully-configured provider, else the first provider. Without this the
+  // panel highlighted the first keyless provider (e.g. Nous Portal) even when
+  // the user had already selected another (e.g. DuckDuckGo).
+  // eslint-disable-next-line no-restricted-syntax -- one-shot provider-choice claim flag, not an atom mirror
+  useEffect(() => {
+    if (providerChoiceClaimedRef.current || activeProvider || providers.length === 0) {
+      return
+    }
+
+    const selected =
+      providers.find(p => p.is_active) ??
+      (cfg?.active_provider ? providers.find(p => p.name === cfg.active_provider) : undefined) ??
+      providers.find(p => providerConfigured(p, envState)) ??
+      providers[0]
+
+    // Claim before enqueueing the state update. Effects can run with a stale
+    // activeProvider closure after a user click, so state alone is too late to
+    // protect that choice.
+    providerChoiceClaimedRef.current = true
+    setActiveProvider(selected.name)
+  }, [activeProvider, providers, envState, cfg])
+
   async function handleSelect(provider: ToolProvider) {
+    if (selecting !== null) {
+      return
+    }
+
+    providerChoiceClaimedRef.current = true
     setActiveProvider(provider.name)
     setSelecting(provider.name)
 
@@ -723,6 +745,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
                 'flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition hover:bg-accent/50',
                 isActive && 'bg-accent/40'
               )}
+              disabled={selecting !== null}
               onClick={() => void handleSelect(provider)}
               type="button"
             >

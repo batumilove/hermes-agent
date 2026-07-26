@@ -494,7 +494,7 @@ def _build_report(
 def _write_report(report: dict) -> None:
     """Write report to ``~/.hermes/update-sources/last-run.json``."""
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    REPORT_PATH.write_text(json.dumps(report, indent=2) + "\n")
+    REPORT_PATH.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------

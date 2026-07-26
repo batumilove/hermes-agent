@@ -160,7 +160,17 @@ def _redact_json(value):
 
 def _subprocess_result(cmd: Sequence[str], *, cwd: Path, timeout: int = 120) -> CommandResult:
     start = time.monotonic()
-    proc = subprocess.run(cmd, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout, check=False)
+    proc = subprocess.run(
+        cmd,
+        cwd=str(cwd),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        check=False,
+    )
     return CommandResult(
         phase="host",
         cmd=" ".join(shlex.quote(part) for part in cmd),
@@ -225,7 +235,17 @@ def build_remote_plan(*, sandbox_home: str, archive_remote_path: str, tests: Seq
 
 def _host_git(cmd: Sequence[str], repo_root: Path) -> str | None:
     try:
-        proc = subprocess.run(["git", *cmd], cwd=str(repo_root), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=30, check=False)
+        proc = subprocess.run(
+        ["git", *cmd],
+        cwd=str(repo_root),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
     except Exception:
         return None
     return proc.stdout.strip() if proc.returncode == 0 else None

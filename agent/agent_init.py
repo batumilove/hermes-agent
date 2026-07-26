@@ -69,6 +69,43 @@ def _ra():
     return run_agent
 
 
+def _moa_reference_output_allowed(agent: Any) -> bool:
+    """Keep MoA display events off only the machine-readable ``-Q`` surface."""
+    return not (
+        getattr(agent, "platform", None) == "cli"
+        and getattr(agent, "tool_progress_mode", "all") == "off"
+    )
+
+
+def _relay_moa_reference_event(agent: Any, event: str, **kwargs: Any) -> None:
+    """Relay MoA display events while preserving the ``-Q`` stdout contract."""
+    if not _moa_reference_output_allowed(agent):
+        return
+    cb = getattr(agent, "tool_progress_callback", None)
+    if cb is None:
+        return
+    try:
+        if event == "moa.reference":
+            cb(
+                "moa.reference",
+                str(kwargs.get("label") or ""),
+                str(kwargs.get("text") or ""),
+                None,
+                moa_index=kwargs.get("index"),
+                moa_count=kwargs.get("count"),
+            )
+        elif event == "moa.aggregating":
+            cb(
+                "moa.aggregating",
+                str(kwargs.get("aggregator") or ""),
+                None,
+                None,
+                moa_ref_count=kwargs.get("ref_count"),
+            )
+    except Exception:
+        pass
+
+
 def _normalize_route_base_url(base_url: Any) -> str:
     """Canonicalize an endpoint URL for model-route identity comparisons."""
     return normalize_route_base_url(base_url)
@@ -480,6 +517,7 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    requested_provider: str = None,
 ):
     """
     Initialize the AI Agent.
@@ -488,6 +526,7 @@ def init_agent(
         base_url (str): Base URL for the model API (optional)
         api_key (str): API key for authentication (optional, uses env var if not provided)
         provider (str): Provider identifier (optional; used for telemetry/routing hints)
+        requested_provider (str): Original provider identity before runtime canonicalization
         api_mode (str): API mode override: "chat_completions" or "codex_responses"
         model (str): Model name to use (default: "anthropic/claude-opus-4.6")
         max_iterations (int): Maximum number of tool calling iterations (default: 90)
@@ -568,10 +607,11 @@ def init_agent(
     agent.base_url = base_url or ""
     provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
     agent.provider = provider_name or ""
-    agent._disable_streaming = False
-    # Preserve the caller-supplied pool until provider auto-detection below has
-    # established the effective provider; validating against an empty provider
-    # here would incorrectly discard compatible pools.
+    agent.requested_provider = (
+        requested_provider.strip().lower()
+        if isinstance(requested_provider, str) and requested_provider.strip()
+        else agent.provider
+    )
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
@@ -608,8 +648,11 @@ def init_agent(
     else:
         agent.api_mode = "chat_completions"
 
-    # Validate only after URL-based provider inference. This keeps a compatible
-    # pool supplied with provider=None attached to the detected provider.
+    # Credential-pool validation runs AFTER provider auto-detection so
+    # a pool scoped to e.g. "anthropic" is not rejected when the agent
+    # was constructed with provider=None and an anthropic.com URL.
+    # Regression from #63048 which placed this check before the
+    # URL-based auto-detection block above (fixed #63425).
     if credential_pool is not None:
         try:
             from agent.credential_pool import credential_pool_matches_provider
@@ -721,6 +764,8 @@ def init_agent(
     agent._execution_thread_id: int | None = None  # Set at run_conversation() start
     agent._interrupt_thread_signal_pending = False
     agent._client_lock = threading.RLock()
+    agent._model_request_active = threading.Event()
+    agent._supports_active_turn_redirect = True
 
     # /steer mechanism — inject a user note into the next tool result
     # without interrupting the agent. Unlike interrupt(), steer() does
@@ -731,6 +776,13 @@ def init_agent(
     # existing tool message rather than inserting a new user turn).
     agent._pending_steer: Optional[str] = None
     agent._pending_steer_lock = threading.Lock()
+
+    # Active-turn redirect mechanism. A regular follow-up sent while the model
+    # is generating is different from a hard /stop: preserve the valid turn
+    # prefix, cancel only the in-flight model request, and rebuild its tail with
+    # the correction. The loop drains this slot at a role-safe boundary.
+    agent._pending_redirect: Optional[str] = None
+    agent._pending_redirect_lock = threading.Lock()
 
     # Concurrent-tool worker thread tracking.  `_execute_tool_calls_concurrent`
     # runs each tool on its own ThreadPoolExecutor worker — those worker
@@ -771,9 +823,10 @@ def init_agent(
     # Anthropic prompt caching: auto-enabled for Claude models on native
     # Anthropic, OpenRouter, and third-party gateways that speak the
     # Anthropic protocol (``api_mode == 'anthropic_messages'``). Reduces
-    # input costs by ~75% on multi-turn conversations. Uses system_and_3
-    # strategy (4 breakpoints). See ``_anthropic_prompt_cache_policy``
-    # for the layout-vs-transport decision.
+    # input costs by ~75% on multi-turn conversations. Uses four breakpoints:
+    # the static system prefix, full system prompt, and last two messages
+    # (falling back to system-and-3 when no static prefix is available). See
+    # ``_anthropic_prompt_cache_policy`` for the layout-vs-transport decision.
     agent._use_prompt_caching, agent._use_native_cache_layout = (
         agent._anthropic_prompt_cache_policy()
     )
@@ -898,6 +951,12 @@ def init_agent(
     agent._stream_writer_tls = threading.local()
     agent._stream_writer_dropped = 0
 
+    # Displayed reasoning text streamed during the current model response,
+    # captured only when a surface consumed it via a reasoning callback. Used
+    # by active-turn redirect to checkpoint what the user actually saw without
+    # ever persisting hidden provider reasoning.
+    agent._current_streamed_reasoning_text = ""
+
     # Optional current-turn user-message override used when the API-facing
     # user message intentionally differs from the persisted transcript
     # (e.g. CLI voice mode adds a temporary prefix for the live call only).
@@ -1004,49 +1063,20 @@ def init_agent(
                 elif isinstance(effective_key, str) and len(effective_key) > 12:
                     print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
     elif agent.provider == "moa":
-        from agent.moa_loop import MoAClient
+        from agent.moa_loop import build_moa_facade
         agent.api_mode = "chat_completions"
 
-        # Route reference-model outputs to the agent's tool_progress_callback so
+        # build_moa_facade wires the reference relay that routes
+        # reference-model outputs to the agent's tool_progress_callback so
         # every surface that already consumes it (CLI spinner/scrollback, TUI,
-        # desktop, gateway) can show each reference's answer as a labelled block
-        # before the aggregator acts. The facade emits "moa.reference" and
-        # "moa.aggregating" events; we forward them through the same callback
-        # the tool lifecycle uses. Best-effort and cache-safe — these are
-        # display-only events, they never touch the message history.
-        def _moa_reference_relay(event: str, **kwargs: Any) -> None:
-            cb = getattr(agent, "tool_progress_callback", None)
-            if cb is None:
-                return
-            try:
-                if event == "moa.reference":
-                    label = str(kwargs.get("label") or "")
-                    text = str(kwargs.get("text") or "")
-                    idx = kwargs.get("index")
-                    count = kwargs.get("count")
-                    cb(
-                        "moa.reference",
-                        label,
-                        text,
-                        None,
-                        moa_index=idx,
-                        moa_count=count,
-                    )
-                elif event == "moa.aggregating":
-                    cb(
-                        "moa.aggregating",
-                        str(kwargs.get("aggregator") or ""),
-                        None,
-                        None,
-                        moa_ref_count=kwargs.get("ref_count"),
-                    )
-            except Exception:
-                pass
-
-        agent.client = MoAClient(
-            agent.model or "default",
-            reference_callback=_moa_reference_relay,
-        )
+        # desktop, gateway) can show each reference's answer as a labelled
+        # block before the aggregator acts. The facade emits "moa.reference",
+        # "moa.progress", "moa.phase", and "moa.aggregating" events, forwarded
+        # through the same callback the tool lifecycle uses. Best-effort and
+        # cache-safe — display-only events, they never touch the message
+        # history. The factory is shared with the fallback-restore/recovery
+        # paths so a restored facade keeps emitting these events (#53802).
+        agent.client = build_moa_facade(agent, agent.model)
         agent._client_kwargs = {}
         agent.api_key = api_key or "moa-virtual-provider"
         agent.base_url = "moa://local"
@@ -1312,6 +1342,13 @@ def init_agent(
                     print("⚠️  Warning: API key appears invalid or missing")
         except Exception as e:
             raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
+
+    # Keep a stable identity for the pool entry that supplied this runtime.
+    # OAuth refreshes can replace the runtime token before a failed request is
+    # recovered, so the mutable API-key value alone cannot reliably attribute
+    # the failure to its source entry.
+    from agent.agent_runtime_helpers import sync_credential_pool_entry_id
+    sync_credential_pool_entry_id(agent)
     
     # Provider fallback chain — ordered list of backup providers tried
     # when the primary is exhausted (rate-limit, overload, connection
@@ -1458,6 +1495,9 @@ def init_agent(
     
     # Cached system prompt -- built once per session, only rebuilt on compression
     agent._cached_system_prompt: Optional[str] = None
+    # Cross-session-stable prefix of the cached prompt. It remains separate
+    # from the persisted string and is used only to place an early cache marker.
+    agent._cached_system_prompt_static: Optional[str] = None
     
     # Filesystem checkpoint manager (transparent — not a tool)
     from tools.checkpoint_manager import CheckpointManager
@@ -1471,6 +1511,14 @@ def init_agent(
     # SQLite session store (optional -- provided by CLI or gateway)
     agent._session_db = session_db
     agent._parent_session_id = parent_session_id
+    # A close flush and the worker's turn-start flush can overlap. The durable
+    # marker is attached to each in-memory message dict, so its test-and-append
+    # sequence must be serialized per agent rather than relying on SQLite alone.
+    agent._session_persist_lock = threading.RLock()
+    # CLI retains its just-accepted user dict until turn setup can reuse it.
+    # This preserves the message-local durable marker if close persistence wins
+    # the race before the agent's normal early turn flush.
+    agent._pending_cli_user_message = None
     agent._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
     agent._session_db_created = False  # DB row deferred to run_conversation()
     # Most agents own their session row and should finalize it on close().
@@ -1542,14 +1590,6 @@ def init_agent(
         )
     except Exception as _tlg_err:
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
-    try:
-        from agent.context_efficiency import normalize_config as _normalize_context_efficiency_config
-        agent._context_efficiency_config = _normalize_context_efficiency_config(
-            _agent_cfg.get("context_efficiency", {})
-        )
-    except Exception as _cef_err:
-        agent._context_efficiency_config = {"enabled": False}
-        _ra().logger.warning("Context efficiency config ignored: %s", _cef_err)
     # Cache only the derived auxiliary compression context override that is
     # needed later by the startup feasibility check.  Avoid exposing a
     # broad pseudo-public config object on the agent instance.
@@ -1789,6 +1829,28 @@ def init_agent(
     compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
     compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
     compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
+    # Minimum REAL (actionable) user messages guaranteed to survive in the
+    # uncompressed tail (compression.min_tail_user_messages).  Default 1
+    # preserves current behavior exactly — the existing single-user tail
+    # anchor.  Values > 1 extend the guarantee to the last N actionable
+    # user turns.  Booleans rejected (bool subclasses int), non-int-like
+    # values fall back to 1, floor at 1.
+    _raw_min_tail_users = _compression_cfg.get("min_tail_user_messages", 1)
+    if isinstance(_raw_min_tail_users, bool):
+        compression_min_tail_users = 1
+    elif isinstance(_raw_min_tail_users, int):
+        compression_min_tail_users = _raw_min_tail_users
+    elif isinstance(_raw_min_tail_users, float):
+        compression_min_tail_users = (
+            int(_raw_min_tail_users) if _raw_min_tail_users.is_integer() else 1
+        )
+    else:
+        try:
+            compression_min_tail_users = int(str(_raw_min_tail_users).strip())
+        except (TypeError, ValueError):
+            compression_min_tail_users = 1
+    if compression_min_tail_users < 1:
+        compression_min_tail_users = 1
     # Cap on compression retry rounds before a turn gives up with "max
     # compression attempts reached" (compression.max_attempts).  Hardcoding 3
     # strands sessions that legitimately need more rounds — e.g. a restart
@@ -1817,6 +1879,39 @@ def init_agent(
     if compression_max_attempts < 1:
         compression_max_attempts = 3
     compression_max_attempts = min(compression_max_attempts, 10)
+
+    def _parse_prune_int(raw, default):
+        # Same parser semantics as compression.max_attempts above: reject
+        # booleans (bool subclasses int — YAML `true` would coerce to 1),
+        # reject fractional floats rather than truncating them, accept
+        # integral floats and numeric strings, fall back to the default on
+        # anything else.
+        if isinstance(raw, bool):
+            return default
+        if isinstance(raw, int):
+            return raw
+        if isinstance(raw, float):
+            return int(raw) if raw.is_integer() else default
+        try:
+            return int(str(raw).strip())
+        except (TypeError, ValueError):
+            return default
+
+    # Opt-in proactive tool-result prune trigger (0 = disabled — the
+    # default, so an unset key is behavior-neutral).  Negative values are
+    # treated as disabled rather than erroring.
+    compression_proactive_prune_tokens = max(
+        0, _parse_prune_int(_compression_cfg.get("proactive_prune_tokens", 0), 0)
+    )
+    compression_proactive_prune_min_chars = _parse_prune_int(
+        _compression_cfg.get("proactive_prune_min_result_chars", 8000), 8000
+    )
+    compression_proactive_prune_min_reclaim = max(
+        0,
+        _parse_prune_int(
+            _compression_cfg.get("proactive_prune_min_reclaim_tokens", 4096), 4096
+        ),
+    )
     # protect_first_n is the number of non-system messages to protect at
     # the head, in addition to the system prompt (which is always
     # implicitly protected by the compressor).  Floor at 0 — a value of
@@ -2291,6 +2386,10 @@ def init_agent(
             max_tokens=agent.max_tokens,
             model_thresholds=compression_model_thresholds,
             threshold_tokens_cap=compression_threshold_tokens,
+            proactive_prune_tokens=compression_proactive_prune_tokens,
+            proactive_prune_min_result_chars=compression_proactive_prune_min_chars,
+            proactive_prune_min_reclaim_tokens=compression_proactive_prune_min_reclaim,
+            min_tail_user_messages=compression_min_tail_users,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):
@@ -2555,6 +2654,7 @@ def init_agent(
     agent._primary_runtime = {
         "model": agent.model,
         "provider": agent.provider,
+        "requested_provider": agent.requested_provider,
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),

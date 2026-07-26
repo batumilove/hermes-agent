@@ -56,7 +56,7 @@ from pathlib import Path
 MARKER = "<!-- hermes-ci-review-bot -->"
 
 # Severity ordering for display.
-_SEVERITY_ORDER = ["error", "action_required", "warning", "info"]
+_SEVERITY_ORDER = ["error", "action_required", "warning", "info", "debug"]
 
 # Severities that trigger the "blocking issues" layout (vs. the
 # "looks good!" banner).
@@ -66,7 +66,7 @@ _SEVERITY_GROUP_HEADER = {
     "error": "## ❌ Job failures",
     "action_required": "## ⚠️ Action required",
     "warning": "## ⚠️ Warnings",
-    "info": "## ℹ️ Details",
+    "info": "## ℹ️ Info",
 }
 
 
@@ -279,6 +279,7 @@ def render_comment(items: list[ReviewItem], pending_jobs: list[str] | None = Non
         by_severity.setdefault(item.severity, []).append(item)
 
     info = by_severity.get("info", [])
+    debug = by_severity.get("debug", [])
     has_blocking = any(by_severity.get(s) for s in _BLOCKING_SEVERITIES)
 
     body = f"{MARKER}\n# ૮ >ﻌ< ა ci review\n\n"
@@ -287,7 +288,7 @@ def render_comment(items: list[ReviewItem], pending_jobs: list[str] | None = Non
         body += f"{commit_info}\n\n"
 
     if not items and not pending:
-        return f"{body}looks good to me!"
+        return f"{body}all good!"
 
     sections: list[str] = []
 
@@ -296,9 +297,11 @@ def render_comment(items: list[ReviewItem], pending_jobs: list[str] | None = Non
         if group:
             sections.append(_render_group(_SEVERITY_GROUP_HEADER[sev], group))
 
-    # Info: collapsible <details>
+    # Info is visible above the fold; debug details remain collapsible.
     if info:
-        sections.append(_render_info_details(info))
+        sections.append(_render_group(_SEVERITY_GROUP_HEADER["info"], info))
+    if debug:
+        sections.append("### debug info\n\n" + _render_info_details(debug))
 
     if pending:
         body += _render_pending_items(pending)
@@ -415,7 +418,7 @@ def main() -> int:
         pending_jobs=pending,
     )
 
-    args.output.write_text(body)
+    args.output.write_text(body, encoding="utf-8")
     print(f"Wrote {len(body)} chars to {args.output}")
     return 0
 
