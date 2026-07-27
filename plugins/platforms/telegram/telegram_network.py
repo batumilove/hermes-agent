@@ -120,26 +120,54 @@ class _CancellationSafeNetworkStream:
 
     def __init__(self, stream: Any):
         self._stream = stream
+        self._close_task: asyncio.Task | None = None
+
+    async def _close_after_failure(self) -> None:
+        try:
+            await self.aclose()
+        except BaseException:
+            pass
 
     async def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
         try:
             return await self._stream.read(max_bytes, timeout=timeout)
         except BaseException:
             # A caller cancellation can arrive after the peer has queued bytes
-            # plus FIN but before httpcore creates a Response.  Close this exact
+            # plus FIN but before httpcore creates a Response. Close this exact
             # stream while ownership is still local; no response-level cleanup
             # exists yet, and an inactive pool route may never be reaped.
-            try:
-                await self.aclose()
-            except BaseException:
-                pass
+            await self._close_after_failure()
             raise
 
     async def write(self, buffer: bytes, timeout: float | None = None) -> None:
-        await self._stream.write(buffer, timeout=timeout)
+        try:
+            await self._stream.write(buffer, timeout=timeout)
+        except BaseException:
+            await self._close_after_failure()
+            raise
 
     async def aclose(self) -> None:
-        await self._stream.aclose()
+        if self._close_task is None:
+            self._close_started()
+            self._close_task = asyncio.create_task(self._stream.aclose())
+            _abandoned_response_cleanups.add(self._close_task)
+            self._close_task.add_done_callback(self._close_done)
+        await asyncio.shield(self._close_task)
+
+    def _close_started(self) -> None:
+        return None
+
+    def _close_done(self, task: asyncio.Task) -> None:
+        _abandoned_response_cleanups.discard(task)
+        try:
+            task.result()
+        except BaseException:
+            self._close_finished(error=True)
+        else:
+            self._close_finished(error=False)
+
+    def _close_finished(self, *, error: bool) -> None:
+        return None
 
     async def start_tls(
         self, ssl_context, server_hostname=None, timeout=None
@@ -149,12 +177,7 @@ class _CancellationSafeNetworkStream:
                 ssl_context, server_hostname, timeout
             )
         except BaseException:
-            # We have caught the delivered cancellation, so this bounded local
-            # socket close can run before cancellation is propagated upward.
-            try:
-                await self._stream.aclose()
-            except BaseException:
-                pass
+            await self._close_after_failure()
             raise
         return _CancellationSafeNetworkStream(stream)
 
@@ -169,14 +192,11 @@ class _DiagnosticCancellationSafeNetworkStream(_CancellationSafeNetworkStream):
         super().__init__(stream)
         self._lifecycle = lifecycle
 
-    async def aclose(self) -> None:
+    def _close_started(self) -> None:
         self._lifecycle.report_close_started()
-        try:
-            await self._stream.aclose()
-        except BaseException:
-            self._lifecycle.report_closed(error=True)
-            raise
-        self._lifecycle.report_closed()
+
+    def _close_finished(self, *, error: bool) -> None:
+        self._lifecycle.report_closed(error=error)
 
     async def start_tls(
         self, ssl_context, server_hostname=None, timeout=None
@@ -186,13 +206,7 @@ class _DiagnosticCancellationSafeNetworkStream(_CancellationSafeNetworkStream):
                 ssl_context, server_hostname, timeout
             )
         except BaseException:
-            self._lifecycle.report_close_started()
-            try:
-                await self._stream.aclose()
-            except BaseException:
-                self._lifecycle.report_closed(error=True)
-            else:
-                self._lifecycle.report_closed()
+            await self._close_after_failure()
             raise
         return _DiagnosticCancellationSafeNetworkStream(stream, self._lifecycle)
 
