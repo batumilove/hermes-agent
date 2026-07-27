@@ -39,7 +39,12 @@ def _runner_with(monkeypatch, *, idle, armed_adapter=True):
     r._background_tasks = set()
     adapter = _FakeRelayAdapter() if armed_adapter else None
 
-    monkeypatch.setattr(r, "_scale_to_zero_is_idle", lambda: idle, raising=False)
+    monkeypatch.setattr(
+        r,
+        "_scale_to_zero_is_idle",
+        lambda *, idle_timeout_seconds: idle,
+        raising=False,
+    )
     monkeypatch.setattr(r, "_relay_adapter_for_dormancy", lambda: adapter, raising=False)
     monkeypatch.setattr(r, "_scale_to_zero_idle_timeout_seconds", lambda: 300.0, raising=False)
     monkeypatch.setattr(r, "_update_runtime_status", lambda *a, **k: None, raising=False)

@@ -854,6 +854,7 @@ class GatewayConfig:
     
     # Delivery settings
     always_log_local: bool = True  # Always save cron outputs to local files
+    delivery_ledger_enabled: bool = True
     # Drop outbound "silence narration" messages (e.g. *(silent)*, 🔇, a bare
     # ".") pre-send. These are model hallucinations emitted when a persona has
     # nothing actionable to say; in bot-to-bot channels they mirror back and
@@ -1138,6 +1139,9 @@ class GatewayConfig:
             sessions_dir=sessions_dir,
             write_sessions_json=_coerce_bool(data.get("write_sessions_json"), True),
             always_log_local=_coerce_bool(data.get("always_log_local"), True),
+            delivery_ledger_enabled=_coerce_bool(
+                data.get("delivery_ledger"), True
+            ),
             filter_silence_narration=_coerce_bool(
                 data.get("filter_silence_narration"), True
             ),
@@ -1329,6 +1333,11 @@ def load_gateway_config() -> GatewayConfig:
                 gw_data["always_log_local"] = yaml_cfg["always_log_local"]
             elif isinstance(gateway_section, dict) and "always_log_local" in gateway_section:
                 gw_data["always_log_local"] = gateway_section["always_log_local"]
+
+            if "delivery_ledger" in yaml_cfg:
+                gw_data["delivery_ledger"] = yaml_cfg["delivery_ledger"]
+            elif isinstance(gateway_section, dict) and "delivery_ledger" in gateway_section:
+                gw_data["delivery_ledger"] = gateway_section["delivery_ledger"]
 
             # write_sessions_json: top-level wins; nested gateway.* fallback
             # (matches the gateway.streaming precedence pattern).

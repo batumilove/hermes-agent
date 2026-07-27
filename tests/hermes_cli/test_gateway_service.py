@@ -421,7 +421,7 @@ class TestRequireServiceInstalled:
 
 class TestGeneratedSystemdUnits:
     def _expected_timeout_stop_sec(self) -> str:
-        timeout = int(max(60, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT + 30))
+        timeout = int(max(60, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT + 60 + 15))
         return f"TimeoutStopSec={timeout}"
 
     def test_user_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self, monkeypatch):
@@ -437,8 +437,8 @@ class TestGeneratedSystemdUnits:
         assert "ExecReload=/bin/kill -USR1 $MAINPID" in unit
         assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
         assert f"RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}" in unit
-        # The default drain is immediate, so keep a bounded 60-second stop
-        # budget without forcing every restart to wait 90 seconds.
+        # The service manager must outlast the process-level shutdown watchdog
+        # so the latter can preserve all-thread diagnostics before hard exit.
         assert self._expected_timeout_stop_sec() in unit
         # ExecStopPost reaps any process the gateway didn't clean up itself,
         # so long-lived helpers (e.g. adb) can't be left orphaned in the
@@ -449,12 +449,26 @@ class TestGeneratedSystemdUnits:
         # tool-call children before systemd SIGKILLs the cgroup — #8202.
         assert "KillMode=mixed" in unit
 
-    def test_user_unit_adds_cleanup_headroom_to_positive_drain_timeout(self, monkeypatch):
+    def test_user_unit_adds_watchdog_and_service_manager_headroom_to_positive_drain_timeout(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 45)
 
         unit = gateway_cli.generate_systemd_unit(system=False)
 
-        assert "TimeoutStopSec=75" in unit
+        assert "TimeoutStopSec=120" in unit
+
+    def test_user_unit_outlasts_process_shutdown_watchdog(self, monkeypatch):
+        """systemd must not SIGKILL before the gateway's diagnostic watchdog."""
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 45)
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        timeout_line = next(
+            line for line in unit.splitlines() if line.startswith("TimeoutStopSec=")
+        )
+        timeout_s = int(timeout_line.partition("=")[2])
+
+        from gateway.shutdown_watchdog import resolve_shutdown_watchdog_delay
+
+        assert timeout_s > resolve_shutdown_watchdog_delay(45)
 
     def test_user_unit_includes_resolved_node_directory_in_path(self, monkeypatch):
         monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: "/home/test/.nvm/versions/node/v24.14.0/bin/node" if cmd == "node" else None)
@@ -555,8 +569,8 @@ class TestGeneratedSystemdUnits:
         assert "ExecReload=/bin/kill -USR1 $MAINPID" in unit
         assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
         assert f"RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}" in unit
-        # The default drain is immediate, so keep a bounded 60-second stop
-        # budget without forcing every restart to wait 90 seconds.
+        # The service manager must outlast the process-level shutdown watchdog
+        # so the latter can preserve all-thread diagnostics before hard exit.
         assert self._expected_timeout_stop_sec() in unit
         assert "WantedBy=multi-user.target" in unit
         # ExecStopPost reaps any process the gateway didn't clean up itself,

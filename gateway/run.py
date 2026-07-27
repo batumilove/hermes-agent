@@ -218,6 +218,50 @@ def _ensure_windows_gateway_venv_imports() -> None:
         return
 
 
+def _load_gateway_agent_class():
+    """Import ``AIAgent`` and its transitive local-runtime dependencies.
+
+    ``run_agent`` imports ``model_tools``, whose built-in tool discovery parses
+    the tool tree.  Doing that work on the first inbound-message callback blocks
+    the asyncio loop for seconds. Python's module cache makes subsequent imports
+    cheap without adding a second mutable class cache here.
+    """
+    from run_agent import AIAgent
+
+    return AIAgent
+
+
+def _preload_gateway_agent_runtime(runner: Any) -> bool:
+    """Load the local agent runtime before any platform accepts messages.
+
+    Proxy-only gateways never construct a local ``AIAgent`` and must retain
+    their lightweight startup path.
+    """
+    proxy_resolver = getattr(runner, "_get_proxy_url", None)
+    if not callable(proxy_resolver):
+        # Synthetic/minimal runners used by embedders and startup tests do not
+        # execute local conversations; preserve their lightweight path.
+        return False
+    if proxy_resolver():
+        return False
+    started = time.monotonic()
+    try:
+        _load_gateway_agent_class()
+    except Exception:
+        # Preserve the historical degraded-mode behavior: platform commands,
+        # cron, and reconnect handling can still run, while the first local
+        # conversation retries the import and reports its actual failure.
+        logger.exception(
+            "Local agent runtime preload failed; continuing gateway startup"
+        )
+        return False
+    logger.info(
+        "Preloaded local agent runtime before platform startup in %.3fs",
+        time.monotonic() - started,
+    )
+    return True
+
+
 def _gateway_platform_value(platform: Any) -> str:
     """Return a normalized gateway platform value for enums or raw strings."""
     return str(getattr(platform, "value", platform) or "").strip().lower()
@@ -2630,6 +2674,11 @@ def _load_gateway_config() -> dict:
     return raw
 
 
+async def _load_gateway_config_async() -> dict:
+    """Load gateway config without blocking the event-loop thread."""
+    return await asyncio.to_thread(_load_gateway_config)
+
+
 def _checkpoint_agent_kwargs(config: dict | None) -> dict:
     """Translate gateway checkpoint config into ``AIAgent`` constructor args.
 
@@ -4284,6 +4333,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         source: Optional[SessionSource] = None,
         session_key: Optional[str] = None,
         user_config: Optional[dict] = None,
+        _rehydrate_override: bool = True,
     ) -> tuple[str, dict]:
         """Resolve model/runtime for a session.
 
@@ -4299,7 +4349,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 resolved_session_key = None
 
         model = _resolve_gateway_model(user_config)
-        if resolved_session_key:
+        if resolved_session_key and _rehydrate_override:
             self._rehydrate_session_model_override(resolved_session_key)
         override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
         if override:
@@ -4425,6 +4475,61 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _last_good["*"] = model
 
         return model, runtime_kwargs
+
+    async def _resolve_session_agent_runtime_async(
+        self,
+        *,
+        source: Optional[SessionSource] = None,
+        session_key: Optional[str] = None,
+        user_config: Optional[dict] = None,
+    ) -> tuple[str, dict]:
+        """Resolve an event-loop turn without waiting on config or SessionStore locks."""
+        if user_config is None:
+            user_config = await _load_gateway_config_async()
+
+        resolved_session_key = session_key
+        if not resolved_session_key and source is not None:
+            try:
+                resolved_session_key = self._session_key_for_source(source)
+            except Exception:
+                resolved_session_key = None
+        boundary_generations = self.__dict__.get(
+            "_conversation_scope_generation"
+        ) or {}
+        boundary_generation = int(
+            boundary_generations.get(resolved_session_key, 0)
+        )
+        loaded_override = None
+        if (
+            resolved_session_key
+            and resolved_session_key not in self._session_model_overrides
+        ):
+            loaded_override = await asyncio.to_thread(
+                self._load_persisted_session_model_override,
+                resolved_session_key,
+            )
+        current_generations = self.__dict__.get(
+            "_conversation_scope_generation"
+        ) or {}
+        if (
+            resolved_session_key
+            and loaded_override is not None
+            and int(current_generations.get(resolved_session_key, 0))
+            == boundary_generation
+        ):
+            # Installation happens back on the event loop. Cancellation cannot
+            # leave a worker thread that later resurrects stale conversation
+            # state, and setdefault keeps a concurrent live /model update
+            # authoritative.
+            self._install_rehydrated_session_model_override(
+                resolved_session_key, loaded_override
+            )
+        return self._resolve_session_agent_runtime(
+            source=source,
+            session_key=resolved_session_key,
+            user_config=user_config,
+            _rehydrate_override=False,
+        )
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         """Build the effective model/runtime config for a single turn.
@@ -4934,13 +5039,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:  # noqa: BLE001 - diagnostics must never block startup
             logger.debug("scale-to-zero: not-armed reason logging failed", exc_info=True)
 
-    def _scale_to_zero_is_idle(self) -> bool:
+    def _scale_to_zero_is_idle(self, *, idle_timeout_seconds: float) -> bool:
         from gateway.scale_to_zero import is_idle
 
         return is_idle(
             running_agent_count=self._running_agent_count(),
             seconds_since_last_inbound=time.time() - self._last_inbound_at,
-            idle_timeout_seconds=self._scale_to_zero_idle_timeout_seconds(),
+            idle_timeout_seconds=idle_timeout_seconds,
             has_live_background_work=self._scale_to_zero_has_live_background_work(),
         )
 
@@ -4994,7 +5099,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return
                 if time.time() < self._scale_to_zero_cooldown_until:
                     continue
-                if not self._scale_to_zero_is_idle():
+                idle_timeout_seconds = await asyncio.to_thread(
+                    self._scale_to_zero_idle_timeout_seconds
+                )
+                if not self._scale_to_zero_is_idle(
+                    idle_timeout_seconds=idle_timeout_seconds
+                ):
                     continue
                 adapter = self._relay_adapter_for_dormancy()
                 if adapter is None:
@@ -5005,7 +5115,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.info(
                     "scale-to-zero: gateway idle for >= %.0fs — going dormant "
                     "(relay buffered, socket closed, awaiting platform suspend)",
-                    self._scale_to_zero_idle_timeout_seconds(),
+                    idle_timeout_seconds,
                 )
                 try:
                     self._update_runtime_status("draining")
@@ -6565,6 +6675,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         from gateway.display_config import resolve_display_setting
         platform_key = _platform_config_key(event.source.platform)
+        busy_user_config = await _load_gateway_config_async()
 
         # In steer mode the user's text has already been injected into the
         # active run. Some mobile chat setups want that steering to be silent,
@@ -6577,7 +6688,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else:
                 steer_ack_enabled = bool(
                     resolve_display_setting(
-                        _load_gateway_config(),
+                        busy_user_config,
                         platform_key,
                         "busy_steer_ack_enabled",
                         True,
@@ -6595,7 +6706,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         status_parts = []
         busy_ack_detail_enabled = bool(
             resolve_display_setting(
-                _load_gateway_config(),
+                busy_user_config,
                 _platform_config_key(event.source.platform),
                 "busy_ack_detail",
                 True,
@@ -6661,7 +6772,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 is_seen,
                 mark_seen,
             )
-            _user_cfg = _load_gateway_config()
+            _user_cfg = busy_user_config
             if not is_seen(_user_cfg, BUSY_INPUT_FLAG):
                 if is_steer_mode:
                     _hint_mode = "steer"
@@ -6765,6 +6876,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("Interrupted running agent for session %s during shutdown", session_key)
             except Exception as e:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
+
+    async def _notify_active_sessions_with_timeout(self) -> bool:
+        """Bound the best-effort notification phase and force progress on timeout."""
+        timeout = self._adapter_disconnect_timeout_secs()
+        completed = await self._await_adapter_cleanup_with_timeout(
+            self._notify_active_sessions_of_shutdown(), timeout
+        )
+        if not completed:
+            logger.warning(
+                "Shutdown notifications exceeded %.1fs; forcing shutdown forward progress",
+                timeout,
+            )
+        return completed
 
     async def _notify_active_sessions_of_shutdown(self) -> None:
         """Send shutdown/restart notifications to active chats and home channels.
@@ -7638,13 +7762,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             from gateway.delivery_ledger import (
                 RECOVERED_MARKER,
-                ledger_enabled,
                 mark_delivered,
                 mark_failed,
                 sweep_recoverable,
             )
 
-            if not ledger_enabled():
+            if not self.config.delivery_ledger_enabled:
                 return 0
             # Only claim rows we can actually send this boot: self.adapters
             # holds a platform only after its connect() succeeded, and each
@@ -7725,7 +7848,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
         return redelivered
 
-    def _schedule_resume_pending_sessions(self, platform=None) -> int:
+    def _schedule_resume_pending_sessions(
+        self,
+        platform=None,
+        *,
+        restart_loop_guard_config: Optional[tuple] = None,
+    ) -> int:
         """Auto-continue fresh restart-interrupted sessions after startup.
 
         ``resume_pending`` already preserves the transcript AND the existing
@@ -7778,7 +7906,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 from gateway import restart_loop_guard as _rlg
 
-                _max_restarts, _window = self._restart_loop_guard_config()
+                if restart_loop_guard_config is None:
+                    restart_loop_guard_config = self._restart_loop_guard_config()
+                _max_restarts, _window = restart_loop_guard_config
                 if _rlg.check_and_record(_max_restarts, _window):
                     return 0
             except Exception as exc:  # noqa: BLE001 — breaker must fail OPEN
@@ -8097,11 +8227,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return True
         
         # Discover Python plugins before shell hooks so plugin block
-        # decisions take precedence in tie cases.  The CLI startup path
-        # does this via an explicit call in hermes_cli/main.py; the
-        # gateway lazily imports run_agent inside per-request handlers,
-        # so the discover_plugins() side-effect in model_tools.py is NOT
-        # guaranteed to have run by the time we reach this point.
+        # decisions take precedence in tie cases. Local-runtime preload also
+        # discovers plugins, but proxy mode skips that preload and a degraded
+        # preload may fail; keep this explicit, idempotent startup gate.
         try:
             from hermes_cli.plugins import discover_plugins
             discover_plugins()
@@ -9331,7 +9459,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # auto-resume scoped to this platform so recovery
                         # doesn't silently wait for a manual user message.
                         try:
-                            self._schedule_resume_pending_sessions(platform=platform)
+                            restart_loop_guard_config = await asyncio.to_thread(
+                                self._restart_loop_guard_config
+                            )
+                            self._schedule_resume_pending_sessions(
+                                platform=platform,
+                                restart_loop_guard_config=restart_loop_guard_config,
+                            )
                         except Exception:
                             logger.debug(
                                 "resume-pending reschedule after %s reconnect failed",
@@ -9645,8 +9779,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await self._cancel_secondary_profile_reconnect_tasks()
 
             # Notify all chats with active agents BEFORE draining.
-            # Adapters are still connected here, so messages can be sent.
-            await self._notify_active_sessions_of_shutdown()
+            # Adapters are still connected here, so messages can be sent. The
+            # notification is best-effort and must not consume the stop budget
+            # if an adapter's network send wedges.
+            await self._notify_active_sessions_with_timeout()
             logger.info(
                 "Shutdown phase: notify_active_sessions done at +%.2fs",
                 _phase_elapsed(),
@@ -10481,6 +10617,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return None
 
         if hasattr(config, "extra") and isinstance(config.extra, dict):
+            config.extra["_gateway_delivery_ledger_enabled"] = (
+                self.config.delivery_ledger_enabled
+            )
             config.extra.setdefault(
                 "group_sessions_per_user",
                 self.config.group_sessions_per_user,
@@ -11984,7 +12123,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not moa_payload:
                 return moa_usage()
             try:
-                cfg = load_config()
+                cfg = await asyncio.to_thread(load_config)
                 moa_cfg = normalize_moa_config(cfg.get("moa") if isinstance(cfg, dict) else {})
             except Exception:
                 moa_cfg = normalize_moa_config({})
@@ -12515,7 +12654,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # than consulting process-global compatibility mirrors.
                     vision_runtime = None
                     try:
-                        turn_model, runtime_kwargs = self._resolve_session_agent_runtime(
+                        turn_model, runtime_kwargs = await self._resolve_session_agent_runtime_async(
                             source=source,
                             session_key=session_key,
                         )
@@ -12714,7 +12853,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _msg_model_cfg = {}
                 _msg_custom_providers = []
                 try:
-                    _msg_cfg = _load_gateway_config()
+                    _msg_cfg = await _load_gateway_config_async()
                     _msg_model_cfg = _msg_cfg.get("model", {})
                     if isinstance(_msg_model_cfg, dict):
                         _msg_raw_ctx = _msg_model_cfg.get("context_length")
@@ -12735,7 +12874,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # self.model/self.base_url), so using them here always raised
                 # AttributeError, silently caught below, meaning this feature
                 # never ran.
-                _msg_model, _msg_runtime = self._resolve_session_agent_runtime(
+                _msg_model, _msg_runtime = await self._resolve_session_agent_runtime_async(
                     source=source,
                     session_key=session_key,
                     user_config=_msg_cfg,
@@ -13033,9 +13172,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_message = None
         persist_user_timestamp = None
         try:
-            _pcfg = _load_gateway_config()
+            _turn_user_config = await _load_gateway_config_async()
+            _pcfg = _turn_user_config
             _redact_pii = bool((_pcfg.get("privacy") or {}).get("redact_pii", False))
         except Exception:
+            _turn_user_config = {}
             pass
 
         # Build the context prompt to inject.  The render is pinned per
@@ -13236,7 +13377,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _hyg_configured_base_url = None
             _hyg_data = {}
             try:
-                _hyg_data = _load_gateway_config()
+                _hyg_data = _turn_user_config
                 if _hyg_data:
                     # Resolve model name (same logic as run_sync)
                     _model_cfg = _hyg_data.get("model", {})
@@ -13278,7 +13419,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _hyg_configured_base_url = _hyg_base_url
 
                 try:
-                    _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
+                    _hyg_model, _hyg_runtime = await self._resolve_session_agent_runtime_async(
                         source=source,
                         session_key=session_key,
                         user_config=_hyg_data if isinstance(_hyg_data, dict) else None,
@@ -13397,7 +13538,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     try:
                         from run_agent import AIAgent
 
-                        _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
+                        _hyg_model, _hyg_runtime = await self._resolve_session_agent_runtime_async(
                             source=source,
                             session_key=session_key,
                             user_config=_hyg_data if isinstance(_hyg_data, dict) else None,
@@ -13656,7 +13797,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     profile_build_directive,
                     profile_build_mode,
                 )
-                _onb_cfg = _load_gateway_config()
+                _onb_cfg = _turn_user_config
                 if (
                     profile_build_mode(_onb_cfg) == "ask"
                     and not is_seen(_onb_cfg, PROFILE_BUILD_FLAG)
@@ -13797,7 +13938,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp = (
                     _event_epoch if _event_epoch is not None else _embedded_ts
                 )
-                if _message_timestamps_enabled(_load_gateway_config()):
+                if _message_timestamps_enabled(_turn_user_config):
                     message_text = _render_msg_ts(
                         _clean_message_text,
                         persist_user_timestamp,
@@ -14007,7 +14148,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # scratch text, not ordinary final-answer content.
             try:
                 _show_reasoning_effective = _resolve_gateway_display_bool(
-                    _load_gateway_config(),
+                    _turn_user_config,
                     _platform_config_key(source.platform),
                     "show_reasoning",
                     default=bool(getattr(self, "_show_reasoning", False)),
@@ -14036,7 +14177,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     try:
                         from gateway.display_config import resolve_display_setting
                         _reasoning_style = resolve_display_setting(
-                            _load_gateway_config(),
+                            _turn_user_config,
                             _platform_config_key(source.platform),
                             "reasoning_style",
                             "code",
@@ -14064,7 +14205,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 from gateway.runtime_footer import build_footer_line as _bfl
                 _footer_line = _bfl(
-                    user_config=_load_gateway_config(),
+                    user_config=_turn_user_config,
                     platform_key=_platform_config_key(source.platform),
                     model=agent_result.get("model"),
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
@@ -14237,7 +14378,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     {
                         "role": "session_meta",
                         "tools": tool_defs or [],
-                        "model": _resolve_gateway_model(),
+                        "model": _resolve_gateway_model(_turn_user_config),
                         "platform": source.platform.value if source.platform else "",
                         "timestamp": ts,
                     }
@@ -14995,7 +15136,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         sid = getattr(session_entry, "session_id", None) or ""
         if not sid:
             return None, None
-        max_turns = self._goal_max_turns_from_config()
+        max_turns = await asyncio.to_thread(self._goal_max_turns_from_config)
         return GoalManager(session_id=sid, default_max_turns=max_turns), session_entry
 
 
@@ -15089,7 +15230,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not sid:
             return
 
-        max_turns = self._goal_max_turns_from_config()
+        max_turns = await asyncio.to_thread(self._goal_max_turns_from_config)
 
         mgr = GoalManager(session_id=sid, default_max_turns=max_turns)
         if not mgr.is_active():
@@ -15684,8 +15825,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _thread_metadata = self._thread_metadata_for_source(source, event_message_id)
 
         try:
-            user_config = _load_gateway_config()
-            model, runtime_kwargs = self._resolve_session_agent_runtime(
+            user_config = await _load_gateway_config_async()
+            model, runtime_kwargs = await self._resolve_session_agent_runtime_async(
                 source=source,
                 user_config=user_config,
             )
@@ -15706,11 +15847,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             pr = self._provider_routing
             max_iterations = _current_max_iterations()
-            reasoning_config = self._resolve_session_reasoning_config(
-                source=source, model=model
+            reasoning_config = await asyncio.to_thread(
+                self._resolve_session_reasoning_config,
+                source=source,
+                model=model,
             )
             self._reasoning_config = reasoning_config
-            self._service_tier = self._resolve_session_service_tier(source=source)
+            self._service_tier = await asyncio.to_thread(
+                self._resolve_session_service_tier,
+                source=source,
+            )
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
             # Enrich the prompt with image descriptions so the background
@@ -16057,13 +16203,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         future.add_done_callback(_log_rename_failure)
 
     async def _maybe_call_session_db(self, method_name: str, **kwargs):
-        """Call sync or async session-db methods without leaking coroutines."""
+        """Call sync or async session-db methods without blocking the event loop."""
         session_db = getattr(self, "_session_db", None)
         if session_db is None:
             return None
         session_db = getattr(session_db, "_db", session_db)
         method = getattr(session_db, method_name)
-        result = method(**kwargs)
+        if inspect.iscoroutinefunction(method):
+            return await method(**kwargs)
+        result = await asyncio.to_thread(method, **kwargs)
         if inspect.isawaitable(result):
             return await result
         return result
@@ -16667,8 +16815,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Gate check.
         confirm_required = True
         try:
-            cfg = self._read_user_config()
-            approvals = cfg.get("approvals") if isinstance(cfg, dict) else None
+            user_config = await asyncio.to_thread(self._read_user_config)
+            approvals = (
+                user_config.get("approvals")
+                if isinstance(user_config, dict)
+                else None
+            )
             if isinstance(approvals, dict):
                 confirm_required = bool(approvals.get("destructive_slash_confirm", True))
         except Exception:
@@ -17911,7 +18063,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.warning("%s transcription failed: %s", log_context, trans_exc)
             return text, []
 
-    def _build_process_event_source(self, evt: dict):
+    def _lookup_process_event_origin(self, session_key: str):
+        """Read a process event's persisted origin under SessionStore locking."""
+        lookup = getattr(self.session_store, "peek_session_origin", None)
+        if callable(lookup):
+            return lookup(session_key)
+
+        # Compatibility for narrow test doubles and older external stores.
+        self.session_store._ensure_loaded()
+        entry = self.session_store._entries.get(session_key)
+        return getattr(entry, "origin", None) if entry else None
+
+    def _build_process_event_source(
+        self, evt: dict, *, lookup_persisted_origin: bool = True,
+    ):
         """Resolve the canonical source for a synthetic background-process event.
 
         Prefer the persisted session-store origin for the event's session key.
@@ -17926,17 +18091,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         derived_chat_id = ""
 
         if session_key:
-            try:
-                self.session_store._ensure_loaded()
-                entry = self.session_store._entries.get(session_key)
-                if entry and getattr(entry, "origin", None):
-                    return entry.origin
-            except Exception as exc:
-                logger.debug(
-                    "Synthetic process-event session-store lookup failed for %s: %s",
-                    session_key,
-                    exc,
-                )
+            if lookup_persisted_origin:
+                try:
+                    origin = self._lookup_process_event_origin(session_key)
+                    if origin is not None:
+                        return origin
+                except Exception as exc:
+                    logger.debug(
+                        "Synthetic process-event session-store lookup failed for %s: %s",
+                        session_key,
+                        exc,
+                    )
 
             cached_source = self._get_cached_session_source(session_key)
             if cached_source is not None:
@@ -17989,6 +18154,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_name=str(evt.get("user_name") or "").strip() or None,
         )
 
+    async def _build_process_event_source_async(self, evt: dict):
+        """Resolve persisted routing off-loop, then finish from loop-owned state."""
+        session_key = str(evt.get("session_key") or "").strip()
+        if session_key:
+            try:
+                origin = await asyncio.to_thread(
+                    self._lookup_process_event_origin, session_key,
+                )
+                if origin is not None:
+                    return origin
+            except Exception as exc:
+                logger.debug(
+                    "Synthetic process-event session-store lookup failed for %s: %s",
+                    session_key,
+                    exc,
+                )
+        return self._build_process_event_source(
+            evt, lookup_persisted_origin=False,
+        )
+
     async def _inject_watch_notification(
         self, synth_text: str, evt: dict,
     ) -> Optional[bool]:
@@ -18001,7 +18186,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         is not a transactional boundary: a process crash after adapter
         acceptance can still cause durable at-least-once replay.
         """
-        source = self._build_process_event_source(evt)
+        source = await self._build_process_event_source_async(evt)
         if not source:
             logger.warning(
                 "Dropping watch notification with no routing metadata for process %s",
@@ -18341,7 +18526,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         user_name = watcher.get("user_name", "")
         message_id = str(watcher.get("message_id") or "").strip() or None
         agent_notify = watcher.get("notify_on_complete", False)
-        notify_mode = self._load_background_notifications_mode()
+        notify_mode = await asyncio.to_thread(
+            self._load_background_notifications_mode
+        )
 
         logger.debug("Process watcher started: %s (every %ss, notify=%s, agent_notify=%s)",
                       session_id, interval, notify_mode, agent_notify)
@@ -18672,34 +18859,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
-    def _rehydrate_session_model_override(self, session_key: str) -> None:
-        """Lazily restore a persisted /model override after a gateway restart.
-
-        ``_session_model_overrides`` is in-memory only, so before persistence
-        a restart silently reverted every session to the global default model.
-        The non-secret parts (model/provider/base_url) are written through to
-        the session store when /model runs (and cleared on /new); here we read
-        them back on first use and re-resolve credentials via the normal
-        runtime provider resolution — api_key is never persisted to disk.
-
-        No-op when an in-memory override already exists (live state wins) or
-        when the store has nothing persisted (e.g. the user ran /new, which
-        clears both the in-memory dict and the persisted field).
-        """
-        if session_key in self._session_model_overrides:
-            return
+    def _load_persisted_session_model_override(
+        self, session_key: str
+    ) -> Optional[dict]:
+        """Read and hydrate persisted override data without mutating runner state."""
         store = getattr(self, "session_store", None)
         if store is None:
-            return
+            return None
         try:
             persisted = store.get_model_override(session_key)
         except Exception:
             logger.debug(
                 "Failed to read persisted session model override", exc_info=True
             )
-            return
+            return None
         if not persisted:
-            return
+            return None
         override: Dict[str, Any] = {
             "model": persisted.get("model"),
             "provider": persisted.get("provider"),
@@ -18724,11 +18899,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "(provider=%s); using credential-less override",
                     provider, exc_info=True,
                 )
-        self._session_model_overrides[session_key] = override
+        return override
+
+    def _install_rehydrated_session_model_override(
+        self, session_key: str, override: dict
+    ) -> bool:
+        """Install persisted state only when no newer in-memory override won."""
+        installed = self._session_model_overrides.setdefault(session_key, override)
+        if installed is not override:
+            return False
         logger.info(
             "Rehydrated persisted /model override for session=%s: model=%s provider=%s",
-            session_key, override.get("model"), provider or "",
+            session_key,
+            override.get("model"),
+            override.get("provider") or "",
         )
+        return True
+
+    def _rehydrate_session_model_override(self, session_key: str) -> None:
+        """Lazily restore a persisted /model override after a gateway restart.
+
+        ``_session_model_overrides`` is in-memory only, so before persistence
+        a restart silently reverted every session to the global default model.
+        The non-secret parts (model/provider/base_url) are written through to
+        the session store when /model runs (and cleared on /new); here we read
+        them back on first use and re-resolve credentials via the normal
+        runtime provider resolution — api_key is never persisted to disk.
+
+        No-op when an in-memory override already exists (live state wins) or
+        when the store has nothing persisted (e.g. the user ran /new, which
+        clears both the in-memory dict and the persisted field).
+        """
+        if session_key in self._session_model_overrides:
+            return
+        override = self._load_persisted_session_model_override(session_key)
+        if override is None:
+            return
+        self._install_rehydrated_session_model_override(session_key, override)
 
     def _apply_session_model_override(
         self, session_key: str, model: str, runtime_kwargs: dict
@@ -18925,6 +19132,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if not session_key:
             return
+        generations = self.__dict__.get("_conversation_scope_generation")
+        if generations is None:
+            generations = {}
+            self._conversation_scope_generation = generations
+        generations[session_key] = int(generations.get(session_key, 0)) + 1
         for attr in _CONVERSATION_SCOPED_STATE:
             store = getattr(self, attr, None)
             if isinstance(store, dict):
@@ -19663,20 +19875,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # ------------------------------------------------------------------
 
     def _get_proxy_url(self) -> Optional[str]:
-        """Return the proxy URL if proxy mode is configured, else None.
+        """Return the process-lifetime proxy URL resolved during startup.
 
         Checks GATEWAY_PROXY_URL env var first (convenient for Docker),
-        then ``gateway.proxy_url`` in config.yaml.
+        then ``gateway.proxy_url`` in config.yaml.  The startup preload probes
+        this method before adapters accept messages, so caching here keeps the
+        config lock and deepcopy work out of every inbound-message callback.
+        Proxy configuration changes take effect on the next gateway restart.
         """
+        cache_attr = "_resolved_gateway_proxy_url"
+        if hasattr(self, cache_attr):
+            return getattr(self, cache_attr)
+
         url = os.getenv("GATEWAY_PROXY_URL", "").strip()
-        if url:
-            return url.rstrip("/")
-        cfg = _load_gateway_config()
-        url = (cfg.get("gateway") or {}).get("proxy_url")
-        url = (url or "").strip()
-        if url:
-            return url.rstrip("/")
-        return None
+        if not url:
+            cfg = _load_gateway_config()
+            url = ((cfg.get("gateway") or {}).get("proxy_url") or "").strip()
+
+        resolved = url.rstrip("/") if url else None
+        setattr(self, cache_attr, resolved)
+        return resolved
 
     async def _run_agent_via_proxy(
         self,
@@ -19772,7 +19990,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _scfg = StreamingConfig()
 
         platform_key = _platform_config_key(source.platform)
-        user_config = _load_gateway_config()
+        user_config = await _load_gateway_config_async()
         from gateway.display_config import resolve_display_setting
         _plat_streaming = resolve_display_setting(
             user_config, platform_key, "streaming"
@@ -20176,7 +20394,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return True
             return self._is_session_run_current(session_key, run_generation)
         
-        user_config = _load_gateway_config()
+        user_config = await _load_gateway_config_async()
         platform_key = _platform_config_key(source.platform)
 
         from hermes_cli.tools_config import _get_platform_tools
@@ -22920,7 +23138,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _result_for_fb = result_holder[0]
             _run_failed = _result_for_fb.get("failed") if _result_for_fb else False
             if _agent is not None and hasattr(_agent, 'model') and not _run_failed:
-                _cfg_model = _resolve_gateway_model()
+                _cfg_model = _resolve_gateway_model(user_config)
                 # Normalize _cfg_model the same way AIAgent.__init__ does, so a
                 # vendor-prefixed config value (e.g. "deepseek/deepseek-v4-pro")
                 # matches the agent's stripped model ("deepseek-v4-pro") on
@@ -24080,6 +24298,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         logger.debug("Nous auth keepalive did not start: %s", exc)
 
     _ensure_windows_gateway_venv_imports()
+
+    # ``run_agent`` transitively discovers built-in tools. Keep that synchronous
+    # GIL-heavy cold import before ``runner.start()`` connects platform adapters;
+    # otherwise the first inbound message can freeze Telegram/Discord heartbeats.
+    _preload_gateway_agent_runtime(runner)
 
     # MCP tool discovery — run in an executor so the asyncio event loop
     # stays responsive even when a configured MCP server is slow or

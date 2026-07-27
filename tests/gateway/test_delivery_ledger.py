@@ -187,16 +187,22 @@ class TestLedgerEnabled:
     def test_truthy_strings(self):
         assert dl.ledger_enabled({"gateway": {"delivery_ledger": "true"}}) is True
 
+    def test_omitted_config_defaults_on_without_loading_global_config(self):
+        with patch("hermes_cli.config.load_config") as load_config:
+            assert dl.ledger_enabled() is True
+        load_config.assert_not_called()
+
 
 class TestGatewayRedeliverySweep:
     """Drive the real GatewayRunner._redeliver_pending_obligations."""
 
     @staticmethod
     def _runner(adapter=None):
-        from gateway.config import Platform
+        from gateway.config import GatewayConfig, Platform
         from gateway.run import GatewayRunner
 
         runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig()
         runner.adapters = {Platform.SLACK: adapter} if adapter else {}
         _store = MagicMock()
         _store.clear_resume_pending = AsyncMock()
@@ -275,10 +281,8 @@ class TestGatewayRedeliverySweep:
         _orphan("ob-1")
         adapter = self._adapter()
         runner = self._runner(adapter)
-        with patch.object(dl, "ledger_enabled", return_value=False), patch(
-            "gateway.delivery_ledger.ledger_enabled", return_value=False
-        ):
-            n = await runner._redeliver_pending_obligations()
+        runner.config.delivery_ledger_enabled = False
+        n = await runner._redeliver_pending_obligations()
         assert n == 0
         adapter.send.assert_not_awaited()
 
@@ -359,9 +363,11 @@ class TestUnconnectedPlatformKeepsItsBudget:
 
     @staticmethod
     def _runner_without_slack():
+        from gateway.config import GatewayConfig
         from gateway.run import GatewayRunner
 
         runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig()
         runner.adapters = {}  # slack failed to connect this boot
         _store = MagicMock()
         _store.clear_resume_pending = AsyncMock()

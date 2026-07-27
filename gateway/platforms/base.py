@@ -2450,6 +2450,12 @@ class BasePlatformAdapter(ABC):
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
         self.platform = platform
+        # Resolved once by GatewayRunner before adapter construction. Final
+        # delivery runs on the event loop and must not reload/deep-copy the
+        # complete config merely to read this Boolean gate.
+        self.delivery_ledger_enabled: bool = bool(
+            config.extra.get("_gateway_delivery_ledger_enabled", True)
+        )
         self._message_handler: Optional[MessageHandler] = None
         # Optional hook (e.g. Telegram DM topic recovery) that rewrites
         # ``event.source.thread_id`` before session keying. Returns the
@@ -5309,12 +5315,11 @@ class BasePlatformAdapter(ABC):
                         try:
                             from gateway.delivery_ledger import (
                                 compute_obligation_id,
-                                ledger_enabled,
                                 mark_attempting,
                                 record_obligation,
                             )
 
-                            if ledger_enabled():
+                            if self.delivery_ledger_enabled:
                                 _obligation_id = compute_obligation_id(
                                     session_key,
                                     str(getattr(event, "message_id", "") or ""),

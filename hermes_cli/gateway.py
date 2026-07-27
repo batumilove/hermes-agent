@@ -7,6 +7,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 import asyncio
 import json
 import logging
+import math
 import os
 import shlex
 import shutil
@@ -2782,12 +2783,17 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         "/sbin",
         "/bin",
     ]
-    # Preserve 30s for post-drain cleanup before systemd escalates, with a
-    # 60s minimum for installs that use the default immediate drain. Positive
-    # drain values extend the deadline directly instead of inheriting a second
-    # 60s floor, so a configured 45s drain yields 75s rather than 90s.
+    # The process-level shutdown watchdog fires after drain + 60s and writes
+    # all-thread diagnostics before forcing exit. systemd must outlast that
+    # watchdog or TimeoutStopSec destroys the only actionable wedge evidence.
+    # Keep a small service-manager margin after it, plus a 60s minimum.
     _drain_timeout = int(_get_restart_drain_timeout() or 0)
-    restart_timeout = max(60, _drain_timeout + 30)
+    from gateway.shutdown_watchdog import resolve_shutdown_watchdog_delay
+
+    restart_timeout = max(
+        60,
+        math.ceil(resolve_shutdown_watchdog_delay(_drain_timeout)) + 15,
+    )
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)

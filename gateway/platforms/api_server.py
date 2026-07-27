@@ -2243,7 +2243,7 @@ class APIServerAdapter(BasePlatformAdapter):
         from gateway.run import _resolve_gateway_model
 
         readiness = collect_runtime_readiness(
-            configured_model=_resolve_gateway_model(),
+            configured_model=await asyncio.to_thread(_resolve_gateway_model),
             runtime_status=runtime,
             active_api_runs=active_api_runs,
             process_completion_queue_depth=process_depth,
@@ -2454,7 +2454,7 @@ class APIServerAdapter(BasePlatformAdapter):
             )
             from toolsets import resolve_toolset
 
-            config = load_config()
+            config = await asyncio.to_thread(load_config)
             enabled_toolsets = _get_platform_tools(
                 config,
                 "api_server",
@@ -4784,7 +4784,7 @@ class APIServerAdapter(BasePlatformAdapter):
         auth = request.headers.get("Authorization", "")
         token = auth[7:].strip() if auth.startswith("Bearer ") else ""
 
-        cfg = load_config()
+        cfg = await asyncio.to_thread(load_config)
         claims = get_fire_verifier()(
             token=token,
             expected_audience=cfg_get(cfg, "cron", "chronos", "expected_audience", default=""),

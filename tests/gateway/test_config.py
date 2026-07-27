@@ -448,6 +448,15 @@ class TestGatewayConfigRoundtrip:
         restored = GatewayConfig.from_dict({"always_log_local": "false"})
         assert restored.always_log_local is False
 
+    def test_from_dict_resolves_delivery_ledger_gate_once(self):
+        assert GatewayConfig.from_dict({}).delivery_ledger_enabled is True
+        assert (
+            GatewayConfig.from_dict(
+                {"delivery_ledger": "false"}
+            ).delivery_ledger_enabled
+            is False
+        )
+
     def test_from_dict_ignores_malformed_nested_sections(self):
         restored = GatewayConfig.from_dict(
             {
@@ -783,6 +792,38 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.always_log_local is False
+
+    def test_delivery_ledger_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  delivery_ledger: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.delivery_ledger_enabled is False
+
+    def test_top_level_delivery_ledger_wins_over_nested_gateway_section(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "delivery_ledger: false\n"
+            "gateway:\n"
+            "  delivery_ledger: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.delivery_ledger_enabled is False
 
     def test_filter_silence_narration_from_nested_gateway_section(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
