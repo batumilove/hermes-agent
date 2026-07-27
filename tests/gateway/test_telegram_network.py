@@ -337,6 +337,26 @@ class _RawDiagnosticBackend:
         return None
 
 
+class _BlockingConnectBackend:
+    """Create a stream, then hold connect_tcp before returning ownership."""
+
+    def __init__(self, stream):
+        self.stream = stream
+        self.connect_started = asyncio.Event()
+        self.release_connect = asyncio.Event()
+
+    async def connect_tcp(self, *args, **kwargs):
+        self.connect_started.set()
+        await self.release_connect.wait()
+        return self.stream
+
+    async def connect_unix_socket(self, *args, **kwargs):
+        return await self.connect_tcp(*args, **kwargs)
+
+    async def sleep(self, _seconds):
+        return None
+
+
 class _DiagnosticTrackingStream(_TrackingStream):
     def __init__(self, *, close_error: Exception | None = None):
         super().__init__()
@@ -589,6 +609,92 @@ def test_pre_response_diagnostic_local_port_accepts_valid_integer():
             return Socket() if name == "socket" else None
 
     assert tnet._stream_local_port(Stream()) == "43210"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method_name", "args"),
+    [
+        ("connect_tcp", ("api.telegram.org", 443)),
+        ("connect_unix_socket", ("/tmp/telegram-test.sock",)),
+    ],
+)
+async def test_cancelled_connect_closes_stream_returned_after_caller_exits(
+    method_name, args
+):
+    stream = _RawDiagnosticStream()
+    backend = _BlockingConnectBackend(stream)
+    wrapped = tnet._CancellationSafeNetworkBackend(backend)
+
+    task = asyncio.create_task(getattr(wrapped, method_name)(*args))
+    await asyncio.wait_for(backend.connect_started.wait(), timeout=1.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    backend.release_connect.set()
+    for _ in range(20):
+        if stream.closed:
+            break
+        await asyncio.sleep(0)
+
+    assert stream.closed is True
+
+
+@pytest.mark.asyncio
+async def test_cancelled_connect_cleanup_does_not_retain_request_registry():
+    stream = _RawDiagnosticStream()
+    backend = _BlockingConnectBackend(stream)
+    wrapped = tnet._CancellationSafeNetworkBackend(backend)
+    request_streams = []
+    token = tnet._request_network_streams.set(request_streams)
+
+    try:
+        task = asyncio.create_task(wrapped.connect_tcp("api.telegram.org", 443))
+        await asyncio.wait_for(backend.connect_started.wait(), timeout=1.0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        tnet._request_network_streams.reset(token)
+
+    backend.release_connect.set()
+    for _ in range(20):
+        if stream.closed:
+            break
+        await asyncio.sleep(0)
+
+    assert stream.closed is True
+    assert request_streams == []
+
+
+@pytest.mark.asyncio
+async def test_cancelled_diagnostic_connect_balances_abandoned_stream_lifecycle():
+    stream = _RawDiagnosticStream()
+    backend = _BlockingConnectBackend(stream)
+    wrapped = tnet._DiagnosticCancellationSafeNetworkBackend(
+        backend, owner="general", route="primary"
+    )
+
+    with _LifecycleLogCapture(lambda: stream) as capture:
+        task = asyncio.create_task(wrapped.connect_tcp("api.telegram.org", 443))
+        await asyncio.wait_for(backend.connect_started.wait(), timeout=1.0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        backend.release_connect.set()
+        for _ in range(20):
+            if stream.closed and len(capture.records) == 3:
+                break
+            await asyncio.sleep(0)
+
+    assert stream.closed is True
+    events = [
+        record.getMessage().split(" event=", 1)[1].split()[0]
+        for record, _ in capture.records
+    ]
+    assert events == ["socket-opened", "socket-close-started", "socket-closed"]
 
 
 @pytest.mark.asyncio
