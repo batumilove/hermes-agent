@@ -285,6 +285,36 @@ class _RawDiagnosticStream:
         return None
 
 
+class _RepeatedCancellationSocketStream:
+    """Own a real socket and hold close open for a second cancellation."""
+
+    def __init__(self, sock: socket.socket):
+        self.sock = sock
+        self.read_started = asyncio.Event()
+        self.close_started = asyncio.Event()
+        self.release_close = asyncio.Event()
+
+    async def read(self, _max_bytes, timeout=None):
+        self.read_started.set()
+        await asyncio.Event().wait()
+
+    async def write(self, _buffer, timeout=None):
+        return None
+
+    async def aclose(self):
+        self.close_started.set()
+        await self.release_close.wait()
+        self.sock.close()
+
+    async def start_tls(self, _ssl_context, _server_hostname=None, _timeout=None):
+        return self
+
+    def get_extra_info(self, name):
+        if name == "socket":
+            return self.sock
+        return None
+
+
 class _RawDiagnosticBackend:
     def __init__(self, stream):
         self.stream = stream
@@ -1083,6 +1113,36 @@ class TestRewriteRequestForIp:
 
 class TestFallbackTransport:
     """Primary path fails → try fallback IPs → stick to whichever works."""
+
+    @pytest.mark.asyncio
+    async def test_repeated_cancellation_cannot_interrupt_raw_stream_close(self):
+        """A second cancellation must not strand pre-response socket cleanup."""
+        left, right = socket.socketpair()
+        stream = _RepeatedCancellationSocketStream(left)
+        wrapped = tnet._CancellationSafeNetworkStream(stream)
+        waiter = asyncio.create_task(wrapped.read(1))
+
+        try:
+            await asyncio.wait_for(stream.read_started.wait(), timeout=1.0)
+            waiter.cancel()
+            await asyncio.wait_for(stream.close_started.wait(), timeout=1.0)
+
+            # Production issues overlapping cancellations while fallback requests
+            # unwind. This second cancellation currently interrupts raw close.
+            waiter.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiter
+
+            stream.release_close.set()
+            for _ in range(100):
+                if left.fileno() == -1:
+                    break
+                await asyncio.sleep(0.01)
+            assert left.fileno() == -1
+            assert not tnet._abandoned_response_cleanups
+        finally:
+            left.close()
+            right.close()
 
     @pytest.mark.asyncio
     async def test_cancelled_caller_cancels_inflight_transport_request(self, monkeypatch):
