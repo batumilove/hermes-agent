@@ -1123,6 +1123,58 @@ class TestFallbackTransport:
     """Primary path fails → try fallback IPs → stick to whichever works."""
 
     @pytest.mark.asyncio
+    async def test_cancellation_after_connect_before_tls_detaches_raw_stream_close(self):
+        """Cancellation in httpcore's connect trace hook must not strand its socket.
+
+        httpcore awaits the async ``connect_tcp.complete`` trace callback after
+        ``connect_tcp()`` returns but before ``start_tls()`` begins. Production
+        cancellation waves hit this ownership gap: no protected raw-stream
+        operation is active yet, and no HTTP response exists to close.
+        """
+        left, right = socket.socketpair()
+        stream = _RepeatedCancellationSocketStream(left, "trace")
+        transport = httpx.AsyncHTTPTransport()
+        transport._pool._network_backend = tnet._CancellationSafeNetworkBackend(
+            _RawDiagnosticBackend(stream)
+        )
+        trace_started = asyncio.Event()
+
+        async def _hold_after_connect(name, _info):
+            if name.endswith("connect_tcp.complete"):
+                trace_started.set()
+                await asyncio.Event().wait()
+
+        request = _telegram_request()
+        request.extensions["trace"] = _hold_after_connect
+        request_task = asyncio.create_task(
+            tnet._handle_transport_request(transport, request)
+        )
+
+        try:
+            await asyncio.wait_for(trace_started.wait(), timeout=1.0)
+            request_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request_task
+
+            await asyncio.wait_for(stream.close_started.wait(), timeout=1.0)
+            # Re-cancelling an already-unwound caller must not own or interrupt
+            # the detached request-scoped close task.
+            request_task.cancel()
+            stream.release_close.set()
+            for _ in range(100):
+                if left.fileno() == -1:
+                    break
+                await asyncio.sleep(0.01)
+
+            assert left.fileno() == -1
+            assert not tnet._abandoned_response_cleanups
+        finally:
+            stream.release_close.set()
+            left.close()
+            right.close()
+            await transport.aclose()
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("operation", ["read", "write", "start_tls"])
     async def test_repeated_cancellation_cannot_interrupt_raw_stream_close(
         self, operation
