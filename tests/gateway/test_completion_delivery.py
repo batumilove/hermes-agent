@@ -9,6 +9,7 @@ state (when available) is acknowledged through its authoritative SQLite API.
 import asyncio
 import json
 import queue
+import threading
 from collections import OrderedDict
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -408,6 +409,59 @@ def test_delivery_state_is_isolated_per_gateway_profile_lifecycle():
     assert asyncio.run(_exercise()) == (True, True)
     default_adapter.handle_message.assert_awaited_once()
     profile_adapter.handle_message.assert_awaited_once()
+
+
+def test_process_event_source_lookup_does_not_block_event_loop():
+    """A contended SessionStore lookup must not stall unrelated loop tasks."""
+    entered = threading.Event()
+    release = threading.Event()
+    heartbeat_ran = threading.Event()
+    heartbeat_before_release = []
+
+    canonical = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="canonical-chat",
+        chat_type="group",
+        thread_id="canonical-topic",
+    )
+    event = _completion_event(started_at=10.0)
+
+    def _contended_load():
+        entered.set()
+        assert release.wait(timeout=2.0), "test failed to release session-store lookup"
+
+    def _release_after_observing_heartbeat():
+        assert entered.wait(timeout=1.0), "session-store lookup was never entered"
+        heartbeat_before_release.append(heartbeat_ran.wait(timeout=0.5))
+        release.set()
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter, origins={event["session_key"]: SimpleNamespace(origin=canonical)})
+    runner.session_store._ensure_loaded = _contended_load
+
+    async def _exercise():
+        releaser = threading.Thread(target=_release_after_observing_heartbeat)
+        releaser.start()
+
+        delivery = asyncio.create_task(
+            runner._inject_watch_notification("completion", event)
+        )
+
+        async def _heartbeat():
+            await asyncio.sleep(0)
+            heartbeat_ran.set()
+
+        heartbeat = asyncio.create_task(_heartbeat())
+        result = await delivery
+        await heartbeat
+        releaser.join(timeout=1.0)
+        assert not releaser.is_alive()
+        return result
+
+    assert asyncio.run(_exercise()) is True
+    assert heartbeat_before_release == [True]
+    delivered = adapter.handle_message.await_args.args[0]
+    assert delivered.source == canonical
 
 
 def test_async_completion_uses_canonical_origin_routing(monkeypatch, isolated_registry):

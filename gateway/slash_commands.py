@@ -607,7 +607,7 @@ class GatewaySlashCommandsMixin:
         user_config: dict[str, Any] = {}
         if not model_name or not provider_name or not context_total:
             try:
-                user_config = _load_gateway_config()
+                user_config = await asyncio.to_thread(_load_gateway_config)
             except Exception:
                 user_config = {}
         if not model_name:
@@ -1500,7 +1500,7 @@ class GatewaySlashCommandsMixin:
         excluded_provs = []
         config_path = (_command_profile_home or _hermes_home) / "config.yaml"
         try:
-            cfg = _load_gateway_config()
+            cfg = await asyncio.to_thread(_load_gateway_config)
             if cfg:
                 model_cfg = cfg.get("model", {})
                 if isinstance(model_cfg, dict):
@@ -1782,7 +1782,7 @@ class GatewaySlashCommandsMixin:
                         _sw_config_ctx = None
                         _sw_model_cfg = {}
                         try:
-                            _sw_cfg = _load_gateway_config()
+                            _sw_cfg = await asyncio.to_thread(_load_gateway_config)
                             _sw_model_cfg = _sw_cfg.get("model", {})
                             if isinstance(_sw_model_cfg, dict):
                                 _sw_raw = _sw_model_cfg.get("context_length")
@@ -2105,7 +2105,7 @@ class GatewaySlashCommandsMixin:
             _sw2_config_ctx = None
             _sw2_model_cfg = {}
             try:
-                _sw2_cfg = _load_gateway_config()
+                _sw2_cfg = await asyncio.to_thread(_load_gateway_config)
                 _sw2_model_cfg = _sw2_cfg.get("model", {})
                 if isinstance(_sw2_model_cfg, dict):
                     _sw2_raw = _sw2_model_cfg.get("context_length")
@@ -2228,7 +2228,7 @@ class GatewaySlashCommandsMixin:
             from hermes_cli.config import load_config, save_config
         except Exception as exc:
             return f"❌ Could not load config: {exc}"
-        cfg = load_config()
+        cfg = await asyncio.to_thread(load_config)
 
         result = crs.apply(
             cfg,
@@ -2258,7 +2258,7 @@ class GatewaySlashCommandsMixin:
         config_path = _hermes_home / 'config.yaml'
 
         try:
-            config = _load_gateway_config()
+            config = await asyncio.to_thread(_load_gateway_config)
             personalities = cfg_get(config, "agent", "personalities", default={})
         except Exception:
             config = {}
@@ -2719,7 +2719,7 @@ class GatewaySlashCommandsMixin:
         from gateway.run import _checkpoint_agent_kwargs, _load_gateway_config
         from tools.checkpoint_manager import CheckpointManager, format_checkpoint_list
 
-        cp_kwargs = _checkpoint_agent_kwargs(_load_gateway_config())
+        cp_kwargs = _checkpoint_agent_kwargs(await asyncio.to_thread(_load_gateway_config))
 
         if not cp_kwargs["checkpoints_enabled"]:
             return t("gateway.rollback.not_enabled")
@@ -2972,7 +2972,8 @@ class GatewaySlashCommandsMixin:
         _session_model = str(
             ((getattr(self, "_session_model_overrides", {}) or {}).get(session_key) or {}).get("model") or ""
         )
-        self._reasoning_config = self._resolve_session_reasoning_config(
+        self._reasoning_config = await asyncio.to_thread(
+            self._resolve_session_reasoning_config,
             source=event.source,
             session_key=session_key,
             model=_session_model,
@@ -3157,11 +3158,12 @@ class GatewaySlashCommandsMixin:
         # normalizes unicode dashes.
         args, persist_global = self._parse_reasoning_command_args(raw_args)
         session_key = self._session_key_for_source(event.source)
-        self._service_tier = self._resolve_session_service_tier(
-            session_key=session_key
+        self._service_tier = await asyncio.to_thread(
+            self._resolve_session_service_tier,
+            session_key=session_key,
         )
 
-        user_config = _load_gateway_config()
+        user_config = await asyncio.to_thread(_load_gateway_config)
         model = _resolve_gateway_model(user_config)
         if not model_supports_fast_mode(model):
             return t("gateway.fast.not_supported")
@@ -3261,7 +3263,7 @@ class GatewaySlashCommandsMixin:
 
         # --- check config gate ------------------------------------------------
         try:
-            user_config = _load_gateway_config()
+            user_config = await asyncio.to_thread(_load_gateway_config)
             gate_enabled = is_truthy_value(
                 cfg_get(user_config, "display", "tool_progress_command"),
                 default=False,
@@ -3342,7 +3344,7 @@ class GatewaySlashCommandsMixin:
 
         # --- load config ----------------------------------------------------
         try:
-            user_config: dict = _load_gateway_config()
+            user_config: dict = await asyncio.to_thread(_load_gateway_config)
         except Exception as e:
             return t("gateway.config_read_failed", error=e)
 
@@ -4528,7 +4530,7 @@ class GatewaySlashCommandsMixin:
 
         # Read the gate fresh from disk so a prior "always" click takes
         # effect on the next invocation without restarting the gateway.
-        user_config = self._read_user_config()
+        user_config = await asyncio.to_thread(self._read_user_config)
         approvals = user_config.get("approvals") if isinstance(user_config, dict) else None
         confirm_required = True
         if isinstance(approvals, dict):

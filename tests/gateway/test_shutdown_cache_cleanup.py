@@ -78,6 +78,10 @@ class _FakeGateway:
         # fake exercises the same call shape stop() now uses.
         self._cleanup_agent_resources(agent)
 
+    async def _notify_active_sessions_with_timeout(self):
+        await self._notify_active_sessions_of_shutdown()
+        return True
+
     async def _notify_active_sessions_of_shutdown(self):
         pass
 
