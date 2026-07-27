@@ -129,6 +129,10 @@ class TestProducerHook:
 
         load_config.assert_not_called()
         assert adapter.sent == ["final answer"]
+        rows = _rows()
+        assert len(rows) == 1
+        assert rows[0][1] == "delivered"
+        assert rows[0][2] == "final answer"
 
     @pytest.mark.asyncio
     async def test_disabled_gate_skips_recording_but_sends(self):
