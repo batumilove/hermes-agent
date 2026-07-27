@@ -288,6 +288,7 @@ class TestPlatformReconnectWatcher:
         runner = _make_runner()
         runner._sync_voice_mode_state_to_adapter = MagicMock()
         runner._schedule_resume_pending_sessions = MagicMock(return_value=1)
+        runner._restart_loop_guard_config = MagicMock(return_value=(7, 90))
 
         platform_config = PlatformConfig(enabled=True, token="test")
         runner._failed_platforms[Platform.TELEGRAM] = {
@@ -319,8 +320,10 @@ class TestPlatformReconnectWatcher:
 
         assert Platform.TELEGRAM in runner.adapters
         runner._schedule_resume_pending_sessions.assert_called_once_with(
-            platform=Platform.TELEGRAM
+            platform=Platform.TELEGRAM,
+            restart_loop_guard_config=(7, 90),
         )
+        runner._restart_loop_guard_config.assert_called_once_with()
 
     @pytest.mark.asyncio
     async def test_reconnect_nonretryable_removed_from_queue(self):
