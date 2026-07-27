@@ -218,18 +218,59 @@ class _DiagnosticCancellationSafeNetworkStream(_CancellationSafeNetworkStream):
 
 
 class _CancellationSafeNetworkBackend:
-    """Wrap httpcore-created streams with TLS cancellation cleanup."""
+    """Wrap httpcore-created streams with connect/TLS cancellation cleanup."""
 
     def __init__(self, backend: Any):
         self._backend = backend
 
-    async def connect_tcp(self, *args, **kwargs) -> _CancellationSafeNetworkStream:
-        stream = await self._backend.connect_tcp(*args, **kwargs)
+    def _wrap(self, stream: Any) -> _CancellationSafeNetworkStream:
         return _CancellationSafeNetworkStream(stream)
 
+    async def _close_abandoned_connect_result(self, connect_task: asyncio.Task) -> None:
+        try:
+            stream = connect_task.result()
+        except BaseException:
+            return
+        try:
+            await self._wrap(stream).aclose()
+        except BaseException:
+            pass
+
+    def _abandoned_connect_done(self, connect_task: asyncio.Task) -> None:
+        _abandoned_response_cleanups.discard(connect_task)
+        cleanup_task = connect_task.get_loop().create_task(
+            self._close_abandoned_connect_result(connect_task)
+        )
+        _abandoned_response_cleanups.add(cleanup_task)
+        cleanup_task.add_done_callback(_abandoned_response_cleanups.discard)
+
+    async def _connect(self, awaitable: Any) -> _CancellationSafeNetworkStream:
+        # The backend may own a live socket before connect_* returns it. Shield
+        # that ownership transfer so caller cancellation cannot destroy the only
+        # coroutine able to return the socket. If the caller exits first, retain
+        # the connect task and close any eventual result independently.
+        connect_task = asyncio.ensure_future(awaitable)
+        _abandoned_response_cleanups.add(connect_task)
+        try:
+            stream = await asyncio.shield(connect_task)
+        except BaseException:
+            # A done callback captures its registration Context by default. Do not
+            # retain the failed request's stream registry while an abandoned
+            # backend connect finishes, or append the eventual wrapper to a stale
+            # request list after that request has already unwound.
+            connect_task.add_done_callback(
+                self._abandoned_connect_done,
+                context=contextvars.Context(),
+            )
+            raise
+        _abandoned_response_cleanups.discard(connect_task)
+        return self._wrap(stream)
+
+    async def connect_tcp(self, *args, **kwargs) -> _CancellationSafeNetworkStream:
+        return await self._connect(self._backend.connect_tcp(*args, **kwargs))
+
     async def connect_unix_socket(self, *args, **kwargs) -> _CancellationSafeNetworkStream:
-        stream = await self._backend.connect_unix_socket(*args, **kwargs)
-        return _CancellationSafeNetworkStream(stream)
+        return await self._connect(self._backend.connect_unix_socket(*args, **kwargs))
 
     async def sleep(self, seconds: float) -> None:
         await self._backend.sleep(seconds)
@@ -250,18 +291,6 @@ class _DiagnosticCancellationSafeNetworkBackend(_CancellationSafeNetworkBackend)
             stream=stream,
         )
         return _DiagnosticCancellationSafeNetworkStream(stream, lifecycle)
-
-    async def connect_tcp(
-        self, *args, **kwargs
-    ) -> _DiagnosticCancellationSafeNetworkStream:
-        stream = await self._backend.connect_tcp(*args, **kwargs)
-        return self._wrap(stream)
-
-    async def connect_unix_socket(
-        self, *args, **kwargs
-    ) -> _DiagnosticCancellationSafeNetworkStream:
-        stream = await self._backend.connect_unix_socket(*args, **kwargs)
-        return self._wrap(stream)
 
 
 def _new_async_http_transport(
