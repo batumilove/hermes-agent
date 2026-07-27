@@ -15852,8 +15852,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 source=source,
                 model=model,
             )
-            self._reasoning_config = reasoning_config
-            self._service_tier = await asyncio.to_thread(
+            service_tier = await asyncio.to_thread(
                 self._resolve_session_service_tier,
                 source=source,
             )
@@ -15887,7 +15886,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     enabled_toolsets=enabled_toolsets,
                     disabled_toolsets=disabled_toolsets,
                     reasoning_config=reasoning_config,
-                    service_tier=self._service_tier,
+                    service_tier=service_tier,
                     request_overrides=turn_route.get("request_overrides"),
                     providers_allowed=pr.get("only"),
                     providers_ignored=pr.get("ignore"),

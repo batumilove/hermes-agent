@@ -1402,6 +1402,8 @@ async def test_get_dm_topic_info_schedules_reload_off_event_loop(monkeypatch):
     task = adapter._dm_topics_config_reload_task
     assert isinstance(task, asyncio.Task)
     await task
+    await asyncio.sleep(0)
+    assert adapter._dm_topics_config_reload_task is None
     assert read_threads and read_threads[0] != event_loop_thread
     assert adapter._dm_topics is not original_topics
     assert original_topics == {}
@@ -1409,6 +1411,29 @@ async def test_get_dm_topic_info_schedules_reload_off_event_loop(monkeypatch):
         "name": "General",
         "thread_id": 999,
     }
+
+
+@pytest.mark.asyncio
+async def test_dm_topic_reload_task_consumes_failure_and_clears_handle(
+    monkeypatch, caplog
+):
+    adapter = _make_adapter([])
+    caplog.set_level("DEBUG")
+    monkeypatch.setattr(
+        adapter,
+        "_refresh_dm_topics_config_async",
+        AsyncMock(side_effect=RuntimeError("malformed dm_topics snapshot")),
+    )
+
+    adapter._schedule_dm_topics_config_reload()
+    task = adapter._dm_topics_config_reload_task
+    assert isinstance(task, asyncio.Task)
+    await asyncio.gather(task, return_exceptions=True)
+    await asyncio.sleep(0)
+
+    assert task.done()
+    assert adapter._dm_topics_config_reload_task is None
+    assert "DM-topic config reload failed" in caplog.text
 
 
 @pytest.mark.asyncio

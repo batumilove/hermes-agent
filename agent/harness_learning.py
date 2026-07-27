@@ -234,12 +234,11 @@ def _has_affirmative_side_effect_claim(
             for term in context_terms
         ):
             continue
-        if _STATUS_HEADING_RE.search(sentence) and not _FIRST_PERSON_RE.search(sentence):
-            continue
-
         for raw_clause in _ACTION_CLAUSE_SPLIT_RE.split(sentence):
             clause = raw_clause.strip()
             if not clause:
+                continue
+            if _STATUS_HEADING_RE.search(clause) and not _FIRST_PERSON_RE.search(clause):
                 continue
             affirmative_verbs = [
                 verb for verb in verbs if _has_unnegated_verb(clause, verb)
@@ -467,10 +466,9 @@ def _tool_result_succeeded(tool_name: str, result: Any, args: str = "") -> bool:
             succeeded = False
     elif tool == "execute_code":
         succeeded = str(parsed.get("status") or "").lower() == "success"
-        exit_code = parsed.get("exit_code")
-        if exit_code is not None:
+        if "exit_code" in parsed:
             try:
-                succeeded = succeeded and int(str(exit_code)) == 0
+                succeeded = succeeded and int(str(parsed["exit_code"])) == 0
             except (TypeError, ValueError):
                 succeeded = False
     else:

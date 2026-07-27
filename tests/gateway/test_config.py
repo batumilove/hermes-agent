@@ -457,6 +457,15 @@ class TestGatewayConfigRoundtrip:
             is False
         )
 
+    def test_to_dict_roundtrip_preserves_disabled_delivery_ledger(self):
+        config = GatewayConfig(delivery_ledger_enabled=False)
+
+        serialized = config.to_dict()
+        restored = GatewayConfig.from_dict(serialized)
+
+        assert serialized["delivery_ledger"] is False
+        assert restored.delivery_ledger_enabled is False
+
     def test_from_dict_ignores_malformed_nested_sections(self):
         restored = GatewayConfig.from_dict(
             {

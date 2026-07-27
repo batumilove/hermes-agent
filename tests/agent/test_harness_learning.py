@@ -16,6 +16,7 @@ from agent.harness_learning import (
     HarnessPatchKind,
     RegressionTask,
     SideEffectEvidenceRegulator,
+    _tool_result_succeeded,
     diagnose_repeated_tool_failure,
 )
 from agent.action_realization import ActionRealizer, RealizationAction
@@ -122,6 +123,28 @@ def test_side_effect_evidence_regulator_flags_cron_upload_deploy_and_delete_clai
 
     assert claimed.requires_evidence is True
     assert claimed.missing_evidence_for == ["cronjob", "upload", "deploy", "delete"]
+
+
+def test_status_heading_does_not_hide_earlier_action_clause():
+    regulator = SideEffectEvidenceRegulator()
+
+    claimed = regulator.evaluate_final_response(
+        "Deployed the canary, and verification: pass"
+    )
+
+    assert claimed.requires_evidence is True
+    assert "deploy" in claimed.missing_evidence_for
+
+
+def test_execute_code_explicit_null_exit_code_is_not_success():
+    assert _tool_result_succeeded(
+        "execute_code",
+        {"status": "success", "output": "ok", "exit_code": None},
+    ) is False
+    assert _tool_result_succeeded(
+        "execute_code",
+        {"status": "success", "output": "ok"},
+    ) is True
 
 
 def test_side_effect_evidence_footer_scans_current_turn_tool_messages_only():

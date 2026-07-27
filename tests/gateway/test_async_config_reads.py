@@ -2,6 +2,7 @@
 
 import ast
 import inspect
+import textwrap
 import threading
 from pathlib import Path
 
@@ -187,3 +188,37 @@ def test_async_gateway_functions_load_at_most_one_config_snapshot_per_call():
         name: lines for name, lines in calls_by_function.items() if len(lines) > 1
     }
     assert repeated == {}
+
+
+def test_background_task_keeps_reasoning_and_service_tier_turn_local():
+    """Concurrent background turns must not reread shared routing attributes."""
+    source = textwrap.dedent(
+        inspect.getsource(gateway_run.GatewayRunner._run_background_task_inner)
+    )
+    tree = ast.parse(source)
+
+    shared_assignments = []
+    agent_keywords = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if (
+                    isinstance(target, ast.Attribute)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "self"
+                    and target.attr in {"_reasoning_config", "_service_tier"}
+                ):
+                    shared_assignments.append(target.attr)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "AIAgent"
+        ):
+            agent_keywords = {keyword.arg: keyword.value for keyword in node.keywords}
+
+    assert shared_assignments == []
+    assert isinstance(agent_keywords["reasoning_config"], ast.Name)
+    assert agent_keywords["reasoning_config"].id == "reasoning_config"
+    assert isinstance(agent_keywords["service_tier"], ast.Name)
+    assert agent_keywords["service_tier"].id == "service_tier"

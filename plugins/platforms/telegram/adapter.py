@@ -9179,10 +9179,27 @@ class TelegramAdapter(BasePlatformAdapter):
             # historical immediate-refresh contract.
             self._reload_dm_topics_from_config()
             return
-        self._dm_topics_config_reload_task = loop.create_task(
+        reload_task = loop.create_task(
             self._refresh_dm_topics_config_async(),
             name="telegram-dm-topics-config-reload",
         )
+        self._dm_topics_config_reload_task = reload_task
+
+        def _finish_reload(finished: asyncio.Task) -> None:
+            if self._dm_topics_config_reload_task is finished:
+                self._dm_topics_config_reload_task = None
+            try:
+                finished.result()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.debug(
+                    "[%s] DM-topic config reload failed",
+                    self.name,
+                    exc_info=True,
+                )
+
+        reload_task.add_done_callback(_finish_reload)
 
     def _read_dm_topics_config_snapshot(
         self,
