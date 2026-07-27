@@ -1146,20 +1146,28 @@ class TestFallbackTransport:
 
         request = _telegram_request()
         request.extensions["trace"] = _hold_after_connect
-        request_task = asyncio.create_task(
-            tnet._handle_transport_request(transport, request)
-        )
+        orchestration_cancelled_once = asyncio.Event()
+
+        async def _orchestrate_request():
+            try:
+                return await tnet._handle_transport_request(transport, request)
+            except asyncio.CancelledError:
+                await stream.close_started.wait()
+                orchestration_cancelled_once.set()
+                await asyncio.Event().wait()
+
+        request_task = asyncio.create_task(_orchestrate_request())
 
         try:
             await asyncio.wait_for(trace_started.wait(), timeout=1.0)
             request_task.cancel()
+            await asyncio.wait_for(orchestration_cancelled_once.wait(), timeout=1.0)
+
+            # Re-cancel the still-active caller while request-scoped cleanup is
+            # blocked. The detached close must remain independently owned.
+            request_task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await request_task
-
-            await asyncio.wait_for(stream.close_started.wait(), timeout=1.0)
-            # Re-cancelling an already-unwound caller must not own or interrupt
-            # the detached request-scoped close task.
-            request_task.cancel()
             stream.release_close.set()
             for _ in range(100):
                 if left.fileno() == -1:
