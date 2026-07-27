@@ -1010,6 +1010,7 @@ class GatewayConfig:
             "sessions_dir": str(self.sessions_dir),
             "write_sessions_json": self.write_sessions_json,
             "always_log_local": self.always_log_local,
+            "delivery_ledger": self.delivery_ledger_enabled,
             "filter_silence_narration": self.filter_silence_narration,
             "stt_enabled": self.stt_enabled,
             "stt_echo_transcripts": self.stt_echo_transcripts,

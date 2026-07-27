@@ -2787,7 +2787,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     # all-thread diagnostics before forcing exit. systemd must outlast that
     # watchdog or TimeoutStopSec destroys the only actionable wedge evidence.
     # Keep a small service-manager margin after it, plus a 60s minimum.
-    _drain_timeout = int(_get_restart_drain_timeout() or 0)
+    _drain_timeout = _get_restart_drain_timeout() or 0.0
     from gateway.shutdown_watchdog import resolve_shutdown_watchdog_delay
 
     restart_timeout = max(

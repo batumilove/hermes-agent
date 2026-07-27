@@ -1,5 +1,6 @@
 """Tests for gateway service management helpers."""
 
+import math
 import os
 import subprocess
 from pathlib import Path
@@ -17,6 +18,7 @@ from gateway.restart import (
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
 )
+from gateway.shutdown_watchdog import resolve_shutdown_watchdog_delay
 
 
 class TestUserSystemdPrivateSocketPreflight:
@@ -421,7 +423,15 @@ class TestRequireServiceInstalled:
 
 class TestGeneratedSystemdUnits:
     def _expected_timeout_stop_sec(self) -> str:
-        timeout = int(max(60, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT + 60 + 15))
+        timeout = max(
+            60,
+            math.ceil(
+                resolve_shutdown_watchdog_delay(
+                    DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+                )
+            )
+            + 15,
+        )
         return f"TimeoutStopSec={timeout}"
 
     def test_user_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self, monkeypatch):
@@ -456,6 +466,17 @@ class TestGeneratedSystemdUnits:
 
         assert "TimeoutStopSec=120" in unit
 
+    def test_user_unit_preserves_fractional_drain_timeout_until_final_ceiling(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            gateway_cli, "_get_restart_drain_timeout", lambda: 45.9
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert "TimeoutStopSec=121" in unit
+
     def test_user_unit_outlasts_process_shutdown_watchdog(self, monkeypatch):
         """systemd must not SIGKILL before the gateway's diagnostic watchdog."""
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 45)
@@ -465,8 +486,6 @@ class TestGeneratedSystemdUnits:
             line for line in unit.splitlines() if line.startswith("TimeoutStopSec=")
         )
         timeout_s = int(timeout_line.partition("=")[2])
-
-        from gateway.shutdown_watchdog import resolve_shutdown_watchdog_delay
 
         assert timeout_s > resolve_shutdown_watchdog_delay(45)
 
