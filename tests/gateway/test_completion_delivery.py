@@ -158,6 +158,102 @@ def test_concurrent_claims_share_the_same_narrow_delivery_seam():
     adapter.handle_message.assert_awaited_once()
 
 
+def test_durable_claim_does_not_block_the_event_loop(monkeypatch):
+    """SQLite claim contention must stay outside the gateway event loop."""
+    from tools import async_delegation
+
+    entered = threading.Event()
+    release = threading.Event()
+    heartbeat = threading.Event()
+    heartbeat_before_release = []
+
+    def _blocking_claim(_delegation_id, _claim_id):
+        entered.set()
+        release.wait(timeout=2)
+        return True
+
+    def _release_claim():
+        saw_claim = entered.wait(timeout=0.2)
+        heartbeat_before_release.append(heartbeat.wait(timeout=0.1) if saw_claim else heartbeat.is_set())
+        release.set()
+
+    monkeypatch.setattr(async_delegation, "claim_completion_delivery", _blocking_claim)
+    monkeypatch.setattr(
+        async_delegation, "complete_completion_delivery", lambda *_args: True
+    )
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    releaser = threading.Thread(target=_release_claim)
+
+    async def _exercise():
+        async def _heartbeat():
+            await asyncio.sleep(0.01)
+            heartbeat.set()
+
+        releaser.start()
+        heartbeat_task = asyncio.create_task(_heartbeat())
+        try:
+            result = await runner._deliver_completion_notification(
+                "completion", _async_event("deleg_blocked_claim")
+            )
+            await heartbeat_task
+            return result
+        finally:
+            release.set()
+            releaser.join(timeout=1)
+
+    assert asyncio.run(_exercise()) is True
+    assert not releaser.is_alive()
+    assert heartbeat_before_release == [True]
+    adapter.handle_message.assert_awaited_once()
+
+
+def test_cancelled_durable_claim_finishes_then_releases(monkeypatch):
+    """Cancellation cannot strand a claim whose worker is still running."""
+    from tools import async_delegation
+
+    claim_entered = threading.Event()
+    allow_claim = threading.Event()
+    releases = []
+
+    def _blocking_claim(_delegation_id, _claim_id):
+        claim_entered.set()
+        allow_claim.wait(timeout=2)
+        return True
+
+    monkeypatch.setattr(async_delegation, "claim_completion_delivery", _blocking_claim)
+    monkeypatch.setattr(
+        async_delegation,
+        "release_completion_delivery",
+        lambda delegation_id, claim_id: releases.append((delegation_id, claim_id)) or True,
+    )
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+
+    async def _exercise():
+        task = asyncio.create_task(
+            runner._deliver_completion_notification(
+                "completion", _async_event("deleg_cancelled_claim")
+            )
+        )
+        assert await asyncio.to_thread(claim_entered.wait, 0.5)
+        task.cancel()
+        await asyncio.sleep(0.01)
+        assert not task.done()
+        allow_claim.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    try:
+        asyncio.run(_exercise())
+    finally:
+        allow_claim.set()
+
+    assert len(releases) == 1
+    assert releases[0][0] == "deleg_cancelled_claim"
+    adapter.handle_message.assert_not_awaited()
+
+
 def test_failed_async_injection_is_retried_and_only_success_is_acked(
     monkeypatch, isolated_registry,
 ):

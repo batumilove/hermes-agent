@@ -18310,6 +18310,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         event or the event has no gateway route. No cross-process exactly-once
         guarantee is claimed.
         """
+        async def _ledger_io(func, *args):
+            """Run one ledger mutation off-loop without abandoning it on cancel."""
+            task = asyncio.create_task(asyncio.to_thread(func, *args))
+            cancellation = None
+            while True:
+                try:
+                    result = await asyncio.shield(task)
+                    break
+                except asyncio.CancelledError as exc:
+                    cancellation = cancellation or exc
+                    if task.done():
+                        result = task.result()
+                        break
+            if cancellation is not None:
+                raise cancellation
+            return result
+
         identity = self._completion_delivery_identity(evt)
         durable_claim_id = ""
         durable_delegation_id = ""
@@ -18320,9 +18337,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     from tools.async_delegation import claim_completion_delivery
 
                     durable_claim_id = f"gateway:{id(self)}:{__import__('uuid').uuid4().hex}"
-                    if not claim_completion_delivery(
-                        durable_delegation_id, durable_claim_id,
-                    ):
+                    try:
+                        claimed = await _ledger_io(
+                            claim_completion_delivery,
+                            durable_delegation_id,
+                            durable_claim_id,
+                        )
+                    except asyncio.CancelledError:
+                        from tools.async_delegation import release_completion_delivery
+
+                        await _ledger_io(
+                            release_completion_delivery,
+                            durable_delegation_id,
+                            durable_claim_id,
+                        )
+                        raise
+                    if not claimed:
                         return None
                 except Exception as exc:
                     logger.warning(
@@ -18350,8 +18380,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         try:
                             from tools.async_delegation import drop_completion_delivery
 
-                            drop_completion_delivery(
-                                durable_delegation_id, durable_claim_id,
+                            await _ledger_io(
+                                drop_completion_delivery,
+                                durable_delegation_id,
+                                durable_claim_id,
                             )
                         except Exception:
                             logger.debug(
@@ -18364,8 +18396,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         try:
                             from tools.async_delegation import release_completion_delivery
 
-                            release_completion_delivery(
-                                durable_delegation_id, durable_claim_id,
+                            await _ledger_io(
+                                release_completion_delivery,
+                                durable_delegation_id,
+                                durable_claim_id,
                             )
                         except Exception:
                             logger.debug(
@@ -18406,8 +18440,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 try:
                     from tools.async_delegation import complete_completion_delivery
 
-                    complete_completion_delivery(
-                        durable_delegation_id, durable_claim_id,
+                    await _ledger_io(
+                        complete_completion_delivery,
+                        durable_delegation_id,
+                        durable_claim_id,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -18423,8 +18459,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 try:
                     from tools.async_delegation import release_completion_delivery
 
-                    release_completion_delivery(
-                        durable_delegation_id, durable_claim_id,
+                    await _ledger_io(
+                        release_completion_delivery,
+                        durable_delegation_id,
+                        durable_claim_id,
                     )
                 except Exception:
                     logger.debug("Could not release durable completion claim", exc_info=True)
