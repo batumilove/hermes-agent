@@ -1217,7 +1217,9 @@ async def test_base_send_image_fallback_preserves_metadata():
             return None
 
     call_log = []
-    adapter = _ConcreteBaseAdapter(Platform.TELEGRAM, None)
+    adapter = _ConcreteBaseAdapter(
+        PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM
+    )
     metadata = {"thread_id": "20197"}
 
     result = await adapter.send_image(
