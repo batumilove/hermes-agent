@@ -286,20 +286,27 @@ class _RawDiagnosticStream:
 
 
 class _RepeatedCancellationSocketStream:
-    """Own a real socket and hold close open for a second cancellation."""
+    """Own a real socket and hold one selected operation and close open."""
 
-    def __init__(self, sock: socket.socket):
+    def __init__(self, sock: socket.socket, operation: str):
         self.sock = sock
-        self.read_started = asyncio.Event()
+        self.operation = operation
+        self.operation_started = asyncio.Event()
         self.close_started = asyncio.Event()
         self.release_close = asyncio.Event()
 
-    async def read(self, _max_bytes, timeout=None):
-        self.read_started.set()
+    async def _block_if_selected(self, operation: str) -> None:
+        if self.operation != operation:
+            return
+        self.operation_started.set()
         await asyncio.Event().wait()
 
+    async def read(self, _max_bytes, timeout=None):
+        await self._block_if_selected("read")
+        return b""
+
     async def write(self, _buffer, timeout=None):
-        return None
+        await self._block_if_selected("write")
 
     async def aclose(self):
         self.close_started.set()
@@ -307,6 +314,7 @@ class _RepeatedCancellationSocketStream:
         self.sock.close()
 
     async def start_tls(self, _ssl_context, _server_hostname=None, _timeout=None):
+        await self._block_if_selected("start_tls")
         return self
 
     def get_extra_info(self, name):
@@ -1115,20 +1123,29 @@ class TestFallbackTransport:
     """Primary path fails → try fallback IPs → stick to whichever works."""
 
     @pytest.mark.asyncio
-    async def test_repeated_cancellation_cannot_interrupt_raw_stream_close(self):
+    @pytest.mark.parametrize("operation", ["read", "write", "start_tls"])
+    async def test_repeated_cancellation_cannot_interrupt_raw_stream_close(
+        self, operation
+    ):
         """A second cancellation must not strand pre-response socket cleanup."""
         left, right = socket.socketpair()
-        stream = _RepeatedCancellationSocketStream(left)
+        stream = _RepeatedCancellationSocketStream(left, operation)
         wrapped = tnet._CancellationSafeNetworkStream(stream)
-        waiter = asyncio.create_task(wrapped.read(1))
+        if operation == "read":
+            operation_coro = wrapped.read(1)
+        elif operation == "write":
+            operation_coro = wrapped.write(b"request")
+        else:
+            operation_coro = wrapped.start_tls(None)
+        waiter = asyncio.create_task(operation_coro)
 
         try:
-            await asyncio.wait_for(stream.read_started.wait(), timeout=1.0)
+            await asyncio.wait_for(stream.operation_started.wait(), timeout=1.0)
             waiter.cancel()
             await asyncio.wait_for(stream.close_started.wait(), timeout=1.0)
 
             # Production issues overlapping cancellations while fallback requests
-            # unwind. This second cancellation currently interrupts raw close.
+            # unwind. This second cancellation must not interrupt raw close.
             waiter.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await waiter
