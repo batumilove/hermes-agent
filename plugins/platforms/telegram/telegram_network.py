@@ -31,6 +31,9 @@ _diagnostic_request_ids = itertools.count(1)
 _diagnostic_request_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     "telegram_diagnostic_request_id", default="none"
 )
+_request_network_streams: contextvars.ContextVar[
+    list["_CancellationSafeNetworkStream"] | None
+] = contextvars.ContextVar("telegram_request_network_streams", default=None)
 
 
 def _stream_local_port(stream: Any) -> str:
@@ -121,6 +124,9 @@ class _CancellationSafeNetworkStream:
     def __init__(self, stream: Any):
         self._stream = stream
         self._close_task: asyncio.Task | None = None
+        request_streams = _request_network_streams.get()
+        if request_streams is not None:
+            request_streams.append(self)
 
     async def _close_after_failure(self) -> None:
         try:
@@ -440,6 +446,16 @@ class _RetryingCloseResponseStream(httpx.AsyncByteStream):
             )
 
 
+async def _close_request_network_streams(
+    streams: tuple[_CancellationSafeNetworkStream, ...],
+) -> None:
+    """Close only raw streams created by one failed pre-response request."""
+    await asyncio.gather(
+        *(stream.aclose() for stream in streams),
+        return_exceptions=True,
+    )
+
+
 async def _handle_transport_request(
     transport: httpx.AsyncBaseTransport,
     request: httpx.Request,
@@ -452,8 +468,10 @@ async def _handle_transport_request(
     detach the live socket from its pool. Under Telegram progress/edit churn,
     those sockets persist in CLOSE_WAIT until the gateway reaches RLIMIT_NOFILE.
     ``_CancellationSafeNetworkStream`` closes the exact raw socket when caller
-    cancellation interrupts TLS setup; cancellation otherwise propagates into
-    httpcore so its normal connect/header cleanup runs.
+    cancellation interrupts a stream operation. A request-scoped registry also
+    retains every stream returned before response creation, so cancellation in
+    httpcore's async trace hooks detaches a strongly referenced cleanup task
+    for only those streams; concurrent requests and shared pools are untouched.
 
     After the response has been returned, a caller that is cancelled while
     reading the response body (e.g. PTB's
@@ -462,7 +480,20 @@ async def _handle_transport_request(
     closes that otherwise-unclaimed response, and the response stream wrapper
     retries an interrupted close in a detached bounded task.
     """
-    response = await transport.handle_async_request(request)
+    request_streams: list[_CancellationSafeNetworkStream] = []
+    streams_token = _request_network_streams.set(request_streams)
+    try:
+        response = await transport.handle_async_request(request)
+    except BaseException:
+        if request_streams:
+            cleanup_task = asyncio.create_task(
+                _close_request_network_streams(tuple(reversed(request_streams)))
+            )
+            _abandoned_response_cleanups.add(cleanup_task)
+            cleanup_task.add_done_callback(_abandoned_response_cleanups.discard)
+        raise
+    finally:
+        _request_network_streams.reset(streams_token)
     network_stream = response.extensions.get("network_stream")
     response_stream = response.stream
     if diagnostic_context is not None:
