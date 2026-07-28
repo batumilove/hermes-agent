@@ -1090,6 +1090,24 @@ def _build_gateway_agent_history(
     return agent_history, observed_context
 
 
+def _warn_persisted_transcript_skew(
+    session_key: str,
+    *,
+    persisted_count: int,
+    live_count: int,
+) -> None:
+    """Report a persisted/live transcript length mismatch without guessing cause."""
+    logger.warning(
+        "Persisted transcript lagged live cached history for session %s "
+        "(persisted=%d, live=%d, skew=%d); preserving live conversation "
+        "context; cause=unconfirmed",
+        session_key,
+        persisted_count,
+        live_count,
+        max(0, live_count - persisted_count),
+    )
+
+
 def _select_cached_agent_history(
     persisted_history: List[Dict[str, Any]],
     live_history: Any,
@@ -22108,11 +22126,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     agent_history, getattr(agent, "_session_messages", None)
                 )
                 if _selected is not agent_history:
-                    logger.warning(
-                        "Persisted transcript lagged live cached history for "
-                        "session %s (disk=%d, memory=%d); preserving live "
-                        "conversation context (possible FTS write corruption)",
-                        session_key, len(agent_history), len(_selected),
+                    _warn_persisted_transcript_skew(
+                        session_key,
+                        persisted_count=len(agent_history),
+                        live_count=len(_selected),
                     )
                     # The live in-memory history bypassed the
                     # _build_gateway_agent_history cleanup pipeline above —
