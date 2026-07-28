@@ -35,9 +35,10 @@ def _command_strings(value: Any) -> list[str]:
 
 
 def _install_segments(command: str) -> list[str]:
+    logical_commands = re.sub(r"[ \t]*\\\r?\n[ \t]*", " ", command)
     return [
         segment.strip().rstrip(" \\")
-        for segment in re.split(r"\s*(?:&&|\|\||;)\s*", command)
+        for segment in re.split(r"\s*(?:&&|\|\||;|\r?\n)\s*", logical_commands)
         if NPM_INSTALL_RE.search(segment)
     ]
 
@@ -70,6 +71,30 @@ def _uses_supported_cooldown(command: str) -> bool:
         return False
     cooldowns = [int(value) for value in COOLDOWN_RE.findall(inner_command)]
     return bool(cooldowns) and cooldowns[-1] >= REQUIRED_COOLDOWN_DAYS
+
+
+def test_multiline_commands_are_checked_independently() -> None:
+    command = (
+        "npm exec --package=npm@11.18.0 -- npm ci --min-release-age=7\n"
+        "npm ci"
+    )
+
+    segments = _install_segments(command)
+
+    assert len(segments) == 2
+    assert _uses_supported_cooldown(segments[0])
+    assert not _uses_supported_cooldown(segments[1])
+
+
+def test_shell_line_continuations_remain_one_command() -> None:
+    command = (
+        "npm exec --package=npm@11.18.0 -- \\\n"
+        "  npm ci --min-release-age=7"
+    )
+
+    assert _install_segments(command) == [
+        "npm exec --package=npm@11.18.0 -- npm ci --min-release-age=7"
+    ]
 
 
 def test_cooldown_must_be_on_inner_npm_11_command() -> None:
