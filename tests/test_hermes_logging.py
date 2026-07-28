@@ -110,6 +110,28 @@ class TestSetupLogging:
         ]
         assert len(agent_handlers) == 1
 
+    def test_initialized_default_call_configures_a_different_home(self, hermes_home):
+        """Process-wide initialization must not skip another profile's logs."""
+        other_home = hermes_home.parent / "other-hermes-home"
+
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        hermes_logging.setup_logging(hermes_home=other_home)
+
+        expected = {
+            (hermes_home / "logs" / "agent.log").resolve(),
+            (hermes_home / "logs" / "errors.log").resolve(),
+            (other_home / "logs" / "agent.log").resolve(),
+            (other_home / "logs" / "errors.log").resolve(),
+        }
+        actual = {
+            Path(handler.baseFilename).resolve()
+            for handler in hermes_logging.rotating_file_handlers()
+            if isinstance(handler, RotatingFileHandler)
+        }
+
+        assert other_home.joinpath("logs").is_dir()
+        assert expected <= actual
+
     def test_initialized_default_call_keeps_event_loop_responsive(
         self, hermes_home, monkeypatch
     ):
