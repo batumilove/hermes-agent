@@ -2304,34 +2304,46 @@ class SessionStore:
                 return True
         return False
 
+    def mark_resume_pending_batch(
+        self,
+        session_keys: List[str],
+        reason: str = "restart_timeout",
+    ) -> List[str]:
+        """Atomically mark multiple sessions resumable with one routing save.
+
+        Shutdown can have many concurrent turns. Persisting each marker through
+        a separate whole-index save lets the shutdown deadline expire after an
+        arbitrary prefix. This method mutates every eligible entry under one
+        lock and performs one durable save, whose multi-key path is reconciled
+        atomically by ``_persist_routing_data``.
+
+        Returns the ordered unique keys that existed and were marked. Explicitly
+        suspended sessions remain excluded.
+        """
+        unique_keys = list(dict.fromkeys(session_keys))
+        marked: List[str] = []
+        marked_at = _now()
+        with self._lock:
+            self._ensure_loaded_locked()
+            for session_key in unique_keys:
+                entry = self._entries.get(session_key)
+                if entry is None or entry.suspended:
+                    continue
+                entry.resume_pending = True
+                entry.resume_reason = reason
+                entry.last_resume_marked_at = marked_at
+                marked.append(session_key)
+            if marked:
+                self._save()
+        return marked
+
     def mark_resume_pending(
         self,
         session_key: str,
         reason: str = "restart_timeout",
     ) -> bool:
-        """Mark a session as resumable after a restart interruption.
-
-        Unlike ``suspend_session()``, this preserves the existing
-        ``session_id`` and the transcript.  The next call to
-        ``get_or_create_session()`` for this key returns the same entry
-        so the user auto-resumes on the same conversation lane.
-
-        Returns True if the session existed and was marked.
-        """
-        with self._lock:
-            self._ensure_loaded_locked()
-            if session_key in self._entries:
-                entry = self._entries[session_key]
-                # Never override an explicit ``suspended`` — that is a hard
-                # forced-wipe signal (from /stop or stuck-loop escalation).
-                if entry.suspended:
-                    return False
-                entry.resume_pending = True
-                entry.resume_reason = reason
-                entry.last_resume_marked_at = _now()
-                self._save()
-                return True
-        return False
+        """Mark one session as resumable after a restart interruption."""
+        return bool(self.mark_resume_pending_batch([session_key], reason))
 
     def clear_resume_pending(self, session_key: str) -> bool:
         """Clear the resume-pending flag after a successful resumed turn.

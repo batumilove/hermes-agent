@@ -9823,48 +9823,59 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_keys,
                 reason: str,
             ) -> list[str]:
-                """Persist resume intent without letting storage wedge shutdown.
-
-                The configured drain timeout governs active-work grace, so keep
-                that full budget for ``_drain_active_agents``.  Resume markers
-                get a separate, small batch budget: enough for normal SQLite
-                writes, but bounded independently so one contended store cannot
-                defer the real drain until the hard shutdown watchdog fires.
-                """
+                """Persist all resume intents in one bounded atomic batch."""
                 budget = min(5.0, max(0.05, float(timeout)))
-                deadline = asyncio.get_running_loop().time() + budget
-                attempted: list[str] = []
-                for session_key in session_keys:
-                    remaining = deadline - asyncio.get_running_loop().time()
-                    if remaining <= 0:
-                        break
-                    # Once the facade call starts, cancellation cannot prove its
-                    # executor-backed write did not commit later.  Include the
-                    # key in graceful cleanup before awaiting so a compensating
-                    # clear is queued behind any late write.
-                    attempted.append(session_key)
-                    try:
-                        await asyncio.wait_for(
-                            self.async_session_store.mark_resume_pending(
-                                session_key,
-                                reason,
-                            ),
-                            timeout=remaining,
-                        )
-                    except asyncio.TimeoutError:
-                        logger.warning(
-                            "Shutdown resume-marker persistence exceeded %.2fs; "
-                            "forcing shutdown forward progress",
-                            budget,
-                        )
-                        break
-                    except Exception as exc:
-                        logger.debug(
-                            "mark_resume_pending failed for %s: %s",
-                            session_key,
-                            exc,
-                        )
-                return attempted
+                candidates = list(dict.fromkeys(session_keys))
+                if not candidates:
+                    return []
+
+                # Every key is possibly committed once the off-loop batch starts.
+                # Return all candidates for compensating graceful cleanup even if
+                # cancellation wins while the backing worker finishes later.
+                try:
+                    persisted = await asyncio.wait_for(
+                        self.async_session_store.mark_resume_pending_batch(
+                            candidates,
+                            reason,
+                        ),
+                        timeout=budget,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Shutdown resume-marker batch timed out after %.2fs: "
+                        "candidates=%d persisted=unknown missing=unknown; "
+                        "forcing shutdown forward progress",
+                        budget,
+                        len(candidates),
+                    )
+                    return candidates
+                except Exception as exc:
+                    logger.warning(
+                        "Shutdown resume-marker batch failed: candidates=%d "
+                        "persisted=0 missing=%d error=%s",
+                        len(candidates),
+                        len(candidates),
+                        exc,
+                    )
+                    return candidates
+
+                persisted_keys = list(dict.fromkeys(persisted or []))
+                persisted_set = set(persisted_keys)
+                missing = [key for key in candidates if key not in persisted_set]
+                log = logger.warning if missing else logger.info
+                log(
+                    "Shutdown resume-marker batch: candidates=%d persisted=%d "
+                    "missing=%d",
+                    len(candidates),
+                    len(persisted_keys),
+                    len(missing),
+                )
+                if missing:
+                    logger.warning(
+                        "Shutdown resume-marker batch omitted session keys: %s",
+                        ", ".join(missing),
+                    )
+                return candidates
 
             # Pre-mark sessions as resume_pending BEFORE the drain wait.
             # If the process is killed by the service manager during the

@@ -177,13 +177,13 @@ async def test_gateway_stop_bounds_pre_drain_resume_persistence_by_drain_deadlin
     marker_started = asyncio.Event()
     never = asyncio.Event()
 
-    async def stuck_mark_resume_pending(*_args, **_kwargs):
+    async def stuck_mark_resume_pending_batch(*_args, **_kwargs):
         marker_started.set()
         await never.wait()
 
     async_store = MagicMock()
     async_store._store = runner.session_store
-    async_store.mark_resume_pending = stuck_mark_resume_pending
+    async_store.mark_resume_pending_batch = stuck_mark_resume_pending_batch
     runner._async_session_store = async_store
 
     with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
@@ -194,6 +194,39 @@ async def test_gateway_stop_bounds_pre_drain_resume_persistence_by_drain_deadlin
     running_agent.interrupt.assert_called_once_with("Gateway restarting")
     adapter.disconnect.assert_awaited_once()
     assert runner._shutdown_event.is_set() is True
+
+
+@pytest.mark.asyncio
+async def test_gateway_stop_persists_all_resume_markers_in_one_atomic_batch():
+    """Many interrupted turns must not lose markers to per-key timeout churn."""
+    runner, adapter = make_restart_runner()
+    runner._restart_drain_timeout = 0.05
+    runner._finalize_shutdown_agents = AsyncMock()
+    adapter.disconnect = AsyncMock()
+
+    session_keys = [f"session-{index:02d}" for index in range(14)]
+    running_agent = MagicMock()
+    runner._running_agents = {key: running_agent for key in session_keys}
+    running_agent.interrupt.side_effect = lambda _reason: runner._running_agents.clear()
+
+    async_store = MagicMock()
+    async_store._store = runner.session_store
+    async_store.mark_resume_pending_batch = AsyncMock(return_value=session_keys)
+    async_store.mark_resume_pending = AsyncMock()
+    runner._async_session_store = async_store
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await asyncio.wait_for(
+            runner.stop(restart=True, service_restart=True),
+            timeout=2.0,
+        )
+
+    assert async_store.mark_resume_pending_batch.await_count == 2
+    for call in async_store.mark_resume_pending_batch.await_args_list:
+        assert call.args == (session_keys, "restart_timeout")
+    async_store.mark_resume_pending.assert_not_awaited()
+    running_agent.interrupt.assert_called_with("Gateway restarting")
+    adapter.disconnect.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -213,17 +246,18 @@ async def test_gateway_stop_clears_late_pre_drain_marker_after_graceful_finish()
     resume_pending: set[str] = set()
     background_writes: list[asyncio.Task] = []
 
-    async def mark_resume_pending(session_key, _reason):
+    async def mark_resume_pending_batch(session_keys, _reason):
         marker_started.set()
 
         async def commit_later():
             await release_marker.wait()
-            resume_pending.add(session_key)
+            resume_pending.update(session_keys)
             marker_written.set()
 
         write = asyncio.create_task(commit_later())
         background_writes.append(write)
         await asyncio.shield(write)
+        return list(session_keys)
 
     async def clear_resume_pending(session_key):
         await marker_written.wait()
@@ -231,7 +265,7 @@ async def test_gateway_stop_clears_late_pre_drain_marker_after_graceful_finish()
 
     async_store = MagicMock()
     async_store._store = runner.session_store
-    async_store.mark_resume_pending = mark_resume_pending
+    async_store.mark_resume_pending_batch = mark_resume_pending_batch
     async_store.clear_resume_pending = clear_resume_pending
     runner._async_session_store = async_store
 
