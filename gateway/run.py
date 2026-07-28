@@ -9819,10 +9819,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             timeout = self._restart_drain_timeout
 
+            _resume_marker_tasks = getattr(
+                self,
+                "_shutdown_resume_marker_tasks",
+                None,
+            )
+            if _resume_marker_tasks is None:
+                _resume_marker_tasks = self._shutdown_resume_marker_tasks = set()
+
+            def _track_resume_marker_task(task: asyncio.Task) -> None:
+                _resume_marker_tasks.add(task)
+
+                def _consume_and_discard(done: asyncio.Task) -> None:
+                    _resume_marker_tasks.discard(done)
+                    if not done.cancelled():
+                        done.exception()
+
+                task.add_done_callback(_consume_and_discard)
+
             async def _mark_resume_pending_bounded(
                 session_keys,
                 reason: str,
-            ) -> list[str]:
+            ) -> list[tuple[str, asyncio.Task]]:
                 """Persist resume intent without letting storage wedge shutdown.
 
                 The configured drain timeout governs active-work grace, so keep
@@ -9830,25 +9848,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 get a separate, small batch budget: enough for normal SQLite
                 writes, but bounded independently so one contended store cannot
                 defer the real drain until the hard shutdown watchdog fires.
+
+                Keep each executor-backed task alive after an await timeout.
+                Graceful cleanup can then await that exact attempt before
+                submitting its compensating clear, preserving mark-before-clear
+                order even when the marker commits after await cancellation.
                 """
                 budget = min(5.0, max(0.05, float(timeout)))
                 deadline = asyncio.get_running_loop().time() + budget
-                attempted: list[str] = []
+                attempted: list[tuple[str, asyncio.Task]] = []
                 for session_key in session_keys:
                     remaining = deadline - asyncio.get_running_loop().time()
                     if remaining <= 0:
                         break
-                    # Once the facade call starts, cancellation cannot prove its
-                    # executor-backed write did not commit later.  Include the
-                    # key in graceful cleanup before awaiting so a compensating
-                    # clear is queued behind any late write.
-                    attempted.append(session_key)
+                    marker_task = asyncio.create_task(
+                        self.async_session_store.mark_resume_pending(
+                            session_key,
+                            reason,
+                        )
+                    )
+                    _track_resume_marker_task(marker_task)
+                    attempted.append((session_key, marker_task))
                     try:
                         await asyncio.wait_for(
-                            self.async_session_store.mark_resume_pending(
-                                session_key,
-                                reason,
-                            ),
+                            asyncio.shield(marker_task),
                             timeout=remaining,
                         )
                     except asyncio.TimeoutError:
@@ -9904,15 +9927,55 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Drain completed gracefully — all running sessions finished.
                 # Clear the pre-drain resume_pending markers so sessions that
                 # completed during the drain window don't carry a stale flag.
-                for _sk in _pre_drain_keys:
+                #
+                # A marker await may have timed out while its executor write is
+                # still running.  Each compensator therefore awaits the exact
+                # marker task before submitting its clear.  We bound only the
+                # shutdown-path wait: pending compensators retain strong runner
+                # references and finish in-order if the late write returns.
+                async def _clear_after_marker_attempt(
+                    session_key: str,
+                    marker_task: asyncio.Task,
+                ) -> None:
+                    try:
+                        await asyncio.shield(marker_task)
+                    except Exception as exc:
+                        logger.debug(
+                            "mark_resume_pending completed with error before clear for %s: %s",
+                            session_key,
+                            exc,
+                        )
+                    try:
+                        await self.async_session_store.clear_resume_pending(session_key)
+                    except Exception as exc:
+                        logger.debug(
+                            "clear_resume_pending after drain failed for %s: %s",
+                            session_key,
+                            exc,
+                        )
+
+                _cleanup_tasks: list[asyncio.Task] = []
+                for _sk, _marker_task in _pre_drain_keys:
                     if _sk not in self._running_agents:
-                        try:
-                            await self.async_session_store.clear_resume_pending(_sk)
-                        except Exception as _e:
-                            logger.debug(
-                                "clear_resume_pending after drain failed for %s: %s",
-                                _sk, _e,
-                            )
+                        _cleanup_task = asyncio.create_task(
+                            _clear_after_marker_attempt(_sk, _marker_task)
+                        )
+                        _track_resume_marker_task(_cleanup_task)
+                        _cleanup_tasks.append(_cleanup_task)
+
+                if _cleanup_tasks:
+                    _cleanup_budget = min(5.0, max(0.05, float(timeout)))
+                    _, _pending_cleanup = await asyncio.wait(
+                        _cleanup_tasks,
+                        timeout=_cleanup_budget,
+                    )
+                    if _pending_cleanup:
+                        logger.warning(
+                            "Shutdown resume-marker cleanup exceeded %.2fs; "
+                            "%d ordered cleanup task(s) remain pending",
+                            _cleanup_budget,
+                            len(_pending_cleanup),
+                        )
 
             if timed_out:
                 logger.warning(
