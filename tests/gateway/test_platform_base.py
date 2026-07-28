@@ -1,7 +1,10 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
+import asyncio
 import os
+import threading
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -35,6 +38,33 @@ def test_media_delivery_denies_encrypted_bitwarden_cache(tmp_path, monkeypatch):
 
     assert path in base._media_delivery_denied_paths()
     assert base.validate_media_delivery_path(str(path)) is None
+
+
+def test_async_gateway_paths_do_not_call_sync_media_filesystem_helpers():
+    """Async gateway functions must use the off-loop media helper variants."""
+    gateway_root = Path(__file__).resolve().parents[2] / "gateway"
+    base_source = (gateway_root / "platforms/base.py").read_text(encoding="utf-8")
+    weixin_source = (gateway_root / "platforms/weixin.py").read_text(encoding="utf-8")
+    run_source = (gateway_root / "run.py").read_text(encoding="utf-8")
+    kanban_source = (gateway_root / "kanban_watchers.py").read_text(encoding="utf-8")
+
+    assert "media_files, response = await self.extract_media_async(response)" in base_source
+    assert "await self.filter_media_delivery_paths_async(media_files)" in base_source
+    assert "await self.extract_local_files_async(text_content)" in base_source
+    assert "await self.filter_local_delivery_paths_async(local_files)" in base_source
+
+    assert "await self.extract_media_async(content)" in weixin_source
+    assert "await self.extract_local_files_async(image_cleaned)" in weixin_source
+    assert "await self.filter_media_delivery_paths_async(media_files)" in weixin_source
+    assert "await self.filter_local_delivery_paths_async(local_files)" in weixin_source
+
+    assert run_source.count("await BasePlatformAdapter.extract_media_async(") >= 2
+    assert "await BasePlatformAdapter.extract_local_files_async(cleaned)" in run_source
+    assert run_source.count("await BasePlatformAdapter.filter_media_delivery_paths_async(") >= 2
+    assert "await BasePlatformAdapter.filter_local_delivery_paths_async(" in run_source
+
+    assert kanban_source.count("await BasePlatformAdapter.extract_local_files_async(") >= 2
+    assert "await BasePlatformAdapter.filter_local_delivery_paths_async(" in kanban_source
 
 
 class TestInboundMediaSizeCap:
@@ -892,6 +922,51 @@ class TestMediaDeliveryPathValidation:
         ])
 
         assert filtered == [(str(safe.resolve()), True)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("sync_name", "async_name", "payload"),
+        [
+            ("extract_media", "extract_media_async", "MEDIA:/tmp/a"),
+            ("extract_local_files", "extract_local_files_async", "/tmp/a"),
+            ("filter_media_delivery_paths", "filter_media_delivery_paths_async", [("/tmp/a", False)]),
+            ("filter_local_delivery_paths", "filter_local_delivery_paths_async", ["/tmp/a"]),
+        ],
+    )
+    async def test_async_media_filesystem_helpers_keep_event_loop_responsive(
+        self, monkeypatch, sync_name, async_name, payload,
+    ):
+        """A slow filesystem validator must run outside the asyncio loop."""
+        heartbeat = threading.Event()
+        worker_threads = []
+
+        def blocking_filter(values):
+            worker_threads.append(threading.get_ident())
+            observed_heartbeat = heartbeat.wait(timeout=1.0)
+            return (values, observed_heartbeat)
+
+        monkeypatch.setattr(
+            BasePlatformAdapter,
+            sync_name,
+            staticmethod(blocking_filter),
+        )
+
+        filter_task = asyncio.create_task(
+            getattr(BasePlatformAdapter, async_name)(payload)
+        )
+
+        async def pulse():
+            await asyncio.sleep(0)
+            heartbeat.set()
+
+        pulse_task = asyncio.create_task(pulse())
+        values, observed_heartbeat = await filter_task
+        await pulse_task
+
+        assert values == payload
+        assert observed_heartbeat is True
+        assert worker_threads == [worker_threads[0]]
+        assert worker_threads[0] != threading.get_ident()
 
     def test_allows_operator_configured_extra_root(self, tmp_path, monkeypatch):
         extra_root = tmp_path / "operator-media"

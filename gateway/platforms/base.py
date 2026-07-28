@@ -3728,6 +3728,14 @@ class BasePlatformAdapter(ABC):
                 logger.warning("Skipping unsafe MEDIA directive path: %s", _log_safe_path(raw))
         return safe_media
 
+    @classmethod
+    async def filter_media_delivery_paths_async(cls, media_files) -> List[Tuple[str, bool]]:
+        """Validate MEDIA paths without blocking the gateway event loop."""
+        return await asyncio.to_thread(
+            cls.filter_media_delivery_paths,
+            media_files,
+        )
+
     @staticmethod
     def filter_local_delivery_paths(file_paths) -> List[str]:
         """Drop unsafe bare local file paths and normalize accepted paths."""
@@ -3740,6 +3748,14 @@ class BasePlatformAdapter(ABC):
             else:
                 logger.warning("Skipping unsafe local file path: %s", _log_safe_path(raw))
         return safe_paths
+
+    @classmethod
+    async def filter_local_delivery_paths_async(cls, file_paths) -> List[str]:
+        """Validate bare local paths without blocking the gateway event loop."""
+        return await asyncio.to_thread(
+            cls.filter_local_delivery_paths,
+            file_paths,
+        )
 
 
     @staticmethod
@@ -3920,6 +3936,11 @@ class BasePlatformAdapter(ABC):
         
         return media, cleaned
 
+    @classmethod
+    async def extract_media_async(cls, content: str) -> Tuple[List[Tuple[str, bool]], str]:
+        """Extract MEDIA directives off-loop because extensionless paths stat files."""
+        return await asyncio.to_thread(cls.extract_media, content)
+
     @staticmethod
     def strip_media_directives_for_display(text: str) -> str:
         """Strip MEDIA: directives from streamed/display text.
@@ -4023,6 +4044,11 @@ class BasePlatformAdapter(ABC):
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
 
         return paths, cleaned
+
+    @classmethod
+    async def extract_local_files_async(cls, content: str) -> Tuple[List[str], str]:
+        """Extract bare local paths off-loop because candidate checks stat files."""
+        return await asyncio.to_thread(cls.extract_local_files, content)
 
     async def _keep_typing(
         self,
@@ -5187,8 +5213,8 @@ class BasePlatformAdapter(ABC):
                 _response_pre_extract = response
 
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
-                media_files, response = self.extract_media(response)
-                media_files = self.filter_media_delivery_paths(media_files)
+                media_files, response = await self.extract_media_async(response)
+                media_files = await self.filter_media_delivery_paths_async(media_files)
 
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
@@ -5206,8 +5232,8 @@ class BasePlatformAdapter(ABC):
                     # (helps small models that don't use MEDIA: syntax). Skip
                     # system/command notices so config paths stay visible text
                     # instead of becoming native uploads.
-                    local_files, text_content = self.extract_local_files(text_content)
-                    local_files = self.filter_local_delivery_paths(local_files)
+                    local_files, text_content = await self.extract_local_files_async(text_content)
+                    local_files = await self.filter_local_delivery_paths_async(local_files)
                     if local_files:
                         logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
 

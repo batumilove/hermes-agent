@@ -660,6 +660,7 @@ class GatewayKanbanWatchersMixin:
         errors are logged but do not break the notifier loop.
         """
         from pathlib import Path as _Path
+        from gateway.platforms.base import BasePlatformAdapter
 
         candidates: list[str] = []
         seen: set[str] = set()
@@ -669,8 +670,6 @@ class GatewayKanbanWatchersMixin:
                 return
             expanded = os.path.expanduser(path)
             if expanded in seen:
-                return
-            if not os.path.isfile(expanded):
                 return
             seen.add(expanded)
             candidates.append(expanded)
@@ -686,22 +685,21 @@ class GatewayKanbanWatchersMixin:
             # 2. Paths embedded in the payload summary.
             summary = event_payload.get("summary")
             if isinstance(summary, str) and summary:
-                paths, _ = adapter.extract_local_files(summary)
+                paths, _ = await BasePlatformAdapter.extract_local_files_async(summary)
                 for p in paths:
                     _add(p)
 
         # 3. Legacy: paths embedded in task.result.
         if task is not None and getattr(task, "result", None):
             result_text = str(task.result)
-            paths, _ = adapter.extract_local_files(result_text)
+            paths, _ = await BasePlatformAdapter.extract_local_files_async(result_text)
             for p in paths:
                 _add(p)
 
         if not candidates:
             return
 
-        from gateway.platforms.base import BasePlatformAdapter
-        candidates = BasePlatformAdapter.filter_local_delivery_paths(candidates)
+        candidates = await BasePlatformAdapter.filter_local_delivery_paths_async(candidates)
         if not candidates:
             return
 
