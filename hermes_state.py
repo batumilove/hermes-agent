@@ -1797,6 +1797,12 @@ class SessionDB:
         self._fts_cjk_available = False
         self._fts_unavailable_warned = False
         self._conn = None
+        # The gateway polls handoffs every two seconds from a worker thread.
+        # Keep that read off the shared writer connection: pysqlite connection
+        # contention can retain the GIL and starve the asyncio event loop even
+        # when the caller itself was dispatched through asyncio.to_thread().
+        self._handoff_read_lock = threading.Lock()
+        self._handoff_read_conn: Optional[sqlite3.Connection] = None
         try:
             if read_only:
                 # Read-only attach for cross-profile aggregation: SELECT-only,
@@ -2526,6 +2532,10 @@ class SessionDB:
             if self._conn:
                 self._conn.close()
                 self._conn = None
+            with self._handoff_read_lock:
+                if self._handoff_read_conn is not None:
+                    self._handoff_read_conn.close()
+                    self._handoff_read_conn = None
 
     # ── Chunked FTS rebuild engine (v23 opt-in optimize) ──
     #
@@ -10670,19 +10680,43 @@ class SessionDB:
             return None
 
     def list_pending_handoffs(self) -> List[Dict[str, Any]]:
-        """Return all sessions in handoff_state='pending', oldest first.
+        """Return pending handoff dispatch fields, oldest first.
 
-        Used by the gateway's handoff watcher.
+        The gateway polls this method every two seconds. Use a dedicated,
+        read-only connection so polling never contends on the SessionDB writer
+        connection's internal pysqlite mutex.
         """
-        try:
-            cur = self._conn.execute(
-                "SELECT * FROM sessions "
-                "WHERE handoff_state = 'pending' "
-                "ORDER BY started_at ASC"
-            )
-            return [dict(r) for r in cur.fetchall()]
-        except Exception:
-            return []
+        with self._handoff_read_lock:
+            try:
+                if self._closed:
+                    return []
+                if self._handoff_read_conn is None:
+                    self._handoff_read_conn = sqlite3.connect(
+                        f"file:{self.db_path}?mode=ro",
+                        uri=True,
+                        check_same_thread=False,
+                        timeout=1.0,
+                        isolation_level=None,
+                        cached_statements=0,
+                    )
+                    self._handoff_read_conn.row_factory = sqlite3.Row
+                    apply_state_db_read_tuning(self._handoff_read_conn)
+                cur = self._handoff_read_conn.execute(
+                    "SELECT id, handoff_platform, title FROM sessions "
+                    "WHERE handoff_state = 'pending' "
+                    "ORDER BY started_at ASC"
+                )
+                return [dict(r) for r in cur.fetchall()]
+            except Exception:
+                # Reopen on the next poll if a database replacement or close
+                # invalidated this process-local reader.
+                if self._handoff_read_conn is not None:
+                    try:
+                        self._handoff_read_conn.close()
+                    except Exception:
+                        pass
+                    self._handoff_read_conn = None
+                return []
 
     def claim_handoff(self, session_id: str) -> bool:
         """Atomically transition pending → running. Returns True if claimed."""

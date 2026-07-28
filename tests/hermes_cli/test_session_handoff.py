@@ -12,7 +12,12 @@ flip pending → running, and finishes with ``complete_handoff`` or
 
 from __future__ import annotations
 
+import sqlite3
+import subprocess
+import sys
+import textwrap
 import time
+from pathlib import Path
 
 import pytest
 
@@ -101,6 +106,119 @@ class TestHandoffStateDB:
         ids = [r["id"] for r in pending]
         assert set(ids) == {a, b}
 
+    def test_list_pending_handoffs_does_not_use_shared_writer_connection(self, db):
+        sid = "sess-isolated-reader"
+        self._make_session(db, sid)
+        db.request_handoff(sid, "telegram")
+
+        writer_connection = db._conn
+
+        class _SharedConnectionMustNotBeUsed:
+            def execute(self, *_args, **_kwargs):
+                raise AssertionError("handoff polling used the shared writer connection")
+
+        db._conn = _SharedConnectionMustNotBeUsed()
+        try:
+            pending = db.list_pending_handoffs()
+        finally:
+            db._conn = writer_connection
+
+        assert pending == [
+            {"id": sid, "handoff_platform": "telegram", "title": None}
+        ]
+
+    def test_list_pending_handoffs_does_not_wait_for_shared_connection(self):
+        probe = textwrap.dedent(
+            """
+            import tempfile
+            import threading
+            import time
+            from concurrent.futures import ThreadPoolExecutor
+            from pathlib import Path
+
+            from hermes_state import SessionDB
+
+            with tempfile.TemporaryDirectory() as tmp:
+                db = SessionDB(db_path=Path(tmp) / "state.db")
+
+                def insert(conn):
+                    conn.execute(
+                        "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+                        ("sess-contended-writer", "cli", time.time()),
+                    )
+
+                db._execute_write(insert)
+                assert db.request_handoff("sess-contended-writer", "telegram")
+
+                entered = threading.Event()
+                release = threading.Event()
+
+                def hold_shared_connection():
+                    entered.set()
+                    release.wait(timeout=30)
+                    return 1
+
+                db._conn.create_function(
+                    "hold_shared_connection", 0, hold_shared_connection
+                )
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    blocker = pool.submit(
+                        lambda: db._conn.execute(
+                            "SELECT hold_shared_connection()"
+                        ).fetchone()
+                    )
+                    assert entered.wait(timeout=2)
+                    poll = pool.submit(db.list_pending_handoffs)
+                    pending = poll.result(timeout=2)
+                    release.set()
+                    blocker.result(timeout=2)
+
+                assert pending == [{
+                    "id": "sess-contended-writer",
+                    "handoff_platform": "telegram",
+                    "title": None,
+                }]
+                db.close()
+            """
+        )
+
+        try:
+            completed = subprocess.run(
+                [sys.executable, "-c", probe],
+                cwd=str(Path(__file__).resolve().parents[2]),
+                capture_output=True,
+                text=True,
+                timeout=6,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            pytest.fail("handoff polling waited for the shared connection")
+
+        assert completed.returncode == 0, completed.stderr
+
+    def test_list_pending_handoffs_returns_only_dispatch_fields(self, db):
+        sid = "sess-narrow-projection"
+        self._make_session(db, sid, title="handoff title")
+        db.request_handoff(sid, "discord")
+
+        assert db.list_pending_handoffs() == [
+            {
+                "id": sid,
+                "handoff_platform": "discord",
+                "title": "handoff title",
+            }
+        ]
+
+    def test_close_releases_dedicated_handoff_reader(self, db):
+        db.list_pending_handoffs()
+        reader = db._handoff_read_conn
+
+        db.close()
+
+        assert db._handoff_read_conn is None
+        with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+            reader.execute("SELECT 1")
+
     def test_claim_handoff_is_atomic(self, db):
         sid = "sess-claim"
         self._make_session(db, sid)
@@ -169,6 +287,7 @@ class TestHandoffStateDB:
         pending = db.list_pending_handoffs()
         assert len(pending) == 1
         assert pending[0]["id"] == sid
+        assert pending[0]["title"] == "my session"
         assert db.claim_handoff(sid) is True
         assert db.get_handoff_state(sid)["state"] == "running"
 
