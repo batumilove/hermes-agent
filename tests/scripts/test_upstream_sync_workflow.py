@@ -41,7 +41,7 @@ def test_workflow_uses_scoped_deploy_key_and_never_executes_upstream_code():
     job = workflow["jobs"]["sync-one-commit"]
 
     assert workflow["permissions"] == {
-        "contents": "read",
+        "contents": "write",
         "pull-requests": "write",
     }
     assert job["if"].startswith("github.repository == 'batumilove/hermes-agent'")
