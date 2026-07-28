@@ -256,6 +256,25 @@ COMPONENT_PREFIXES = {
 # Main setup
 # ---------------------------------------------------------------------------
 
+def _handler_path_key(path: os.PathLike | str) -> str:
+    """Normalize a handler path without touching the filesystem."""
+    return os.path.normcase(os.path.abspath(os.fspath(path)))
+
+
+def _has_default_handlers(log_dir: Path) -> bool:
+    """Return whether *log_dir* already has the two default file handlers."""
+    expected = {
+        _handler_path_key(log_dir / "agent.log"),
+        _handler_path_key(log_dir / "errors.log"),
+    }
+    existing = {
+        _handler_path_key(handler.baseFilename)
+        for handler in rotating_file_handlers()
+        if isinstance(handler, RotatingFileHandler)
+    }
+    return expected <= existing
+
+
 def setup_logging(
     *,
     hermes_home: Optional[Path] = None,
@@ -302,6 +321,22 @@ def setup_logging(
     global _logging_initialized
     home = hermes_home or get_hermes_home()
     log_dir = home / "logs"
+
+    # AIAgent is constructed once per gateway message and calls the default
+    # setup path each time.  Once this profile's default handlers exist that
+    # call is the documented no-op: return before filesystem/config/YAML work
+    # so a slow config read cannot block the gateway event loop.  Key the fast
+    # path by log directory because another profile/home in the same process
+    # still needs its own handlers.  Explicit modes also run below because a
+    # later gateway/gui setup may need to add its component-specific handler.
+    if (
+        _logging_initialized
+        and not force
+        and mode is None
+        and _has_default_handlers(log_dir)
+    ):
+        return log_dir
+
     log_dir.mkdir(parents=True, exist_ok=True)
 
     # Read config defaults (best-effort — config may not be loaded yet).
