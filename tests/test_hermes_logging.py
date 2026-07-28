@@ -1,4 +1,5 @@
 """Tests for hermes_logging — centralized logging setup."""
+import asyncio
 import io
 import logging
 import os
@@ -108,6 +109,41 @@ class TestSetupLogging:
             and "agent.log" in getattr(h, "baseFilename", "")
         ]
         assert len(agent_handlers) == 1
+
+    def test_initialized_default_call_keeps_event_loop_responsive(
+        self, hermes_home, monkeypatch
+    ):
+        """AIAgent's repeated default setup must not parse config on the loop."""
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+
+        config_read_started = threading.Event()
+        release_config_read = threading.Event()
+
+        def _blocked_config_read():
+            config_read_started.set()
+            assert release_config_read.wait(timeout=1)
+            return None, None, None
+
+        monkeypatch.setattr(hermes_logging, "_read_logging_config", _blocked_config_read)
+
+        async def _probe():
+            heartbeat = asyncio.create_task(asyncio.sleep(0.02))
+            timer = threading.Timer(0.2, release_config_read.set)
+            timer.start()
+            try:
+                # This is the synchronous call AIAgent makes during each gateway turn.
+                hermes_logging.setup_logging(hermes_home=hermes_home)
+                await heartbeat
+                return release_config_read.is_set()
+            finally:
+                release_config_read.set()
+                timer.cancel()
+                timer.join(timeout=1)
+
+        released_before_heartbeat = asyncio.run(_probe())
+
+        assert not released_before_heartbeat, "event loop was blocked by config parsing"
+        assert not config_read_started.is_set(), "idempotent setup re-read config.yaml"
 
     def test_force_reinitializes(self, hermes_home):
         hermes_logging.setup_logging(hermes_home=hermes_home)

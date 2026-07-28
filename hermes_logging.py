@@ -302,6 +302,16 @@ def setup_logging(
     global _logging_initialized
     home = hermes_home or get_hermes_home()
     log_dir = home / "logs"
+
+    # AIAgent is constructed once per gateway message and calls the default
+    # setup path each time.  Once process logging is initialized that call is
+    # the documented no-op: return before filesystem/config/YAML work so a
+    # slow config read cannot block the gateway event loop.  Explicit modes
+    # still run below because a later gateway/gui setup may need to add its
+    # component-specific handler after an earlier CLI bootstrap.
+    if _logging_initialized and not force and mode is None:
+        return log_dir
+
     log_dir.mkdir(parents=True, exist_ok=True)
 
     # Read config defaults (best-effort — config may not be loaded yet).
