@@ -9857,16 +9857,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 budget = min(5.0, max(0.05, float(timeout)))
                 deadline = asyncio.get_running_loop().time() + budget
                 attempted: list[tuple[str, asyncio.Task]] = []
+                if not session_keys:
+                    return attempted
+                try:
+                    async_store = self.async_session_store
+                except AttributeError:
+                    logger.debug(
+                        "Async session store unavailable during shutdown; "
+                        "skipping %d resume marker(s)",
+                        len(session_keys),
+                    )
+                    return attempted
+
+                async def _persist_marker(session_key: str) -> None:
+                    await async_store.mark_resume_pending(session_key, reason)
+
                 for session_key in session_keys:
                     remaining = deadline - asyncio.get_running_loop().time()
                     if remaining <= 0:
                         break
-                    marker_task = asyncio.create_task(
-                        self.async_session_store.mark_resume_pending(
-                            session_key,
-                            reason,
-                        )
-                    )
+                    marker_task = asyncio.create_task(_persist_marker(session_key))
                     _track_resume_marker_task(marker_task)
                     attempted.append((session_key, marker_task))
                     try:
