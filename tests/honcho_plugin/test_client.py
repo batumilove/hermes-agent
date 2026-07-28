@@ -3,7 +3,10 @@
 import importlib.util
 import json
 import os
+import socket
 import sys
+import threading
+import time
 import types
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -1363,6 +1366,98 @@ class TestHonchoSingletonReuseAndClose:
 
     def teardown_method(self):
         reset_honcho_client()
+
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("honcho"),
+        reason="honcho SDK not installed",
+    )
+    def test_peer_fin_does_not_leave_idle_close_wait(self):
+        """A peer FIN after a complete response must not remain pooled in CLOSE_WAIT."""
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        peer_port = listener.getsockname()[1]
+        close_peer = threading.Event()
+        server_errors = []
+
+        def serve_one():
+            try:
+                conn, _ = listener.accept()
+                with conn:
+                    request = b""
+                    while b"\r\n\r\n" not in request:
+                        chunk = conn.recv(4096)
+                        if not chunk:
+                            return
+                        request += chunk
+                    conn.sendall(
+                        b"HTTP/1.1 200 OK\r\n"
+                        b"Content-Type: application/json\r\n"
+                        b"Content-Length: 2\r\n"
+                        b"Connection: keep-alive\r\n\r\n{}"
+                    )
+                    if not close_peer.wait(timeout=2):
+                        raise TimeoutError("test did not release the peer")
+            except Exception as exc:  # pragma: no cover - surfaced below
+                server_errors.append(exc)
+            finally:
+                listener.close()
+
+        server = threading.Thread(target=serve_one, daemon=True)
+        server.start()
+
+        config = HonchoClientConfig(
+            api_key="test-key",
+            workspace_id="test-workspace",
+            environment="production",
+            base_url=f"http://127.0.0.1:{peer_port}",
+            timeout=1.0,
+        )
+        with patch(
+            "plugins.memory.honcho.client._apply_fresh_oauth_token"
+        ), patch("hermes_cli.config.load_config", return_value={}):
+            client = get_honcho_client(config)
+            assert client._http.get("/probe") == {}
+
+        # The response is complete while the peer is still connected. Closing
+        # it now deterministically exercises an idle pooled peer-FIN rather than
+        # a FIN consumed during response processing.
+        close_peer.set()
+        server.join(timeout=2)
+        assert not server.is_alive()
+        assert server_errors == []
+
+        def peer_states():
+            states = []
+            for proc_path in ("/proc/net/tcp", "/proc/net/tcp6"):
+                with open(proc_path, encoding="ascii") as table:
+                    next(table)
+                    for row in table:
+                        fields = row.split()
+                        remote_port = int(fields[2].rsplit(":", 1)[1], 16)
+                        if remote_port == peer_port:
+                            states.append(fields[3])
+            return states
+
+        # Linux TCP state 08 is CLOSE_WAIT. A no-idle-pool client may already
+        # have removed the socket; otherwise the peer FIN becomes observable.
+        deadline = time.monotonic() + 0.5
+        observed = []
+        peer_close_observed = False
+        while time.monotonic() < deadline:
+            observed = peer_states()
+            if not observed or all(state != "01" for state in observed):
+                peer_close_observed = True
+                break
+            time.sleep(0.01)
+
+        assert peer_close_observed, (
+            f"peer close was not observed before the deadline; final states: {observed}"
+        )
+        assert "08" not in observed, (
+            f"peer-closed Honcho connection remained pooled in CLOSE_WAIT: {observed}"
+        )
 
     @pytest.fixture
     def real_honcho_client(self):
