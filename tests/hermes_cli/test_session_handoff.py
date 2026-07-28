@@ -12,6 +12,7 @@ flip pending → running, and finishes with ``complete_handoff`` or
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import subprocess
 import sys
@@ -127,7 +128,9 @@ class TestHandoffStateDB:
             {"id": sid, "handoff_platform": "telegram", "title": None}
         ]
 
-    def test_list_pending_handoffs_does_not_wait_for_shared_connection(self):
+    def test_list_pending_handoffs_does_not_wait_for_shared_connection(
+        self, tmp_path
+    ):
         probe = textwrap.dedent(
             """
             import tempfile
@@ -182,10 +185,16 @@ class TestHandoffStateDB:
             """
         )
 
+        hermes_home = tmp_path / "subprocess-hermes-home"
+        hermes_home.mkdir()
+        env = os.environ.copy()
+        env["HERMES_HOME"] = str(hermes_home)
+
         try:
             completed = subprocess.run(
                 [sys.executable, "-c", probe],
                 cwd=str(Path(__file__).resolve().parents[2]),
+                env=env,
                 capture_output=True,
                 text=True,
                 timeout=6,
