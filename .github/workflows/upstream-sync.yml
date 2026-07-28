@@ -9,7 +9,9 @@ on:
     branches: [batumi/live]
 
 permissions:
-  contents: read
+  # EnablePullRequestAutoMerge requires repository contents write permission.
+  # Git credentials remain disabled; SSH deploy key is still the only push path.
+  contents: write
   pull-requests: write
 
 concurrency:
