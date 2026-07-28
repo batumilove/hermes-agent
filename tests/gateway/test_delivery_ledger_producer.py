@@ -8,6 +8,7 @@ block the send.
 """
 
 import asyncio
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -133,6 +134,86 @@ class TestProducerHook:
         assert len(rows) == 1
         assert rows[0][1] == "delivered"
         assert rows[0][2] == "final answer"
+
+    @pytest.mark.parametrize(
+        ("blocked_name", "send_success"),
+        [
+            ("record_obligation", True),
+            ("mark_attempting", True),
+            ("mark_delivered", True),
+            ("mark_failed", False),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_delivery_ledger_mutations_do_not_block_event_loop(
+        self, monkeypatch, blocked_name, send_success
+    ):
+        adapter = _Adapter()
+        if not send_success:
+            adapter.send = AsyncMock(
+                return_value=SendResult(success=False, error="rejected")
+            )
+
+        started = threading.Event()
+        heartbeat = threading.Event()
+        heartbeat_before_release: list[bool] = []
+
+        def blocking_mutation(*args, **kwargs):
+            started.set()
+            heartbeat_before_release.append(heartbeat.wait(timeout=1.0))
+
+        for name in (
+            "record_obligation",
+            "mark_attempting",
+            "mark_delivered",
+            "mark_failed",
+        ):
+            monkeypatch.setattr(
+                dl,
+                name,
+                blocking_mutation if name == blocked_name else lambda *a, **k: None,
+            )
+
+        async def heartbeat_task():
+            while not started.is_set():
+                await asyncio.sleep(0)
+            heartbeat.set()
+
+        await asyncio.gather(_run(adapter, _event()), heartbeat_task())
+
+        assert heartbeat_before_release == [True]
+
+    @pytest.mark.asyncio
+    async def test_delivered_ack_finishes_once_before_cancellation_propagates(
+        self, monkeypatch
+    ):
+        adapter = _Adapter()
+        started = threading.Event()
+        release = threading.Event()
+        delivered_calls: list[str] = []
+
+        monkeypatch.setattr(dl, "record_obligation", lambda **kwargs: None)
+        monkeypatch.setattr(dl, "mark_attempting", lambda obligation_id: None)
+
+        def blocking_delivered(obligation_id):
+            delivered_calls.append(obligation_id)
+            started.set()
+            release.wait(timeout=1.0)
+
+        monkeypatch.setattr(dl, "mark_delivered", blocking_delivered)
+
+        task = asyncio.create_task(_run(adapter, _event()))
+        while not started.is_set():
+            await asyncio.sleep(0)
+
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert len(delivered_calls) == 1
 
     @pytest.mark.asyncio
     async def test_disabled_gate_skips_recording_but_sends(self):
