@@ -1,0 +1,203 @@
+name: Sync one upstream commit
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+  pull_request:
+    types: [closed]
+    branches: [batumi/live]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: upstream-sync-batumi-live
+  cancel-in-progress: false
+
+jobs:
+  sync-one-commit:
+    name: Prepare next upstream commit
+    if: >-
+      github.repository == 'batumilove/hermes-agent' &&
+      (github.event_name != 'pull_request' ||
+       (github.event.pull_request.merged == true &&
+        startsWith(github.event.pull_request.head.ref, 'sync/upstream-')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Only trusted batumi/live code is checked out. The privileged job fetches
+      # and cherry-picks upstream bytes but never executes them.
+      - name: Checkout trusted sync controller
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: batumi/live
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Configure repo-scoped deploy key
+        env:
+          DEPLOY_KEY: ${{ secrets.UPSTREAM_SYNC_DEPLOY_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DEPLOY_KEY" ]; then
+            echo "::error::UPSTREAM_SYNC_DEPLOY_KEY is required."
+            exit 1
+          fi
+
+          KEY_FILE="$RUNNER_TEMP/upstream-sync-deploy-key"
+          KNOWN_HOSTS="$RUNNER_TEMP/github-known-hosts"
+          printf '%s\n' "$DEPLOY_KEY" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          gh api meta --jq '.ssh_keys[]' | sed 's/^/github.com /' > "$KNOWN_HOSTS"
+          chmod 600 "$KNOWN_HOSTS"
+
+          echo "GIT_SSH_COMMAND=ssh -i $KEY_FILE -o IdentitiesOnly=yes -o UserKnownHostsFile=$KNOWN_HOSTS -o StrictHostKeyChecking=yes" >> "$GITHUB_ENV"
+          git remote set-url origin git@github.com:batumilove/hermes-agent.git
+
+      - name: Validate state and select exactly one commit
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if [ "$(gh api "repos/$GITHUB_REPOSITORY" --jq .allow_auto_merge)" != "true" ]; then
+            echo "::error::Repository auto-merge is disabled. Enable it before activating this workflow."
+            exit 1
+          fi
+
+          OPEN_SYNC_PRS=$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --limit 100 \
+            --json number,headRefName,url \
+            --jq '.[] | select(.headRefName | startswith("sync/hermes-update-") or startswith("sync/upstream-")) | "\(.number)\t\(.headRefName)\t\(.url)"')
+          if [ -n "$OPEN_SYNC_PRS" ]; then
+            echo "::error::Open sync PR already exists; refusing to create or update another."
+            printf '%s\n' "$OPEN_SYNC_PRS"
+            exit 1
+          fi
+
+          BASELINE=$(tr -d '[:space:]' < .github/upstream-sync-base)
+          if ! [[ "$BASELINE" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid .github/upstream-sync-base: expected one full lowercase SHA."
+            exit 1
+          fi
+
+          git remote add upstream https://github.com/NousResearch/hermes-agent.git
+          git fetch --no-tags upstream main
+
+          if ! git cat-file -e "$BASELINE^{commit}"; then
+            echo "::error::Recorded upstream baseline does not exist: $BASELINE"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$BASELINE" upstream/main; then
+            echo "::error::Recorded baseline is not an ancestor of upstream/main: $BASELINE"
+            exit 1
+          fi
+
+          NEXT_COMMIT=$(git rev-list --first-parent --reverse "$BASELINE..upstream/main" | sed -n '1p')
+          if [ -z "$NEXT_COMMIT" ]; then
+            echo "No new first-parent upstream commit after $BASELINE."
+            echo "has_commit=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          FIRST_PARENT=$(git rev-parse "$NEXT_COMMIT^1")
+          if [ "$FIRST_PARENT" != "$BASELINE" ]; then
+            echo "::error::Next upstream commit does not directly advance the recorded baseline."
+            echo "baseline=$BASELINE next=$NEXT_COMMIT first_parent=$FIRST_PARENT"
+            exit 1
+          fi
+
+          SHORT_SHA=${NEXT_COMMIT:0:12}
+          BRANCH="sync/upstream-$SHORT_SHA"
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "::error::Remote branch already exists without an open PR: $BRANCH"
+            exit 1
+          fi
+
+          {
+            echo "has_commit=true"
+            echo "baseline=$BASELINE"
+            echo "next_commit=$NEXT_COMMIT"
+            echo "branch=$BRANCH"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create PR, trigger CI, and enable approval-gated auto-merge
+        if: steps.plan.outputs.has_commit == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASELINE: ${{ steps.plan.outputs.baseline }}
+          NEXT_COMMIT: ${{ steps.plan.outputs.next_commit }}
+          BRANCH: ${{ steps.plan.outputs.branch }}
+        run: |
+          set -euo pipefail
+          git config user.name "hermes-upstream-sync[bot]"
+          git config user.email "189313529+batumilove@users.noreply.github.com"
+          git switch -c "$BRANCH"
+
+          PARENT_COUNT=$(git rev-list --parents -n 1 "$NEXT_COMMIT" | awk '{print NF - 1}')
+          if [ "$PARENT_COUNT" -gt 1 ]; then
+            git cherry-pick -m 1 "$NEXT_COMMIT"
+          else
+            git cherry-pick "$NEXT_COMMIT"
+          fi
+
+          # Push the unamended candidate with the deploy key, then create the
+          # PR using GITHUB_TOKEN. GitHub suppresses events created by its own
+          # token, so a second deploy-key push below supplies the synchronize
+          # event that starts required pull_request CI.
+          git diff --check batumi/live...HEAD
+          INITIAL_HEAD=$(git rev-parse HEAD)
+          git push origin "HEAD:refs/heads/$BRANCH"
+
+          SUBJECT=$(git show -s --format=%s "$NEXT_COMMIT")
+          BODY_FILE="$RUNNER_TEMP/upstream-sync-pr.md"
+          # Backticks are intentional Markdown literals, not shell expressions.
+          # shellcheck disable=SC2016
+          {
+            printf 'Carries exactly one first-parent commit from `NousResearch/hermes-agent@main`.\n\n'
+            printf -- '- Previous upstream baseline: `%s`\n' "$BASELINE"
+            printf -- '- Candidate upstream commit: `%s`\n' "$NEXT_COMMIT"
+            printf -- '- Upstream subject: `%s`\n\n' "$SUBJECT"
+            printf 'The workflow cherry-picked the upstream patch onto current `batumi/live` and advances `.github/upstream-sync-base` in the same final commit. No upstream code was executed by the privileged sync job.\n\n'
+            printf 'Auto-merge uses **rebase** and remains blocked until repository CI, required human approval, CODEOWNER review, and review-thread resolution all pass.\n'
+          } > "$BODY_FILE"
+
+          PR_URL=$(gh pr create \
+            --repo "$GITHUB_REPOSITORY" \
+            --base batumi/live \
+            --head "$BRANCH" \
+            --title "sync(upstream): $SUBJECT" \
+            --body-file "$BODY_FILE")
+          PR_NUMBER=${PR_URL##*/}
+          if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "::error::Could not parse PR number from: $PR_URL"
+            exit 1
+          fi
+
+          printf '%s\n' "$NEXT_COMMIT" > .github/upstream-sync-base
+          git add .github/upstream-sync-base
+          git commit --amend --no-edit
+          git diff --check batumi/live...HEAD
+          git push \
+            "--force-with-lease=refs/heads/$BRANCH:$INITIAL_HEAD" \
+            origin "HEAD:refs/heads/$BRANCH"
+
+          gh pr merge "$PR_NUMBER" --auto --rebase --repo "$GITHUB_REPOSITORY"
+          gh pr view "$PR_NUMBER" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json number,state,baseRefName,headRefName,headRefOid,mergeStateStatus,autoMergeRequest,url
+
+      - name: Remove deploy key material
+        if: always()
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/upstream-sync-deploy-key"
+          if [ -f "$KEY_FILE" ]; then
+            shred -u "$KEY_FILE"
+          fi
