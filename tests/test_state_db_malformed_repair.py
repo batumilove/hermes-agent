@@ -12,6 +12,7 @@ journal_mode in apply_wal_with_fallback), before _init_schema runs — so it
 cannot be handled at the FTS-rebuild layer. These tests verify the
 sqlite_master surgery path recovers the canonical data and self-heals on open.
 """
+import logging
 import sqlite3
 import uuid
 from pathlib import Path
@@ -616,3 +617,20 @@ def test_select_cached_agent_history_prefers_longer_live_transcript():
     # No live transcript / not a list → no-op.
     assert _select_cached_agent_history(persisted, None) is persisted
     assert _select_cached_agent_history(persisted, "nope") is persisted
+
+
+def test_persisted_transcript_skew_warning_does_not_claim_fts_corruption(caplog):
+    from gateway.run import _warn_persisted_transcript_skew
+
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        _warn_persisted_transcript_skew(
+            "agent:main:telegram:dm:1:2",
+            persisted_count=4,
+            live_count=6,
+        )
+
+    message = caplog.records[-1].getMessage()
+    assert "Persisted transcript lagged live cached history" in message
+    assert "persisted=4, live=6, skew=2" in message
+    assert "cause=unconfirmed" in message
+    assert "FTS write corruption" not in message

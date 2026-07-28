@@ -25,6 +25,7 @@ import sys
 import threading
 import time
 import weakref
+from contextlib import contextmanager
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
@@ -1759,6 +1760,10 @@ class SessionDB:
         self.read_only = read_only
 
         self._lock = threading.Lock()
+        self._write_diag_lock = threading.Lock()
+        self._write_waiter_count = 0
+        self._write_owner_operation: Optional[str] = None
+        self._write_owner_started: Optional[float] = None
         self._write_count = 0
         (
             self._checkpoint_coordinator_key,
@@ -2259,6 +2264,40 @@ class SessionDB:
                 self._warn_fts5_unavailable(exc)
             return False
 
+    @contextmanager
+    def _attributed_write_lock(self, operation_label: str):
+        """Hold the writer lock and expose bounded instance-local attribution."""
+        wait_started = time.monotonic()
+        with self._write_diag_lock:
+            self._write_waiter_count += 1
+            queue_depth = self._write_waiter_count
+            owner_operation = self._write_owner_operation or "-"
+            owner_age_s = (
+                max(0.0, wait_started - self._write_owner_started)
+                if self._write_owner_started is not None
+                else 0.0
+            )
+
+        acquired = False
+        try:
+            with self._lock:
+                acquired = True
+                lock_wait = time.monotonic() - wait_started
+                with self._write_diag_lock:
+                    self._write_waiter_count -= 1
+                    self._write_owner_operation = operation_label
+                    self._write_owner_started = time.monotonic()
+                try:
+                    yield lock_wait, queue_depth, owner_operation, owner_age_s
+                finally:
+                    with self._write_diag_lock:
+                        self._write_owner_operation = None
+                        self._write_owner_started = None
+        finally:
+            if not acquired:
+                with self._write_diag_lock:
+                    self._write_waiter_count -= 1
+
     def _execute_write(
         self,
         fn: Callable[[sqlite3.Connection], T],
@@ -2301,9 +2340,13 @@ class SessionDB:
         for attempt in range(self._WRITE_MAX_RETRIES):
             try:
                 write_started = time.monotonic()
-                lock_wait_started = time.monotonic()
-                with self._lock:
-                    lock_wait = time.monotonic() - lock_wait_started
+                with self._attributed_write_lock(operation_label) as lock_diag:
+                    (
+                        lock_wait,
+                        queue_depth,
+                        owner_operation,
+                        owner_age_s,
+                    ) = lock_diag
                     if self._closed or self._conn is None:
                         raise RuntimeError("SessionDB is closed")
                     transaction_started = time.monotonic()
@@ -2342,7 +2385,8 @@ class SessionDB:
                     logger.warning(
                         "SessionDB write latency: caller=%s operation=%s role=%s "
                         "payload_bytes=%s fts_bytes=%s lock_wait=%.3fs txn=%.3fs "
-                        "total=%.3fs attempt=%d",
+                        "total=%.3fs attempt=%d instance_queue_depth=%d "
+                        "instance_owner_operation=%s instance_owner_age_s=%.3f",
                         caller_name,
                         operation_label,
                         role_label,
@@ -2352,6 +2396,9 @@ class SessionDB:
                         transaction_time,
                         total_time,
                         attempt + 1,
+                        queue_depth,
+                        owner_operation,
+                        owner_age_s,
                     )
                 # Success — periodic best-effort checkpoint is now handled by a
                 # dedicated background coordinator so checkpoint I/O no longer

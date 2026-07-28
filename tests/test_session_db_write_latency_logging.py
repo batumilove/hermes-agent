@@ -1,6 +1,8 @@
 import json
 import logging
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from hermes_state import SessionDB
 
@@ -25,6 +27,51 @@ def test_execute_write_warns_when_waiting_for_session_db_lock(tmp_path, caplog):
     assert "operation=insert_session" in messages
     assert "lock_wait=" in messages
     assert "txn=" in messages
+    db.close()
+
+
+def test_execute_write_attributes_lock_wait_to_observed_owner(tmp_path, caplog):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db._SLOW_WRITE_WARN_S = 0.0
+    db._SLOW_LOCK_WAIT_WARN_S = 0.0
+    holder_entered = threading.Event()
+    release_holder = threading.Event()
+
+    def hold_writer(conn):
+        holder_entered.set()
+        assert release_holder.wait(timeout=5)
+
+    def wait_for_writer(conn):
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+            ("waiter", "test", time.time()),
+        )
+
+    with caplog.at_level(logging.WARNING, logger="hermes_state"):
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            holder = pool.submit(
+                db._execute_write,
+                hold_writer,
+                operation="hold_writer",
+            )
+            assert holder_entered.wait(timeout=2)
+            waiter = pool.submit(
+                db._execute_write,
+                wait_for_writer,
+                operation="wait_for_writer",
+            )
+            time.sleep(0.05)
+            release_holder.set()
+            holder.result(timeout=2)
+            waiter.result(timeout=2)
+
+    messages = [record.getMessage() for record in caplog.records]
+    waiter_log = next(
+        message for message in messages if "operation=wait_for_writer" in message
+    )
+    assert "instance_queue_depth=1" in waiter_log
+    assert "instance_owner_operation=hold_writer" in waiter_log
+    assert "instance_owner_age_s=" in waiter_log
     db.close()
 
 
