@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -197,8 +198,8 @@ async def test_gateway_stop_bounds_pre_drain_resume_persistence_by_drain_deadlin
 
 
 @pytest.mark.asyncio
-async def test_gateway_stop_clears_late_pre_drain_marker_after_graceful_finish():
-    """Timed-out marker writes must not leave false resume state after clean drain."""
+async def test_gateway_stop_bounds_wedged_graceful_resume_cleanup():
+    """A permanently wedged clear must not stall graceful shutdown."""
     runner, adapter = make_restart_runner()
     runner._restart_drain_timeout = 0.05
     runner._finalize_shutdown_agents = AsyncMock()
@@ -207,38 +208,74 @@ async def test_gateway_stop_clears_late_pre_drain_marker_after_graceful_finish()
     running_agent = MagicMock()
     runner._running_agents = {"session": running_agent}
 
-    marker_started = asyncio.Event()
-    release_marker = asyncio.Event()
-    marker_written = asyncio.Event()
+    clear_started = threading.Event()
+    release_clear = threading.Event()
+    sync_store = runner.session_store
+    sync_store.mark_resume_pending = MagicMock()
+
+    def stuck_clear_resume_pending(_session_key):
+        clear_started.set()
+        release_clear.wait()
+
+    sync_store.clear_resume_pending = stuck_clear_resume_pending
+
+    async def finish_gracefully():
+        await asyncio.sleep(0.01)
+        runner._running_agents.clear()
+
+    finisher = asyncio.create_task(finish_gracefully())
+    stop_task = asyncio.create_task(runner.stop(restart=True, service_restart=True))
+    completed_within_bound = False
+    try:
+        with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+            await asyncio.wait_for(asyncio.shield(stop_task), timeout=0.5)
+        completed_within_bound = True
+    except asyncio.TimeoutError:
+        pass
+    finally:
+        release_clear.set()
+        await finisher
+        await asyncio.wait_for(stop_task, timeout=1.0)
+
+    assert clear_started.is_set()
+    assert completed_within_bound, "wedged resume cleanup stalled graceful shutdown"
+    running_agent.interrupt.assert_not_called()
+    adapter.disconnect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_gateway_stop_clears_real_executor_marker_that_commits_late():
+    """A timed-out to_thread marker must be ordered before compensating clear."""
+    runner, adapter = make_restart_runner()
+    runner._restart_drain_timeout = 0.05
+    runner._finalize_shutdown_agents = AsyncMock()
+    adapter.disconnect = AsyncMock()
+
+    running_agent = MagicMock()
+    runner._running_agents = {"session": running_agent}
+
+    marker_started = threading.Event()
+    release_marker = threading.Event()
     resume_pending: set[str] = set()
-    background_writes: list[asyncio.Task] = []
+    write_order: list[str] = []
+    sync_store = runner.session_store
 
-    async def mark_resume_pending(session_key, _reason):
+    def delayed_mark_resume_pending(session_key, _reason):
         marker_started.set()
+        release_marker.wait()
+        resume_pending.add(session_key)
+        write_order.append("mark")
 
-        async def commit_later():
-            await release_marker.wait()
-            resume_pending.add(session_key)
-            marker_written.set()
-
-        write = asyncio.create_task(commit_later())
-        background_writes.append(write)
-        await asyncio.shield(write)
-
-    async def clear_resume_pending(session_key):
-        await marker_written.wait()
+    def clear_resume_pending(session_key):
         resume_pending.discard(session_key)
+        write_order.append("clear")
 
-    async_store = MagicMock()
-    async_store._store = runner.session_store
-    async_store.mark_resume_pending = mark_resume_pending
-    async_store.clear_resume_pending = clear_resume_pending
-    runner._async_session_store = async_store
+    sync_store.mark_resume_pending = delayed_mark_resume_pending
+    sync_store.clear_resume_pending = clear_resume_pending
 
     async def finish_gracefully_after_marker_timeout():
-        await marker_started.wait()
+        await asyncio.to_thread(marker_started.wait)
         await asyncio.sleep(0.06)
-        release_marker.set()
         runner._running_agents.clear()
 
     finisher = asyncio.create_task(finish_gracefully_after_marker_timeout())
@@ -248,8 +285,18 @@ async def test_gateway_stop_clears_late_pre_drain_marker_after_graceful_finish()
             timeout=1.0,
         )
     await finisher
-    await asyncio.gather(*background_writes)
 
+    # Let the actual executor-backed marker commit only after graceful cleanup
+    # has already been requested. The final durable state must still be clear.
+    release_marker.set()
+
+    async def wait_for_late_marker_cleanup():
+        while write_order[-2:] != ["mark", "clear"]:
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(wait_for_late_marker_cleanup(), timeout=1.0)
+
+    assert write_order[-2:] == ["mark", "clear"]
     assert resume_pending == set()
     running_agent.interrupt.assert_not_called()
     adapter.disconnect.assert_awaited_once()
