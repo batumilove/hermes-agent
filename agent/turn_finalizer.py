@@ -22,6 +22,7 @@ keep the exact logger name (``"agent.conversation_loop"``).
 
 from __future__ import annotations
 
+import copy
 import os
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
@@ -495,6 +496,12 @@ def finalize_turn(
                 session_id=agent.session_id or "",
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
+                messages=tuple(copy.deepcopy(messages)),
+                workdir=str(
+                    getattr(agent, "cwd", None)
+                    or getattr(agent, "workdir", None)
+                    or ""
+                ),
             )
             for _hook_result in _transform_results:
                 if isinstance(_hook_result, str) and _hook_result:

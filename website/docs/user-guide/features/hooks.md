@@ -1253,6 +1253,8 @@ def my_callback(
     session_id: str,
     model: str,
     platform: str,
+    messages: tuple[dict, ...],
+    workdir: str,
     **kwargs,
 ) -> str | None:
 ```
@@ -1263,10 +1265,12 @@ def my_callback(
 | `session_id` | `str` | Session ID for this conversation (may be empty for one-shot runs). |
 | `model` | `str` | Model name that produced the response (e.g. `anthropic/claude-sonnet-4.6`). |
 | `platform` | `str` | Delivery platform (`cli`, `telegram`, `discord`, …; empty when unset). |
+| `messages` | `tuple[dict, ...]` | Detached copy of the conversation through the current turn. Mutations are discarded. |
+| `workdir` | `str` | Active agent working directory, or an empty string when none is set. |
 
 **Return value:** Non-empty `str` to replace the response text, `None` or empty string to leave it unchanged. **First non-empty string wins** when multiple plugins register — mirroring `transform_tool_result`.
 
-**Use cases:** Apply a personality/vocabulary transform (pirate-speak, Spongebob), redact user-specific identifiers from the final text, append a project-specific signature footer, enforce a house style guide without burning tokens on SOUL instructions.
+**Use cases:** Apply a personality/vocabulary transform (pirate-speak, Spongebob), redact user-specific identifiers from the final text, append a project-specific signature footer, enforce workspace evidence policy, or preserve an existing conversation footer without burning tokens on SOUL instructions.
 
 ```python
 import os, re
@@ -1280,7 +1284,7 @@ def register(ctx):
     ctx.register_hook("transform_llm_output", spongebob)
 ```
 
-The hook is guarded on a non-empty, non-interrupted response — it will not fire on stop-button interrupts or empty turns. Exceptions are logged as warnings and do not break agent execution.
+The hook is guarded on a non-empty, non-interrupted response — it will not fire on stop-button interrupts or empty turns. Exceptions are logged as warnings and do not break agent execution. Plugins and their hook registrations are loaded only when a session starts; changing the plugin set does not mutate an active conversation's prompt or tool schemas.
 
 ---
 
