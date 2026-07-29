@@ -22,9 +22,10 @@ permissions:
 
 jobs:
   observe:
-    uses: batumilove/hermes-ops/.github/workflows/staging-telegram-socket-diagnostics.yml@b94325e71fe2eabc70af60719d7984f7d66bb723
+    uses: batumilove/hermes-ops/.github/workflows/staging-telegram-socket-diagnostics.yml@93b014d82872a66a58366989fc21f48624352f55
     with:
       expected_source_sha: ${{ inputs.expected_source_sha }}
       observation_seconds: ${{ inputs.observation_seconds }}
       activation_ack: ${{ inputs.activation_ack }}
+      deployment_lane: ${{ github.ref_name == 'rebuild/batumi-live' && 'candidate' || 'live' }}
     secrets: inherit
