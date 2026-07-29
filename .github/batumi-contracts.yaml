@@ -1,0 +1,75 @@
+version: 1
+
+contracts:
+  - id: cli-and-config
+    rationale: Preserve public commands, profile loading, and config defaults.
+    tests:
+      - tests/cli/test_cli_init.py
+      - tests/hermes_cli/test_env_loader.py
+      - tests/hermes_cli/test_lifecycle.py
+      - tests/gateway/test_config.py
+
+  - id: state-and-sqlite
+    rationale: Preserve existing databases, handoff state, and concurrent reads.
+    tests:
+      - tests/test_hermes_state.py
+      - tests/test_session_db_read_path_split.py
+      - tests/hermes_cli/test_session_handoff.py
+
+  - id: plugins
+    rationale: Preserve plugin discovery, lifecycle hooks, and skill exposure.
+    tests:
+      - tests/hermes_cli/test_plugins.py
+      - tests/test_plugin_skills.py
+      - tests/tools/test_environment_registry.py
+
+  - id: telegram
+    rationale: Preserve cancellation, topic routing, reconnect, and delivery behavior.
+    tests:
+      - tests/gateway/test_telegram_network.py
+      - tests/gateway/test_telegram_request_phase_real_socket.py
+      - tests/gateway/test_telegram_network_reconnect.py
+      - tests/gateway/test_platform_reconnect_fd_leak.py
+      - tests/gateway/test_dm_topics.py
+      - tests/gateway/test_delivery.py
+      - tests/gateway/test_ephemeral_telegram_topics.py
+
+  - id: cron
+    rationale: Preserve verbatim scripts, topic ownership, and scheduler shutdown.
+    tests:
+      - tests/cron/test_scheduler.py
+      - tests/cron/test_cron_no_agent.py
+      - tests/cron/test_shutdown_interrupt.py
+      - tests/cron/test_scheduler_shutdown_guard.py
+
+  - id: gateway-lifecycle
+    rationale: Preserve restart continuation, delivery ledger, and close cleanup.
+    tests:
+      - tests/gateway/test_restart_resume_pending.py
+      - tests/gateway/test_completion_delivery.py
+      - tests/gateway/test_delivery_ledger.py
+      - tests/gateway/test_delivery_ledger_producer.py
+      - tests/gateway/test_gateway_shutdown.py
+      - tests/gateway/test_shutdown_cache_cleanup.py
+      - tests/gateway/test_webhook_session_close.py
+
+  - id: provider-fallback
+    rationale: Preserve classification and per-episode fallback transitions.
+    tests:
+      - tests/agent/test_error_classifier.py
+      - tests/run_agent/test_24996_fallback_exhaustion_cooldown.py
+
+  - id: terminal-backends
+    rationale: Preserve terminal selection and plugin-provided environments.
+    tests:
+      - tests/tools/test_terminal_tool_requirements.py
+      - tests/tools/test_environment_registry.py
+      - tests/hermes_cli/test_dump_terminal_backend.py
+
+  - id: update-and-rollback
+    rationale: Preserve safe update checks and running-container restart behavior.
+    tests:
+      - tests/hermes_cli/test_update_check.py
+      - tests/test_install_diverged_update.py
+      - tests/docker/test_container_restart.py
+      - tests/docker/test_gateway_run_supervised.py

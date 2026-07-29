@@ -13,11 +13,14 @@ patches:
       verification command, and retirement condition.
     paths:
       - .github/batumi-patches.yaml
+      - .github/batumi-contracts.yaml
       - .github/upstream-base
       - .github/workflows/ci.yml
       - .github/workflows/upstream-sync.yml
       - scripts/check_fork_delta.py
+      - scripts/run_batumi_contracts.py
       - tests/scripts/test_check_fork_delta.py
+      - tests/scripts/test_run_batumi_contracts.py
       - tests/scripts/test_upstream_sync_workflow.py
     tests:
       - scripts/run_tests.sh tests/scripts/test_check_fork_delta.py tests/scripts/test_upstream_sync_workflow.py
