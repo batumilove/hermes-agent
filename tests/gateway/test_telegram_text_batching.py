@@ -369,8 +369,8 @@ class TestTextBatching:
         await asyncio.sleep(0.2)
 
     @pytest.mark.asyncio
-    async def test_cancellation_during_topic_recovery_drains_worker_without_enqueue(self):
-        """Started off-loop recovery is owned until completion after cancellation."""
+    async def test_repeated_cancellation_during_topic_recovery_still_drains_worker(self):
+        """Repeated cancellation cannot detach started off-loop recovery."""
         adapter = _make_adapter()
         started = asyncio.Event()
         release = asyncio.Event()
@@ -391,6 +391,11 @@ class TestTextBatching:
         task.cancel()
         await asyncio.sleep(0.05)
         assert not task.done()
+
+        task.cancel()
+        await asyncio.sleep(0.05)
+        assert not task.done(), "repeated cancellation detached topic recovery"
+        assert task in adapter._text_recovery_tasks
 
         release.set()
         with pytest.raises(asyncio.CancelledError):

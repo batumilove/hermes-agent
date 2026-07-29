@@ -13759,24 +13759,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                         _hyg_agent, _compressed = await asyncio.shield(
                                             _hyg_task
                                         )
-                                    except asyncio.CancelledError:
+                                    except asyncio.CancelledError as _hyg_cancellation:
                                         # run_in_executor cannot stop a worker that
                                         # already owns an AIAgent. Reclaim the result,
                                         # clean it off-loop, and only then propagate
-                                        # cancellation. No session state is published
-                                        # from this cancelled hygiene attempt.
+                                        # the original cancellation. Overlapping stop
+                                        # and shutdown cancellation must not detach the
+                                        # non-cancellable executor worker. No session
+                                        # state is published from this cancelled attempt.
+                                        while not _hyg_task.done():
+                                            try:
+                                                await asyncio.shield(_hyg_task)
+                                            except asyncio.CancelledError:
+                                                continue
                                         try:
-                                            _hyg_agent, _compressed = await _hyg_task
+                                            _hyg_agent, _compressed = _hyg_task.result()
                                         except BaseException:
                                             # The worker owns cleanup on failure.
                                             _hyg_agent = None
                                         else:
-                                            await self._cleanup_agent_resources_off_loop(
-                                                _hyg_agent,
-                                                context="session hygiene cancelled",
+                                            _cleanup_task = asyncio.create_task(
+                                                self._cleanup_agent_resources_off_loop(
+                                                    _hyg_agent,
+                                                    context="session hygiene cancelled",
+                                                )
                                             )
+                                            while not _cleanup_task.done():
+                                                try:
+                                                    await asyncio.shield(_cleanup_task)
+                                                except asyncio.CancelledError:
+                                                    continue
+                                            try:
+                                                _cleanup_task.result()
+                                            except BaseException:
+                                                pass
                                             _hyg_agent = None
-                                        raise
+                                        raise _hyg_cancellation
 
                                     # _compress_context ends the old session and creates
                                     # a new session_id.  Write compressed messages into

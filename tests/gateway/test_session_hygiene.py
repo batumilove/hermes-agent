@@ -424,10 +424,10 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
 
 
 @pytest.mark.asyncio
-async def test_session_hygiene_cancellation_awaits_worker_cleanup_without_publication(
+async def test_session_hygiene_repeated_cancellation_awaits_worker_cleanup_without_publication(
     monkeypatch, tmp_path
 ):
-    """Cancellation cannot orphan a successful off-loop hygiene agent."""
+    """Repeated cancellation cannot orphan a successful off-loop hygiene agent."""
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
@@ -533,6 +533,10 @@ async def test_session_hygiene_cancellation_awaits_worker_cleanup_without_public
     task.cancel()
     await asyncio.sleep(0.05)
     assert not task.done(), "cancellation returned before executor ownership was reclaimed"
+
+    task.cancel()
+    await asyncio.sleep(0.05)
+    assert not task.done(), "repeated cancellation detached executor ownership"
 
     BlockingCompressAgent.release.set()
     with pytest.raises(asyncio.CancelledError):

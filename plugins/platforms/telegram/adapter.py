@@ -8726,12 +8726,24 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             try:
                 await asyncio.shield(recovery_task)
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as cancellation:
                 # asyncio.to_thread/run_in_executor cannot cancel a started
                 # SessionDB lookup. Keep ownership until it finishes, then
-                # propagate cancellation without publishing the recovered event.
-                await recovery_task
-                raise
+                # propagate the original cancellation without publishing the
+                # recovered event. Overlapping stop/disconnect cancellation
+                # must not detach the non-cancellable executor worker.
+                while not recovery_task.done():
+                    try:
+                        await asyncio.shield(recovery_task)
+                    except asyncio.CancelledError:
+                        continue
+                try:
+                    recovery_task.result()
+                except BaseException:
+                    # Cancellation has authority over a concurrent recovery
+                    # failure, but the result must still be observed.
+                    pass
+                raise cancellation
 
             if self._should_drop_delayed_delivery():
                 return
