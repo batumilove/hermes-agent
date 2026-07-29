@@ -60,6 +60,19 @@ jobs:
         with:
           github-token: ${{ github.token }}
 
+  fork-delta:
+    name: Fork patch ownership
+    needs: detect
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require every upstream delta path to have an owner
+        run: python3 scripts/check_fork_delta.py
+
   # ─────────────────────────────────────────────────────────────────────
   # Lane-gated sub-workflows. Each runs in parallel after detect finishes.
   # Skipped workflows (if condition is false) don't spin up runners.
@@ -257,6 +270,7 @@ jobs:
     name: All required checks pass
     needs:
       - detect
+      - fork-delta
       - tests
       - lint
       - js-tests

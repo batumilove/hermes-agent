@@ -1,0 +1,166 @@
+version: 1
+
+# Last official upstream commit contained in batumi/live history. The daily
+# sync workflow advances this file together with the upstream merge.
+upstream:
+  repository: NousResearch/hermes-agent
+  branch: main
+  base_file: .github/upstream-base
+
+patches:
+  - id: core-runtime-correctness
+    kind: core
+    rationale: >-
+      Fork-only gateway, Telegram, cron, state, provider fallback, update, and
+      controller evidence behavior that is not yet equivalent upstream.
+    paths:
+      - agent/**
+      - cron/**
+      - gateway/**
+      - hermes_cli/**
+      - plugins/memory/honcho/**
+      - plugins/platforms/telegram/**
+      - plugins/**
+      - native/**
+      - tools/**
+      - acp_adapter/**
+      - acp_registry/**
+      - batch_runner.py
+      - cli.py
+      - cli-config.yaml.example
+      - hermes_state.py
+      - model_tools.py
+      - run_agent.py
+      - toolsets.py
+      - tests/**
+    tests:
+      - scripts/run_tests.sh tests/gateway/ tests/cron/ tests/hermes_cli/
+      - scripts/run_tests.sh tests/agent/ tests/run_agent/ tests/tools/
+      - scripts/run_tests.sh tests/test_hermes_state.py
+    retirement: Remove each behavior when an upstream implementation passes its compatibility contract.
+
+  - id: edge-extensions
+    kind: extension
+    rationale: >-
+      Temporary in-tree homes for Batumi extensions while they move to pinned
+      external plugin distributions without changing existing config keys.
+    paths:
+      - plugins/rtk-rewrite/**
+      - plugins/web/tinyfish/**
+      - tools/environments/kata.py
+      - tools/environments/sandbox_manager.py
+      - tools/herdr_tools.py
+      - tools/mcporter_tool.py
+      - agent/context_efficiency.py
+      - agent/context_efficiency_report.py
+      - agent/context_route_outcome_report.py
+      - agent/harness_eval.py
+      - agent/harness_learning.py
+      - agent/secret_sources/systemd.py
+      - agent/workspace_diff_sentinel.py
+    tests:
+      - scripts/run_tests.sh tests/plugins/ tests/tools/ tests/agent/
+    retirement: Remove in-tree copies after pinned external packages pass the same tests.
+
+  - id: fork-operations
+    kind: operations
+    rationale: >-
+      Fork-owned CI, immutable image publication, staged Compose delivery,
+      diagnostics, rollback, and upstream synchronization controls.
+    paths:
+      - .github/**
+      - deploy/**
+      - docker/**
+      - scripts/ci/**
+      - scripts/deploy/**
+      - scripts/staging/**
+      - scripts/**
+      - docs/operations/**
+      - Dockerfile
+      - docker-compose.yml
+      - MANIFEST.in
+      - package.json
+      - package-lock.json
+      - website/package.json
+      - website/package-lock.json
+      - web/package.json
+      - ui-tui/package.json
+      - apps/desktop/package.json
+    tests:
+      - scripts/run_tests.sh tests/ci/ tests/scripts/
+      - npm test --workspace tests-js
+    retirement: Keep thin callers in this fork; move reusable implementation to batumilove/hermes-ops.
+
+  - id: fork-skills
+    kind: skill
+    rationale: >-
+      Batumi-owned skills retained until their pinned copies are published and
+      verified in batumilove/hermes-skills.
+    paths:
+      - skills/**
+      - optional-skills/**
+      - website/docs/reference/skills-catalog.md
+      - website/docs/reference/optional-skills-catalog.md
+      - website/docs/user-guide/skills/**
+      - website/static/api/model-catalog.json
+    tests:
+      - scripts/run_tests.sh tests/skills/
+    retirement: Remove each in-tree skill after the external catalog smoke test passes.
+
+  - id: compatibility-surfaces
+    kind: compatibility
+    rationale: >-
+      One-release compatibility for existing desktop, TUI, dashboard,
+      packaging, documentation, and profile-facing contracts.
+    paths:
+      - apps/**
+      - web/**
+      - ui-tui/**
+      - tui_gateway/**
+      - website/**
+      - docs/**
+      - locales/**
+      - nix/**
+      - packaging/**
+      - providers/**
+      - setup.py
+      - pyproject.toml
+      - uv.lock
+      - AGENTS.md
+      - CONTRIBUTING.md
+      - README*
+      - SECURITY*
+      - .gitignore
+      - .dockerignore
+      - .npmrc
+      - .prettierignore
+      - .prettierrc
+      - eslint.config.shared.mjs
+      - constraints-termux.txt
+      - flake.lock
+      - flake.nix
+    tests:
+      - scripts/run_tests.sh
+      - npm test
+    retirement: Remove shims only after one release and an explicit migration notice.
+
+  - id: migration-cleanup
+    kind: cleanup
+    rationale: >-
+      Historical artifacts scheduled for deletion on the clean candidate; they
+      remain attributed while the legacy branch is still the comparison base.
+    paths:
+      - LOCAL_PATCHES.md
+      - batumi-panorama-*
+      - batumi-panorama-assets/**
+      - honcho-buun-canary-setup.*
+      - infographic/**
+      - failure_cases/**
+      - repro_race.py
+      - vendor/**
+      - contributors/**
+      - config/**
+      - .plans/**
+    tests:
+      - scripts/check_fork_delta.py
+    retirement: Delete this entry when the clean upstream-based candidate replaces the legacy tree.
