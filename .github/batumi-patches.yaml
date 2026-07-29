@@ -1,166 +1,53 @@
 version: 1
 
-# Last official upstream commit contained in batumi/live history. The daily
-# sync workflow advances this file together with the upstream merge.
 upstream:
   repository: NousResearch/hermes-agent
   branch: main
   base_file: .github/upstream-base
 
 patches:
-  - id: core-runtime-correctness
-    kind: core
-    rationale: >-
-      Fork-only gateway, Telegram, cron, state, provider fallback, update, and
-      controller evidence behavior that is not yet equivalent upstream.
-    paths:
-      - agent/**
-      - cron/**
-      - gateway/**
-      - hermes_cli/**
-      - plugins/memory/honcho/**
-      - plugins/platforms/telegram/**
-      - plugins/**
-      - native/**
-      - tools/**
-      - acp_adapter/**
-      - acp_registry/**
-      - batch_runner.py
-      - cli.py
-      - cli-config.yaml.example
-      - hermes_state.py
-      - model_tools.py
-      - run_agent.py
-      - toolsets.py
-      - tests/**
-    tests:
-      - scripts/run_tests.sh tests/gateway/ tests/cron/ tests/hermes_cli/
-      - scripts/run_tests.sh tests/agent/ tests/run_agent/ tests/tools/
-      - scripts/run_tests.sh tests/test_hermes_state.py
-    retirement: Remove each behavior when an upstream implementation passes its compatibility contract.
-
-  - id: edge-extensions
-    kind: extension
-    rationale: >-
-      Temporary in-tree homes for Batumi extensions while they move to pinned
-      external plugin distributions without changing existing config keys.
-    paths:
-      - plugins/rtk-rewrite/**
-      - plugins/web/tinyfish/**
-      - tools/environments/kata.py
-      - tools/environments/sandbox_manager.py
-      - tools/herdr_tools.py
-      - tools/mcporter_tool.py
-      - agent/context_efficiency.py
-      - agent/context_efficiency_report.py
-      - agent/context_route_outcome_report.py
-      - agent/harness_eval.py
-      - agent/harness_learning.py
-      - agent/secret_sources/systemd.py
-      - agent/workspace_diff_sentinel.py
-    tests:
-      - scripts/run_tests.sh tests/plugins/ tests/tools/ tests/agent/
-    retirement: Remove in-tree copies after pinned external packages pass the same tests.
-
-  - id: fork-operations
+  - id: fork-patch-governance
     kind: operations
     rationale: >-
-      Fork-owned CI, immutable image publication, staged Compose delivery,
-      diagnostics, rollback, and upstream synchronization controls.
+      Require every fork-to-upstream path delta to have an explicit owner,
+      verification command, and retirement condition.
     paths:
-      - .github/**
-      - deploy/**
-      - docker/**
-      - scripts/ci/**
-      - scripts/deploy/**
-      - scripts/staging/**
-      - scripts/**
-      - docs/operations/**
-      - Dockerfile
-      - docker-compose.yml
-      - MANIFEST.in
-      - package.json
-      - package-lock.json
-      - website/package.json
-      - website/package-lock.json
-      - web/package.json
-      - ui-tui/package.json
-      - apps/desktop/package.json
-    tests:
-      - scripts/run_tests.sh tests/ci/ tests/scripts/
-      - npm test --workspace tests-js
-    retirement: Keep thin callers in this fork; move reusable implementation to batumilove/hermes-ops.
-
-  - id: fork-skills
-    kind: skill
-    rationale: >-
-      Batumi-owned skills retained until their pinned copies are published and
-      verified in batumilove/hermes-skills.
-    paths:
-      - skills/**
-      - optional-skills/**
-      - website/docs/reference/skills-catalog.md
-      - website/docs/reference/optional-skills-catalog.md
-      - website/docs/user-guide/skills/**
-      - website/static/api/model-catalog.json
-    tests:
-      - scripts/run_tests.sh tests/skills/
-    retirement: Remove each in-tree skill after the external catalog smoke test passes.
-
-  - id: compatibility-surfaces
-    kind: compatibility
-    rationale: >-
-      One-release compatibility for existing desktop, TUI, dashboard,
-      packaging, documentation, and profile-facing contracts.
-    paths:
-      - apps/**
-      - web/**
-      - ui-tui/**
-      - tui_gateway/**
-      - website/**
-      - docs/**
-      - locales/**
-      - nix/**
-      - packaging/**
-      - providers/**
-      - setup.py
-      - pyproject.toml
-      - uv.lock
-      - AGENTS.md
-      - CONTRIBUTING.md
-      - README*
-      - SECURITY*
-      - .gitignore
-      - .dockerignore
-      - .npmrc
-      - .prettierignore
-      - .prettierrc
-      - eslint.config.shared.mjs
-      - constraints-termux.txt
-      - flake.lock
-      - flake.nix
-    tests:
-      - scripts/run_tests.sh
-      - npm test
-    retirement: Remove shims only after one release and an explicit migration notice.
-
-  - id: migration-cleanup
-    kind: cleanup
-    rationale: >-
-      Historical artifacts scheduled for deletion on the clean candidate; they
-      remain attributed while the legacy branch is still the comparison base.
-    paths:
-      - LOCAL_PATCHES.md
-      - batumi-panorama-*
-      - batumi-panorama-assets/**
-      - honcho-buun-canary-setup.*
-      - infographic/**
-      - failure_cases/**
-      - repro_race.py
-      - vendor/**
-      - contributors/**
-      - config/**
-      - .plans/**
-    tests:
+      - .github/batumi-patches.yaml
+      - .github/upstream-base
+      - .github/workflows/ci.yml
+      - .github/workflows/upstream-sync.yml
       - scripts/check_fork_delta.py
-    retirement: Delete this entry when the clean upstream-based candidate replaces the legacy tree.
+      - tests/scripts/test_check_fork_delta.py
+      - tests/scripts/test_upstream_sync_workflow.py
+    tests:
+      - scripts/run_tests.sh tests/scripts/test_check_fork_delta.py tests/scripts/test_upstream_sync_workflow.py
+    retirement: Retain while batumi/live carries any fork-only patch.
+
+  - id: plugin-environment-backends
+    kind: core
+    rationale: >-
+      Let external plugins register terminal execution environments without
+      adding product-specific branches to the core terminal tool.
+    paths:
+      - hermes_cli/plugins.py
+      - tools/environments/__init__.py
+      - tools/environments/registry.py
+      - tools/terminal_tool.py
+      - tests/tools/test_environment_registry.py
+      - website/docs/developer-guide/plugins/index.md
+    tests:
+      - scripts/run_tests.sh tests/tools/test_environment_registry.py tests/tools/test_terminal_tool_requirements.py
+    retirement: Remove when upstream exposes an equivalent session-stable environment backend registry.
+
+  - id: final-output-policy-context
+    kind: core
+    rationale: >-
+      Give output-policy plugins detached conversation context and the active
+      workdir so evidence and workspace footers can remain outside the loop.
+    paths:
+      - agent/turn_finalizer.py
+      - tests/agent/test_transform_llm_output_context.py
+      - website/docs/user-guide/features/hooks.md
+    tests:
+      - scripts/run_tests.sh tests/agent/test_transform_llm_output_context.py
+    retirement: Remove when upstream transform_llm_output supplies equivalent read-only context.
