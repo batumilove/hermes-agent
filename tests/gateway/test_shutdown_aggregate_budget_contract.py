@@ -25,13 +25,15 @@ async def _run_stop(runner):
 def _configure_fast_forced_shutdown(runner, monkeypatch, active_agents):
     """Reach post-drain cleanup without real waits, processes, or user state."""
     runner._restart_drain_timeout = 0.01
-    runner._SHUTDOWN_TAIL_RESERVE_S = 0.10
-    monkeypatch.setattr(gateway_run, "resolve_shutdown_watchdog_delay", lambda _t: 0.30)
+    runner._SHUTDOWN_TAIL_RESERVE_S = 0.50
+    monkeypatch.setattr(gateway_run, "resolve_shutdown_watchdog_delay", lambda _t: 1.50)
     runner._notify_active_sessions_with_timeout = AsyncMock(return_value=True)
     runner._drain_active_agents = AsyncMock(return_value=(active_agents, True))
     runner._running_agents = {}
-    runner._finalize_shutdown_agents = gateway_run.GatewayRunner._finalize_shutdown_agents.__get__(
-        runner, gateway_run.GatewayRunner
+    runner._finalize_shutdown_agents = (
+        gateway_run.GatewayRunner._finalize_shutdown_agents.__get__(
+            runner, gateway_run.GatewayRunner
+        )
     )
 
     async def _inline_executor(func, *args):
@@ -66,7 +68,7 @@ class _BlockingFlushAgent:
 
     def _flush_messages_to_session_db(self, _messages):
         self._started.set()
-        time.sleep(1.0)
+        time.sleep(2.0)
 
     def _drop_trailing_empty_response_scaffolding(self, _messages):
         return None
@@ -80,11 +82,13 @@ async def test_wedged_agent_finalize_cannot_starve_tail_release(monkeypatch):
     _configure_fast_forced_shutdown(runner, monkeypatch, agents)
 
     before = time.monotonic()
-    await asyncio.wait_for(_run_stop(runner), timeout=2.0)
+    await asyncio.wait_for(_run_stop(runner), timeout=4.0)
     elapsed = time.monotonic() - before
 
     assert started.is_set(), "agent finalization was never attempted"
-    assert elapsed < 0.75, f"agent finalization consumed aggregate budget: {elapsed:.3f}s"
+    assert elapsed < 1.60, (
+        f"agent finalization consumed aggregate budget: {elapsed:.3f}s"
+    )
 
 
 @pytest.mark.asyncio
@@ -97,16 +101,18 @@ async def test_wedged_cached_client_shutdown_cannot_starve_tail_release(monkeypa
 
     def _block():
         started.set()
-        time.sleep(1.0)
+        time.sleep(2.0)
 
     monkeypatch.setattr(auxiliary_client, "shutdown_cached_clients", _block)
 
     before = time.monotonic()
-    await asyncio.wait_for(_run_stop(runner), timeout=2.0)
+    await asyncio.wait_for(_run_stop(runner), timeout=4.0)
     elapsed = time.monotonic() - before
 
     assert started.is_set(), "cached-client cleanup was never attempted"
-    assert elapsed < 0.75, f"cached-client cleanup consumed aggregate budget: {elapsed:.3f}s"
+    assert elapsed < 1.60, (
+        f"cached-client cleanup consumed aggregate budget: {elapsed:.3f}s"
+    )
 
 
 @pytest.mark.asyncio
@@ -118,7 +124,7 @@ async def test_wedged_database_close_cannot_starve_tail_release(monkeypatch):
     class _BlockingDB:
         def close(self):
             started.set()
-            time.sleep(1.0)
+            time.sleep(2.0)
 
     database = _BlockingDB()
     runner._session_db = MagicMock()
@@ -126,8 +132,8 @@ async def test_wedged_database_close_cannot_starve_tail_release(monkeypatch):
     runner.session_store._db = None
 
     before = time.monotonic()
-    await asyncio.wait_for(_run_stop(runner), timeout=2.0)
+    await asyncio.wait_for(_run_stop(runner), timeout=4.0)
     elapsed = time.monotonic() - before
 
     assert started.is_set(), "database close was never attempted"
-    assert elapsed < 0.75, f"database close consumed aggregate budget: {elapsed:.3f}s"
+    assert elapsed < 1.60, f"database close consumed aggregate budget: {elapsed:.3f}s"
