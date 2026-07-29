@@ -160,9 +160,11 @@ async def test_reset_fallback_is_a_noop_when_pool_absent(monkeypatch):
 
 
 def test_caller_limits_win_over_pool_default(monkeypatch):
-    """A caller-supplied ``limits`` kwarg must win over the ``_POOL_LIMITS``
-    ``setdefault`` default, for both the primary and lazily-built fallback
-    pools (#71593)."""
+    """Caller concurrency and expiry override the pool defaults.
+
+    Idle keepalive remains disabled so an inactive fallback route cannot retain
+    a peer-closed socket indefinitely.
+    """
     import asyncio
 
     kwargs_log: list = []
@@ -181,15 +183,21 @@ def test_caller_limits_win_over_pool_default(monkeypatch):
     transport = tnet.TelegramFallbackTransport(
         ["149.154.167.220"], limits=custom_limits
     )
-    # Primary built in __init__ with the caller's limits (not the default).
-    assert kwargs_log[0]["limits"] is custom_limits
+    # Primary preserves caller concurrency/expiry but disables idle sockets.
+    primary_limits = kwargs_log[0]["limits"]
+    assert primary_limits.max_connections == custom_limits.max_connections
+    assert primary_limits.max_keepalive_connections == 0
+    assert primary_limits.keepalive_expiry == custom_limits.keepalive_expiry
 
     # Lazily-built fallback pool must also carry the caller's limits.
     asyncio.run(transport._get_fallback("149.154.167.220"))
     assert len(kwargs_log) == 2
-    assert all(kw["limits"] is custom_limits for kw in kwargs_log)
-    # And the caller's limits are NOT the class default.
-    assert custom_limits is not tnet.TelegramFallbackTransport._POOL_LIMITS
+    assert all(
+        kw["limits"].max_connections == custom_limits.max_connections
+        and kw["limits"].max_keepalive_connections == 0
+        and kw["limits"].keepalive_expiry == custom_limits.keepalive_expiry
+        for kw in kwargs_log
+    )
 
 
 def test_pool_default_limits_applied_when_caller_omits(monkeypatch):

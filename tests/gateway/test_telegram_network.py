@@ -407,6 +407,21 @@ def test_new_transport_fails_closed_when_httpcore_shape_changes(monkeypatch):
         tnet._new_async_http_transport()
 
 
+def test_new_transport_accepts_injected_async_base_transport(monkeypatch):
+    class CustomTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            return httpx.Response(200, request=request)
+
+    custom = CustomTransport()
+    monkeypatch.setattr(
+        tnet.httpx,
+        "AsyncHTTPTransport",
+        lambda **_kwargs: custom,
+    )
+
+    assert tnet._new_async_http_transport() is custom
+
+
 def _fake_transport_factory(calls, behavior):
     """Returns a factory that creates FakeTransport instances."""
     instances = []

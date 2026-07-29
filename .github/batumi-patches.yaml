@@ -128,9 +128,10 @@ patches:
       upstream's bounded lazy fallback pools.
     paths:
       - plugins/platforms/telegram/telegram_network.py
+      - tests/gateway/test_telegram_fallback_pool_release_71593.py
       - tests/gateway/test_telegram_network.py
       - tests/gateway/test_telegram_request_phase_real_socket.py
     tests:
-      - scripts/run_tests.sh tests/gateway/test_telegram_network.py tests/gateway/test_telegram_request_phase_real_socket.py
+      - scripts/run_tests.sh tests/gateway/test_telegram_fallback_pool_release_71593.py tests/gateway/test_telegram_network.py tests/gateway/test_telegram_request_phase_real_socket.py
       - scripts/run_tests.sh tests/gateway/test_telegram_network_reconnect.py tests/gateway/test_platform_reconnect_fd_leak.py
     retirement: Remove when upstream passes the repeated-cancel real-socket contract.

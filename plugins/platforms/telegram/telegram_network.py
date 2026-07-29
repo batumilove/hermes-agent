@@ -19,6 +19,8 @@ from typing import Any, Iterable, Optional
 
 import httpx
 
+_HTTPX_ASYNC_HTTP_TRANSPORT_TYPE = httpx.AsyncHTTPTransport
+
 logger = logging.getLogger(__name__)
 
 _TELEGRAM_API_HOST = "api.telegram.org"
@@ -299,12 +301,19 @@ def _new_async_http_transport(
     diagnostic_owner: str = "unknown",
     diagnostic_route: str = "primary",
     **kwargs,
-) -> httpx.AsyncHTTPTransport:
+) -> httpx.AsyncBaseTransport:
     """Build an HTTPX transport whose raw TLS sockets are cancellation-safe."""
     transport = httpx.AsyncHTTPTransport(**kwargs)
     pool = getattr(transport, "_pool", None)
     backend = getattr(pool, "_network_backend", None)
     if pool is None or backend is None:
+        # Tests and extension code may intentionally replace the concrete HTTPX
+        # transport with another AsyncBaseTransport. Only fail closed when the
+        # real HTTPX type changes shape; custom transports own their lifecycle.
+        if isinstance(transport, httpx.AsyncBaseTransport) and not isinstance(
+            transport, _HTTPX_ASYNC_HTTP_TRANSPORT_TYPE
+        ):
+            return transport
         raise RuntimeError(
             "Unsupported httpx/httpcore transport internals: expected "
             "AsyncHTTPTransport._pool._network_backend"
