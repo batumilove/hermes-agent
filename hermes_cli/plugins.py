@@ -464,6 +464,32 @@ class PluginContext:
             self.manifest.name, name, " (override)" if override else "",
         )
 
+    def register_environment_backend(
+        self,
+        name: str,
+        factory: Callable,
+        *,
+        containerized: bool = False,
+    ) -> None:
+        """Register a terminal backend through the host-owned registry.
+
+        ``factory`` receives the same keyword arguments as
+        ``tools.terminal_tool._create_environment``. Built-in backend names
+        and names already claimed by another plugin are rejected.
+        """
+        from tools.environments.registry import register_environment_backend
+
+        register_environment_backend(
+            name,
+            factory,
+            containerized=containerized,
+        )
+        logger.debug(
+            "Plugin %s registered environment backend: %s",
+            self.manifest.name,
+            name,
+        )
+
     # -- override trust gate ------------------------------------------------
 
     def _tool_override_allowed(self, tool_name: str) -> bool:

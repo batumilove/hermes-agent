@@ -543,6 +543,34 @@ Both serialize concurrent first calls with double-checked locking and run the fa
 
 > Rule of thumb: any time you write `global _something` followed by a `is None` check and a build, reach for one of these instead.
 
+### Register a terminal environment backend
+
+Plugins can add terminal execution backends without adding a branch to
+`tools/terminal_tool.py`:
+
+```python
+def create_backend(*, cwd, timeout, container_config, **kwargs):
+    return MyEnvironment(
+        cwd=cwd,
+        timeout=timeout,
+        config=container_config,
+    )
+
+def register(ctx):
+    ctx.register_environment_backend(
+        "my_backend",
+        create_backend,
+        containerized=True,
+    )
+```
+
+The factory receives the normalized terminal environment settings plus
+`image`, `ssh_config`, `local_config`, `task_id`, and `host_cwd`. Set
+`containerized=True` when Hermes should apply container path handling and
+dependency-install behavior. Built-in backend names are reserved, and duplicate
+registrations are rejected. Environment backends are registered when the plugin
+loads at session startup, keeping the active toolset stable for the session.
+
 
 
 ### Conditional tool availability
