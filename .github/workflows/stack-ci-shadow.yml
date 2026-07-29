@@ -11,6 +11,6 @@ permissions:
 
 jobs:
   shadow:
-    uses: batumilove/hermes-ops/.github/workflows/shadow-validation.yml@6be80bd51b29dca2192dfb8417e37945ac81761d
+    uses: batumilove/hermes-ops/.github/workflows/shadow-validation.yml@a30aa9dc370c4aa1f2f4e7771a12e71c80e5ec36
     with:
       source_sha: ${{ github.event.pull_request.head.sha || github.sha }}
