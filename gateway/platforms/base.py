@@ -5338,14 +5338,14 @@ class BasePlatformAdapter(ABC):
                             )
 
                             if self.delivery_ledger_enabled:
-                                _obligation_id = compute_obligation_id(
+                                candidate_obligation_id = compute_obligation_id(
                                     session_key,
                                     str(getattr(event, "message_id", "") or ""),
                                     text_content,
                                 )
                                 await _run_delivery_ledger_io(
                                     record_obligation,
-                                    obligation_id=_obligation_id,
+                                    obligation_id=candidate_obligation_id,
                                     session_key=session_key,
                                     platform=str(
                                         getattr(event.source.platform, "value",
@@ -5355,9 +5355,16 @@ class BasePlatformAdapter(ABC):
                                     thread_id=getattr(event.source, "thread_id", None),
                                     content=text_content,
                                 )
-                                await _run_delivery_ledger_io(
-                                    mark_attempting, _obligation_id
-                                )
+                                _obligation_id = candidate_obligation_id
+                                try:
+                                    await _run_delivery_ledger_io(
+                                        mark_attempting, _obligation_id
+                                    )
+                                except Exception:
+                                    logger.debug(
+                                        "delivery ledger attempting update failed",
+                                        exc_info=True,
+                                    )
                         except Exception:
                             logger.debug("delivery ledger record failed", exc_info=True)
                             _obligation_id = None
