@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 import re
+import shlex
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -104,34 +107,93 @@ def test_deployment_uses_environment_scoped_reusable_workflow() -> None:
     assert reusable["on"]["workflow_call"]["secrets"]["TAILSCALE_AUTHKEY"]["required"] == "false"
 
 
-def test_deployment_installs_exact_running_stack_acceptance_helper() -> None:
+def test_all_deployment_controllers_share_the_target_environment_concurrency_domain() -> None:
+    automatic = _workflow("deploy-compose.yml")
+    manual = _workflow("promote-compose.yml")
+
+    assert automatic["concurrency"] == {
+        "group": "hermes-batumi-staging-deployment-control",
+        "cancel-in-progress": "false",
+    }
+    assert manual["concurrency"] == {
+        "group": "hermes-${{ inputs.environment }}-deployment-control",
+        "cancel-in-progress": "false",
+    }
+
+
+def test_reusable_deployment_uses_only_the_installed_host_controller() -> None:
     reusable = _workflow("_deploy-compose.yml")
-    run = next(
+    steps = reusable["jobs"]["deploy"]["steps"]
+    scripts = "\n".join(step.get("run", "") for step in steps)
+    apply_script = next(
         step["run"]
-        for step in reusable["jobs"]["deploy"]["steps"]
-        if step["name"] == "Install deployment tooling and apply release"
-    )
-    deployer = (REPO / "scripts" / "deploy" / "hermes-compose-deploy.sh").read_text(
-        encoding="utf-8"
+        for step in steps
+        if step["name"] == "Apply release through installed host controller"
     )
 
-    assert "scripts/deploy/verify_running_stack.py" in run
-    assert 'install -m 0755' in run
-    assert 'verify-running-stack.py' in run
-    invocation = 'python3 "$acceptance_helper"'
-    assert invocation in deployer
-    invocation_index = deployer.index(invocation)
-    evidence_index = deployer.index('record_evidence deployed')
-    assert invocation_index < evidence_index
-    invocation_block = deployer[invocation_index:evidence_index]
-    for required_argument in (
-        '--environment "$environment"',
-        '--image "$image"',
-        '--digest "$digest"',
-        '--source-sha "$source_sha"',
-        '--deploy-root "$deploy_root"',
-    ):
-        assert required_argument in invocation_block
+    assert not any(step.get("uses", "").startswith("actions/checkout@") for step in steps)
+    assert "scp " not in apply_script
+    assert "install -m" not in apply_script
+    assert "scripts/deploy/hermes-compose-deploy.sh" not in scripts
+    assert "deploy/compose.yml" not in scripts
+    assert "sudo -n /usr/local/libexec/hermes-deployment-controller apply" in scripts
+    assert "emergency" not in scripts.lower()
+
+
+def test_reusable_deployment_normalizes_bot_actor_and_builds_bounded_remote_identity(
+    tmp_path: Path,
+) -> None:
+    reusable = _workflow("_deploy-compose.yml")
+    apply_script = next(
+        step["run"]
+        for step in reusable["jobs"]["deploy"]["steps"]
+        if step["name"] == "Apply release through installed host controller"
+    )
+    home = tmp_path / "home"
+    ssh_dir = home / ".ssh"
+    ssh_dir.mkdir(parents=True)
+    (ssh_dir / "deploy_key").write_text("fixture", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    ssh_log = tmp_path / "ssh.args"
+    fake_ssh = bin_dir / "ssh"
+    fake_ssh.write_text(
+        "#!/usr/bin/env bash\nprintf '%s\\0' \"$@\" > \"$SSH_LOG\"\n",
+        encoding="utf-8",
+    )
+    fake_ssh.chmod(0o755)
+    env = os.environ.copy()
+    env.update({
+        "PATH": f"{bin_dir}:{env['PATH']}",
+        "HOME": str(home),
+        "SSH_LOG": str(ssh_log),
+        "DEPLOY_USER": "hermes-deploy",
+        "DEPLOY_HOST": "staging.example.test",
+        "DEPLOY_ENVIRONMENT": "batumi-staging",
+        "DEPLOY_OPERATION": "deploy",
+        "IMAGE_REPOSITORY": "ghcr.io/batumilove/hermes-agent-deploy",
+        "IMAGE_DIGEST": "sha256:" + "1" * 64,
+        "SOURCE_SHA": "a" * 40,
+        "GITHUB_ACTOR": "dependabot[bot]",
+        "GITHUB_RUN_ID": "9" * 20,
+        "GITHUB_RUN_ATTEMPT": "1",
+    })
+
+    completed = subprocess.run(
+        ["bash", "-c", apply_script], text=True, capture_output=True, env=env, timeout=10
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    ssh_args = ssh_log.read_bytes().rstrip(b"\0").decode().split("\0")
+    remote_args = shlex.split(ssh_args[-1])
+    assert remote_args[:3] == [
+        "sudo", "-n", "/usr/local/libexec/hermes-deployment-controller"
+    ]
+    assert remote_args[3] == "apply"
+    assert remote_args[9] == "github-actions:_deploy-compose:" + "9" * 20
+    assert remote_args[10] == "github:dependabot-bot-"
+    for identity in remote_args[9:11]:
+        assert re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/@-]{1,159}", identity)
 
 
 def test_manual_promotion_verifies_digest_without_rebuilding() -> None:
