@@ -287,6 +287,34 @@ class TestMarkResumePending:
         assert e.suspended is True
         assert e.resume_pending is False
 
+    def test_batch_marks_all_eligible_sessions_and_survives_roundtrip(self, tmp_path):
+        store = _make_store(tmp_path)
+        entries = [
+            store.get_or_create_session(_make_source(chat_id=str(1000 + index)))
+            for index in range(14)
+        ]
+        suspended = store.get_or_create_session(_make_source(chat_id="suspended"))
+        store.suspend_session(suspended.session_key)
+        requested = [
+            entries[0].session_key,
+            *[entry.session_key for entry in entries],
+            suspended.session_key,
+            "no-such-key",
+        ]
+
+        marked = store.mark_resume_pending_batch(requested, "restart_timeout")
+
+        expected = [entry.session_key for entry in entries]
+        assert marked == expected
+        reloaded = _make_store(tmp_path)
+        reloaded._ensure_loaded()
+        for session_key in expected:
+            entry = reloaded._entries[session_key]
+            assert entry.resume_pending is True
+            assert entry.resume_reason == "restart_timeout"
+            assert entry.last_resume_marked_at is not None
+        assert reloaded._entries[suspended.session_key].resume_pending is False
+
     def test_survives_roundtrip_through_json(self, tmp_path):
         store = _make_store(tmp_path)
         source = _make_source()
@@ -960,9 +988,11 @@ async def test_drain_timeout_marks_resume_pending():
         session_key_two: MagicMock(),
     }
 
-    # Plug a mock session_store that records marks.
+    # Plug a mock session_store that records atomic batches.
     session_store = MagicMock()
-    session_store.mark_resume_pending = MagicMock(return_value=True)
+    session_store.mark_resume_pending_batch = MagicMock(
+        return_value=[session_key_one, session_key_two]
+    )
     runner.session_store = session_store
 
     with patch("gateway.status.remove_pid_file"), patch(
@@ -970,11 +1000,11 @@ async def test_drain_timeout_marks_resume_pending():
     ):
         await runner.stop()
 
-    # Both active sessions were marked with the shutdown_timeout reason.
-    calls = session_store.mark_resume_pending.call_args_list
-    marked = {args[0][0] for args in calls}
-    assert marked == {session_key_one, session_key_two}
+    # Both active sessions were marked together with the shutdown_timeout reason.
+    calls = session_store.mark_resume_pending_batch.call_args_list
+    assert calls
     for args in calls:
+        assert args[0][0] == [session_key_one, session_key_two]
         assert args[0][1] == "shutdown_timeout"
 
 
@@ -985,11 +1015,12 @@ async def test_drain_timeout_uses_restart_reason_when_restarting():
     runner._restart_drain_timeout = 0.05
     runner._restart_requested = True
 
+    session_key = "agent:main:telegram:dm:A"
     running_agent = MagicMock()
-    runner._running_agents = {"agent:main:telegram:dm:A": running_agent}
+    runner._running_agents = {session_key: running_agent}
 
     session_store = MagicMock()
-    session_store.mark_resume_pending = MagicMock(return_value=True)
+    session_store.mark_resume_pending_batch = MagicMock(return_value=[session_key])
     runner.session_store = session_store
 
     with patch("gateway.status.remove_pid_file"), patch(
@@ -997,9 +1028,10 @@ async def test_drain_timeout_uses_restart_reason_when_restarting():
     ):
         await runner.stop(restart=True, detached_restart=False, service_restart=True)
 
-    calls = session_store.mark_resume_pending.call_args_list
-    assert calls, "expected at least one mark_resume_pending call"
+    calls = session_store.mark_resume_pending_batch.call_args_list
+    assert calls, "expected at least one mark_resume_pending_batch call"
     for args in calls:
+        assert args[0][0] == [session_key]
         assert args[0][1] == "restart_timeout"
 
 
@@ -1024,7 +1056,7 @@ async def test_drain_timeout_skips_pending_sentinel_sessions():
     }
 
     session_store = MagicMock()
-    session_store.mark_resume_pending = MagicMock(return_value=True)
+    session_store.mark_resume_pending_batch = MagicMock(return_value=[session_key_real])
     runner.session_store = session_store
 
     with patch("gateway.status.remove_pid_file"), patch(
@@ -1032,9 +1064,10 @@ async def test_drain_timeout_skips_pending_sentinel_sessions():
     ):
         await runner.stop()
 
-    calls = session_store.mark_resume_pending.call_args_list
-    marked = {args[0][0] for args in calls}
-    assert marked == {session_key_real}
+    calls = session_store.mark_resume_pending_batch.call_args_list
+    assert calls
+    for args in calls:
+        assert args[0][0] == [session_key_real]
 
 
 # ---------------------------------------------------------------------------

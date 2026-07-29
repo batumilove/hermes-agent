@@ -9819,22 +9819,77 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             timeout = self._restart_drain_timeout
 
+            async def _mark_resume_pending_bounded(
+                session_keys,
+                reason: str,
+            ) -> list[str]:
+                """Persist all resume intents in one bounded atomic batch."""
+                budget = min(5.0, max(0.05, float(timeout)))
+                candidates = list(dict.fromkeys(session_keys))
+                if not candidates:
+                    return []
+
+                # Every key is possibly committed once the off-loop batch starts.
+                # Return all candidates for compensating graceful cleanup even if
+                # cancellation wins while the backing worker finishes later.
+                try:
+                    persisted = await asyncio.wait_for(
+                        self.async_session_store.mark_resume_pending_batch(
+                            candidates,
+                            reason,
+                        ),
+                        timeout=budget,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Shutdown resume-marker batch timed out after %.2fs: "
+                        "candidates=%d persisted=unknown missing=unknown; "
+                        "forcing shutdown forward progress",
+                        budget,
+                        len(candidates),
+                    )
+                    return candidates
+                except Exception as exc:
+                    logger.warning(
+                        "Shutdown resume-marker batch failed: candidates=%d "
+                        "persisted=0 missing=%d error=%s",
+                        len(candidates),
+                        len(candidates),
+                        exc,
+                    )
+                    return candidates
+
+                persisted_keys = list(dict.fromkeys(persisted or []))
+                persisted_set = set(persisted_keys)
+                missing = [key for key in candidates if key not in persisted_set]
+                log = logger.warning if missing else logger.info
+                log(
+                    "Shutdown resume-marker batch: candidates=%d persisted=%d "
+                    "missing=%d",
+                    len(candidates),
+                    len(persisted_keys),
+                    len(missing),
+                )
+                if missing:
+                    logger.warning(
+                        "Shutdown resume-marker batch omitted session keys: %s",
+                        ", ".join(missing),
+                    )
+                return candidates
+
             # Pre-mark sessions as resume_pending BEFORE the drain wait.
             # If the process is killed by the service manager during the
             # drain, the durable marker is already written so the next
             # gateway boot can recover in-flight sessions (#27856).
-            _pre_drain_keys: list[str] = []
-            for _sk, _agent in list(self._running_agents.items()):
-                if _agent is _AGENT_PENDING_SENTINEL:
-                    continue
-                try:
-                    await self.async_session_store.mark_resume_pending(
-                        _sk,
-                        "restart_timeout" if self._restart_requested else "shutdown_timeout",
-                    )
-                    _pre_drain_keys.append(_sk)
-                except Exception as _e:
-                    logger.debug("pre-drain mark_resume_pending failed for %s: %s", _sk, _e)
+            _pre_drain_candidates = [
+                session_key
+                for session_key, agent in list(self._running_agents.items())
+                if agent is not _AGENT_PENDING_SENTINEL
+            ]
+            _pre_drain_keys = await _mark_resume_pending_bounded(
+                _pre_drain_candidates,
+                "restart_timeout" if self._restart_requested else "shutdown_timeout",
+            )
 
             _cron_at_start = self._active_cron_job_count()
             _api_at_start = self._active_api_run_count()
@@ -9904,16 +9959,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _resume_reason = (
                     "restart_timeout" if self._restart_requested else "shutdown_timeout"
                 )
-                for _sk, _agent in list(self._running_agents.items()):
-                    if _agent is _AGENT_PENDING_SENTINEL:
-                        continue
-                    try:
-                        await self.async_session_store.mark_resume_pending(_sk, _resume_reason)
-                    except Exception as _e:
-                        logger.debug(
-                            "mark_resume_pending failed for %s: %s",
-                            _sk, _e,
-                        )
+                _post_timeout_candidates = [
+                    session_key
+                    for session_key, agent in list(self._running_agents.items())
+                    if agent is not _AGENT_PENDING_SENTINEL
+                ]
+                await _mark_resume_pending_bounded(
+                    _post_timeout_candidates,
+                    _resume_reason,
+                )
                 self._interrupt_running_agents(
                     _INTERRUPT_REASON_GATEWAY_RESTART if self._restart_requested else _INTERRUPT_REASON_GATEWAY_SHUTDOWN
                 )
