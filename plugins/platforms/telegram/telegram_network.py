@@ -331,10 +331,16 @@ def _new_async_http_transport(
 
 
 async def _close_response(response: httpx.Response) -> None:
-    """Close an abandoned response, swallowing any error."""
+    """Close an abandoned response, observing terminal exceptions.
+
+    This helper runs inside a fire-and-forget cleanup task, so it must not let
+    caller cancellation (``asyncio.CancelledError``) leave the response socket
+    open. All exceptions are swallowed after the close attempt so that the
+    cleanup task terminates cleanly.
+    """
     try:
         await response.aclose()
-    except Exception:
+    except BaseException:
         logger.debug("Failed to close abandoned Telegram response", exc_info=True)
 
 
@@ -405,19 +411,20 @@ class _RetryingCloseResponseStream(httpx.AsyncByteStream):
         task.add_done_callback(_abandoned_response_cleanups.discard)
 
     async def _retry_close(self) -> None:
+        # Terminal cleanup: swallow any exception thrown at us while we are
+        # trying to close the socket, so caller cancellation or process exit
+        # cannot abandon an open FD.
         try:
             await asyncio.wait_for(self._stream.aclose(), timeout=5.0)
-        except asyncio.CancelledError:
-            pass
-        except Exception:
+        except BaseException:
             pass
         if self._raw_socket_is_closed():
             return
         # A response stream may mark itself closed before failing, making this
         # retry return successfully without completing pool/socket cleanup.
         # Once the first close failed, always drive the exact network-stream
-        # terminal path; a successful network close is left to its own pooling
-        # semantics, while its failure falls back to the exact raw OS socket.
+        # terminal path and verify the raw OS socket is really gone before
+        # returning.
         await self._force_close_network_stream()
 
     def _raw_socket_is_closed(self) -> bool:
@@ -435,36 +442,46 @@ class _RetryingCloseResponseStream(httpx.AsyncByteStream):
     async def _force_close_network_stream(self) -> None:
         if self._network_stream is None:
             return
+
+        # Prefer the network stream's cooperative async close path.  A
+        # "successful" return is not enough: a pooled connection may be
+        # released rather than closed, leaving the OS socket in CLOSE_WAIT.
         try:
             aclose = getattr(self._network_stream, "aclose", None)
             if aclose is not None:
                 await asyncio.wait_for(aclose(), timeout=2.0)
-                # network_stream.aclose() succeeded — do NOT raw-close the
-                # underlying socket: a pooled success may keep an established
-                # connection intentionally. Only the failure path below falls
-                # back to the raw OS socket.
-                return
-            close = getattr(self._network_stream, "close", None)
-            if close is not None:
-                close()
-                return
         except asyncio.CancelledError:
-            logger.debug("Telegram response network-stream force-close cancelled")
-            self._close_raw_socket_fallback()
-            raise
-        except Exception:
-            logger.debug(
-                "Failed to force-close Telegram response network stream",
-                exc_info=True,
-            )
-            self._close_raw_socket_fallback()
+            # We are racing caller cancellation. Continue to synchronous close
+            # so the socket does not outlive the cancelled task.
+            pass
+        except BaseException:
+            pass
+
+        if self._raw_socket_is_closed():
+            return
+
+        # Fall back to the synchronous close() hook if the stream provides one.
+        close = getattr(self._network_stream, "close", None)
+        if close is not None:
+            try:
+                close()
+            except BaseException:
+                pass
+
+        if self._raw_socket_is_closed():
+            return
+
+        # Last resort: close the exact raw OS socket exposed by the network stream.
+        self._close_raw_socket_fallback()
 
     def _close_raw_socket_fallback(self) -> None:
         """Close the exact raw OS socket exposed by the network stream.
 
-        Called only from the failure branch of _force_close_network_stream
-        when network_stream.aclose() raised, was cancelled, or timed out.
-        Idempotent: a second call is a no-op once the socket has been closed.
+        This is the terminal fallback when cooperative stream close did not
+        actually close the FD.  asyncio exposes a ``TransportSocket`` view
+        whose disruptive ``close()`` method is intentionally absent; in that
+        case close its exact wrapped socket object instead.  Idempotent once
+        the exposed socket reports ``fileno() == -1``.
         """
         if self._raw_socket_closed:
             return
@@ -475,13 +492,26 @@ class _RetryingCloseResponseStream(httpx.AsyncByteStream):
             raw_socket = get_extra_info("socket")
             if raw_socket is None:
                 return
-            raw_socket.close()
-            self._raw_socket_closed = True
+
+            wrapped_socket = getattr(raw_socket, "_sock", None)
+            close_targets = [raw_socket]
+            if isinstance(wrapped_socket, socket.socket):
+                close_targets.append(wrapped_socket)
+            for target in close_targets:
+                close = getattr(target, "close", None)
+                if close is None:
+                    continue
+                try:
+                    close()
+                except Exception:
+                    continue
+                if self._raw_socket_is_closed():
+                    self._raw_socket_closed = True
+                    return
         except Exception:
-            logger.debug(
-                "Failed to close raw Telegram response socket fallback",
-                exc_info=True,
-            )
+            pass
+
+        logger.debug("Failed to close raw Telegram response socket fallback")
 
 
 async def _close_request_network_streams(
@@ -557,17 +587,15 @@ async def _handle_transport_request(
 
 
 def _close_response_on_task_done(task: asyncio.Task, response: httpx.Response) -> None:
-    """Attach a callback that closes *response* if *task* ends abnormally."""
+    """Attach a callback that closes *response* if it is still open at task end."""
     def _on_done(finished_task: asyncio.Task) -> None:
-        if finished_task.cancelled():
-            should_close = True
-        else:
-            exc = finished_task.exception()
-            should_close = exc is not None
-        if should_close and not getattr(response, "is_closed", True):
-            close_task = asyncio.create_task(_close_response(response))
-            _abandoned_response_cleanups.add(close_task)
-            close_task.add_done_callback(_abandoned_response_cleanups.discard)
+        # Always close if the response was not fully closed, even on normal
+        # completion: a caller may have returned without consuming the body.
+        if getattr(response, "is_closed", True):
+            return
+        close_task = asyncio.create_task(_close_response(response))
+        close_task.add_done_callback(_abandoned_response_cleanups.discard)
+        _abandoned_response_cleanups.add(close_task)
 
     task.add_done_callback(_on_done)
 

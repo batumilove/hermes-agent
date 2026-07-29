@@ -935,8 +935,11 @@ async def test_socket_close_error_diagnostic_redacts_request_and_exception(monke
             await response.aclose()
 
         assert selected_stream.closed is True
-        assert len(capture.records) == 3
-        error_record, error_closed_state = capture.records[2]
+        lifecycle_records = [
+            item for item in capture.records if "event=" in item[0].getMessage()
+        ]
+        assert len(lifecycle_records) == 3
+        error_record, error_closed_state = lifecycle_records[2]
         assert error_closed_state is True
         _assert_lifecycle_record(
             error_record,
