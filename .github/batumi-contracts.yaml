@@ -68,6 +68,7 @@ contracts:
 
   - id: update-and-rollback
     rationale: Preserve safe update checks and running-container restart behavior.
+    serial: true
     tests:
       - tests/hermes_cli/test_update_check.py
       - tests/test_install_diverged_update.py

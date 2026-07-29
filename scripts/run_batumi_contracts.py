@@ -45,6 +45,8 @@ def load_contracts(path: Path) -> list[dict[str, Any]]:
         seen.add(contract_id)
         if not isinstance(contract.get("rationale"), str) or not contract["rationale"].strip():
             raise ContractError(f"{contract_id}.rationale must be a non-empty string")
+        if not isinstance(contract.get("serial", False), bool):
+            raise ContractError(f"{contract_id}.serial must be a boolean")
         tests = contract.get("tests")
         if not isinstance(tests, list) or not tests:
             raise ContractError(f"{contract_id}.tests must be a non-empty list")
@@ -86,24 +88,45 @@ def main(argv: list[str] | None = None) -> int:
             print(contract["id"])
         return 0
 
-    selectors = list(
+    serial_selectors = list(
         dict.fromkeys(
             selector
             for contract in selected
+            if contract.get("serial", False)
             for selector in contract["tests"]
+        )
+    )
+    serial_set = set(serial_selectors)
+    parallel_selectors = list(
+        dict.fromkeys(
+            selector
+            for contract in selected
+            if not contract.get("serial", False)
+            for selector in contract["tests"]
+            if selector not in serial_set
         )
     )
     with tempfile.TemporaryDirectory(prefix="hermes-batumi-contracts-") as home:
         env = os.environ.copy()
         env["HERMES_HOME"] = home
-        command = [
-            str(ROOT / "scripts" / "run_tests.sh"),
-            *selectors,
-            "-q",
-            *pytest_args,
-        ]
-        result = subprocess.run(command, cwd=ROOT, env=env)
-    return result.returncode
+        lanes = (
+            (parallel_selectors, []),
+            (serial_selectors, ["-j", "1"]),
+        )
+        for selectors, runner_args in lanes:
+            if not selectors:
+                continue
+            command = [
+                str(ROOT / "scripts" / "run_tests.sh"),
+                *runner_args,
+                *selectors,
+                "-q",
+                *pytest_args,
+            ]
+            result = subprocess.run(command, cwd=ROOT, env=env)
+            if result.returncode:
+                return result.returncode
+    return 0
 
 
 if __name__ == "__main__":
