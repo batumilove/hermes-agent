@@ -29,6 +29,25 @@ def test_local_gateway_preloads_run_agent_module(monkeypatch):
     assert imported == ["run_agent"]
 
 
+def test_local_gateway_preload_resolves_lazy_openai_sdk(monkeypatch):
+    class FakeAgent:
+        pass
+
+    fake_run_agent = types.SimpleNamespace(AIAgent=FakeAgent)
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import agent.process_bootstrap as process_bootstrap
+
+    loaded: list[str] = []
+    monkeypatch.setattr(
+        process_bootstrap,
+        "_load_openai_cls",
+        lambda: loaded.append("openai.OpenAI") or object,
+    )
+
+    assert gateway_run._load_gateway_agent_class() is FakeAgent
+    assert loaded == ["openai.OpenAI"]
+
+
 def test_proxy_gateway_skips_local_agent_runtime_preload(monkeypatch):
     runner = types.SimpleNamespace(_get_proxy_url=lambda: "https://proxy.invalid")
     monkeypatch.setattr(

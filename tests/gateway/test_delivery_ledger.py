@@ -9,6 +9,8 @@ id stability, and the startup redelivery sweep's contract:
 - poison rows abandon at the attempts cap / stale cutoff
 """
 
+import asyncio
+import threading
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -261,6 +263,42 @@ class TestGatewayRedeliverySweep:
 
         assert n == 0
         assert _row("ob-1")["state"] == "failed"
+
+    @pytest.mark.parametrize(
+        ("blocked_name", "send_success"),
+        [("mark_delivered", True), ("mark_failed", False)],
+    )
+    @pytest.mark.asyncio
+    async def test_redelivery_ledger_updates_do_not_block_event_loop(
+        self, monkeypatch, blocked_name, send_success
+    ):
+        _record()
+        _orphan("ob-1")
+        runner = self._runner(self._adapter(success=send_success))
+        started = threading.Event()
+        heartbeat = threading.Event()
+        heartbeat_before_release: list[bool] = []
+
+        def blocking_mutation(*args, **kwargs):
+            started.set()
+            heartbeat_before_release.append(heartbeat.wait(timeout=1.0))
+
+        monkeypatch.setattr(
+            dl,
+            blocked_name,
+            blocking_mutation,
+        )
+
+        async def heartbeat_task():
+            while not started.is_set():
+                await asyncio.sleep(0)
+            heartbeat.set()
+
+        await asyncio.gather(
+            runner._redeliver_pending_obligations(), heartbeat_task()
+        )
+
+        assert heartbeat_before_release == [True]
 
     @pytest.mark.asyncio
     async def test_missing_adapter_leaves_row_recoverable(self):

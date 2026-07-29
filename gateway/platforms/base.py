@@ -37,6 +37,24 @@ _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
 _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
 
 
+async def _run_delivery_ledger_io(func, *args, **kwargs):
+    """Run one durable ledger mutation off-loop and finish it on cancellation."""
+    task = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
+    cancellation = None
+    while True:
+        try:
+            result = await asyncio.shield(task)
+            break
+        except asyncio.CancelledError as exc:
+            cancellation = cancellation or exc
+            if task.done():
+                result = task.result()
+                break
+    if cancellation is not None:
+        raise cancellation
+    return result
+
+
 def _platform_name(platform) -> str:
     """Normalize a Platform enum / raw string into a lowercase name."""
     value = getattr(platform, "value", platform)
@@ -5325,7 +5343,8 @@ class BasePlatformAdapter(ABC):
                                     str(getattr(event, "message_id", "") or ""),
                                     text_content,
                                 )
-                                record_obligation(
+                                await _run_delivery_ledger_io(
+                                    record_obligation,
                                     obligation_id=_obligation_id,
                                     session_key=session_key,
                                     platform=str(
@@ -5336,7 +5355,9 @@ class BasePlatformAdapter(ABC):
                                     thread_id=getattr(event.source, "thread_id", None),
                                     content=text_content,
                                 )
-                                mark_attempting(_obligation_id)
+                                await _run_delivery_ledger_io(
+                                    mark_attempting, _obligation_id
+                                )
                         except Exception:
                             logger.debug("delivery ledger record failed", exc_info=True)
                             _obligation_id = None
@@ -5355,9 +5376,12 @@ class BasePlatformAdapter(ABC):
                             )
 
                             if getattr(result, "success", False):
-                                mark_delivered(_obligation_id)
+                                await _run_delivery_ledger_io(
+                                    mark_delivered, _obligation_id
+                                )
                             else:
-                                mark_failed(
+                                await _run_delivery_ledger_io(
+                                    mark_failed,
                                     _obligation_id,
                                     str(getattr(result, "error", "") or ""),
                                 )

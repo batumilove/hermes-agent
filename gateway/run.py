@@ -227,6 +227,13 @@ def _load_gateway_agent_class():
     cheap without adding a second mutable class cache here.
     """
     from run_agent import AIAgent
+    from agent.process_bootstrap import _load_openai_cls
+
+    # ``run_agent`` intentionally exposes a lazy OpenAI proxy for short-lived
+    # CLI commands. A gateway is long-lived and already pays its local-runtime
+    # startup cost before adapters connect, so resolve the same process cache
+    # here rather than on the first inbound-message callback.
+    _load_openai_cls()
 
     return AIAgent
 
@@ -2030,6 +2037,7 @@ from gateway.platforms.base import (
     RunPhaseReply,
     MessageEvent,
     MessageType,
+    _run_delivery_ledger_io,
     _prefix_within_utf16_limit,
     _reply_anchor_for_event,
     merge_pending_message_event,
@@ -7837,7 +7845,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 result = None
             try:
                 if result is not None and getattr(result, "success", False):
-                    mark_delivered(row["obligation_id"])
+                    await _run_delivery_ledger_io(
+                        mark_delivered, row["obligation_id"]
+                    )
                     redelivered += 1
                     logger.info(
                         "Redelivered recovered final response to %s:%s "
@@ -7846,7 +7856,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         row["obligation_id"], row["attempts"],
                     )
                 else:
-                    mark_failed(
+                    await _run_delivery_ledger_io(
+                        mark_failed,
                         row["obligation_id"],
                         str(getattr(result, "error", "") or "send failed"),
                     )

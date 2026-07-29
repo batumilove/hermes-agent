@@ -260,9 +260,14 @@ class TestStaleSessionLockSelfHeal:
         # An ordinary message should heal the stale lock, then fall through
         # to normal dispatch.  User gets a reply instead of a busy ack.
         await adapter.handle_message(_make_event("hello"))
-        # Drain any spawned background tasks.
-        for _ in range(5):
-            await asyncio.sleep(0)
+        # Wait for the spawned processing task to finish its off-loop ledger I/O
+        # and send the response.  A fixed number of event-loop turns is not a
+        # completion boundary once durable SQLite mutations use to_thread().
+        async def _response_sent():
+            while not any("handled:text" in r for r in adapter.sent_responses):
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(_response_sent(), timeout=2.0)
 
         assert any("handled:text" in r for r in adapter.sent_responses), (
             "stale lock trapped a normal message — split-brain not healed"
