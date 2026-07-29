@@ -10,6 +10,7 @@ so CLI and messaging platforms behave identically.
 
 import importlib
 import sys
+import threading
 import types
 from datetime import datetime
 from types import SimpleNamespace
@@ -306,19 +307,29 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
 
     class FakeCompressAgent:
         last_instance = None
+        constructor_thread_ids = []
+        compression_thread_ids = []
+        cleanup_thread_ids = []
 
         def __init__(self, **kwargs):
+            type(self).constructor_thread_ids.append(threading.get_ident())
             self.model = kwargs.get("model")
             self.session_id = kwargs.get("session_id", "fake-session")
+            self._end_session_on_close = True
             self._print_fn = None
-            self.shutdown_memory_provider = MagicMock()
-            self.close = MagicMock()
             type(self).last_instance = self
 
         def _compress_context(self, messages, *_args, **_kwargs):
+            type(self).compression_thread_ids.append(threading.get_ident())
             # Simulate real _compress_context: create a new session_id
             self.session_id = f"{self.session_id}_compressed"
             return ([{"role": "assistant", "content": "compressed"}], None)
+
+        def shutdown_memory_provider(self):
+            type(self).cleanup_thread_ids.append(threading.get_ident())
+
+        def close(self):
+            type(self).cleanup_thread_ids.append(threading.get_ident())
 
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = FakeCompressAgent
@@ -384,6 +395,7 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
         message_id="1",
     )
 
+    event_loop_thread_id = threading.get_ident()
     result = await runner._handle_message(event)
 
     assert result == "ok"
@@ -391,8 +403,23 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
     # happens silently with server-side logging only.
     assert len(adapter.sent) == 0
     assert FakeCompressAgent.last_instance is not None
-    FakeCompressAgent.last_instance.shutdown_memory_provider.assert_called_once()
-    FakeCompressAgent.last_instance.close.assert_called_once()
+    assert FakeCompressAgent.constructor_thread_ids
+    assert all(
+        thread_id != event_loop_thread_id
+        for thread_id in FakeCompressAgent.constructor_thread_ids
+    )
+    assert FakeCompressAgent.compression_thread_ids
+    assert all(
+        thread_id != event_loop_thread_id
+        for thread_id in FakeCompressAgent.compression_thread_ids
+    )
+    assert FakeCompressAgent.cleanup_thread_ids
+    assert all(
+        thread_id != event_loop_thread_id
+        for thread_id in FakeCompressAgent.cleanup_thread_ids
+    )
+    assert FakeCompressAgent.last_instance._end_session_on_close is False
+    assert len(FakeCompressAgent.cleanup_thread_ids) == 2
 
 
 @pytest.mark.asyncio

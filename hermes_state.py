@@ -31,7 +31,7 @@ from pathlib import Path
 from agent.memory_manager import sanitize_context
 from agent.message_sanitization import _sanitize_surrogates
 from hermes_constants import get_hermes_home
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -1808,6 +1808,12 @@ class SessionDB:
         # when the caller itself was dispatched through asyncio.to_thread().
         self._handoff_read_lock = threading.Lock()
         self._handoff_read_conn: Optional[sqlite3.Connection] = None
+        # Full-text recall can run for seconds on large databases. Keep those
+        # scans on their own read-only connection and lock so they never convoy
+        # persistence writes or bounded topic/session point reads through
+        # ``self._lock``.
+        self._recall_read_lock = threading.Lock()
+        self._recall_read_conn: Optional[sqlite3.Connection] = None
         try:
             if read_only:
                 # Read-only attach for cross-profile aggregation: SELECT-only,
@@ -2583,6 +2589,10 @@ class SessionDB:
                 if self._handoff_read_conn is not None:
                     self._handoff_read_conn.close()
                     self._handoff_read_conn = None
+            with self._recall_read_lock:
+                if self._recall_read_conn is not None:
+                    self._recall_read_conn.close()
+                    self._recall_read_conn = None
 
     # ── Chunked FTS rebuild engine (v23 opt-in optimize) ──
     #
@@ -7821,6 +7831,62 @@ class SessionDB:
                 run = 0
         return run == 1
 
+    def _recall_read_rows(
+        self,
+        sql: str,
+        params: Sequence[Any] = (),
+    ) -> List[sqlite3.Row]:
+        """Execute one recall query on the dedicated read-only connection."""
+        with self._recall_read_lock:
+            if self._closed:
+                raise RuntimeError("SessionDB is closed")
+            if self._recall_read_conn is None:
+                conn = sqlite3.connect(
+                    f"file:{self.db_path}?mode=ro",
+                    uri=True,
+                    check_same_thread=False,
+                    timeout=1.0,
+                    isolation_level=None,
+                    cached_statements=0,
+                )
+                conn.row_factory = sqlite3.Row
+                apply_state_db_read_tuning(conn)
+                # The CJK tokenizer is connection-local. Loading it here is
+                # read-only and lets this reader use the same existing index
+                # capabilities the writer probed during schema initialization.
+                load_fts5_cjk_extension(conn)
+                self._recall_read_conn = conn
+            return self._recall_read_conn.execute(sql, params).fetchall()
+
+    def _reset_recall_read_conn(self) -> None:
+        """Drop the process-local recall reader after an FTS repair/replacement."""
+        with self._recall_read_lock:
+            if self._recall_read_conn is not None:
+                try:
+                    self._recall_read_conn.close()
+                finally:
+                    self._recall_read_conn = None
+
+    def _recall_fts_rebuild_status(self) -> Optional[Dict[str, Any]]:
+        rows = self._recall_read_rows(
+            "SELECT key, value FROM state_meta WHERE key IN (?, ?)",
+            ("fts_rebuild_high_water", "fts_rebuild_progress"),
+        )
+        values = {row["key"]: row["value"] for row in rows}
+        high_water = values.get("fts_rebuild_high_water")
+        if high_water is None:
+            return None
+        total = int(high_water)
+        if total <= 0:
+            return None
+        progress = int(values.get("fts_rebuild_progress") or 0)
+        return {
+            "pending": True,
+            "total": total,
+            "indexed": progress,
+            "percent": min(100, int(100 * progress / total)),
+        }
+
     def search_messages(
         self,
         query: str,
@@ -8097,10 +8163,11 @@ class SessionDB:
                 """
                 cjk_params.extend([limit, offset])
                 try:
-                    with self._lock:
-                        cjk_cursor = self._conn.execute(cjk_sql, cjk_params)
-                        matches = [dict(row) for row in cjk_cursor.fetchall()]
-                        _trigram_succeeded = True
+                    matches = [
+                        dict(row)
+                        for row in self._recall_read_rows(cjk_sql, cjk_params)
+                    ]
+                    _trigram_succeeded = True
                 except sqlite3.OperationalError:
                     # Tokenizer missing on this connection / query syntax —
                     # the trigram + LIKE routes below still answer.
@@ -8113,14 +8180,14 @@ class SessionDB:
                     # in place once and retry; on refusal/failure fall back.
                     if self._try_runtime_fts_rebuild(exc):
                         try:
-                            with self._lock:
-                                cjk_cursor = self._conn.execute(
+                            self._reset_recall_read_conn()
+                            matches = [
+                                dict(row)
+                                for row in self._recall_read_rows(
                                     cjk_sql, cjk_params
                                 )
-                                matches = [
-                                    dict(row) for row in cjk_cursor.fetchall()
-                                ]
-                                _trigram_succeeded = True
+                            ]
+                            _trigram_succeeded = True
                         except sqlite3.DatabaseError:
                             logger.warning(
                                 "CJK-bigram FTS search still failing after "
@@ -8190,10 +8257,11 @@ class SessionDB:
                 # produce missing/duplicated rows across pages.
                 tri_params.extend([merge_window, 0])
                 try:
-                    with self._lock:
-                        tri_cursor = self._conn.execute(tri_sql, tri_params)
-                        matches = [dict(row) for row in tri_cursor.fetchall()]
-                        _trigram_succeeded = True
+                    matches = [
+                        dict(row)
+                        for row in self._recall_read_rows(tri_sql, tri_params)
+                    ]
+                    _trigram_succeeded = True
                 except sqlite3.OperationalError:
                     # Trigram query failed at runtime — fall through to LIKE.
                     pass
@@ -8211,14 +8279,14 @@ class SessionDB:
                     # messages table, so CJK search stays available.
                     if self._try_runtime_fts_rebuild(exc):
                         try:
-                            with self._lock:
-                                tri_cursor = self._conn.execute(
+                            self._reset_recall_read_conn()
+                            matches = [
+                                dict(row)
+                                for row in self._recall_read_rows(
                                     tri_sql, tri_params
                                 )
-                                matches = [
-                                    dict(row) for row in tri_cursor.fetchall()
-                                ]
-                                _trigram_succeeded = True
+                            ]
+                            _trigram_succeeded = True
                         except sqlite3.DatabaseError:
                             logger.warning(
                                 "Trigram FTS search still failing after "
@@ -8279,9 +8347,10 @@ class SessionDB:
                 """
                 like_params.extend([limit, offset])
                 like_params = [non_op_tokens[0]] + like_params
-                with self._lock:
-                    like_cursor = self._conn.execute(like_sql, like_params)
-                    matches = [dict(r) for r in like_cursor.fetchall()]
+                matches = [
+                    dict(row)
+                    for row in self._recall_read_rows(like_sql, like_params)
+                ]
             if cjk_count >= 3 and _trigram_succeeded:
                 try:
                     gap_matches = self._search_cjk_trigram_gap(
@@ -8316,9 +8385,9 @@ class SessionDB:
                     logger.debug("CJK gap supplement skipped: %s", exc)
         else:
             try:
-                with self._lock:
-                    cursor = self._conn.execute(sql, params)
-                    matches = [dict(row) for row in cursor.fetchall()]
+                matches = [
+                    dict(row) for row in self._recall_read_rows(sql, params)
+                ]
             except sqlite3.OperationalError:
                 # FTS5 query syntax error despite sanitization — return empty
                 return []
@@ -8333,12 +8402,13 @@ class SessionDB:
                 # search) that never trigger a write to repair it first.
                 if not self._try_runtime_fts_rebuild(exc):
                     raise
-                with self._lock:
-                    cursor = self._conn.execute(sql, params)
-                    try:
-                        matches = [dict(row) for row in cursor.fetchall()]
-                    except sqlite3.OperationalError:
-                        return []
+                self._reset_recall_read_conn()
+                try:
+                    matches = [
+                        dict(row) for row in self._recall_read_rows(sql, params)
+                    ]
+                except sqlite3.OperationalError:
+                    return []
 
         # Deferred-rebuild supplement (schema v23): while the background
         # backfill is pending, the FTS indexes only cover rows outside the
@@ -8347,7 +8417,7 @@ class SessionDB:
         # messages mid-rebuild. The range shrinks as the backfill advances,
         # so this cost decays to zero. The CJK LIKE-fallback path above
         # already scans the whole base table and needs no supplement.
-        rebuild_status = self.fts_rebuild_status()
+        rebuild_status = self._recall_fts_rebuild_status()
         if rebuild_status is not None and len(matches) < limit:
             try:
                 gap_matches = self._search_unindexed_gap(
@@ -8367,9 +8437,8 @@ class SessionDB:
         # Done outside the lock so we don't hold it across N sequential queries.
         for match in matches:
             try:
-                with self._lock:
-                    ctx_cursor = self._conn.execute(
-                        """WITH target AS (
+                context_rows = self._recall_read_rows(
+                    """WITH target AS (
                                SELECT session_id, timestamp, id
                                FROM messages
                                WHERE id = ?
@@ -8399,28 +8468,28 @@ class SessionDB:
                                ORDER BY m.timestamp ASC, m.id ASC
                                LIMIT 1
                            )""",
-                        (match["id"], match["id"]),
+                    (match["id"], match["id"]),
+                )
+                context_msgs = []
+                for r in context_rows:
+                    raw = r["content"]
+                    decoded = self._decode_content(raw)
+                    # Multimodal context: render a compact text-only
+                    # summary for search previews.
+                    if isinstance(decoded, list):
+                        text_parts = [
+                            p.get("text", "") for p in decoded
+                            if isinstance(p, dict) and p.get("type") == "text"
+                        ]
+                        text = " ".join(t for t in text_parts if t).strip()
+                        preview = text or "[multimodal content]"
+                    elif isinstance(decoded, str):
+                        preview = decoded
+                    else:
+                        preview = ""
+                    context_msgs.append(
+                        {"role": r["role"], "content": preview[:200]}
                     )
-                    context_msgs = []
-                    for r in ctx_cursor.fetchall():
-                        raw = r["content"]
-                        decoded = self._decode_content(raw)
-                        # Multimodal context: render a compact text-only
-                        # summary for search previews.
-                        if isinstance(decoded, list):
-                            text_parts = [
-                                p.get("text", "") for p in decoded
-                                if isinstance(p, dict) and p.get("type") == "text"
-                            ]
-                            text = " ".join(t for t in text_parts if t).strip()
-                            preview = text or "[multimodal content]"
-                        elif isinstance(decoded, str):
-                            preview = decoded
-                        else:
-                            preview = ""
-                        context_msgs.append(
-                            {"role": r["role"], "content": preview[:200]}
-                        )
                 match["context"] = context_msgs
             except Exception:
                 match["context"] = []
@@ -8449,7 +8518,7 @@ class SessionDB:
         phrases kept whole), which is deliberately recall-over-precision:
         temporary results beat silently missing ones mid-rebuild.
         """
-        status = self.fts_rebuild_status()
+        status = self._recall_fts_rebuild_status()
         if status is None or limit <= 0:
             return []
         progress, high_water = status["indexed"], status["total"]
@@ -8500,8 +8569,7 @@ class SessionDB:
             LIMIT ?
         """
         params = [terms[0]] + params + [limit]
-        with self._lock:
-            rows = self._conn.execute(sql, params).fetchall()
+        rows = self._recall_read_rows(sql, params)
         return [dict(r) for r in rows]
 
     def _search_cjk_trigram_gap(
@@ -8568,8 +8636,7 @@ class SessionDB:
             LIMIT ?
         """
         params = [tokens[0]] + params + [limit]
-        with self._lock:
-            rows = self._conn.execute(sql, params).fetchall()
+        rows = self._recall_read_rows(sql, params)
         return [dict(r) for r in rows]
 
     def search_sessions_by_id(

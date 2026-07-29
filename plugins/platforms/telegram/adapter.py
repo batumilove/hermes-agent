@@ -8547,7 +8547,7 @@ class TelegramAdapter(BasePlatformAdapter):
         event.text = self._clean_bot_trigger_text(event.text)
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
-        self._enqueue_text_event(event)
+        await self._recover_and_enqueue_text_event(event)
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
@@ -8623,20 +8623,24 @@ class TelegramAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def _text_batch_key(self, event: MessageEvent) -> str:
-        """Session-scoped key for text message batching.
-
-        Applies the installed topic-recovery hook first so DM-topic batches
-        coalesce on (and dispatch to) the recovered lane rather than the
-        raw inbound ``message_thread_id`` Telegram may have attached.
-        """
+        """Build the session-scoped key for an already-recovered text event."""
         from gateway.session import build_session_key
-        self._apply_topic_recovery(event)
         return build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
             profile=event.source.profile,
         )
+
+    async def _recover_and_enqueue_text_event(self, event: MessageEvent) -> None:
+        """Serialize off-loop topic recovery with ordered split-chunk enqueue."""
+        lock = getattr(self, "_text_recovery_enqueue_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._text_recovery_enqueue_lock = lock
+        async with lock:
+            await self._apply_topic_recovery_async(event)
+            self._enqueue_text_event(event)
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text event and reset the flush timer.

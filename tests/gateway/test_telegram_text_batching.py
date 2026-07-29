@@ -32,6 +32,7 @@ def _make_adapter():
     adapter._drop_delayed_deliveries = False
     adapter._pending_text_batches = {}
     adapter._pending_text_batch_tasks = {}
+    adapter._text_recovery_enqueue_lock = asyncio.Lock()
     adapter._pending_photo_batches = {}
     adapter._pending_photo_batch_tasks = {}
     adapter._media_group_events = {}
@@ -157,7 +158,7 @@ class TestTextBatching:
             ),
         )
 
-        adapter._enqueue_text_event(event)
+        await adapter._recover_and_enqueue_text_event(event)
 
         def _key(thread_id: str) -> str:
             return build_session_key(
@@ -179,6 +180,112 @@ class TestTextBatching:
 
         adapter.handle_message.assert_called_once()
         dispatched = adapter.handle_message.call_args[0][0]
+        assert dispatched.source.thread_id == "222"
+
+    @pytest.mark.asyncio
+    async def test_telegram_text_recovery_does_not_block_event_loop(self):
+        """A synchronous topic lookup must run outside the asyncio loop."""
+        adapter = _make_adapter()
+        heartbeat_ran = asyncio.Event()
+        heartbeat_seen_by_recovery = []
+        loop = asyncio.get_running_loop()
+
+        def recover(_source):
+            heartbeat_seen_by_recovery.append(
+                asyncio.run_coroutine_threadsafe(
+                    heartbeat_ran.wait(), loop
+                ).result(timeout=1)
+            )
+            return "222"
+
+        adapter.set_topic_recovery_fn(recover)
+        event = _make_event("event-loop heartbeat")
+        message = SimpleNamespace(text=event.text)
+        update = SimpleNamespace(
+            update_id=1,
+            message=message,
+            effective_message=message,
+        )
+        adapter._is_user_authorized_from_message = lambda _msg: True
+        adapter._should_process_message = lambda _msg: True
+        adapter._ensure_forum_commands = AsyncMock()
+        adapter._build_message_event = lambda *_args, **_kwargs: event
+        adapter._clean_bot_trigger_text = lambda text: text
+        adapter._cache_replied_media = AsyncMock()
+        adapter._apply_telegram_group_observe_attribution = lambda value: value
+
+        async def heartbeat():
+            await asyncio.sleep(0)
+            heartbeat_ran.set()
+
+        await asyncio.gather(
+            adapter._handle_text_message(update, SimpleNamespace()),
+            heartbeat(),
+        )
+
+        assert heartbeat_seen_by_recovery == [True]
+        assert event.source.thread_id == "222"
+        await asyncio.sleep(0.2)
+
+    @pytest.mark.asyncio
+    async def test_telegram_text_recovery_awaits_coroutine_hook(self):
+        adapter = _make_adapter()
+
+        async def recover(_source):
+            await asyncio.sleep(0)
+            return "333"
+
+        adapter.set_topic_recovery_fn(recover)
+        event = _make_event("async recovery")
+
+        await adapter._recover_and_enqueue_text_event(event)
+
+        assert event.source.thread_id == "333"
+        await asyncio.sleep(0.2)
+
+    @pytest.mark.asyncio
+    async def test_dm_topic_batching_recovers_thread_before_keying_concurrently(self):
+        """Awaited recovery must preserve split-chunk order and batch identity."""
+        adapter = _make_adapter()
+        first_recovery_started = asyncio.Event()
+        release_first_recovery = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        calls = 0
+
+        def recover(_source):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                loop.call_soon_threadsafe(first_recovery_started.set)
+                asyncio.run_coroutine_threadsafe(
+                    release_first_recovery.wait(), loop
+                ).result(timeout=1)
+            return "222"
+
+        adapter.set_topic_recovery_fn(recover)
+        first = _make_event("chunk 1")
+        second = _make_event("chunk 2")
+
+        first_task = asyncio.create_task(
+            adapter._recover_and_enqueue_text_event(first)
+        )
+        await asyncio.wait_for(first_recovery_started.wait(), timeout=1)
+        second_task = asyncio.create_task(
+            adapter._recover_and_enqueue_text_event(second)
+        )
+        await asyncio.sleep(0)
+        release_first_recovery.set()
+        await asyncio.gather(first_task, second_task)
+
+        assert len(adapter._pending_text_batches) == 1
+        pending = next(iter(adapter._pending_text_batches.values()))
+        assert pending.text == "chunk 1\nchunk 2"
+        assert pending.source.thread_id == "222"
+
+        await asyncio.sleep(0.2)
+        adapter.handle_message.assert_called_once()
+        dispatched = adapter.handle_message.call_args.args[0]
+        assert dispatched.text == "chunk 1\nchunk 2"
         assert dispatched.source.thread_id == "222"
 
     @pytest.mark.asyncio

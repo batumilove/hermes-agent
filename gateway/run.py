@@ -13700,49 +13700,57 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                             if len(_hyg_msgs) >= 4:
                                 _hyg_session_db = getattr(self._session_db, "_db", self._session_db)
-                                _hyg_agent = AIAgent(
-                                    **_hyg_runtime,
-                                    model=_hyg_model,
-                                    max_iterations=4,
-                                    quiet_mode=True,
-                                    skip_memory=True,
-                                    enabled_toolsets=["memory"],
-                                    session_id=session_entry.session_id,
-                                    session_db=_hyg_session_db,
-                                )
+                                _hyg_agent = None
                                 try:
-                                    # Gateway hygiene runs before the user turn
-                                    # starts and already owns the session binding.
-                                    # Prefer in-place compaction here: it archives
-                                    # old rows under the same session id instead of
-                                    # minting a continuation child that then has to
-                                    # be published back to SessionStore/topic
-                                    # bindings.  If no SessionDB is available,
-                                    # compress_context leaves this flag false and
-                                    # the guard below preserves the transcript.
-                                    _hyg_agent.compression_in_place = True
-                                    _bind_hyg_state = getattr(
-                                        getattr(_hyg_agent, "context_compressor", None),
-                                        "bind_session_state",
-                                        None,
-                                    )
-                                    if callable(_bind_hyg_state):
-                                        _bind_hyg_state(
-                                            _hyg_session_db,
-                                            session_entry.session_id,
+                                    def _compress_hygiene_off_loop():
+                                        agent = AIAgent(
+                                            **_hyg_runtime,
+                                            model=_hyg_model,
+                                            max_iterations=4,
+                                            quiet_mode=True,
+                                            skip_memory=True,
+                                            enabled_toolsets=["memory"],
+                                            session_id=session_entry.session_id,
+                                            session_db=_hyg_session_db,
                                         )
-                                    # It must never finalize on close() — close()
-                                    # would end the live gateway session row.
-                                    _hyg_agent._end_session_on_close = False
-                                    _hyg_agent._print_fn = lambda *a, **kw: None
+                                        try:
+                                            # Gateway hygiene runs before the user
+                                            # turn and already owns the session
+                                            # binding. Prefer in-place compaction.
+                                            agent.compression_in_place = True
+                                            _bind_hyg_state = getattr(
+                                                getattr(
+                                                    agent,
+                                                    "context_compressor",
+                                                    None,
+                                                ),
+                                                "bind_session_state",
+                                                None,
+                                            )
+                                            if callable(_bind_hyg_state):
+                                                _bind_hyg_state(
+                                                    _hyg_session_db,
+                                                    session_entry.session_id,
+                                                )
+                                            # Hygiene cleanup must never end the
+                                            # live gateway session row.
+                                            agent._end_session_on_close = False
+                                            agent._print_fn = lambda *a, **kw: None
+                                            compressed, _ = agent._compress_context(
+                                                _hyg_msgs,
+                                                "",
+                                                approx_tokens=_approx_tokens,
+                                            )
+                                            return agent, compressed
+                                        except BaseException:
+                                            agent._end_session_on_close = False
+                                            self._cleanup_agent_resources(agent)
+                                            raise
 
-                                    loop = asyncio.get_running_loop()
-                                    _compressed, _ = await loop.run_in_executor(
-                                        None,
-                                        lambda: _hyg_agent._compress_context(
-                                            _hyg_msgs, "",
-                                            approx_tokens=_approx_tokens,
-                                        ),
+                                    _hyg_agent, _compressed = await (
+                                        self._run_in_executor_with_context(
+                                            _compress_hygiene_off_loop
+                                        )
                                     )
 
                                     # _compress_context ends the old session and creates
