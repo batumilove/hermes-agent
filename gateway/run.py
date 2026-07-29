@@ -249,7 +249,17 @@ def _preload_gateway_agent_runtime(runner: Any) -> bool:
         # Synthetic/minimal runners used by embedders and startup tests do not
         # execute local conversations; preserve their lightweight path.
         return False
-    if proxy_resolver():
+    try:
+        proxy_url = proxy_resolver()
+    except Exception:
+        # Preserve degraded startup when proxy configuration cannot be
+        # resolved. The first conversation retries and reports the root cause.
+        logger.exception(
+            "Failed to resolve gateway proxy configuration during runtime preload; "
+            "continuing gateway startup"
+        )
+        return False
+    if proxy_url:
         return False
     started = time.monotonic()
     try:

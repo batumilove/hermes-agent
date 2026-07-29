@@ -255,10 +255,11 @@ async def test_end_webhook_session_does_not_block_loop_while_peeking_session():
 async def test_end_webhook_session_does_not_block_loop_while_closing_session():
     heartbeat_ran = threading.Event()
     heartbeat_seen_while_end_blocked = []
+    ended_sessions = []
 
     def end_session(session_id: str, reason: str) -> None:
         heartbeat_seen_while_end_blocked.append(heartbeat_ran.wait(timeout=0.5))
-        assert (session_id, reason) == ("session-1", "webhook_complete")
+        ended_sessions.append((session_id, reason))
 
     runner = SimpleNamespace(
         session_store=SimpleNamespace(peek_session_id=lambda _key: "session-1"),
@@ -282,3 +283,4 @@ async def test_end_webhook_session_does_not_block_loop_while_closing_session():
     await asyncio.gather(close_task, heartbeat_task)
 
     assert heartbeat_seen_while_end_blocked == [True]
+    assert ended_sessions == [("session-1", "webhook_complete")]

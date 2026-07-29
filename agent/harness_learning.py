@@ -143,7 +143,7 @@ _STATUS_DESCRIPTION_RE = re.compile(
     r"inspection (?:shows|found)|readback (?:shows|found))\b"
 )
 _STATUS_HEADING_RE = re.compile(
-    r"^\s*(?:#{1,6}\s*)?(?:\d+[.)]\s*)?.*"
+    r"^\s*#{1,6}\s+(?:\d+[.)]\s*)?.*"
     r"\b(?:status|state|parity|readback|verification)\b"
     r"\s*(?:[-—:]+\s*)?(?:pass|fail|block(?:ed)?)\s*$"
 )
@@ -238,7 +238,15 @@ def _has_affirmative_side_effect_claim(
             clause = raw_clause.strip()
             if not clause:
                 continue
-            if _STATUS_HEADING_RE.search(clause) and not _FIRST_PERSON_RE.search(clause):
+            status_heading_scope = clause
+            if re.fullmatch(r"\s*#{1,6}\s+\d+[.)]\s*", previous):
+                # Sentence splitting treats a numbered Markdown heading's
+                # ``7.`` as punctuation. Rejoin only that narrow prefix;
+                # plain status-shaped action claims remain regulated.
+                status_heading_scope = f"{previous} {clause}"
+            if _STATUS_HEADING_RE.search(
+                status_heading_scope
+            ) and not _FIRST_PERSON_RE.search(status_heading_scope):
                 continue
             affirmative_verbs = [
                 verb for verb in verbs if _has_unnegated_verb(clause, verb)
