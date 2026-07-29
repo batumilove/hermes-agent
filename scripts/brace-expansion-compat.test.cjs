@@ -113,7 +113,7 @@ test('Docker dependency layer copies local adapter inputs before npm install', (
 
   const dockerfile = fs.readFileSync(dockerfilePath, 'utf8');
   const installIndex = dockerfile.indexOf(
-    'RUN npm exec --package=npm@11.18.0 -- npm install --prefer-offline --no-audit',
+    'RUN npm exec --package=npm@11.18.0 --ignore-scripts --min-release-age=7 -- npm install --prefer-offline --no-audit --ignore-scripts=false --min-release-age=7',
   );
   assert.notEqual(installIndex, -1, 'Docker npm install step is missing');
 

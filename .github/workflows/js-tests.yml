@@ -22,7 +22,7 @@ jobs:
           cache: npm
       - uses: ./.github/actions/retry
         with:
-          command: npm ci --ignore-scripts
+          command: npm exec --package=npm@11.18.0 --ignore-scripts --min-release-age=7 -- npm ci --ignore-scripts --min-release-age=7
       - id: set-matrix
         run: |
           PACKAGES=$(npm query .workspace | jq -c '[.[].location]')
@@ -49,7 +49,7 @@ jobs:
           cache: npm
       - uses: ./.github/actions/retry
         with:
-          command: npm ci
+          command: npm exec --package=npm@11.18.0 --ignore-scripts --min-release-age=7 -- npm ci --ignore-scripts=false --min-release-age=7
       - env:
           PACKAGE: ${{ matrix.package }}
         run: npm run --prefix "$PACKAGE" check

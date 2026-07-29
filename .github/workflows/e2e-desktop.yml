@@ -40,7 +40,7 @@ jobs:
       # needed for the terminal pane.
       - uses: ./.github/actions/retry
         with:
-          command: npm ci
+          command: npm exec --package=npm@11.18.0 --ignore-scripts --min-release-age=7 -- npm ci --ignore-scripts=false --min-release-age=7
 
       # ── Python (for the hermes serve backend) ──────────────────────────
       - name: Install uv
