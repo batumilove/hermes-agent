@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   observe:
-    uses: batumilove/hermes-ops/.github/workflows/staging-telegram-socket-diagnostics.yml@a30aa9dc370c4aa1f2f4e7771a12e71c80e5ec36
+    uses: batumilove/hermes-ops/.github/workflows/staging-telegram-socket-diagnostics.yml@a2e50d44291764c394e393ef88474bc926ec7a0e
     with:
       expected_source_sha: ${{ inputs.expected_source_sha }}
       observation_seconds: ${{ inputs.observation_seconds }}

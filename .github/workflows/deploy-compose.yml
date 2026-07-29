@@ -19,20 +19,20 @@ concurrency:
 jobs:
   publish:
     if: github.repository == 'batumilove/hermes-agent'
-    uses: batumilove/hermes-ops/.github/workflows/build-image.yml@a30aa9dc370c4aa1f2f4e7771a12e71c80e5ec36
+    uses: batumilove/hermes-ops/.github/workflows/build-image.yml@a2e50d44291764c394e393ef88474bc926ec7a0e
     with:
       source_sha: ${{ github.sha }}
-      ops_sha: a30aa9dc370c4aa1f2f4e7771a12e71c80e5ec36
+      ops_sha: a2e50d44291764c394e393ef88474bc926ec7a0e
     secrets: inherit
 
   deploy-staging:
     needs: publish
     if: vars.HERMES_STAGING_DEPLOY_ENABLED == 'true'
-    uses: batumilove/hermes-ops/.github/workflows/compose-deploy.yml@a30aa9dc370c4aa1f2f4e7771a12e71c80e5ec36
+    uses: batumilove/hermes-ops/.github/workflows/compose-deploy.yml@a2e50d44291764c394e393ef88474bc926ec7a0e
     with:
       environment: batumi-staging
       operation: deploy
       image_digest: ${{ needs.publish.outputs.digest }}
       source_sha: ${{ needs.publish.outputs.source_sha }}
-      ops_sha: a30aa9dc370c4aa1f2f4e7771a12e71c80e5ec36
+      ops_sha: a2e50d44291764c394e393ef88474bc926ec7a0e
     secrets: inherit
