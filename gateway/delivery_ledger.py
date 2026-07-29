@@ -46,6 +46,7 @@ import os
 import sqlite3
 import threading
 import time
+from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
@@ -53,6 +54,11 @@ from hermes_constants import get_hermes_home
 logger = logging.getLogger(__name__)
 
 _DB_LOCK = threading.Lock()
+
+_DEFAULT_SQLITE_TIMEOUT_SECONDS = 10.0
+# Final-response checkpoints are best-effort and must not hold platform
+# delivery behind the shared state.db writer queue.
+_HOT_PATH_SQLITE_TIMEOUT_SECONDS = 0.1
 
 # Redelivery policy knobs (module constants; deliberately not config — the
 # ledger itself is gated by ``gateway.delivery_ledger`` and these bounds
@@ -74,10 +80,12 @@ def _db_path():
     return get_hermes_home() / "state.db"
 
 
-def _connect() -> sqlite3.Connection:
+def _connect(
+    *, timeout: float = _DEFAULT_SQLITE_TIMEOUT_SECONDS
+) -> sqlite3.Connection:
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=10)
+    conn = sqlite3.connect(path, timeout=timeout)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS delivery_obligations (
@@ -97,6 +105,19 @@ def _connect() -> sqlite3.Connection:
         )"""
     )
     return conn
+
+
+@contextmanager
+def _hot_path_connection():
+    deadline = time.monotonic() + _HOT_PATH_SQLITE_TIMEOUT_SECONDS
+    if not _DB_LOCK.acquire(timeout=_HOT_PATH_SQLITE_TIMEOUT_SECONDS):
+        raise sqlite3.OperationalError("delivery ledger lock busy")
+    try:
+        remaining = max(0.0, deadline - time.monotonic())
+        with _connect(timeout=remaining) as conn:
+            yield conn
+    finally:
+        _DB_LOCK.release()
 
 
 def _owner_stamp() -> tuple[int, Optional[int]]:
@@ -164,7 +185,7 @@ def record_obligation(
     """Record a final response as owed to the platform (state='pending')."""
     now = time.time()
     pid, started = _owner_stamp()
-    with _DB_LOCK, _connect() as conn:
+    with _hot_path_connection() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO delivery_obligations
                (obligation_id, session_key, platform, chat_id, thread_id,
@@ -175,7 +196,7 @@ def record_obligation(
              str(thread_id) if thread_id else None, content, now, now,
              pid, started),
         )
-    _prune()
+    _prune(timeout=_HOT_PATH_SQLITE_TIMEOUT_SECONDS)
 
 
 def mark_attempting(obligation_id: str) -> None:
@@ -191,7 +212,7 @@ def mark_failed(obligation_id: str, error: str = "") -> None:
 
 
 def _update_state(obligation_id: str, state: str, error: str = "") -> None:
-    with _DB_LOCK, _connect() as conn:
+    with _hot_path_connection() as conn:
         conn.execute(
             """UPDATE delivery_obligations
                SET state=?, updated_at=?, last_error=?
@@ -273,11 +294,15 @@ def sweep_recoverable(
     return claimed
 
 
-def _prune(now: Optional[float] = None) -> None:
+def _prune(
+    now: Optional[float] = None,
+    *,
+    timeout: float = _DEFAULT_SQLITE_TIMEOUT_SECONDS,
+) -> None:
     now = now if now is not None else time.time()
     cutoff = now - _RETENTION_SECONDS
     try:
-        with _connect() as conn:
+        with _connect(timeout=timeout) as conn:
             conn.execute(
                 """DELETE FROM delivery_obligations
                    WHERE state IN ('delivered', 'abandoned') AND updated_at < ?""",
