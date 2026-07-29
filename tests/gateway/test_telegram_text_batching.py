@@ -33,6 +33,8 @@ def _make_adapter():
     adapter._pending_text_batches = {}
     adapter._pending_text_batch_tasks = {}
     adapter._text_recovery_enqueue_lock = asyncio.Lock()
+    adapter._text_recovery_lane_locks = {}
+    adapter._text_recovery_tasks = set()
     adapter._pending_photo_batches = {}
     adapter._pending_photo_batch_tasks = {}
     adapter._media_group_events = {}
@@ -287,6 +289,147 @@ class TestTextBatching:
         dispatched = adapter.handle_message.call_args.args[0]
         assert dispatched.text == "chunk 1\nchunk 2"
         assert dispatched.source.thread_id == "222"
+
+    @pytest.mark.asyncio
+    async def test_topic_recovery_is_fair_across_unrelated_raw_lanes(self):
+        """A slow lookup in chat A must not head-of-line block chat B."""
+        adapter = _make_adapter()
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        second_started = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def recover(source):
+            if source.chat_id == "chat-a":
+                loop.call_soon_threadsafe(first_started.set)
+                asyncio.run_coroutine_threadsafe(
+                    release_first.wait(), loop
+                ).result(timeout=2)
+            else:
+                loop.call_soon_threadsafe(second_started.set)
+            return "222"
+
+        adapter.set_topic_recovery_fn(recover)
+        first = asyncio.create_task(
+            adapter._recover_and_enqueue_text_event(_make_event("a", "chat-a"))
+        )
+        await asyncio.wait_for(first_started.wait(), timeout=1)
+        second = asyncio.create_task(
+            adapter._recover_and_enqueue_text_event(_make_event("b", "chat-b"))
+        )
+
+        await asyncio.wait_for(second_started.wait(), timeout=0.25)
+        release_first.set()
+        await asyncio.gather(first, second)
+
+        assert len(adapter._pending_text_batches) == 2
+        assert adapter._text_recovery_lane_locks == {}
+        assert adapter._text_recovery_tasks == set()
+        await asyncio.sleep(0.2)
+
+    @pytest.mark.asyncio
+    async def test_cancelled_topic_recovery_waiter_does_not_leak_lane_registry(self):
+        """Cancellation while queued on a raw lane removes its registry claim."""
+        adapter = _make_adapter()
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        calls = 0
+
+        def recover(_source):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                loop.call_soon_threadsafe(first_started.set)
+                asyncio.run_coroutine_threadsafe(
+                    release_first.wait(), loop
+                ).result(timeout=2)
+            return "222"
+
+        adapter.set_topic_recovery_fn(recover)
+        first = asyncio.create_task(
+            adapter._recover_and_enqueue_text_event(_make_event("first"))
+        )
+        await asyncio.wait_for(first_started.wait(), timeout=1)
+        cancelled = asyncio.create_task(
+            adapter._recover_and_enqueue_text_event(_make_event("cancelled"))
+        )
+        await asyncio.sleep(0)
+        cancelled.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cancelled
+
+        release_first.set()
+        await first
+
+        assert calls == 1
+        assert next(iter(adapter._pending_text_batches.values())).text == "first"
+        assert adapter._text_recovery_lane_locks == {}
+        assert adapter._text_recovery_tasks == set()
+        await asyncio.sleep(0.2)
+
+    @pytest.mark.asyncio
+    async def test_cancellation_during_topic_recovery_drains_worker_without_enqueue(self):
+        """Started off-loop recovery is owned until completion after cancellation."""
+        adapter = _make_adapter()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        finished = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def recover(_source):
+            loop.call_soon_threadsafe(started.set)
+            asyncio.run_coroutine_threadsafe(release.wait(), loop).result(timeout=2)
+            loop.call_soon_threadsafe(finished.set)
+            return "222"
+
+        adapter.set_topic_recovery_fn(recover)
+        task = asyncio.create_task(
+            adapter._recover_and_enqueue_text_event(_make_event("cancelled"))
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+        task.cancel()
+        await asyncio.sleep(0.05)
+        assert not task.done()
+
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert finished.is_set()
+        assert adapter._pending_text_batches == {}
+        assert adapter._text_recovery_lane_locks == {}
+        assert adapter._text_recovery_tasks == set()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_drains_topic_recovery_and_drops_late_enqueue(self):
+        """Disconnect waits for managed recovery work and prevents stale enqueue."""
+        adapter = _make_adapter()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def recover(_source):
+            loop.call_soon_threadsafe(started.set)
+            asyncio.run_coroutine_threadsafe(release.wait(), loop).result(timeout=2)
+            return "222"
+
+        adapter.set_topic_recovery_fn(recover)
+        recovery = asyncio.create_task(
+            adapter._recover_and_enqueue_text_event(_make_event("stale"))
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+        disconnect = asyncio.create_task(adapter.disconnect())
+        await asyncio.sleep(0.05)
+        assert not disconnect.done()
+
+        release.set()
+        await asyncio.gather(recovery, disconnect)
+
+        adapter.handle_message.assert_not_called()
+        assert adapter._pending_text_batches == {}
+        assert adapter._text_recovery_lane_locks == {}
+        assert adapter._text_recovery_tasks == set()
 
     @pytest.mark.asyncio
     async def test_disconnect_cancels_pending_text_batch_without_dispatch(self):

@@ -13700,9 +13700,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                             if len(_hyg_msgs) >= 4:
                                 _hyg_session_db = getattr(self._session_db, "_db", self._session_db)
+                                _hyg_original_sid = session_entry.session_id
                                 _hyg_agent = None
                                 try:
                                     def _compress_hygiene_off_loop():
+                                        agent = None
                                         agent = AIAgent(
                                             **_hyg_runtime,
                                             model=_hyg_model,
@@ -13710,7 +13712,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             quiet_mode=True,
                                             skip_memory=True,
                                             enabled_toolsets=["memory"],
-                                            session_id=session_entry.session_id,
+                                            session_id=_hyg_original_sid,
                                             session_db=_hyg_session_db,
                                         )
                                         try:
@@ -13730,7 +13732,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             if callable(_bind_hyg_state):
                                                 _bind_hyg_state(
                                                     _hyg_session_db,
-                                                    session_entry.session_id,
+                                                    _hyg_original_sid,
                                                 )
                                             # Hygiene cleanup must never end the
                                             # live gateway session row.
@@ -13743,15 +13745,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             )
                                             return agent, compressed
                                         except BaseException:
-                                            agent._end_session_on_close = False
+                                            if agent is not None:
+                                                agent._end_session_on_close = False
                                             self._cleanup_agent_resources(agent)
                                             raise
 
-                                    _hyg_agent, _compressed = await (
+                                    _hyg_task = asyncio.create_task(
                                         self._run_in_executor_with_context(
                                             _compress_hygiene_off_loop
                                         )
                                     )
+                                    try:
+                                        _hyg_agent, _compressed = await asyncio.shield(
+                                            _hyg_task
+                                        )
+                                    except asyncio.CancelledError:
+                                        # run_in_executor cannot stop a worker that
+                                        # already owns an AIAgent. Reclaim the result,
+                                        # clean it off-loop, and only then propagate
+                                        # cancellation. No session state is published
+                                        # from this cancelled hygiene attempt.
+                                        try:
+                                            _hyg_agent, _compressed = await _hyg_task
+                                        except BaseException:
+                                            # The worker owns cleanup on failure.
+                                            _hyg_agent = None
+                                        else:
+                                            await self._cleanup_agent_resources_off_loop(
+                                                _hyg_agent,
+                                                context="session hygiene cancelled",
+                                            )
+                                            _hyg_agent = None
+                                        raise
 
                                     # _compress_context ends the old session and creates
                                     # a new session_id.  Write compressed messages into

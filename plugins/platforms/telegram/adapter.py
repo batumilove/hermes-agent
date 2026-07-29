@@ -735,6 +735,13 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        # Topic recovery can touch SessionDB. Serialize only events from the
+        # same stable raw lane, and track active handlers so disconnect can
+        # drain their executor work before releasing adapter ownership.
+        self._text_recovery_lane_locks: Dict[
+            str, tuple[asyncio.Lock, int]
+        ] = {}
+        self._text_recovery_tasks: set[asyncio.Task] = set()
         self._drop_delayed_deliveries = False
         self._polling_error_task: Optional[asyncio.Task] = None
         self._polling_conflict_count: int = 0
@@ -4121,6 +4128,17 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_photo_batches.clear()
         self._pending_text_batch_tasks.clear()
         self._pending_text_batches.clear()
+        # A synchronous topic recovery runs in the loop's executor and cannot
+        # be stopped by Task.cancel(). Its handler is cancellation-safe and
+        # owns that worker until completion, so drain handlers rather than
+        # cancelling them and leaving an unmanaged SessionDB read behind.
+        recovery_tasks = [
+            task
+            for task in getattr(self, "_text_recovery_tasks", set())
+            if task is not current_task and not task.done()
+        ]
+        if recovery_tasks:
+            await asyncio.gather(*recovery_tasks, return_exceptions=True)
         if getattr(self, "_polling_error_task", None) is not current_task:
             self._polling_error_task = None
         if getattr(self, "_polling_progress_verifier_task", None) is not current_task:
@@ -8632,15 +8650,97 @@ class TelegramAdapter(BasePlatformAdapter):
             profile=event.source.profile,
         )
 
-    async def _recover_and_enqueue_text_event(self, event: MessageEvent) -> None:
-        """Serialize off-loop topic recovery with ordered split-chunk enqueue."""
-        lock = getattr(self, "_text_recovery_enqueue_lock", None)
-        if lock is None:
+    def _text_recovery_lane_key(self, event: MessageEvent) -> str:
+        """Return the stable pre-recovery session lane for a text event."""
+        from gateway.session import build_session_key
+
+        return build_session_key(
+            event.source,
+            group_sessions_per_user=self.config.extra.get(
+                "group_sessions_per_user", True
+            ),
+            thread_sessions_per_user=self.config.extra.get(
+                "thread_sessions_per_user", False
+            ),
+            profile=event.source.profile,
+        )
+
+    async def _acquire_text_recovery_lane(self, lane_key: str) -> asyncio.Lock:
+        """Acquire a raw-lane lock and account for cancellable waiters."""
+        registry = self._text_recovery_lane_locks
+        entry = registry.get(lane_key)
+        if entry is None:
             lock = asyncio.Lock()
-            self._text_recovery_enqueue_lock = lock
-        async with lock:
-            await self._apply_topic_recovery_async(event)
+            users = 0
+        else:
+            lock, users = entry
+        registry[lane_key] = (lock, users + 1)
+        try:
+            await lock.acquire()
+        except BaseException:
+            current = registry.get(lane_key)
+            if current is not None and current[0] is lock:
+                remaining = current[1] - 1
+                if remaining:
+                    registry[lane_key] = (lock, remaining)
+                else:
+                    registry.pop(lane_key, None)
+            raise
+        return lock
+
+    def _release_text_recovery_lane(
+        self, lane_key: str, lock: asyncio.Lock
+    ) -> None:
+        """Release a lane and remove its registry entry when it becomes idle."""
+        lock.release()
+        current = self._text_recovery_lane_locks.get(lane_key)
+        if current is None or current[0] is not lock:
+            return
+        remaining = current[1] - 1
+        if remaining:
+            self._text_recovery_lane_locks[lane_key] = (lock, remaining)
+        else:
+            self._text_recovery_lane_locks.pop(lane_key, None)
+
+    async def _recover_and_enqueue_text_event(self, event: MessageEvent) -> None:
+        """Recover and enqueue fairly while owning off-loop work to completion."""
+        if self._should_drop_delayed_delivery():
+            return
+        if not hasattr(self, "_text_recovery_lane_locks"):
+            self._text_recovery_lane_locks = {}
+        if not hasattr(self, "_text_recovery_tasks"):
+            self._text_recovery_tasks = set()
+
+        owner = asyncio.current_task()
+        if owner is not None:
+            self._text_recovery_tasks.add(owner)
+        lane_key = self._text_recovery_lane_key(event)
+        lane_lock = None
+        try:
+            lane_lock = await self._acquire_text_recovery_lane(lane_key)
+            if self._should_drop_delayed_delivery():
+                return
+
+            recovery_task = asyncio.create_task(
+                self._apply_topic_recovery_async(event)
+            )
+            try:
+                await asyncio.shield(recovery_task)
+            except asyncio.CancelledError:
+                # asyncio.to_thread/run_in_executor cannot cancel a started
+                # SessionDB lookup. Keep ownership until it finishes, then
+                # propagate cancellation without publishing the recovered event.
+                await recovery_task
+                raise
+
+            if self._should_drop_delayed_delivery():
+                return
             self._enqueue_text_event(event)
+        finally:
+            if lane_lock is not None:
+                self._release_text_recovery_lane(lane_key, lane_lock)
+            if owner is not None:
+                self._text_recovery_tasks.discard(owner)
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text event and reset the flush timer.
