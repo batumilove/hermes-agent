@@ -15,9 +15,12 @@ from typing import Any
 
 import yaml
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from hermes_constants import get_hermes_home
 
-ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_LOCK = ROOT / ".github" / "batumi-components.lock.yaml"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 VALID_KINDS = {"operations", "plugin-bundle", "skills"}

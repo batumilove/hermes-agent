@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,17 @@ from scripts.install_batumi_components import (
 
 ROOT = Path(__file__).resolve().parents[2]
 LOCK = ROOT / ".github" / "batumi-components.lock.yaml"
+
+
+def test_installer_entrypoint_imports_repo_modules_outside_root(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "install_batumi_components.py"), "--help"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--verify-only" in result.stdout
 
 
 def test_component_lock_pins_every_external_repository() -> None:
