@@ -468,9 +468,11 @@ class _RetryingCloseResponseStream(httpx.AsyncByteStream):
     def _close_raw_socket_fallback(self) -> None:
         """Close the exact raw OS socket exposed by the network stream.
 
-        Called only from the failure branch of _force_close_network_stream
-        when network_stream.aclose() raised, was cancelled, or timed out.
-        Idempotent: a second call is a no-op once the socket has been closed.
+        This is the terminal fallback when cooperative stream close did not
+        actually close the FD.  asyncio exposes a ``TransportSocket`` view
+        whose disruptive ``close()`` method is intentionally absent; in that
+        case close its exact wrapped socket object instead.  Idempotent once
+        the exposed socket reports ``fileno() == -1``.
         """
         if self._raw_socket_closed:
             return
@@ -481,13 +483,26 @@ class _RetryingCloseResponseStream(httpx.AsyncByteStream):
             raw_socket = get_extra_info("socket")
             if raw_socket is None:
                 return
-            raw_socket.close()
-            self._raw_socket_closed = True
+
+            wrapped_socket = getattr(raw_socket, "_sock", None)
+            close_targets = [raw_socket]
+            if isinstance(wrapped_socket, socket.socket):
+                close_targets.append(wrapped_socket)
+            for target in close_targets:
+                close = getattr(target, "close", None)
+                if close is None:
+                    continue
+                try:
+                    close()
+                except Exception:
+                    continue
+                if self._raw_socket_is_closed():
+                    self._raw_socket_closed = True
+                    return
         except Exception:
-            logger.debug(
-                "Failed to close raw Telegram response socket fallback",
-                exc_info=True,
-            )
+            pass
+
+        logger.debug("Failed to close raw Telegram response socket fallback")
 
 
 async def _close_request_network_streams(
