@@ -883,6 +883,22 @@ def test_finalizer_no_warning_for_deployed_runtime_parity_status_heading(monkeyp
     assert "Side-effect evidence regulator" not in result["final_response"]
 
 
+def test_finalizer_warns_for_fresh_deploy_claim_shaped_like_status_line(monkeypatch):
+    """A status suffix must not hide an affirmative side-effect claim."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "deploy to production"}]
+
+    result = _run_finalizer(
+        agent,
+        messages,
+        "Deployed to production, status: PASS",
+    )
+
+    assert "Side-effect evidence regulator" in result["final_response"]
+    assert "deploy" in result["final_response"]
+
+
 def test_finalizer_no_warning_when_response_has_no_side_effect_claims(monkeypatch):
     """A normal informational response should never get a footer."""
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])

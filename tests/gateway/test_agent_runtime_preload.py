@@ -60,6 +60,20 @@ def test_proxy_gateway_skips_local_agent_runtime_preload(monkeypatch):
     assert gateway_run._preload_gateway_agent_runtime(runner) is False
 
 
+def test_proxy_resolution_failure_preserves_degraded_gateway_startup(monkeypatch):
+    runner = types.SimpleNamespace(
+        _get_proxy_url=lambda: (_ for _ in ()).throw(RuntimeError("broken proxy config"))
+    )
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_agent_class",
+        lambda: (_ for _ in ()).throw(AssertionError("must not preload")),
+        raising=False,
+    )
+
+    assert gateway_run._preload_gateway_agent_runtime(runner) is False
+
+
 def test_local_agent_preload_failure_preserves_degraded_gateway_startup(monkeypatch):
     runner = types.SimpleNamespace(_get_proxy_url=lambda: None)
     monkeypatch.setattr(
