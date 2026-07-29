@@ -3,6 +3,7 @@ name: Publish and deploy Hermes image
 on:
   push:
     branches: [batumi/live]
+  workflow_dispatch:
 
 permissions:
   contents: read

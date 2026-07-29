@@ -67,6 +67,11 @@ def test_operational_workflows_use_the_locked_ops_commit() -> None:
         assert set(refs) == {ops_sha}
 
 
+def test_deploy_workflow_allows_pre_cutover_candidate_dispatch() -> None:
+    workflow = ROOT / ".github" / "workflows" / "deploy-compose.yml"
+    assert "workflow_dispatch:" in workflow.read_text(encoding="utf-8")
+
+
 def test_component_lock_rejects_moving_refs(tmp_path: Path) -> None:
     payload = yaml.safe_load(LOCK.read_text(encoding="utf-8"))
     payload["components"][0]["commit"] = "main"
