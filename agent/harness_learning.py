@@ -663,6 +663,49 @@ def _iter_nested_values(value: Any):
                 yield from _iter_nested_values(decoded)
 
 
+def _decode_single_terminal_json_output(output: str) -> Any:
+    """Decode one JSON document after optional leading terminal diagnostics.
+
+    The terminal tool combines stderr and stdout.  A direct first-party
+    ``hermes kanban ... --json`` command can therefore prepend startup status
+    lines before its JSON stdout.  Accept that shape only when exactly one
+    JSON document starts on its own line and nothing but whitespace follows
+    it.  Ambiguous/multiple documents and trailing diagnostics fail closed.
+    """
+
+    text = str(output or "")
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    decoder = json.JSONDecoder()
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        stripped = line.lstrip(" \t")
+        if stripped.startswith(("{", "[")):
+            start = offset + (len(line) - len(stripped))
+            try:
+                root, end = decoder.raw_decode(text, start)
+            except (json.JSONDecodeError, TypeError):
+                pass
+            else:
+                if not text[end:].strip():
+                    return root
+                return None
+        elif stripped.strip():
+            # A complete JSON scalar before the object/array would make this a
+            # multi-document stream, not a human-readable diagnostic prefix.
+            try:
+                json.loads(stripped)
+            except (json.JSONDecodeError, TypeError):
+                pass
+            else:
+                return None
+        offset += len(line)
+    return None
+
+
 def _readback_root(result: str, *, terminal_envelope: bool = False) -> Any:
     """Decode a native result or terminal JSON output without recursive descent."""
 
@@ -678,10 +721,7 @@ def _readback_root(result: str, *, terminal_envelope: bool = False) -> Any:
         and isinstance(root, dict)
         and isinstance(root.get("output"), str)
     ):
-        try:
-            root = json.loads(root["output"])
-        except (json.JSONDecodeError, TypeError):
-            return None
+        root = _decode_single_terminal_json_output(root["output"])
     return root
 
 

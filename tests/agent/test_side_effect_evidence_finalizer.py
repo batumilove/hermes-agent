@@ -527,6 +527,160 @@ def test_status_claim_rejects_missing_malformed_or_nonzero_tool_outcome(
 
 
 @pytest.mark.parametrize(
+    ("command", "payload"),
+    [
+        (
+            "hermes kanban --board ops show t_5c8e72a4 --json",
+            {"task": {"id": "t_5c8e72a4", "status": "blocked"}},
+        ),
+        (
+            "hermes kanban --board ops list --json",
+            [{"id": "t_5c8e72a4", "status": "blocked"}],
+        ),
+    ],
+)
+def test_terminal_kanban_readback_accepts_single_json_after_startup_diagnostic(
+    monkeypatch, command, payload
+):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    messages = [
+        {"role": "user", "content": "Update"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "readback-1",
+                    "function": {
+                        "name": "terminal",
+                        "arguments": json.dumps({"command": command}),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "readback-1",
+            "name": "terminal",
+            "content": json.dumps(
+                {
+                    "output": (
+                        "systemd user manager: applied 19 secrets\n"
+                        + json.dumps(payload)
+                    ),
+                    "exit_code": 0,
+                    "error": None,
+                }
+            ),
+        },
+    ]
+
+    result = _run_finalizer(
+        FakeAgent(), messages, "Task t_5c8e72a4 is blocked."
+    )
+
+    assert result["final_response"] == "Task t_5c8e72a4 is blocked."
+
+
+@pytest.mark.parametrize(
+    "terminal_output",
+    [
+        "systemd user manager: applied 19 secrets",
+        (
+            '"machine-readable startup record"\n'
+            '{"task":{"id":"t_5c8e72a4","status":"blocked"}}'
+        ),
+        (
+            "systemd user manager: applied 19 secrets\n"
+            '{"task":{"id":"t_5c8e72a4","status":"blocked"}}\n'
+            '{"task":{"id":"t_5c8e72a4","status":"done"}}'
+        ),
+        (
+            "systemd user manager: applied 19 secrets\n"
+            '{"task":{"id":"t_5c8e72a4","status":"blocked"}}\n'
+            "unexpected trailing diagnostic"
+        ),
+    ],
+)
+def test_terminal_kanban_readback_rejects_missing_or_ambiguous_json_after_diagnostic(
+    monkeypatch, terminal_output
+):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    messages = [
+        {"role": "user", "content": "Update"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "show-1",
+                    "function": {
+                        "name": "terminal",
+                        "arguments": json.dumps(
+                            {
+                                "command": (
+                                    "hermes kanban --board ops show "
+                                    "t_5c8e72a4 --json"
+                                )
+                            }
+                        ),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "show-1",
+            "name": "terminal",
+            "content": json.dumps(
+                {"output": terminal_output, "exit_code": 0, "error": None}
+            ),
+        },
+    ]
+
+    result = _run_finalizer(
+        FakeAgent(), messages, "Task t_5c8e72a4 is blocked."
+    )
+
+    assert result["final_response"].startswith("Kanban claim rejected:")
+
+
+def test_native_kanban_readback_remains_strict_about_leading_diagnostics(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    messages = [
+        {"role": "user", "content": "Update"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "show-1",
+                    "function": {
+                        "name": "kanban_show",
+                        "arguments": '{"task_id":"t_5c8e72a4"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "show-1",
+            "name": "kanban_show",
+            "content": (
+                "systemd user manager: applied 19 secrets\n"
+                '{"task":{"id":"t_5c8e72a4","status":"blocked"}}'
+            ),
+        },
+    ]
+
+    result = _run_finalizer(
+        FakeAgent(), messages, "Task t_5c8e72a4 is blocked."
+    )
+
+    assert result["final_response"].startswith("Kanban claim rejected:")
+
+
+@pytest.mark.parametrize(
     "response",
     [
         "```text\nCreated Kanban task t_5c8e72a4; it is running.\n```",
