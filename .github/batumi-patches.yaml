@@ -51,3 +51,61 @@ patches:
     tests:
       - scripts/run_tests.sh tests/agent/test_transform_llm_output_context.py
     retirement: Remove when upstream transform_llm_output supplies equivalent read-only context.
+
+  - id: provider-fallback-lifecycle
+    kind: core
+    rationale: >-
+      Expose provider fallback transitions to edge telemetry and re-arm
+      exhaustion reporting when a later fallback episode begins.
+    paths:
+      - agent/agent_runtime_helpers.py
+      - agent/chat_completion_helpers.py
+      - agent/conversation_loop.py
+      - gateway/run.py
+      - hermes_cli/plugins.py
+      - tests/hermes_cli/test_plugins.py
+      - tests/run_agent/test_24996_fallback_exhaustion_cooldown.py
+      - website/docs/developer-guide/plugins/index.md
+      - website/docs/user-guide/features/hooks.md
+    tests:
+      - scripts/run_tests.sh tests/run_agent/test_24996_fallback_exhaustion_cooldown.py tests/hermes_cli/test_plugins.py
+    retirement: Remove when upstream provides equivalent observer hooks and episode reset.
+
+  - id: kimi-billing-classification
+    kind: core
+    rationale: >-
+      Treat Kimi's billing-cycle usage-limit 403 as non-retryable billing so
+      credential rotation and provider fallback occur immediately.
+    paths:
+      - agent/error_classifier.py
+      - tests/agent/test_error_classifier.py
+    tests:
+      - scripts/run_tests.sh tests/agent/test_error_classifier.py
+    retirement: Remove when upstream classifies the same Kimi response as billing.
+
+  - id: cron-verbatim-delivery
+    kind: core
+    rationale: >-
+      Preserve the documented byte-for-byte stdout delivery contract for
+      script-only no-agent cron jobs even when global wrapping is enabled.
+    paths:
+      - cron/scheduler.py
+      - tests/cron/test_scheduler.py
+    tests:
+      - scripts/run_tests.sh tests/cron/test_scheduler.py
+    retirement: Remove when upstream no-agent deliveries remain verbatim by default.
+
+  - id: cron-ephemeral-telegram-topics
+    kind: core
+    rationale: >-
+      Preserve the existing config key that creates one private Telegram topic
+      per cron output without persisting generated topic mappings.
+    paths:
+      - cron/scheduler.py
+      - gateway/delivery.py
+      - hermes_cli/config.py
+      - plugins/platforms/telegram/adapter.py
+      - tests/gateway/test_ephemeral_telegram_topics.py
+    tests:
+      - scripts/run_tests.sh tests/gateway/test_ephemeral_telegram_topics.py tests/gateway/test_delivery.py tests/gateway/test_dm_topics.py
+    retirement: Remove when upstream offers equivalent config and nonpersistent topic ownership.
