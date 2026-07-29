@@ -63,7 +63,7 @@ class _OpenAsyncByteStream(httpx.AsyncByteStream):
 class _NoopAcloseNetworkStream:
     """Network stream whose ``aclose()`` succeeds but never closes the socket."""
 
-    def __init__(self, sock: socket.socket) -> None:
+    def __init__(self, sock: Any) -> None:
         self._sock = sock
 
     def get_extra_info(self, name: str) -> Any:
@@ -83,6 +83,18 @@ class _NoopAcloseNetworkStream:
 class _RaisingAcloseNetworkStream(_NoopAcloseNetworkStream):
     async def aclose(self) -> None:
         raise OSError("simulated network-stream aclose failure")
+
+
+class _TransportSocketLike:
+    """Model asyncio.TransportSocket: exposes ``_sock`` but bans ``close()``."""
+
+    __slots__ = ("_sock",)
+
+    def __init__(self, sock: socket.socket) -> None:
+        self._sock = sock
+
+    def fileno(self) -> int:
+        return self._sock.fileno()
 
 
 def _assert_socket_closed(sock: socket.socket, label: str) -> None:
@@ -136,6 +148,31 @@ async def test_retry_closes_raw_socket_when_network_aclose_raises() -> None:
         await asyncio.sleep(0.2)
 
         _assert_socket_closed(child, "network_stream.aclose() raised")
+    finally:
+        parent.close()
+        try:
+            child.close()
+        except OSError:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_retry_closes_asyncio_transport_socket_wrapper() -> None:
+    """The fallback must close asyncio's non-closeable TransportSocket view."""
+    parent, child = socket.socketpair()
+    try:
+        wrapper = tnet._RetryingCloseResponseStream(
+            _FailingResponseStream(),
+            network_stream=_NoopAcloseNetworkStream(_TransportSocketLike(child)),
+        )
+
+        try:
+            await wrapper.aclose()
+        except BaseException:
+            pass
+        await asyncio.sleep(0.2)
+
+        _assert_socket_closed(child, "asyncio.TransportSocket-compatible wrapper")
     finally:
         parent.close()
         try:
