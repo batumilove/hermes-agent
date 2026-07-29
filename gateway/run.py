@@ -6903,15 +6903,64 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _maybe_update_status(force=True)
         return snapshot, timed_out
 
-    def _interrupt_running_agents(self, reason: str) -> None:
-        for session_key, agent in list(self._running_agents.items()):
-            if agent is _AGENT_PENDING_SENTINEL:
-                continue
+    def _shutdown_interrupt_timeout_secs(self) -> float:
+        """Total budget for interrupt dispatch plus post-interrupt quiescence."""
+        return 5.0
+
+    async def _interrupt_running_agents(self, reason: str, deadline: float) -> None:
+        """Dispatch agent interrupts off-loop without extending ``deadline``.
+
+        ``AIAgent.interrupt()`` acquires several thread locks and recursively
+        interrupts child agents.  A wedged lock or child must not hold the
+        gateway event loop during shutdown.  Dedicated daemon threads keep
+        blocked calls independent and cannot delay interpreter exit.
+        """
+        workers: list[tuple[str, threading.Thread]] = []
+
+        def _interrupt_one(session_key: str, agent: Any) -> None:
             try:
                 agent.interrupt(reason)
-                logger.debug("Interrupted running agent for session %s during shutdown", session_key)
+                logger.debug(
+                    "Interrupted running agent for session %s during shutdown",
+                    session_key,
+                )
             except Exception as e:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
+
+        for index, (session_key, agent) in enumerate(list(self._running_agents.items())):
+            if agent is _AGENT_PENDING_SENTINEL:
+                continue
+            worker = threading.Thread(
+                target=_interrupt_one,
+                args=(session_key, agent),
+                name=f"gateway-shutdown-interrupt-{index}",
+                daemon=True,
+            )
+            try:
+                worker.start()
+                workers.append((session_key, worker))
+            except Exception as e:
+                logger.warning(
+                    "Failed starting shutdown interrupt worker for session %s: %s",
+                    session_key,
+                    e,
+                )
+
+        while (
+            any(worker.is_alive() for _session_key, worker in workers)
+            and asyncio.get_running_loop().time() < deadline
+        ):
+            await asyncio.sleep(0.01)
+
+        blocked = [session_key for session_key, worker in workers if worker.is_alive()]
+        if blocked:
+            logger.warning(
+                "Shutdown agent interrupt dispatch exceeded %.2fs with %d blocked "
+                "agent(s); forcing shutdown forward progress: %s",
+                self._shutdown_interrupt_timeout_secs(),
+                len(blocked),
+                ", ".join(blocked[:10]),
+            )
 
     async def _notify_active_sessions_with_timeout(self) -> bool:
         """Bound the best-effort notification phase and force progress on timeout."""
@@ -9967,11 +10016,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _post_timeout_candidates,
                     _resume_reason,
                 )
-                self._interrupt_running_agents(
-                    _INTERRUPT_REASON_GATEWAY_RESTART if self._restart_requested else _INTERRUPT_REASON_GATEWAY_SHUTDOWN
+                interrupt_deadline = (
+                    asyncio.get_running_loop().time()
+                    + self._shutdown_interrupt_timeout_secs()
                 )
-                interrupt_deadline = asyncio.get_running_loop().time() + 5.0
-                while self._running_agents and asyncio.get_running_loop().time() < interrupt_deadline:
+                await self._interrupt_running_agents(
+                    _INTERRUPT_REASON_GATEWAY_RESTART
+                    if self._restart_requested
+                    else _INTERRUPT_REASON_GATEWAY_SHUTDOWN,
+                    interrupt_deadline,
+                )
+                while (
+                    self._running_agents
+                    and asyncio.get_running_loop().time() < interrupt_deadline
+                ):
                     self._update_runtime_status("draining")
                     await asyncio.sleep(0.1)
 

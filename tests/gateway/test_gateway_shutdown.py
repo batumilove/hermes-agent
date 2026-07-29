@@ -1,4 +1,6 @@
 import asyncio
+import threading
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -271,6 +273,50 @@ async def test_gateway_stop_interrupts_after_drain_timeout():
 
     running_agent.interrupt.assert_called_once_with("Gateway shutting down")
     disconnect_mock.assert_awaited_once()
+    assert runner._shutdown_event.is_set() is True
+
+
+@pytest.mark.asyncio
+async def test_gateway_stop_bounds_blocking_agent_interrupt_fanout():
+    """One blocking agent interrupt must not hold the shutdown event loop."""
+    runner, adapter = make_restart_runner()
+    runner._restart_drain_timeout = 0.0
+    runner._shutdown_interrupt_timeout_secs = lambda: 0.05
+    runner._finalize_shutdown_agents = AsyncMock()
+    adapter.disconnect = AsyncMock()
+
+    interrupt_started = threading.Event()
+    event_times: dict[str, float] = {}
+    running_agent = MagicMock()
+
+    def block_interrupt(_reason):
+        interrupt_started.set()
+        event_times["interrupt_started"] = time.monotonic()
+        time.sleep(1.0)
+        event_times["interrupt_returned"] = time.monotonic()
+        runner._running_agents.clear()
+
+    async def event_loop_heartbeat():
+        while not interrupt_started.is_set():
+            await asyncio.sleep(0)
+        await asyncio.sleep(0.05)
+        event_times["heartbeat"] = time.monotonic()
+
+    running_agent.interrupt.side_effect = block_interrupt
+    runner._running_agents = {"blocked-session": running_agent}
+
+    heartbeat_task = asyncio.create_task(event_loop_heartbeat())
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop()
+    await heartbeat_task
+
+    assert interrupt_started.is_set()
+    assert "heartbeat" in event_times
+    assert (
+        "interrupt_returned" not in event_times
+        or event_times["heartbeat"] < event_times["interrupt_returned"]
+    )
+    adapter.disconnect.assert_awaited_once()
     assert runner._shutdown_event.is_set() is True
 
 
