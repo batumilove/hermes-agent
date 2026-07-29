@@ -109,3 +109,18 @@ patches:
     tests:
       - scripts/run_tests.sh tests/gateway/test_ephemeral_telegram_topics.py tests/gateway/test_delivery.py tests/gateway/test_dm_topics.py
     retirement: Remove when upstream offers equivalent config and nonpersistent topic ownership.
+
+  - id: telegram-cancellation-socket-ownership
+    kind: core
+    rationale: >-
+      Close raw connect, TLS, response-header, and response-body streams under
+      repeated caller cancellation while preserving route-safe diagnostics and
+      upstream's bounded lazy fallback pools.
+    paths:
+      - plugins/platforms/telegram/telegram_network.py
+      - tests/gateway/test_telegram_network.py
+      - tests/gateway/test_telegram_request_phase_real_socket.py
+    tests:
+      - scripts/run_tests.sh tests/gateway/test_telegram_network.py tests/gateway/test_telegram_request_phase_real_socket.py
+      - scripts/run_tests.sh tests/gateway/test_telegram_network_reconnect.py tests/gateway/test_platform_reconnect_fd_leak.py
+    retirement: Remove when upstream passes the repeated-cancel real-socket contract.
