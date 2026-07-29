@@ -9819,22 +9819,66 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             timeout = self._restart_drain_timeout
 
+            async def _mark_resume_pending_bounded(
+                session_keys,
+                reason: str,
+            ) -> list[str]:
+                """Persist resume intent without letting storage wedge shutdown.
+
+                The configured drain timeout governs active-work grace, so keep
+                that full budget for ``_drain_active_agents``.  Resume markers
+                get a separate, small batch budget: enough for normal SQLite
+                writes, but bounded independently so one contended store cannot
+                defer the real drain until the hard shutdown watchdog fires.
+                """
+                budget = min(5.0, max(0.05, float(timeout)))
+                deadline = asyncio.get_running_loop().time() + budget
+                attempted: list[str] = []
+                for session_key in session_keys:
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        break
+                    # Once the facade call starts, cancellation cannot prove its
+                    # executor-backed write did not commit later.  Include the
+                    # key in graceful cleanup before awaiting so a compensating
+                    # clear is queued behind any late write.
+                    attempted.append(session_key)
+                    try:
+                        await asyncio.wait_for(
+                            self.async_session_store.mark_resume_pending(
+                                session_key,
+                                reason,
+                            ),
+                            timeout=remaining,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "Shutdown resume-marker persistence exceeded %.2fs; "
+                            "forcing shutdown forward progress",
+                            budget,
+                        )
+                        break
+                    except Exception as exc:
+                        logger.debug(
+                            "mark_resume_pending failed for %s: %s",
+                            session_key,
+                            exc,
+                        )
+                return attempted
+
             # Pre-mark sessions as resume_pending BEFORE the drain wait.
             # If the process is killed by the service manager during the
             # drain, the durable marker is already written so the next
             # gateway boot can recover in-flight sessions (#27856).
-            _pre_drain_keys: list[str] = []
-            for _sk, _agent in list(self._running_agents.items()):
-                if _agent is _AGENT_PENDING_SENTINEL:
-                    continue
-                try:
-                    await self.async_session_store.mark_resume_pending(
-                        _sk,
-                        "restart_timeout" if self._restart_requested else "shutdown_timeout",
-                    )
-                    _pre_drain_keys.append(_sk)
-                except Exception as _e:
-                    logger.debug("pre-drain mark_resume_pending failed for %s: %s", _sk, _e)
+            _pre_drain_candidates = [
+                session_key
+                for session_key, agent in list(self._running_agents.items())
+                if agent is not _AGENT_PENDING_SENTINEL
+            ]
+            _pre_drain_keys = await _mark_resume_pending_bounded(
+                _pre_drain_candidates,
+                "restart_timeout" if self._restart_requested else "shutdown_timeout",
+            )
 
             _cron_at_start = self._active_cron_job_count()
             _api_at_start = self._active_api_run_count()
@@ -9904,16 +9948,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _resume_reason = (
                     "restart_timeout" if self._restart_requested else "shutdown_timeout"
                 )
-                for _sk, _agent in list(self._running_agents.items()):
-                    if _agent is _AGENT_PENDING_SENTINEL:
-                        continue
-                    try:
-                        await self.async_session_store.mark_resume_pending(_sk, _resume_reason)
-                    except Exception as _e:
-                        logger.debug(
-                            "mark_resume_pending failed for %s: %s",
-                            _sk, _e,
-                        )
+                _post_timeout_candidates = [
+                    session_key
+                    for session_key, agent in list(self._running_agents.items())
+                    if agent is not _AGENT_PENDING_SENTINEL
+                ]
+                await _mark_resume_pending_bounded(
+                    _post_timeout_candidates,
+                    _resume_reason,
+                )
                 self._interrupt_running_agents(
                     _INTERRUPT_REASON_GATEWAY_RESTART if self._restart_requested else _INTERRUPT_REASON_GATEWAY_SHUTDOWN
                 )
