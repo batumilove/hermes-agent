@@ -14,16 +14,23 @@ patches:
     paths:
       - .github/batumi-patches.yaml
       - .github/batumi-contracts.yaml
+      - .github/batumi-components.lock.yaml
       - .github/upstream-base
       - .github/workflows/ci.yml
+      - .github/workflows/deploy-compose.yml
+      - .github/workflows/promote-compose.yml
+      - .github/workflows/stack-ci-shadow.yml
+      - .github/workflows/staging-telegram-socket-diagnostics.yml
       - .github/workflows/upstream-sync.yml
       - scripts/check_fork_delta.py
+      - scripts/install_batumi_components.py
       - scripts/run_batumi_contracts.py
       - tests/scripts/test_check_fork_delta.py
+      - tests/scripts/test_install_batumi_components.py
       - tests/scripts/test_run_batumi_contracts.py
       - tests/scripts/test_upstream_sync_workflow.py
     tests:
-      - scripts/run_tests.sh tests/scripts/test_check_fork_delta.py tests/scripts/test_upstream_sync_workflow.py
+      - scripts/run_tests.sh tests/scripts/test_check_fork_delta.py tests/scripts/test_install_batumi_components.py tests/scripts/test_upstream_sync_workflow.py
     retirement: Retain while batumi/live carries any fork-only patch.
 
   - id: plugin-environment-backends

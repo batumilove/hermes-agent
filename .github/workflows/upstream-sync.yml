@@ -51,6 +51,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # shellcheck disable=SC2016
           open_prs=$(gh pr list \
             --repo "$GITHUB_REPOSITORY" \
             --state open \
@@ -96,6 +97,7 @@ jobs:
           git diff --check batumi/live...HEAD
 
           git push origin "HEAD:refs/heads/$branch"
+          # shellcheck disable=SC2016
           {
             printf 'Batched official upstream changes into the fork patch stack.\n\n'
             printf -- '- Previous upstream base: `%s`\n' "$baseline"

@@ -1,0 +1,16 @@
+name: Running stack CI shadow
+
+on:
+  pull_request:
+  push:
+    branches: [batumi/live]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shadow:
+    uses: batumilove/hermes-ops/.github/workflows/shadow-validation.yml@6be80bd51b29dca2192dfb8417e37945ac81761d
+    with:
+      source_sha: ${{ github.event.pull_request.head.sha || github.sha }}

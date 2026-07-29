@@ -1,0 +1,37 @@
+name: Publish and deploy Hermes image
+
+on:
+  push:
+    branches: [batumi/live]
+
+permissions:
+  contents: read
+  checks: read
+  packages: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: hermes-staging-deploy
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'batumilove/hermes-agent'
+    uses: batumilove/hermes-ops/.github/workflows/build-image.yml@6be80bd51b29dca2192dfb8417e37945ac81761d
+    with:
+      source_sha: ${{ github.sha }}
+      ops_sha: 6be80bd51b29dca2192dfb8417e37945ac81761d
+    secrets: inherit
+
+  deploy-staging:
+    needs: publish
+    if: vars.HERMES_STAGING_DEPLOY_ENABLED == 'true'
+    uses: batumilove/hermes-ops/.github/workflows/compose-deploy.yml@6be80bd51b29dca2192dfb8417e37945ac81761d
+    with:
+      environment: batumi-staging
+      operation: deploy
+      image_digest: ${{ needs.publish.outputs.digest }}
+      source_sha: ${{ needs.publish.outputs.source_sha }}
+      ops_sha: 6be80bd51b29dca2192dfb8417e37945ac81761d
+    secrets: inherit

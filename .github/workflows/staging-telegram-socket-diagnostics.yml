@@ -1,0 +1,30 @@
+name: Observe Telegram socket ownership on staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_source_sha:
+        required: true
+        type: string
+      observation_seconds:
+        required: true
+        default: "90"
+        type: choice
+        options: ["60", "90", "120"]
+      activation_ack:
+        required: true
+        default: disabled
+        type: choice
+        options: [disabled, enabled]
+
+permissions:
+  contents: read
+
+jobs:
+  observe:
+    uses: batumilove/hermes-ops/.github/workflows/staging-telegram-socket-diagnostics.yml@6be80bd51b29dca2192dfb8417e37945ac81761d
+    with:
+      expected_source_sha: ${{ inputs.expected_source_sha }}
+      observation_seconds: ${{ inputs.observation_seconds }}
+      activation_ack: ${{ inputs.activation_ack }}
+    secrets: inherit
