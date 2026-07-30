@@ -131,7 +131,32 @@ patches:
       - tests/gateway/test_telegram_fallback_pool_release_71593.py
       - tests/gateway/test_telegram_network.py
       - tests/gateway/test_telegram_request_phase_real_socket.py
+      - tests/gateway/test_telegram_terminal_close_regression.py
     tests:
       - scripts/run_tests.sh tests/gateway/test_telegram_fallback_pool_release_71593.py tests/gateway/test_telegram_network.py tests/gateway/test_telegram_request_phase_real_socket.py
       - scripts/run_tests.sh tests/gateway/test_telegram_network_reconnect.py tests/gateway/test_platform_reconnect_fd_leak.py
     retirement: Remove when upstream passes the repeated-cancel real-socket contract.
+
+  - id: gateway-delivery-shutdown-correctness
+    kind: core
+    rationale: >-
+      Keep final delivery fail-open under ledger contention, prevent retries
+      while Telegram's polling health gate is degraded, serialize topic
+      recovery without blocking the event loop, and bound shutdown cleanup
+      while retaining ownership of non-cancellable worker operations.
+    paths:
+      - gateway/delivery_ledger.py
+      - gateway/platforms/base.py
+      - gateway/run.py
+      - plugins/platforms/telegram/adapter.py
+      - tests/gateway/test_delivery_ledger_producer.py
+      - tests/gateway/test_gateway_shutdown.py
+      - tests/gateway/test_session_hygiene.py
+      - tests/gateway/test_shutdown_aggregate_budget_contract.py
+      - tests/gateway/test_telegram_send_path_degraded_retry.py
+      - tests/gateway/test_telegram_text_batching.py
+      - tests/test_session_db_recall_reader.py
+    tests:
+      - scripts/run_tests.sh tests/gateway/test_delivery_ledger_producer.py tests/gateway/test_gateway_shutdown.py tests/gateway/test_shutdown_aggregate_budget_contract.py
+      - scripts/run_tests.sh tests/gateway/test_session_hygiene.py tests/gateway/test_telegram_send_path_degraded_retry.py tests/gateway/test_telegram_text_batching.py tests/test_session_db_recall_reader.py
+    retirement: Remove individual paths when upstream passes their contention, cancellation, degraded-delivery, and aggregate-shutdown contracts.
