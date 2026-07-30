@@ -7,11 +7,12 @@
 #   - Uses Windows-style volume path for ~/.hermes
 #
 # Usage:
+#   $env:HERMES_IMAGE = "nousresearch/hermes-agent@sha256:<verified-digest>"
 #   docker compose -f docker-compose.windows.yml up -d
 #
 services:
   gateway:
-    image: nousresearch/hermes-agent:latest
+    image: ${HERMES_IMAGE:?set HERMES_IMAGE to an immutable image digest}
     container_name: hermes
     restart: unless-stopped
     volumes:
@@ -22,7 +23,7 @@ services:
     command: ["gateway", "run"]
 
   dashboard:
-    image: nousresearch/hermes-agent:latest
+    image: ${HERMES_IMAGE:?set HERMES_IMAGE to an immutable image digest}
     container_name: hermes-dashboard
     restart: unless-stopped
     depends_on:

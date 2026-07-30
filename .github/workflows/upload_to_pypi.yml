@@ -70,7 +70,7 @@ jobs:
         run: cd web && npm exec --package=npm@11.18.0 -- npm ci --ignore-scripts --min-release-age=7 && npm run build
 
       - name: Build TUI bundle
-        run: cd ui-tui && npm exec --package=npm@11.18.0 -- npm ci --min-release-age=7 && npm run build
+        run: cd ui-tui && npm exec --package=npm@11.18.0 --ignore-scripts --min-release-age=7 -- npm ci --ignore-scripts=false --min-release-age=7 && npm run build
 
       - name: Bundle TUI into hermes_cli
         run: |

@@ -150,7 +150,7 @@ ENV npm_config_install_links=false
 # the global npm stays untouched and the temporary npm version is pinned.
 # `--min-release-age=7` is passed explicitly as a second line of defense, in
 # addition to the `.npmrc` value; the Dockerfile must use numeric days.
-RUN npm exec --package=npm@11.18.0 -- npm install --prefer-offline --no-audit --min-release-age=7 && \
+RUN npm exec --package=npm@11.18.0 --ignore-scripts --min-release-age=7 -- npm install --prefer-offline --no-audit --ignore-scripts=false --min-release-age=7 && \
     npx playwright install --with-deps chromium --only-shell && \
     npm cache clean --force
 

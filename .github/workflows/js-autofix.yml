@@ -73,7 +73,7 @@ jobs:
       # --ignore-scripts: eslint only needs TS sources + eslint packages.
       - uses: ./.github/actions/retry
         with:
-          command: npm ci --ignore-scripts
+          command: npm exec --package=npm@11.18.0 --ignore-scripts --min-release-age=7 -- npm ci --ignore-scripts --min-release-age=7
 
       - name: npm run fix in all workspaces
         # continue-on-error: if un-fixable errors exist on main, we still want
