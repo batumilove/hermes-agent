@@ -8,8 +8,10 @@ The hygiene system uses the SAME compression config as the agent:
 so CLI and messaging platforms behave identically.
 """
 
+import asyncio
 import importlib
 import sys
+import threading
 import types
 from datetime import datetime
 from types import SimpleNamespace
@@ -306,19 +308,29 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
 
     class FakeCompressAgent:
         last_instance = None
+        constructor_thread_ids = []
+        compression_thread_ids = []
+        cleanup_thread_ids = []
 
         def __init__(self, **kwargs):
+            type(self).constructor_thread_ids.append(threading.get_ident())
             self.model = kwargs.get("model")
             self.session_id = kwargs.get("session_id", "fake-session")
+            self._end_session_on_close = True
             self._print_fn = None
-            self.shutdown_memory_provider = MagicMock()
-            self.close = MagicMock()
             type(self).last_instance = self
 
         def _compress_context(self, messages, *_args, **_kwargs):
+            type(self).compression_thread_ids.append(threading.get_ident())
             # Simulate real _compress_context: create a new session_id
             self.session_id = f"{self.session_id}_compressed"
             return ([{"role": "assistant", "content": "compressed"}], None)
+
+        def shutdown_memory_provider(self):
+            type(self).cleanup_thread_ids.append(threading.get_ident())
+
+        def close(self):
+            type(self).cleanup_thread_ids.append(threading.get_ident())
 
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = FakeCompressAgent
@@ -384,6 +396,7 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
         message_id="1",
     )
 
+    event_loop_thread_id = threading.get_ident()
     result = await runner._handle_message(event)
 
     assert result == "ok"
@@ -391,8 +404,159 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
     # happens silently with server-side logging only.
     assert len(adapter.sent) == 0
     assert FakeCompressAgent.last_instance is not None
-    FakeCompressAgent.last_instance.shutdown_memory_provider.assert_called_once()
-    FakeCompressAgent.last_instance.close.assert_called_once()
+    assert FakeCompressAgent.constructor_thread_ids
+    assert all(
+        thread_id != event_loop_thread_id
+        for thread_id in FakeCompressAgent.constructor_thread_ids
+    )
+    assert FakeCompressAgent.compression_thread_ids
+    assert all(
+        thread_id != event_loop_thread_id
+        for thread_id in FakeCompressAgent.compression_thread_ids
+    )
+    assert FakeCompressAgent.cleanup_thread_ids
+    assert all(
+        thread_id != event_loop_thread_id
+        for thread_id in FakeCompressAgent.cleanup_thread_ids
+    )
+    assert FakeCompressAgent.last_instance._end_session_on_close is False
+    assert len(FakeCompressAgent.cleanup_thread_ids) == 2
+
+
+@pytest.mark.asyncio
+async def test_session_hygiene_repeated_cancellation_awaits_worker_cleanup_without_publication(
+    monkeypatch, tmp_path
+):
+    """Repeated cancellation cannot orphan a successful off-loop hygiene agent."""
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    class BlockingCompressAgent:
+        last_instance = None
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+        cleanup_calls = []
+
+        def __init__(self, **kwargs):
+            self.model = kwargs.get("model")
+            self.session_id = kwargs.get("session_id", "fake-session")
+            self._end_session_on_close = True
+            self._print_fn = None
+            self._last_compaction_in_place = True
+            self.context_compressor = SimpleNamespace(
+                bind_session_state=lambda *_args, **_kwargs: None,
+                _last_compress_aborted=False,
+                _last_aux_model_failure_model=None,
+            )
+            type(self).last_instance = self
+
+        def _compress_context(self, messages, *_args, **_kwargs):
+            type(self).started.set()
+            assert type(self).release.wait(timeout=5)
+            type(self).finished.set()
+            return ([{"role": "assistant", "content": "compressed"}], None)
+
+        def shutdown_memory_provider(self):
+            type(self).cleanup_calls.append(("memory", threading.get_ident()))
+
+        def close(self):
+            type(self).cleanup_calls.append(("close", threading.get_ident()))
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = BlockingCompressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    gateway_run = importlib.import_module("gateway.run")
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
+    )
+    runner.adapters = {Platform.TELEGRAM: HygieneCaptureAdapter()}
+    runner._voice_mode = {}
+    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner.session_store = MagicMock()
+    session_entry = SessionEntry(
+        session_key="agent:main:telegram:group:-1001:17585",
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="group",
+    )
+    runner.session_store.get_or_create_session.return_value = session_entry
+    runner.session_store.load_transcript.return_value = _make_history(6, content_size=400)
+    runner.session_store.has_any_sessions.return_value = True
+    runner.session_store.rewrite_transcript = MagicMock()
+    runner.session_store.append_to_transcript = MagicMock()
+    runner.session_store._save = MagicMock()
+    runner._running_agents = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._session_db = None
+    runner._is_user_authorized = lambda _source: True
+    runner._set_session_env = lambda _context: None
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "ok",
+        "messages": [],
+        "tools": [],
+        "history_offset": 0,
+        "last_prompt_tokens": 0,
+    })
+    runner._sync_telegram_topic_binding = MagicMock()
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"}
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 100,
+    )
+
+    event = MessageEvent(
+        text="cancel during hygiene",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001",
+            chat_type="group",
+            thread_id="17585",
+            user_id="12345",
+        ),
+        message_id="1",
+    )
+    event_loop_thread_id = threading.get_ident()
+
+    task = asyncio.create_task(runner._handle_message(event))
+    assert await asyncio.to_thread(BlockingCompressAgent.started.wait, 3)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    assert not task.done(), "cancellation returned before executor ownership was reclaimed"
+
+    task.cancel()
+    await asyncio.sleep(0.05)
+    assert not task.done(), "repeated cancellation detached executor ownership"
+
+    BlockingCompressAgent.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert BlockingCompressAgent.finished.is_set()
+    assert [name for name, _ in BlockingCompressAgent.cleanup_calls] == [
+        "memory",
+        "close",
+    ]
+    assert all(
+        thread_id != event_loop_thread_id
+        for _, thread_id in BlockingCompressAgent.cleanup_calls
+    )
+    assert BlockingCompressAgent.last_instance._end_session_on_close is False
+    assert session_entry.session_id == "sess-1"
+    runner.session_store.rewrite_transcript.assert_not_called()
+    runner.session_store._save.assert_not_called()
+    runner._sync_telegram_topic_binding.assert_not_called()
+    runner._run_agent.assert_not_awaited()
 
 
 @pytest.mark.asyncio
