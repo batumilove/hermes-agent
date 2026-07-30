@@ -252,3 +252,15 @@ def test_staging_diagnostic_workflow_has_no_remote_privileged_logic_or_raw_logs(
         assert value not in raw
     assert "/home/hermes-staging/.hermes-staging" not in raw
     assert "DEPLOY_ROOT" not in raw
+
+
+def test_staging_diagnostic_docs_require_explicit_stop_start_ack() -> None:
+    docs = [
+        REPO / "docs" / "operations" / "docker-compose-cd.md",
+        REPO / "docs" / "operations" / "hermes-staging-promotion-gates.md",
+    ]
+    for path in docs:
+        raw = path.read_text()
+        assert "activation_ack" not in raw
+        assert "staging_stop_start_ack=staging-stop-start-authorized" in raw
+        assert "stop/start" in raw
