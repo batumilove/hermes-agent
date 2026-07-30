@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: hermes-staging-deploy
+  group: hermes-batumi-staging-deployment-control
   cancel-in-progress: false
 
 env:

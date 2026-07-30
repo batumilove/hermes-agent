@@ -20,9 +20,11 @@ use the separate repository `ghcr.io/batumilove/hermes-agent-deploy`.
    environment.
 6. After staging validation, `.github/workflows/promote-compose.yml` promotes
    the same digest to `batumi-production`; it never rebuilds the image.
-7. The host deploy helper serializes deployments with `flock`, pulls before
-   replacing the healthy container, waits for the s6-supervised gateway health
-   check, and restores the prior digest on failure.
+7. A digest-bound, root-owned host controller rejects every deploy or rollback
+   while an authoritative soak lease exists. It verifies the reviewed artifact
+   manifest, records an expiring deployment lease, then invokes the installed
+   deploy helper. The helper pulls before replacement, waits for the
+   s6-supervised gateway health check, and restores the prior digest on failure.
 
 `deploy/compose.yml` intentionally runs only the gateway. Add the dashboard as
 a separately reviewed service after gateway migration is stable. Both staging
@@ -38,7 +40,6 @@ variables in each environment:
 | --- | --- | --- |
 | `DEPLOY_HOST` | `hermes-staging-01` | Tailnet DNS name; no shell syntax |
 | `DEPLOY_USER` | `hermes-deploy` | Dedicated deployment account |
-| `DEPLOY_ROOT` | `/opt/hermes-compose/staging` | Account-owned deployment root |
 | `TAILSCALE_TAGS` | `tag:ci` | Ephemeral runner identity |
 
 Configure these environment secrets:
@@ -56,8 +57,10 @@ disabled.
 
 Use a Tailscale OAuth client restricted to creation of the CI tag. ACLs should
 allow that tag to reach only TCP/22 on the two deployment hosts. The SSH key
-should belong only to the unprivileged deployment account. Docker-group access
-is already root-equivalent; do not also grant broad passwordless sudo.
+should belong only to the unprivileged deployment account. That account must
+have **no** Docker-group/socket access and no broad passwordless sudo. Its only
+deployment capability is the digest-bound `apply` command installed under the
+separate `hermes-deploy` sudo rule.
 
 If the auth-key fallback is used, create it with only `tag:ci`, `ephemeral`,
 `preauthorized`, and the shortest practical expiry. Record its expiry and
@@ -103,29 +106,35 @@ be reviewed independently.
 Required host state:
 
 1. Docker Engine and Docker Compose v2 are installed.
-2. The deployment account can run Docker and owns `DEPLOY_ROOT`. Membership in
-   the Docker group is root-equivalent; restrict SSH and Tailscale access
-   accordingly.
-3. The host is already authenticated for pull-only access to
+2. `/usr/local/libexec/hermes-deployment-controller` and its deployer, Compose,
+   and acceptance assets are root-owned artifacts that exactly match the
+   reviewed versions. The
+   deployment account cannot replace them.
+3. The deployment account has no Docker-group/socket access. The installer
+   refuses authorization until this is true for every `hermes-deploy` principal.
+4. Each configured deployment root and `runtime.env` is root-owned (`0700` and
+   `0600` respectively). `runtime.env` contains exactly `HERMES_DATA_DIR`,
+   `HERMES_UID`, and `HERMES_GID`; the data path is absolute and non-root.
+5. The root execution context is already authenticated for pull-only access to
    `ghcr.io/batumilove/hermes-agent-deploy`, or the package is deliberately
    public. Never pass a registry token through workflow command arguments.
-4. A dedicated Hermes data directory exists and is backed up off-host.
-5. Runtime secrets are present only inside that Hermes home or its approved
+6. A dedicated Hermes data directory exists and is backed up off-host.
+7. Runtime secrets are present only inside that Hermes home or its approved
    host-side secret injection path. They do not belong in Compose or GitHub
    workflow files.
-6. The deployment account's `runtime.env` exists at mode `0600`.
 
 Example staging preparation (values are examples, not a command to run on
 production):
 
 ```bash
-install -d -m 0700 /opt/hermes-compose/staging
-install -d -m 0700 /home/hermes-staging/.hermes-staging
+install -o root -g root -d -m 0700 /opt/hermes-compose/staging
+install -o 1001 -g 1001 -d -m 0700 /home/hermes-staging/.hermes-staging
 cat >/opt/hermes-compose/staging/runtime.env <<'EOF'
 HERMES_DATA_DIR=/home/hermes-staging/.hermes-staging
 HERMES_UID=1001
 HERMES_GID=1001
 EOF
+chown root:root /opt/hermes-compose/staging/runtime.env
 chmod 0600 /opt/hermes-compose/staging/runtime.env
 ```
 
@@ -195,12 +204,15 @@ image_digest: sha256:<64 hex characters>
 source_sha: <40-character commit SHA>
 ```
 
-Rollback uses the host's `release.previous.env` and needs no registry tag:
+Rollback uses the host's `release.previous.env`. The operator must supply the
+exact expected previous source SHA and digest; the root-owned helper refuses a
+mismatch before touching the running release:
 
 ```text
 environment: batumi-production
 operation: rollback
-source_sha: <40-character incident/change SHA>
+image_digest: sha256:<exact previous digest>
+source_sha: <exact previous 40-character source SHA>
 ```
 
 The host records timestamp, result, environment, source SHA, and digest in
@@ -220,10 +232,49 @@ values or container logs.
 - Automatic rollback also fails: workflow fails loudly for operator action.
 - First deployment fails: unhealthy gateway is stopped.
 
-The workflow concurrency group serializes publication runs without cancellation,
-preventing two reruns from racing to publish the same source tag. Queued stale
-runs fail the protected-branch SHA check. The host deployment lock separately
-prevents overlapping remote changes.
+Automatic and manual workflows resolve to the same target-environment
+concurrency domain. GitHub concurrency is only an optimization: the host
+controller's atomic lease and lock remain authoritative across automatic
+deploy, manual deploy, and rollback. Queued stale runs still fail the
+protected-branch SHA check.
+
+## Authoritative deployment and soak lease
+
+`/usr/local/libexec/hermes-deployment-controller` owns one lease namespace per
+environment under `/var/lib/hermes-deployment-control`. Every record contains
+the owner/controller, operation, exact source SHA, immutable digest,
+authorization identity, workflow run/attempt where applicable, acquisition
+time, and expiry. Writes are atomic and audit events are append-only.
+
+- `apply` creates a fixed acquired-plus-30-minute deployment transaction lease
+  and holds the environment control lock through deploy/rollback completion.
+  The deployer runner has a 20-minute deadline. Normal return or exception
+  removes the transaction lease under that lock and audits `deployment-released`.
+  If the controller process is forcibly terminated before its `finally` cleanup,
+  the orphan remains fail-closed until expiry; after expiry, an explicit `status`
+  call (or the next mutating command) audits `lease-expired` before removal. Do
+  not delete the lease file manually; before expiry, use only the separately
+  authorized direct-root emergency-clear path with an audited reason.
+- `soak-acquire` creates a durable, bounded lease for the fixed-grid controller.
+  Any active deployment or soak lease blocks every mutating deployment path.
+- `soak-release` requires the exact lease ID, owner, and authorization identity.
+- Expired leases are explicitly audited before removal; malformed state fails
+  closed.
+- `emergency-clear` is deliberately absent from workflow and sudoers rules. It
+  requires direct root execution with an audited reason and authorization.
+
+Rollout is split and fail-closed. Export
+`scripts/deploy/install-hermes-deployment-controller.sh` from the exact reviewed
+commit, verify its SHA-256 externally, install that exact byte sequence as
+`/usr/local/sbin/install-hermes-deployment-controller` (`root:root 0755`), and
+read it back before execution. `--stage` binds every installed artifact to the
+reviewed commit/tree but removes deployment sudo authorization. After exact
+manifest/config/ownership readback, removal of all Docker access from the
+deployment principal, and root pull-auth verification, a separate
+`--authorize` validates and installs digest-bound sudoers rules. The
+`hermes-deploy` rule permits only `apply`; the separate `hermes-soak` rule
+permits only soak acquire/release/status. Host staging, authorization, workflow
+activation, lease acquisition, and scheduler activation remain separate gates.
 
 ## Staging socket diagnostic transaction helper
 
@@ -267,11 +318,12 @@ Rollout is intentionally split and fail-closed:
    controlled staging gateway stop/start transitions to enable and restore
    diagnostics, and remain bound to the exact deployed source SHA.
 
-**Security boundary:** this correctness helper does not create least privilege.
-`hermes-deploy` Docker-group membership remains root-equivalent, so privilege
-containment remains **FAIL** until a separately reviewed deployment-helper
-migration removes Docker access. This candidate deliberately does not change
-users or groups.
+**Security boundary:** the diagnostic helper alone does not create least
+privilege. Privilege containment remains **FAIL** until the independently
+reviewed deployment-controller migration is staged, every `hermes-deploy`
+principal loses Docker-group/socket access, exact artifacts are read back, and
+the separate authorization gate succeeds. Merely merging these files does not
+change host users, groups, sudoers, deployment state, or runtime authority.
 
 Rollback order: revoke the diagnostic sudoers rule first; preserve recovery
 until every transaction is `RESTORED` or safely `ABORTED`; force and verify exact restoration; revert
