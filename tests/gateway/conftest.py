@@ -244,6 +244,35 @@ _ensure_telegram_mock()
 _ensure_discord_mock()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_telegram_token_owner_claims():
+    """Keep process-global Telegram ownership claims hermetic per test.
+
+    Production intentionally retains a token claim when teardown cannot prove
+    owner termination. Several lifecycle tests exercise exactly that terminal
+    state, so their adapter remains strongly reachable after the assertion and
+    must not fence an unrelated test that happens to reuse the placeholder
+    token in the same xdist worker. Clearing only this test-process registry at
+    test boundaries preserves within-test overlap detection without weakening
+    production ownership retention.
+    """
+
+    def _clear_claims() -> None:
+        module = sys.modules.get("plugins.platforms.telegram.adapter")
+        if module is None:
+            return
+        guard = getattr(module, "_TELEGRAM_TOKEN_LOCK_OWNERS_GUARD", None)
+        owners = getattr(module, "_TELEGRAM_TOKEN_LOCK_OWNERS", None)
+        if guard is None or owners is None:
+            return
+        with guard:
+            owners.clear()
+
+    _clear_claims()
+    yield
+    _clear_claims()
+
+
 # ---------------------------------------------------------------------------
 # Plugin-adapter anti-pattern guard
 # ---------------------------------------------------------------------------

@@ -149,6 +149,12 @@ async def test_polling_disconnect_webhook_reconnect_heals_webhook_send_path(monk
 
     monkeypatch.setenv("TELEGRAM_WEBHOOK_URL", "https://example.test/telegram")
     monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "test-secret")
+
+    async def _shutdown_requires_stopped_updater():
+        if webhook_app.updater.stop.await_count != 1:
+            raise RuntimeError("Updater is still running!")
+
+    webhook_app.shutdown = AsyncMock(side_effect=_shutdown_requires_stopped_updater)
     try:
         assert await adapter.connect(is_reconnect=True) is True
         webhook_app.updater.start_webhook.assert_awaited_once()
@@ -157,6 +163,101 @@ async def test_polling_disconnect_webhook_reconnect_heals_webhook_send_path(monk
         assert adapter._send_path_degraded is False
     finally:
         await adapter.disconnect()
+    webhook_app.updater.stop.assert_awaited_once()
+    webhook_app.shutdown.assert_awaited_once()
+    assert adapter.fatal_error_code is None
+
+
+@pytest.mark.asyncio
+async def test_reused_adapter_resets_updater_attempt_for_new_application(
+    monkeypatch,
+):
+    """A pre-start failure in G+1 cannot inherit G's stop obligation."""
+    adapter = _make_adapter()
+    replacement_app = _lifecycle_app()
+    _configure_lifecycle_connect(monkeypatch, adapter, [replacement_app])
+    adapter._updater_start_attempted = True
+
+    async def _cancel_before_initialize(awaitable, *_args, **_kwargs):
+        awaitable.close()
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(
+        tg_adapter, "_await_with_thread_deadline", _cancel_before_initialize
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await adapter.connect(is_reconnect=True)
+
+    assert adapter._app is replacement_app
+    assert adapter._updater_start_attempted is False
+    await adapter.disconnect()
+    replacement_app.updater.stop.assert_not_awaited()
+    replacement_app.shutdown.assert_awaited_once()
+    assert adapter.fatal_error_code is None
+
+
+@pytest.mark.asyncio
+async def test_disconnect_invalidates_connect_during_application_initialize(monkeypatch):
+    """A late initialize result cannot restart or publish after clean teardown."""
+    adapter = _make_adapter()
+    app = _lifecycle_app()
+    initialize_entered = asyncio.Event()
+    release_initialize = asyncio.Event()
+
+    async def _slow_initialize():
+        initialize_entered.set()
+        await release_initialize.wait()
+
+    app.initialize = AsyncMock(side_effect=_slow_initialize)
+    _configure_lifecycle_connect(monkeypatch, adapter, [app])
+
+    connecting = asyncio.create_task(adapter.connect())
+    await asyncio.wait_for(initialize_entered.wait(), timeout=1.0)
+    await asyncio.wait_for(adapter.disconnect(), timeout=1.0)
+    release_initialize.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(connecting, timeout=1.0)
+    app.start.assert_not_awaited()
+    app.updater.start_polling.assert_not_awaited()
+    assert adapter.is_connected() is False
+    assert adapter._app is None
+
+
+@pytest.mark.asyncio
+async def test_cancellation_resistant_initialize_retains_generation_owner(monkeypatch):
+    """Indeterminate connect I/O prevents a clean teardown ownership claim."""
+    adapter = _make_adapter()
+    app = _lifecycle_app()
+    initialize_entered = asyncio.Event()
+    release_initialize = asyncio.Event()
+
+    async def _resistant_initialize():
+        initialize_entered.set()
+        while not release_initialize.is_set():
+            try:
+                await release_initialize.wait()
+            except asyncio.CancelledError:
+                continue
+
+    app.initialize = AsyncMock(side_effect=_resistant_initialize)
+    _configure_lifecycle_connect(monkeypatch, adapter, [app])
+    monkeypatch.setattr(tg_adapter, "_UPDATER_STOP_TIMEOUT", 0.01)
+
+    connecting = asyncio.create_task(adapter.connect())
+    await asyncio.wait_for(initialize_entered.wait(), timeout=1.0)
+    await asyncio.wait_for(adapter.disconnect(), timeout=1.0)
+
+    assert adapter.fatal_error_code == "telegram_polling_owner_unterminated"
+    assert adapter._app is app
+    assert adapter._connect_generation_quiesce_failed is True
+    adapter._release_platform_lock.assert_not_called()
+
+    release_initialize.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(connecting, timeout=1.0)
+    app.start.assert_not_awaited()
+    assert adapter.is_connected() is False
 
 
 @pytest.mark.asyncio
@@ -637,7 +738,7 @@ async def test_disconnect_fences_verifier_and_late_progress_completion():
 
 
 @pytest.mark.asyncio
-async def test_disconnect_during_polling_start_returns_false_without_recovery():
+async def test_disconnect_during_polling_start_propagates_cancellation_without_recovery():
     adapter = _make_adapter()
     adapter._app = _mock_polling_app()
     entered = asyncio.Event()
@@ -660,9 +761,10 @@ async def test_disconnect_during_polling_start_returns_false_without_recovery():
 
     await adapter.disconnect()
     release.set()
-    result = await start
+    with pytest.raises(asyncio.CancelledError):
+        await start
 
-    assert result is False
+    assert start.cancelled()
     recovery.assert_not_called()
     assert adapter._polling_error_task is None
     assert not adapter.has_fatal_error

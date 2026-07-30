@@ -197,6 +197,10 @@ def _secondary_recovery_runner(*, running=True):
     runner._make_adapter_auth_check = lambda platform, profile_name=None: object()
     runner._adapter_disconnect_timeout_secs = lambda: 0
     runner._sync_voice_mode_state_to_adapter = lambda adapter: None
+    runner._telegram_owner_disposals = set()
+    runner._retained_telegram_owner_adapters = set()
+    runner._telegram_owner_replacement_fenced = False
+    runner._telegram_owner_recycle_requested = False
     return runner
 
 

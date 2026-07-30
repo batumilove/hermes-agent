@@ -42,10 +42,16 @@ from gateway.run import GatewayRunner  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _no_auto_discovery(monkeypatch):
-    """Disable DoH auto-discovery so connect() uses the plain builder chain."""
+    """Disable DoH discovery and isolate process-local Telegram token claims."""
     async def _noop():
         return []
+
     monkeypatch.setattr("plugins.platforms.telegram.adapter.discover_fallback_ips", _noop)
+    with tg_adapter._TELEGRAM_TOKEN_LOCK_OWNERS_GUARD:
+        tg_adapter._TELEGRAM_TOKEN_LOCK_OWNERS.clear()
+    yield
+    with tg_adapter._TELEGRAM_TOKEN_LOCK_OWNERS_GUARD:
+        tg_adapter._TELEGRAM_TOKEN_LOCK_OWNERS.clear()
 
 
 def _make_adapter() -> TelegramAdapter:
@@ -1048,14 +1054,16 @@ def test_polling_error_callback_uses_shared_network_classifier():
 def test_connect_initialize_retry_uses_shared_network_classifier():
     source = Path(TelegramAdapter.connect.__code__.co_filename).read_text(encoding="utf-8")
     tree = ast.parse(source)
-    connect = next(
+    connect_functions = [
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "connect"
-    )
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name in {"connect", "_connect_generation"}
+    ]
     exception_handlers = [
         node
-        for node in ast.walk(connect)
+        for function in connect_functions
+        for node in ast.walk(function)
         if isinstance(node, ast.ExceptHandler)
         and isinstance(node.type, ast.Name)
         and node.type.id == "Exception"
@@ -1456,6 +1464,7 @@ async def test_disconnect_stop_exception_retains_unterminated_owner(tmp_path):
     app.shutdown = AsyncMock()
     adapter._app = app
     adapter._bot = app.bot
+    adapter._updater_start_attempted = True
 
     await adapter.disconnect()
 
@@ -1635,9 +1644,10 @@ async def test_polling_owner_stop_is_serialized_and_rechecked(monkeypatch):
         release_first_stop.set()
         pending = [task for task in (network, conflict) if task is not None]
         if pending:
-            results = await asyncio.wait_for(
-                asyncio.gather(*pending, return_exceptions=True), timeout=2.0
-            )
+            with patch("asyncio.sleep", new=AsyncMock(side_effect=_yielding_sleep)):
+                results = await asyncio.wait_for(
+                    asyncio.gather(*pending, return_exceptions=True), timeout=2.0
+                )
 
     assert not any(isinstance(result, BaseException) for result in results)
     assert observed_before_release == 1
@@ -1701,9 +1711,10 @@ async def test_polling_owner_stop_serialized_caller_rechecks_still_running(monke
         release_first_stop.set()
         pending = [task for task in (network, conflict) if task is not None]
         if pending:
-            results = await asyncio.wait_for(
-                asyncio.gather(*pending, return_exceptions=True), timeout=2.0
-            )
+            with patch("asyncio.sleep", new=AsyncMock(side_effect=_yielding_sleep)):
+                results = await asyncio.wait_for(
+                    asyncio.gather(*pending, return_exceptions=True), timeout=2.0
+                )
 
     assert not any(isinstance(result, BaseException) for result in results)
     assert stop_call_count == 2
@@ -1794,6 +1805,7 @@ async def test_disconnect_retains_owner_references_after_stop_timeout():
     bot = MagicMock()
     adapter._app = app
     adapter._bot = bot
+    adapter._updater_start_attempted = True
     adapter._set_status_indicator = AsyncMock()
     adapter._cancel_pending_delivery_tasks = AsyncMock()
     adapter._release_platform_lock = MagicMock()
@@ -1979,6 +1991,334 @@ async def test_network_and_conflict_recovery_share_one_generation_owner():
     adapter._handoff_polling_fatal_error.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_recovery_stop_honors_failed_latch_when_updater_running_is_false():
+    """PTB's running flag cannot erase a prior unproven stop attempt."""
+    adapter = _make_adapter()
+    app = MagicMock()
+    app.updater = MagicMock(running=False)
+    adapter._polling_owner_stop_failed = True
+    adapter._handoff_polling_fatal_error = AsyncMock()
+
+    terminated = await adapter._stop_polling_owner_for_recovery(
+        app, context="running-flag regression"
+    )
+
+    assert terminated is False
+    assert adapter.fatal_error_code == "telegram_polling_owner_unterminated"
+    assert adapter._polling_teardown_started is True
+    app.updater.stop.assert_not_called()
+    adapter._handoff_polling_fatal_error.assert_awaited_once()
+
+
+def test_same_process_token_claim_blocks_reentrant_scoped_lock_acquire():
+    """A PID-reentrant lock file cannot authorize two adapters for one token."""
+    first = _make_adapter()
+    second = _make_adapter()
+    first._acquire_platform_lock = MagicMock(return_value=True)
+    second._acquire_platform_lock = MagicMock(return_value=True)
+    first._release_platform_lock = MagicMock()
+
+    assert first._acquire_telegram_token_lock() is True
+    assert second._acquire_telegram_token_lock() is False
+
+    first._acquire_platform_lock.assert_called_once()
+    second._acquire_platform_lock.assert_not_called()
+    assert second.fatal_error_code == "telegram-bot-token_lock"
+
+    first._release_telegram_token_lock()
+    first._release_platform_lock.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_disposal_marker_serializes_before_polling_start(tmp_path):
+    """A disposal that wins the transition lock blocks start_polling atomically."""
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="test-token")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapter = _make_adapter()
+    adapter._gateway_replacement_guard = runner._telegram_replacement_blocked
+    adapter._gateway_owner_transition_lock = runner._telegram_owner_transition_lock
+    disconnect_entered = asyncio.Event()
+    release_disconnect = asyncio.Event()
+
+    async def _blocked_disconnect():
+        disconnect_entered.set()
+        await release_disconnect.wait()
+
+    adapter.disconnect = AsyncMock(side_effect=_blocked_disconnect)
+    app = MagicMock()
+    app.updater.start_polling = AsyncMock()
+    cleanup = asyncio.create_task(
+        runner._safe_adapter_disconnect(adapter, Platform.TELEGRAM)
+    )
+    try:
+        await asyncio.wait_for(disconnect_entered.wait(), timeout=1.0)
+        with pytest.raises(tg_adapter._PollingLifecycleAbort):
+            await adapter._start_polling_once(
+                app, drop_pending_updates=False, error_callback=None
+            )
+        app.updater.start_polling.assert_not_awaited()
+    finally:
+        release_disconnect.set()
+        assert await asyncio.wait_for(cleanup, timeout=1.0) is True
+
+
+@pytest.mark.asyncio
+async def test_cancellation_resistant_polling_start_cannot_outlive_disposal(
+    tmp_path, monkeypatch
+):
+    """Pending updater start is retained and makes disposal fail closed."""
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="test-token")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapter = _make_adapter()
+    adapter._gateway_replacement_guard = runner._telegram_replacement_blocked
+    adapter._gateway_owner_transition_lock = runner._telegram_owner_transition_lock
+    start_entered = asyncio.Event()
+    release_start = asyncio.Event()
+
+    async def _resistant_start(**_kwargs):
+        start_entered.set()
+        while not release_start.is_set():
+            try:
+                await release_start.wait()
+            except asyncio.CancelledError:
+                continue
+
+    app = MagicMock(running=False)
+    app.updater = MagicMock(running=False)
+    app.updater.start_polling = AsyncMock(side_effect=_resistant_start)
+    app.updater.stop = AsyncMock()
+    app.shutdown = AsyncMock()
+    adapter._app = app
+    adapter._bot = app.bot
+    adapter._release_telegram_token_lock = MagicMock()
+    adapter._set_status_indicator = AsyncMock()
+    adapter._cancel_pending_delivery_tasks = AsyncMock()
+    monkeypatch.setattr(tg_adapter, "_UPDATER_STOP_TIMEOUT", 0.01)
+
+    start = asyncio.create_task(
+        adapter._start_polling_once(
+            app, drop_pending_updates=False, error_callback=None
+        )
+    )
+    try:
+        await asyncio.wait_for(start_entered.wait(), timeout=1.0)
+        completed = await asyncio.wait_for(
+            runner._safe_adapter_disconnect(adapter, Platform.TELEGRAM),
+            timeout=1.0,
+        )
+        assert completed is False
+        assert runner._telegram_owner_replacement_fenced is True
+        assert adapter.fatal_error_code == "telegram_polling_owner_unterminated"
+        assert adapter._app is app
+        adapter._release_telegram_token_lock.assert_not_called()
+        app.updater.stop.assert_not_awaited()
+        assert await adapter.connect(is_reconnect=True) is False
+        assert adapter._polling_teardown_started is True
+    finally:
+        release_start.set()
+        result = await asyncio.wait_for(
+            asyncio.gather(start, return_exceptions=True), timeout=1.0
+        )
+        assert isinstance(result[0], asyncio.CancelledError)
+
+
+@pytest.mark.asyncio
+async def test_cancellation_resistant_webhook_start_cannot_publish_after_disposal(
+    tmp_path, monkeypatch
+):
+    """Late webhook completion remains fenced and cannot become connected."""
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="test-token")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapter = _make_adapter()
+    adapter._gateway_replacement_guard = runner._telegram_replacement_blocked
+    adapter._gateway_owner_transition_lock = runner._telegram_owner_transition_lock
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _resistant_webhook(**_kwargs):
+        entered.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue
+
+    app = MagicMock(running=False)
+    app.updater = MagicMock(running=False)
+    app.updater.start_webhook = AsyncMock(side_effect=_resistant_webhook)
+    app.updater.stop = AsyncMock()
+    app.shutdown = AsyncMock()
+    adapter._app = app
+    adapter._bot = app.bot
+    adapter._release_telegram_token_lock = MagicMock()
+    adapter._set_status_indicator = AsyncMock()
+    adapter._cancel_pending_delivery_tasks = AsyncMock()
+    monkeypatch.setattr(tg_adapter, "_UPDATER_STOP_TIMEOUT", 0.01)
+
+    start = asyncio.create_task(adapter._start_webhook_once(app, listen="127.0.0.1"))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=1.0)
+        completed = await asyncio.wait_for(
+            runner._safe_adapter_disconnect(adapter, Platform.TELEGRAM),
+            timeout=1.0,
+        )
+        assert completed is False
+        assert runner._telegram_owner_replacement_fenced is True
+        adapter._release_telegram_token_lock.assert_not_called()
+    finally:
+        release.set()
+        result = await asyncio.wait_for(
+            asyncio.gather(start, return_exceptions=True), timeout=1.0
+        )
+        assert isinstance(result[0], asyncio.CancelledError)
+    assert adapter.is_connected() is False
+
+
+@pytest.mark.asyncio
+async def test_same_adapter_connect_generations_are_serialized():
+    """Only one connect generation may perform admission/application install."""
+    adapter = _make_adapter()
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+    active = 0
+    max_active = 0
+
+    async def _generation(*, is_reconnect=False):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        if not is_reconnect:
+            first_entered.set()
+            await release_first.wait()
+        active -= 1
+        return True
+
+    adapter._connect_application_generation = AsyncMock(side_effect=_generation)
+    first = asyncio.create_task(adapter.connect())
+    await asyncio.wait_for(first_entered.wait(), timeout=1.0)
+    second = asyncio.create_task(adapter.connect(is_reconnect=True))
+    await asyncio.sleep(0)
+    assert max_active == 1
+    release_first.set()
+    assert await asyncio.wait_for(first, timeout=1.0) is True
+    assert await asyncio.wait_for(second, timeout=1.0) is True
+    assert max_active == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_transition_wait_fences_before_propagating(tmp_path):
+    """Cancellation before marker activation must still retain the central fence."""
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="test-token")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapter = _make_adapter()
+    adapter.disconnect = AsyncMock()
+    await runner._telegram_owner_transition_lock.acquire()
+    cleanup = asyncio.create_task(
+        runner._safe_adapter_disconnect(adapter, Platform.TELEGRAM)
+    )
+    try:
+        await asyncio.sleep(0)
+        cleanup.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cleanup
+        assert id(adapter) in runner._telegram_owner_disposals
+        assert runner._telegram_owner_replacement_fenced is True
+        adapter.disconnect.assert_not_called()
+    finally:
+        runner._telegram_owner_transition_lock.release()
+
+
+@pytest.mark.asyncio
+async def test_never_attempted_polling_disconnect_skips_updater_stop():
+    """Pre-polling startup failure has positive proof that no updater owner exists."""
+    adapter = _make_adapter()
+    app = MagicMock(running=False)
+    app.updater = MagicMock(running=False)
+    app.updater.stop = AsyncMock(
+        side_effect=RuntimeError("This Updater is not running!")
+    )
+    app.shutdown = AsyncMock()
+    adapter._app = app
+    adapter._bot = app.bot
+    adapter._updater_start_attempted = False
+    adapter._release_telegram_token_lock = MagicMock()
+    adapter._set_status_indicator = AsyncMock()
+    adapter._cancel_pending_delivery_tasks = AsyncMock()
+
+    await adapter.disconnect()
+
+    app.updater.stop.assert_not_awaited()
+    app.shutdown.assert_awaited_once()
+    adapter._release_telegram_token_lock.assert_called_once_with()
+    assert adapter._app is None
+    assert adapter.fatal_error_code is None
+
+
+@pytest.mark.asyncio
+async def test_guard_refusal_cannot_publish_connected_adapter(monkeypatch):
+    """A lifecycle-aborted polling start must make connect() fail closed."""
+    app = MagicMock()
+    app.bot = MagicMock()
+    app.initialize = AsyncMock()
+    app.start = AsyncMock()
+    app.add_handler = MagicMock()
+
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.request.return_value = builder
+    builder.get_updates_request.return_value = builder
+    builder.build.return_value = app
+    application = MagicMock()
+    application.builder.return_value = builder
+    monkeypatch.setattr(tg_adapter, "Application", application)
+    monkeypatch.setattr(tg_adapter, "HTTPXRequest", MagicMock)
+    monkeypatch.setattr(tg_adapter, "resolve_proxy_url", lambda *a, **k: None)
+
+    adapter = _make_adapter()
+    adapter._acquire_platform_lock = MagicMock(return_value=True)
+    adapter._release_platform_lock = MagicMock()
+    adapter._fallback_ips = MagicMock(return_value=[])
+    adapter._delete_webhook_best_effort = AsyncMock()
+
+    async def _refuse_polling(*_args, **_kwargs):
+        adapter._polling_teardown_started = True
+        adapter._send_path_degraded = True
+        return False
+
+    adapter._start_polling_resilient = AsyncMock(side_effect=_refuse_polling)
+    adapter._mark_connected = MagicMock()
+    adapter._polling_heartbeat_loop = AsyncMock()
+    adapter._start_post_connect_housekeeping = MagicMock()
+
+    assert await adapter.connect() is False
+
+    adapter._mark_connected.assert_not_called()
+    adapter._start_post_connect_housekeeping.assert_not_called()
+    assert adapter.is_connected is False
+    adapter._release_telegram_token_lock()
+
+
 def _owner_fatal_runner(tmp_path):
     config = GatewayConfig(
         platforms={
@@ -1988,6 +2328,12 @@ def _owner_fatal_runner(tmp_path):
     )
     runner = GatewayRunner(config)
     runner.request_restart = MagicMock(return_value=True)
+    # New tests assert the centralized fence objects; they are not persisted
+    # into real GatewayRunner state, so seed the defaults explicitly.
+    runner._telegram_owner_disposals = set()
+    runner._retained_telegram_owner_adapters = set()
+    runner._telegram_owner_replacement_fenced = False
+    runner._telegram_owner_recycle_requested = False
     return runner
 
 

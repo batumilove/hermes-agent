@@ -55,7 +55,9 @@ async def test_connect_retries_when_initialize_wall_deadline_expires(monkeypatch
 
     deadline_calls = 0
 
-    async def _fake_deadline(awaitable, timeout, *, on_abandon=None):
+    async def _fake_deadline(
+        awaitable, timeout, *, on_abandon=None, retain_abandoned=None
+    ):
         nonlocal deadline_calls
         deadline_calls += 1
         if deadline_calls == 1:
