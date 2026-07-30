@@ -27,7 +27,7 @@ The correct behaviour: a ``send_path_degraded`` error should
 short-circuit ``_send_with_retry`` immediately (no retries, no failure
 notice) so the caller's own backoff/queue logic handles re-delivery.
 
-This test is RED against the current code at f35d8ac289.
+This test is RED against base ``55f7d9d323e3d98e71878598a4eee9909f7267b2``.
 """
 import asyncio
 import sys

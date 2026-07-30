@@ -4426,6 +4426,12 @@ class BasePlatformAdapter(ABC):
             return result
 
         error_str = result.error or ""
+        # ``send_path_degraded`` is a polling-health gate, not transient I/O.
+        # Only external polling progress can clear it; same-call retries cannot.
+        # Return immediately so the caller's durable delivery/backoff path owns
+        # re-delivery and no false terminal-failure notice is emitted.
+        if error_str == "send_path_degraded":
+            return result
         is_network = result.retryable or self._is_retryable_error(error_str)
 
         # Timeout errors are not safe to retry (message may have been
