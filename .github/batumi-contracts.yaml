@@ -14,6 +14,7 @@ contracts:
     tests:
       - tests/test_hermes_state.py
       - tests/test_session_db_read_path_split.py
+      - tests/test_session_db_recall_reader.py
       - tests/hermes_cli/test_session_handoff.py
 
   - id: plugins
@@ -28,11 +29,14 @@ contracts:
     tests:
       - tests/gateway/test_telegram_network.py
       - tests/gateway/test_telegram_request_phase_real_socket.py
+      - tests/gateway/test_telegram_terminal_close_regression.py
       - tests/gateway/test_telegram_network_reconnect.py
       - tests/gateway/test_platform_reconnect_fd_leak.py
       - tests/gateway/test_dm_topics.py
       - tests/gateway/test_delivery.py
       - tests/gateway/test_ephemeral_telegram_topics.py
+      - tests/gateway/test_telegram_send_path_degraded_retry.py
+      - tests/gateway/test_telegram_text_batching.py
 
   - id: cron
     rationale: Preserve verbatim scripts, topic ownership, and scheduler shutdown.
@@ -50,6 +54,8 @@ contracts:
       - tests/gateway/test_delivery_ledger.py
       - tests/gateway/test_delivery_ledger_producer.py
       - tests/gateway/test_gateway_shutdown.py
+      - tests/gateway/test_session_hygiene.py
+      - tests/gateway/test_shutdown_aggregate_budget_contract.py
       - tests/gateway/test_shutdown_cache_cleanup.py
       - tests/gateway/test_webhook_session_close.py
 
