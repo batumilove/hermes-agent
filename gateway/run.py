@@ -9818,7 +9818,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
 
         async def _stop_impl() -> None:
-            def _kill_tool_subprocesses(phase: str) -> None:
+            _tool_cleanup_thread: threading.Thread | None = None
+
+            def _kill_tool_subprocesses_sync(phase: str) -> None:
                 """Kill tool subprocesses + tear down terminal envs + browsers.
 
                 Called twice in the shutdown path: once eagerly after a
