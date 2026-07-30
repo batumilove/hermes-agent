@@ -32,6 +32,9 @@ def _make_adapter():
     adapter._drop_delayed_deliveries = False
     adapter._pending_text_batches = {}
     adapter._pending_text_batch_tasks = {}
+    adapter._text_recovery_enqueue_lock = asyncio.Lock()
+    adapter._text_recovery_lane_locks = {}
+    adapter._text_recovery_tasks = set()
     adapter._pending_photo_batches = {}
     adapter._pending_photo_batch_tasks = {}
     adapter._media_group_events = {}
@@ -114,6 +117,138 @@ class TestTextBatching:
         assert "chunk 1" in text
         assert "chunk 2" in text
         assert "chunk 3" in text
+
+    @pytest.mark.asyncio
+    async def test_topic_recovery_does_not_block_event_loop(self):
+        adapter = _make_adapter()
+        heartbeat_ran = asyncio.Event()
+        heartbeat_seen = []
+        loop = asyncio.get_running_loop()
+
+        def recover(_source):
+            heartbeat_seen.append(
+                asyncio.run_coroutine_threadsafe(
+                    heartbeat_ran.wait(), loop
+                ).result(timeout=1)
+            )
+            return "222"
+
+        adapter.set_topic_recovery_fn(recover)
+
+        async def heartbeat():
+            await asyncio.sleep(0)
+            heartbeat_ran.set()
+
+        event = _make_event("heartbeat")
+        await asyncio.gather(
+            adapter._recover_and_enqueue_text_event(event),
+            heartbeat(),
+        )
+
+        assert heartbeat_seen == [True]
+        assert event.source.thread_id == "222"
+        await asyncio.sleep(0.2)
+
+    @pytest.mark.asyncio
+    async def test_topic_recovery_is_fair_across_unrelated_raw_lanes(self):
+        adapter = _make_adapter()
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        second_started = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def recover(source):
+            if source.chat_id == "chat-a":
+                loop.call_soon_threadsafe(first_started.set)
+                asyncio.run_coroutine_threadsafe(
+                    release_first.wait(), loop
+                ).result(timeout=2)
+            else:
+                loop.call_soon_threadsafe(second_started.set)
+            return "222"
+
+        adapter.set_topic_recovery_fn(recover)
+        first = asyncio.create_task(
+            adapter._recover_and_enqueue_text_event(_make_event("a", "chat-a"))
+        )
+        await asyncio.wait_for(first_started.wait(), timeout=1)
+        second = asyncio.create_task(
+            adapter._recover_and_enqueue_text_event(_make_event("b", "chat-b"))
+        )
+
+        await asyncio.wait_for(second_started.wait(), timeout=0.25)
+        release_first.set()
+        await asyncio.gather(first, second)
+
+        assert len(adapter._pending_text_batches) == 2
+        assert adapter._text_recovery_lane_locks == {}
+        assert adapter._text_recovery_tasks == set()
+        await asyncio.sleep(0.2)
+
+    @pytest.mark.asyncio
+    async def test_repeated_cancellation_drains_topic_recovery_worker(self):
+        adapter = _make_adapter()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        finished = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def recover(_source):
+            loop.call_soon_threadsafe(started.set)
+            asyncio.run_coroutine_threadsafe(release.wait(), loop).result(timeout=2)
+            loop.call_soon_threadsafe(finished.set)
+            return "222"
+
+        adapter.set_topic_recovery_fn(recover)
+        task = asyncio.create_task(
+            adapter._recover_and_enqueue_text_event(_make_event("cancelled"))
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+        task.cancel()
+        await asyncio.sleep(0.05)
+        assert not task.done()
+        task.cancel()
+        await asyncio.sleep(0.05)
+        assert not task.done()
+        assert task in adapter._text_recovery_tasks
+
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert finished.is_set()
+        assert adapter._pending_text_batches == {}
+        assert adapter._text_recovery_lane_locks == {}
+        assert adapter._text_recovery_tasks == set()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_drains_topic_recovery_and_drops_late_enqueue(self):
+        adapter = _make_adapter()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def recover(_source):
+            loop.call_soon_threadsafe(started.set)
+            asyncio.run_coroutine_threadsafe(release.wait(), loop).result(timeout=2)
+            return "222"
+
+        adapter.set_topic_recovery_fn(recover)
+        recovery = asyncio.create_task(
+            adapter._recover_and_enqueue_text_event(_make_event("stale"))
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+        disconnect = asyncio.create_task(adapter.disconnect())
+        await asyncio.sleep(0.05)
+        assert not disconnect.done()
+
+        release.set()
+        await asyncio.gather(recovery, disconnect)
+
+        adapter.handle_message.assert_not_called()
+        assert adapter._pending_text_batches == {}
+        assert adapter._text_recovery_lane_locks == {}
+        assert adapter._text_recovery_tasks == set()
 
 
     @pytest.mark.asyncio

@@ -8849,15 +8849,50 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _maybe_update_status(force=True)
         return snapshot, timed_out
 
-    def _interrupt_running_agents(self, reason: str) -> None:
-        for session_key, agent in list(self._running_agents.items()):
-            if agent is _AGENT_PENDING_SENTINEL:
-                continue
+    def _shutdown_interrupt_timeout_secs(self) -> float:
+        return 5.0
+
+    async def _interrupt_running_agents(self, reason: str, deadline: float) -> None:
+        """Dispatch interrupts without letting a wedged agent block the loop."""
+        workers: list[tuple[str, threading.Thread]] = []
+
+        def _interrupt_one(session_key: str, agent: Any) -> None:
             try:
                 agent.interrupt(reason)
-                logger.debug("Interrupted running agent for session %s during shutdown", session_key)
+                logger.debug(
+                    "Interrupted running agent for session %s during shutdown",
+                    session_key,
+                )
             except Exception as e:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
+
+        for index, (session_key, agent) in enumerate(list(self._running_agents.items())):
+            if agent is _AGENT_PENDING_SENTINEL:
+                continue
+            worker = threading.Thread(
+                target=_interrupt_one,
+                args=(session_key, agent),
+                name=f"gateway-shutdown-interrupt-{index}",
+                daemon=True,
+            )
+            worker.start()
+            workers.append((session_key, worker))
+
+        while (
+            any(worker.is_alive() for _key, worker in workers)
+            and asyncio.get_running_loop().time() < deadline
+        ):
+            await asyncio.sleep(0.01)
+
+        blocked = [key for key, worker in workers if worker.is_alive()]
+        if blocked:
+            logger.warning(
+                "Shutdown interrupt dispatch exceeded %.2fs with %d blocked "
+                "agent(s); forcing forward progress: %s",
+                self._shutdown_interrupt_timeout_secs(),
+                len(blocked),
+                ", ".join(blocked[:10]),
+            )
 
     async def _notify_active_sessions_of_shutdown(self) -> None:
         """Send shutdown/restart notifications to active chats and home channels.
@@ -9058,7 +9093,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     e,
                 )
 
-    async def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
+    async def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> bool:
+        deadline = getattr(self, "_shutdown_cleanup_deadline", None)
+        if deadline is None:
+            deadline = asyncio.get_running_loop().time() + self._CLEANUP_TIMEOUT_S
         for agent in active_agents.values():
             # Persist any in-flight transcript to the SQLite session store
             # before teardown (#13121).  An agent forcibly interrupted by the
@@ -9075,10 +9113,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # transcript whose tail may be a pending tool result.  The flush is
             # idempotent (identity-tracked in ``_flush_messages_to_session_db``),
             # so agents that DID finish gracefully re-flush nothing.
-            try:
+            def _persist_and_finalize() -> None:
                 _flush = getattr(agent, "_flush_messages_to_session_db", None)
                 _session_messages = getattr(agent, "_session_messages", None)
-                if callable(_flush) and isinstance(_session_messages, list) and _session_messages:
+                if (
+                    callable(_flush)
+                    and isinstance(_session_messages, list)
+                    and _session_messages
+                ):
                     # Strip private empty-response retry scaffolding from the
                     # tail first, mirroring the graceful ``_persist_session``
                     # path, so a resumed turn doesn't replay synthetic recovery
@@ -9113,22 +9155,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             getattr(agent, "session_id", None),
                             _session_messages,
                         )
-            except Exception as _e:
-                logger.debug("Shutdown transcript flush failed: %s", _e)
-            try:
-                from hermes_cli.lifecycle import finalize_session
-                finalize_session(
-                    session_id=getattr(agent, "session_id", None),
-                    platform="gateway",
-                    reason="shutdown",
-                )
-            except Exception:
-                pass
-            # Off-loop + bounded: a wedged memory provider here used to hang
-            # the whole shutdown so SIGTERM never completed (#53175).
-            await self._cleanup_agent_resources_off_loop(
-                agent, context="shutdown finalize"
-            )
+                try:
+                    from hermes_cli.lifecycle import finalize_session
+
+                    finalize_session(
+                        session_id=getattr(agent, "session_id", None),
+                        platform="gateway",
+                        reason="shutdown",
+                    )
+                except Exception:
+                    pass
+
+            remaining = self._shutdown_remaining(deadline)
+            if remaining <= 0 or not await self._run_shutdown_sync_daemon(
+                _persist_and_finalize,
+                timeout=remaining,
+                context="agent transcript finalization",
+            ):
+                return False
+
+            remaining = self._shutdown_remaining(deadline)
+            if remaining <= 0 or not await self._run_shutdown_sync_daemon(
+                self._cleanup_agent_resources,
+                agent,
+                timeout=remaining,
+                context="agent resource cleanup",
+            ):
+                return False
+        return True
 
     def _should_emit_long_running_notification(
         self,
@@ -9163,6 +9217,54 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # serviced (#53175). Offload to a worker thread under this timeout so the
     # loop is never blocked; mirrors the /new reset path's fix (#35994).
     _CLEANUP_TIMEOUT_S = 30.0
+    _TOOL_SUBPROCESS_CLEANUP_TIMEOUT_S = 2.0
+    _SHUTDOWN_TAIL_RESERVE_S = 10.0
+
+    @staticmethod
+    def _shutdown_remaining(deadline: Optional[float]) -> float:
+        if deadline is None:
+            return float("inf")
+        return max(0.0, deadline - asyncio.get_running_loop().time())
+
+    async def _run_shutdown_sync_daemon(
+        self,
+        func,
+        *args,
+        timeout: float,
+        context: str,
+    ) -> bool:
+        """Bound shutdown-only synchronous work on an exit-safe daemon thread."""
+        done = threading.Event()
+        errors: list[BaseException] = []
+        ctx = copy_context()
+
+        def _worker() -> None:
+            try:
+                ctx.run(func, *args)
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                done.set()
+
+        threading.Thread(
+            target=_worker,
+            name=f"gateway-shutdown-{context.replace(' ', '-')}",
+            daemon=True,
+        ).start()
+        loop = asyncio.get_running_loop()
+        wait_deadline = loop.time() + max(0.0, timeout)
+        while not done.is_set() and loop.time() < wait_deadline:
+            await asyncio.sleep(min(0.05, max(0.0, wait_deadline - loop.time())))
+        if not done.is_set():
+            logger.warning(
+                "Shutdown %s exceeded %.2fs; forcing forward progress",
+                context,
+                timeout,
+            )
+            return False
+        if errors:
+            logger.warning("Shutdown %s failed: %s", context, errors[0])
+        return True
 
     def _defer_agent_cleanup_until_future_done(
         self,
@@ -9241,6 +9343,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 f" ({context})" if context else "",
                 cleanup_exc,
             )
+
+    async def _drain_hygiene_future_after_cancellation(
+        self,
+        future: asyncio.Future,
+        agent: Any,
+        cancellation: asyncio.CancelledError,
+    ) -> None:
+        """Keep ownership of non-cancellable hygiene work through cleanup."""
+        while not future.done():
+            try:
+                await asyncio.shield(future)
+            except asyncio.CancelledError:
+                continue
+            except BaseException:
+                break
+        try:
+            future.result()
+        except BaseException:
+            pass
+
+        cleanup_task = asyncio.create_task(
+            self._cleanup_agent_resources_off_loop(
+                agent,
+                context="session hygiene cancelled",
+            )
+        )
+        while not cleanup_task.done():
+            try:
+                await asyncio.shield(cleanup_task)
+            except asyncio.CancelledError:
+                continue
+        try:
+            cleanup_task.result()
+        except BaseException:
+            pass
+        raise cancellation
 
     def _cleanup_agent_resources(self, agent: Any) -> None:
         """Best-effort cleanup for temporary or cached agent instances."""
@@ -11925,7 +12063,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
 
         async def _stop_impl() -> None:
-            def _kill_tool_subprocesses(phase: str) -> None:
+            _tool_cleanup_active = threading.Event()
+
+            def _kill_tool_subprocesses_sync(phase: str) -> None:
                 """Kill tool subprocesses + tear down terminal envs + browsers.
 
                 Called twice in the shutdown path: once eagerly after a
@@ -11990,6 +12130,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as _e:
                     logger.debug("cleanup_all_browsers (%s) error: %s", phase, _e)
 
+            async def _kill_tool_subprocesses(
+                phase: str,
+                *,
+                timeout: float,
+            ) -> None:
+                if _tool_cleanup_active.is_set():
+                    logger.warning(
+                        "Shutdown (%s): prior tool cleanup is still running; "
+                        "skipping overlapping sweep",
+                        phase,
+                    )
+                    return
+
+                def _run() -> None:
+                    _tool_cleanup_active.set()
+                    try:
+                        _kill_tool_subprocesses_sync(phase)
+                    finally:
+                        _tool_cleanup_active.clear()
+
+                await GatewayRunner._run_shutdown_sync_daemon(
+                    self,
+                    _run,
+                    timeout=min(
+                        getattr(
+                            self,
+                            "_TOOL_SUBPROCESS_CLEANUP_TIMEOUT_S",
+                            GatewayRunner._TOOL_SUBPROCESS_CLEANUP_TIMEOUT_S,
+                        ),
+                        max(0.0, timeout),
+                    ),
+                    context=f"tool cleanup ({phase})",
+                )
+
             # Thread-based shutdown watchdog (#66892): asyncio timeouts cannot
             # recover a frozen loop. Arm a plain OS thread at the start of
             # stop(); if teardown never finishes within drain+grace it dumps
@@ -12041,6 +12215,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             _stop_started_at = time.monotonic()
             _stop_started_at_box["t"] = _stop_started_at
+            _cleanup_deadline = asyncio.get_running_loop().time() + max(
+                0.0,
+                resolve_shutdown_watchdog_delay(self._restart_drain_timeout)
+                - getattr(
+                    self,
+                    "_SHUTDOWN_TAIL_RESERVE_S",
+                    GatewayRunner._SHUTDOWN_TAIL_RESERVE_S,
+                ),
+            )
+            _cleanup_budget_exhausted = False
 
             def _phase_elapsed() -> float:
                 return time.monotonic() - _stop_started_at
@@ -12159,10 +12343,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "mark_resume_pending failed for %s: %s",
                             _sk, _e,
                         )
-                self._interrupt_running_agents(
-                    _INTERRUPT_REASON_GATEWAY_RESTART if self._restart_requested else _INTERRUPT_REASON_GATEWAY_SHUTDOWN
+                interrupt_deadline = (
+                    asyncio.get_running_loop().time()
+                    + self._shutdown_interrupt_timeout_secs()
                 )
-                interrupt_deadline = asyncio.get_running_loop().time() + 5.0
+                await self._interrupt_running_agents(
+                    _INTERRUPT_REASON_GATEWAY_RESTART
+                    if self._restart_requested
+                    else _INTERRUPT_REASON_GATEWAY_SHUTDOWN,
+                    interrupt_deadline,
+                )
                 while self._running_agents and asyncio.get_running_loop().time() < interrupt_deadline:
                     self._update_runtime_status("draining")
                     await asyncio.sleep(0.1)
@@ -12175,7 +12365,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # children left behind by an interrupted terminal tool get
                 # killed by systemd instead of us (issue #8202).  The final
                 # catch-all cleanup below still runs for the graceful path.
-                _kill_tool_subprocesses("post-interrupt")
+                await _kill_tool_subprocesses(
+                    "post-interrupt",
+                    timeout=GatewayRunner._shutdown_remaining(_cleanup_deadline),
+                )
                 logger.info(
                     "Shutdown phase: post-interrupt tool kill done at +%.2fs",
                     _phase_elapsed(),
@@ -12187,7 +12380,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as e:
                     logger.error("Failed to launch detached gateway restart: %s", e)
 
-            await self._finalize_shutdown_agents(active_agents)
+            self._shutdown_cleanup_deadline = _cleanup_deadline
+            if not await self._finalize_shutdown_agents(active_agents):
+                _cleanup_budget_exhausted = True
 
             # Also shut down memory providers on idle cached agents.
             # _finalize_shutdown_agents only handles agents that were
@@ -12207,19 +12402,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Bounded + off-loop so a wedged memory provider on one
                     # idle agent can't hang shutdown indefinitely — that path
                     # is why SIGTERM failed to kill the process (#53175).
-                    await self._cleanup_agent_resources_off_loop(
-                        _agent, context="shutdown idle-cache"
-                    )
+                    _remaining = GatewayRunner._shutdown_remaining(_cleanup_deadline)
+                    if _remaining <= 0 or not await GatewayRunner._run_shutdown_sync_daemon(
+                        self,
+                        self._cleanup_agent_resources,
+                        _agent,
+                        timeout=_remaining,
+                        context="idle-cache cleanup",
+                    ):
+                        _cleanup_budget_exhausted = True
+                        break
 
             for platform, adapter in list(self.adapters.items()):
-                await self._bounded_adapter_teardown(adapter, platform)
+                _remaining = GatewayRunner._shutdown_remaining(_cleanup_deadline)
+                if _remaining <= 0:
+                    _cleanup_budget_exhausted = True
+                    break
+                try:
+                    await asyncio.wait_for(
+                        self._bounded_adapter_teardown(adapter, platform),
+                        timeout=_remaining,
+                    )
+                except asyncio.TimeoutError:
+                    _cleanup_budget_exhausted = True
+                    break
 
             # Disconnect secondary-profile adapters (multiplex mode).
             for _prof, _amap in list(getattr(self, "_profile_adapters", {}).items()):
                 for platform, adapter in list(_amap.items()):
-                    await self._bounded_adapter_teardown(
-                        adapter, platform, profile=_prof
-                    )
+                    _remaining = GatewayRunner._shutdown_remaining(_cleanup_deadline)
+                    if _remaining <= 0:
+                        _cleanup_budget_exhausted = True
+                        break
+                    try:
+                        await asyncio.wait_for(
+                            self._bounded_adapter_teardown(
+                                adapter, platform, profile=_prof
+                            ),
+                            timeout=_remaining,
+                        )
+                    except asyncio.TimeoutError:
+                        _cleanup_budget_exhausted = True
+                        break
                 _amap.clear()
             if hasattr(self, "_profile_adapters"):
                 self._profile_adapters.clear()
@@ -12273,7 +12497,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # where drain succeeded without interrupt, and (b) anything
             # that got respawned between the earlier call and adapter
             # disconnect (defense in depth; safe to call repeatedly).
-            _kill_tool_subprocesses("final-cleanup")
+            await _kill_tool_subprocesses(
+                "final-cleanup",
+                timeout=GatewayRunner._shutdown_remaining(_cleanup_deadline),
+            )
             logger.info(
                 "Shutdown phase: final-cleanup tool kill done at +%.2fs",
                 _phase_elapsed(),
@@ -12288,7 +12515,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # RLIMIT_NOFILE=256.  See #14210.
             try:
                 from agent.auxiliary_client import shutdown_cached_clients
-                shutdown_cached_clients()
+                _remaining = GatewayRunner._shutdown_remaining(_cleanup_deadline)
+                if _remaining > 0:
+                    if not await GatewayRunner._run_shutdown_sync_daemon(
+                        self,
+                        shutdown_cached_clients,
+                        timeout=_remaining,
+                        context="cached-client cleanup",
+                    ):
+                        _cleanup_budget_exhausted = True
+                else:
+                    _cleanup_budget_exhausted = True
             except Exception as _e:
                 logger.debug("shutdown_cached_clients error: %s", _e)
 
@@ -12305,7 +12542,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _db is None or not hasattr(_db, "close"):
                     continue
                 try:
-                    _db.close()
+                    _remaining = GatewayRunner._shutdown_remaining(_cleanup_deadline)
+                    if _remaining <= 0:
+                        _cleanup_budget_exhausted = True
+                        break
+                    if not await GatewayRunner._run_shutdown_sync_daemon(
+                        self,
+                        _db.close,
+                        timeout=_remaining,
+                        context="SessionDB close",
+                    ):
+                        _cleanup_budget_exhausted = True
+                        break
                 except Exception as _e:
                     logger.debug("SessionDB close error: %s", _e)
             GatewayRunner._shutdown_executor(self)
@@ -12326,17 +12574,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # message).  Skip the marker in that case so the next startup
             # suspends those sessions — giving users a clean slate instead
             # of resuming a half-finished tool loop.
-            if not timed_out:
+            if not timed_out and not _cleanup_budget_exhausted:
                 try:
                     (_hermes_home / ".clean_shutdown").touch()
                 except Exception:
                     pass
             else:
-                logger.info(
-                    "Skipping .clean_shutdown marker — drain timed out with "
-                    "interrupted agents; next startup will suspend recently "
-                    "active sessions."
-                )
+                if timed_out:
+                    logger.info(
+                        "Skipping .clean_shutdown marker — drain timed out with "
+                        "interrupted agents; next startup will suspend recently "
+                        "active sessions."
+                    )
+                else:
+                    logger.warning(
+                        "Skipping .clean_shutdown marker — aggregate cleanup "
+                        "budget was exhausted before teardown completed."
+                    )
 
             # Track sessions that were active at shutdown for stuck-loop
             # detection (#7536).  On each restart, the counter increments
@@ -16200,6 +16454,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                                     )
                                                     continue
                                                 raise
+                                    except asyncio.CancelledError as _hyg_cancellation:
+                                        # Executor work cannot be cancelled once
+                                        # started. Retain ownership through worker
+                                        # completion and cleanup, even if stop()
+                                        # cancels this handler repeatedly.
+                                        _hyg_cleanup_deferred = True
+                                        await self._drain_hygiene_future_after_cancellation(
+                                            _hyg_future,
+                                            _hyg_agent,
+                                            _hyg_cancellation,
+                                        )
                                     except asyncio.TimeoutError:
                                         _cancelled = None
                                         while _cancelled is None:

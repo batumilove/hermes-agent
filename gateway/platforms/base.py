@@ -2756,7 +2756,9 @@ class BasePlatformAdapter(ABC):
         # Optional hook (e.g. Telegram DM topic recovery) that rewrites
         # ``event.source.thread_id`` before session keying. Returns the
         # corrected thread_id or None to leave the source untouched.
-        self._topic_recovery_fn: Optional[Callable[[Any], Optional[str]]] = None
+        self._topic_recovery_fn: Optional[
+            Callable[[Any], Optional[str] | Awaitable[Optional[str]]]
+        ] = None
         self._running = False
         self._fatal_error_code: Optional[str] = None
         self._fatal_error_message: Optional[str] = None
@@ -3291,7 +3293,9 @@ class BasePlatformAdapter(ABC):
 
     def set_topic_recovery_fn(
         self,
-        fn: Optional[Callable[[Any], Optional[str]]],
+        fn: Optional[
+            Callable[[Any], Optional[str] | Awaitable[Optional[str]]]
+        ],
     ) -> None:
         """Install a thread_id-recovery hook (Telegram DM topic mode).
 
@@ -3313,6 +3317,33 @@ class BasePlatformAdapter(ABC):
             return
         try:
             recovered = recover(source)
+        except Exception:
+            logger.debug("topic recovery hook failed", exc_info=True)
+            return
+        if recovered is None or str(recovered) == str(source.thread_id or ""):
+            return
+        try:
+            event.source = dataclasses.replace(source, thread_id=str(recovered))
+        except Exception:
+            logger.debug("topic recovery rewrite failed", exc_info=True)
+
+    async def _apply_topic_recovery_async(self, event: MessageEvent) -> None:
+        """Recover a thread off-loop, then publish the source rewrite on-loop."""
+        recover = getattr(self, "_topic_recovery_fn", None)
+        if recover is None:
+            return
+        source = getattr(event, "source", None)
+        if source is None:
+            return
+        try:
+            if inspect.iscoroutinefunction(recover):
+                recovered = await recover(source)
+            else:
+                recovered = await asyncio.to_thread(recover, source)
+                if inspect.isawaitable(recovered):
+                    recovered = await recovered
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.debug("topic recovery hook failed", exc_info=True)
             return
@@ -5049,6 +5080,10 @@ class BasePlatformAdapter(ABC):
             return result
 
         error_str = result.error or ""
+        # This is a polling-health gate, not transient I/O. Only external
+        # polling progress can clear it, so same-call retries cannot help.
+        if error_str == "send_path_degraded":
+            return result
         is_network = result.retryable or self._is_retryable_error(error_str)
 
         # Timeout errors are not safe to retry (message may have been
