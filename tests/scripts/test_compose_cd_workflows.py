@@ -179,11 +179,24 @@ def test_compose_runtime_is_digest_driven_and_health_checked() -> None:
 
 def test_staging_diagnostic_workflow_delegates_exact_bounded_json_only() -> None:
     workflow = _workflow("staging-telegram-socket-diagnostics.yml")
+    assert workflow["name"] == "Cycle staging gateway and observe Telegram socket ownership"
     assert workflow["on"]["workflow_dispatch"]["inputs"]["observation_seconds"]["options"] == ["60", "90", "120"]
+    restart_ack = workflow["on"]["workflow_dispatch"]["inputs"]["staging_stop_start_ack"]
+    assert restart_ack == {
+        "description": (
+            "Authorizes controlled staging gateway stop/start to enable and restore diagnostics"
+        ),
+        "required": "true",
+        "default": "not-authorized",
+        "type": "choice",
+        "options": ["not-authorized", "staging-stop-start-authorized"],
+    }
+    assert "activation_ack" not in workflow["on"]["workflow_dispatch"]["inputs"]
     job = workflow["jobs"]["observe"]
+    assert job["name"] == "Stop/start staging, observe, and restore"
     assert job["if"] == (
         "vars.HERMES_STAGING_DIAGNOSTICS_ENABLED == 'true' && "
-        "inputs.activation_ack == 'enabled' && "
+        "inputs.staging_stop_start_ack == 'staging-stop-start-authorized' && "
         "github.repository == 'batumilove/hermes-agent' && "
         "github.ref == 'refs/heads/batumi/live'"
     )
@@ -209,14 +222,7 @@ def test_staging_diagnostic_workflow_delegates_exact_bounded_json_only() -> None
     assert 'git cat-file -e "$EXPECTED_SOURCE_SHA^{commit}"' in verify_source["run"]
     assert 'git merge-base --is-ancestor "$EXPECTED_SOURCE_SHA" HEAD' in verify_source["run"]
     assert steps.index(checkout) < steps.index(verify_source) < steps.index(join_tailnet)
-    assert workflow["on"]["workflow_dispatch"]["inputs"]["activation_ack"] == {
-        "description": "Explicit activation acknowledgement (must be enabled)",
-        "required": "true",
-        "default": "disabled",
-        "type": "choice",
-        "options": ["disabled", "enabled"],
-    }
-    assert "inputs.activation_ack == 'enabled'" in job["if"]
+    assert "inputs.staging_stop_start_ack == 'staging-stop-start-authorized'" in job["if"]
     assert job["environment"]["name"] == "batumi-staging"
     assert job["timeout-minutes"] == "20"
     assert workflow["concurrency"] == {
@@ -246,3 +252,15 @@ def test_staging_diagnostic_workflow_has_no_remote_privileged_logic_or_raw_logs(
         assert value not in raw
     assert "/home/hermes-staging/.hermes-staging" not in raw
     assert "DEPLOY_ROOT" not in raw
+
+
+def test_staging_diagnostic_docs_require_explicit_stop_start_ack() -> None:
+    docs = [
+        REPO / "docs" / "operations" / "docker-compose-cd.md",
+        REPO / "docs" / "operations" / "hermes-staging-promotion-gates.md",
+    ]
+    for path in docs:
+        raw = path.read_text()
+        assert "activation_ack" not in raw
+        assert "staging_stop_start_ack=staging-stop-start-authorized" in raw
+        assert "stop/start" in raw

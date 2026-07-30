@@ -227,7 +227,9 @@ explicit sudo authorization; no-mutation request rejection; crash/reboot
 restore canaries for every durable state; one 60-second live diagnostic gate;
 and only then workflow activation. Activation requires both the default-off
 `HERMES_STAGING_DIAGNOSTICS_ENABLED=true` environment variable and a per-run
-`activation_ack=enabled`. The workflow supplies bounded JSON on stdin
+`staging_stop_start_ack=staging-stop-start-authorized`, which explicitly
+authorizes controlled staging gateway stop/start transitions to enable and
+restore diagnostics. The workflow supplies bounded JSON on stdin
 to one exact no-argument sudo command. It cannot select paths, commands,
 container/image identity, recovery mode, or an unbounded duration.
 

@@ -1,4 +1,4 @@
-name: Observe Telegram socket ownership on staging
+name: Cycle staging gateway and observe Telegram socket ownership
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       observation_seconds:
-        description: Bounded diagnostic observation window
+        description: Observation window between controlled staging gateway stop/start transitions
         required: true
         default: "90"
         type: choice
@@ -16,14 +16,14 @@ on:
           - "60"
           - "90"
           - "120"
-      activation_ack:
-        description: Explicit activation acknowledgement (must be enabled)
+      staging_stop_start_ack:
+        description: Authorizes controlled staging gateway stop/start to enable and restore diagnostics
         required: true
-        default: disabled
+        default: not-authorized
         type: choice
         options:
-          - disabled
-          - enabled
+          - not-authorized
+          - staging-stop-start-authorized
 
 permissions:
   contents: read
@@ -34,10 +34,10 @@ concurrency:
 
 jobs:
   observe:
-    name: Enable, observe, and restore
+    name: Stop/start staging, observe, and restore
     if: >-
       vars.HERMES_STAGING_DIAGNOSTICS_ENABLED == 'true' &&
-      inputs.activation_ack == 'enabled' &&
+      inputs.staging_stop_start_ack == 'staging-stop-start-authorized' &&
       github.repository == 'batumilove/hermes-agent' &&
       github.ref == 'refs/heads/batumi/live'
     runs-on: ubuntu-latest

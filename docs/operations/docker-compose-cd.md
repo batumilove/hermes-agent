@@ -263,7 +263,9 @@ Rollout is intentionally split and fail-closed:
 7. Run one 60-second live gate and verify only bounded aggregate evidence is
    returned. Activate the workflow only after all earlier gates pass by setting
    `HERMES_STAGING_DIAGNOSTICS_ENABLED=true`; each dispatch must separately set
-   `activation_ack=enabled` and remain bound to the exact deployed source SHA.
+   `staging_stop_start_ack=staging-stop-start-authorized`, explicitly authorizing
+   controlled staging gateway stop/start transitions to enable and restore
+   diagnostics, and remain bound to the exact deployed source SHA.
 
 **Security boundary:** this correctness helper does not create least privilege.
 `hermes-deploy` Docker-group membership remains root-equivalent, so privilege
