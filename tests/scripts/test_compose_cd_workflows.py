@@ -185,9 +185,30 @@ def test_staging_diagnostic_workflow_delegates_exact_bounded_json_only() -> None
         "vars.HERMES_STAGING_DIAGNOSTICS_ENABLED == 'true' && "
         "inputs.activation_ack == 'enabled' && "
         "github.repository == 'batumilove/hermes-agent' && "
-        "github.ref == 'refs/heads/batumi/live' && "
-        "github.sha == inputs.expected_source_sha"
+        "github.ref == 'refs/heads/batumi/live'"
     )
+    assert "github.sha == inputs.expected_source_sha" not in job["if"]
+
+    steps = job["steps"]
+    checkout = next(
+        step for step in steps if step["name"] == "Check out protected deployment history"
+    )
+    verify_source = next(
+        step for step in steps
+        if step["name"] == "Require deployed source to be contained in batumi/live"
+    )
+    join_tailnet = next(step for step in steps if step["name"] == "Join the deployment tailnet")
+    assert checkout["uses"] == (
+        "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
+    )
+    assert checkout["with"] == {
+        "ref": "batumi/live",
+        "fetch-depth": "0",
+        "persist-credentials": "false",
+    }
+    assert 'git cat-file -e "$EXPECTED_SOURCE_SHA^{commit}"' in verify_source["run"]
+    assert 'git merge-base --is-ancestor "$EXPECTED_SOURCE_SHA" HEAD' in verify_source["run"]
+    assert steps.index(checkout) < steps.index(verify_source) < steps.index(join_tailnet)
     assert workflow["on"]["workflow_dispatch"]["inputs"]["activation_ack"] == {
         "description": "Explicit activation acknowledgement (must be enabled)",
         "required": "true",

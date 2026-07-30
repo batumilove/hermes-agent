@@ -39,8 +39,7 @@ jobs:
       vars.HERMES_STAGING_DIAGNOSTICS_ENABLED == 'true' &&
       inputs.activation_ack == 'enabled' &&
       github.repository == 'batumilove/hermes-agent' &&
-      github.ref == 'refs/heads/batumi/live' &&
-      github.sha == inputs.expected_source_sha
+      github.ref == 'refs/heads/batumi/live'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment:
@@ -62,6 +61,20 @@ jobs:
           [[ "$DEPLOY_HOST" == hermes-staging-01 ]]
           [[ "$DEPLOY_USER" == hermes-deploy ]]
           [[ "$TAILSCALE_TAGS" =~ ^tag:[A-Za-z0-9,_:-]+$ ]]
+
+      - name: Check out protected deployment history
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: batumi/live
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require deployed source to be contained in batumi/live
+        shell: bash
+        run: |
+          set -euo pipefail
+          git cat-file -e "$EXPECTED_SOURCE_SHA^{commit}"
+          git merge-base --is-ancestor "$EXPECTED_SOURCE_SHA" HEAD
 
       - name: Join the deployment tailnet
         uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3
