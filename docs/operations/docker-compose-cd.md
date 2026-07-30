@@ -277,3 +277,57 @@ Rollback order: revoke the diagnostic sudoers rule first; preserve recovery
 until every transaction is `RESTORED` or safely `ABORTED`; force and verify exact restoration; revert
 the workflow; then disable/remove the timer, service, and helper. Never restore
 Docker-group membership as a rollback convenience.
+
+## Staging provider-telemetry promotion
+
+`.github/workflows/staging-provider-telemetry-deploy.yml` is the only supported
+automated path for promoting the private `infra-ops` provider-telemetry
+integration. It is manual, staging-only, serialized, attached to the
+`batumi-staging` environment, and disabled unless all of these environment
+variables are configured:
+
+- `HERMES_STAGING_TELEMETRY_DEPLOY_ENABLED=true`
+- `HERMES_STAGING_TELEMETRY_APPROVED_SHA=<exact reviewed infra-ops commit>`
+- `HERMES_STAGING_TELEMETRY_APPROVED_TREE=<exact reviewed infra-ops tree>`
+
+Each dispatch must provide the same exact commit/tree, the exact Hermes source
+SHA already running in staging, and `activation_ack=enabled`. The workflow
+checks out the private source with an `INFRA_OPS_READ_KEY` GitHub deploy key
+registered read-only on `batumilove/infra-ops`. The private key exists only in
+the `batumi-staging` environment; do not substitute a personal token.
+
+Required `batumi-staging` secrets:
+
+- `DEPLOY_SSH_KEY` and `DEPLOY_KNOWN_HOSTS` for
+  `hermes-deploy@hermes-staging-01`
+- `MONITORING_DEPLOY_SSH_KEY` and `MONITORING_KNOWN_HOSTS` for
+  `ubuntu@monitoring-vm`
+- `INFRA_OPS_READ_KEY` (the private half of a read-only GitHub deploy key
+  registered only on `batumilove/infra-ops`)
+- the existing scoped Tailscale credential
+
+The transaction verifies the private Git commit and tree, creates a manifest
+for exactly two plugin files and one Prometheus rule file, and transfers only
+those files. On the Hermes host it verifies the running source SHA and fixed
+`/opt/data` bind mount, captures all existing counters, stops only the main
+Hermes service under s6, swaps the plugin directory, restarts, and requires:
+
+- healthy gateway and `hermes_provider_telemetry_up 1`
+- exact installed plugin hashes
+- a live PID holding the mode-`0600` writer lock
+- no disappeared or decreased persisted counter series
+
+On `monitoring-vm`, the candidate is checked with the live container's
+`promtool` before atomic installation, Prometheus is reloaded, and the rules
+API must expose exactly one `HermesProviderTelemetryCounterRegression` rule.
+Backups live outside the active rule glob. Any later-stage failure rolls back
+the earlier stage; a failed rollback exits distinctly with
+`ROLLBACK_FAILED` and requires manual recovery. Preserve transaction backups
+until the observation window closes.
+
+**Security boundary:** the staging identity remains Docker-group/root-equivalent
+and the monitoring identity uses passwordless sudo. Environment approval,
+immutable source checks, strict host-key verification, fixed destinations, and
+reviewed scripts constrain the workflow but do not turn those credentials into
+least-privilege identities. A future helper/forced-command migration is a
+separate hardening change.

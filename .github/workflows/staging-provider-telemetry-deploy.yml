@@ -1,0 +1,257 @@
+name: Deploy provider telemetry to staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      infra_ops_sha:
+        description: Approved exact infra-ops commit SHA
+        required: true
+        type: string
+      infra_ops_tree:
+        description: Approved exact infra-ops tree SHA
+        required: true
+        type: string
+      expected_hermes_source_sha:
+        description: Exact Hermes source SHA currently deployed to batumi-staging
+        required: true
+        type: string
+      activation_ack:
+        description: Explicit deployment acknowledgement (must be enabled)
+        required: true
+        default: disabled
+        type: choice
+        options:
+          - disabled
+          - enabled
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hermes-staging-provider-telemetry-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Back up, deploy, and verify staging telemetry
+    if: >-
+      vars.HERMES_STAGING_TELEMETRY_DEPLOY_ENABLED == 'true' &&
+      inputs.activation_ack == 'enabled' &&
+      github.repository == 'batumilove/hermes-agent' &&
+      github.ref == 'refs/heads/batumi/live' &&
+      inputs.infra_ops_sha == vars.HERMES_STAGING_TELEMETRY_APPROVED_SHA &&
+      inputs.infra_ops_tree == vars.HERMES_STAGING_TELEMETRY_APPROVED_TREE
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: batumi-staging
+    env:
+      INFRA_OPS_SHA: ${{ inputs.infra_ops_sha }}
+      INFRA_OPS_TREE: ${{ inputs.infra_ops_tree }}
+      EXPECTED_HERMES_SOURCE_SHA: ${{ inputs.expected_hermes_source_sha }}
+      HERMES_HOST: hermes-staging-01
+      HERMES_USER: hermes-deploy
+      MONITORING_HOST: monitoring-vm
+      MONITORING_USER: ubuntu
+      TAILSCALE_TAGS: ${{ vars.TAILSCALE_TAGS }}
+
+    steps:
+      - name: Validate fixed staging inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$INFRA_OPS_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$INFRA_OPS_TREE" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_HERMES_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$HERMES_HOST" == hermes-staging-01 ]]
+          [[ "$HERMES_USER" == hermes-deploy ]]
+          [[ "$MONITORING_HOST" == monitoring-vm ]]
+          [[ "$MONITORING_USER" == ubuntu ]]
+          [[ "$TAILSCALE_TAGS" =~ ^tag:[A-Za-z0-9,_:-]+$ ]]
+
+      - name: Check out deployment tooling
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: hermes-agent
+          persist-credentials: false
+
+      - name: Check out exact infra-ops source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: batumilove/infra-ops
+          ref: ${{ inputs.infra_ops_sha }}
+          path: infra-ops
+          ssh-key: ${{ secrets.INFRA_OPS_READ_KEY }}
+          ssh-strict: true
+          persist-credentials: false
+
+      - name: Verify immutable source and candidate manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual_commit=$(git -C infra-ops rev-parse 'HEAD^{commit}')
+          actual_tree=$(git -C infra-ops rev-parse 'HEAD^{tree}')
+          [[ "$actual_commit" == "$INFRA_OPS_SHA" ]]
+          [[ "$actual_tree" == "$INFRA_OPS_TREE" ]]
+
+          candidate="$RUNNER_TEMP/telemetry-candidate"
+          install -m 0700 -d "$candidate/plugin" "$candidate/prometheus"
+          install -m 0600 \
+            infra-ops/integrations/hermes-provider-telemetry/plugin/__init__.py \
+            "$candidate/plugin/__init__.py"
+          install -m 0600 \
+            infra-ops/integrations/hermes-provider-telemetry/plugin/plugin.yaml \
+            "$candidate/plugin/plugin.yaml"
+          install -m 0600 \
+            infra-ops/integrations/hermes-provider-telemetry/prometheus/hermes_provider_telemetry.rules.yml \
+            "$candidate/prometheus/hermes_provider_telemetry.rules.yml"
+          (
+            cd "$candidate"
+            sha256sum \
+              plugin/__init__.py \
+              plugin/plugin.yaml \
+              prometheus/hermes_provider_telemetry.rules.yml \
+              > manifest.sha256
+            sha256sum -c manifest.sha256
+          )
+
+      - name: Join the deployment tailnet
+        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+          oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
+          tags: ${{ env.TAILSCALE_TAGS }}
+          hostname: gha-hermes-staging-telemetry-${{ github.run_id }}
+
+      - name: Configure separate pinned SSH identities
+        shell: bash
+        env:
+          HERMES_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HERMES_SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          MONITORING_SSH_PRIVATE_KEY: ${{ secrets.MONITORING_DEPLOY_SSH_KEY }}
+          MONITORING_SSH_KNOWN_HOSTS: ${{ secrets.MONITORING_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -m 0700 -d "$HOME/.ssh"
+          printf '%s\n' "$HERMES_SSH_PRIVATE_KEY" > "$HOME/.ssh/hermes_deploy_key"
+          printf '%s\n' "$HERMES_SSH_KNOWN_HOSTS" > "$HOME/.ssh/hermes_known_hosts"
+          printf '%s\n' "$MONITORING_SSH_PRIVATE_KEY" > "$HOME/.ssh/monitoring_deploy_key"
+          printf '%s\n' "$MONITORING_SSH_KNOWN_HOSTS" > "$HOME/.ssh/monitoring_known_hosts"
+          chmod 0600 "$HOME/.ssh/hermes_deploy_key" "$HOME/.ssh/hermes_known_hosts"
+          chmod 0600 "$HOME/.ssh/monitoring_deploy_key" "$HOME/.ssh/monitoring_known_hosts"
+          [[ -s "$HOME/.ssh/hermes_deploy_key" && -s "$HOME/.ssh/hermes_known_hosts" ]]
+          [[ -s "$HOME/.ssh/monitoring_deploy_key" && -s "$HOME/.ssh/monitoring_known_hosts" ]]
+
+      - name: Apply staging telemetry transaction
+        shell: bash
+        run: |
+          set -euo pipefail
+          txn="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          candidate="$RUNNER_TEMP/telemetry-candidate"
+          hermes_remote="/opt/hermes-compose/staging/.incoming-telemetry-$txn"
+          monitoring_remote="/tmp/hermes-telemetry-$txn"
+          hermes_target="${HERMES_USER}@${HERMES_HOST}"
+          monitoring_target="${MONITORING_USER}@${MONITORING_HOST}"
+          hermes_applied=0
+          monitoring_applied=0
+
+          common_opts=(
+            -F /dev/null
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o GlobalKnownHostsFile=/dev/null
+            -o PasswordAuthentication=no
+            -o KbdInteractiveAuthentication=no
+            -o ChallengeResponseAuthentication=no
+            -o PreferredAuthentications=publickey
+            -o PubkeyAuthentication=yes
+            -o NumberOfPasswordPrompts=0
+            -o ConnectTimeout=15
+          )
+          hermes_opts=(
+            "${common_opts[@]}"
+            -i "$HOME/.ssh/hermes_deploy_key"
+            -o "UserKnownHostsFile=$HOME/.ssh/hermes_known_hosts"
+          )
+          monitoring_opts=(
+            "${common_opts[@]}"
+            -i "$HOME/.ssh/monitoring_deploy_key"
+            -o "UserKnownHostsFile=$HOME/.ssh/monitoring_known_hosts"
+          )
+
+          cleanup() {
+            # shellcheck disable=SC2029
+            ssh "${hermes_opts[@]}" "$hermes_target" "rm -rf -- '$hermes_remote'" >/dev/null 2>&1 || true
+            # shellcheck disable=SC2029
+            ssh "${monitoring_opts[@]}" "$monitoring_target" "rm -rf -- '$monitoring_remote'" >/dev/null 2>&1 || true
+          }
+          rollback() {
+            rc=$?
+            rollback_failed=0
+            trap - ERR
+            if [[ $monitoring_applied == 1 ]]; then
+              # shellcheck disable=SC2029
+              ssh "${monitoring_opts[@]}" "$monitoring_target" \
+                'sudo -n bash -s -- rollback' "$txn" \
+                < hermes-agent/scripts/deploy/prometheus-staging-provider-telemetry.sh || rollback_failed=1
+            fi
+            if [[ $hermes_applied == 1 ]]; then
+              # shellcheck disable=SC2029
+              ssh "${hermes_opts[@]}" "$hermes_target" \
+                'bash -s -- rollback' "$txn" "$EXPECTED_HERMES_SOURCE_SHA" \
+                < hermes-agent/scripts/deploy/hermes-staging-provider-telemetry.sh || rollback_failed=1
+            fi
+            cleanup
+            if [[ $rollback_failed == 1 ]]; then
+              echo 'ERROR: ROLLBACK_FAILED; manual recovery required' >&2
+              exit 70
+            fi
+            exit "$rc"
+          }
+          trap rollback ERR
+          trap cleanup EXIT
+
+          # shellcheck disable=SC2029
+          ssh "${hermes_opts[@]}" "$hermes_target" \
+            "install -d -m 0700 -- '$hermes_remote' '$hermes_remote/plugin'"
+          # shellcheck disable=SC2029
+          ssh "${monitoring_opts[@]}" "$monitoring_target" \
+            "install -d -m 0700 -- '$monitoring_remote' '$monitoring_remote/prometheus'"
+          scp "${hermes_opts[@]}" \
+            "$candidate/plugin/__init__.py" \
+            "$candidate/plugin/plugin.yaml" \
+            "$hermes_target:$hermes_remote/plugin/"
+          scp "${hermes_opts[@]}" \
+            "$candidate/manifest.sha256" \
+            "$hermes_target:$hermes_remote/manifest.sha256"
+          scp "${monitoring_opts[@]}" \
+            "$candidate/prometheus/hermes_provider_telemetry.rules.yml" \
+            "$monitoring_target:$monitoring_remote/prometheus/hermes_provider_telemetry.rules.yml"
+          scp "${monitoring_opts[@]}" \
+            "$candidate/manifest.sha256" \
+            "$monitoring_target:$monitoring_remote/manifest.sha256"
+
+          hermes_applied=1
+          # shellcheck disable=SC2029
+          ssh "${hermes_opts[@]}" "$hermes_target" \
+            'bash -s -- deploy' "$txn" "$EXPECTED_HERMES_SOURCE_SHA" "$hermes_remote" \
+            < hermes-agent/scripts/deploy/hermes-staging-provider-telemetry.sh
+
+          monitoring_applied=1
+          # shellcheck disable=SC2029
+          ssh "${monitoring_opts[@]}" "$monitoring_target" \
+            'sudo -n bash -s -- deploy' "$txn" "$monitoring_remote" \
+            < hermes-agent/scripts/deploy/prometheus-staging-provider-telemetry.sh
+
+          # shellcheck disable=SC2029
+          ssh "${hermes_opts[@]}" "$hermes_target" \
+            'bash -s -- verify' "$txn" "$EXPECTED_HERMES_SOURCE_SHA" \
+            < hermes-agent/scripts/deploy/hermes-staging-provider-telemetry.sh
+          # shellcheck disable=SC2029
+          ssh "${monitoring_opts[@]}" "$monitoring_target" \
+            'sudo -n bash -s -- verify' "$txn" \
+            < hermes-agent/scripts/deploy/prometheus-staging-provider-telemetry.sh
+
+          trap - ERR
