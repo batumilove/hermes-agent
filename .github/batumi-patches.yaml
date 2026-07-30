@@ -113,7 +113,7 @@ patches:
     paths:
       - cron/scheduler.py
       - gateway/delivery.py
-      - hermes_cli/config.py
+      - hermes_cli/config_defaults.py
       - plugins/platforms/telegram/adapter.py
       - tests/gateway/test_ephemeral_telegram_topics.py
     tests:

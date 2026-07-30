@@ -11,7 +11,7 @@ from typing import Any, Callable
 EnvironmentFactory = Callable[..., Any]
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 _RESERVED_BACKENDS = frozenset(
-    {"daytona", "docker", "local", "modal", "singularity", "ssh"}
+    {"daytona", "docker", "local", "modal", "singularity", "ssh", "vercel_sandbox"}
 )
 
 
