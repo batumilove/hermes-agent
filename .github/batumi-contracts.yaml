@@ -83,6 +83,7 @@ contracts:
     serial: true
     tests:
       - tests/hermes_cli/test_update_check.py
+      - tests/hermes_cli/test_update_eol_churn.py
       - tests/test_install_diverged_update.py
       - tests/docker/test_container_restart.py
       - tests/docker/test_gateway_run_supervised.py

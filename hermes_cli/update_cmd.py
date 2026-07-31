@@ -3073,14 +3073,35 @@ def _normalize_managed_eol(git_cmd, repo_root):
     probe = git_cmd + ["-c", "core.autocrlf=false"]
 
     def _dirty(*extra):
+        # A checkout can leave index stat data matching the rewritten CRLF
+        # files. Force Git to reconsider it under the prospective config before
+        # asking for content differences, or a busy checkout may be only partly
+        # detected.
+        subprocess.run(
+            probe + ["update-index", "-q", "--really-refresh"],
+            cwd=repo_root,
+            capture_output=True,
+            check=False,
+        )
+        ignore_eol = "--ignore-cr-at-eol" in extra
+        output_mode = ["--numstat", "--no-renames"] if ignore_eol else ["--name-only"]
         out = subprocess.run(
-            probe + ["diff", "-z", "--name-only", *extra],
+            probe + ["diff", "-z", *output_mode, *extra],
             cwd=repo_root,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
         )
         if out.returncode != 0:
             return None
+        if ignore_eol:
+            # --name-only reports a path even when --ignore-cr-at-eol removes
+            # every hunk. Numstat omits those paths; --no-renames keeps each
+            # NUL record in the stable added<TAB>deleted<TAB>path shape.
+            return {
+                fields[2]
+                for record in out.stdout.split("\0")
+                if record and len(fields := record.split("\t", 2)) == 3
+            }
         return {p for p in out.stdout.split("\0") if p}
 
     def _eol_only():

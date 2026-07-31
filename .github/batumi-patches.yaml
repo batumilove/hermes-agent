@@ -36,6 +36,18 @@ patches:
       - scripts/run_tests.sh tests/scripts/test_check_fork_delta.py tests/scripts/test_ci_workflow.py tests/scripts/test_install_batumi_components.py tests/scripts/test_upstream_sync_workflow.py
     retirement: Retain while batumi/live carries any fork-only patch.
 
+  - id: safe-update-eol-normalization
+    kind: core
+    rationale: >-
+      Force Git to invalidate checkout stat data before classifying CRLF-only
+      churn so managed updates cannot miss part of a large rewritten tree.
+    paths:
+      - hermes_cli/update_cmd.py
+      - tests/hermes_cli/test_update_eol_churn.py
+    tests:
+      - scripts/run_tests.sh tests/hermes_cli/test_update_eol_churn.py
+    retirement: Remove when upstream forces an equivalent index refresh before EOL classification.
+
   - id: plugin-environment-backends
     kind: core
     rationale: >-
