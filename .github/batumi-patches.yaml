@@ -105,6 +105,19 @@ patches:
       - scripts/run_tests.sh tests/cron/test_scheduler.py
     retirement: Remove when upstream no-agent deliveries remain verbatim by default.
 
+  - id: honcho-connection-lifecycle
+    kind: core
+    rationale: >-
+      Close replaced and reset Honcho clients deterministically, and disable
+      idle keepalive so peer-closed HTTP connections are not retained between
+      intermittent memory operations.
+    paths:
+      - plugins/memory/honcho/client.py
+      - tests/honcho_plugin/test_connection_lifecycle.py
+    tests:
+      - scripts/run_tests.sh tests/honcho_plugin/test_connection_lifecycle.py tests/honcho_plugin/test_client.py
+    retirement: Remove when upstream owns injected Honcho clients and passes the same reset, replacement, and no-idle-pool contracts.
+
   - id: cron-ephemeral-telegram-topics
     kind: core
     rationale: >-

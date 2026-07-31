@@ -24,6 +24,12 @@ contracts:
       - tests/test_plugin_skills.py
       - tests/tools/test_environment_registry.py
 
+  - id: honcho
+    rationale: Preserve deterministic HTTP connection cleanup for memory operations.
+    tests:
+      - tests/honcho_plugin/test_connection_lifecycle.py
+      - tests/honcho_plugin/test_client.py
+
   - id: telegram
     rationale: Preserve cancellation, topic routing, reconnect, and delivery behavior.
     tests:
