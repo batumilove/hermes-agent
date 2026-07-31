@@ -16,6 +16,7 @@ Key design decisions:
 
 import asyncio
 import atexit
+import itertools
 import json
 import logging
 import os
@@ -78,6 +79,8 @@ except ImportError:  # pragma: no cover - stripped/scaffold installs only
     psutil = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
+
+_SESSION_DB_INSTANCE_IDS = itertools.count(1)
 
 _COMPRESSION_LOCK_HOLDER_PID_RE = re.compile(r"(?:^|:)pid=(\d+)(?::|$)")
 
@@ -1792,6 +1795,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     _WRITE_RETRY_SLOW_AFTER_S = 2.0
     _WRITE_RETRY_SLOW_MIN_S = 0.250  # 250ms
     _WRITE_RETRY_SLOW_MAX_S = 1.000  # 1s
+    _SLOW_WRITE_WARN_S = 1.0
+    _SLOW_LOCK_WAIT_WARN_S = 0.25
     # Attempt a WAL checkpoint every N successful writes (PASSIVE mode).
     _CHECKPOINT_EVERY_N_WRITES = 50
     # Retain the existing coarse 1000-write maintenance cadence, but replace
@@ -1824,6 +1829,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self.read_only = read_only
 
         self._lock = threading.Lock()
+        self._write_diag_lock = threading.Lock()
+        self._write_waiter_count = 0
+        self._write_owner_operation: Optional[str] = None
+        self._write_owner_started: Optional[float] = None
+        self._write_owner_generation = 0
+        self._write_last_owner_operation: Optional[str] = None
+        self._write_instance_id = f"{next(_SESSION_DB_INSTANCE_IDS):x}"
         # Read-path split (WAL only): recall/browse queries run on per-thread
         # read-only connections so they never queue behind writer flushes on
         # self._lock. See _read_ctx().
@@ -2368,10 +2380,70 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 self._warn_fts5_unavailable(exc)
             return False
 
+    @contextmanager
+    def _attributed_write_lock(self, operation_label: str):
+        """Hold the writer lock and expose bounded instance-local attribution."""
+        wait_started = time.monotonic()
+        with self._write_diag_lock:
+            self._write_waiter_count += 1
+            queue_depth = self._write_waiter_count
+            owner_operation = self._write_owner_operation or "-"
+            owner_generation = self._write_owner_generation
+            owner_age_s = (
+                max(0.0, wait_started - self._write_owner_started)
+                if self._write_owner_started is not None
+                else 0.0
+            )
+
+        acquired = False
+        try:
+            with self._lock:
+                acquired = True
+                lock_wait = time.monotonic() - wait_started
+                with self._write_diag_lock:
+                    self._write_waiter_count -= 1
+                    owner_transitions = self._write_owner_generation - owner_generation
+                    last_owner_operation = (
+                        self._write_last_owner_operation
+                        if owner_transitions > 0
+                        else None
+                    ) or "-"
+                    if owner_operation != "-" or owner_transitions > 0:
+                        lock_holder = "attributed"
+                    elif lock_wait >= 0.001:
+                        lock_holder = "unattributed"
+                    else:
+                        lock_holder = "none"
+                    self._write_owner_generation += 1
+                    self._write_last_owner_operation = operation_label
+                    self._write_owner_operation = operation_label
+                    self._write_owner_started = time.monotonic()
+                try:
+                    yield (
+                        lock_wait,
+                        queue_depth,
+                        owner_operation,
+                        owner_age_s,
+                        owner_transitions,
+                        last_owner_operation,
+                        lock_holder,
+                    )
+                finally:
+                    with self._write_diag_lock:
+                        self._write_owner_operation = None
+                        self._write_owner_started = None
+        finally:
+            if not acquired:
+                with self._write_diag_lock:
+                    self._write_waiter_count -= 1
+
     def _execute_write(
         self,
         fn: Callable[[sqlite3.Connection], T],
         patience_s: Optional[float] = None,
+        *,
+        operation: Optional[str] = None,
+        items: Optional[int] = None,
     ) -> T:
         """Execute a write transaction with BEGIN IMMEDIATE and jitter retry.
 
@@ -2399,20 +2471,85 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         if patience_s is None:
             patience_s = self._WRITE_PATIENCE_S
+        caller_name = getattr(fn, "__name__", type(fn).__name__)
+        if operation is None and caller_name == "_do":
+            qualname = getattr(fn, "__qualname__", "")
+            enclosing = qualname.rsplit(".<locals>.", 1)[0]
+            inferred_operation = enclosing.rsplit(".", 1)[-1] if enclosing else caller_name
+        else:
+            inferred_operation = caller_name
+        operation_name = str(operation or inferred_operation)
+        operation_label = re.sub(r"[\r\n\t]+", " ", operation_name)[:96]
         deadline = time.monotonic() + patience_s
+        attempt = 0
         while True:
             try:
-                with self._lock:
+                write_started = time.monotonic()
+                with self._attributed_write_lock(operation_label) as lock_diag:
+                    (
+                        lock_wait,
+                        queue_depth,
+                        owner_operation,
+                        owner_age_s,
+                        owner_transitions,
+                        last_owner_operation,
+                        lock_holder,
+                    ) = lock_diag
+                    if self._conn is None:
+                        raise RuntimeError("SessionDB is closed")
+                    transaction_started = time.monotonic()
+                    begin_started = time.monotonic()
                     self._conn.execute("BEGIN IMMEDIATE")
+                    begin_wait = time.monotonic() - begin_started
                     try:
+                        callback_started = time.monotonic()
                         result = fn(self._conn)
+                        callback_time = time.monotonic() - callback_started
+                        commit_started = time.monotonic()
                         self._conn.commit()
+                        commit_time = time.monotonic() - commit_started
+                        transaction_time = time.monotonic() - transaction_started
                     except BaseException:
                         try:
                             self._conn.rollback()
                         except Exception:
                             pass
                         raise
+                total_time = time.monotonic() - write_started
+                if (
+                    lock_wait >= self._SLOW_LOCK_WAIT_WARN_S
+                    or total_time >= self._SLOW_WRITE_WARN_S
+                ):
+                    logger.warning(
+                        "SessionDB write latency: caller=%s operation=%s "
+                        "items=%s outcome=write lock_wait=%.3fs "
+                        "begin_wait=%.3fs callback=%.3fs commit=%.3fs "
+                        "txn=%.3fs total=%.3fs attempt=%d pid=%d "
+                        "thread_id=%d db_instance=%s instance_queue_depth=%d "
+                        "instance_owner_operation=%s instance_owner_age_s=%.3f "
+                        "instance_owner_transitions=%d "
+                        "instance_last_owner_operation=%s "
+                        "instance_lock_holder=%s",
+                        caller_name,
+                        operation_label,
+                        items if items is not None else "-",
+                        lock_wait,
+                        begin_wait,
+                        callback_time,
+                        commit_time,
+                        transaction_time,
+                        total_time,
+                        attempt + 1,
+                        os.getpid(),
+                        threading.get_ident(),
+                        self._write_instance_id,
+                        queue_depth,
+                        owner_operation,
+                        owner_age_s,
+                        owner_transitions,
+                        last_owner_operation,
+                        lock_holder,
+                    )
                 # Success — periodic best-effort checkpoint + FTS merge.
                 self._write_count += 1
                 if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
@@ -2438,6 +2575,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                             )
                         # Never overshoot the deadline by a full slow-jitter.
                         time.sleep(min(jitter, max(deadline - now, 0.001)))
+                        attempt += 1
                         continue
                     # Patience exhausted — say what actually happened so the
                     # surfaced error doesn't read as disk/permission damage.
@@ -6059,7 +6197,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 (total_messages, total_tool_calls, session_id),
             )
 
-        self._execute_write(_do)
+        self._execute_write(
+            _do,
+            operation="replace_messages",
+            items=len(messages),
+        )
 
     def has_archived_messages(self, session_id: str) -> bool:
         """Return True if the session has any soft-archived (``active = 0``) rows.
