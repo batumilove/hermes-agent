@@ -133,6 +133,21 @@ patches:
       - scripts/run_tests.sh tests/honcho_plugin/test_connection_lifecycle.py tests/honcho_plugin/test_client.py
     retirement: Remove when upstream owns injected Honcho clients and passes the same reset, replacement, and no-idle-pool contracts.
 
+  - id: honcho-operational-monitoring
+    kind: operations
+    rationale: >-
+      Preserve the production Honcho health monitor and queue diagnostic used
+      by Hermes cron, together with their fail-closed behavior contracts.
+    paths:
+      - hermes_cli/honcho_monitor.py
+      - hermes_cli/honcho_queue_diagnostic.py
+      - scripts/honcho_monitor.py
+      - tests/hermes_cli/test_honcho_monitor.py
+      - tests/hermes_cli/test_honcho_queue_diagnostic.py
+    tests:
+      - scripts/run_tests.sh tests/hermes_cli/test_honcho_monitor.py tests/hermes_cli/test_honcho_queue_diagnostic.py
+    retirement: Remove when the live watchdog and diagnostics migrate to a durable operations package that no longer imports these modules.
+
   - id: cron-ephemeral-telegram-topics
     kind: core
     rationale: >-
