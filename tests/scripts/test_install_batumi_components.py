@@ -65,6 +65,19 @@ def test_operational_workflows_use_the_locked_ops_commit() -> None:
         ]
         assert refs
         assert set(refs) == {ops_sha}
+        if workflow.name in {"deploy-compose.yml", "promote-compose.yml"}:
+            assert f"ops_sha: {ops_sha}" in text
+
+
+def test_manual_promotion_requires_exact_digest_for_rollback() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github" / "workflows" / "promote-compose.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    triggers = workflow.get("on", workflow.get(True))
+    image_digest = triggers["workflow_dispatch"]["inputs"]["image_digest"]
+    assert image_digest["required"] is True
 
 
 def test_deploy_workflow_allows_pre_cutover_candidate_dispatch() -> None:

@@ -12,8 +12,8 @@ on:
         type: choice
         options: [deploy, rollback]
       image_digest:
-        description: Immutable digest required for deploy
-        required: false
+        description: Exact immutable target digest for deploy or rollback
+        required: true
         type: string
       source_sha:
         description: Exact source commit represented by the digest
@@ -25,11 +25,11 @@ permissions:
 
 jobs:
   promote:
-    uses: batumilove/hermes-ops/.github/workflows/compose-deploy.yml@93b014d82872a66a58366989fc21f48624352f55
+    uses: batumilove/hermes-ops/.github/workflows/compose-deploy.yml@3f3c152a42b914eec347050edb56e111f7299c9f
     with:
       environment: ${{ inputs.environment }}
       operation: ${{ inputs.operation }}
       image_digest: ${{ inputs.image_digest }}
       source_sha: ${{ inputs.source_sha }}
-      ops_sha: 93b014d82872a66a58366989fc21f48624352f55
+      ops_sha: 3f3c152a42b914eec347050edb56e111f7299c9f
     secrets: inherit
