@@ -26,11 +26,12 @@ patches:
       - scripts/install_batumi_components.py
       - scripts/run_batumi_contracts.py
       - tests/scripts/test_check_fork_delta.py
+      - tests/scripts/test_ci_workflow.py
       - tests/scripts/test_install_batumi_components.py
       - tests/scripts/test_run_batumi_contracts.py
       - tests/scripts/test_upstream_sync_workflow.py
     tests:
-      - scripts/run_tests.sh tests/scripts/test_check_fork_delta.py tests/scripts/test_install_batumi_components.py tests/scripts/test_upstream_sync_workflow.py
+      - scripts/run_tests.sh tests/scripts/test_check_fork_delta.py tests/scripts/test_ci_workflow.py tests/scripts/test_install_batumi_components.py tests/scripts/test_upstream_sync_workflow.py
     retirement: Retain while batumi/live carries any fork-only patch.
 
   - id: plugin-environment-backends
