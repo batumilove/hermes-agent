@@ -105,6 +105,21 @@ patches:
       - scripts/run_tests.sh tests/test_session_db_write_latency_logging.py tests/state/test_write_lock_patience.py
     retirement: Remove when upstream provides equivalent privacy-bounded phase timing and lock-owner attribution for SessionDB writes.
 
+  - id: relay-scope-concurrency-lifecycle
+    kind: core
+    rationale: >-
+      Isolate persistent Relay turn, logical-call, and shared-metrics task scope
+      stacks so overlapping same-session work can finish out of order without
+      orphaning child scopes or blocking session finalization.
+    paths:
+      - agent/relay_llm.py
+      - agent/relay_runtime.py
+      - hermes_cli/observability/relay_shared_metrics.py
+      - tests/hermes_cli/test_relay_shared_metrics_runtime.py
+    tests:
+      - scripts/run_tests.sh tests/hermes_cli/test_relay_shared_metrics_runtime.py tests/hermes_cli/test_relay_shared_metrics.py tests/agent/test_relay_llm.py tests/agent/test_relay_tools.py tests/agent/test_auxiliary_relay.py
+    retirement: Remove when upstream isolates overlapping Relay scope lifetimes and passes the same real-binding out-of-order closure contracts.
+
   - id: plugin-environment-backends
     kind: core
     rationale: >-
