@@ -178,5 +178,65 @@ def test_final_response_fills_pure_tool_call_tail(monkeypatch):
     assert sum(1 for m in persisted if m.get("role") == "assistant") == 1
 
 
+def test_final_response_warns_on_unsupported_deployment_claim(monkeypatch):
+    """A fresh deployment claim without current-turn evidence must be qualified."""
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "deploy it"}]
+
+    result = finalize_turn(
+        agent,
+        final_response="Deployed to production, status: PASS",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="deploy it",
+        original_user_message="deploy it",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(final)",
+    )
+
+    assert "Side-effect evidence regulator" in result["final_response"]
+    assert agent.persisted_messages is not None
+    # Delivery-only advisory: do not poison durable model context with a
+    # synthetic warning that future turns could quote as if the model wrote it.
+    assert "Side-effect evidence regulator" not in agent.persisted_messages[-1]["content"]
+
+
+def test_transformed_deployment_claim_is_checked_after_plugin_hook(monkeypatch):
+    """A plugin cannot introduce an unchecked side-effect success claim."""
+
+    def invoke_hook(name, **_kwargs):
+        if name == "transform_llm_output":
+            return ["Deployed to production, status: PASS"]
+        return []
+
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", invoke_hook)
+    agent = FakeAgent()
+    result = finalize_turn(
+        agent,
+        final_response="Draft response.",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[{"role": "user", "content": "deploy it"}],
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="deploy it",
+        original_user_message="deploy it",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(final)",
+    )
+
+    assert result["final_response"].startswith("Deployed to production")
+    assert "Side-effect evidence regulator" in result["final_response"]
+    assert agent.persisted_messages is not None
+    assert agent.persisted_messages[-1]["content"] == "Draft response."
 
 

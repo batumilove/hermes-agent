@@ -511,6 +511,20 @@ def finalize_turn(
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
 
+    # Side-effect evidence verifier footer. Run after output transforms so a
+    # plugin cannot remove the warning or introduce an unchecked success claim.
+    # The durable transcript was persisted above, making this advisory
+    # delivery-only and keeping synthetic regulator text out of model context.
+    if final_response and not interrupted:
+        try:
+            from agent.side_effect_evidence import build_side_effect_evidence_footer
+
+            footer = build_side_effect_evidence_footer(messages, final_response)
+            if footer:
+                final_response = final_response.rstrip() + "\n\n" + footer
+        except Exception as _side_effect_err:
+            logger.debug("side-effect evidence verifier footer failed: %s", _side_effect_err)
+
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.
     # Plugins can use this to persist conversation data (e.g. sync
