@@ -1177,9 +1177,52 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
         if resolved_timeout is not None:
             kwargs["timeout"] = resolved_timeout
 
+        # Honcho's server may close an otherwise reusable HTTP/1.1 connection
+        # after the response has completed. A normal idle pool can retain that
+        # peer-FIN socket in CLOSE_WAIT until the next pool operation. Hermes
+        # calls Honcho intermittently, so disable idle keepalive for this client:
+        # each completed request closes its transport deterministically.
+        import httpx
+
+        owned_http_client = httpx.Client(
+            limits=httpx.Limits(
+                max_keepalive_connections=0,
+                max_connections=100,
+            ),
+            timeout=httpx.Timeout(resolved_timeout),
+        )
+        kwargs["http_client"] = owned_http_client
+
+        try:
+            client = Honcho(**kwargs)
+        except BaseException:
+            owned_http_client.close()
+            raise
+
+        # Honcho treats injected clients as caller-owned. Hermes created this
+        # one, so transfer ownership to the SDK wrapper used by our existing
+        # deterministic reset/replacement cleanup. If an SDK test double or a
+        # future SDK ignores the injection, close the unused client here.
+        http_wrapper = None
+        for state_name in ("__pydantic_private__", "__dict__"):
+            try:
+                state = object.__getattribute__(client, state_name)
+            except AttributeError:
+                continue
+            if isinstance(state, dict) and "_http" in state:
+                http_wrapper = state["_http"]
+                break
+        if (
+            http_wrapper is not None
+            and getattr(http_wrapper, "_client", None) is owned_http_client
+        ):
+            http_wrapper._owns_client = True
+        else:
+            owned_http_client.close()
+
         global _cached_timeout
         _cached_timeout = resolved_timeout
-        return Honcho(**kwargs)
+        return client
 
     return _honcho_client_slot.get(_build)
 
