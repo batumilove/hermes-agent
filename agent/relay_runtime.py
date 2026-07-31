@@ -473,7 +473,12 @@ class RelayTurnContext:
     turn_id: str
     task_id: str
     handle: Any = None
+    context: contextvars.Context | None = field(default=None, repr=False)
     logical_llm_calls: dict[str, Any] = field(default_factory=dict, repr=False)
+    logical_llm_contexts: dict[str, contextvars.Context] = field(
+        default_factory=dict,
+        repr=False,
+    )
     logical_llm_lock: threading.RLock = field(
         default_factory=threading.RLock,
         repr=False,
@@ -601,21 +606,28 @@ class RelaySessionCoordinator:
             raise RuntimeError("Hermes Relay conversation lease is released")
         turn = RelayTurnContext(lease=lease, turn_id=turn_id, task_id=task_id)
         if isinstance(lease.host, RelayRuntime) and lease.session is not None:
+            host = lease.host
+            session = lease.session
             try:
-                turn.handle = lease.host.run_in_session(
-                    lease.session,
-                    lease.host.relay.scope.push,
-                    TURN_SCOPE,
-                    lease.host.relay.ScopeType.Function,
-                    handle=lease.session.handle,
-                    input={},
-                    metadata={
-                        RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION,
-                        RUNTIME_INSTANCE_KEY: lease.host.runtime_id,
-                        "hermes.execution_surface": lease.platform or "unknown",
-                    },
-                )
+                turn.context = contextvars.Context()
+
+                def push_turn() -> Any:
+                    host.relay.get_scope_stack()
+                    return host.relay.scope.push(
+                        TURN_SCOPE,
+                        host.relay.ScopeType.Function,
+                        handle=session.handle,
+                        input={},
+                        metadata={
+                            RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION,
+                            RUNTIME_INSTANCE_KEY: host.runtime_id,
+                            "hermes.execution_surface": lease.platform or "unknown",
+                        },
+                    )
+
+                turn.handle = turn.context.run(push_turn)
             except Exception:
+                turn.context = None
                 logger.warning("Hermes Relay turn initialization failed", exc_info=True)
         turn._token = _CURRENT_TURN.set(turn)
         key = (lease.profile_key, lease.session_id)
@@ -639,10 +651,9 @@ class RelaySessionCoordinator:
             try:
                 if isinstance(lease.host, RelayRuntime) and lease.session is not None:
                     self._finish_logical_calls(turn, outcome=outcome)
-                    if turn.handle is not None:
+                    if turn.handle is not None and turn.context is not None:
                         try:
-                            lease.host.run_in_session(
-                                lease.session,
+                            turn.context.run(
                                 lease.host.relay.scope.pop,
                                 turn.handle,
                                 output={"outcome": outcome},
@@ -722,11 +733,15 @@ class RelaySessionCoordinator:
         with turn.logical_llm_lock:
             logical_calls = list(turn.logical_llm_calls.items())
             turn.logical_llm_calls.clear()
+            logical_contexts = dict(turn.logical_llm_contexts)
+            turn.logical_llm_contexts.clear()
         for index in range(len(logical_calls) - 1, -1, -1):
             request_id, logical_handle = logical_calls[index]
+            logical_context = logical_contexts.get(request_id)
+            if logical_context is None:
+                continue
             try:
-                lease.host.run_in_session(
-                    lease.session,
+                logical_context.run(
                     lease.host.relay.scope.pop,
                     logical_handle,
                     output={"outcome": outcome},
@@ -747,6 +762,12 @@ class RelaySessionCoordinator:
                             pending_request_id,
                             pending_handle,
                         )
+                        pending_context = logical_contexts.get(pending_request_id)
+                        if pending_context is not None:
+                            turn.logical_llm_contexts.setdefault(
+                                pending_request_id,
+                                pending_context,
+                            )
                 logger.warning(
                     "Hermes Relay logical LLM finalization failed",
                     exc_info=True,

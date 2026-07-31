@@ -171,7 +171,7 @@ class _Runtime:
             with session.lock:
                 if session.closing or session.relay_session.context is None:
                     return None
-                task_context = session.relay_session.context.copy()
+                task_context = contextvars.Context()
                 start_fields = task_start_fields(event)
                 active_turn = relay_runtime.active_turn(session.session_id)
                 parent_handle = session.relay_session.handle
@@ -591,8 +591,7 @@ class _Runtime:
             retry_count=task.retry_count,
         )
         try:
-            self._run_in_task(
-                task,
+            task.context.run(
                 self.relay.scope.pop,
                 task.handle,
                 output=fields,
