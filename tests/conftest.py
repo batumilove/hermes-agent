@@ -11,7 +11,10 @@ Hermetic-test invariants enforced here (see AGENTS.md for rationale):
    CI. Code using ``Path.home() / ".hermes"`` instead of the canonical
    ``get_hermes_home()`` is a bug to fix at the callsite.)
 3. **Deterministic runtime.** TZ=UTC, LANG=C.UTF-8, PYTHONHASHSEED=0.
-4. **No HERMES_SESSION_* inheritance** — the agent's current gateway
+4. **No reserved test-host DNS leakage.** Fixture endpoints such as
+   ``stub.invalid`` and ``custom.example.com`` fail locally before libc can
+   append an operator DNS search suffix and query production resolvers.
+5. **No HERMES_SESSION_* inheritance** — the agent's current gateway
    session must not leak into tests.
 
 These invariants make the local test run match CI closely. Gaps that
@@ -34,6 +37,12 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+from test_support.dns_guard import install_reserved_test_host_guard
+
+# Install before pytest imports test modules: collection-time constructors can
+# otherwise resolve fixture endpoints before any autouse fixture starts.
+install_reserved_test_host_guard()
 
 
 # ── Sandbox HERMES_HOME before ANY test module is imported ──────────────────
