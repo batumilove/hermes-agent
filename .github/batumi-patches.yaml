@@ -17,11 +17,13 @@ patches:
       - .github/batumi-components.lock.yaml
       - .github/upstream-base
       - .github/workflows/ci.yml
+      - .github/workflows/contributor-check.yml
       - .github/workflows/deploy-compose.yml
       - .github/workflows/promote-compose.yml
       - .github/workflows/stack-ci-shadow.yml
       - .github/workflows/staging-telegram-socket-diagnostics.yml
       - .github/workflows/upstream-sync.yml
+      - contributors/emails/hermes@local
       - scripts/check_fork_delta.py
       - scripts/install_batumi_components.py
       - scripts/run_batumi_contracts.py
