@@ -5507,6 +5507,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _loop_liveness_watchdog: Optional[Any] = None
     _gateway_started_at: float = 0.0
     _shutdown_watchdog_done: Optional["threading.Event"] = None
+    _systemd_timeout_stop_s: Optional[float] = None
     _platform_lock_takeover_on_start: bool = False
     _reconnect_watcher_task: Optional["asyncio.Task"] = None
 
@@ -9220,6 +9221,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _CLEANUP_TIMEOUT_S = 30.0
     _TOOL_SUBPROCESS_CLEANUP_TIMEOUT_S = 2.0
     _SHUTDOWN_TAIL_RESERVE_S = 10.0
+    _SYSTEMD_SHUTDOWN_MARGIN_S = 5.0
+
+    def _shutdown_watchdog_delay_secs(self) -> float:
+        """Return a hard-exit leash that precedes systemd's SIGKILL boundary."""
+        delay = resolve_shutdown_watchdog_delay(self._restart_drain_timeout)
+        timeout_stop = getattr(self, "_systemd_timeout_stop_s", None)
+        try:
+            timeout_stop = float(timeout_stop) if timeout_stop is not None else None
+        except (TypeError, ValueError):
+            timeout_stop = None
+        if timeout_stop is not None and timeout_stop > 0.0:
+            delay = min(
+                delay,
+                max(
+                    0.0,
+                    timeout_stop
+                    - getattr(
+                        self,
+                        "_SYSTEMD_SHUTDOWN_MARGIN_S",
+                        GatewayRunner._SYSTEMD_SHUTDOWN_MARGIN_S,
+                    ),
+                ),
+            )
+        return max(0.0, delay)
 
     @staticmethod
     def _shutdown_remaining(deadline: Optional[float]) -> float:
@@ -10393,6 +10418,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             from gateway.shutdown_forensics import check_systemd_timing_alignment
             _alignment = check_systemd_timing_alignment(self._restart_drain_timeout)
+            if _alignment is not None:
+                self._systemd_timeout_stop_s = _alignment.get("timeout_stop_sec")
             if _alignment is not None and _alignment.get("mismatch"):
                 logger.warning(
                     "Stale systemd unit detected: %s has TimeoutStopSec=%.0fs but "
@@ -12185,9 +12212,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "active_cron_jobs": self._active_cron_job_count(),
                     "active_api_runs": self._active_api_run_count(),
                     "restart_drain_timeout": self._restart_drain_timeout,
-                    "watchdog_delay_s": resolve_shutdown_watchdog_delay(
-                        self._restart_drain_timeout
-                    ),
+                    "watchdog_delay_s": GatewayRunner._shutdown_watchdog_delay_secs(self),
                     "phase_elapsed_s": (
                         time.monotonic() - started if started is not None else None
                     ),
@@ -12195,7 +12220,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if not os.environ.get("PYTEST_CURRENT_TEST"):
                 arm_shutdown_watchdog(
-                    resolve_shutdown_watchdog_delay(self._restart_drain_timeout),
+                    GatewayRunner._shutdown_watchdog_delay_secs(self),
                     done_event=_watchdog_done,
                     snapshot_fn=_shutdown_watchdog_snapshot,
                     exit_code=1,
@@ -12218,7 +12243,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _stop_started_at_box["t"] = _stop_started_at
             _cleanup_deadline = asyncio.get_running_loop().time() + max(
                 0.0,
-                resolve_shutdown_watchdog_delay(self._restart_drain_timeout)
+                GatewayRunner._shutdown_watchdog_delay_secs(self)
                 - getattr(
                     self,
                     "_SHUTDOWN_TAIL_RESERVE_S",
