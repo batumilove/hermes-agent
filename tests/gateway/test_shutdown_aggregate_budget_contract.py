@@ -59,6 +59,15 @@ def _configure_fast_forced_shutdown(runner, monkeypatch, active_agents):
     monkeypatch.setattr(browser_tool, "cleanup_all_browsers", lambda: None)
 
 
+def test_systemd_stop_timeout_caps_internal_shutdown_watchdog():
+    """The internal exit leash must fire before systemd's SIGKILL boundary."""
+    runner, _adapter = make_restart_runner()
+    runner._restart_drain_timeout = 60.0
+    runner._systemd_timeout_stop_s = 90.0
+
+    assert runner._shutdown_watchdog_delay_secs() == 85.0
+
+
 class _BlockingFlushAgent:
     session_id = "aggregate-budget-agent"
 
