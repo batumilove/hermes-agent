@@ -754,22 +754,27 @@ def _logical_parent(
         with turn.logical_llm_lock:
             handle = turn.logical_llm_calls.get(request_id)
             if handle is None:
-                handle = runtime.run_in_session(
-                    session,
-                    runtime.relay.scope.push,
-                    relay_runtime.LOGICAL_LLM_SCOPE,
-                    runtime.relay.ScopeType.Function,
-                    handle=parent,
-                    input={},
-                    metadata={
-                        relay_runtime.RUNTIME_SCHEMA_KEY: relay_runtime.RUNTIME_SCHEMA_VERSION,
-                        relay_runtime.RUNTIME_INSTANCE_KEY: runtime.runtime_id,
-                        "hermes.call_role": str(
-                            (metadata or {}).get("call_role") or "primary"
-                        ),
-                    },
-                )
+                logical_context = contextvars.Context()
+
+                def push_logical() -> Any:
+                    runtime.relay.get_scope_stack()
+                    return runtime.relay.scope.push(
+                        relay_runtime.LOGICAL_LLM_SCOPE,
+                        runtime.relay.ScopeType.Function,
+                        handle=parent,
+                        input={},
+                        metadata={
+                            relay_runtime.RUNTIME_SCHEMA_KEY: relay_runtime.RUNTIME_SCHEMA_VERSION,
+                            relay_runtime.RUNTIME_INSTANCE_KEY: runtime.runtime_id,
+                            "hermes.call_role": str(
+                                (metadata or {}).get("call_role") or "primary"
+                            ),
+                        },
+                    )
+
+                handle = logical_context.run(push_logical)
                 turn.logical_llm_calls[request_id] = handle
+                turn.logical_llm_contexts[request_id] = logical_context
     return turn, handle, request_id
 
 
@@ -788,11 +793,13 @@ def _complete_logical(
         with turn.logical_llm_lock:
             if turn.logical_llm_calls.get(request_id) is not handle:
                 return
+            logical_context = turn.logical_llm_contexts.get(request_id)
+            if logical_context is None:
+                return
         if lease.session is None:
             return
         try:
-            lease.host.run_in_session(
-                lease.session,
+            logical_context.run(
                 lease.host.relay.scope.pop,
                 handle,
                 output={"outcome": outcome},
@@ -812,6 +819,7 @@ def _complete_logical(
         with turn.logical_llm_lock:
             if turn.logical_llm_calls.get(request_id) is handle:
                 turn.logical_llm_calls.pop(request_id, None)
+                turn.logical_llm_contexts.pop(request_id, None)
 
 
 def _recover_successful_callback(
