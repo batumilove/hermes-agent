@@ -48,6 +48,23 @@ patches:
       - scripts/run_tests.sh tests/hermes_cli/test_update_eol_churn.py
     retirement: Remove when upstream forces an equivalent index refresh before EOL classification.
 
+  - id: gateway-session-request-resource-lifecycle
+    kind: core
+    rationale: >-
+      Release per-thread SessionDB read connections when workers terminate and
+      close idle cached request clients at turn boundaries without interrupting
+      concurrent request owners.
+    paths:
+      - hermes_state.py
+      - run_agent.py
+      - tests/agent/test_request_client_reuse.py
+      - tests/agent/test_turn_finalizer_cleanup_guard.py
+      - tests/test_session_db_read_path_split.py
+    tests:
+      - scripts/run_tests.sh tests/test_session_db_read_path_split.py tests/agent/test_request_client_reuse.py tests/agent/test_turn_finalizer_cleanup_guard.py
+      - scripts/run_tests.sh tests/run_agent/test_run_agent.py
+    retirement: Remove when upstream releases dead-thread SessionDB readers and closes idle request pools at turn boundaries with equivalent ownership and real-socket contracts.
+
   - id: plugin-environment-backends
     kind: core
     rationale: >-
