@@ -2480,7 +2480,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             inferred_operation = caller_name
         operation_name = str(operation or inferred_operation)
         operation_label = re.sub(r"[\r\n\t]+", " ", operation_name)[:96]
-        deadline = time.monotonic() + patience_s
+        call_started = time.monotonic()
+        deadline = call_started + patience_s
         attempt = 0
         while True:
             try:
@@ -2516,15 +2517,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                             pass
                         raise
                 total_time = time.monotonic() - write_started
+                elapsed_total = time.monotonic() - call_started
                 if (
                     lock_wait >= self._SLOW_LOCK_WAIT_WARN_S
-                    or total_time >= self._SLOW_WRITE_WARN_S
+                    or elapsed_total >= self._SLOW_WRITE_WARN_S
                 ):
                     logger.warning(
                         "SessionDB write latency: caller=%s operation=%s "
                         "items=%s outcome=write lock_wait=%.3fs "
                         "begin_wait=%.3fs callback=%.3fs commit=%.3fs "
-                        "txn=%.3fs total=%.3fs attempt=%d pid=%d "
+                        "txn=%.3fs total=%.3fs elapsed=%.3fs attempt=%d pid=%d "
                         "thread_id=%d db_instance=%s instance_queue_depth=%d "
                         "instance_owner_operation=%s instance_owner_age_s=%.3f "
                         "instance_owner_transitions=%d "
@@ -2539,6 +2541,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         commit_time,
                         transaction_time,
                         total_time,
+                        elapsed_total,
                         attempt + 1,
                         os.getpid(),
                         threading.get_ident(),
