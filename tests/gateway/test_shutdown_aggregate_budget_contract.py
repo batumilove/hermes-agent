@@ -50,11 +50,13 @@ def _configure_fast_forced_shutdown(runner, monkeypatch, active_agents):
     import cron.scheduler as cron_scheduler
     import tools.async_delegation as async_delegation
     import tools.browser_tool as browser_tool
+    import tools.process_registry as process_registry_module
     import tools.terminal_tool as terminal_tool
 
     monkeypatch.setattr(auxiliary_client, "shutdown_cached_clients", lambda: None)
     monkeypatch.setattr(cron_scheduler, "mark_running_jobs_interrupted", lambda _r: [])
     monkeypatch.setattr(async_delegation, "interrupt_all", lambda reason: 0)
+    monkeypatch.setattr(process_registry_module.process_registry, "kill_all", lambda: 0)
     monkeypatch.setattr(terminal_tool, "cleanup_all_environments", lambda: None)
     monkeypatch.setattr(browser_tool, "cleanup_all_browsers", lambda: None)
 
