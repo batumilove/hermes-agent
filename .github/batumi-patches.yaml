@@ -94,6 +94,21 @@ patches:
       - scripts/run_tests.sh tests/agent/test_transform_llm_output_context.py
     retirement: Remove when upstream transform_llm_output supplies equivalent read-only context.
 
+  - id: side-effect-evidence-regulator
+    kind: core
+    rationale: >-
+      Require current-turn execution evidence before preserving fresh external
+      side-effect claims in final responses while leaving descriptive parity
+      headings unchanged.
+    paths:
+      - agent/side_effect_evidence.py
+      - agent/turn_finalizer.py
+      - tests/agent/test_side_effect_evidence_reconciliation.py
+      - tests/agent/test_turn_finalizer_final_response_persistence.py
+    tests:
+      - scripts/run_tests.sh tests/agent/test_side_effect_evidence_reconciliation.py tests/agent/test_turn_finalizer_final_response_persistence.py
+    retirement: Remove when upstream provides equivalent fail-closed current-turn side-effect evidence validation.
+
   - id: provider-fallback-lifecycle
     kind: core
     rationale: >-
