@@ -79,6 +79,18 @@ patches:
       - scripts/run_tests.sh tests/run_agent/test_run_agent.py
     retirement: Remove when upstream releases dead-thread SessionDB readers and closes idle request pools at turn boundaries with equivalent ownership and real-socket contracts.
 
+  - id: sessiondb-write-latency-diagnostics
+    kind: core
+    rationale: >-
+      Attribute slow SessionDB writes to Python lock wait, SQLite transaction
+      acquisition, callback, and commit phases without logging session content.
+    paths:
+      - hermes_state.py
+      - tests/test_session_db_write_latency_logging.py
+    tests:
+      - scripts/run_tests.sh tests/test_session_db_write_latency_logging.py tests/state/test_write_lock_patience.py
+    retirement: Remove when upstream provides equivalent privacy-bounded phase timing and lock-owner attribution for SessionDB writes.
+
   - id: plugin-environment-backends
     kind: core
     rationale: >-
