@@ -36,6 +36,25 @@ def test_reserved_test_hostname_is_rejected_without_system_resolution(monkeypatc
     assert calls == []
 
 
+def test_install_guard_is_idempotent_and_normalizes_reserved_bytes(monkeypatch):
+    calls = []
+
+    def unexpected_resolution(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("system resolver was called")
+
+    monkeypatch.setattr(dns_guard, "_REAL_GETADDRINFO", unexpected_resolution)
+
+    dns_guard.install_reserved_test_host_guard()
+    dns_guard.install_reserved_test_host_guard()
+
+    with pytest.raises(socket.gaierror) as exc_info:
+        socket.getaddrinfo(b"STUB.INVALID.", 443)
+
+    assert exc_info.value.errno == socket.EAI_NONAME
+    assert calls == []
+
+
 @pytest.mark.parametrize(
     "hostname",
     ["localhost", "example.com", "example.net", "example.org"],
