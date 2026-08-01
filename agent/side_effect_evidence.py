@@ -222,7 +222,9 @@ def _tool_result_succeeded(tool_name: str, content: Any) -> bool:
         )
         succeeded = positive_status or positive_flag or positive_handle
 
-    compact = json.dumps(result, ensure_ascii=False, sort_keys=True).lower()
+    compact = json.dumps(
+        result, ensure_ascii=False, sort_keys=True, default=str
+    ).lower()
     return succeeded and not any(marker in compact for marker in _ERROR_MARKERS)
 
 
@@ -283,7 +285,36 @@ def evaluate_side_effect_evidence(
         "generic_side_effect" not in evidence
     ):
         missing.append("deploy")
-    if _has_affirmative_side_effect_claim(final_response, ("deleted", "removed")) and not (
+    if _has_affirmative_side_effect_claim(
+        final_response,
+        ("deleted", "removed"),
+        context_terms=(
+            "remote",
+            "repository",
+            "repo",
+            "branch",
+            "issue",
+            "pull request",
+            "pr",
+            "cronjob",
+            "cron",
+            "scheduler",
+            "container",
+            "image",
+            "bucket",
+            "artifact",
+            "deployment",
+            "service",
+            "server",
+            "domain",
+            "record",
+            "account",
+            "user",
+            "message",
+            "job",
+            "workflow",
+        ),
+    ) and not (
         {"cronjob", "github", "browser", "generic_side_effect"} & evidence
     ):
         missing.append("delete")

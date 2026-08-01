@@ -102,6 +102,7 @@ patches:
       headings unchanged.
     paths:
       - agent/side_effect_evidence.py
+      - agent/turn_finalizer.py
       - tests/agent/test_side_effect_evidence_reconciliation.py
       - tests/agent/test_turn_finalizer_final_response_persistence.py
     tests:

@@ -143,3 +143,26 @@ def test_nonzero_child_exit_fails_closed_for_generic_execution_tools(tool_name):
         ),
     ]
     assert _warns("Deployed successfully.", messages)
+
+
+def test_nonserializable_tool_result_fails_closed_without_skipping_regulator():
+    messages = [
+        {"role": "user", "content": "deploy"},
+        {
+            "role": "tool",
+            "name": "process",
+            "content": {"status": "success", "output": b"Traceback (most recent call last)"},
+        },
+    ]
+    assert _warns("Deployed successfully.", messages)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        "I removed the unused import.",
+        "I deleted the dead code path.",
+    ],
+)
+def test_routine_code_edit_prose_is_not_an_external_delete_claim(response):
+    assert not _warns(response)
