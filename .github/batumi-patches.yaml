@@ -48,6 +48,20 @@ patches:
       - scripts/run_tests.sh tests/hermes_cli/test_update_eol_churn.py
     retirement: Remove when upstream forces an equivalent index refresh before EOL classification.
 
+  - id: test-dns-isolation
+    kind: compatibility
+    rationale: >-
+      Prevent reserved fixture hostnames from escaping tests into libc DNS while
+      preserving ordinary DNS behavior for tests that explicitly require it.
+    paths:
+      - test_support/__init__.py
+      - test_support/dns_guard.py
+      - tests/conftest.py
+      - tests/test_dns_isolation.py
+    tests:
+      - scripts/run_tests.sh tests/test_dns_isolation.py
+    retirement: Remove when upstream provides an equivalent pre-import DNS guard with explicit per-test opt-out coverage.
+
   - id: gateway-session-request-resource-lifecycle
     kind: core
     rationale: >-
