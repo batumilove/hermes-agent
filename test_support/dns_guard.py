@@ -40,7 +40,7 @@ def _is_reserved_test_hostname(host: Any) -> bool:
     if hostname == "test" or hostname.endswith(".test"):
         return True
     return any(
-        hostname == domain or hostname.endswith(f".{domain}")
+        hostname.endswith(f".{domain}")
         for domain in _EXAMPLE_DOMAINS
     )
 

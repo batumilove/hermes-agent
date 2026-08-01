@@ -36,7 +36,11 @@ def test_reserved_test_hostname_is_rejected_without_system_resolution(monkeypatc
     assert calls == []
 
 
-def test_loopback_hostname_still_uses_system_resolver(monkeypatch):
+@pytest.mark.parametrize(
+    "hostname",
+    ["localhost", "example.com", "example.net", "example.org"],
+)
+def test_ordinary_hostname_still_uses_system_resolver(monkeypatch, hostname):
     sentinel = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", 443))]
     calls = []
 
@@ -46,5 +50,5 @@ def test_loopback_hostname_still_uses_system_resolver(monkeypatch):
 
     monkeypatch.setattr(dns_guard, "_REAL_GETADDRINFO", fake_resolution)
 
-    assert dns_guard._guarded_getaddrinfo("localhost", 443) == sentinel
-    assert calls == [(('localhost', 443), {})]
+    assert dns_guard._guarded_getaddrinfo(hostname, 443) == sentinel
+    assert calls == [((hostname, 443), {})]
