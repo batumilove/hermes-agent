@@ -51,6 +51,69 @@ from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
 
+# ActiveGraph event bridge — optional/user-plugin owned.
+# Keep this lazy and fail-open: cron must never depend on observability being
+# installed or initialized, and scheduler.py can be imported before the plugin
+# manager has loaded user plugins.
+_ag_emit = None
+_ag_import_attempted = False
+
+
+def _ag(event_type: str, payload: dict) -> None:
+    """Emit an ActiveGraph event when the optional activegraph plugin is loaded.
+
+    Directory plugins are importable as ``hermes_plugins.<slug>`` only after the
+    plugin manager has discovered them. Cron runs from scheduler threads where
+    this helper can be reached before that namespace exists, so fall back to a
+    best-effort plugin discovery before giving up.  Failure stays fail-open:
+    cron execution must not depend on observability.
+    """
+    global _ag_emit, _ag_import_attempted
+    if _ag_emit is None and not _ag_import_attempted:
+        _ag_import_attempted = True
+        try:
+            import importlib
+            try:
+                _plugin = importlib.import_module("hermes_plugins.activegraph")
+            except Exception:
+                from hermes_cli.plugins import discover_plugins
+
+                discover_plugins()
+                _plugin = importlib.import_module("hermes_plugins.activegraph")
+            _ag_emit = getattr(_plugin, "_emit")
+        except Exception:
+            _ag_emit = None
+    if _ag_emit is None:
+        return
+    try:
+        _ag_emit(event_type, payload)
+    except Exception:
+        logger.debug("ActiveGraph cron emit failed for %s", event_type, exc_info=True)
+
+
+def _cron_ag_job_name(job: dict) -> str:
+    return str(job.get("name") or str(job.get("prompt") or "")[:60] or job.get("id") or "cron job")
+
+
+def _cron_ag_schedule(job: dict) -> str:
+    display = str(job.get("schedule_display") or "").strip()
+    if display:
+        return display
+    schedule = job.get("schedule")
+    if isinstance(schedule, dict):
+        for key in ("display", "value", "expr", "run_at"):
+            value = str(schedule.get(key) or "").strip()
+            if value:
+                return value
+        kind = str(schedule.get("kind") or "").strip()
+        if kind == "interval" and schedule.get("minutes"):
+            return f"every {schedule.get('minutes')}m"
+        if kind:
+            return kind
+    if schedule is not None:
+        return str(schedule)
+    return ""
+
 
 def _set_cron_session_title(session_db, session_id, base_title):
     """Robustly title a finished cron session before it is closed.
@@ -4003,6 +4066,19 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # becomes running only immediately before the actual run.
         mark_execution_running(execution_id)
 
+        job_id = str(job.get("id", "?"))
+        job_name = _cron_ag_job_name(job)
+        _ag(
+            "hermes.cron.started",
+            {
+                "job_id": job_id,
+                "job_name": job_name,
+                "schedule": _cron_ag_schedule(job),
+                "no_agent": bool(job.get("no_agent", False)),
+                "has_script": bool(job.get("script")),
+            },
+        )
+
         # Run the job under the profile's secret scope. get_secret() fails
         # closed outside a scope once profile isolation is in play (multiple
         # gateway profiles / room→profile multiplexing), and cron fires from
@@ -4112,6 +4188,18 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             success = False
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
+        _ag(
+            "hermes.cron.completed" if success else "hermes.cron.failed",
+            {
+                "job_id": job_id,
+                "job_name": job_name,
+                "success": bool(success),
+                "output_len": len(output) if output else 0,
+                "response_len": len(final_response) if final_response else 0,
+                "error": (error or "")[:500],
+                "delivery_error": (delivery_error or "")[:500],
+            },
+        )
         if not _consume_interrupted_flag(job["id"]):
             mark_job_run(job["id"], success, error, delivery_error=delivery_error)
         normalized_deliver = _normalize_deliver_value(job.get("deliver", "local"))
@@ -4143,6 +4231,15 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # anything that isn't a plain Exception.
         _err_text = str(e) or type(e).__name__
         logger.error("Error processing job %s: %s", job['id'], _err_text)
+        _ag(
+            "hermes.cron.failed",
+            {
+                "job_id": str(job.get("id", "?")),
+                "job_name": _cron_ag_job_name(job),
+                "success": False,
+                "error": f"{type(e).__name__}: {_err_text}"[:500],
+            },
+        )
         try:
             if not _consume_interrupted_flag(job["id"]):
                 mark_job_run(job["id"], False, _err_text)
