@@ -11,6 +11,8 @@ edge cases — call ``monkeypatch.delenv("HERMES_MODEL", raising=False)``
 inside the test, which overrides this fixture's value for that scope.
 """
 
+import sys
+
 import pytest
 
 
@@ -18,4 +20,21 @@ import pytest
 def _default_cron_test_model(monkeypatch):
     """Pin a default HERMES_MODEL so cron run_job tests have a resolvable model."""
     monkeypatch.setenv("HERMES_MODEL", "test-cron-default-model")
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_activegraph_cron_emission(monkeypatch):
+    """Keep cron unit tests from emitting into an operator's ActiveGraph DB.
+
+    ``cron.scheduler`` discovers the optional directory plugin lazily.  The
+    plugin's configured DB path may already be bound to the operator profile
+    before the global per-test HERMES_HOME fixture runs, so tests exercising
+    ``run_one_job`` must default to a local no-op emitter.  Focused bridge tests
+    explicitly replace these globals when they need to assert emission.
+    """
+    scheduler = sys.modules.get("cron.scheduler")
+    if scheduler is not None:
+        monkeypatch.setattr(scheduler, "_ag_emit", lambda *_args, **_kwargs: None, raising=False)
+        monkeypatch.setattr(scheduler, "_ag_import_attempted", True, raising=False)
     yield

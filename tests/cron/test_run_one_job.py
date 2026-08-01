@@ -13,6 +13,74 @@ extracted helper directly.
 import cron.scheduler as s
 
 
+def test_ag_discovers_directory_plugin_before_giving_up(monkeypatch):
+    """Cron ActiveGraph emission discovers directory plugins if the namespace is cold."""
+    events = []
+    imports = []
+    discovered = []
+
+    class FakePlugin:
+        @staticmethod
+        def _emit(event_type, payload):
+            events.append((event_type, payload))
+
+    def fake_import_module(name):
+        imports.append(name)
+        if len(imports) == 1:
+            raise ModuleNotFoundError("No module named 'hermes_plugins'")
+        return FakePlugin
+
+    def fake_discover_plugins():
+        discovered.append(True)
+
+    import importlib
+    import hermes_cli.plugins as plugins
+
+    monkeypatch.setattr(s, "_ag_emit", None)
+    monkeypatch.setattr(s, "_ag_import_attempted", False)
+    monkeypatch.setattr(importlib, "import_module", fake_import_module)
+    monkeypatch.setattr(plugins, "discover_plugins", fake_discover_plugins)
+
+    s._ag("hermes.cron.started", {"job_id": "cold-plugin"})
+
+    assert discovered == [True]
+    assert imports == ["hermes_plugins.activegraph", "hermes_plugins.activegraph"]
+    assert events == [("hermes.cron.started", {"job_id": "cold-plugin"})]
+
+
+def test_run_one_job_emits_activegraph_cron_events(monkeypatch):
+    """Cron emits ActiveGraph started/completed events from the shared fire path."""
+    events = []
+    monkeypatch.setattr(s, "_ag_emit", lambda event_type, payload: events.append((event_type, payload)))
+    monkeypatch.setattr(s, "_ag_import_attempted", True)
+    monkeypatch.setattr(s, "claim_dispatch", lambda jid: True)
+    monkeypatch.setattr(s, "run_job", lambda job, *, defer_agent_teardown=None: (True, "out", "final", None))
+    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.md")
+    monkeypatch.setattr(s, "_deliver_result", lambda *a, **k: None)
+    monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
+
+    ok = s.run_one_job({
+        "id": "cron-ag-1",
+        "name": "cron AG",
+        "schedule": {"kind": "interval", "minutes": 5},
+        "no_agent": True,
+        "script": "watchdog.sh",
+    })
+
+    assert ok is True
+    assert [event for event, _ in events] == ["hermes.cron.started", "hermes.cron.completed"]
+    assert events[0][1] == {
+        "job_id": "cron-ag-1",
+        "job_name": "cron AG",
+        "schedule": "every 5m",
+        "no_agent": True,
+        "has_script": True,
+    }
+    assert events[1][1]["job_id"] == "cron-ag-1"
+    assert events[1][1]["success"] is True
+    assert events[1][1]["output_len"] == 3
+    assert events[1][1]["response_len"] == 5
+
 def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final response",
                     error=None, silent_marker_in=None):
     """Patch the job pipeline primitives and record the call order."""
