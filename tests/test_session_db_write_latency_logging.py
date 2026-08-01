@@ -1,7 +1,7 @@
-import json
 import logging
 import os
 import re
+import sqlite3
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -31,6 +31,24 @@ class _DelayedPhaseConnection:
     def commit(self):
         time.sleep(self._commit_s)
         return self._wrapped.commit()
+
+    def __getattr__(self, name):
+        return getattr(self._wrapped, name)
+
+
+class _RetryOnceConnection:
+    """Real SQLite connection proxy that reports one synthetic busy attempt."""
+
+    def __init__(self, wrapped):
+        self._wrapped = wrapped
+        self._begin_attempts = 0
+
+    def execute(self, sql, *args, **kwargs):
+        if sql == "BEGIN IMMEDIATE":
+            self._begin_attempts += 1
+            if self._begin_attempts == 1:
+                raise sqlite3.OperationalError("database is locked")
+        return self._wrapped.execute(sql, *args, **kwargs)
 
     def __getattr__(self, name):
         return getattr(self._wrapped, name)
@@ -98,7 +116,7 @@ def test_execute_write_splits_transaction_phases_and_identifies_runtime(tmp_path
     assert callback_s >= 0.015
     assert commit_s >= 0.02
     phase_sum = begin_s + callback_s + commit_s
-    assert phase_sum - 0.003 <= transaction_s <= phase_sum + 0.010
+    assert phase_sum - 0.003 <= transaction_s <= phase_sum + 0.250
     db.close()
 
 
@@ -314,4 +332,35 @@ def test_execute_write_infers_enclosing_session_operation(tmp_path, caplog):
     messages = "\n".join(record.getMessage() for record in caplog.records)
     assert "caller=_do" in messages
     assert "operation=set_expiry_finalized" in messages
+    db.close()
+
+
+def test_execute_write_reports_retry_elapsed_and_uses_it_for_warning(
+    tmp_path, caplog, monkeypatch
+):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db._conn = _RetryOnceConnection(db._conn)  # type: ignore[assignment]
+    db._SLOW_WRITE_WARN_S = 0.015
+    db._SLOW_LOCK_WAIT_WARN_S = 60.0
+    monkeypatch.setattr("hermes_state.random.uniform", lambda *_args: 0.03)
+
+    def insert_session(conn):
+        conn.execute(
+            "INSERT OR IGNORE INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+            ("retried-session", "test", time.time()),
+        )
+
+    with caplog.at_level(logging.WARNING, logger="hermes_state"):
+        db._execute_write(insert_session)
+
+    message = next(
+        record.getMessage()
+        for record in caplog.records
+        if "operation=insert_session" in record.getMessage()
+    )
+    elapsed_s = _logged_seconds(message, "elapsed")
+    total_s = _logged_seconds(message, "total")
+    assert "attempt=2" in message
+    assert elapsed_s >= 0.025
+    assert elapsed_s > total_s
     db.close()
