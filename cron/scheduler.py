@@ -4188,18 +4188,6 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             success = False
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
-        _ag(
-            "hermes.cron.completed" if success else "hermes.cron.failed",
-            {
-                "job_id": job_id,
-                "job_name": job_name,
-                "success": bool(success),
-                "output_len": len(output) if output else 0,
-                "response_len": len(final_response) if final_response else 0,
-                "error": (error or "")[:500],
-                "delivery_error": (delivery_error or "")[:500],
-            },
-        )
         if not _consume_interrupted_flag(job["id"]):
             mark_job_run(job["id"], success, error, delivery_error=delivery_error)
         normalized_deliver = _normalize_deliver_value(job.get("deliver", "local"))
@@ -4216,6 +4204,22 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             success=success,
             error=error,
             delivery_outcome=delivery_outcome,
+        )
+        # Emit the terminal event only after canonical bookkeeping succeeds.
+        # Otherwise a bookkeeping exception enters the outer failure handler;
+        # emitting earlier would produce both completed and failed terminals
+        # for one started event.
+        _ag(
+            "hermes.cron.completed" if success else "hermes.cron.failed",
+            {
+                "job_id": job_id,
+                "job_name": job_name,
+                "success": bool(success),
+                "output_len": len(output) if output else 0,
+                "response_len": len(final_response) if final_response else 0,
+                "error": (error or "")[:500],
+                "delivery_error": (delivery_error or "")[:500],
+            },
         )
         return True
 
