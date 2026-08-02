@@ -2483,6 +2483,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         call_started = time.monotonic()
         deadline = call_started + patience_s
         attempt = 0
+
+        # Transient engine-level error observed on contended WAL appends.
+        # SQLite's exception class varies by build: some versions surface it
+        # as InterfaceError, which is a sibling of DatabaseError. Keep the
+        # policy message-scoped so unrelated sqlite3 errors still fail fast.
+        def _is_no_more_rows(exc: sqlite3.Error) -> bool:
+            return "no more rows available" in str(exc).lower()
+
         while True:
             try:
                 write_started = time.monotonic()
@@ -2563,21 +2571,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             except sqlite3.OperationalError as exc:
                 err_msg = str(exc).lower()
                 if "locked" in err_msg or "busy" in err_msg:
-                    now = time.monotonic()
-                    if now < deadline:
-                        elapsed = now - (deadline - patience_s)
-                        if elapsed >= self._WRITE_RETRY_SLOW_AFTER_S:
-                            jitter = random.uniform(
-                                self._WRITE_RETRY_SLOW_MIN_S,
-                                self._WRITE_RETRY_SLOW_MAX_S,
-                            )
-                        else:
-                            jitter = random.uniform(
-                                self._WRITE_RETRY_MIN_S,
-                                self._WRITE_RETRY_MAX_S,
-                            )
-                        # Never overshoot the deadline by a full slow-jitter.
-                        time.sleep(min(jitter, max(deadline - now, 0.001)))
+                    if self._sleep_before_write_retry(deadline, patience_s):
                         attempt += 1
                         continue
                     # Patience exhausted — say what actually happened so the
@@ -2589,9 +2583,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         "a large WAL checkpoint, or an older pre-update "
                         "process; the database itself is healthy)"
                     ) from exc
-                # Non-lock error — propagate.
+                if _is_no_more_rows(exc) and self._sleep_before_write_retry(
+                    deadline, patience_s
+                ):
+                    attempt += 1
+                    continue
+                # Non-lock error or patience exhausted — propagate.
                 raise
             except sqlite3.DatabaseError as exc:
+                if _is_no_more_rows(exc) and self._sleep_before_write_retry(
+                    deadline, patience_s
+                ):
+                    attempt += 1
+                    continue
                 # Corrupt FTS shadow tables make every write raise the
                 # malformed/corrupt error class through the FTS sync triggers
                 # while the canonical messages table is intact. The gateway
@@ -2604,6 +2608,37 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 if not self._try_runtime_fts_rebuild(exc):
                     raise
                 continue
+            except sqlite3.Error as exc:
+                # Catch InterfaceError and any other sqlite3.Error sibling not
+                # covered above. Only the known transient message is retried.
+                if _is_no_more_rows(exc) and self._sleep_before_write_retry(
+                    deadline, patience_s
+                ):
+                    attempt += 1
+                    continue
+                raise
+
+    def _sleep_before_write_retry(
+        self, deadline: float, patience_s: float
+    ) -> bool:
+        """Sleep one jitter interval when the patience budget permits retry."""
+        now = time.monotonic()
+        if now >= deadline:
+            return False
+        elapsed = now - (deadline - patience_s)
+        if elapsed >= self._WRITE_RETRY_SLOW_AFTER_S:
+            jitter = random.uniform(
+                self._WRITE_RETRY_SLOW_MIN_S,
+                self._WRITE_RETRY_SLOW_MAX_S,
+            )
+        else:
+            jitter = random.uniform(
+                self._WRITE_RETRY_MIN_S,
+                self._WRITE_RETRY_MAX_S,
+            )
+        # Never overshoot the deadline by a full slow-jitter.
+        time.sleep(min(jitter, max(deadline - now, 0.001)))
+        return True
 
     @staticmethod
     def _is_fts_write_corruption_error(exc: sqlite3.DatabaseError) -> bool:
