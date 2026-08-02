@@ -16,10 +16,12 @@ from cron.jobs import (
     update_job,
     pause_job,
     resume_job,
+    trigger_job,
     remove_job,
     mark_job_run,
     advance_next_run,
     claim_dispatch,
+    clear_pending_trigger,
     heartbeat_run_claim,
     get_due_jobs,
     save_job_output,
@@ -314,6 +316,36 @@ class TestResolveJobRef:
         with pytest.raises(AmbiguousJobReference):
             remove_job("dup")
 
+    def test_trigger_job_persists_manual_origin_until_due_scan(
+        self, tmp_cron_dir, tmp_path, monkeypatch
+    ):
+        import cron.executions as executions
+
+        monkeypatch.setattr(
+            executions, "EXECUTIONS_FILE", tmp_path / "cron" / "executions.db"
+        )
+        job = create_job(prompt="manual provenance", schedule="every 1h")
+
+        triggered = trigger_job(job["id"])
+        persisted = get_job(job["id"])
+
+        marker = triggered["pending_trigger"]
+        assert marker["origin"] == "manual"
+        assert persisted["pending_trigger"] == marker
+        ledger = executions.latest_execution(job["id"])
+        assert ledger["id"] == marker["execution_id"]
+        assert ledger["trigger_origin"] == "manual"
+
+        due = get_due_jobs()
+        assert due[0]["_execution_trigger_origin"] == "manual"
+        assert due[0]["_execution_triggered_at"] == marker["at"]
+        assert due[0]["_execution_id"] == marker["execution_id"]
+        # Merely scanning due jobs must not consume provenance: a crash between
+        # get_due_jobs() and ledger binding must remain restart-safe.
+        assert get_job(job["id"])["pending_trigger"] == marker
+        assert clear_pending_trigger(job["id"], marker["execution_id"])
+        assert get_job(job["id"]).get("pending_trigger") is None
+
 
 class TestMarkJobRun:
     def test_increments_completed(self, tmp_cron_dir):
@@ -560,6 +592,7 @@ class TestGetDueJobs:
 
         due = get_due_jobs()
         assert [j["id"] for j in due] == [job["id"]], "long-execution job was skipped (perpetual-defer bug)"
+        assert due[0]["_execution_trigger_origin"] == "catchup"
         # next_run_at fast-forwarded into the future (no burst of missed slots).
         nxt = _ensure_aware(datetime.fromisoformat(get_job(job["id"])["next_run_at"]))
         assert nxt > _hermes_now()

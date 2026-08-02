@@ -345,8 +345,21 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_runs, claim_dispatch, heartbeat_run_claim
-from cron.executions import create_execution, finish_execution, mark_execution_running
+from cron.jobs import (
+    advance_next_runs,
+    claim_dispatch,
+    clear_pending_trigger,
+    get_due_jobs,
+    heartbeat_run_claim,
+    mark_job_run,
+    save_job_output,
+)
+from cron.executions import (
+    create_execution,
+    finish_execution,
+    latest_execution,
+    mark_execution_running,
+)
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -4055,7 +4068,9 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
     """
     execution_id = job.get("execution_id")
     if not execution_id:
-        execution_id = create_execution(job["id"], source="direct")["id"]
+        execution_id = create_execution(
+            job["id"], source="direct", trigger_origin="direct"
+        )["id"]
     try:
         # Pre-run dispatch claim (issue #38758): atomically commit a finite
         # one-shot's dispatch BEFORE its side effect runs, so a tick that dies
@@ -4444,7 +4459,31 @@ def tick(
                 _running_job_ids.add(job_id)
             # Record the attempt before executor dispatch. Recovery classifies
             # abandoned records as unknown; it never automatically retries them.
-            execution = create_execution(job_id, source="builtin")
+            pending_execution_id = job.get("_execution_id")
+            pending_execution = (
+                latest_execution(job_id) if pending_execution_id else None
+            )
+            if (
+                pending_execution is not None
+                and pending_execution["id"] == pending_execution_id
+                and pending_execution["status"] == "claimed"
+                and pending_execution["trigger_origin"] == "manual"
+            ):
+                execution = pending_execution
+            else:
+                execution = create_execution(
+                    job_id,
+                    source="builtin",
+                    trigger_origin=job.get("_execution_trigger_origin", "unknown"),
+                    scheduled_for=job.get(
+                        "_execution_scheduled_for", job.get("next_run_at")
+                    ),
+                    triggered_at=job.get("_execution_triggered_at"),
+                )
+            if pending_execution_id:
+                # Clear only the marker that produced this due item. A newer
+                # concurrent manual trigger keeps its own marker for the next tick.
+                clear_pending_trigger(job_id, pending_execution_id)
             dispatched_job = dict(job, execution_id=execution["id"])
             _ctx = contextvars.copy_context()
 

@@ -20,6 +20,7 @@ from hermes_time import now as _hermes_now
 EXECUTIONS_FILE = get_hermes_home().resolve() / "cron" / "executions.db"
 MAX_TERMINAL_EXECUTIONS = 1000
 _TERMINAL_STATES = ("completed", "failed", "unknown")
+_TRIGGER_ORIGINS = ("scheduled", "manual", "external", "catchup", "direct", "unknown")
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
 
@@ -41,6 +42,9 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
              id TEXT PRIMARY KEY,
              job_id TEXT NOT NULL,
              source TEXT NOT NULL,
+             trigger_origin TEXT NOT NULL DEFAULT 'unknown',
+             scheduled_for TEXT,
+             triggered_at TEXT,
              process_id TEXT NOT NULL,
              pid INTEGER NOT NULL,
              process_started_at INTEGER,
@@ -52,6 +56,18 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
              error TEXT
            )"""
     )
+    # Additive in-place migration. SQLite cannot add a CHECK constraint around
+    # existing rows without rebuilding the table, so runtime validation in
+    # create_execution() protects all new writes while legacy rows become
+    # explicitly unknown rather than being retroactively misclassified.
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(executions)")}
+    for name, definition in (
+        ("trigger_origin", "TEXT NOT NULL DEFAULT 'unknown'"),
+        ("scheduled_for", "TEXT"),
+        ("triggered_at", "TEXT"),
+    ):
+        if name not in columns:
+            conn.execute(f"ALTER TABLE executions ADD COLUMN {name} {definition}")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_executions_job_claimed "
         "ON executions(job_id, claimed_at DESC, id DESC)"
@@ -132,19 +148,39 @@ def _prune_unlocked(conn: sqlite3.Connection) -> None:
     )
 
 
-def create_execution(job_id: str, *, source: str) -> Dict[str, Any]:
-    """Persist a claimed attempt before executor/provider dispatch."""
+def create_execution(
+    job_id: str,
+    *,
+    source: str,
+    trigger_origin: str = "unknown",
+    scheduled_for: Optional[str] = None,
+    triggered_at: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Persist a claimed attempt and its immutable trigger provenance."""
+    origin = str(trigger_origin).lower()
+    if origin not in _TRIGGER_ORIGINS:
+        raise ValueError(f"invalid cron trigger_origin: {trigger_origin!r}")
     now = _hermes_now().isoformat()
     execution_id = uuid.uuid4().hex
     pid = os.getpid()
     with _transaction() as conn:
         conn.execute(
             """INSERT INTO executions
-               (id, job_id, source, process_id, pid, process_started_at,
-                status, claimed_at)
-               VALUES (?, ?, ?, ?, ?, ?, 'claimed', ?)""",
-            (execution_id, str(job_id), str(source), _PROCESS_ID, pid,
-             _process_start_time(pid), now),
+               (id, job_id, source, trigger_origin, scheduled_for, triggered_at,
+                process_id, pid, process_started_at, status, claimed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'claimed', ?)""",
+            (
+                execution_id,
+                str(job_id),
+                str(source),
+                origin,
+                str(scheduled_for) if scheduled_for is not None else None,
+                str(triggered_at) if triggered_at is not None else now,
+                _PROCESS_ID,
+                pid,
+                _process_start_time(pid),
+                now,
+            ),
         )
         row = conn.execute(
             "SELECT * FROM executions WHERE id=?", (execution_id,)

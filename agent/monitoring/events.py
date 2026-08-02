@@ -70,6 +70,9 @@ class CronExecutionEvent:
     status: str
     job_key: str
     source: str = "unknown"
+    trigger_origin: str = "unknown"
+    scheduled_for: Optional[str] = None
+    triggered_at: Optional[str] = None
     duration_ms: Optional[int] = None
     delivery_outcome: Optional[str] = None
     error_class: Optional[str] = None
