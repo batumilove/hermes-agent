@@ -608,6 +608,7 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
     job_id = job["id"]
     try:
         from cron.scheduler import run_one_job
+        from cron.executions import create_execution
 
         # At-most-once claim: bail without running if a tick/other fire owns it.
         if not claim_job_for_fire(job_id):
@@ -626,7 +627,12 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
 
         # run_one_job records last_run_at/last_status via mark_job_run (which
         # also clears the fire claim) and returns True iff it processed the job.
-        #
+        execution = create_execution(
+            job_id,
+            source="manual",
+            trigger_origin="manual",
+        )
+
         # A manual `run` executes the job synchronously on the caller's thread,
         # and a cron job is itself a full agent run that routinely takes
         # minutes. The calling turn emits no tool activity for that entire
@@ -685,7 +691,7 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
             _heartbeat_thread.start()
 
         try:
-            processed = run_one_job(job)
+            processed = run_one_job(dict(job, execution_id=execution["id"]))
         finally:
             _heartbeat_stop.set()
             if _heartbeat_thread is not None:

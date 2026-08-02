@@ -1647,20 +1647,69 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 
 def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Schedule a job to run on the next scheduler tick. Accepts a job ID or name."""
+    """Schedule a durably-attributed manual run on the next scheduler tick."""
     job = resolve_job_ref(job_id)
     if not job:
         return None
-    return update_job(
+    triggered_at = _hermes_now().isoformat()
+    from cron.executions import create_execution, finish_execution
+
+    execution = create_execution(
         job["id"],
-        {
-            "enabled": True,
-            "state": "scheduled",
-            "paused_at": None,
-            "paused_reason": None,
-            "next_run_at": _hermes_now().isoformat(),
-        },
+        source="manual",
+        trigger_origin="manual",
+        triggered_at=triggered_at,
     )
+    try:
+        updated = update_job(
+            job["id"],
+            {
+                "enabled": True,
+                "state": "scheduled",
+                "paused_at": None,
+                "paused_reason": None,
+                "next_run_at": triggered_at,
+                # Persist across process restart. The due scan consumes this
+                # marker only after provenance already exists in executions.db.
+                "pending_trigger": {
+                    "origin": "manual",
+                    "at": triggered_at,
+                    "execution_id": execution["id"],
+                },
+            },
+        )
+    except Exception as exc:
+        finish_execution(
+            execution["id"],
+            success=False,
+            error=f"Failed to schedule manual trigger: {exc}",
+        )
+        raise
+    if updated is None:
+        finish_execution(
+            execution["id"],
+            success=False,
+            error="Failed to schedule manual trigger: job disappeared",
+        )
+    return updated
+
+
+def clear_pending_trigger(job_id: str, expected_execution_id: str) -> bool:
+    """Consume a manual-trigger marker after its ledger execution is durable."""
+    with _jobs_lock():
+        jobs = load_jobs()
+        for job in jobs:
+            if job.get("id") != job_id:
+                continue
+            marker = job.get("pending_trigger")
+            if not isinstance(marker, dict):
+                return False
+            if marker.get("execution_id") != expected_execution_id:
+                return False
+            job.pop("pending_trigger", None)
+            save_jobs(jobs)
+            return True
+    return False
 
 
 def remove_job(job_id: str) -> bool:
@@ -2065,7 +2114,12 @@ def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
                         return False  # someone holds a fresh claim
                 except Exception:
                     pass  # malformed claim → overwrite
-            job["fire_claim"] = {"at": now.isoformat(), "by": _machine_id()}
+            scheduled_for = job.get("next_run_at")
+            job["fire_claim"] = {
+                "at": now.isoformat(),
+                "by": _machine_id(),
+                "scheduled_for": scheduled_for,
+            }
             kind = job.get("schedule", {}).get("kind")
             if kind in {"cron", "interval"}:
                 nxt = compute_next_run(job["schedule"], now.isoformat())
@@ -2358,6 +2412,27 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             kind = schedule.get("kind")
 
             next_run_dt = _ensure_aware(raw_next_run_dt)
+            pending_trigger = job.get("pending_trigger")
+            if (
+                isinstance(pending_trigger, dict)
+                and pending_trigger.get("origin") == "manual"
+                and isinstance(pending_trigger.get("at"), str)
+                and isinstance(pending_trigger.get("execution_id"), str)
+            ):
+                job["_execution_trigger_origin"] = "manual"
+                job["_execution_triggered_at"] = pending_trigger["at"]
+                job["_execution_scheduled_for"] = None
+                job["_execution_id"] = pending_trigger["execution_id"]
+            elif pending_trigger is not None:
+                # A malformed/directly-edited marker must never be promoted to
+                # natural scheduled provenance.
+                job["_execution_trigger_origin"] = "unknown"
+                job["_execution_triggered_at"] = now.isoformat()
+                job["_execution_scheduled_for"] = None
+            else:
+                job["_execution_trigger_origin"] = "scheduled"
+                job["_execution_triggered_at"] = now.isoformat()
+                job["_execution_scheduled_for"] = next_run
             # Migration repair: a cron job persists next_run_at as an absolute
             # instant, but the cron expr describes local wall-clock intent. If the
             # configured/system timezone changed after persistence, the stored
@@ -2430,6 +2505,8 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                                 rj["next_run_at"] = new_next
                                 needs_save = True
                                 break
+                        if job.get("_execution_trigger_origin") == "scheduled":
+                            job["_execution_trigger_origin"] = "catchup"
                         record_catch_up_occurrence()
                         # Fall through to due.append(job) — execute once now
 

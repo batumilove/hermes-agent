@@ -208,8 +208,13 @@ def cron_runs(job_id: Optional[str] = None, limit: int = 20):
         print(
             f"{record.get('id', '?')}  {record.get('status', '?'):<9}  "
             f"job={record.get('job_id', '?')}  source={record.get('source', '?')}  "
+            f"origin={record.get('trigger_origin', 'unknown')}  "
             f"{record.get('claimed_at', '?')}"
         )
+        if record.get("scheduled_for"):
+            print(f"    scheduled_for={record['scheduled_for']}")
+        if record.get("triggered_at"):
+            print(f"    triggered_at={record['triggered_at']}")
         if record.get("error"):
             print(f"    {record['error']}")
 
