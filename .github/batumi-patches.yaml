@@ -58,8 +58,10 @@ patches:
       - test_support/dns_guard.py
       - tests/conftest.py
       - tests/test_dns_isolation.py
+      - tests/plugins/image_gen/test_xai_provider.py
     tests:
       - scripts/run_tests.sh tests/test_dns_isolation.py
+      - scripts/run_tests.sh tests/plugins/image_gen/test_xai_provider.py
     retirement: Remove when upstream provides an equivalent pre-import DNS guard with explicit per-test opt-out coverage.
 
   - id: gateway-session-request-resource-lifecycle
