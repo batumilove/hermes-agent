@@ -10,6 +10,8 @@ The first test characterizes the sequence as driven through `tick()` (proving
 the extraction didn't change `tick`'s behavior); the rest unit-test the
 extracted helper directly.
 """
+import pytest
+
 import cron.scheduler as s
 
 
@@ -80,6 +82,34 @@ def test_run_one_job_emits_activegraph_cron_events(monkeypatch):
     assert events[1][1]["success"] is True
     assert events[1][1]["output_len"] == 3
     assert events[1][1]["response_len"] == 5
+
+
+@pytest.mark.parametrize("failing_bookkeeper", ["mark_job_run", "finish_execution"])
+def test_run_one_job_emits_exactly_one_terminal_event_when_bookkeeping_fails(
+    monkeypatch, failing_bookkeeper
+):
+    """A post-run bookkeeping error must not emit both completed and failed."""
+    events = []
+    monkeypatch.setattr(s, "_ag_emit", lambda event_type, payload: events.append((event_type, payload)))
+    monkeypatch.setattr(s, "_ag_import_attempted", True)
+    monkeypatch.setattr(s, "create_execution", lambda *a, **k: {"id": "exec-ag-bookkeeping"})
+    monkeypatch.setattr(s, "claim_dispatch", lambda _jid: True)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: None)
+    monkeypatch.setattr(s, "run_job", lambda job, *, defer_agent_teardown=None: (True, "out", "final", None))
+    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.md")
+    monkeypatch.setattr(s, "_deliver_result", lambda *a, **k: None)
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError(f"{failing_bookkeeper} failed")
+
+    monkeypatch.setattr(s, "mark_job_run", fail if failing_bookkeeper == "mark_job_run" else lambda *a, **k: None)
+    monkeypatch.setattr(s, "finish_execution", fail if failing_bookkeeper == "finish_execution" else lambda *a, **k: None)
+
+    ok = s.run_one_job({"id": "cron-ag-bookkeeping", "name": "cron AG bookkeeping"})
+
+    assert ok is False
+    assert [event for event, _ in events] == ["hermes.cron.started", "hermes.cron.failed"]
+
 
 def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final response",
                     error=None, silent_marker_in=None):
