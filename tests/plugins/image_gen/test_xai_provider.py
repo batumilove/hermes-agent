@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import socket
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -13,6 +14,20 @@ import pytest
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _forbid_network_resolution(monkeypatch):
+    """Fail if an xAI provider unit test reaches the system resolver."""
+    calls = []
+
+    def unexpected_resolution(host, *args, **kwargs):
+        calls.append(host)
+        raise socket.gaierror(socket.EAI_NONAME, "unit-test DNS is disabled")
+
+    monkeypatch.setattr(socket, "getaddrinfo", unexpected_resolution)
+    yield
+    assert calls == [], f"unit test attempted DNS resolution for {calls!r}"
 
 
 @pytest.fixture(autouse=True)
@@ -228,7 +243,8 @@ class TestGenerate:
             "data": [{"url": "https://xai.image/test.png"}],
         }
 
-        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post:
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post, \
+             patch("plugins.image_gen.xai.save_url_image", return_value="/tmp/test.png"):
             provider = XAIImageGenProvider()
             provider.generate(prompt="test")
 
@@ -250,7 +266,8 @@ class TestGenerate:
         mock_resp.raise_for_status = MagicMock()
         mock_resp.json.return_value = {"data": [{"url": "https://xai.image/test.png"}]}
 
-        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post:
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post, \
+             patch("plugins.image_gen.xai.save_url_image", return_value="/tmp/test.png"):
             provider = XAIImageGenProvider()
             provider.generate(prompt="test")
 
