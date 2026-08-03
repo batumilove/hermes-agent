@@ -120,6 +120,49 @@ patches:
       - scripts/run_tests.sh tests/hermes_cli/test_relay_shared_metrics_runtime.py tests/hermes_cli/test_relay_shared_metrics.py tests/agent/test_relay_llm.py tests/agent/test_relay_tools.py tests/agent/test_auxiliary_relay.py
     retirement: Remove when upstream isolates overlapping Relay scope lifetimes and passes the same real-binding out-of-order closure contracts.
 
+  - id: cron-activegraph-lifecycle-telemetry
+    kind: core
+    rationale: >-
+      Preserve one fail-open ActiveGraph lifecycle terminal event per cron run,
+      emitted after bookkeeping so completed and failed events cannot duplicate.
+    paths:
+      - cron/scheduler.py
+      - tests/cron/conftest.py
+      - tests/cron/test_run_one_job.py
+    tests:
+      - scripts/run_tests.sh tests/cron/test_run_one_job.py
+    retirement: Remove when upstream emits equivalent lazy, fail-open, exactly-once cron lifecycle telemetry after bookkeeping.
+
+  - id: sessiondb-no-more-rows-retry
+    kind: core
+    rationale: >-
+      Retry transient SQLite no-more-rows write failures across the relevant
+      exception hierarchy using the existing bounded write-retry policy.
+    paths:
+      - hermes_state.py
+      - tests/state/test_no_more_rows_retry.py
+    tests:
+      - scripts/run_tests.sh tests/state/test_no_more_rows_retry.py
+    retirement: Remove when upstream retries equivalent transient no-more-rows write failures with bounded backoff and regression coverage.
+
+  - id: langfuse-lazy-sdk-retention
+    kind: compatibility
+    rationale: >-
+      Retain the pinned Langfuse SDK as a lazy observability dependency and
+      restore it before plugin import without making gateway startup fail closed.
+    paths:
+      - hermes_cli/tools_config.py
+      - plugins/observability/langfuse/README.md
+      - plugins/observability/langfuse/__init__.py
+      - pyproject.toml
+      - tests/plugins/test_langfuse_plugin.py
+      - tests/test_project_metadata.py
+      - tools/lazy_deps.py
+      - uv.lock
+    tests:
+      - scripts/run_tests.sh tests/plugins/test_langfuse_plugin.py tests/test_project_metadata.py
+    retirement: Remove when upstream preserves the pinned Langfuse SDK through lazy dependency setup and plugin import with equivalent tests.
+
   - id: plugin-environment-backends
     kind: core
     rationale: >-
