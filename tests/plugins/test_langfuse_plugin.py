@@ -77,6 +77,21 @@ class TestRuntimeGate:
         sys.modules.pop(mod_name, None)
         return importlib.import_module(mod_name)
 
+    def test_import_preflights_pinned_lazy_dependency(self, monkeypatch):
+        """An enabled plugin must restore its SDK after exact ``uv sync``."""
+        from tools import lazy_deps
+
+        calls = []
+        monkeypatch.setattr(
+            lazy_deps,
+            "ensure",
+            lambda feature, *, prompt=False: calls.append((feature, prompt)),
+        )
+
+        self._fresh_plugin()
+
+        assert calls == [("observability.langfuse", False)]
+
     def test_get_langfuse_returns_none_without_credentials(self, monkeypatch):
         for k in (
             "HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_SECRET_KEY",

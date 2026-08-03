@@ -33,6 +33,17 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+# The plugin manager imports this module only after the user explicitly enables
+# observability/langfuse. Restore the pinned SDK through Hermes' lazy-dependency
+# framework before importing it. In normal venv mode this repairs an SDK removed
+# by exact ``uv sync``; immutable deployments may use the durable target mode.
+try:
+    from tools.lazy_deps import ensure as _ensure_lazy_dependency
+
+    _ensure_lazy_dependency("observability.langfuse", prompt=False)
+except Exception as exc:  # pragma: no cover - plugin remains fail-open
+    logger.warning("Langfuse plugin dependency unavailable: %s", exc)
+
 try:
     from langfuse import Langfuse, propagate_attributes
 except Exception:  # pragma: no cover - fail-open when optional dep is missing

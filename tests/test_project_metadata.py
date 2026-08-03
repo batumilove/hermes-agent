@@ -88,6 +88,23 @@ def test_lazy_installable_extras_excluded_from_all():
         )
 
 
+def test_langfuse_plugin_dependency_is_pinned_and_lazy_installable():
+    """An enabled Langfuse plugin must survive exact uv reconciliation.
+
+    Langfuse is opt-in, so it must remain outside ``[all]``. It still needs
+    one exact pin shared by the explicit extra, the lazy-install allowlist,
+    and the lockfile; otherwise ``uv sync --locked`` removes the SDK and the
+    bundled plugin silently becomes inert on the next gateway restart.
+    """
+    from tools.lazy_deps import LAZY_DEPS
+
+    optional_dependencies = _load_optional_dependencies()
+    assert optional_dependencies["langfuse"] == ["langfuse==4.6.1"]
+    assert LAZY_DEPS["observability.langfuse"] == ("langfuse==4.6.1",)
+    assert "hermes-agent[langfuse]" not in optional_dependencies["all"]
+    assert _uv_lock_version("langfuse") == "4.6.1"
+
+
 def _exact_pins(specs):
     pins = {}
     for spec in specs:
