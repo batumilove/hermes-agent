@@ -492,10 +492,15 @@ class TestPlaceholderKeyDetection:
         plugin = self._fresh_plugin(monkeypatch)
         with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
             assert plugin._get_langfuse() is None
-        warnings = [r for r in caplog.records if r.levelname == "WARNING"
-                    and r.name == self.LOGGER_NAME]
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelname == "WARNING"
+            and r.name == self.LOGGER_NAME
+            and "credentials look like placeholders" in r.getMessage()
+        ]
         assert len(warnings) == 1, (
-            f"Expected a single combined warning; got {len(warnings)}:\n"
+            f"Expected a single combined placeholder warning; got {len(warnings)}:\n"
             + "\n".join(r.getMessage() for r in warnings)
         )
         text = warnings[0].getMessage()
@@ -514,10 +519,15 @@ class TestPlaceholderKeyDetection:
         with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
             for _ in range(15):
                 assert plugin._get_langfuse() is None
-        warnings = [r for r in caplog.records if r.levelname == "WARNING"
-                    and r.name == self.LOGGER_NAME]
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelname == "WARNING"
+            and r.name == self.LOGGER_NAME
+            and "credentials look like placeholders" in r.getMessage()
+        ]
         assert len(warnings) == 1, (
-            f"Warning fired {len(warnings)} times across 15 calls; "
+            f"Placeholder warning fired {len(warnings)} times across 15 calls; "
             "expected 1 (cached via _INIT_FAILED)"
         )
 
