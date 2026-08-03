@@ -36,6 +36,18 @@ patches:
       - scripts/run_tests.sh tests/scripts/test_check_fork_delta.py tests/scripts/test_ci_workflow.py tests/scripts/test_install_batumi_components.py tests/scripts/test_upstream_sync_workflow.py
     retirement: Retain while batumi/live carries any fork-only patch.
 
+  - id: import-restore-fidelity
+    kind: core
+    rationale: >-
+      Restore archived POSIX rwx permissions during Hermes imports while
+      streaming ZIP members in bounded chunks and retaining secret-mode hardening.
+    paths:
+      - hermes_cli/backup.py
+      - tests/hermes_cli/test_backup.py
+    tests:
+      - scripts/run_tests.sh tests/hermes_cli/test_backup.py
+    retirement: Remove when upstream preserves safe archived modes and imports large members with bounded memory using equivalent regression coverage.
+
   - id: safe-update-eol-normalization
     kind: core
     rationale: >-

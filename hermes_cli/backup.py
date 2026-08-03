@@ -684,6 +684,21 @@ def run_backup(args) -> None:
 # Import
 # ---------------------------------------------------------------------------
 
+_IMPORT_COPY_CHUNK_SIZE = 1024 * 1024
+
+
+def _restore_zip_file(zf: zipfile.ZipFile, member: str, target: Path) -> None:
+    """Stream one ZIP member to disk and restore safe POSIX permission bits."""
+    info = zf.getinfo(member)
+    with zf.open(info) as src, open(target, "wb") as dst:
+        shutil.copyfileobj(src, dst, length=_IMPORT_COPY_CHUNK_SIZE)
+
+    # Hermes-created archives retain Unix stat metadata. Restore only rwx bits:
+    # setuid/setgid/sticky and the archived file type are never trusted.
+    if os.name == "posix" and info.create_system == 3:
+        os.chmod(target, (info.external_attr >> 16) & 0o777)
+
+
 def _validate_backup_zip(zf: zipfile.ZipFile) -> tuple[bool, str]:
     """Check that a zip looks like a Hermes backup.
 
@@ -812,8 +827,7 @@ def run_import(args) -> None:
                     continue
                 try:
                     target.parent.mkdir(parents=True, exist_ok=True)
-                    with zf.open(member) as src, open(target, "wb") as dst:
-                        dst.write(src.read())
+                    _restore_zip_file(zf, member, target)
                     # External provider configs commonly hold credentials.
                     if target.suffix in {".json", ".env", ".conf"} or target.name in _SECRET_FILE_NAMES:
                         try:
@@ -858,8 +872,7 @@ def run_import(args) -> None:
 
             try:
                 target.parent.mkdir(parents=True, exist_ok=True)
-                with zf.open(member) as src, open(target, "wb") as dst:
-                    dst.write(src.read())
+                _restore_zip_file(zf, member, target)
                 if target.name in _SECRET_FILE_NAMES:
                     os.chmod(target, 0o600)
                 restored += 1
