@@ -8,13 +8,17 @@ you explicitly enable it.
 Pick one:
 
 ```bash
-# Interactive: walks you through credentials + SDK install + enable
+# Interactive: saves credentials, installs the pinned SDK, and enables plugin
 hermes tools  # → Langfuse Observability
 
-# Manual
-pip install langfuse
-hermes plugins enable observability/langfuse
+# Scriptable dependency install + plugin enable (credentials configured separately)
+hermes tools post-setup langfuse
 ```
+
+Avoid an unpinned direct `pip install langfuse` in a uv-managed Hermes venv:
+an exact `uv sync --locked` may remove packages that are not part of the
+selected project extras. The setup paths above rehydrate the pinned SDK when
+the enabled plugin starts.
 
 ## Required credentials
 
