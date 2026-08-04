@@ -42,7 +42,7 @@ from hermes_constants import get_hermes_home
 from hermes_cli.sqlite_runtime import (
     is_sqlite_wal_reset_vulnerable as _is_sqlite_wal_reset_vulnerable,
 )
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, TypeVar
 
 from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _BRANCH_CHILD_SQL,
@@ -81,6 +81,190 @@ except ImportError:  # pragma: no cover - stripped/scaffold installs only
 logger = logging.getLogger(__name__)
 
 _SESSION_DB_INSTANCE_IDS = itertools.count(1)
+_SESSION_DB_LOCK_KINDS = frozenset({"direct", "lifecycle", "maintenance", "read", "write"})
+
+
+class _SessionDBAttributedLock:
+    """A ``threading.Lock``-compatible mutex with content-free holder telemetry."""
+
+    def __init__(self, owner: "SessionDB") -> None:
+        # Avoid turning the lock into a new SessionDB retention root. The owner
+        # already owns this wrapper; a strong back-reference would create a
+        # cycle and delay connection cleanup when callers omit close().
+        self._owner_ref = weakref.ref(owner)
+        self._raw = threading.Lock()
+        self._active: Optional[Dict[str, Any]] = None
+
+    def _owner(self) -> "SessionDB":
+        owner = self._owner_ref()
+        if owner is None:  # pragma: no cover - wrapper is normally owner-reachable
+            raise RuntimeError("SessionDB lock owner is no longer available")
+        return owner
+
+    @staticmethod
+    def _clean_operation(operation: str) -> str:
+        return re.sub(r"[^A-Za-z0-9_.:-]+", "_", str(operation))[:96] or "unknown"
+
+    @staticmethod
+    def _infer_kind(operation: str) -> str:
+        lowered = operation.lower()
+        if operation == "_read_ctx" or lowered.startswith(
+            ("get_", "list_", "load_", "search_", "find_", "count_", "has_", "is_")
+        ):
+            return "read"
+        if any(token in lowered for token in ("checkpoint", "fts", "optimize", "rebuild", "vacuum")):
+            return "maintenance"
+        if any(token in lowered for token in ("close", "open", "init", "shutdown")):
+            return "lifecycle"
+        return "direct"
+
+    def _acquire(
+        self,
+        operation: str,
+        holder_kind: str,
+        blocking: bool = True,
+        timeout: float = -1,
+    ) -> Tuple[bool, Optional[Tuple[float, int, str, float, int, str, str, str, str]]]:
+        owner = self._owner()
+        operation_label = self._clean_operation(operation)
+        kind = holder_kind if holder_kind in _SESSION_DB_LOCK_KINDS else "direct"
+        wait_started = time.monotonic()
+        with owner._write_diag_lock:
+            owner._write_waiter_count += 1
+            queue_depth = owner._write_waiter_count
+            owner_operation = owner._write_owner_operation or "-"
+            owner_kind = owner._write_owner_kind or "-"
+            owner_generation = owner._write_owner_generation
+            owner_age_s = (
+                max(0.0, wait_started - owner._write_owner_started)
+                if owner._write_owner_started is not None
+                else 0.0
+            )
+
+        try:
+            if timeout == -1:
+                acquired = self._raw.acquire(blocking)
+            else:
+                acquired = self._raw.acquire(blocking, timeout)
+        except BaseException:
+            with owner._write_diag_lock:
+                owner._write_waiter_count -= 1
+            raise
+        if not acquired:
+            with owner._write_diag_lock:
+                owner._write_waiter_count -= 1
+            return False, None
+
+        acquired_at = time.monotonic()
+        lock_wait = acquired_at - wait_started
+        with owner._write_diag_lock:
+            owner._write_waiter_count -= 1
+            owner_transitions = owner._write_owner_generation - owner_generation
+            last_owner_operation = (
+                owner._write_last_owner_operation if owner_transitions > 0 else None
+            ) or "-"
+            last_owner_kind = (
+                owner._write_last_owner_kind if owner_transitions > 0 else None
+            ) or "-"
+            if owner_operation != "-" or owner_transitions > 0:
+                lock_holder = "attributed"
+            elif lock_wait >= 0.001:
+                lock_holder = "unattributed"
+            else:
+                lock_holder = "none"
+            owner._write_owner_generation += 1
+            owner._write_last_owner_operation = operation_label
+            owner._write_last_owner_kind = kind
+            owner._write_owner_operation = operation_label
+            owner._write_owner_kind = kind
+            owner._write_owner_started = acquired_at
+            self._active = {
+                "operation": operation_label,
+                "holder_kind": kind,
+                "wait": lock_wait,
+                "hold_started": acquired_at,
+                "queue_depth": queue_depth,
+                "thread_id": threading.get_ident(),
+            }
+        return True, (
+            lock_wait,
+            queue_depth,
+            owner_operation,
+            owner_age_s,
+            owner_transitions,
+            last_owner_operation,
+            lock_holder,
+            owner_kind,
+            last_owner_kind,
+        )
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        operation = sys._getframe(1).f_code.co_name
+        acquired, _ = self._acquire(
+            operation,
+            self._infer_kind(operation),
+            blocking=blocking,
+            timeout=timeout,
+        )
+        return acquired
+
+    def release(self) -> None:
+        owner = self._owner()
+        released_at = time.monotonic()
+        with owner._write_diag_lock:
+            active = self._active
+            if active is not None:
+                self._active = None
+                owner._write_owner_operation = None
+                owner._write_owner_kind = None
+                owner._write_owner_started = None
+        self._raw.release()
+        if active is None or active["holder_kind"] == "write":
+            return
+        hold_s = released_at - active["hold_started"]
+        if (
+            active["wait"] < owner._SLOW_LOCK_WAIT_WARN_S
+            and hold_s < owner._SLOW_LOCK_HOLD_WARN_S
+        ):
+            return
+        logger.warning(
+            "SessionDB lock latency: operation=%s holder_kind=%s wait=%.3fs "
+            "hold=%.3fs pid=%d thread_id=%d db_instance=%s queue_depth=%d",
+            active["operation"],
+            active["holder_kind"],
+            active["wait"],
+            hold_s,
+            os.getpid(),
+            active["thread_id"],
+            owner._write_instance_id,
+            active["queue_depth"],
+        )
+
+    def locked(self) -> bool:
+        return self._raw.locked()
+
+    def __enter__(self) -> "_SessionDBAttributedLock":
+        operation = sys._getframe(1).f_code.co_name
+        acquired, _ = self._acquire(operation, self._infer_kind(operation))
+        if not acquired:  # pragma: no cover - blocking acquisition cannot do this
+            raise RuntimeError("failed to acquire SessionDB lock")
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> Literal[False]:
+        self.release()
+        return False
+
+    @contextmanager
+    def hold(self, operation: str, holder_kind: str):
+        acquired, diagnostics = self._acquire(operation, holder_kind)
+        if not acquired:  # pragma: no cover - blocking acquisition cannot do this
+            raise RuntimeError("failed to acquire SessionDB lock")
+        try:
+            assert diagnostics is not None
+            yield diagnostics
+        finally:
+            self.release()
+
 
 _COMPRESSION_LOCK_HOLDER_PID_RE = re.compile(r"(?:^|:)pid=(\d+)(?::|$)")
 
@@ -1797,6 +1981,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     _WRITE_RETRY_SLOW_MAX_S = 1.000  # 1s
     _SLOW_WRITE_WARN_S = 1.0
     _SLOW_LOCK_WAIT_WARN_S = 0.25
+    _SLOW_LOCK_HOLD_WARN_S = 1.0
     # Attempt a WAL checkpoint every N successful writes (PASSIVE mode).
     _CHECKPOINT_EVERY_N_WRITES = 50
     # Retain the existing coarse 1000-write maintenance cadence, but replace
@@ -1828,14 +2013,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self.db_path = db_path or _default_db_path()
         self.read_only = read_only
 
-        self._lock = threading.Lock()
         self._write_diag_lock = threading.Lock()
         self._write_waiter_count = 0
         self._write_owner_operation: Optional[str] = None
+        self._write_owner_kind: Optional[str] = None
         self._write_owner_started: Optional[float] = None
         self._write_owner_generation = 0
         self._write_last_owner_operation: Optional[str] = None
+        self._write_last_owner_kind: Optional[str] = None
         self._write_instance_id = f"{next(_SESSION_DB_INSTANCE_IDS):x}"
+        self._lock = _SessionDBAttributedLock(self)
         # Read-path split (WAL only): recall/browse queries run on per-thread
         # read-only connections so they never queue behind writer flushes on
         # self._lock. See _read_ctx().
@@ -2381,61 +2568,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return False
 
     @contextmanager
-    def _attributed_write_lock(self, operation_label: str):
-        """Hold the writer lock and expose bounded instance-local attribution."""
-        wait_started = time.monotonic()
-        with self._write_diag_lock:
-            self._write_waiter_count += 1
-            queue_depth = self._write_waiter_count
-            owner_operation = self._write_owner_operation or "-"
-            owner_generation = self._write_owner_generation
-            owner_age_s = (
-                max(0.0, wait_started - self._write_owner_started)
-                if self._write_owner_started is not None
-                else 0.0
-            )
+    def _attributed_lock(self, operation_label: str, *, holder_kind: str):
+        """Hold the instance mutex with bounded, content-free attribution."""
+        with self._lock.hold(operation_label, holder_kind) as diagnostics:
+            yield diagnostics
 
-        acquired = False
-        try:
-            with self._lock:
-                acquired = True
-                lock_wait = time.monotonic() - wait_started
-                with self._write_diag_lock:
-                    self._write_waiter_count -= 1
-                    owner_transitions = self._write_owner_generation - owner_generation
-                    last_owner_operation = (
-                        self._write_last_owner_operation
-                        if owner_transitions > 0
-                        else None
-                    ) or "-"
-                    if owner_operation != "-" or owner_transitions > 0:
-                        lock_holder = "attributed"
-                    elif lock_wait >= 0.001:
-                        lock_holder = "unattributed"
-                    else:
-                        lock_holder = "none"
-                    self._write_owner_generation += 1
-                    self._write_last_owner_operation = operation_label
-                    self._write_owner_operation = operation_label
-                    self._write_owner_started = time.monotonic()
-                try:
-                    yield (
-                        lock_wait,
-                        queue_depth,
-                        owner_operation,
-                        owner_age_s,
-                        owner_transitions,
-                        last_owner_operation,
-                        lock_holder,
-                    )
-                finally:
-                    with self._write_diag_lock:
-                        self._write_owner_operation = None
-                        self._write_owner_started = None
-        finally:
-            if not acquired:
-                with self._write_diag_lock:
-                    self._write_waiter_count -= 1
+    @contextmanager
+    def _attributed_write_lock(self, operation_label: str):
+        """Hold the writer mutex while preserving the existing diagnostics API."""
+        with self._attributed_lock(operation_label, holder_kind="write") as diagnostics:
+            yield diagnostics
 
     def _execute_write(
         self,
@@ -2483,13 +2625,21 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         call_started = time.monotonic()
         deadline = call_started + patience_s
         attempt = 0
-
+        sqlite_retry_wait = 0.0
         # Transient engine-level error observed on contended WAL appends.
         # SQLite's exception class varies by build: some versions surface it
         # as InterfaceError, which is a sibling of DatabaseError. Keep the
         # policy message-scoped so unrelated sqlite3 errors still fail fast.
         def _is_no_more_rows(exc: sqlite3.Error) -> bool:
             return "no more rows available" in str(exc).lower()
+
+        def _sleep_before_retry() -> bool:
+            nonlocal sqlite_retry_wait
+            sleep_started = time.monotonic()
+            slept = self._sleep_before_write_retry(deadline, patience_s)
+            if slept:
+                sqlite_retry_wait += time.monotonic() - sleep_started
+            return slept
 
         while True:
             try:
@@ -2503,6 +2653,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         owner_transitions,
                         last_owner_operation,
                         lock_holder,
+                        owner_kind,
+                        last_owner_kind,
                     ) = lock_diag
                     if self._conn is None:
                         raise RuntimeError("SessionDB is closed")
@@ -2532,18 +2684,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 ):
                     logger.warning(
                         "SessionDB write latency: caller=%s operation=%s "
-                        "items=%s outcome=write lock_wait=%.3fs "
+                        "items=%s outcome=write lock_wait=%.3fs sqlite_retry_wait=%.3fs "
                         "begin_wait=%.3fs callback=%.3fs commit=%.3fs "
                         "txn=%.3fs total=%.3fs elapsed=%.3fs attempt=%d pid=%d "
                         "thread_id=%d db_instance=%s instance_queue_depth=%d "
-                        "instance_owner_operation=%s instance_owner_age_s=%.3f "
-                        "instance_owner_transitions=%d "
-                        "instance_last_owner_operation=%s "
+                        "instance_owner_operation=%s instance_owner_kind=%s "
+                        "instance_owner_age_s=%.3f instance_owner_transitions=%d "
+                        "instance_last_owner_operation=%s instance_last_owner_kind=%s "
                         "instance_lock_holder=%s",
                         caller_name,
                         operation_label,
                         items if items is not None else "-",
                         lock_wait,
+                        sqlite_retry_wait,
                         begin_wait,
                         callback_time,
                         commit_time,
@@ -2556,9 +2709,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         self._write_instance_id,
                         queue_depth,
                         owner_operation,
+                        owner_kind,
                         owner_age_s,
                         owner_transitions,
                         last_owner_operation,
+                        last_owner_kind,
                         lock_holder,
                     )
                 # Success — periodic best-effort checkpoint + FTS merge.
@@ -2571,7 +2726,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             except sqlite3.OperationalError as exc:
                 err_msg = str(exc).lower()
                 if "locked" in err_msg or "busy" in err_msg:
-                    if self._sleep_before_write_retry(deadline, patience_s):
+                    if _sleep_before_retry():
                         attempt += 1
                         continue
                     # Patience exhausted — say what actually happened so the
@@ -2583,17 +2738,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         "a large WAL checkpoint, or an older pre-update "
                         "process; the database itself is healthy)"
                     ) from exc
-                if _is_no_more_rows(exc) and self._sleep_before_write_retry(
-                    deadline, patience_s
-                ):
+                if _is_no_more_rows(exc) and _sleep_before_retry():
                     attempt += 1
                     continue
                 # Non-lock error or patience exhausted — propagate.
                 raise
             except sqlite3.DatabaseError as exc:
-                if _is_no_more_rows(exc) and self._sleep_before_write_retry(
-                    deadline, patience_s
-                ):
+                if _is_no_more_rows(exc) and _sleep_before_retry():
                     attempt += 1
                     continue
                 # Corrupt FTS shadow tables make every write raise the
@@ -2611,9 +2762,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             except sqlite3.Error as exc:
                 # Catch InterfaceError and any other sqlite3.Error sibling not
                 # covered above. Only the known transient message is retried.
-                if _is_no_more_rows(exc) and self._sleep_before_write_retry(
-                    deadline, patience_s
-                ):
+                if _is_no_more_rows(exc) and _sleep_before_retry():
                     attempt += 1
                     continue
                 raise
@@ -2723,7 +2872,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         from checkpointing thousands of frames at once (issue #45383).
         """
         try:
-            with self._lock:
+            with self._attributed_lock(
+                "_try_wal_checkpoint", holder_kind="maintenance"
+            ):
                 result = self._conn.execute(
                     "PRAGMA wal_checkpoint(PASSIVE)"
                 ).fetchone()
