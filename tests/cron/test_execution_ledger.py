@@ -9,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def _point_ledger(monkeypatch, tmp_path):
     import cron.executions as executions
@@ -37,6 +39,23 @@ def test_execution_transitions_are_durable(monkeypatch, tmp_path):
 
     persisted = executions.list_executions(job_id="job-1")
     assert persisted == [completed]
+
+
+def test_mark_running_rebinds_execution_owner(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    row = executions.create_execution("job-owner", source="manual")
+    with sqlite3.connect(executions.EXECUTIONS_FILE) as conn:
+        conn.execute(
+            """UPDATE executions SET process_id='request-process', pid=-1,
+               process_started_at=NULL WHERE id=?""",
+            (row["id"],),
+        )
+
+    running = executions.mark_execution_running(row["id"])
+
+    assert running["process_id"] == executions._PROCESS_ID
+    assert running["pid"] == os.getpid()
+    assert running["process_started_at"] == executions._process_start_time(os.getpid())
 
 
 def test_execution_persists_immutable_trigger_provenance(monkeypatch, tmp_path):
@@ -273,7 +292,7 @@ def test_builtin_tick_binds_original_scheduled_slot(monkeypatch):
             "_execution_triggered_at": "2026-08-01T03:00:37+00:00",
         }],
     )
-    monkeypatch.setattr(scheduler, "advance_next_run", lambda _job_id: True)
+    monkeypatch.setattr(scheduler, "advance_next_runs", lambda _job_ids: 1)
     monkeypatch.setattr(scheduler, "_get_parallel_pool", lambda _workers: InlinePool())
     monkeypatch.setattr(scheduler, "run_one_job", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
@@ -325,7 +344,7 @@ def test_builtin_tick_reuses_durable_manual_execution(monkeypatch):
             "_execution_trigger_origin": "manual",
         }],
     )
-    monkeypatch.setattr(scheduler, "advance_next_run", lambda _job_id: True)
+    monkeypatch.setattr(scheduler, "advance_next_runs", lambda _job_ids: 1)
     monkeypatch.setattr(scheduler, "_get_parallel_pool", lambda _workers: InlinePool())
     monkeypatch.setattr(scheduler, "latest_execution", lambda _job_id: execution)
     cleared = []
@@ -350,6 +369,66 @@ def test_builtin_tick_reuses_durable_manual_execution(monkeypatch):
     assert scheduler.tick(verbose=False, sync=True) == 1
     assert dispatched[0]["execution_id"] == "exec-manual"
     assert cleared == [("manual-provenance", "exec-manual")]
+
+
+@pytest.mark.parametrize(
+    ("latest_record", "expected_origin"),
+    [
+        (None, "unknown"),
+        (
+            {
+                "id": "missing-execution",
+                "status": "unknown",
+                "trigger_origin": "manual",
+            },
+            "manual",
+        ),
+    ],
+)
+def test_builtin_tick_validates_manual_marker(
+    monkeypatch, latest_record, expected_origin
+):
+    import concurrent.futures
+    import cron.scheduler as scheduler
+
+    due_job = {
+        "id": "forged-marker",
+        "next_run_at": "2026-08-01T03:00:00+00:00",
+        "_execution_trigger_origin": "manual",
+        "_execution_triggered_at": "2026-08-01T02:59:59+00:00",
+        "_execution_scheduled_for": None,
+        "_execution_id": "missing-execution",
+    }
+    created = []
+
+    class InlinePool:
+        def submit(self, fn, *args, **kwargs):
+            future = concurrent.futures.Future()
+            try:
+                future.set_result(fn(*args, **kwargs))
+            except BaseException as exc:
+                future.set_exception(exc)
+            return future
+
+    monkeypatch.setattr(scheduler, "get_due_jobs", lambda: [due_job])
+    monkeypatch.setattr(scheduler, "advance_next_runs", lambda _job_ids: 1)
+    monkeypatch.setattr(
+        scheduler, "latest_execution", lambda _job_id: latest_record
+    )
+    monkeypatch.setattr(scheduler, "clear_pending_trigger", lambda *_args: True)
+    monkeypatch.setattr(
+        scheduler,
+        "create_execution",
+        lambda job_id, **kwargs: created.append((job_id, kwargs))
+        or {"id": "exec-unknown"},
+    )
+    monkeypatch.setattr(scheduler, "run_one_job", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(scheduler, "_get_parallel_pool", lambda *_args: InlinePool())
+    scheduler._running_job_ids.clear()
+
+    assert scheduler.tick(verbose=False, sync=True) == 1
+    assert created[0][1]["trigger_origin"] == expected_origin
+    assert created[0][1]["scheduled_for"] is None
 
 
 def test_run_one_job_records_running_then_terminal(monkeypatch):

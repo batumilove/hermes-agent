@@ -1652,7 +1652,20 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
     if not job:
         return None
     triggered_at = _hermes_now().isoformat()
-    from cron.executions import create_execution, finish_execution
+    from cron.executions import create_execution, finish_execution, latest_execution
+
+    pending = job.get("pending_trigger")
+    if isinstance(pending, dict) and isinstance(pending.get("execution_id"), str):
+        existing = latest_execution(job["id"])
+        if (
+            existing is not None
+            and existing["id"] == pending["execution_id"]
+            and existing["status"] == "claimed"
+            and existing["trigger_origin"] == "manual"
+        ):
+            # Repeated trigger requests before the next tick are idempotent.
+            # Creating another ledger row would orphan the first claimed attempt.
+            return job
 
     execution = create_execution(
         job["id"],

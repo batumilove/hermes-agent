@@ -67,7 +67,17 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
         ("triggered_at", "TEXT"),
     ):
         if name not in columns:
-            conn.execute(f"ALTER TABLE executions ADD COLUMN {name} {definition}")
+            try:
+                conn.execute(f"ALTER TABLE executions ADD COLUMN {name} {definition}")
+            except sqlite3.OperationalError:
+                # Another gateway/profile process may have completed the same
+                # additive migration after our PRAGMA snapshot. Accept only if
+                # the exact column now exists; every other DDL failure remains fatal.
+                refreshed = {
+                    row["name"] for row in conn.execute("PRAGMA table_info(executions)")
+                }
+                if name not in refreshed:
+                    raise
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_executions_job_claimed "
         "ON executions(job_id, claimed_at DESC, id DESC)"
@@ -193,11 +203,14 @@ def create_execution(
 def mark_execution_running(execution_id: str) -> Optional[Dict[str, Any]]:
     """Transition one claimed attempt to running exactly once."""
     now = _hermes_now().isoformat()
+    pid = os.getpid()
     with _transaction() as conn:
         cur = conn.execute(
-            """UPDATE executions SET status='running', started_at=?
+            """UPDATE executions
+               SET status='running', started_at=?, process_id=?, pid=?,
+                   process_started_at=?
                WHERE id=? AND status='claimed'""",
-            (now, execution_id),
+            (now, _PROCESS_ID, pid, _process_start_time(pid), execution_id),
         )
         if cur.rowcount != 1:
             return None
