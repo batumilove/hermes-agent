@@ -1178,6 +1178,11 @@ class SessionStore:
         self._save_lock = threading.Lock()
         self._routing_generation = 0
         self._persisted_routing_generation = 0
+        # Single-entry upserts persisted since the last full rewrite:
+        # session_key -> (revision, entry_json). Revisions are allocated
+        # from _routing_generation, so fast and full snapshots are totally
+        # ordered; guarded by _save_lock (see _save_entry).
+        self._fast_persisted_entries: Dict[str, tuple[int, str]] = {}
         self._inflight_lock = threading.Lock()
         self._inflight_sessions: Dict[str, _SessionFlight] = {}
         # An unscoped pre-migration Slack key can represent at most one
@@ -1425,12 +1430,20 @@ class SessionStore:
         data, generation = self._snapshot_routing_locked()
         self._persist_routing_data(data, generation)
 
+    def _next_routing_generation_locked(self) -> int:
+        """Bump and return the shared routing counter. Caller holds ``_lock``.
+
+        Both full snapshots and single-entry fast saves must allocate from
+        this counter so stale-write protection has one total order.
+        """
+        self._routing_generation = getattr(self, "_routing_generation", 0) + 1
+        return self._routing_generation
+
     def _snapshot_routing_locked(self) -> tuple[Dict[str, Any], int]:
         """Capture immutable routing data and a monotonic generation."""
-        self._routing_generation = getattr(self, "_routing_generation", 0) + 1
         return (
             {key: entry.to_dict() for key, entry in self._entries.items()},
-            self._routing_generation,
+            self._next_routing_generation_locked(),
         )
 
     def _persist_routing_data(self, data: Dict[str, Any], generation: int) -> None:
@@ -1442,6 +1455,13 @@ class SessionStore:
         with save_lock:
             if generation <= getattr(self, "_persisted_routing_generation", 0):
                 return
+            # A delayed full rewrite must include fast saves serialized after
+            # its snapshot or it could regress those entries.
+            fast_persisted = getattr(self, "_fast_persisted_entries", None)
+            if fast_persisted:
+                for key, (revision, entry_json) in fast_persisted.items():
+                    if revision > generation:
+                        data[key] = json.loads(entry_json)
             db_saved = False
             _db = getattr(self, "_db", None)
             if _db:
@@ -1460,6 +1480,14 @@ class SessionStore:
             if getattr(self, "_write_sessions_json", True) or not db_saved:
                 self._save_sessions_json(data)
             self._persisted_routing_generation = generation
+            # Records at or below this full snapshot are now superseded.
+            if fast_persisted:
+                for key in [
+                    k
+                    for k, (revision, _) in fast_persisted.items()
+                    if revision <= generation
+                ]:
+                    del fast_persisted[key]
 
     def _save_sessions_json(self, data: Dict[str, Any]) -> None:
         """Write the legacy sessions.json mirror of the routing index."""
@@ -1506,6 +1534,46 @@ class SessionStore:
         with self._lock:
             data, generation = self._snapshot_routing_locked()
         self._persist_routing_data(data, generation)
+
+    def _save_entry(self, session_key: str) -> None:
+        """Persist one metadata-only routing entry through the existing UPSERT."""
+        with self._lock:
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return
+            entry_json = json.dumps(entry.to_dict())
+            revision = self._next_routing_generation_locked()
+
+        _db = getattr(self, "_db", None)
+        saver = getattr(_db, "save_gateway_routing_entry", None) if _db else None
+        if callable(saver):
+            save_lock = getattr(self, "_save_lock", None)
+            if save_lock is None:
+                save_lock = threading.Lock()
+                self._save_lock = save_lock
+            try:
+                with save_lock:
+                    if getattr(self, "_persisted_routing_generation", 0) >= revision:
+                        return
+                    fast_persisted = getattr(self, "_fast_persisted_entries", None)
+                    if fast_persisted is None:
+                        fast_persisted = {}
+                        self._fast_persisted_entries = fast_persisted
+                    persisted = fast_persisted.get(session_key)
+                    if persisted is not None and persisted[0] >= revision:
+                        return
+                    saver(session_key, entry_json, scope=self._routing_scope())
+                    fast_persisted[session_key] = (revision, entry_json)
+                return
+            except Exception as exc:
+                logger.warning(
+                    "gateway.session: single-entry routing save failed for %r "
+                    "(%s); falling back to full index rewrite",
+                    session_key,
+                    exc,
+                )
+        self._save_entries()
+
     def _resolve_profile_for_key(self, source: Optional[SessionSource] = None) -> Optional[str]:
         """Return the profile namespace for session keys, or None when off.
 
@@ -2298,6 +2366,7 @@ class SessionStore:
 
         # ---- Phase 2: lock write -- apply decisions to _entries ----
         _needs_save = False
+        _metadata_only_save = False
         _needs_recover = False
         entry: Optional[SessionEntry] = None
         was_auto_reset = False
@@ -2310,7 +2379,9 @@ class SessionStore:
 
             if session_key in self._entries and not force_new:
                 entry = self._entries[session_key]
-                self._heal_compression_tip_locked(
+                # Compression-tip healing changes identity and must refresh
+                # the full DB index plus legacy mirror.
+                _healed = self._heal_compression_tip_locked(
                     entry, existing_session_id, canonical_existing_session_id
                 )
 
@@ -2346,6 +2417,7 @@ class SessionStore:
                     # window.  Treat as healthy -- bump updated_at and save.
                     entry.updated_at = now
                     _needs_save = True
+                    _metadata_only_save = not _healed
                 else:
                     # Stale check clean.  Apply reset decision.
                     if _reset_reason:
@@ -2360,6 +2432,7 @@ class SessionStore:
                     else:
                         entry.updated_at = now
                         _needs_save = True
+                        _metadata_only_save = not _healed
             else:
                 if not force_new:
                     _needs_recover = True
@@ -2426,7 +2499,10 @@ class SessionStore:
                 }
 
         if _needs_save:
-            self._save_entries()
+            if _metadata_only_save:
+                self._save_entry(session_key)
+            else:
+                self._save_entries()
 
         # SQLite operations outside the lock (unchanged).
         if self._db and db_end_session_id:
@@ -2470,19 +2546,25 @@ class SessionStore:
         """Update lightweight session metadata after an interaction."""
         with self._lock:
             self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return
+            entry.updated_at = _now()
+            if last_prompt_tokens is not None:
+                entry.last_prompt_tokens = last_prompt_tokens
+            # Snapshot peer fields under the same lock so a concurrent reset
+            # cannot produce a torn old/new peer record after persistence.
+            peer_session_id = entry.session_id
+            peer_origin = entry.origin
+            peer_display_name = entry.display_name
 
-            if session_key in self._entries:
-                entry = self._entries[session_key]
-                entry.updated_at = _now()
-                if last_prompt_tokens is not None:
-                    entry.last_prompt_tokens = last_prompt_tokens
-                self._save()
-                self._record_gateway_session_peer(
-                    entry.session_id,
-                    session_key,
-                    entry.origin,
-                    display_name=entry.display_name,
-                )
+        self._save_entry(session_key)
+        self._record_gateway_session_peer(
+            peer_session_id,
+            session_key,
+            peer_origin,
+            display_name=peer_display_name,
+        )
 
     def get_session_metadata(
         self,
