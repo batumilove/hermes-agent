@@ -333,3 +333,16 @@ patches:
       - scripts/run_tests.sh tests/gateway/test_delivery_ledger_producer.py tests/gateway/test_gateway_shutdown.py tests/gateway/test_shutdown_aggregate_budget_contract.py
       - scripts/run_tests.sh tests/gateway/test_session_hygiene.py tests/gateway/test_telegram_send_path_degraded_retry.py tests/gateway/test_telegram_text_batching.py tests/test_session_db_recall_reader.py
     retirement: Remove individual paths when upstream passes their contention, cancellation, degraded-delivery, and aggregate-shutdown contracts.
+
+  - id: buzz-allowlisted-dm-metadata-fallback
+    kind: compatibility
+    rationale: >-
+      Let explicitly allow-listed Buzz senders use relay-materialized DM
+      conversations when kind-9 events omit the structural recipient p-tag,
+      without weakening mention gating for allow-all mode or real channels.
+    paths:
+      - plugins/platforms/buzz/adapter.py
+      - tests/gateway/test_buzz_adapter.py
+    tests:
+      - scripts/run_tests.sh tests/gateway/test_buzz_adapter.py tests/gateway/test_buzz_websocket.py
+    retirement: Remove when upstream safely recognizes p-tag-less relay DMs for explicitly allow-listed senders with equivalent channel and access-control regression coverage.
