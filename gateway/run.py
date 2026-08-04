@@ -4475,6 +4475,8 @@ class TurnRunner:
         reused_cached_agent = False
         _cache_lock = getattr(self._runner, "_agent_cache_lock", None)
         _cache = getattr(self._runner, "_agent_cache", None)
+        cached = None
+        _cache_eviction_kind = None
 
         # Peek at the cached entry's snapshot session_id (if any) so we can
         # check, OUTSIDE the cache lock, whether THAT session_id is a DEAD
@@ -4584,6 +4586,7 @@ class TurnRunner:
                             ctx.session_key, _cached_sid,
                         )
                         evicted = self._runner._agent_cache.pop(ctx.session_key, None)
+                        _cache_eviction_kind = "stale_self_heal"
                         _ev_agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
                         if _ev_agent and _ev_agent is not _AGENT_PENDING_SENTINEL:
                             # Same deferred-cleanup rationale as the
@@ -4606,6 +4609,7 @@ class TurnRunner:
                             ctx.session_key, _cached_mc, _current_msg_count,
                         )
                         evicted = self._runner._agent_cache.pop(ctx.session_key, None)
+                        _cache_eviction_kind = "cross_process"
                         _ev_agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
                         if _ev_agent and _ev_agent is not _AGENT_PENDING_SENTINEL:
                             # Defer cleanup until AFTER the lock is
@@ -4637,6 +4641,20 @@ class TurnRunner:
                         agent.max_iterations = max_iterations
                         logger.debug("Reusing cached agent for session %s", ctx.session_key)
                         reused_cached_agent = True
+
+        # Record aggregate events only after releasing the cache lock.
+        _lifecycle = getattr(self._runner, "_lifecycle_counters", None)
+        if _lifecycle is not None:
+            if reused_cached_agent:
+                _lifecycle.record_cache_event("hit")
+            elif cached is None:
+                _lifecycle.record_cache_event("miss_absent")
+            elif cached[1] != _sig:
+                _lifecycle.record_cache_event("miss_signature")
+            else:
+                _lifecycle.record_cache_event("miss_absent")
+            if _cache_eviction_kind is not None:
+                _lifecycle.record_eviction(_cache_eviction_kind)
 
         # Lock released — refresh the fallback chain from disk for the
         # reused agent OUTSIDE the cache lock (config.yaml read is disk
@@ -4672,6 +4690,7 @@ class TurnRunner:
 
         if agent is None:
             # Config changed or first message — create fresh agent
+            _cap_evicted = 0
             agent = ctx.AIAgent(
                 model=turn_route["model"],
                 **turn_route["runtime"],
@@ -4720,8 +4739,15 @@ class TurnRunner:
                     _cache[ctx.session_key] = (
                         agent, _sig, _current_msg_count, ctx.session_id,
                     )
-                    self._runner._enforce_agent_cache_cap()
+                    _cap_evicted = self._runner._enforce_agent_cache_cap()
             logger.debug("Created new agent for session %s (sig=%s)", ctx.session_key, _sig)
+            if _lifecycle is not None:
+                _lifecycle.record_cache_event("created")
+                for _ in range(_cap_evicted):
+                    _lifecycle.record_eviction("cap")
+                _context_engine = getattr(agent, "context_compressor", None)
+                if _context_engine is not None:
+                    _lifecycle.record_context_engine(_context_engine)
 
         # Per-message state — callbacks and reasoning config change every
         # turn and must not be baked into the cached agent constructor.
@@ -5956,6 +5982,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         import threading as _threading
         self._agent_cache: "OrderedDict[str, tuple]" = OrderedDict()
         self._agent_cache_lock = _threading.Lock()
+        from gateway.lifecycle_counters import GatewayLifecycleCounters
+        self._lifecycle_counters = GatewayLifecycleCounters.from_config()
 
         # Conversation-scoped per-session state (/model, /model --once,
         # /reasoning, /fast overrides; per-turn sidecar notes; ephemeral
@@ -9682,6 +9710,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Best-effort cleanup for temporary or cached agent instances."""
         if agent is None:
             return
+        _lifecycle = getattr(self, "_lifecycle_counters", None)
+        if _lifecycle is not None:
+            _lifecycle.record_hard_cleanup(attempted=True)
+        cleanup_success = True
         try:
             if hasattr(agent, "shutdown_memory_provider"):
                 # Drain queued memory writes BEFORE tearing the provider down.
@@ -9701,7 +9733,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     try:
                         _mm.flush_pending(timeout=10)
                     except Exception:
-                        pass
+                        cleanup_success = False
                 # Pass the agent's own conversation transcript so memory
                 # providers' ``on_session_end`` hooks see the real messages
                 # instead of the empty default (#15165). ``_session_messages``
@@ -9718,15 +9750,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 else:
                     agent.shutdown_memory_provider()
         except Exception:
-            pass
+            cleanup_success = False
         # Close tool resources (terminal sandboxes, browser daemons,
         # background processes, httpx clients) to prevent zombie
         # process accumulation.
+        close_attempted = hasattr(agent, "close")
+        close_success = False
         try:
-            if hasattr(agent, "close"):
+            if close_attempted:
                 agent.close()
+                close_success = True
         except Exception:
-            pass
+            cleanup_success = False
+        if _lifecycle is not None and close_attempted:
+            _lifecycle.record_agent_close(attempted=True, success=close_success)
         # Auxiliary async clients (session_search/web/vision/etc.) live in a
         # process-global cache and are created inside worker threads. Clean up
         # any entries whose event loop is now dead so their httpx transports do
@@ -9735,7 +9772,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from agent.auxiliary_client import cleanup_stale_async_clients
             cleanup_stale_async_clients()
         except Exception:
-            pass
+            cleanup_success = False
+        if _lifecycle is not None:
+            _lifecycle.record_hard_cleanup(
+                attempted=False,
+                success=cleanup_success,
+            )
 
     _STUCK_LOOP_THRESHOLD = 3  # restarts while active before auto-suspend
     _STUCK_LOOP_FILE = ".restart_failure_counts"
@@ -13055,6 +13097,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 with _cache_lock:
                     _idle_agents = list(_cache.values())
                     _cache.clear()
+                _lifecycle = getattr(self, "_lifecycle_counters", None)
+                if _lifecycle is not None:
+                    _lifecycle.record_shutdown_cache_clear(len(_idle_agents))
                 for _entry in _idle_agents:
                     _agent = (
                         _entry[0] if isinstance(_entry, tuple) else _entry
@@ -23451,6 +23496,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         agent = evicted[0] if isinstance(evicted, tuple) and evicted else evicted
         if agent is None or agent is _AGENT_PENDING_SENTINEL:
             return
+        _lifecycle = getattr(self, "_lifecycle_counters", None)
+        if _lifecycle is not None:
+            _lifecycle.record_eviction("explicit")
 
         # Don't tear down an agent that's actively mid-turn — its client,
         # sandbox and child subagents are in use by the running request.
@@ -23583,6 +23631,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if agent is None:
             return
+        success = True
         try:
             if hasattr(agent, "release_clients"):
                 agent.release_clients()
@@ -23591,7 +23640,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # fall back to the legacy full-close path.
                 self._cleanup_agent_resources(agent)
         except Exception:
-            pass
+            success = False
         # Free conversation history memory — can be tens of MB with tool
         # outputs (file reads, terminal output, search results) on heavy
         # 100+-tool-call sessions. release_clients() deliberately preserves
@@ -23599,8 +23648,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # persisted session JSON on the next turn, so dropping it here is safe.
         if hasattr(agent, "_session_messages"):
             agent._session_messages = []
+        _lifecycle = getattr(self, "_lifecycle_counters", None)
+        if _lifecycle is not None:
+            _lifecycle.record_soft_release(success=success)
 
-    def _enforce_agent_cache_cap(self) -> None:
+    def _enforce_agent_cache_cap(self) -> int:
         """Evict oldest cached agents when cache exceeds _AGENT_CACHE_MAX_SIZE.
 
         Must be called with _agent_cache_lock held.  Resource cleanup
@@ -23617,11 +23669,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         _cache = getattr(self, "_agent_cache", None)
         if _cache is None:
-            return
+            return 0
         # OrderedDict.popitem(last=False) pops oldest; plain dict lacks the
         # arg so skip enforcement if a test fixture swapped the cache type.
         if not hasattr(_cache, "move_to_end"):
-            return
+            return 0
 
         # Snapshot of agent instances that are actively mid-turn.  Use id()
         # so the lookup is O(1) and doesn't depend on AIAgent.__eq__ (which
@@ -23681,6 +23733,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     daemon=True,
                     name=f"agent-cache-evict-{key[:24]}",
                 ).start()
+        return len(evict_plan)
 
     def _sweep_idle_cached_agents(self) -> int:
         """Evict cached agents whose AIAgent has been idle > _AGENT_CACHE_IDLE_TTL_SECS.
@@ -23757,6 +23810,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     to_evict.append((key, agent))
             for key, _ in to_evict:
                 _cache.pop(key, None)
+        _lifecycle = getattr(self, "_lifecycle_counters", None)
+        if _lifecycle is not None:
+            for _ in to_evict:
+                _lifecycle.record_eviction("idle")
         for key, agent in to_evict:
             logger.info(
                 "Agent cache idle-TTL evict: session=%s (idle=%.0fs)",
