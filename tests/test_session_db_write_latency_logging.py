@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import re
@@ -167,32 +168,35 @@ def test_execute_write_attributes_lock_wait_to_observed_owner(tmp_path, caplog):
     db.close()
 
 
-def test_execute_write_classifies_direct_lock_holder_as_unattributed(tmp_path, caplog):
+def test_execute_write_attributes_fallback_read_holder(tmp_path, caplog):
     db = SessionDB(db_path=tmp_path / "state.db")
     db._SLOW_WRITE_WARN_S = 0.0
     db._SLOW_LOCK_WAIT_WARN_S = 0.0
+    db._wal_active = False
     holder_entered = threading.Event()
     release_holder = threading.Event()
 
-    def hold_direct_lock():
-        with db._lock:
+    def hold_fallback_read():
+        with db._read_ctx() as conn:
+            assert conn is not None
+            conn.execute("SELECT 1").fetchone()
             holder_entered.set()
             assert release_holder.wait(timeout=5)
 
-    def wait_for_direct_holder(conn):
+    def wait_for_read_holder(conn):
         conn.execute(
             "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
-            ("direct-waiter", "test", time.time()),
+            ("read-waiter", "test", time.time()),
         )
 
     with caplog.at_level(logging.WARNING, logger="hermes_state"):
         with ThreadPoolExecutor(max_workers=2) as pool:
-            holder = pool.submit(hold_direct_lock)
+            holder = pool.submit(hold_fallback_read)
             assert holder_entered.wait(timeout=2)
             waiter = pool.submit(
                 db._execute_write,
-                wait_for_direct_holder,
-                operation="wait_for_direct_holder",
+                wait_for_read_holder,
+                operation="wait_for_read_holder",
             )
             time.sleep(0.05)
             release_holder.set()
@@ -202,11 +206,12 @@ def test_execute_write_classifies_direct_lock_holder_as_unattributed(tmp_path, c
     message = next(
         record.getMessage()
         for record in caplog.records
-        if "operation=wait_for_direct_holder" in record.getMessage()
+        if "operation=wait_for_read_holder" in record.getMessage()
     )
-    assert "instance_owner_operation=-" in message
+    assert "instance_owner_operation=_read_ctx" in message
+    assert "instance_owner_kind=read" in message
     assert "instance_owner_transitions=0" in message
-    assert "instance_lock_holder=unattributed" in message
+    assert "instance_lock_holder=attributed" in message
     db.close()
 
 
@@ -360,7 +365,90 @@ def test_execute_write_reports_retry_elapsed_and_uses_it_for_warning(
     )
     elapsed_s = _logged_seconds(message, "elapsed")
     total_s = _logged_seconds(message, "total")
+    sqlite_retry_wait_s = _logged_seconds(message, "sqlite_retry_wait")
     assert "attempt=2" in message
+    assert sqlite_retry_wait_s >= 0.025
     assert elapsed_s >= 0.025
     assert elapsed_s > total_s
+    db.close()
+
+
+def test_nonwrite_lock_logs_content_free_holder_latency(tmp_path, caplog):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db._SLOW_LOCK_HOLD_WARN_S = 0.0
+
+    with caplog.at_level(logging.WARNING, logger="hermes_state"):
+        with db._attributed_lock("maintenance_probe", holder_kind="maintenance"):
+            time.sleep(0.01)
+
+    message = next(
+        record.getMessage()
+        for record in caplog.records
+        if "SessionDB lock latency" in record.getMessage()
+    )
+    assert "operation=maintenance_probe" in message
+    assert "holder_kind=maintenance" in message
+    assert "wait=" in message
+    assert "hold=" in message
+    assert f"pid={os.getpid()}" in message
+    assert f"thread_id={threading.get_ident()}" in message
+    assert "db_instance=" in message
+    assert str(tmp_path) not in message
+    db.close()
+
+
+def test_attributed_lock_clears_owner_after_exception_and_cancellation(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+
+    for error_type in (RuntimeError, asyncio.CancelledError):
+        try:
+            with db._attributed_lock("failing_lifecycle", holder_kind="lifecycle"):
+                raise error_type("expected")
+        except error_type as exc:
+            assert str(exc) == "expected"
+        else:
+            raise AssertionError(f"expected {error_type.__name__}")
+
+        with db._write_diag_lock:
+            assert db._write_waiter_count == 0
+            assert db._write_owner_operation is None
+            assert db._write_owner_kind is None
+            assert db._write_owner_started is None
+        assert db._lock.acquire(timeout=0.1)
+        db._lock.release()
+    db.close()
+
+
+def test_passive_checkpoint_is_attributed_as_maintenance(tmp_path, caplog):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db._SLOW_LOCK_HOLD_WARN_S = 0.0
+
+    with caplog.at_level(logging.WARNING, logger="hermes_state"):
+        db._try_wal_checkpoint()
+
+    message = next(
+        record.getMessage()
+        for record in caplog.records
+        if "SessionDB lock latency" in record.getMessage()
+    )
+    assert "operation=_try_wal_checkpoint" in message
+    assert "holder_kind=maintenance" in message
+    db.close()
+
+
+def test_incremental_fts_merge_is_attributed_as_maintenance(tmp_path, caplog):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db._SLOW_LOCK_HOLD_WARN_S = 0.0
+    db._fts_enabled = True
+
+    with caplog.at_level(logging.WARNING, logger="hermes_state"):
+        db._try_incremental_merge_fts()
+
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "SessionDB lock latency" in record.getMessage()
+    ]
+    assert any("operation=_merge_fts_incrementally" in message for message in messages)
+    assert any("holder_kind=maintenance" in message for message in messages)
     db.close()
