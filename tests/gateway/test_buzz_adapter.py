@@ -558,9 +558,21 @@ class TestBuzzAdapterSend:
         assert result.success is True
 
     @pytest.mark.asyncio
-    async def test_send_document_surfaces_relay_file_type_rejection(self, tmp_path):
-        document = tmp_path / "artifact.html"
-        document.write_text("<html></html>", encoding="utf-8")
+    @pytest.mark.parametrize(
+        ("file_name", "media_type"),
+        [
+            ("artifact.html", "text/html"),
+            ("artifact.zip", "application/zip"),
+        ],
+    )
+    async def test_send_document_surfaces_relay_file_type_rejection(
+        self,
+        tmp_path,
+        file_name,
+        media_type,
+    ):
+        document = tmp_path / file_name
+        document.write_bytes(b"unsupported")
         adapter = _make_adapter()
         cli = _ScriptedCli()
         cli.script(
@@ -568,7 +580,10 @@ class TestBuzzAdapterSend:
             "send",
             "",
             code=1,
-            stderr='{"error":"user_error","message":"unsupported file type: text/html"}',
+            stderr=(
+                '{"error":"user_error","message":"unsupported file type: '
+                f'{media_type}"}}'
+            ),
         )
         adapter._run_cli = cli
 
@@ -577,7 +592,7 @@ class TestBuzzAdapterSend:
         args, _stdin = cli.calls[0]
         assert args[args.index("--file") + 1] == str(document)
         assert result.success is False
-        assert "unsupported file type: text/html" in result.error
+        assert f"unsupported file type: {media_type}" in result.error
 
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────
