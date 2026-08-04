@@ -16,6 +16,14 @@ def test_ci_can_run_against_an_exact_candidate_ref() -> None:
     assert "workflow_dispatch" in triggers
 
 
+def test_ci_emits_the_required_aggregate_check_for_live_pushes() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    triggers = workflow.get("on", workflow.get(True))
+
+    assert set(triggers["push"]["branches"]) == {"main", "batumi/live"}
+    assert workflow["jobs"]["all-checks-pass"]["name"] == "All required checks pass"
+
+
 def test_fork_contracts_install_the_canonical_test_environment() -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     steps = workflow["jobs"]["fork-contracts"]["steps"]
