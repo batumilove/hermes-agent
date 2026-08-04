@@ -651,32 +651,93 @@ class BuzzAdapter(BasePlatformAdapter):
         """Send an image: local files upload via --file, URLs go as a link."""
         local = Path(image_url).expanduser() if not image_url.startswith(("http://", "https://")) else None
         if local is not None and local.is_file():
-            args = [
-                "messages", "send",
-                "--channel", str(chat_id),
-                "--file", str(local),
-                "--content", "-",
-            ]
-            if reply_to:
-                args += ["--reply-to", str(reply_to)]
-            code, out, err = await self._run_cli(args, input_text=caption or "")
-            if code != 0:
-                return SendResult(success=False, error=_cli_error_message(err, code), retryable=code == 2)
-            try:
-                data = json.loads(out or "{}")
-            except ValueError:
-                data = {}
-            event_id = data.get("event_id")
-            if event_id:
-                self._mark_seen(str(chat_id), str(event_id))
-            return SendResult(
-                success=bool(data.get("accepted", True)),
-                message_id=str(event_id) if event_id else None,
-                raw_response=data,
+            return await self._send_local_file(
+                chat_id,
+                local,
+                caption=caption,
+                reply_to=reply_to,
+                metadata=metadata,
             )
         # Markdown renders in Buzz, so a URL arrives as a clickable image link.
         text = f"{caption}\n{image_url}" if caption else image_url
         return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
+
+    async def _send_local_file(
+        self,
+        chat_id: str,
+        file_path: Path,
+        *,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        args = [
+            "messages", "send",
+            "--channel", str(chat_id),
+            "--file", str(file_path),
+            "--content", "-",
+        ]
+        reply_target = reply_to or (metadata or {}).get("thread_id")
+        if reply_target:
+            args += ["--reply-to", str(reply_target)]
+        code, out, err = await self._run_cli(args, input_text=caption or "")
+        if code != 0:
+            return SendResult(success=False, error=_cli_error_message(err, code), retryable=code == 2)
+        try:
+            data = json.loads(out or "{}")
+        except ValueError:
+            data = {}
+        event_id = data.get("event_id")
+        if event_id:
+            self._mark_seen(str(chat_id), str(event_id))
+        return SendResult(
+            success=bool(data.get("accepted", True)),
+            message_id=str(event_id) if event_id else None,
+            raw_response=data,
+        )
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Upload a local image emitted through Hermes' ``MEDIA:`` pipeline."""
+        local = Path(image_path).expanduser()
+        if not local.is_file():
+            return SendResult(success=False, error="Image attachment not found")
+        return await self._send_local_file(
+            chat_id,
+            local,
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Upload a local document emitted through Hermes' ``MEDIA:`` pipeline."""
+        local = Path(file_path).expanduser()
+        if not local.is_file():
+            return SendResult(success=False, error="File attachment not found")
+        return await self._send_local_file(
+            chat_id,
+            local,
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         chat_id = str(chat_id)

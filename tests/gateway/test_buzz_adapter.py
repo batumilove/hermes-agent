@@ -6,6 +6,9 @@ import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+from gateway.config import Platform
+from gateway.platforms.base import MessageEvent, MessageType
+from gateway.session import SessionSource, build_session_key
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 # Load plugins/platforms/buzz/adapter.py under a unique module name
@@ -99,6 +102,31 @@ class _ScriptedCli:
         if queue:
             return queue[0]
         return 0, "[]", ""
+
+
+async def _hold_typing(_chat_id, interval=2.0, metadata=None, stop_event=None):
+    if stop_event is not None:
+        await stop_event.wait()
+    else:
+        await asyncio.Event().wait()
+
+
+def _message_event():
+    return MessageEvent(
+        text="send the artifact",
+        message_type=MessageType.TEXT,
+        source=SessionSource(platform=Platform("buzz"), chat_id=CHANNEL, chat_type="dm"),
+        message_id="incoming-1",
+    )
+
+
+def _safe_media_file(tmp_path, monkeypatch, name, payload=b"payload"):
+    root = tmp_path / "media-cache"
+    path = root / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    monkeypatch.setattr("gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", (root,))
+    return path.resolve()
 
 
 # ── bech32 / identity helpers ─────────────────────────────────────────────
@@ -469,6 +497,87 @@ class TestBuzzAdapterSend:
         assert result.success is True
         args, _stdin = cli.calls[0]
         assert args[args.index("--file") + 1] == str(img)
+
+    @pytest.mark.asyncio
+    async def test_media_directive_image_uses_file_upload(self, tmp_path, monkeypatch):
+        image = _safe_media_file(tmp_path, monkeypatch, "preview.png", b"\x89PNG fake")
+        adapter = _make_adapter()
+        adapter._keep_typing = _hold_typing
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt-image", "message": ""})
+        adapter._run_cli = cli
+
+        async def handler(_event):
+            return f"Preview attached.\nMEDIA:{image}"
+
+        adapter.set_message_handler(handler)
+        event = _message_event()
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+        upload_calls = [args for args, _stdin in cli.calls if "--file" in args]
+        assert len(upload_calls) == 1
+        assert upload_calls[0][upload_calls[0].index("--file") + 1] == str(image)
+
+    @pytest.mark.asyncio
+    async def test_media_directive_document_uses_file_upload(self, tmp_path, monkeypatch):
+        document = _safe_media_file(tmp_path, monkeypatch, "report.pdf", b"%PDF-1.4 fake")
+        adapter = _make_adapter()
+        adapter._keep_typing = _hold_typing
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt-document", "message": ""})
+        adapter._run_cli = cli
+
+        async def handler(_event):
+            return f"Report attached.\nMEDIA:{document}"
+
+        adapter.set_message_handler(handler)
+        event = _message_event()
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+        upload_calls = [args for args, _stdin in cli.calls if "--file" in args]
+        assert len(upload_calls) == 1
+        assert upload_calls[0][upload_calls[0].index("--file") + 1] == str(document)
+
+    @pytest.mark.asyncio
+    async def test_send_document_targets_metadata_thread(self, tmp_path):
+        document = tmp_path / "report.pdf"
+        document.write_bytes(b"%PDF-1.4 fake")
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt-thread", "message": ""})
+        adapter._run_cli = cli
+
+        result = await adapter.send_document(
+            CHANNEL,
+            str(document),
+            metadata={"thread_id": "thread-event"},
+        )
+
+        args, _stdin = cli.calls[0]
+        assert args[args.index("--reply-to") + 1] == "thread-event"
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_send_document_surfaces_relay_file_type_rejection(self, tmp_path):
+        document = tmp_path / "artifact.html"
+        document.write_text("<html></html>", encoding="utf-8")
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=1,
+            stderr='{"error":"user_error","message":"unsupported file type: text/html"}',
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send_document(CHANNEL, str(document), caption="artifact")
+
+        args, _stdin = cli.calls[0]
+        assert args[args.index("--file") + 1] == str(document)
+        assert result.success is False
+        assert "unsupported file type: text/html" in result.error
 
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────
