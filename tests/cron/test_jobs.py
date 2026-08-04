@@ -346,6 +346,25 @@ class TestResolveJobRef:
         assert clear_pending_trigger(job["id"], marker["execution_id"])
         assert get_job(job["id"]).get("pending_trigger") is None
 
+    def test_retrigger_is_idempotent_while_manual_execution_is_pending(
+        self, tmp_cron_dir, tmp_path, monkeypatch
+    ):
+        import cron.executions as executions
+
+        monkeypatch.setattr(
+            executions, "EXECUTIONS_FILE", tmp_path / "cron" / "executions.db"
+        )
+        job = create_job(prompt="manual provenance", schedule="every 1h")
+        first = trigger_job(job["id"])["pending_trigger"]
+        second = trigger_job(job["id"])["pending_trigger"]
+
+        records = executions.list_executions(job_id=job["id"], limit=10)
+        assert second == first
+        assert len(records) == 1
+        assert records[0]["id"] == first["execution_id"]
+        assert records[0]["status"] == "claimed"
+        assert get_job(job["id"])["pending_trigger"] == first
+
 
 class TestMarkJobRun:
     def test_increments_completed(self, tmp_cron_dir):

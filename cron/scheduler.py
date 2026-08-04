@@ -4463,22 +4463,39 @@ def tick(
             pending_execution = (
                 latest_execution(job_id) if pending_execution_id else None
             )
-            if (
+            bound_manual_trigger = (
                 pending_execution is not None
                 and pending_execution["id"] == pending_execution_id
-                and pending_execution["status"] == "claimed"
                 and pending_execution["trigger_origin"] == "manual"
-            ):
+            )
+            if bound_manual_trigger and pending_execution["status"] == "claimed":
                 execution = pending_execution
             else:
+                if pending_execution_id:
+                    # A syntactic jobs.json marker is not provenance. Preserve
+                    # manual origin only when it binds to an immutable prior
+                    # manual request that recovery classified as unknown.
+                    recovered_manual = (
+                        bound_manual_trigger
+                        and pending_execution["status"] == "unknown"
+                    )
+                    trigger_origin = "manual" if recovered_manual else "unknown"
+                    scheduled_for = None
+                    triggered_at = (
+                        job.get("_execution_triggered_at") if recovered_manual else None
+                    )
+                else:
+                    trigger_origin = job.get("_execution_trigger_origin", "unknown")
+                    scheduled_for = job.get(
+                        "_execution_scheduled_for", job.get("next_run_at")
+                    )
+                    triggered_at = job.get("_execution_triggered_at")
                 execution = create_execution(
                     job_id,
                     source="builtin",
-                    trigger_origin=job.get("_execution_trigger_origin", "unknown"),
-                    scheduled_for=job.get(
-                        "_execution_scheduled_for", job.get("next_run_at")
-                    ),
-                    triggered_at=job.get("_execution_triggered_at"),
+                    trigger_origin=trigger_origin,
+                    scheduled_for=scheduled_for,
+                    triggered_at=triggered_at,
                 )
             if pending_execution_id:
                 # Clear only the marker that produced this due item. A newer
