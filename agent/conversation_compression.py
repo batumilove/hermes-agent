@@ -76,6 +76,13 @@ from agent.session_activity import ActivityProvenance, normalize_activity_proven
 
 logger = logging.getLogger(__name__)
 
+# Private marker shared with ``run_agent.AIAgent`` persistence. Durable replay
+# rows adopted after lease acquisition are fresh dictionaries, so identity
+# comparison against the caller's stale ``conversation_history`` cannot prove
+# they already exist in SQLite. Stamp them before any abort/error exit can run
+# the normal append-only persistence path.
+_DB_PERSISTED_MARKER = "_db_persisted"
+
 # Terminal compression outcomes published by host/hygiene timeout or cooldown
 # writers. Detached heartbeat workers must not clobber these back to
 # agent.compression after cancel (otherwise timeout is unobservable). Observing
@@ -2734,6 +2741,13 @@ def compress_context(
                         len(messages),
                         len(durable_parent),
                     )
+                    # Every row in ``durable_parent`` came from SQLite, but the
+                    # loader returned fresh dictionaries. Mark them durable so
+                    # an aborted summary followed by normal error persistence
+                    # cannot append the adopted transcript a second time.
+                    for durable_message in durable_parent:
+                        if isinstance(durable_message, dict):
+                            durable_message[_DB_PERSISTED_MARKER] = True
                     messages = durable_parent
                     _pre_msg_count = len(messages)
                     # Token estimate was for the stale snapshot; clear it so
