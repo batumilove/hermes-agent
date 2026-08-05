@@ -23825,12 +23825,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if agent is None:
             return
         success = True
+        soft_release_attempted = False
         try:
             if hasattr(agent, "release_clients"):
+                soft_release_attempted = True
                 agent.release_clients()
             else:
                 # Older agent instance (shouldn't happen in practice) —
-                # fall back to the legacy full-close path.
+                # fall back to the legacy full-close path. The hard-cleanup
+                # instrumentation owns this outcome; do not double-count it
+                # as a soft release that never occurred.
                 self._cleanup_agent_resources(agent)
         except Exception:
             success = False
@@ -23842,7 +23846,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if hasattr(agent, "_session_messages"):
             agent._session_messages = []
         _lifecycle = getattr(self, "_lifecycle_counters", None)
-        if _lifecycle is not None:
+        if _lifecycle is not None and soft_release_attempted:
             _lifecycle.record_soft_release(success=success)
 
     def _enforce_agent_cache_cap(self) -> int:

@@ -213,6 +213,39 @@ def test_record_hard_cleanup_and_agent_close():
     assert ev["agent_close_failure"] == 1
 
 
+def test_soft_release_legacy_fallback_is_only_counted_as_hard_cleanup():
+    """The no-release_clients compatibility path must not claim a soft release."""
+    from gateway.lifecycle_counters import GatewayLifecycleCounters
+    from gateway.run import GatewayRunner
+
+    ctr = GatewayLifecycleCounters(enabled=True)
+    runner = object.__new__(GatewayRunner)
+    runner._lifecycle_counters = ctr
+    hard_cleanup_agents = []
+
+    def _record_hard_cleanup(agent):
+        hard_cleanup_agents.append(agent)
+        ctr.record_hard_cleanup(attempted=True)
+        ctr.record_hard_cleanup(attempted=False, success=True)
+
+    runner._cleanup_agent_resources = _record_hard_cleanup
+
+    class _LegacyAgent:
+        _session_messages = ["large persisted transcript"]
+
+    agent = _LegacyAgent()
+    runner._release_evicted_agent_soft(agent)
+
+    assert hard_cleanup_agents == [agent]
+    assert agent._session_messages == []
+    events = ctr.snapshot()["agent_cache"]["events"]
+    assert events["hard_cleanup_calls"] == 1
+    assert events["hard_cleanup_success"] == 1
+    assert "soft_release_calls" not in events
+    assert "soft_release_success" not in events
+    assert "soft_release_failure" not in events
+
+
 def test_record_shutdown_cache_clear():
     from gateway.lifecycle_counters import GatewayLifecycleCounters
 
