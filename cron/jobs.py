@@ -1648,63 +1648,73 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
     """Schedule a durably-attributed manual run on the next scheduler tick."""
-    job = resolve_job_ref(job_id)
-    if not job:
+    resolved = resolve_job_ref(job_id)
+    if not resolved:
         return None
-    triggered_at = _hermes_now().isoformat()
+    canonical_id = resolved["id"]
     from cron.executions import create_execution, finish_execution, latest_execution
 
-    pending = job.get("pending_trigger")
-    if isinstance(pending, dict) and isinstance(pending.get("execution_id"), str):
-        existing = latest_execution(job["id"])
-        if (
-            existing is not None
-            and existing["id"] == pending["execution_id"]
-            and existing["status"] == "claimed"
-            and existing["trigger_origin"] == "manual"
-        ):
-            # Repeated trigger requests before the next tick are idempotent.
-            # Creating another ledger row would orphan the first claimed attempt.
-            return job
+    # Keep pending-marker inspection, ledger creation, and jobs.json publication
+    # inside one store lock. Without this boundary, concurrent API/CLI trigger
+    # requests can both observe no marker, create separate claimed executions,
+    # and overwrite one marker, leaving an owner-live execution orphaned forever.
+    with _jobs_lock():
+        jobs = load_jobs()
+        for i, job in enumerate(jobs):
+            if job.get("id") != canonical_id:
+                continue
 
-    execution = create_execution(
-        job["id"],
-        source="manual",
-        trigger_origin="manual",
-        triggered_at=triggered_at,
-    )
-    try:
-        updated = update_job(
-            job["id"],
-            {
-                "enabled": True,
-                "state": "scheduled",
-                "paused_at": None,
-                "paused_reason": None,
-                "next_run_at": triggered_at,
-                # Persist across process restart. The due scan consumes this
-                # marker only after provenance already exists in executions.db.
-                "pending_trigger": {
-                    "origin": "manual",
-                    "at": triggered_at,
-                    "execution_id": execution["id"],
-                },
-            },
-        )
-    except Exception as exc:
-        finish_execution(
-            execution["id"],
-            success=False,
-            error=f"Failed to schedule manual trigger: {exc}",
-        )
-        raise
-    if updated is None:
-        finish_execution(
-            execution["id"],
-            success=False,
-            error="Failed to schedule manual trigger: job disappeared",
-        )
-    return updated
+            pending = job.get("pending_trigger")
+            if isinstance(pending, dict) and isinstance(
+                pending.get("execution_id"), str
+            ):
+                existing = latest_execution(canonical_id)
+                if (
+                    existing is not None
+                    and existing["id"] == pending["execution_id"]
+                    and existing["status"] == "claimed"
+                    and existing["trigger_origin"] == "manual"
+                ):
+                    # Repeated or concurrent requests before the next tick are
+                    # idempotent and reuse the exact durable execution identity.
+                    return _normalize_job_record(job)
+
+            triggered_at = _hermes_now().isoformat()
+            execution = create_execution(
+                canonical_id,
+                source="manual",
+                trigger_origin="manual",
+                triggered_at=triggered_at,
+            )
+            updated = _apply_skill_fields(
+                {
+                    **job,
+                    "enabled": True,
+                    "state": "scheduled",
+                    "paused_at": None,
+                    "paused_reason": None,
+                    "next_run_at": triggered_at,
+                    # Persist across process restart. The due scan consumes this
+                    # marker only after provenance already exists in executions.db.
+                    "pending_trigger": {
+                        "origin": "manual",
+                        "at": triggered_at,
+                        "execution_id": execution["id"],
+                    },
+                }
+            )
+            jobs[i] = updated
+            try:
+                _save_jobs_unlocked(jobs)
+            except Exception as exc:
+                finish_execution(
+                    execution["id"],
+                    success=False,
+                    error=f"Failed to schedule manual trigger: {exc}",
+                )
+                raise
+            return _normalize_job_record(updated)
+    return None
 
 
 def clear_pending_trigger(job_id: str, expected_execution_id: str) -> bool:
