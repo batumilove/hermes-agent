@@ -306,6 +306,15 @@ def list_executions(
     return [dict(row) for row in rows]
 
 
+def get_execution(execution_id: str) -> Optional[Dict[str, Any]]:
+    """Load one immutable execution identity directly by its primary key."""
+    with _transaction() as conn:
+        row = conn.execute(
+            "SELECT * FROM executions WHERE id=?", (str(execution_id),)
+        ).fetchone()
+    return _record(row)
+
+
 def latest_execution(job_id: str) -> Optional[Dict[str, Any]]:
     rows = list_executions(job_id=job_id, limit=1)
     return rows[0] if rows else None
