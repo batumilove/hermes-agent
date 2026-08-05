@@ -1550,8 +1550,8 @@ def test_real_binding_overlapping_metrics_model_calls_close_out_of_order(
     assert runtime.start_task(task_event) is not None
     runtime.start_model_call(call_a)
     runtime.start_model_call(call_b)
-    runtime.end_model_call(call_a, outcome="success")
-    runtime.end_model_call(call_b, outcome="success")
+    runtime.end_model_call(call_a)
+    runtime.end_model_call(call_b)
     runtime.finish_task({**task_event, "completed": True})
     runtime.close_session({"session_id": "metrics-model-session"})
     relay_runtime.SESSION_COORDINATOR.finalize_conversation(
