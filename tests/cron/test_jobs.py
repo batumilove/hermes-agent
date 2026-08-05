@@ -365,6 +365,40 @@ class TestResolveJobRef:
         assert records[0]["status"] == "claimed"
         assert get_job(job["id"])["pending_trigger"] == first
 
+    def test_concurrent_retrigger_creates_one_pending_execution(
+        self, tmp_cron_dir, tmp_path, monkeypatch
+    ):
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
+        import cron.executions as executions
+
+        monkeypatch.setattr(
+            executions, "EXECUTIONS_FILE", tmp_path / "cron" / "executions.db"
+        )
+        original_create = executions.create_execution
+        create_barrier = threading.Barrier(2)
+
+        def synchronized_create(*args, **kwargs):
+            try:
+                create_barrier.wait(timeout=1)
+            except threading.BrokenBarrierError:
+                pass
+            return original_create(*args, **kwargs)
+
+        monkeypatch.setattr(executions, "create_execution", synchronized_create)
+        job = create_job(prompt="manual provenance", schedule="every 1h")
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            triggered = list(pool.map(lambda _: trigger_job(job["id"]), range(2)))
+
+        markers = [result["pending_trigger"] for result in triggered]
+        records = executions.list_executions(job_id=job["id"], limit=10)
+        assert markers[0] == markers[1]
+        assert len(records) == 1
+        assert records[0]["id"] == markers[0]["execution_id"]
+        assert records[0]["status"] == "claimed"
+
 
 class TestMarkJobRun:
     def test_increments_completed(self, tmp_cron_dir):
