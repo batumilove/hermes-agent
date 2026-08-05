@@ -60,6 +60,22 @@ patches:
       - scripts/run_tests.sh tests/hermes_cli/test_update_eol_churn.py
     retirement: Remove when upstream forces an equivalent index refresh before EOL classification.
 
+  - id: upstream-sync-whitespace-cleanup
+    kind: cleanup
+    rationale: >-
+      Keep the accepted upstream tree free of inherited trailing whitespace and
+      missing-final-newline defects so the fork remains clean under diff checks
+      after advancing its recorded upstream baseline.
+    paths:
+      - hermes_cli/bang_shell.py
+      - nix/desktop.nix
+      - tests/cli/test_bang_shell_mode.py
+      - tests/hermes_cli/test_model_switch_context_offload.py
+    tests:
+      - git diff --check $(cat .github/upstream-base)..HEAD
+      - scripts/run_tests.sh tests/cli/test_bang_shell_mode.py tests/hermes_cli/test_model_switch_context_offload.py
+    retirement: Remove when the recorded upstream baseline contains byte-identical diff-check-clean versions of these files.
+
   - id: test-dns-isolation
     kind: compatibility
     rationale: >-
@@ -178,6 +194,18 @@ patches:
     tests:
       - scripts/run_tests.sh tests/tools/test_environment_registry.py tests/tools/test_terminal_tool_requirements.py
     retirement: Remove when upstream exposes an equivalent session-stable environment backend registry.
+
+  - id: compression-adopted-history-dedup
+    kind: core
+    rationale: >-
+      Mark durable transcript rows adopted after compression lease acquisition
+      as already persisted so an aborted summary cannot append them again.
+    paths:
+      - agent/conversation_compression.py
+      - tests/agent/test_compression_concurrent_fork.py
+    tests:
+      - scripts/run_tests.sh tests/agent/test_compression_concurrent_fork.py
+    retirement: Remove when upstream preserves persistence identity for adopted durable compression history with equivalent abort-path regression coverage.
 
   - id: final-output-policy-context
     kind: core
