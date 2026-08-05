@@ -1,8 +1,9 @@
-"""Regression tests for transient SQLite ``no more rows available`` errors.
+"""Retry of transient ``no more rows available`` SQLite engine errors.
 
 Under concurrent WAL writers, SQLite can surface this transient engine failure
-through different sqlite3 exception classes. Transcript persistence must retry
-it inside the existing bounded patience policy rather than aborting the turn.
+through different ``sqlite3`` exception classes. The policy is message-scoped:
+known transient failures retry within the existing bounded patience window,
+while unrelated errors still propagate immediately.
 """
 
 import sqlite3
