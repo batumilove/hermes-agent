@@ -93,6 +93,22 @@ patches:
       - scripts/run_tests.sh tests/run_agent/test_run_agent.py
     retirement: Remove when upstream releases dead-thread SessionDB readers and closes idle request pools at turn boundaries with equivalent ownership and real-socket contracts.
 
+  - id: gateway-lifecycle-diagnostics
+    kind: core
+    rationale: >-
+      Expose opt-in, privacy-bounded lifecycle counters that correlate gateway
+      agent-cache ownership and cleanup outcomes with context-engine resource
+      retention without retaining session or message identifiers.
+    paths:
+      - gateway/lifecycle_counters.py
+      - gateway/run.py
+      - gateway/slash_commands.py
+      - tests/gateway/test_agents_command_delegations.py
+      - tests/gateway/test_lifecycle_counters.py
+    tests:
+      - scripts/run_tests.sh tests/gateway/test_lifecycle_counters.py tests/gateway/test_agents_command_delegations.py
+    retirement: Remove when upstream provides equivalent opt-in, fixed-cardinality gateway lifecycle diagnostics with privacy and cleanup-outcome coverage.
+
   - id: sessiondb-write-latency-diagnostics
     kind: core
     rationale: >-
