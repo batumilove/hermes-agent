@@ -38,6 +38,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from hermes_constants import get_default_hermes_root
 from test_support.dns_guard import install_reserved_test_host_guard
 
 # Install before pytest imports test modules: collection-time constructors can
@@ -67,10 +68,10 @@ install_reserved_test_host_guard()
 # would silently stop protecting the operator's actual ~/.hermes (#69385).
 _PRE_SANDBOX_KANBAN_OVERRIDE = os.environ.get("HERMES_KANBAN_HOME", "").strip()
 _PRE_SANDBOX_HERMES_HOME = os.environ.get("HERMES_HOME", "")
-if not os.environ.get("HERMES_HOME"):
-    _SESSION_HERMES_HOME = tempfile.mkdtemp(prefix="hermes-test-home-")
-    os.environ["HERMES_HOME"] = _SESSION_HERMES_HOME
-    atexit.register(shutil.rmtree, _SESSION_HERMES_HOME, True)
+_PRE_SANDBOX_HERMES_ROOT = get_default_hermes_root().resolve()
+_SESSION_HERMES_HOME = tempfile.mkdtemp(prefix="hermes-test-home-")
+os.environ["HERMES_HOME"] = _SESSION_HERMES_HOME
+atexit.register(shutil.rmtree, _SESSION_HERMES_HOME, True)
 
 #: HERMES_HOME as it stood when conftest was imported - i.e. before any test
 #: module could import code that configures logging. Recorded so the guard in
@@ -588,10 +589,10 @@ def _capture_real_kanban_root() -> Path:
     if _PRE_SANDBOX_KANBAN_OVERRIDE:
         return Path(_PRE_SANDBOX_KANBAN_OVERRIDE).expanduser().resolve()
     if _PRE_SANDBOX_HERMES_HOME:
-        # HERMES_HOME was genuinely set before the sandbox — honor it via the
-        # normal resolver (it may be a profile dir whose root matters).
-        from hermes_constants import get_default_hermes_root
-        return get_default_hermes_root().resolve()
+        # HERMES_HOME was genuinely set before the sandbox.  Use the root
+        # captured before rewiring the environment; resolving it now would
+        # return the throwaway test home instead of the operator root.
+        return _PRE_SANDBOX_HERMES_ROOT
     # No pre-existing HERMES_HOME: the real root is the platform default,
     # NOT the sandbox tempdir now sitting in the env.
     return (Path.home() / ".hermes").resolve()
