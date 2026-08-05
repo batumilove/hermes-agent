@@ -1564,6 +1564,9 @@ def init_agent(
     
     # SQLite session store (optional -- provided by CLI or gateway)
     agent._session_db = session_db
+    # Injected stores are owned by the outer runner and may be shared by many
+    # agents. Only a store lazily created by this agent may be closed here.
+    agent._owns_session_db = session_db is None
     agent._parent_session_id = parent_session_id
     # A close flush and the worker's turn-start flush can overlap. The durable
     # marker is attached to each in-memory message dict, so its test-and-append

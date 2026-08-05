@@ -611,6 +611,7 @@ class AIAgent:
             from hermes_state import SessionDB
 
             self._session_db = SessionDB()
+            self._owns_session_db = True
             return self._session_db
         except Exception:
             logger.debug("SessionDB unavailable for recall", exc_info=True)
@@ -4138,8 +4139,34 @@ class AIAgent:
         except Exception:
             pass
 
+    def _release_persistence_resources(self) -> None:
+        """Close agent-owned context/session database handles idempotently."""
+        context_engine = getattr(self, "context_compressor", None)
+        try:
+            shutdown = getattr(context_engine, "shutdown", None)
+            if callable(shutdown):
+                shutdown()
+        except Exception:
+            logger.debug("Context-engine shutdown failed during agent cleanup", exc_info=True)
+        finally:
+            if hasattr(self, "context_compressor"):
+                self.context_compressor = None
+
+        session_db = getattr(self, "_session_db", None)
+        try:
+            close = getattr(session_db, "close", None)
+            if getattr(self, "_owns_session_db", False) and callable(close):
+                close()
+        except Exception:
+            logger.debug("SessionDB close failed during agent cleanup", exc_info=True)
+        finally:
+            if hasattr(self, "_session_db"):
+                self._session_db = None
+            if hasattr(self, "_owns_session_db"):
+                self._owns_session_db = False
+
     def release_clients(self) -> None:
-        """Release LLM client resources WITHOUT tearing down session tool state.
+        """Release rebuildable resources WITHOUT tearing down session tool state.
 
         Used by the gateway when evicting this agent from _agent_cache for
         memory-management reasons (LRU cap or idle TTL) — the session may
@@ -4155,6 +4182,9 @@ class AIAgent:
           - OpenAI/httpx client pool (big chunk of held memory + sockets;
             the rebuilt agent gets a fresh client anyway)
           - Active child subagents (per-turn artefacts; safe to drop)
+          - Context-engine and agent-owned SessionDB handles (the rebuilt
+            agent reopens fresh handles; outer-runner stores stay open and the
+            durable session row remains active)
 
         Safe to call multiple times.  Distinct from close() — which is the
         hard teardown for actual session boundaries (/new, /reset, session
@@ -4197,6 +4227,8 @@ class AIAgent:
             self._close_cached_request_openai_client(reason="cache_evict")
         except Exception:
             pass
+
+        self._release_persistence_resources()
 
     def close(self) -> None:
         """Release all resources held by this agent instance.
@@ -4324,6 +4356,10 @@ class AIAgent:
                     session_db.end_session(session_id, "agent_close")
         except Exception:
             pass
+
+        # 9. Close per-agent SQLite handles only after the session row has been
+        # finalized. A newly built/resumed agent opens fresh handles as needed.
+        self._release_persistence_resources()
 
     def _hydrate_todo_store(self, history: List[Dict[str, Any]]) -> None:
         """

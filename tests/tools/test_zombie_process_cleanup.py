@@ -120,6 +120,166 @@ class TestAgentCloseMethod:
                 mock_cleanup_browser.assert_called_once_with("test-close-cleanup")
                 mock_cleanup_cua.assert_called_once_with("test-close-cleanup")
 
+    def test_close_shuts_down_context_engine(self):
+        """Hard teardown closes the agent-owned context-engine storage."""
+        from unittest.mock import MagicMock, patch
+
+        with patch("run_agent.AIAgent.__init__", return_value=None):
+            from run_agent import AIAgent
+            agent = AIAgent.__new__(AIAgent)
+            agent.session_id = "test-close-context-engine"
+            agent._active_children = []
+            agent._active_children_lock = threading.Lock()
+            agent.client = None
+            context_engine = MagicMock()
+            setattr(agent, "context_compressor", context_engine)
+
+            agent.close()
+
+            context_engine.shutdown.assert_called_once_with()
+
+    def test_close_closes_session_database_after_finalization(self):
+        """Hard teardown closes the owned SessionDB after ending its row."""
+        from unittest.mock import MagicMock, patch
+
+        with patch("run_agent.AIAgent.__init__", return_value=None):
+            from run_agent import AIAgent
+            agent = AIAgent.__new__(AIAgent)
+            agent.session_id = "test-close-session-database"
+            agent._active_children = []
+            agent._active_children_lock = threading.Lock()
+            agent.client = None
+            agent._end_session_on_close = True
+            events = []
+            session_db = MagicMock()
+            session_db.end_session.side_effect = lambda *_args: events.append("end")
+            session_db.close.side_effect = lambda: events.append("close")
+            agent._session_db = session_db
+            agent._owns_session_db = True
+
+            agent.close()
+
+            assert events == ["end", "close"]
+
+    def test_soft_client_release_closes_persistence_resources(self):
+        """Discarded cache agents release DB handles without ending sessions."""
+        from unittest.mock import MagicMock, patch
+
+        with patch("run_agent.AIAgent.__init__", return_value=None):
+            from run_agent import AIAgent
+            agent = AIAgent.__new__(AIAgent)
+            agent.session_id = "test-soft-persistence-release"
+            agent._active_children = []
+            agent._active_children_lock = threading.Lock()
+            agent.client = None
+            context_engine = MagicMock()
+            session_db = MagicMock()
+            setattr(agent, "context_compressor", context_engine)
+            agent._session_db = session_db
+            agent._owns_session_db = True
+
+            agent.release_clients()
+
+            context_engine.shutdown.assert_called_once_with()
+            session_db.close.assert_called_once_with()
+            session_db.end_session.assert_not_called()
+
+    def test_persistence_release_is_idempotent_and_exception_isolated(self):
+        """One failed owner close cannot block the other or repeat on retry."""
+        from unittest.mock import MagicMock, patch
+
+        with patch("run_agent.AIAgent.__init__", return_value=None):
+            from run_agent import AIAgent
+            agent = AIAgent.__new__(AIAgent)
+            context_engine = MagicMock()
+            context_engine.shutdown.side_effect = RuntimeError("close failed")
+            session_db = MagicMock()
+            setattr(agent, "context_compressor", context_engine)
+            agent._session_db = session_db
+            agent._owns_session_db = True
+
+            agent._release_persistence_resources()
+            agent._release_persistence_resources()
+
+            context_engine.shutdown.assert_called_once_with()
+            session_db.close.assert_called_once_with()
+            assert agent.context_compressor is None
+            assert agent._session_db is None
+
+    def test_persistence_release_does_not_close_borrowed_session_database(self):
+        """Gateway agents must not close the runner-owned SessionDB singleton."""
+        from unittest.mock import MagicMock, patch
+
+        with patch("run_agent.AIAgent.__init__", return_value=None):
+            from run_agent import AIAgent
+            agent = AIAgent.__new__(AIAgent)
+            session_db = MagicMock()
+            agent._session_db = session_db
+            agent._owns_session_db = False
+
+            agent._release_persistence_resources()
+
+            session_db.close.assert_not_called()
+            assert agent._session_db is None
+
+    def test_constructor_marks_injected_session_database_as_borrowed(self):
+        """A gateway/CLI-injected SessionDB remains owned by its outer runner."""
+        from unittest.mock import MagicMock, patch
+
+        from run_agent import AIAgent
+
+        session_db = MagicMock()
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                session_db=session_db,
+                session_id="borrowed-session-db",
+                platform="telegram",
+            )
+
+        assert agent._session_db is session_db
+        assert agent._owns_session_db is False
+
+    def test_soft_release_keeps_borrowed_real_session_database_usable(self, tmp_path):
+        """Soft eviction preserves the gateway runner's live SQLite connection."""
+        from unittest.mock import patch
+
+        from hermes_state import SessionDB
+        from run_agent import AIAgent
+
+        session_db = SessionDB(tmp_path / "state.db")
+        try:
+            with (
+                patch("run_agent.get_tool_definitions", return_value=[]),
+                patch("run_agent.check_toolset_requirements", return_value={}),
+                patch("run_agent.OpenAI"),
+            ):
+                agent = AIAgent(
+                    api_key="test-key",
+                    base_url="https://openrouter.ai/api/v1",
+                    quiet_mode=True,
+                    skip_context_files=True,
+                    skip_memory=True,
+                    session_db=session_db,
+                    session_id="borrowed-real-session-db",
+                    platform="telegram",
+                )
+
+            agent.release_clients()
+
+            session_db.create_session("after-soft-release", "telegram")
+            assert session_db.get_session("after-soft-release") is not None
+        finally:
+            session_db.close()
+
     def test_close_is_idempotent(self):
         """close() can be called multiple times without error."""
         from unittest.mock import patch
@@ -212,13 +372,16 @@ class TestAgentCloseMethod:
             agent._active_children_lock = threading.Lock()
             agent.client = None
             agent._end_session_on_close = True
-            agent._session_db = MagicMock()
+            session_db = MagicMock()
+            agent._session_db = session_db
+            agent._owns_session_db = True
 
             agent.close()
 
-            agent._session_db.end_session.assert_called_once_with(
+            session_db.end_session.assert_called_once_with(
                 "test-close-session-row", "agent_close"
             )
+            session_db.close.assert_called_once_with()
 
     def test_close_skips_session_end_for_forwarded_continuation_agents(self):
         """Helper agents that handed session ownership forward opt out."""
@@ -232,11 +395,14 @@ class TestAgentCloseMethod:
             agent._active_children_lock = threading.Lock()
             agent.client = None
             agent._end_session_on_close = False
-            agent._session_db = MagicMock()
+            session_db = MagicMock()
+            agent._session_db = session_db
+            agent._owns_session_db = True
 
             agent.close()
 
-            agent._session_db.end_session.assert_not_called()
+            session_db.end_session.assert_not_called()
+            session_db.close.assert_called_once_with()
 
     def test_close_session_end_noops_without_session_db(self):
         """close() is a no-op for session finalization when no DB is wired in."""
