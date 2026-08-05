@@ -76,6 +76,35 @@ patches:
       - scripts/run_tests.sh tests/cli/test_bang_shell_mode.py tests/hermes_cli/test_model_switch_context_offload.py
     retirement: Remove when the recorded upstream baseline contains byte-identical diff-check-clean versions of these files.
 
+  - id: upstream-sync-1be70d63-linearization
+    kind: cleanup
+    rationale: >-
+      Record the upstream delegation, cron, and session-state fixes reconciled
+      through 1be70d63 as a linear fork commit because batumi/live rejects merge
+      commits and therefore cannot retain the upstream commits as ancestors.
+    paths:
+      - tests/cron/test_cron_direct_api_call_62151.py
+      - tests/hermes_state/test_session_md_export.py
+      - tests/tools/test_delegate.py
+      - tools/delegate_tool.py
+      - website/docs/user-guide/features/delegation.md
+    tests:
+      - scripts/run_tests.sh tests/cron/test_cron_direct_api_call_62151.py tests/hermes_state/test_session_md_export.py tests/tools/test_delegate.py
+      - python -m py_compile tools/delegate_tool.py
+    retirement: Remove after the fork is rebased onto upstream 1be70d63 or a descendant containing byte-identical fixes.
+
+  - id: compression-adopted-transcript-deduplication
+    kind: core
+    rationale: >-
+      Prevent compaction from duplicating an already-adopted transcript prefix
+      when concurrent child work advances the stored compression lineage.
+    paths:
+      - agent/conversation_compression.py
+      - tests/agent/test_compression_concurrent_fork.py
+    tests:
+      - scripts/run_tests.sh tests/agent/test_compression_concurrent_fork.py
+    retirement: Remove when upstream prevents adopted transcript duplication with equivalent concurrent-fork coverage.
+
   - id: test-dns-isolation
     kind: compatibility
     rationale: >-
