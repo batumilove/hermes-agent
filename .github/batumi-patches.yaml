@@ -178,6 +178,30 @@ patches:
       - scripts/run_tests.sh tests/cron/test_run_one_job.py
     retirement: Remove when upstream emits equivalent lazy, fail-open, exactly-once cron lifecycle telemetry after bookkeeping.
 
+  - id: cron-trigger-provenance
+    kind: core
+    rationale: >-
+      Persist exact cron trigger origin, due slot, and trigger time so natural
+      scheduler runs cannot be confused with manual, external, catch-up, direct,
+      recovered, or unknown executions across restart and reconciliation.
+    paths:
+      - agent/monitoring/cron_health.py
+      - agent/monitoring/events.py
+      - cron/executions.py
+      - cron/jobs.py
+      - cron/scheduler.py
+      - cron/scheduler_provider.py
+      - hermes_cli/cron.py
+      - tests/cron/test_execution_ledger.py
+      - tests/cron/test_jobs.py
+      - tests/cron/test_scheduler_provider.py
+      - tests/monitoring/test_cron_health_export.py
+      - tests/tools/test_cronjob_run_immediate.py
+      - tools/cronjob_tools.py
+    tests:
+      - scripts/run_tests.sh tests/cron/test_execution_ledger.py tests/cron/test_jobs.py tests/cron/test_scheduler_provider.py tests/monitoring/test_cron_health_export.py tests/tools/test_cronjob_run_immediate.py
+    retirement: Remove when upstream persists equivalent exact trigger provenance through scheduling, manual dispatch, recovery, monitoring, and execution-ledger migration.
+
   - id: sessiondb-no-more-rows-retry
     kind: core
     rationale: >-
