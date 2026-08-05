@@ -365,6 +365,29 @@ class TestResolveJobRef:
         assert records[0]["status"] == "claimed"
         assert get_job(job["id"])["pending_trigger"] == first
 
+    def test_retrigger_reuses_pending_identity_when_newer_execution_exists(
+        self, tmp_cron_dir, tmp_path, monkeypatch
+    ):
+        import cron.executions as executions
+
+        monkeypatch.setattr(
+            executions, "EXECUTIONS_FILE", tmp_path / "cron" / "executions.db"
+        )
+        job = create_job(prompt="manual provenance", schedule="every 1h")
+        first = trigger_job(job["id"])["pending_trigger"]
+        newer = executions.create_execution(
+            job["id"], source="direct", trigger_origin="direct"
+        )
+
+        second = trigger_job(job["id"])["pending_trigger"]
+
+        records = executions.list_executions(job_id=job["id"], limit=10)
+        assert second == first
+        assert {record["id"] for record in records} == {
+            first["execution_id"],
+            newer["id"],
+        }
+
     def test_concurrent_retrigger_creates_one_pending_execution(
         self, tmp_cron_dir, tmp_path, monkeypatch
     ):

@@ -346,7 +346,7 @@ def test_builtin_tick_reuses_durable_manual_execution(monkeypatch):
     )
     monkeypatch.setattr(scheduler, "advance_next_runs", lambda _job_ids: 1)
     monkeypatch.setattr(scheduler, "_get_parallel_pool", lambda _workers: InlinePool())
-    monkeypatch.setattr(scheduler, "latest_execution", lambda _job_id: execution)
+    monkeypatch.setattr(scheduler, "get_execution", lambda _execution_id: execution)
     cleared = []
     monkeypatch.setattr(
         scheduler,
@@ -372,12 +372,13 @@ def test_builtin_tick_reuses_durable_manual_execution(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("latest_record", "expected_origin"),
+    ("exact_record", "expected_origin"),
     [
         (None, "unknown"),
         (
             {
                 "id": "missing-execution",
+                "job_id": "forged-marker",
                 "status": "unknown",
                 "trigger_origin": "manual",
             },
@@ -386,7 +387,7 @@ def test_builtin_tick_reuses_durable_manual_execution(monkeypatch):
     ],
 )
 def test_builtin_tick_validates_manual_marker(
-    monkeypatch, latest_record, expected_origin
+    monkeypatch, exact_record, expected_origin
 ):
     import concurrent.futures
     import cron.scheduler as scheduler
@@ -413,7 +414,7 @@ def test_builtin_tick_validates_manual_marker(
     monkeypatch.setattr(scheduler, "get_due_jobs", lambda: [due_job])
     monkeypatch.setattr(scheduler, "advance_next_runs", lambda _job_ids: 1)
     monkeypatch.setattr(
-        scheduler, "latest_execution", lambda _job_id: latest_record
+        scheduler, "get_execution", lambda _execution_id: exact_record
     )
     monkeypatch.setattr(scheduler, "clear_pending_trigger", lambda *_args: True)
     monkeypatch.setattr(

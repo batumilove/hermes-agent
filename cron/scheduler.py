@@ -357,7 +357,7 @@ from cron.jobs import (
 from cron.executions import (
     create_execution,
     finish_execution,
-    latest_execution,
+    get_execution,
     mark_execution_running,
 )
 
@@ -4461,11 +4461,12 @@ def tick(
             # abandoned records as unknown; it never automatically retries them.
             pending_execution_id = job.get("_execution_id")
             pending_execution = (
-                latest_execution(job_id) if pending_execution_id else None
+                get_execution(pending_execution_id) if pending_execution_id else None
             )
             bound_manual_trigger = (
                 pending_execution is not None
                 and pending_execution["id"] == pending_execution_id
+                and pending_execution["job_id"] == job_id
                 and pending_execution["trigger_origin"] == "manual"
             )
             if bound_manual_trigger and pending_execution["status"] == "claimed":

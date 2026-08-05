@@ -1652,7 +1652,7 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
     if not resolved:
         return None
     canonical_id = resolved["id"]
-    from cron.executions import create_execution, finish_execution, latest_execution
+    from cron.executions import create_execution, finish_execution, get_execution
 
     # Keep pending-marker inspection, ledger creation, and jobs.json publication
     # inside one store lock. Without this boundary, concurrent API/CLI trigger
@@ -1668,10 +1668,11 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
             if isinstance(pending, dict) and isinstance(
                 pending.get("execution_id"), str
             ):
-                existing = latest_execution(canonical_id)
+                existing = get_execution(pending["execution_id"])
                 if (
                     existing is not None
                     and existing["id"] == pending["execution_id"]
+                    and existing["job_id"] == canonical_id
                     and existing["status"] == "claimed"
                     and existing["trigger_origin"] == "manual"
                 ):
