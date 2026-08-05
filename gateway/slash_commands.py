@@ -1203,7 +1203,9 @@ class GatewaySlashCommandsMixin:
             _AGENT_PENDING_SENTINEL,
         )
 
-        if event.get_command_args().strip() == "--diagnostics":
+        get_command_args = getattr(event, "get_command_args", None)
+        command_args = get_command_args().strip() if callable(get_command_args) else ""
+        if command_args == "--diagnostics":
             counters = getattr(self, "_lifecycle_counters", None)
             if counters is None:
                 from gateway.lifecycle_counters import GatewayLifecycleCounters
