@@ -150,6 +150,20 @@ patches:
       - scripts/run_tests.sh tests/test_session_db_write_latency_logging.py tests/state/test_write_lock_patience.py
     retirement: Remove when upstream provides equivalent privacy-bounded phase timing and lock-owner attribution for SessionDB writes.
 
+  - id: gateway-channel-directory-routing-projection
+    kind: core
+    rationale: >-
+      Keep periodic channel-directory discovery off the heavyweight full-session
+      listing path by reading only indexed routing-origin metadata.
+    paths:
+      - gateway/channel_directory.py
+      - hermes_state.py
+      - tests/gateway/test_channel_directory.py
+      - tests/test_hermes_state.py
+    tests:
+      - scripts/run_tests.sh tests/test_hermes_state.py tests/gateway/test_channel_directory.py
+    retirement: Remove when upstream channel discovery uses an equivalent indexed routing-only SessionDB projection with the same fallback and lifecycle contracts.
+
   - id: relay-scope-concurrency-lifecycle
     kind: core
     rationale: >-

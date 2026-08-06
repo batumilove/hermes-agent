@@ -16,6 +16,7 @@ from gateway.channel_directory import (
     load_directory,
     _apply_channel_aliases,
     _build_from_sessions,
+    _build_from_sessions_db,
     _build_slack,
     _slack_directory_warning_last,
 )
@@ -162,6 +163,31 @@ class TestBuildFromSessions:
         sessions_path = tmp_path / "sessions" / "sessions.json"
         sessions_path.parent.mkdir(parents=True)
         sessions_path.write_text(json.dumps(sessions_data))
+
+    def test_database_discovery_uses_routing_only_projection(self):
+        db = MagicMock()
+        db.list_gateway_routing_origins.return_value = [{
+            "origin_json": json.dumps({"chat_id": "123", "chat_name": "Alice"}),
+            "chat_id": "123",
+            "thread_id": None,
+            "display_name": "Alice",
+            "chat_type": "dm",
+        }]
+
+        with patch("hermes_state.SessionDB", return_value=db):
+            entries = _build_from_sessions_db("telegram")
+
+        db.list_gateway_routing_origins.assert_called_once_with(
+            platform="telegram", active_only=False
+        )
+        db.list_gateway_sessions.assert_not_called()
+        db.close.assert_called_once_with()
+        assert entries == [{
+            "id": "123",
+            "name": "Alice",
+            "type": "dm",
+            "thread_id": None,
+        }]
 
     def test_builds_from_sessions_json(self, tmp_path):
         self._write_sessions(tmp_path, {

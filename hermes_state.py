@@ -3643,6 +3643,39 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             rows = self._conn.execute(query, params).fetchall()
         return [self._session_row_dict(r) for r in rows]
 
+    def list_gateway_routing_origins(
+        self,
+        *,
+        platform: Optional[str] = None,
+        active_only: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """List only routing fields from the newest gateway session per key.
+
+        Channel-directory discovery does not need prompts, messages, token
+        totals, activity timestamps, or ordering.  Keep this projection narrow
+        so periodic discovery does not pay the cost of a full session listing.
+        Gateway platform names are normalized lowercase before exact matching so
+        SQLite can use the source index without wrapping the column in LOWER().
+        """
+        query = """
+            SELECT origin_json, chat_id, thread_id, display_name, chat_type
+            FROM sessions
+            WHERE session_key IS NOT NULL
+              AND started_at = (
+                  SELECT MAX(s2.started_at) FROM sessions s2
+                  WHERE s2.session_key = sessions.session_key
+              )
+        """
+        params: list = []
+        if platform:
+            query += " AND source = ?"
+            params.append(platform.lower())
+        if active_only:
+            query += " AND ended_at IS NULL"
+        with self._lock:
+            rows = self._conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
     def find_session_by_origin(
         self,
         *,
