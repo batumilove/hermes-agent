@@ -421,7 +421,7 @@ def _build_from_sessions_db(platform_name: str) -> List[Dict[str, str]]:
         from hermes_state import SessionDB
         db = SessionDB()
         try:
-            lister = getattr(db, "list_gateway_sessions", None)
+            lister = getattr(db, "list_gateway_routing_origins", None)
             if not callable(lister):
                 return []
             rows = lister(platform=platform_name, active_only=False)

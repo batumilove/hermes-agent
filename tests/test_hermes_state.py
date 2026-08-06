@@ -1660,6 +1660,101 @@ class TestListSessionsRich:
         activity = db.get_session_activity("gw-1")
         assert activity["last_activity_description"] == "compressing context"
 
+    def test_gateway_routing_origins_excludes_heavy_session_payloads(self, db):
+        db.create_session(
+            "gw-routing",
+            "telegram",
+            session_key="agent:main:telegram:dm:routing",
+            chat_id="routing",
+            chat_type="dm",
+            system_prompt="large prompt that channel discovery must not resolve",
+        )
+        db.record_gateway_session_peer(
+            "gw-routing",
+            source="telegram",
+            session_key="agent:main:telegram:dm:routing",
+            chat_id="routing",
+            chat_type="dm",
+            thread_id="topic-1",
+            display_name="Routing chat",
+            origin_json=json.dumps({"chat_id": "routing", "chat_name": "Routing chat"}),
+        )
+        db.append_message("gw-routing", "user", "message table must not be read")
+
+        def deny_heavy_tables(action, table, _column, _database, _trigger):
+            if action == sqlite3.SQLITE_READ and table in {"messages", "system_prompts"}:
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        db._conn.set_authorizer(deny_heavy_tables)
+        try:
+            rows = db.list_gateway_routing_origins(platform="telegram")
+        finally:
+            db._conn.set_authorizer(None)
+
+        assert rows == [{
+            "origin_json": json.dumps({"chat_id": "routing", "chat_name": "Routing chat"}),
+            "chat_id": "routing",
+            "thread_id": "topic-1",
+            "display_name": "Routing chat",
+            "chat_type": "dm",
+        }]
+
+    def test_gateway_routing_origins_uses_newest_row_per_key_and_platform(self, db):
+        lane_key = "agent:main:telegram:dm:lane"
+        for session_id, source, chat_id, started_at in (
+            ("old", "telegram", "old-chat", 100.0),
+            ("new", "telegram", "new-chat", 200.0),
+            ("buzz", "buzz", "buzz-chat", 300.0),
+        ):
+            key = lane_key if source == "telegram" else "agent:main:buzz:dm:lane"
+            db.create_session(
+                session_id,
+                source,
+                session_key=key,
+                chat_id=chat_id,
+                chat_type="dm",
+            )
+            db.record_gateway_session_peer(
+                session_id,
+                source=source,
+                session_key=key,
+                chat_id=chat_id,
+                chat_type="dm",
+                display_name=chat_id,
+            )
+            with db._lock:
+                db._conn.execute(
+                    "UPDATE sessions SET started_at = ? WHERE id = ?",
+                    (started_at, session_id),
+                )
+                db._conn.commit()
+
+        rows = db.list_gateway_routing_origins(platform="TELEGRAM", active_only=False)
+
+        assert [row["chat_id"] for row in rows] == ["new-chat"]
+
+    def test_gateway_routing_origins_active_filter_applies_after_newest_row(self, db):
+        lane_key = "agent:main:telegram:dm:ended-lane"
+        db.create_session("active-old", "telegram", session_key=lane_key, chat_id="old")
+        db.create_session("ended-new", "telegram", session_key=lane_key, chat_id="new")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET started_at = 100 WHERE id = 'active-old'"
+            )
+            db._conn.execute(
+                "UPDATE sessions SET started_at = 200, ended_at = 201 WHERE id = 'ended-new'"
+            )
+            db._conn.commit()
+
+        assert db.list_gateway_routing_origins(platform="telegram", active_only=True) == []
+        assert [
+            row["chat_id"]
+            for row in db.list_gateway_routing_origins(
+                platform="telegram", active_only=False
+            )
+        ] == ["new"]
+
     def test_order_by_last_active_surfaces_recently_touched_older_session_first(self, db):
         t0 = 1709500000.0
         db.create_session("old", "cli")
