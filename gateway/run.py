@@ -12899,35 +12899,138 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await self._cancel_secondary_profile_reconnect_tasks()
 
             # Notify all chats with active agents BEFORE draining.
-            # Adapters are still connected here, so messages can be sent.
-            await self._notify_active_sessions_of_shutdown()
+            # Adapters are still connected here, so messages can be sent. This
+            # best-effort phase still consumes the shared shutdown budget.
+            _notification_budget = min(
+                GatewayRunner._adapter_disconnect_timeout_secs(self),
+                GatewayRunner._shutdown_remaining(_cleanup_deadline),
+            )
+            if _notification_budget > 0:
+                _notification_completed = await GatewayRunner._await_adapter_cleanup_with_timeout(
+                    self,
+                    self._notify_active_sessions_of_shutdown(),
+                    _notification_budget,
+                )
+                if not _notification_completed:
+                    logger.warning(
+                        "Shutdown notifications exceeded %.2fs; forcing shutdown "
+                        "forward progress",
+                        _notification_budget,
+                    )
+            else:
+                logger.warning(
+                    "Skipping shutdown notifications — aggregate shutdown budget "
+                    "already exhausted"
+                )
             logger.info(
                 "Shutdown phase: notify_active_sessions done at +%.2fs",
                 _phase_elapsed(),
             )
 
-            timeout = self._restart_drain_timeout
+            configured_drain_timeout = self._restart_drain_timeout
+            _resume_marker_tasks_by_key: dict[str, asyncio.Task] = {}
+            _owned_resume_marker_tasks = getattr(
+                self, "_shutdown_resume_marker_tasks", None
+            )
+            if not isinstance(_owned_resume_marker_tasks, set):
+                _owned_resume_marker_tasks = set()
+                setattr(
+                    self,
+                    "_shutdown_resume_marker_tasks",
+                    _owned_resume_marker_tasks,
+                )
+
+            def _own_resume_marker_task(task: asyncio.Task) -> asyncio.Task:
+                _owned_resume_marker_tasks.add(task)
+
+                def _release(completed: asyncio.Task) -> None:
+                    _owned_resume_marker_tasks.discard(completed)
+                    consume_detached_task_result(completed)
+
+                task.add_done_callback(_release)
+                return task
+
+            async def _persist_resume_pending(
+                session_key: str,
+                reason: str,
+            ) -> None:
+                await self.async_session_store.mark_resume_pending(
+                    session_key,
+                    reason,
+                )
+
+            async def _mark_resume_pending_bounded(
+                session_keys,
+                reason: str,
+            ) -> tuple[list[str], bool]:
+                """Persist resume intent within the shared shutdown deadline."""
+                budget = min(
+                    5.0,
+                    max(0.05, float(configured_drain_timeout)),
+                    GatewayRunner._shutdown_remaining(_cleanup_deadline),
+                )
+                if budget <= 0:
+                    return [], False
+                deadline = asyncio.get_running_loop().time() + budget
+                attempted: list[str] = []
+                for session_key in session_keys:
+                    remaining = min(
+                        deadline - asyncio.get_running_loop().time(),
+                        GatewayRunner._shutdown_remaining(_cleanup_deadline),
+                    )
+                    if remaining <= 0:
+                        return attempted, False
+                    attempted.append(session_key)
+                    task = _resume_marker_tasks_by_key.get(session_key)
+                    if task is None or task.done():
+                        task = _own_resume_marker_task(
+                            asyncio.create_task(
+                                _persist_resume_pending(session_key, reason)
+                            )
+                        )
+                        _resume_marker_tasks_by_key[session_key] = task
+                    done, _pending = await asyncio.wait({task}, timeout=remaining)
+                    if task not in done:
+                        logger.warning(
+                            "Shutdown resume-marker persistence exceeded %.2fs; "
+                            "forcing shutdown forward progress",
+                            budget,
+                        )
+                        return attempted, False
+                    try:
+                        await task
+                    except Exception as exc:
+                        logger.debug(
+                            "mark_resume_pending failed for %s: %s",
+                            session_key,
+                            exc,
+                        )
+                        continue
+                return attempted, True
 
             # Pre-mark sessions as resume_pending BEFORE the drain wait.
             # If the process is killed by the service manager during the
             # drain, the durable marker is already written so the next
             # gateway boot can recover in-flight sessions (#27856).
-            _pre_drain_keys: list[str] = []
-            for _sk, _agent in list(self._running_agents.items()):
-                if _agent is _AGENT_PENDING_SENTINEL:
-                    continue
-                try:
-                    await self.async_session_store.mark_resume_pending(
-                        _sk,
-                        "restart_timeout" if self._restart_requested else "shutdown_timeout",
-                    )
-                    _pre_drain_keys.append(_sk)
-                except Exception as _e:
-                    logger.debug("pre-drain mark_resume_pending failed for %s: %s", _sk, _e)
+            _pre_drain_candidates = [
+                session_key
+                for session_key, agent in list(self._running_agents.items())
+                if agent is not _AGENT_PENDING_SENTINEL
+            ]
+            _pre_drain_keys, _pre_mark_complete = await _mark_resume_pending_bounded(
+                _pre_drain_candidates,
+                "restart_timeout" if self._restart_requested else "shutdown_timeout",
+            )
+            if not _pre_mark_complete and _pre_drain_candidates:
+                _cleanup_budget_exhausted = True
 
             _cron_at_start = self._active_cron_job_count()
             _api_at_start = self._active_api_run_count()
             _drain_started_at = time.monotonic()
+            timeout = min(
+                configured_drain_timeout,
+                GatewayRunner._shutdown_remaining(_cleanup_deadline),
+            )
             active_agents, timed_out = await self._drain_active_agents(timeout)
             logger.info(
                 "Shutdown phase: drain done at +%.2fs (drain took %.2fs, "
@@ -12947,17 +13050,49 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if not timed_out:
                 # Drain completed gracefully — all running sessions finished.
-                # Clear the pre-drain resume_pending markers so sessions that
-                # completed during the drain window don't carry a stale flag.
+                # A timed-out marker task is deliberately left alive because its
+                # executor-backed write may still commit. Compensating clears
+                # await that exact task first so durable ordering is mark→clear.
+                async def _clear_resume_pending_after_mark(session_key: str) -> None:
+                    marker_task = _resume_marker_tasks_by_key.get(session_key)
+                    if marker_task is not None:
+                        try:
+                            await marker_task
+                        except Exception:
+                            pass
+                    try:
+                        await self.async_session_store.clear_resume_pending(session_key)
+                    except Exception as exc:
+                        logger.debug(
+                            "clear_resume_pending after drain failed for %s: %s",
+                            session_key,
+                            exc,
+                        )
+
+                _compensating_clear_tasks: list[asyncio.Task] = []
                 for _sk in _pre_drain_keys:
                     if _sk not in self._running_agents:
-                        try:
-                            await self.async_session_store.clear_resume_pending(_sk)
-                        except Exception as _e:
-                            logger.debug(
-                                "clear_resume_pending after drain failed for %s: %s",
-                                _sk, _e,
+                        clear_task = _own_resume_marker_task(
+                            asyncio.create_task(
+                                _clear_resume_pending_after_mark(_sk)
                             )
+                        )
+                        _compensating_clear_tasks.append(clear_task)
+                if _compensating_clear_tasks:
+                    remaining = GatewayRunner._shutdown_remaining(
+                        _cleanup_deadline
+                    )
+                    done, pending = await asyncio.wait(
+                        _compensating_clear_tasks,
+                        timeout=remaining,
+                    )
+                    if pending:
+                        _cleanup_budget_exhausted = True
+                        logger.warning(
+                            "Shutdown resume-marker compensation exceeded the "
+                            "aggregate deadline with %d task(s) pending",
+                            len(pending),
+                        )
 
             if timed_out:
                 logger.warning(
@@ -12993,19 +13128,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _resume_reason = (
                     "restart_timeout" if self._restart_requested else "shutdown_timeout"
                 )
-                for _sk, _agent in list(self._running_agents.items()):
-                    if _agent is _AGENT_PENDING_SENTINEL:
-                        continue
-                    try:
-                        await self.async_session_store.mark_resume_pending(_sk, _resume_reason)
-                    except Exception as _e:
-                        logger.debug(
-                            "mark_resume_pending failed for %s: %s",
-                            _sk, _e,
-                        )
-                interrupt_deadline = (
-                    asyncio.get_running_loop().time()
-                    + self._shutdown_interrupt_timeout_secs()
+                _post_timeout_candidates = [
+                    session_key
+                    for session_key, agent in list(self._running_agents.items())
+                    if agent is not _AGENT_PENDING_SENTINEL
+                ]
+                _post_marked, _post_mark_complete = await _mark_resume_pending_bounded(
+                    _post_timeout_candidates,
+                    _resume_reason,
+                )
+                if not _post_mark_complete and _post_timeout_candidates:
+                    _cleanup_budget_exhausted = True
+                _now = asyncio.get_running_loop().time()
+                interrupt_deadline = min(
+                    _now + self._shutdown_interrupt_timeout_secs(),
+                    _cleanup_deadline,
                 )
                 await self._interrupt_running_agents(
                     _INTERRUPT_REASON_GATEWAY_RESTART
