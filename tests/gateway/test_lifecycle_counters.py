@@ -13,7 +13,6 @@ aggregate counts and class/type names.
 
 import copy
 import json
-from pathlib import Path
 import threading
 from unittest.mock import MagicMock
 
@@ -57,6 +56,37 @@ def test_from_config_reuses_existing_shared_metrics_opt_in(monkeypatch):
     disabled.record_cache_event("hit")
     assert disabled.snapshot()["enabled"] is False
     assert disabled.snapshot()["agent_cache"]["events"] == {}
+
+
+def test_event_keys_are_fixed_cardinality_and_content_free():
+    from gateway.lifecycle_counters import GatewayLifecycleCounters
+
+    ctr = GatewayLifecycleCounters(enabled=True)
+    sensitive_event = "telegram:999:dm:user@evil.com"
+    direct_sensitive_key = "/home/ubuntu/secret/session-key"
+
+    ctr.record_cache_event(sensitive_event)
+    ctr.incr("agent_cache.events", direct_sensitive_key)
+
+    events = ctr.snapshot()["agent_cache"]["events"]
+    assert events == {"cache_event_unknown": 1, "unknown": 1}
+    blob = json.dumps(events, sort_keys=True)
+    assert sensitive_event not in blob
+    assert direct_sensitive_key not in blob
+
+
+def test_gc_snapshot_preserves_stat_values():
+    from gateway.lifecycle_counters import GatewayLifecycleCounters
+
+    ctr = GatewayLifecycleCounters(enabled=True, gc_enabled=True)
+    stats = ctr.snapshot()["gc"]["stats"]
+
+    assert stats
+    for generation in stats:
+        assert isinstance(generation, dict)
+        assert isinstance(generation["collections"], int)
+        assert isinstance(generation["collected"], int)
+        assert isinstance(generation["uncollectable"], int)
 
 
 def test_snapshot_is_a_deep_copy_and_thread_safe():
@@ -112,6 +142,37 @@ def test_snapshot_top_level_schema_and_monotonic_seq():
     assert s1["monotonic_seq"] > s0["monotonic_seq"]
 
 
+def test_snapshot_counter_sections_share_one_coherent_sequence():
+    from gateway.lifecycle_counters import GatewayLifecycleCounters
+
+    ctr = GatewayLifecycleCounters(enabled=True)
+
+    class _MutatingOnSecondAcquire:
+        def __init__(self):
+            self._lock = threading.Lock()
+            self.acquisitions = 0
+
+        def __enter__(self):
+            self._lock.acquire()
+            self.acquisitions += 1
+            if self.acquisitions == 2:
+                ctr._seq += 1
+                ctr._executor_present = True
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            self._lock.release()
+
+    lock = _MutatingOnSecondAcquire()
+    ctr._lock = lock
+
+    snap = ctr.snapshot()
+
+    assert snap["monotonic_seq"] == 0
+    assert snap["executor"]["present"] is False
+    assert lock.acquisitions == 1
+
+
 def test_snapshot_privacy_no_session_chat_user_path_or_message_contents():
     """The JSON snapshot string MUST NOT leak session keys, chat ids, user
     ids, file paths, or message/session identifiers — only aggregate counts
@@ -155,7 +216,7 @@ def test_snapshot_privacy_no_session_chat_user_path_or_message_contents():
         )
 
 
-def test_record_cache_event_hit_miss_absent_miss_signature_created():
+def test_record_cache_event_hit_miss_absent_miss_signature_invalidated_created():
     from gateway.lifecycle_counters import GatewayLifecycleCounters
 
     ctr = GatewayLifecycleCounters(enabled=True)
@@ -163,12 +224,14 @@ def test_record_cache_event_hit_miss_absent_miss_signature_created():
     ctr.record_cache_event("hit")
     ctr.record_cache_event("miss_absent")
     ctr.record_cache_event("miss_signature")
+    ctr.record_cache_event("miss_invalidated")
     ctr.record_cache_event("created")
     snap = ctr.snapshot()
     ev = snap["agent_cache"]["events"]
     assert ev["hit"] == 2
     assert ev["miss_absent"] == 1
     assert ev["miss_signature"] == 1
+    assert ev["miss_invalidated"] == 1
     assert ev["created"] == 1
 
 
@@ -244,6 +307,31 @@ def test_soft_release_legacy_fallback_is_only_counted_as_hard_cleanup():
     assert "soft_release_calls" not in events
     assert "soft_release_success" not in events
     assert "soft_release_failure" not in events
+
+
+def test_lifecycle_diagnostics_failure_cannot_interrupt_agent_cleanup():
+    from gateway.run import GatewayRunner
+
+    class _ExplodingLifecycle:
+        def record_hard_cleanup(self, **kwargs):
+            raise RuntimeError("diagnostics failure")
+
+        def record_agent_close(self, **kwargs):
+            raise RuntimeError("diagnostics failure")
+
+    class _Agent:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    runner = object.__new__(GatewayRunner)
+    runner._lifecycle_counters = _ExplodingLifecycle()  # type: ignore[assignment]
+    agent = _Agent()
+
+    runner._cleanup_agent_resources(agent)
+
+    assert agent.closed is True
 
 
 def test_record_shutdown_cache_clear():
@@ -464,22 +552,47 @@ def test_executor_snapshot_present_shutdown_threads_queued():
 # ---------------------------------------------------------------------------
 
 
-def test_gateway_runner_init_sets_lifecycle_counters():
+def test_gateway_runner_init_sets_lifecycle_counters(monkeypatch, tmp_path):
     """A fully-constructed GatewayRunner must have a non-None
     ``_lifecycle_counters`` that is a GatewayLifecycleCounters."""
     from gateway.config import GatewayConfig, Platform, PlatformConfig
     from gateway.run import GatewayRunner
     from gateway.lifecycle_counters import GatewayLifecycleCounters
 
-    import tempfile
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    cfg = GatewayConfig(
+        sessions_dir=tmp_path / "sessions",
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=False)},
+    )
+    runner = GatewayRunner(config=cfg)
+    assert isinstance(runner._lifecycle_counters, GatewayLifecycleCounters)
+    # Snapshot is callable and well-formed.
+    snap = runner._lifecycle_counters.snapshot()
+    assert "schema_version" in snap
 
-    with tempfile.TemporaryDirectory() as tmp:
-        cfg = GatewayConfig(
-            sessions_dir=Path(tmp) / "sessions",
-            platforms={Platform.TELEGRAM: PlatformConfig(enabled=False)},
-        )
-        runner = GatewayRunner(config=cfg)
-        assert isinstance(runner._lifecycle_counters, GatewayLifecycleCounters)
-        # Snapshot is callable and well-formed.
-        snap = runner._lifecycle_counters.snapshot()
-        assert "schema_version" in snap
+
+def test_gateway_runner_init_survives_lifecycle_counter_failure(
+    monkeypatch, tmp_path
+):
+    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from gateway.lifecycle_counters import GatewayLifecycleCounters
+    from gateway.run import GatewayRunner
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+    def _fail_from_config(cls):
+        raise RuntimeError("diagnostics initialization failure")
+
+    monkeypatch.setattr(
+        GatewayLifecycleCounters,
+        "from_config",
+        classmethod(_fail_from_config),
+    )
+    cfg = GatewayConfig(
+        sessions_dir=tmp_path / "sessions",
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=False)},
+    )
+
+    runner = GatewayRunner(config=cfg)
+
+    assert runner._lifecycle_counters is None

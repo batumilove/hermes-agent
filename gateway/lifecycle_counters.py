@@ -38,6 +38,34 @@ __all__ = ["GatewayLifecycleCounters"]
 # Bump when the snapshot shape changes in a backwards-incompatible way.
 _SCHEMA_VERSION = 1
 
+_CACHE_FLOW_EVENTS = frozenset(
+    ("hit", "miss_absent", "miss_signature", "miss_invalidated", "created")
+)
+_EVENT_KEYS = frozenset(
+    (
+        *_CACHE_FLOW_EVENTS,
+        "cache_event_unknown",
+        "unknown",
+        "evict_explicit",
+        "evict_cap",
+        "evict_idle",
+        "evict_stale_self_heal",
+        "evict_cross_process",
+        "evict_unknown",
+        "soft_release_calls",
+        "soft_release_success",
+        "soft_release_failure",
+        "hard_cleanup_calls",
+        "hard_cleanup_success",
+        "hard_cleanup_failure",
+        "agent_close_attempt",
+        "agent_close_success",
+        "agent_close_failure",
+        "shutdown_cache_clear_count",
+        "shutdown_cache_clear_total",
+    )
+)
+
 
 def _type_name(obj: Any) -> str:
     """Return a stable class/type name for *obj* — never an id or repr.
@@ -123,11 +151,12 @@ class GatewayLifecycleCounters:
         with self._lock:
             self._seq += 1
             if group == "agent_cache.events":
-                self._events[key] = self._events.get(key, 0) + amount
+                bounded_key = key if key in _EVENT_KEYS else "unknown"
+                self._events[bounded_key] = self._events.get(bounded_key, 0) + amount
             # Other groups could be added here without breaking the API.
 
     # ------------------------------------------------------------------
-    # Cache-flow events (hit / miss_absent / miss_signature / created)
+    # Cache-flow events
     # ------------------------------------------------------------------
     def record_cache_event(
         self, event: str, session_key: Optional[str] = None
@@ -135,10 +164,12 @@ class GatewayLifecycleCounters:
         """Record an agent-cache flow event.
 
         ``event`` is one of: ``hit``, ``miss_absent``, ``miss_signature``,
-        ``created``.  ``session_key`` is accepted for call-site symmetry but is
+        ``miss_invalidated``, ``created``. Unknown values map to one bounded
+        counter. ``session_key`` is accepted for call-site symmetry but is
         deliberately IGNORED — it never reaches the snapshot (privacy).
         """
-        self.incr("agent_cache.events", event)
+        bounded_event = event if event in _CACHE_FLOW_EVENTS else "cache_event_unknown"
+        self.incr("agent_cache.events", bounded_event)
 
     # ------------------------------------------------------------------
     # Evictions
@@ -310,7 +341,10 @@ class GatewayLifecycleCounters:
         try:
             import gc
 
-            return {"counts": list(gc.get_count()), "stats": [list(s) for s in gc.get_stats()]}
+            return {
+                "counts": list(gc.get_count()),
+                "stats": [dict(s) for s in gc.get_stats()],
+            }
         except Exception:
             return {}
 
@@ -360,6 +394,16 @@ class GatewayLifecycleCounters:
             idle_ttl = self._cache_idle_ttl
             ce_total = self._ce_total
             agents_running = self._agents_running
+            executor = {
+                "present": self._executor_present,
+                "shutdown": self._executor_shutdown,
+                "threads": self._executor_threads,
+                "queued": self._executor_queued,
+            }
+            tasks = {
+                "background_active": self._tasks_background,
+                "cleanup_active": self._tasks_cleanup,
+            }
 
         snap: Dict[str, Any] = {
             "enabled": self._enabled,
@@ -378,9 +422,9 @@ class GatewayLifecycleCounters:
                 "cached_total": ce_total,
                 "by_type": ce_by_type_copy,
             },
-            "executor": self._executor_snapshot(),
+            "executor": executor,
             "threads": self._threads_snapshot(),
-            "tasks": self._tasks_snapshot(),
+            "tasks": tasks,
         }
         gc_snap = self._gc_snapshot()
         if gc_snap:

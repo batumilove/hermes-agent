@@ -2297,6 +2297,16 @@ from gateway.whatsapp_identity import (
 logger = logging.getLogger(__name__)
 
 
+def _record_lifecycle(counters, method_name: str, /, *args, **kwargs) -> None:
+    """Record optional diagnostics without affecting gateway control flow."""
+    if counters is None:
+        return
+    try:
+        getattr(counters, method_name)(*args, **kwargs)
+    except Exception:
+        logger.debug("Lifecycle diagnostics %s failed", method_name, exc_info=True)
+
+
 _OWN_POLICY_OPEN_ENV = {
     Platform.WECOM: ("WECOM_DM_POLICY", "WECOM_GROUP_POLICY", "WECOM_ALLOW_ALL_USERS"),
     Platform.WEIXIN: ("WEIXIN_DM_POLICY", "WEIXIN_GROUP_POLICY", "WEIXIN_ALLOW_ALL_USERS"),
@@ -4646,15 +4656,17 @@ class TurnRunner:
         _lifecycle = getattr(self._runner, "_lifecycle_counters", None)
         if _lifecycle is not None:
             if reused_cached_agent:
-                _lifecycle.record_cache_event("hit")
+                _record_lifecycle(_lifecycle, "record_cache_event", "hit")
             elif cached is None:
-                _lifecycle.record_cache_event("miss_absent")
+                _record_lifecycle(_lifecycle, "record_cache_event", "miss_absent")
             elif cached[1] != _sig:
-                _lifecycle.record_cache_event("miss_signature")
+                _record_lifecycle(_lifecycle, "record_cache_event", "miss_signature")
             else:
-                _lifecycle.record_cache_event("miss_absent")
+                _record_lifecycle(_lifecycle, "record_cache_event", "miss_invalidated")
             if _cache_eviction_kind is not None:
-                _lifecycle.record_eviction(_cache_eviction_kind)
+                _record_lifecycle(
+                    _lifecycle, "record_eviction", _cache_eviction_kind
+                )
 
         # Lock released — refresh the fallback chain from disk for the
         # reused agent OUTSIDE the cache lock (config.yaml read is disk
@@ -4742,12 +4754,14 @@ class TurnRunner:
                     _cap_evicted = self._runner._enforce_agent_cache_cap()
             logger.debug("Created new agent for session %s (sig=%s)", ctx.session_key, _sig)
             if _lifecycle is not None:
-                _lifecycle.record_cache_event("created")
+                _record_lifecycle(_lifecycle, "record_cache_event", "created")
                 for _ in range(_cap_evicted):
-                    _lifecycle.record_eviction("cap")
+                    _record_lifecycle(_lifecycle, "record_eviction", "cap")
                 _context_engine = getattr(agent, "context_compressor", None)
                 if _context_engine is not None:
-                    _lifecycle.record_context_engine(_context_engine)
+                    _record_lifecycle(
+                        _lifecycle, "record_context_engine", _context_engine
+                    )
 
         # Per-message state — callbacks and reasoning config change every
         # turn and must not be baked into the cached agent constructor.
@@ -5987,8 +6001,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # polling thread. The dict de-duplicates repeated eviction requests.
         self._pending_evicted_agent_releases: Dict[int, Any] = {}
         self._pending_evicted_agent_releases_lock = _threading.Lock()
-        from gateway.lifecycle_counters import GatewayLifecycleCounters
-        self._lifecycle_counters = GatewayLifecycleCounters.from_config()
+        try:
+            from gateway.lifecycle_counters import GatewayLifecycleCounters
+
+            self._lifecycle_counters = GatewayLifecycleCounters.from_config()
+        except Exception:
+            logger.warning(
+                "Lifecycle diagnostics counters unavailable; continuing without them",
+                exc_info=True,
+            )
+            self._lifecycle_counters = None
 
         # Conversation-scoped per-session state (/model, /model --once,
         # /reasoning, /fast overrides; per-turn sidecar notes; ephemeral
@@ -9716,8 +9738,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if agent is None:
             return
         _lifecycle = getattr(self, "_lifecycle_counters", None)
-        if _lifecycle is not None:
-            _lifecycle.record_hard_cleanup(attempted=True)
+        _record_lifecycle(_lifecycle, "record_hard_cleanup", attempted=True)
         cleanup_success = True
         try:
             if hasattr(agent, "shutdown_memory_provider"):
@@ -9767,8 +9788,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 close_success = True
         except Exception:
             cleanup_success = False
-        if _lifecycle is not None and close_attempted:
-            _lifecycle.record_agent_close(attempted=True, success=close_success)
+        if close_attempted:
+            _record_lifecycle(
+                _lifecycle,
+                "record_agent_close",
+                attempted=True,
+                success=close_success,
+            )
         # Auxiliary async clients (session_search/web/vision/etc.) live in a
         # process-global cache and are created inside worker threads. Clean up
         # any entries whose event loop is now dead so their httpx transports do
@@ -9778,11 +9804,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             cleanup_stale_async_clients()
         except Exception:
             cleanup_success = False
-        if _lifecycle is not None:
-            _lifecycle.record_hard_cleanup(
-                attempted=False,
-                success=cleanup_success,
-            )
+        _record_lifecycle(
+            _lifecycle,
+            "record_hard_cleanup",
+            attempted=False,
+            success=cleanup_success,
+        )
 
     _STUCK_LOOP_THRESHOLD = 3  # restarts while active before auto-suspend
     _STUCK_LOOP_FILE = ".restart_failure_counts"
@@ -13240,8 +13267,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _idle_agents = list(_cache.values())
                     _cache.clear()
                 _lifecycle = getattr(self, "_lifecycle_counters", None)
-                if _lifecycle is not None:
-                    _lifecycle.record_shutdown_cache_clear(len(_idle_agents))
+                _record_lifecycle(
+                    _lifecycle,
+                    "record_shutdown_cache_clear",
+                    len(_idle_agents),
+                )
                 for _entry in _idle_agents:
                     _agent = (
                         _entry[0] if isinstance(_entry, tuple) else _entry
@@ -23645,8 +23675,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if agent is None or agent is _AGENT_PENDING_SENTINEL:
             return
         _lifecycle = getattr(self, "_lifecycle_counters", None)
-        if _lifecycle is not None:
-            _lifecycle.record_eviction("explicit")
+        _record_lifecycle(_lifecycle, "record_eviction", "explicit")
 
         # Don't tear down an agent that's actively mid-turn — its client,
         # sandbox and child subagents are in use by the running request.  The
@@ -23846,8 +23875,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if hasattr(agent, "_session_messages"):
             agent._session_messages = []
         _lifecycle = getattr(self, "_lifecycle_counters", None)
-        if _lifecycle is not None and soft_release_attempted:
-            _lifecycle.record_soft_release(success=success)
+        if soft_release_attempted:
+            _record_lifecycle(
+                _lifecycle, "record_soft_release", success=success
+            )
 
     def _enforce_agent_cache_cap(self) -> int:
         """Evict oldest cached agents when cache exceeds _AGENT_CACHE_MAX_SIZE.
@@ -23978,7 +24009,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _lifecycle = getattr(self, "_lifecycle_counters", None)
         if _lifecycle is not None:
             for _ in to_evict:
-                _lifecycle.record_eviction("idle")
+                _record_lifecycle(_lifecycle, "record_eviction", "idle")
         for key, agent in to_evict:
             logger.info(
                 "Agent cache idle-TTL evict: session=%s (idle=%.0fs)",
