@@ -93,6 +93,25 @@ patches:
       - python -m py_compile tools/delegate_tool.py
     retirement: Remove after the fork is rebased onto upstream 1be70d63 or a descendant containing byte-identical fixes.
 
+  - id: upstream-terminal-lifecycle-totality-backport
+    kind: compatibility
+    rationale: >-
+      Backport upstream terminal lifecycle-guard fixes through PR #80258 so
+      local and remote executable content is bounded and sanitized before
+      recursive scanning, invalid path inputs cannot crash the guard or cron
+      scheduler, and every public guard invocation returns a verdict.
+    paths:
+      - contributors/emails/prathamesh290504@gmail.com
+      - cron/lifecycle_guard.py
+      - cron/scheduler.py
+      - tools/terminal_tool.py
+      - tests/cron/test_cron_no_agent.py
+      - tests/hermes_cli/test_gateway_restart_loop.py
+    tests:
+      - scripts/run_tests.sh tests/hermes_cli/test_gateway_restart_loop.py tests/tools/test_terminal_tool.py tests/cron
+      - python -m py_compile cron/lifecycle_guard.py cron/scheduler.py tools/terminal_tool.py tests/cron/test_cron_no_agent.py tests/hermes_cli/test_gateway_restart_loop.py
+    retirement: Remove after batumi/live is rebased onto upstream merge 863e31318553 or a descendant containing equivalent lifecycle-guard and scheduler totality fixes.
+
   - id: compression-adopted-transcript-deduplication
     kind: core
     rationale: >-
