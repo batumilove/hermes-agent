@@ -115,6 +115,88 @@ async def test_request_restart_is_idempotent():
 
 
 @pytest.mark.asyncio
+async def test_request_restart_steers_active_turn_to_handoff_before_waiting():
+    runner, _adapter = make_restart_runner()
+    runner.stop = AsyncMock()
+    runner._restart_after_turn_timeout = 5.0
+    session_key = "agent:main:telegram:dm:123"
+    running_agent = MagicMock()
+    running_agent.steer.return_value = True
+    runner._running_agents[session_key] = running_agent
+
+    assert runner.request_restart(detached=False, via_service=True) is True
+
+    running_agent.steer.assert_called_once()
+    steer_text = running_agent.steer.call_args.args[0]
+    assert "restart requested" in steer_text.lower()
+    assert "handoff" in steer_text.lower()
+    assert "finish" in steer_text.lower()
+    runner.stop.assert_not_awaited()
+
+    del runner._running_agents[session_key]
+    await runner._restart_task
+
+
+@pytest.mark.asyncio
+async def test_request_restart_steers_each_active_agent_only_once():
+    runner, _adapter = make_restart_runner()
+    runner.stop = AsyncMock()
+    runner._restart_after_turn_timeout = 5.0
+    first = MagicMock()
+    second = MagicMock()
+    first.steer.return_value = True
+    second.steer.return_value = True
+    runner._running_agents.update({"session-1": first, "session-2": second})
+
+    assert runner.request_restart(detached=False, via_service=True) is True
+    assert runner.request_restart(detached=False, via_service=True) is False
+
+    first.steer.assert_called_once()
+    second.steer.assert_called_once()
+
+    runner._running_agents.clear()
+    await runner._restart_task
+
+
+@pytest.mark.asyncio
+async def test_request_restart_steers_agent_materialized_after_pending_sentinel():
+    runner, _adapter = make_restart_runner()
+    runner.stop = AsyncMock()
+    runner._restart_after_turn_timeout = 5.0
+    session_key = "agent:main:telegram:dm:pending"
+    runner._running_agents[session_key] = gateway_run._AGENT_PENDING_SENTINEL
+
+    assert runner.request_restart(detached=False, via_service=True) is True
+
+    running_agent = MagicMock()
+    running_agent.steer.return_value = True
+    runner._running_agents[session_key] = running_agent
+    await asyncio.sleep(0.2)
+
+    running_agent.steer.assert_called_once()
+    runner.stop.assert_not_awaited()
+
+    del runner._running_agents[session_key]
+    await runner._restart_task
+
+
+@pytest.mark.asyncio
+async def test_request_restart_ignores_agent_that_cannot_accept_steer():
+    runner, _adapter = make_restart_runner()
+    runner.stop = AsyncMock()
+    runner._restart_after_turn_timeout = 5.0
+
+    class NoSteerAgent:
+        pass
+
+    runner._running_agents["session-1"] = NoSteerAgent()
+
+    assert runner.request_restart(detached=False, via_service=True) is True
+    runner._running_agents.clear()
+    await runner._restart_task
+
+
+@pytest.mark.asyncio
 async def test_request_restart_defers_stop_until_active_turn_finishes():
     """Regression for #77184: requesting turn must not enter the drain set."""
     runner, _adapter = make_restart_runner()

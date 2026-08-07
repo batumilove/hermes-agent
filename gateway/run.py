@@ -10193,7 +10193,52 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as e:
             logger.debug("Failed to launch systemd planned-restart helper: %s", e)
 
-    async def _await_active_work_before_restart(self) -> bool:
+    _RESTART_HANDOFF_STEER_TEXT = (
+        "Gateway restart requested. Stop starting new work. Preserve a concise "
+        "handoff in your final response with current status, artifacts, blockers, "
+        "and next steps, then finish this turn as soon as safely possible."
+    )
+
+    def _steer_active_agents_for_restart(
+        self,
+        seen_agent_ids: Optional[set[int]] = None,
+    ) -> int:
+        """Ask newly observed active agent turns to hand off and finish."""
+        steered = 0
+        if seen_agent_ids is None:
+            seen_agent_ids = set()
+        for session_key, agent in self._snapshot_running_agents().items():
+            agent_id = id(agent)
+            if agent_id in seen_agent_ids:
+                continue
+            seen_agent_ids.add(agent_id)
+            steer = getattr(agent, "steer", None)
+            if not callable(steer):
+                logger.debug(
+                    "Active agent for %s cannot accept restart handoff steer",
+                    session_key,
+                )
+                continue
+            try:
+                if steer(self._RESTART_HANDOFF_STEER_TEXT):
+                    steered += 1
+            except Exception as exc:
+                logger.warning(
+                    "Failed to steer active agent for restart (%s): %s",
+                    session_key,
+                    exc,
+                )
+        if steered:
+            logger.info(
+                "Restart handoff steer delivered to %d active agent turn(s)",
+                steered,
+            )
+        return steered
+
+    async def _await_active_work_before_restart(
+        self,
+        steered_agent_ids: Optional[set[int]] = None,
+    ) -> bool:
         """Wait for in-flight work to finish before entering ``stop()``.
 
         In-band restart used to call ``stop()`` immediately, which folded the
@@ -10206,6 +10251,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         elapsed with work still active (caller proceeds to ``stop()``, which
         may then interrupt remaining runs under ``restart_drain_timeout``).
         """
+        if steered_agent_ids is None:
+            steered_agent_ids = set()
+        self._steer_active_agents_for_restart(steered_agent_ids)
         active = self._active_work_count()
         if active <= 0:
             return True
@@ -10235,6 +10283,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         deadline = loop.time() + timeout
         last_status_at = 0.0
         while self._active_work_count() > 0:
+            # A queued turn may initially be represented by the pending
+            # sentinel and materialize its agent after /restart. Catch it as
+            # soon as it becomes steerable without duplicating earlier steers.
+            self._steer_active_agents_for_restart(steered_agent_ids)
             now = loop.time()
             if now >= deadline:
                 logger.warning(
@@ -10272,13 +10324,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._restart_detached = detached
         self._restart_via_service = via_service
         self._restart_task_started = True
+        steered_agent_ids: set[int] = set()
+        # Existing turns should converge on a concise, durable handoff instead
+        # of continuing open-ended work for the full wait-for-idle window.
+        self._steer_active_agents_for_restart(steered_agent_ids)
         # Refuse new turns immediately while in-flight work finishes.
         # Keep ``_running`` True so adapters stay connected and the active
         # turn can still deliver its final response (#77184).
         self._draining = True
 
         async def _run_restart() -> None:
-            await self._await_active_work_before_restart()
+            await self._await_active_work_before_restart(steered_agent_ids)
             # Launch the detached helper only AFTER the after-turn wait.
             # Its deadline is drain_timeout+5 and covers stop() teardown —
             # launching earlier would fire `hermes gateway restart` while
