@@ -11,7 +11,6 @@ ids, file paths, message contents, or any other user-identifying data — only
 aggregate counts and class/type names.
 """
 
-import copy
 import json
 import threading
 from unittest.mock import MagicMock
@@ -428,6 +427,7 @@ def _make_diag_runner():
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._background_tasks = set()
+    runner._deferred_agent_cleanup_tasks = set()
     runner._session_key_for_source = lambda source: "agent:main:test:dm:1"
     runner._agent_cache = {}
     runner._agent_cache_lock = threading.Lock()
@@ -472,6 +472,22 @@ async def test_agents_diagnostics_returns_sorted_json_with_snapshot_fields():
     assert data["agent_cache"]["entries"] == 2
     # The raw string must be sorted (stable, deterministic).
     assert out == json.dumps(data, sort_keys=True)
+
+
+@pytest.mark.asyncio
+async def test_agents_diagnostics_reports_deferred_cleanup_tasks():
+    """The cleanup gauge reads GatewayRunner's real deferred-cleanup set."""
+    from gateway.lifecycle_counters import GatewayLifecycleCounters
+
+    task = MagicMock()
+    task.done.return_value = False
+    runner = _make_diag_runner()
+    runner._deferred_agent_cleanup_tasks.add(task)
+    runner._lifecycle_counters = GatewayLifecycleCounters(enabled=True)
+
+    out = await runner._handle_agents_command(_DiagEvent("/agents --diagnostics"))
+
+    assert json.loads(out)["tasks"]["cleanup_active"] == 1
 
 
 @pytest.mark.asyncio
