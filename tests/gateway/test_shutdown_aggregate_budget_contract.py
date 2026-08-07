@@ -94,9 +94,11 @@ async def test_wedged_notification_cannot_consume_shared_shutdown_deadline(monke
     monkeypatch.setattr(
         gateway_run, "resolve_shutdown_watchdog_delay", lambda _timeout: 0.50
     )
+    notification_started = asyncio.Event()
     never = asyncio.Event()
 
     async def _wedged_notification():
+        notification_started.set()
         await never.wait()
 
     runner._notify_active_sessions_of_shutdown = _wedged_notification
@@ -105,6 +107,7 @@ async def test_wedged_notification_cannot_consume_shared_shutdown_deadline(monke
     await asyncio.wait_for(_run_stop(runner), timeout=1.20)
 
     runner._drain_active_agents.assert_awaited_once()
+    assert notification_started.is_set()
 
 
 @pytest.mark.asyncio
@@ -119,9 +122,11 @@ async def test_wedged_pre_drain_marker_cannot_prevent_interrupt(monkeypatch):
         gateway_run, "resolve_shutdown_watchdog_delay", lambda _timeout: 0.50
     )
     runner._notify_active_sessions_of_shutdown = AsyncMock()
+    marker_started = asyncio.Event()
     never = asyncio.Event()
 
     async def _wedged_marker(*_args, **_kwargs):
+        marker_started.set()
         await never.wait()
 
     monkeypatch.setattr(
@@ -143,6 +148,7 @@ async def test_wedged_pre_drain_marker_cannot_prevent_interrupt(monkeypatch):
 
     runner._drain_active_agents.assert_awaited_once()
     runner._interrupt_running_agents.assert_awaited_once()
+    assert marker_started.is_set()
 
 
 @pytest.mark.asyncio
