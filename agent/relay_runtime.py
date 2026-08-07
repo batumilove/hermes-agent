@@ -24,6 +24,24 @@ RUNTIME_SCHEMA_KEY = "hermes.relay.schema_version"
 RUNTIME_SCHEMA_VERSION = "hermes.relay.runtime.v1"
 RUNTIME_INSTANCE_KEY = "hermes.relay.runtime_instance"
 _PROFILE_KEY_CACHE: dict[str, str] = {}
+_SYNC_BRIDGE_LOOP: contextvars.ContextVar[asyncio.AbstractEventLoop | None] = (
+    contextvars.ContextVar("hermes_relay_sync_bridge_loop", default=None)
+)
+
+
+def bind_sync_bridge_loop(loop: asyncio.AbstractEventLoop) -> contextvars.Token:
+    """Bind the managed Relay loop that an off-loop sync callback may re-enter."""
+    return _SYNC_BRIDGE_LOOP.set(loop)
+
+
+def reset_sync_bridge_loop(token: contextvars.Token) -> None:
+    """Restore the preceding managed Relay loop binding."""
+    _SYNC_BRIDGE_LOOP.reset(token)
+
+
+def sync_bridge_loop() -> asyncio.AbstractEventLoop | None:
+    """Return the managed Relay loop inherited by the current sync callback."""
+    return _SYNC_BRIDGE_LOOP.get()
 
 
 @dataclass
