@@ -10898,32 +10898,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _session_messages,
                         )
 
+            session_id = getattr(agent, "session_id", None) or "unknown"
             remaining = self._shutdown_remaining(deadline)
-            if remaining <= 0 or not await self._run_shutdown_sync_daemon(
+            phase_timeout = min(self._CLEANUP_TIMEOUT_S, remaining)
+            if phase_timeout <= 0 or not await self._run_shutdown_sync_daemon(
                 _persist_transcript,
-                timeout=remaining,
-                context="agent transcript persistence",
+                timeout=phase_timeout,
+                context=f"agent transcript persistence session={session_id}",
             ):
                 return False
 
             remaining = self._shutdown_remaining(deadline)
-            if remaining <= 0:
+            phase_timeout = min(self._CLEANUP_TIMEOUT_S, remaining)
+            if phase_timeout <= 0:
                 return False
             await self._finalize_session_off_loop(
                 session_id=getattr(agent, "session_id", None),
                 platform="gateway",
                 reason="shutdown",
-                timeout=remaining,
+                timeout=phase_timeout,
             )
 
             remaining = self._shutdown_remaining(deadline)
-            if remaining <= 0:
+            phase_timeout = min(self._CLEANUP_TIMEOUT_S, remaining)
+            if phase_timeout <= 0:
                 return False
-            await self._cleanup_agent_resources_off_loop(
+            cleanup_completed = await self._cleanup_agent_resources_off_loop(
                 agent,
                 context="shutdown agent resource cleanup",
-                timeout=remaining,
+                timeout=phase_timeout,
             )
+            if not cleanup_completed:
+                logger.warning(
+                    "Shutdown agent resource cleanup stalled: session=%s phase=%s",
+                    session_id,
+                    getattr(agent, "_shutdown_cleanup_phase", "unknown"),
+                )
+                return False
             if self._shutdown_remaining(deadline) <= 0:
                 return False
         return True
@@ -11148,7 +11159,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         *,
         context: str = "",
         timeout: Optional[float] = None,
-    ) -> None:
+    ) -> bool:
         """Run _cleanup_agent_resources in a worker thread with a bounded wait.
 
         Safe to await from coroutines on the gateway event loop: a slow or
@@ -11156,9 +11167,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         block message processing. On timeout the await is cancelled and the
         worker thread is left to finish (or leak) on its own — the caller
         proceeds regardless, exactly as the /new reset path does (#35994).
+
+        Returns True when the cleanup ran to completion within the budget,
+        False when it timed out, failed, or had no budget left.
         """
         if agent is None:
-            return
+            return True
         if context.startswith("shutdown") or context == "session expiry":
             try:
                 agent._end_session_on_close = False
@@ -11168,7 +11182,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if timeout is not None:
             budget = max(0.0, min(budget, float(timeout)))
         if budget <= 0:
-            return
+            return False
         try:
             await asyncio.wait_for(
                 self._run_in_executor_with_context(
@@ -11184,12 +11198,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 f" ({context})" if context else "",
                 budget,
             )
+            return False
         except Exception as cleanup_exc:
             logger.warning(
                 "Agent resource cleanup%s failed: %s (#53175)",
                 f" ({context})" if context else "",
                 cleanup_exc,
             )
+            return False
+        return True
 
     async def _drain_hygiene_future_after_cancellation(
         self,
@@ -11231,9 +11248,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Best-effort cleanup for temporary or cached agent instances."""
         if agent is None:
             return
+
+        def _record_phase(phase: str) -> None:
+            # The shutdown waiter may time out while this daemon thread remains
+            # blocked. Keep the last entered subphase on the agent so the main
+            # loop can report the exact cleanup boundary that stalled.
+            try:
+                setattr(agent, "_shutdown_cleanup_phase", phase)
+            except Exception:
+                pass
+
         _lifecycle = getattr(self, "_lifecycle_counters", None)
         _record_lifecycle(_lifecycle, "record_hard_cleanup", attempted=True)
         cleanup_success = True
+        _record_phase("memory.flush_pending")
         try:
             if hasattr(agent, "shutdown_memory_provider"):
                 # Drain queued memory writes BEFORE tearing the provider down.
@@ -11254,6 +11282,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _mm.flush_pending(timeout=10)
                     except Exception:
                         cleanup_success = False
+                _record_phase("memory.shutdown_provider")
                 # Pass the agent's own conversation transcript so memory
                 # providers' ``on_session_end`` hooks see the real messages
                 # instead of the empty default (#15165). ``_session_messages``
@@ -11276,6 +11305,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Close tool resources (terminal sandboxes, browser daemons,
         # background processes, httpx clients) to prevent zombie
         # process accumulation.
+        _record_phase("agent.close")
         close_attempted = hasattr(agent, "close")
         close_success = False
         try:
@@ -11295,6 +11325,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # process-global cache and are created inside worker threads. Clean up
         # any entries whose event loop is now dead so their httpx transports do
         # not accumulate across gateway turns.
+        _record_phase("auxiliary_client.cleanup_stale")
         try:
             from agent.auxiliary_client import cleanup_stale_async_clients
             cleanup_stale_async_clients()
@@ -11306,6 +11337,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             attempted=False,
             success=cleanup_success,
         )
+        _record_phase("complete")
         return cleanup_success
 
     _STUCK_LOOP_THRESHOLD = 3  # restarts while active before auto-suspend

@@ -88,6 +88,61 @@ class _BlockingFlushAgent:
 
 
 @pytest.mark.asyncio
+async def test_agent_cleanup_keeps_remaining_aggregate_budget(monkeypatch):
+    """One wedged agent cleanup must not monopolize the shared deadline."""
+    monkeypatch.setattr("hermes_cli.lifecycle.finalize_session", lambda **_kwargs: None)
+    runner, _adapter = make_restart_runner()
+    runner._CLEANUP_TIMEOUT_S = 0.05
+    runner._shutdown_cleanup_deadline = asyncio.get_running_loop().time() + 0.50
+    cleanup_started = threading.Event()
+
+    class _Agent:
+        session_id = "wedged-cleanup-agent"
+        _session_messages = []
+
+    def _wedged_cleanup(_agent):
+        cleanup_started.set()
+        time.sleep(2.0)
+
+    runner._cleanup_agent_resources = _wedged_cleanup
+
+    before = asyncio.get_running_loop().time()
+    completed = await runner._finalize_shutdown_agents({"session": _Agent()})
+    elapsed = asyncio.get_running_loop().time() - before
+    remaining = runner._shutdown_remaining(runner._shutdown_cleanup_deadline)
+
+    assert completed is False
+    assert cleanup_started.is_set()
+    assert elapsed < 0.20
+    assert remaining > 0.25
+
+
+@pytest.mark.asyncio
+async def test_agent_cleanup_timeout_reports_blocking_subphase(caplog, monkeypatch):
+    """A timed-out monolithic cleanup identifies its last entered subphase."""
+    monkeypatch.setattr("hermes_cli.lifecycle.finalize_session", lambda **_kwargs: None)
+    runner, _adapter = make_restart_runner()
+    runner._CLEANUP_TIMEOUT_S = 0.05
+    runner._shutdown_cleanup_deadline = asyncio.get_running_loop().time() + 0.50
+    close_started = threading.Event()
+
+    class _Agent:
+        session_id = "diagnostic-cleanup-agent"
+        _session_messages = []
+
+        def close(self):
+            close_started.set()
+            time.sleep(2.0)
+
+    completed = await runner._finalize_shutdown_agents({"session": _Agent()})
+
+    assert completed is False
+    assert close_started.is_set()
+    assert "phase=agent.close" in caplog.text
+    assert "session=diagnostic-cleanup-agent" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_wedged_notification_cannot_consume_shared_shutdown_deadline(monkeypatch):
     runner, _adapter = make_restart_runner()
     _configure_fast_forced_shutdown(runner, monkeypatch, {})
