@@ -101,6 +101,7 @@ patches:
       recursive scanning, invalid path inputs cannot crash the guard or cron
       scheduler, and every public guard invocation returns a verdict.
     paths:
+      - contributors/emails/prathamesh290504@gmail.com
       - cron/lifecycle_guard.py
       - cron/scheduler.py
       - tools/terminal_tool.py
