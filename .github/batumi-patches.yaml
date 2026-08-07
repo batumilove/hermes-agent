@@ -254,6 +254,23 @@ patches:
       - scripts/run_tests.sh tests/agent/test_compression_concurrent_fork.py
     retirement: Remove when upstream prevents adopted transcript duplication with equivalent concurrent-fork coverage.
 
+  - id: compression-host-auxiliary-timeout-alignment
+    kind: core
+    rationale: >-
+      Keep the host-side progress timeout from abandoning a silent but still
+      valid auxiliary compression request before its provider deadline, while
+      preserving deterministic explicit-config timeout tests and accurately
+      describing safely discarded late results.
+    paths:
+      - agent/conversation_compression.py
+      - hermes_cli/config_defaults.py
+      - run_agent.py
+      - tests/agent/test_compress_context_progress_timeout.py
+    tests:
+      - scripts/run_tests.sh tests/agent/test_compress_context_progress_timeout.py
+      - python -m py_compile agent/conversation_compression.py hermes_cli/config_defaults.py run_agent.py
+    retirement: Remove when upstream aligns the host compression idle budget with the effective auxiliary timeout and provides equivalent late-result safety coverage.
+
   - id: post-tool-none-compressor-guard
     kind: core
     rationale: >-
