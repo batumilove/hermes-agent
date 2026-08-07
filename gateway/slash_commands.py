@@ -1225,7 +1225,7 @@ class GatewaySlashCommandsMixin:
                 )
             counters.set_agents_running(len(getattr(self, "_running_agents", {}) or {}))
             background = getattr(self, "_background_tasks", set()) or set()
-            cleanup = getattr(self, "_agent_cleanup_tasks", set()) or set()
+            cleanup = getattr(self, "_deferred_agent_cleanup_tasks", set()) or set()
             counters.set_task_counts(
                 sum(1 for task in background if not task.done()),
                 sum(1 for task in cleanup if not task.done()),
