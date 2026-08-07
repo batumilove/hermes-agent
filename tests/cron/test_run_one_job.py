@@ -207,3 +207,37 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
     assert ss.current_secret_scope() is None
 
 
+def test_cron_agent_result_rejects_reasoning_only_exhaustion():
+    """A visible reasoning excerpt is failure evidence, not a successful report."""
+    result = {
+        "completed": True,
+        "failed": False,
+        "turn_exit_reason": "empty_response_exhausted",
+        "final_response": (
+            "⚠️ The model produced only internal reasoning and no final answer, "
+            "despite retries and fallback. Its last reasoning may contain the answer."
+        ),
+        "session_id": "cron_job-1_20260806_120908",
+    }
+
+    error = s._cron_agent_result_error(result)
+
+    assert error is not None
+    assert "empty_response_exhausted" in error
+    assert "cron_job-1_20260806_120908" in error
+    assert "session transcript" in error
+    assert "last reasoning" not in error
+
+
+def test_cron_agent_result_accepts_normal_final_response():
+    result = {
+        "completed": True,
+        "failed": False,
+        "turn_exit_reason": "text_response(stop)",
+        "final_response": "Acceptance PASS",
+        "session_id": "cron_job-2_20260806_121000",
+    }
+
+    assert s._cron_agent_result_error(result) is None
+
+

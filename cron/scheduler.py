@@ -2932,6 +2932,28 @@ def _guard_job_credential_exfil(job: dict) -> None:
         raise RuntimeError(f"Cron job '{job_id}' blocked for safety: {err}")
 
 
+def _cron_agent_result_error(result: dict) -> Optional[str]:
+    """Return a cron-fatal error for an unusable agent terminal result.
+
+    Interactive surfaces may expose a labeled reasoning excerpt when every
+    empty-response retry and provider fallback has been exhausted.  That text
+    is diagnostic evidence, not a final answer.  Cron must therefore fail the
+    run even though the generic agent result is ``completed=True`` and carries
+    non-empty ``final_response`` text.
+    """
+    turn_exit_reason = str(result.get("turn_exit_reason") or "")
+    if turn_exit_reason != "empty_response_exhausted":
+        return None
+
+    session_id = str(result.get("session_id") or "unknown")
+    return (
+        "Agent produced no final answer after empty-response retries and "
+        "provider fallback "
+        f"(turn_exit_reason={turn_exit_reason}, session_id={session_id}); "
+        "collected tool evidence remains available in the cron session transcript."
+    )
+
+
 def run_job(
     job: dict, *, defer_agent_teardown: Optional[list] = None
 ) -> tuple[bool, str, str, Optional[str]]:
@@ -3838,6 +3860,9 @@ def run_job(
         # builds the proper failure tuple. (issue #17855)
         turn_exit_reason = str(result.get("turn_exit_reason") or "")
         final_response_text = (result.get("final_response") or "").strip()
+        unusable_terminal_error = _cron_agent_result_error(result)
+        if unusable_terminal_error:
+            raise RuntimeError(unusable_terminal_error)
         max_iteration_summary = (
             result.get("failed") is not True
             and result.get("completed") is False
