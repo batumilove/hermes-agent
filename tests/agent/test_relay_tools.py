@@ -9,7 +9,7 @@ import pytest
 
 pytest.importorskip("nemo_relay")
 
-from agent import relay_runtime, relay_tools
+from agent import relay_llm, relay_runtime, relay_tools
 
 
 @pytest.fixture()
@@ -134,7 +134,93 @@ def test_tool_error_is_preserved_from_relay_wrapper_suffix(relay_turn, monkeypat
     assert caught.value is tool_error
 
 
+def test_tool_callback_can_make_nested_sync_llm_call(relay_turn):
+    relay = relay_turn
+    provider_calls = []
+
+    def provider(request):
+        provider_calls.append(request)
+        return {"choices": [{"message": {"content": "expanded"}}]}
+
+    async def annotate_nested_llm(_name, request, next_call):
+        response = await next_call(request)
+        return {**response, "relay_intercepted": True}
+
+    def tool_callback(_args):
+        return relay_llm.execute_current(
+            {"model": "test-model", "messages": []},
+            provider,
+            name="test-provider",
+            model_name="test-model",
+        )
+
+    relay.intercepts.register_llm_execution(
+        "hermes-test-nested-tool-llm",
+        1,
+        annotate_nested_llm,
+    )
+    try:
+        result, observed_args = relay_tools.execute(
+            "lcm_expand_query",
+            {"prompt": "recover context"},
+            tool_callback,
+            session_id="session-1",
+        )
+    finally:
+        relay.intercepts.deregister_llm_execution("hermes-test-nested-tool-llm")
+
+    assert observed_args == {"prompt": "recover context"}
+    assert provider_calls == [{"model": "test-model", "messages": []}]
+    assert result.relay_intercepted is True
+    assert result.choices[0].message.content == "expanded"
 
 
+def test_tool_callback_can_make_nested_sync_llm_stream(relay_turn):
+    provider_calls = []
 
+    def provider(request):
+        provider_calls.append(request)
+        return iter([
+            {
+                "model": "test-model",
+                "choices": [
+                    {
+                        "delta": {"content": "expanded"},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+        ])
 
+    def tool_callback(_args):
+        return list(
+            relay_llm.stream_current(
+                {"model": "test-model", "messages": []},
+                provider,
+                name="test-provider",
+                model_name="test-model",
+                finalizer=lambda: {
+                    "model": "test-model",
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "expanded",
+                            },
+                            "finish_reason": "stop",
+                        }
+                    ],
+                },
+            )
+        )
+
+    result, observed_args = relay_tools.execute(
+        "lcm_expand_query",
+        {"prompt": "recover context"},
+        tool_callback,
+        session_id="session-1",
+    )
+
+    assert observed_args == {"prompt": "recover context"}
+    assert provider_calls == [{"model": "test-model", "messages": []}]
+    assert result[0]["choices"][0]["delta"]["content"] == "expanded"

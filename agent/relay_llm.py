@@ -369,6 +369,7 @@ class ManagedLlmStream(Iterator[Any]):
     ) -> None:
         self.final_response: Any = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._owns_loop = False
         self._stream: Any = None
         self._raw_stream_resource: Any = None
         self._closed = False
@@ -503,11 +504,16 @@ class ManagedLlmStream(Iterator[Any]):
                 self._callback_error = exc
                 raise
 
-        loop = asyncio.new_event_loop()
+        bridge_loop = relay_runtime.sync_bridge_loop()
+        if bridge_loop is not None and bridge_loop.is_running():
+            loop = bridge_loop
+        else:
+            loop = asyncio.new_event_loop()
+            self._owns_loop = True
         self._loop = loop
         self._relay_observes_chunks = True
         try:
-            self._stream = loop.run_until_complete(
+            self._stream = self._run_on_loop(
                 runtime.run_in_session_async(
                     session,
                     runtime.relay.llm.stream_execute,
@@ -521,7 +527,8 @@ class ManagedLlmStream(Iterator[Any]):
                     model_name=model_name,
                     codec=_codec(runtime.relay, metadata),
                     response_codec=_codec(runtime.relay, metadata),
-                )
+                ),
+                loop,
             )
         except BaseException as exc:
             if (
@@ -545,9 +552,23 @@ class ManagedLlmStream(Iterator[Any]):
                     response_model_name=self._logical_response_model_name,
                 )
                 self._logical = None
-            loop.close()
+            if self._owns_loop:
+                loop.close()
             self._loop = None
             raise
+
+    def _run_on_loop(
+        self,
+        value: Any,
+        loop: asyncio.AbstractEventLoop,
+    ) -> Any:
+        if self._owns_loop:
+            return loop.run_until_complete(value)
+
+        async def await_value() -> Any:
+            return await value
+
+        return asyncio.run_coroutine_threadsafe(await_value(), loop).result()
 
     def __iter__(self) -> "ManagedLlmStream":
         return self
@@ -570,7 +591,7 @@ class ManagedLlmStream(Iterator[Any]):
             return await anext(self._stream)
 
         try:
-            chunk = self._loop.run_until_complete(next_chunk())
+            chunk = self._run_on_loop(next_chunk(), self._loop)
         except StopAsyncIteration:
             if self._raw_chunks:
                 self.output_modified = True
@@ -646,13 +667,14 @@ class ManagedLlmStream(Iterator[Any]):
                     await close()
 
                 try:
-                    loop.run_until_complete(close_stream())
+                    self._run_on_loop(close_stream(), loop)
                 except Exception:
                     logger.debug(
                         "Relay stream cleanup failed during provider fallback",
                         exc_info=True,
                     )
-            loop.close()
+            if self._owns_loop:
+                loop.close()
         if not self._defer_logical_completion:
             _complete_logical(
                 self._logical,
@@ -706,7 +728,7 @@ class ManagedLlmStream(Iterator[Any]):
                 await close()
 
             try:
-                loop.run_until_complete(close_stream())
+                self._run_on_loop(close_stream(), loop)
             except Exception as exc:
                 if self._close_error is None:
                     self._close_error = exc
@@ -719,7 +741,8 @@ class ManagedLlmStream(Iterator[Any]):
                 response_model_name=self._logical_response_model_name,
             )
             self._logical = None
-        loop.close()
+        if self._owns_loop:
+            loop.close()
 
     def __del__(self) -> None:
         self._close(logical_outcome="cancelled")
@@ -1241,6 +1264,14 @@ def _run_awaitable(value: Any) -> Any:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
+        bridge_loop = relay_runtime.sync_bridge_loop()
+        if bridge_loop is not None and bridge_loop.is_running():
+            async def await_value() -> Any:
+                return await value
+
+            return asyncio.run_coroutine_threadsafe(
+                await_value(), bridge_loop
+            ).result()
         return asyncio.run(value)
     raise RuntimeError(
         "Synchronous Relay LLM execution cannot run on an event-loop thread"

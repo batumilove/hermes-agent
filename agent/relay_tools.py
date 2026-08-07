@@ -32,12 +32,26 @@ def execute(
     raw_result: dict[str, Any] = {}
     callback_error: BaseException | None = None
     callback_context = contextvars.copy_context()
+    managed_loop: asyncio.AbstractEventLoop | None = None
 
     def invoke(next_args: Any) -> Any:
         nonlocal callback_error, observed_args
         observed_args = next_args if isinstance(next_args, dict) else args
+
+        def call_callback() -> Any:
+            token = (
+                relay_runtime.bind_sync_bridge_loop(managed_loop)
+                if managed_loop is not None
+                else None
+            )
+            try:
+                return callback(observed_args)
+            finally:
+                if token is not None:
+                    relay_runtime.reset_sync_bridge_loop(token)
+
         try:
-            result = callback_context.copy().run(callback, observed_args)
+            result = callback_context.copy().run(call_callback)
         except BaseException as exc:
             callback_error = exc
             raise
@@ -45,18 +59,21 @@ def execute(
         raw_result["json"] = _jsonable(result)
         return raw_result["json"]
 
-    try:
-        managed = _run_awaitable(
-            runtime.run_in_session_async(
-                session,
-                runtime.relay.tools.execute,
-                tool_name,
-                _jsonable(args),
-                invoke,
-                handle=parent,
-                metadata=_jsonable(metadata or {}),
-            )
+    async def execute_managed() -> Any:
+        nonlocal managed_loop
+        managed_loop = asyncio.get_running_loop()
+        return await runtime.run_in_session_async(
+            session,
+            runtime.relay.tools.execute,
+            tool_name,
+            _jsonable(args),
+            invoke,
+            handle=parent,
+            metadata=_jsonable(metadata or {}),
         )
+
+    try:
+        managed = _run_awaitable(execute_managed())
     except BaseException as exc:
         if (
             callback_error is not None
