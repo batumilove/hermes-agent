@@ -196,6 +196,24 @@ class TestRestartRebindWithoutMirror:
         assert rebound.suspended is True
         restarted._db.close()
 
+    def test_expiry_finalization_uses_single_entry_fast_path(
+        self, tmp_path, monkeypatch
+    ):
+        """Expiry flags and override clearing must not rewrite every route."""
+        store = _make_store(tmp_path, monkeypatch)
+        entry = store.get_or_create_session(_source())
+        store.set_model_override(entry.session_key, {"model": "test-model"})
+        sessions_json = tmp_path / "sessions" / "sessions.json"
+        sessions_json.unlink()
+
+        store.set_expiry_finalized(entry)
+
+        assert not sessions_json.exists()
+        durable = _routing_row(store, entry.session_key)
+        assert durable["expiry_finalized"] is True
+        assert durable.get("model_override") is None
+        store._db.close()
+
 
 class TestFullRewriteTelemetry:
     def test_bulk_rewrite_propagates_content_free_reason(
