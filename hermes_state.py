@@ -3556,14 +3556,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self._execute_write(_do)
 
     def replace_gateway_routing_entries(
-        self, entries: Dict[str, str], *, scope: str = ""
+        self,
+        entries: Dict[str, str],
+        *,
+        scope: str = "",
+        reason: str = "unspecified",
     ) -> None:
         """Atomically replace the routing index for *scope* with *entries*.
 
         Mirrors the sessions.json full-rewrite semantics: keys absent from
         *entries* are removed (pruned/reset sessions disappear from the
         index).  Runs as a single write transaction.  Other scopes are
-        untouched.
+        untouched. ``reason`` is a bounded, content-free routing call-site
+        label used only for latency attribution.
         """
         now = time.time()
 
@@ -3576,7 +3581,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     [(scope, k, v, now) for k, v in entries.items() if k and v],
                 )
 
-        self._execute_write(_do)
+        reason_label = re.sub(
+            r"[^A-Za-z0-9_.-]+", "_", str(reason or "unspecified")
+        )[:64]
+        self._execute_write(
+            _do,
+            operation=f"replace_gateway_routing_entries:{reason_label}",
+            items=len(entries),
+        )
 
     def load_gateway_routing_entries(self, *, scope: str = "") -> Dict[str, str]:
         """Load routing entries for *scope* as {session_key: entry_json}."""

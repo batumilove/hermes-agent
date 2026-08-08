@@ -13,6 +13,7 @@ import hashlib
 import logging
 import os
 import json
+import sys
 import threading
 import uuid
 from pathlib import Path
@@ -1472,9 +1473,17 @@ class SessionStore:
             self._save()
 
     def _save(self) -> None:
-        """Persist the routing index while the caller holds ``_lock``."""
+        """Persist the routing index while the caller holds ``_lock``.
+
+        The content-free caller name is forwarded to SessionDB latency
+        telemetry so any remaining expensive full rewrite is attributable.
+        """
         data, generation = self._snapshot_routing_locked()
-        self._persist_routing_data(data, generation)
+        self._persist_routing_data(
+            data,
+            generation,
+            reason=sys._getframe(1).f_code.co_name,
+        )
 
     def _next_routing_generation_locked(self) -> int:
         """Bump and return the shared routing counter. Caller holds ``_lock``.
@@ -1495,7 +1504,13 @@ class SessionStore:
             self._next_routing_generation_locked(),
         )
 
-    def _persist_routing_data(self, data: Dict[str, Any], generation: int) -> None:
+    def _persist_routing_data(
+        self,
+        data: Dict[str, Any],
+        generation: int,
+        *,
+        reason: str = "unspecified",
+    ) -> None:
         """Serialize all whole-index writers through one durable write lock."""
         save_lock = getattr(self, "_save_lock", None)
         if save_lock is None:
@@ -1523,6 +1538,7 @@ class SessionStore:
                         replacer(
                             {k: json.dumps(v) for k, v in data.items()},
                             scope=self._routing_scope(),
+                            reason=str(reason or "unspecified")[:64],
                         )
                         db_saved = True
                     except Exception as exc:
@@ -1581,22 +1597,24 @@ class SessionStore:
                 logger.debug("Could not remove temp file %s: %s", tmp_path, e)
             raise
     
-    def _save_entries(self) -> None:
-        """Snapshot latest state under ``_lock`` and persist after releasing it."""
+    def _save_entries(self, *, reason: Optional[str] = None) -> None:
+        """Snapshot under ``_lock`` and persist with a content-free reason."""
         with self._lock:
             data, generation = self._snapshot_routing_locked()
-        self._persist_routing_data(data, generation)
+        self._persist_routing_data(
+            data,
+            generation,
+            reason=reason or sys._getframe(1).f_code.co_name,
+        )
 
     def _save_entry(self, session_key: str) -> None:
         """Persist ONE routing entry via UPSERT — the per-turn fast path.
 
-        The steady-state turn only bumps ``updated_at`` /
-        ``last_prompt_tokens`` on one entry; routing that through the
-        full index rewrite re-serializes every entry, DELETE+INSERTs
-        every gateway_routing row, and dumps+fsyncs a multi-MB
-        sessions.json — ~50ms p50 at ~1100 routing keys, and it runs
-        twice per turn.  A single-row UPSERT keeps the durable state.db
-        mapping current in well under a millisecond.
+        Steady-state turns and other one-key metadata/flag mutations only
+        change one entry. Routing them through the full index rewrite
+        re-serializes every entry, DELETE+INSERTs every gateway_routing row,
+        and dumps+fsyncs a multi-MB sessions.json. A single-row UPSERT keeps
+        the durable state.db mapping current without that global rewrite.
 
         Correctness constraints this path relies on:
 
@@ -1662,7 +1680,7 @@ class SessionStore:
                     "(%s); falling back to full index rewrite",
                     session_key, exc,
                 )
-        self._save_entries()
+        self._save_entries(reason="single_entry_fallback")
 
     def _resolve_profile_for_key(self, source: Optional[SessionSource] = None) -> Optional[str]:
         """Return the profile namespace for session keys, or None when off.
@@ -2688,9 +2706,9 @@ class SessionStore:
     ) -> bool:
         """Persist a metadata value on a live session entry.
 
-        Values must be small and JSON-serializable — they are written into
-        the routing index (state.db gateway_routing table + the legacy
-        sessions.json mirror) so they survive gateway restarts.
+        Values must be small and JSON-serializable. They are written to the
+        primary state.db routing index so they survive gateway restarts; the
+        legacy sessions.json mirror is refreshed by structural saves.
         """
         with self._lock:
             self._ensure_loaded_locked()
@@ -2699,8 +2717,8 @@ class SessionStore:
                 return False
             entry.metadata[key] = value
             entry.updated_at = _now()
-            self._save()
-            return True
+        self._save_entry(session_key)
+        return True
 
     def set_model_override(
         self, session_key: str, override: Optional[Dict[str, Any]]
@@ -2722,7 +2740,7 @@ class SessionStore:
             if entry.model_override == cleaned:
                 return
             entry.model_override = cleaned
-            self._save()
+        self._save_entry(session_key)
 
     def get_model_override(self, session_key: str) -> Optional[Dict[str, str]]:
         """Return the persisted /model override for *session_key*, if any."""
@@ -2744,9 +2762,10 @@ class SessionStore:
             self._ensure_loaded_locked()
             if session_key in self._entries:
                 self._entries[session_key].suspended = True
-                self._save()
-                return True
-        return False
+            else:
+                return False
+        self._save_entry(session_key)
+        return True
 
     def mark_resume_pending(
         self,
@@ -2773,9 +2792,10 @@ class SessionStore:
                 entry.resume_pending = True
                 entry.resume_reason = reason
                 entry.last_resume_marked_at = _now()
-                self._save()
-                return True
-        return False
+            else:
+                return False
+        self._save_entry(session_key)
+        return True
 
     def clear_resume_pending(self, session_key: str) -> bool:
         """Clear the resume-pending flag after a successful resumed turn.
@@ -2794,8 +2814,8 @@ class SessionStore:
             entry.resume_pending = False
             entry.resume_reason = None
             entry.last_resume_marked_at = None
-            self._save()
-            return True
+        self._save_entry(session_key)
+        return True
 
     def prune_old_entries(self, max_age_days: int) -> int:
         """Drop SessionEntry records older than max_age_days.

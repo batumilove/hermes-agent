@@ -148,6 +148,100 @@ class TestRestartRebindWithoutMirror:
         assert data[fresh.session_key]["session_id"] == fresh.session_id
         store._db.close()
 
+    def test_single_entry_flags_and_metadata_do_not_rewrite_mirror(
+        self, tmp_path, monkeypatch
+    ):
+        """One-key mutations must use the same durable UPSERT fast path.
+
+        These fields do not change the routing key or session id.  Rewriting
+        every routing row (and fsyncing the legacy mirror) for them recreates
+        the production latency class that the point-save path exists to avoid.
+        """
+        store = _make_store(tmp_path, monkeypatch)
+        entry = store.get_or_create_session(_source())
+        sessions_json = tmp_path / "sessions" / "sessions.json"
+        sessions_json.unlink()
+
+        assert store.set_session_metadata(entry.session_key, "watermark", "42")
+        store.set_model_override(
+            entry.session_key,
+            {"model": "test-model", "provider": "test-provider"},
+        )
+        assert store.mark_resume_pending(entry.session_key, reason="test_restart")
+        assert store.clear_resume_pending(entry.session_key)
+        assert store.suspend_session(entry.session_key)
+
+        # A full rewrite would recreate this file.  Every mutation above must
+        # instead persist exactly one state.db routing row.
+        assert not sessions_json.exists()
+        durable = _routing_row(store, entry.session_key)
+        assert durable["metadata"]["watermark"] == "42"
+        assert durable["model_override"] == {
+            "model": "test-model",
+            "provider": "test-provider",
+        }
+        assert durable["resume_pending"] is False
+        assert durable["resume_reason"] is None
+        assert durable["suspended"] is True
+        store._db.close()
+
+        restarted = _make_store(tmp_path, monkeypatch)
+        restarted._ensure_loaded()
+        rebound = restarted._entries[entry.session_key]
+        assert rebound.metadata["watermark"] == "42"
+        assert rebound.model_override == {
+            "model": "test-model",
+            "provider": "test-provider",
+        }
+        assert rebound.suspended is True
+        restarted._db.close()
+
+
+class TestFullRewriteTelemetry:
+    def test_bulk_rewrite_propagates_content_free_reason(
+        self, tmp_path, monkeypatch
+    ):
+        store = _make_store(tmp_path, monkeypatch)
+        store.get_or_create_session(_source())
+        seen = []
+        real_replace = store._db.replace_gateway_routing_entries
+
+        def recording_replace(entries, *, scope="", reason=None):
+            seen.append((reason, len(entries)))
+            return real_replace(entries, scope=scope)
+
+        monkeypatch.setattr(
+            store._db, "replace_gateway_routing_entries", recording_replace
+        )
+
+        assert store.suspend_recently_active(max_age_seconds=120) == 1
+
+        assert seen == [("suspend_recently_active", 1)]
+        store._db.close()
+
+    def test_db_latency_operation_contains_reason_and_item_count(
+        self, tmp_path, monkeypatch
+    ):
+        store = _make_store(tmp_path, monkeypatch)
+        captured = []
+
+        def capture_execute_write(fn, *args, **kwargs):
+            captured.append(kwargs)
+
+        monkeypatch.setattr(store._db, "_execute_write", capture_execute_write)
+
+        store._db.replace_gateway_routing_entries(
+            {"route-a": "{}", "route-b": "{}"},
+            scope="test",
+            reason="prune_old_entries",
+        )
+
+        assert captured == [{
+            "operation": "replace_gateway_routing_entries:prune_old_entries",
+            "items": 2,
+        }]
+        store._db.close()
+
 
 class TestFallbacks:
     def test_no_db_falls_back_to_full_rewrite(self, tmp_path, monkeypatch):
