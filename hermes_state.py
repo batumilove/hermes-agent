@@ -2815,6 +2815,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         *,
         operation: Optional[str] = None,
         items: Optional[int] = None,
+        reason: Optional[str] = None,
     ) -> T:
         """Execute a write transaction with BEGIN IMMEDIATE and jitter retry.
 
@@ -2851,6 +2852,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             inferred_operation = caller_name
         operation_name = str(operation or inferred_operation)
         operation_label = re.sub(r"[\r\n\t]+", " ", operation_name)[:96]
+        reason_label = re.sub(
+            r"[^A-Za-z0-9_.-]+", "_", str(reason or "-")
+        )[:64]
         call_started = time.monotonic()
         deadline = call_started + patience_s
         # Set on the first compression-busy collision so the short wait is
@@ -2916,7 +2920,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 ):
                     logger.warning(
                         "SessionDB write latency: caller=%s operation=%s "
-                        "items=%s outcome=write lock_wait=%.3fs sqlite_retry_wait=%.3fs "
+                        "reason=%s items=%s outcome=write lock_wait=%.3fs sqlite_retry_wait=%.3fs "
                         "begin_wait=%.3fs callback=%.3fs commit=%.3fs "
                         "txn=%.3fs total=%.3fs elapsed=%.3fs attempt=%d pid=%d "
                         "thread_id=%d db_instance=%s instance_queue_depth=%d "
@@ -2926,6 +2930,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         "instance_lock_holder=%s",
                         caller_name,
                         operation_label,
+                        reason_label,
                         items if items is not None else "-",
                         lock_wait,
                         sqlite_retry_wait,
@@ -3586,8 +3591,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         )[:64]
         self._execute_write(
             _do,
-            operation=f"replace_gateway_routing_entries:{reason_label}",
+            operation="replace_gateway_routing_entries",
             items=len(entries),
+            reason=reason_label,
         )
 
     def load_gateway_routing_entries(self, *, scope: str = "") -> Dict[str, str]:
