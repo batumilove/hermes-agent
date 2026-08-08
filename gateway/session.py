@@ -2053,11 +2053,11 @@ class SessionStore:
     def set_expiry_finalized(
         self, entry: SessionEntry, *, clear_model_override: bool = True
     ) -> None:
-        """Mark a session entry expiry-finalized in memory, sessions.json, AND state.db.
+        """Mark a session entry expiry-finalized in memory and state.db.
 
         Single write-path for the expiry watcher (#9006): keeps the durable
-        state.db flag in sync with the JSON routing index so the flag
-        survives sessions.json pruning/loss.
+        session flag in sync with the primary state.db routing row.  The
+        legacy sessions.json mirror is refreshed by structural saves.
 
         ``clear_model_override=False`` preserves the give-up path's original
         behavior (flag only, no override drop).
@@ -2069,16 +2069,18 @@ class SessionStore:
                 # persisted /model override too so a later message doesn't
                 # rehydrate it after the in-memory override was popped.
                 entry.model_override = None
-            self._save()
+            session_key = entry.session_key
+            session_id = entry.session_id
+        self._save_entry(session_key)
         if self._db:
             setter = getattr(self._db, "set_expiry_finalized", None)
             if callable(setter):
                 try:
-                    setter(entry.session_id, True)
+                    setter(session_id, True)
                 except Exception as exc:
                     logger.debug(
                         "Session DB expiry_finalized write failed for %s: %s",
-                        entry.session_id, exc,
+                        session_id, exc,
                     )
             try:
                 # Expiry finalization is a real conversation boundary. Without
@@ -2090,11 +2092,11 @@ class SessionStore:
                 # live rows or rows ended with ``agent_close``.  Explicit
                 # boundaries (compression, session_reset, new_command, etc.)
                 # are preserved — the first writer wins.
-                self._db.promote_to_session_reset(entry.session_id)
+                self._db.promote_to_session_reset(session_id)
             except Exception as exc:
                 logger.debug(
                     "Session DB promote_to_session_reset failed for %s: %s",
-                    entry.session_id, exc,
+                    session_id, exc,
                 )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
