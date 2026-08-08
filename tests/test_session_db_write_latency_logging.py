@@ -121,6 +121,28 @@ def test_execute_write_splits_transaction_phases_and_identifies_runtime(tmp_path
     db.close()
 
 
+def test_execute_write_logs_reason_without_changing_operation(tmp_path, caplog):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db._SLOW_WRITE_WARN_S = 0.0
+    db._SLOW_LOCK_WAIT_WARN_S = 0.0
+
+    with caplog.at_level(logging.WARNING, logger="hermes_state"):
+        db.replace_gateway_routing_entries(
+            {"telegram:1": '{"session_id":"s1"}'},
+            reason="suspend_recently_active",
+        )
+
+    message = next(
+        record.getMessage()
+        for record in caplog.records
+        if "operation=replace_gateway_routing_entries" in record.getMessage()
+    )
+    assert "operation=replace_gateway_routing_entries " in message
+    assert "reason=suspend_recently_active " in message
+    assert "items=1 " in message
+    db.close()
+
+
 def test_execute_write_attributes_lock_wait_to_observed_owner(tmp_path, caplog):
     db = SessionDB(db_path=tmp_path / "state.db")
     db._SLOW_WRITE_WARN_S = 0.0

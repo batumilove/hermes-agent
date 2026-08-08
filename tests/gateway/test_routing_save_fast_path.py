@@ -237,8 +237,9 @@ class TestFullRewriteTelemetry:
         )
 
         assert captured == [{
-            "operation": "replace_gateway_routing_entries:prune_old_entries",
+            "operation": "replace_gateway_routing_entries",
             "items": 2,
+            "reason": "prune_old_entries",
         }]
         store._db.close()
 
