@@ -14,6 +14,7 @@ import concurrent.futures
 import contextvars
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -201,7 +202,12 @@ def _classify_no_agent_script_failure(job_name: str, text: str) -> str:
         if isinstance(k, str) and k and _is_safe_kind(k):
             kind = k
         ts = obj.get("timeout_seconds")
-        if isinstance(ts, (int, float)) and not isinstance(ts, bool):
+        if (
+            isinstance(ts, (int, float))
+            and not isinstance(ts, bool)
+            and math.isfinite(float(ts))
+            and 0 <= float(ts) <= 31_536_000
+        ):
             timeout_seconds = str(int(ts))
         if kind:
             break
