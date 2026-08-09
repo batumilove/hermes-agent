@@ -140,6 +140,20 @@ patches:
       - scripts/run_tests.sh tests/plugins/image_gen/test_xai_provider.py
     retirement: Remove when upstream provides an equivalent pre-import DNS guard with explicit per-test opt-out coverage.
 
+  - id: test-hermes-home-import-isolation
+    kind: compatibility
+    rationale: >-
+      Replace inherited operator HERMES_HOME values before pytest collection so
+      import-time persistence constants cannot bind tests to live state, while
+      preserving the pre-sandbox root used by live-system guards.
+    paths:
+      - tests/hermes_home_isolation_probe.py
+      - tests/test_log_isolation.py
+    tests:
+      - scripts/run_tests.sh tests/test_log_isolation.py
+      - scripts/run_tests.sh tests/cron
+    retirement: Remove when upstream always isolates inherited HERMES_HOME before test collection with equivalent cron-ledger regression coverage.
+
   - id: gateway-session-request-resource-lifecycle
     kind: core
     rationale: >-
