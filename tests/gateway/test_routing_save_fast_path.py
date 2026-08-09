@@ -9,6 +9,7 @@ sessions.json mirror lagged behind (or never existed).
 """
 from __future__ import annotations
 
+import copy
 import json
 import threading
 
@@ -17,10 +18,10 @@ from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionSource, SessionStore
 
 
-def _source(user_id: str = "user-1") -> SessionSource:
+def _source(user_id: str = "user-1", chat_id: str = "cli") -> SessionSource:
     return SessionSource(
         platform=Platform.LOCAL,
-        chat_id="cli",
+        chat_id=chat_id,
         chat_name="CLI",
         chat_type="dm",
         user_id=user_id,
@@ -50,8 +51,8 @@ class TestChangedValuesAlwaysPersist:
         full_reconciles = []
         real_point = store._db.save_gateway_routing_entry
 
-        def recording_point(session_key, entry_json, *, scope=""):
-            point_writes.append(session_key)
+        def recording_point(session_key, entry_json, *, scope="", reason=None):
+            point_writes.append((session_key, reason))
             return real_point(session_key, entry_json, scope=scope)
 
         monkeypatch.setattr(store._db, "save_gateway_routing_entry", recording_point)
@@ -63,7 +64,7 @@ class TestChangedValuesAlwaysPersist:
 
         entry = store.get_or_create_session(_source())
 
-        assert point_writes == [entry.session_key]
+        assert point_writes == [(entry.session_key, "create")]
         assert full_reconciles == []
         assert _routing_row(store, entry.session_key)["session_id"] == entry.session_id
         store._db.close()
@@ -78,8 +79,8 @@ class TestChangedValuesAlwaysPersist:
         full_reconciles = []
         real_point = store._db.save_gateway_routing_entry
 
-        def recording_point(session_key, entry_json, *, scope=""):
-            point_writes.append(session_key)
+        def recording_point(session_key, entry_json, *, scope="", reason=None):
+            point_writes.append((session_key, reason))
             return real_point(session_key, entry_json, scope=scope)
 
         monkeypatch.setattr(store._db, "save_gateway_routing_entry", recording_point)
@@ -92,7 +93,7 @@ class TestChangedValuesAlwaysPersist:
         fresh = store.get_or_create_session(_source(), force_new=True)
 
         assert fresh.session_id != first.session_id
-        assert point_writes == [fresh.session_key]
+        assert point_writes == [(fresh.session_key, "force_new")]
         assert full_reconciles == []
         assert _routing_row(store, fresh.session_key)["session_id"] == fresh.session_id
         store._db.close()
@@ -113,8 +114,8 @@ class TestChangedValuesAlwaysPersist:
         full_reconciles = []
         real_point = store._db.save_gateway_routing_entry
 
-        def recording_point(session_key, entry_json, *, scope=""):
-            point_writes.append(session_key)
+        def recording_point(session_key, entry_json, *, scope="", reason=None):
+            point_writes.append((session_key, reason))
             return real_point(session_key, entry_json, scope=scope)
 
         monkeypatch.setattr(store._db, "save_gateway_routing_entry", recording_point)
@@ -127,9 +128,44 @@ class TestChangedValuesAlwaysPersist:
         healed = store.get_or_create_session(_source())
 
         assert healed.session_id == healed_id
-        assert point_writes == [entry.session_key]
+        assert point_writes == [(entry.session_key, "compression_tip_heal")]
         assert full_reconciles == []
         assert _routing_row(store, entry.session_key)["session_id"] == healed_id
+        store._db.close()
+
+    def test_production_sized_scope_still_uses_one_point_write(
+        self, tmp_path, monkeypatch
+    ):
+        """A mostly-identical 2,216-entry mirror must not enter reconciliation."""
+        store = _make_store(tmp_path, monkeypatch, write_sessions_json=False)
+        seed = store.get_or_create_session(_source("seed", "seed"))
+        with store._lock:
+            for index in range(2_216):
+                entry = copy.deepcopy(seed)
+                entry.session_key = f"agent:main:local:dm:existing-{index}"
+                entry.session_id = f"existing-{index}"
+                store._entries[entry.session_key] = entry
+
+        point_writes = []
+        full_reconciles = []
+        real_point = store._db.save_gateway_routing_entry
+
+        def recording_point(session_key, entry_json, *, scope="", reason=None):
+            point_writes.append((session_key, reason))
+            return real_point(session_key, entry_json, scope=scope)
+
+        monkeypatch.setattr(store._db, "save_gateway_routing_entry", recording_point)
+        monkeypatch.setattr(
+            store._db,
+            "replace_gateway_routing_entries",
+            lambda *a, **k: full_reconciles.append((a, k)),
+        )
+
+        created = store.get_or_create_session(_source("new-user", "new-chat"))
+
+        assert point_writes == [(created.session_key, "create")]
+        assert full_reconciles == []
+        assert _routing_row(store, created.session_key)["session_id"] == created.session_id
         store._db.close()
 
     def test_update_session_persists_last_prompt_tokens_to_db(
