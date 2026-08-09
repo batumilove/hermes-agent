@@ -4121,8 +4121,16 @@ class GatewaySlashCommandsMixin:
                             f"failed to persist compressed transcript for "
                             f"session {new_session_id}"
                         )
-                    session_entry.session_id = new_session_id
-                    await self.async_session_store._save()
+                    old_session_id = session_entry.session_id
+                    if not await self.async_session_store.rebind_session_id(
+                        session_entry.session_key,
+                        old_session_id,
+                        new_session_id,
+                    ):
+                        raise RuntimeError(
+                            "session binding changed before compressed transcript "
+                            f"could be published: {old_session_id} → {new_session_id}"
+                        )
                     await asyncio.to_thread(
                         self._sync_telegram_topic_binding,
                         source, session_entry, reason="compress-command",

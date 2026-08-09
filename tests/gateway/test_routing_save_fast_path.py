@@ -215,6 +215,81 @@ class TestRestartRebindWithoutMirror:
         store._db.close()
 
 
+class TestStructuralPointRebind:
+    def test_rebind_updates_db_and_mirror_without_full_reconciliation(
+        self, tmp_path, monkeypatch
+    ):
+        store = _make_store(tmp_path, monkeypatch)
+        entry = store.get_or_create_session(_source())
+        old_id = entry.session_id
+        new_id = old_id + "_child"
+        replacements = []
+        real_replace = store._db.replace_gateway_routing_entries
+
+        def recording_replace(entries, *, scope="", reason=None):
+            replacements.append((reason, len(entries)))
+            return real_replace(entries, scope=scope, reason=reason)
+
+        monkeypatch.setattr(
+            store._db, "replace_gateway_routing_entries", recording_replace
+        )
+
+        assert store.rebind_session_id(entry.session_key, old_id, new_id)
+
+        assert replacements == []
+        assert _routing_row(store, entry.session_key)["session_id"] == new_id
+        mirror = json.loads(
+            (tmp_path / "sessions" / "sessions.json").read_text(encoding="utf-8")
+        )
+        assert mirror[entry.session_key]["session_id"] == new_id
+        store._db.close()
+
+    def test_rebind_is_compare_and_swap_for_stale_runs(self, tmp_path, monkeypatch):
+        store = _make_store(tmp_path, monkeypatch)
+        entry = store.get_or_create_session(_source())
+        current_id = entry.session_id
+
+        assert not store.rebind_session_id(
+            entry.session_key, "superseded-parent", "stale-child"
+        )
+
+        assert store._entries[entry.session_key].session_id == current_id
+        assert _routing_row(store, entry.session_key)["session_id"] == current_id
+        store._db.close()
+
+    def test_rebind_falls_back_to_full_reconciliation_when_point_save_fails(
+        self, tmp_path, monkeypatch
+    ):
+        store = _make_store(tmp_path, monkeypatch)
+        entry = store.get_or_create_session(_source())
+        old_id = entry.session_id
+        new_id = old_id + "_child"
+        replacements = []
+        real_replace = store._db.replace_gateway_routing_entries
+
+        def fail_point_save(*args, **kwargs):
+            raise RuntimeError("point save failed")
+
+        def recording_replace(entries, *, scope="", reason=None):
+            replacements.append((reason, len(entries)))
+            return real_replace(entries, scope=scope, reason=reason)
+
+        monkeypatch.setattr(store._db, "save_gateway_routing_entry", fail_point_save)
+        monkeypatch.setattr(
+            store._db, "replace_gateway_routing_entries", recording_replace
+        )
+
+        assert store.rebind_session_id(entry.session_key, old_id, new_id)
+
+        assert replacements == [("rebind_session_id_fallback", 1)]
+        assert _routing_row(store, entry.session_key)["session_id"] == new_id
+        mirror = json.loads(
+            (tmp_path / "sessions" / "sessions.json").read_text(encoding="utf-8")
+        )
+        assert mirror[entry.session_key]["session_id"] == new_id
+        store._db.close()
+
+
 class TestFullRewriteTelemetry:
     def test_bulk_rewrite_propagates_content_free_reason(
         self, tmp_path, monkeypatch

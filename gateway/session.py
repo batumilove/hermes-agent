@@ -1510,8 +1510,16 @@ class SessionStore:
         generation: int,
         *,
         reason: str = "unspecified",
+        point_key: Optional[str] = None,
     ) -> None:
-        """Serialize all whole-index writers through one durable write lock."""
+        """Serialize routing persistence through one durable write lock.
+
+        ``point_key`` is reserved for a compare-and-swap session-id rebind:
+        the routing key set is unchanged, so state.db needs one UPSERT while
+        the complete snapshot still refreshes the restart-critical legacy
+        mirror. If the UPSERT is unavailable or fails, fall back to the
+        ordinary atomic full reconciliation.
+        """
         save_lock = getattr(self, "_save_lock", None)
         if save_lock is None:
             save_lock = threading.Lock()
@@ -1532,13 +1540,33 @@ class SessionStore:
             db_saved = False
             _db = getattr(self, "_db", None)
             if _db:
+                point_failed = False
+                point_saver = getattr(_db, "save_gateway_routing_entry", None)
+                if point_key is not None and point_key in data and callable(point_saver):
+                    try:
+                        point_saver(
+                            point_key,
+                            json.dumps(data[point_key]),
+                            scope=self._routing_scope(),
+                        )
+                        db_saved = True
+                    except Exception as exc:
+                        point_failed = True
+                        logger.warning(
+                            "gateway.session: structural point routing save failed "
+                            "for %r (%s); falling back to full reconciliation",
+                            point_key,
+                            exc,
+                        )
                 replacer = getattr(_db, "replace_gateway_routing_entries", None)
-                if callable(replacer):
+                if not db_saved and callable(replacer):
                     try:
                         replacer(
                             {k: json.dumps(v) for k, v in data.items()},
                             scope=self._routing_scope(),
-                            reason=str(reason or "unspecified")[:64],
+                            reason=(
+                                f"{reason}_fallback" if point_failed else reason
+                            )[:64],
                         )
                         db_saved = True
                     except Exception as exc:
@@ -1606,6 +1634,39 @@ class SessionStore:
             generation,
             reason=reason or sys._getframe(1).f_code.co_name,
         )
+
+    def rebind_session_id(
+        self,
+        session_key: str,
+        expected_session_id: str,
+        new_session_id: str,
+    ) -> bool:
+        """CAS one routing binding and durably refresh its legacy mirror.
+
+        Compression rotates a session ID without changing its routing key.
+        Persist that structural one-key transition with one state.db UPSERT,
+        rather than holding a write transaction while reconciling every route.
+        A stale run cannot overwrite a newer binding because the mutation is a
+        compare-and-swap under ``_lock``.
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return False
+            if entry.session_id == new_session_id:
+                return True
+            if entry.session_id != expected_session_id:
+                return False
+            entry.session_id = new_session_id
+            data, generation = self._snapshot_routing_locked()
+        self._persist_routing_data(
+            data,
+            generation,
+            reason="rebind_session_id",
+            point_key=session_key,
+        )
+        return True
 
     def _save_entry(self, session_key: str) -> None:
         """Persist ONE routing entry via UPSERT — the per-turn fast path.

@@ -105,6 +105,63 @@ async def test_compress_command_works_when_auto_compaction_disabled():
 
 
 @pytest.mark.asyncio
+async def test_compress_command_rotation_uses_point_rebind_not_full_save():
+    """Manual rotation is the same one-key transition as auto compression."""
+    history = _make_history()
+    compressed = [
+        history[0],
+        {"role": "assistant", "content": "compressed summary"},
+        history[-1],
+    ]
+    runner = _make_runner(history)
+    session_entry = runner.session_store.get_or_create_session.return_value
+    runner.session_store.rewrite_transcript.return_value = True
+
+    def rebind(session_key, expected_session_id, new_session_id):
+        assert session_key == session_entry.session_key
+        assert session_entry.session_id == expected_session_id
+        session_entry.session_id = new_session_id
+        return True
+
+    runner.session_store.rebind_session_id.side_effect = rebind
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.context_compressor._last_compress_aborted = False
+    agent_instance.context_compressor._last_summary_fallback_used = False
+    agent_instance.context_compressor._last_summary_dropped_count = 0
+    agent_instance.context_compressor._last_summary_error = None
+    agent_instance.session_id = "sess-2"
+    agent_instance._last_compaction_in_place = False
+    agent_instance._compress_context.return_value = (compressed, "")
+    agent_instance._compression_skipped_due_to_lock = False
+
+    def _estimate(messages, **_kwargs):
+        return 100 if messages == history else 60
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
+    ):
+        result = await runner._handle_compress_command(_make_event())
+
+    assert "Compressed:" in result
+    runner.session_store.rewrite_transcript.assert_called_once_with(
+        "sess-2", compressed
+    )
+    runner.session_store.rebind_session_id.assert_called_once_with(
+        session_entry.session_key, "sess-1", "sess-2"
+    )
+    runner.session_store._save.assert_not_called()
+    assert session_entry.session_id == "sess-2"
+
+
+@pytest.mark.asyncio
 async def test_compress_command_surfaces_aux_model_failure_even_when_recovered():
     """When the user's configured ``auxiliary.compression.model`` errors out
     but compression recovers by retrying on the main model, /compress must
