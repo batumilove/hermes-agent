@@ -202,6 +202,22 @@ patches:
       - scripts/run_tests.sh tests/test_session_db_write_latency_logging.py tests/state/test_write_lock_patience.py
     retirement: Remove when upstream provides equivalent privacy-bounded phase timing and lock-owner attribution for SessionDB writes.
 
+  - id: sessiondb-routing-delta-reconciliation
+    kind: core
+    rationale: >-
+      Preserve generation-safe gateway routing snapshots while avoiding
+      whole-scope DELETE and reinsert write amplification for point saves and
+      routine structural synchronization.
+    paths:
+      - gateway/session.py
+      - hermes_state.py
+      - tests/gateway/test_routing_save_fast_path.py
+      - tests/test_gateway_routing_reconcile.py
+    tests:
+      - scripts/run_tests.sh tests/test_gateway_routing_reconcile.py tests/gateway/test_routing_save_fast_path.py
+      - scripts/run_tests.sh tests/test_session_db_write_latency_logging.py tests/test_hermes_state.py tests/gateway/test_session.py
+    retirement: Remove when upstream persists routing snapshots with equivalent generation ordering, delta-only DML, scope isolation, and restart coverage.
+
   - id: gateway-channel-directory-routing-projection
     kind: core
     rationale: >-
