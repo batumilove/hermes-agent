@@ -155,6 +155,131 @@ def _set_cron_session_title(session_db, session_id, base_title):
         return deduped
 
 
+def _classify_no_agent_script_failure(job_name: str, text: str) -> str:
+    """Classify a ``no_agent=True`` script failure for chat delivery.
+
+    ``no_agent`` jobs never touch a provider/fallback chain — the script IS
+    the job. So every provider classifier (rate-limit, timeout, auth) is
+    semantically wrong here, even when the raw error string happens to
+    contain ``timeout``, ``429``, or ``authentication`` (those tokens
+    routinely appear *inside* the script's own stdout/JSON).
+
+    Produces a bounded, sanitized script-failure message. When the script
+    emitted a safe structured ``kind`` (e.g. ``collector_timeout``) we
+    surface it so the operator knows *what* broke, alongside any
+    ``timeout_seconds``. Malformed / oversized stdout is truncated and
+    never claims provider involvement.
+    """
+    import json as _json
+
+    lower = text.lower()
+
+    # A script-timeout signal (subprocess ``SIGTERM``/exit 124, or a
+    # structured ``kind`` naming a timeout). Never a provider timeout.
+    is_timeout = (
+        "timed out" in lower
+        or "timeout" in lower
+        or "collector_timeout" in lower
+        or "exit code 124" in lower
+        or "signal 15" in lower
+    )
+
+    # Try to lift a safe structured ``kind`` (+ optional ``timeout_seconds``)
+    # from the first JSON object on the script's stdout. Only short, safe
+    # scalar fields are surfaced — never nested blobs.
+    kind: str | None = None
+    timeout_seconds: str | None = None
+    # Bound the scan window so a multi-KB stdout blob is never fully parsed.
+    for candidate in _extract_json_candidates(text[:4000]):
+        try:
+            obj = _json.loads(candidate)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(obj, dict):
+            continue
+        k = obj.get("kind")
+        if isinstance(k, str) and k and _is_safe_kind(k):
+            kind = k
+        ts = obj.get("timeout_seconds")
+        if isinstance(ts, (int, float)) and not isinstance(ts, bool):
+            timeout_seconds = str(int(ts))
+        if kind:
+            break
+
+    if kind:
+        detail = f"script failure: {kind}"
+        if timeout_seconds:
+            detail += f" (timeout {timeout_seconds}s)"
+    elif is_timeout:
+        detail = "script timed out"
+    else:
+        # Generic script failure — sanitize and bound the raw text. Keep the
+        # excerpt short so the fixed prefix/suffix never pushes the delivery
+        # message past the chat-channel bound.
+        cleaned = re.sub(r"\s+", " ", text[:2000]).strip()
+        if len(cleaned) > 120:
+            cleaned = cleaned[:117].rstrip() + "..."
+        detail = f"script failed: {cleaned}" if cleaned else "script failed"
+
+    return (
+        f"⚠️ Cron '{job_name}' failed: {detail}. "
+        "Full output saved in cron output."
+    )
+
+
+def _extract_json_candidates(text: str) -> list[str]:
+    """Yield plausible JSON object substrings from ``text``.
+
+    A no_agent error looks like ``Script exited with code 1\\nstdout:\\n{...}``.
+    We scan for ``{`` ... matching ``}`` spans. Bounded to the first few to
+    avoid quadratic scans on adversarial input.
+    """
+    candidates: list[str] = []
+    search_from = 0
+    while len(candidates) < 3:
+        start = text.find("{", search_from)
+        if start == -1:
+            break
+        depth = 0
+        end = start
+        in_str = False
+        escape = False
+        for i in range(start, min(len(text), start + 4000)):
+            ch = text[i]
+            if in_str:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_str = False
+            else:
+                if ch == '"':
+                    in_str = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = i + 1
+                        break
+        if depth == 0 and end > start:
+            candidates.append(text[start:end])
+            search_from = end
+        else:
+            break
+    return candidates
+
+
+def _is_safe_kind(kind: str) -> bool:
+    """Only allow ``[a-z0-9_]+`` kind tokens into the delivery message.
+
+    Prevents a malicious/buggy script from injecting arbitrary formatting or
+    control characters via the ``kind`` field.
+    """
+    return bool(re.fullmatch(r"[a-z0-9_]{1,48}", kind))
+
+
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     """Return a compact one-line failure message for chat delivery.
 
@@ -164,6 +289,14 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     """
     job_name = job.get("name") or job.get("id") or "cron job"
     text = (error or "unknown error").strip()
+
+    # no_agent jobs have no provider/fallback involvement — the script IS the
+    # job. Classify the script failure directly so timeout/rate/auth tokens
+    # that live inside the script's own stdout are never mis-rendered as
+    # provider failures. Must run BEFORE every provider classifier.
+    if job.get("no_agent"):
+        return _classify_no_agent_script_failure(job_name, text)
+
     lower = text.lower()
 
     # Provider/API failures are the common noisy path. Keep these short.
