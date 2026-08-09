@@ -112,6 +112,20 @@ patches:
       - python -m py_compile cron/lifecycle_guard.py cron/scheduler.py tools/terminal_tool.py tests/cron/test_cron_no_agent.py tests/hermes_cli/test_gateway_restart_loop.py
     retirement: Remove after batumi/live is rebased onto upstream merge 863e31318553 or a descendant containing equivalent lifecycle-guard and scheduler totality fixes.
 
+  - id: cron-no-agent-timeout-rendering
+    kind: core
+    rationale: >-
+      Classify deterministic no-agent script failures before provider failures so
+      collector timeouts cannot be mislabeled as provider fallback exhaustion,
+      while bounding and validating structured delivery details.
+    paths:
+      - cron/scheduler.py
+      - tests/cron/test_cron_failure_delivery_classification.py
+    tests:
+      - scripts/run_tests.sh tests/cron/test_cron_failure_delivery_classification.py tests/cron/test_cron_no_agent.py
+      - python -m py_compile cron/scheduler.py tests/cron/test_cron_failure_delivery_classification.py
+    retirement: Remove when upstream classifies no-agent script failures before provider failures with equivalent bounded timeout rendering and regression coverage.
+
   - id: compression-adopted-transcript-deduplication
     kind: core
     rationale: >-
