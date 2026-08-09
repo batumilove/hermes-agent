@@ -137,6 +137,21 @@ def test_no_agent_empty_error_is_safe():
     assert "script" in msg.lower(), msg
 
 
+@pytest.mark.parametrize("invalid_timeout", ["NaN", "Infinity", "-1", "1e308"])
+def test_no_agent_structured_timeout_rejects_non_finite_or_negative_seconds(invalid_timeout):
+    error = (
+        "Script exited with code 1\nstdout:\n"
+        f'{{"kind":"collector_timeout","timeout_seconds":{invalid_timeout}}}'
+    )
+    msg = _summarize_cron_failure_for_delivery(_no_agent_job(), error)
+    assert "collector_timeout" in msg
+    assert "provider" not in msg.lower()
+    assert "timeout -1s" not in msg
+    assert "timeout nans" not in msg.lower()
+    assert "timeout infinitys" not in msg.lower()
+    assert len(msg) <= 220
+
+
 # ---------------------------------------------------------------------------
 # Case 5 — agent rate-limit (UNCHANGED)
 # ---------------------------------------------------------------------------
