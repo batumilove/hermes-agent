@@ -28,10 +28,10 @@ from gateway import run as gateway_run
 from gateway.session_context import set_current_session_id, get_session_env
 
 
-def _session_id_assignments_followed_by_save(source: str) -> list[tuple[int, bool]]:
+def _session_id_assignments_followed_by_point_save(source: str) -> list[tuple[int, bool]]:
     """For each ``session_entry.session_id = ...`` assignment in *source*,
     return ``(lineno, saved_within_5_stmts)`` — True iff a
-    ``self.session_store._save()`` call appears in the same block within the
+    ``self.session_store._save_entry(session_key)`` call appears in the same block within the
     next 5 statements (covers normal control flow without false-flagging
     cleanup that lives 200 lines away).
     """
@@ -58,7 +58,8 @@ def _session_id_assignments_followed_by_save(source: str) -> list[tuple[int, boo
                     if (
                         isinstance(sub, ast.Call)
                         and isinstance(sub.func, ast.Attribute)
-                        and sub.func.attr == "_save"
+                        and sub.func.attr == "_save_entry"
+                        and len(sub.args) == 1
                     ):
                         return True
             return False
@@ -98,9 +99,9 @@ def _session_id_assignments_followed_by_save(source: str) -> list[tuple[int, boo
     return results
 
 
-def test_every_post_compression_session_id_assignment_persists():
+def test_every_post_compression_session_id_assignment_uses_point_persistence():
     """Every ``session_entry.session_id = ...`` in gateway/run.py must be
-    followed by a ``session_store._save()`` call within the same block.
+    followed by a one-key ``session_store._save_entry(...)`` call within the same block.
 
     Regression for #29335 — the assignment at the end of
     ``_handle_message_with_agent`` used to skip ``_save()`` while two sibling
@@ -109,7 +110,7 @@ def test_every_post_compression_session_id_assignment_persists():
     session_id, then drop it on next gateway restart.
     """
     source = inspect.getsource(gateway_run)
-    assignments = _session_id_assignments_followed_by_save(source)
+    assignments = _session_id_assignments_followed_by_point_save(source)
     assert assignments, (
         "No ``session_entry.session_id = ...`` assignments found in gateway/run.py — "
         "either the structure changed or the AST walker is broken."
@@ -117,7 +118,7 @@ def test_every_post_compression_session_id_assignment_persists():
     missing = [lineno for lineno, saved in assignments if not saved]
     assert not missing, (
         f"{len(missing)} ``session_entry.session_id = ...`` site(s) in gateway/run.py "
-        f"are not followed by ``session_store._save()`` within the same block "
+        f"are not followed by ``session_store._save_entry(...)`` within the same block "
         f"(lines: {missing}). Every post-compression session_id update must persist "
         f"or the next turn loads the pre-compression transcript and triggers an "
         f"infinite compression loop. See issue #29335."
