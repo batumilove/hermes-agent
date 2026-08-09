@@ -3565,7 +3565,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # ── Gateway routing index (replaces sessions.json, #9006 follow-up) ────
 
     def save_gateway_routing_entry(
-        self, session_key: str, entry_json: str, *, scope: str = ""
+        self,
+        session_key: str,
+        entry_json: str,
+        *,
+        scope: str = "",
+        reason: str = "unspecified",
     ) -> None:
         """Upsert one gateway routing entry (session_key -> SessionEntry JSON).
 
@@ -3590,7 +3595,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 (scope, session_key, entry_json, time.time()),
             )
 
-        self._execute_write(_do)
+        reason_label = re.sub(
+            r"[^A-Za-z0-9_.-]+", "_", str(reason or "unspecified")
+        )[:64]
+        self._execute_write(
+            _do,
+            operation="save_gateway_routing_entry",
+            items=1,
+            reason=reason_label,
+        )
 
     def replace_gateway_routing_entries(
         self,
@@ -3608,8 +3621,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         now = time.time()
         desired = {key: value for key, value in entries.items() if key and value}
+        reconcile_stats: Dict[str, Any] = {}
 
         def _do(conn):
+            select_started = time.monotonic()
             existing = {
                 row["session_key"]: row["entry_json"]
                 for row in conn.execute(
@@ -3618,17 +3633,23 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     (scope,),
                 )
             }
+            select_time = time.monotonic() - select_started
+
+            comparison_started = time.monotonic()
             stale_keys = existing.keys() - desired.keys()
-            if stale_keys:
-                conn.executemany(
-                    "DELETE FROM gateway_routing WHERE scope = ? AND session_key = ?",
-                    [(scope, key) for key in stale_keys],
-                )
             changed = [
                 (scope, key, value, now)
                 for key, value in desired.items()
                 if existing.get(key) != value
             ]
+            comparison_time = time.monotonic() - comparison_started
+
+            dml_started = time.monotonic()
+            if stale_keys:
+                conn.executemany(
+                    "DELETE FROM gateway_routing WHERE scope = ? AND session_key = ?",
+                    [(scope, key) for key in stale_keys],
+                )
             if changed:
                 conn.executemany(
                     "INSERT INTO gateway_routing "
@@ -3637,6 +3658,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     "entry_json = excluded.entry_json, updated_at = excluded.updated_at",
                     changed,
                 )
+            reconcile_stats.update(
+                existing=len(existing),
+                changed=len(changed),
+                stale=len(stale_keys),
+                select=select_time,
+                comparison=comparison_time,
+                dml=time.monotonic() - dml_started,
+            )
 
         reason_label = re.sub(
             r"[^A-Za-z0-9_.-]+", "_", str(reason or "unspecified")
@@ -3647,6 +3676,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             items=len(entries),
             reason=reason_label,
         )
+        if reconcile_stats:
+            logger.info(
+                "Gateway routing reconciliation: reason=%s existing=%d changed=%d "
+                "stale=%d select=%.6fs comparison=%.6fs dml=%.6fs",
+                reason_label,
+                reconcile_stats["existing"],
+                reconcile_stats["changed"],
+                reconcile_stats["stale"],
+                reconcile_stats["select"],
+                reconcile_stats["comparison"],
+                reconcile_stats["dml"],
+            )
 
     def load_gateway_routing_entries(self, *, scope: str = "") -> Dict[str, str]:
         """Load routing entries for *scope* as {session_key: entry_json}."""

@@ -23,7 +23,8 @@ class _SessionStore:
         self.save_calls = 0
         self.peer_records = []
 
-    def _save(self):
+    def _save_entry(self, session_key):
+        assert session_key == SESSION_KEY
         self.save_calls += 1
 
     def _record_gateway_session_peer(self, session_id, session_key, source):
