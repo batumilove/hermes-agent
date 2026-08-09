@@ -4122,7 +4122,9 @@ class GatewaySlashCommandsMixin:
                             f"session {new_session_id}"
                         )
                     session_entry.session_id = new_session_id
-                    await self.async_session_store._save()
+                    await self.async_session_store._save_entry(
+                        session_entry.session_key
+                    )
                     await asyncio.to_thread(
                         self._sync_telegram_topic_binding,
                         source, session_entry, reason="compress-command",

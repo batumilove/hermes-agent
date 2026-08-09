@@ -641,6 +641,41 @@ class TestDelayedWriteOrdering:
         assert _routing_row(store, entry.session_key)["last_prompt_tokens"] == 2
         store._db.close()
 
+    def test_delayed_structural_refresh_folds_newer_same_key_point_save(
+        self, tmp_path, monkeypatch
+    ):
+        """A newer metadata UPSERT must not cause the mirror refresh to vanish."""
+        store = _make_store(tmp_path, monkeypatch)
+        entry = store.get_or_create_session(_source())
+        original_session_id = entry.session_id
+        with store._lock:
+            entry.session_id = f"{entry.session_id}_child"
+        child_session_id = entry.session_id
+
+        gate = _GatedSaveLock(store._save_lock)
+        store._save_lock = gate
+        structural = threading.Thread(
+            target=store._save_entry,
+            args=(entry.session_key,),
+            kwargs={"reason": "compression_tip_heal", "refresh_mirror": True},
+        )
+        gate.gated_thread = structural
+        structural.start()
+        assert gate.reached.wait(timeout=5)
+
+        store.update_session(entry.session_key, last_prompt_tokens=7)
+        gate.release.set()
+        structural.join(timeout=5)
+        assert not structural.is_alive()
+
+        mirror = json.loads(
+            (store.sessions_dir / "sessions.json").read_text(encoding="utf-8")
+        )
+        assert child_session_id != original_session_id
+        assert mirror[entry.session_key]["session_id"] == child_session_id
+        assert mirror[entry.session_key]["last_prompt_tokens"] == 7
+        store._db.close()
+
     def test_delayed_full_rewrite_folds_in_newer_fast_save(
         self, tmp_path, monkeypatch
     ):

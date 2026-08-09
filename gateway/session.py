@@ -1607,25 +1607,27 @@ class SessionStore:
             reason=reason or sys._getframe(1).f_code.co_name,
         )
 
-    def _save_entry(self, session_key: str) -> None:
+    def _save_entry(
+        self,
+        session_key: str,
+        *,
+        reason: Optional[str] = None,
+        refresh_mirror: bool = False,
+    ) -> None:
         """Persist ONE routing entry via UPSERT — the per-turn fast path.
 
         Steady-state turns and other one-key metadata/flag mutations only
-        change one entry. Routing them through the full index rewrite
-        re-serializes every entry, DELETE+INSERTs every gateway_routing row,
-        and dumps+fsyncs a multi-MB sessions.json. A single-row UPSERT keeps
+        change one entry. Routing them through full reconciliation scans and
+        compares every gateway_routing row and dumps+fsyncs a multi-MB
+        sessions.json. A single-row UPSERT keeps
         the durable state.db mapping current without that global rewrite.
 
         Correctness constraints this path relies on:
 
-        - The key -> session_id mapping never changes here.  Structural
-          transitions (create/recover/reset/switch/prune, and
-          compression-tip heals — see get_or_create_session) still use
-          the full-rewrite path, which also refreshes the legacy
-          sessions.json mirror.  Between structural saves the mirror may
-          lag in metadata only; every remaining sessions.json reader is
-          a legacy fallback and state.db stays primary, so restart
-          rebinding is unaffected.
+        - One-key structural transitions set ``refresh_mirror`` so the legacy
+          sessions.json copy stays current without reconciling the complete
+          SQLite scope. Multi-key repair/prune operations retain the full
+          rewrite path.
 
         - Ordering vs concurrent writers: the entry is serialized under
           ``_lock`` together with a revision allocated from the routing
@@ -1653,6 +1655,11 @@ class SessionStore:
                 return
             entry_json = json.dumps(entry.to_dict())
             revision = self._next_routing_generation_locked()
+            mirror_data = (
+                {key: value.to_dict() for key, value in self._entries.items()}
+                if refresh_mirror
+                else None
+            )
         _db = getattr(self, "_db", None)
         saver = getattr(_db, "save_gateway_routing_entry", None) if _db else None
         if callable(saver):
@@ -1670,9 +1677,32 @@ class SessionStore:
                         self._fast_persisted_entries = fast_persisted
                     persisted = fast_persisted.get(session_key)
                     if persisted is not None and persisted[0] >= revision:
+                        if mirror_data is not None and getattr(
+                            self, "_write_sessions_json", True
+                        ):
+                            for key, (persisted_revision, persisted_json) in (
+                                fast_persisted.items()
+                            ):
+                                if persisted_revision > revision:
+                                    mirror_data[key] = json.loads(persisted_json)
+                            self._save_sessions_json(mirror_data)
                         return
-                    saver(session_key, entry_json, scope=self._routing_scope())
+                    saver(
+                        session_key,
+                        entry_json,
+                        scope=self._routing_scope(),
+                        reason=reason or sys._getframe(1).f_code.co_name,
+                    )
                     fast_persisted[session_key] = (revision, entry_json)
+                    if mirror_data is not None and getattr(
+                        self, "_write_sessions_json", True
+                    ):
+                        for key, (persisted_revision, persisted_json) in (
+                            fast_persisted.items()
+                        ):
+                            if persisted_revision > revision:
+                                mirror_data[key] = json.loads(persisted_json)
+                        self._save_sessions_json(mirror_data)
                 return
             except Exception as exc:
                 logger.warning(
@@ -2478,11 +2508,10 @@ class SessionStore:
 
         # ---- Phase 2: lock write -- apply decisions to _entries ----
         _needs_save = False
-        # Healthy-path saves only bump updated_at on one entry; they take
-        # the single-row UPSERT fast path instead of the full index rewrite
-        # (see _save_entry). Structural transitions (recover/create below)
-        # keep the full rewrite.
-        _metadata_only_save = False
+        # Every one-key transition takes the single-row UPSERT path. Structural
+        # transitions also refresh sessions.json, independently of SQLite.
+        _point_save_reason: Optional[str] = None
+        _refresh_routing_mirror = False
         _needs_recover = False
         entry: Optional[SessionEntry] = None
         was_auto_reset = False
@@ -2495,12 +2524,14 @@ class SessionStore:
 
             if session_key in self._entries and not force_new:
                 entry = self._entries[session_key]
-                # A heal rewrites entry.session_id, so it must reach the
-                # sessions.json mirror too: force the full-rewrite save
-                # below (the fast path persists state.db only).
+                # A heal rewrites entry.session_id, so refresh the legacy
+                # mirror after the point UPSERT without reconciling SQLite.
                 _healed = self._heal_compression_tip_locked(
                     entry, existing_session_id, canonical_existing_session_id
                 )
+                if _healed:
+                    _point_save_reason = "compression_tip_heal"
+                    _refresh_routing_mirror = True
 
                 if _is_stale and entry.session_id == _stale_session_id:
                     # Stale routing self-heal (#54878): the in-memory entry
@@ -2534,7 +2565,6 @@ class SessionStore:
                     # window.  Treat as healthy -- bump updated_at and save.
                     entry.updated_at = now
                     _needs_save = True
-                    _metadata_only_save = not _healed
                 else:
                     # Stale check clean.  Apply reset decision.
                     if _reset_reason:
@@ -2549,7 +2579,6 @@ class SessionStore:
                     else:
                         entry.updated_at = now
                         _needs_save = True
-                        _metadata_only_save = not _healed
             else:
                 if not force_new:
                     _needs_recover = True
@@ -2571,6 +2600,9 @@ class SessionStore:
                         published = recovered
                 entry = published
                 _needs_save = True
+                if published is recovered:
+                    _point_save_reason = "recover"
+                    _refresh_routing_mirror = True
 
         if entry is None:
             # Create a candidate outside the lock, then publish only if another
@@ -2604,6 +2636,12 @@ class SessionStore:
             entry = published
             _needs_save = True
             if entry is candidate:
+                _point_save_reason = (
+                    "force_new"
+                    if force_new
+                    else "reset" if was_auto_reset else "create"
+                )
+                _refresh_routing_mirror = True
                 db_create_kwargs = {
                     "session_id": session_id,
                     "source": source.platform.value,
@@ -2616,10 +2654,11 @@ class SessionStore:
                 }
 
         if _needs_save:
-            if _metadata_only_save:
-                self._save_entry(session_key)
-            else:
-                self._save_entries()
+            self._save_entry(
+                session_key,
+                reason=_point_save_reason,
+                refresh_mirror=_refresh_routing_mirror,
+            )
 
         # SQLite operations outside the lock (unchanged).
         if self._db and db_end_session_id:

@@ -5435,7 +5435,7 @@ class TurnRunner:
                     )
                 else:
                     entry.session_id = agent_session_id
-                    self._runner.session_store._save()
+                    self._runner.session_store._save_entry(ctx.session_key)
                     self._runner.session_store._record_gateway_session_peer(
                         agent_session_id,
                         ctx.session_key,
@@ -17603,7 +17603,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             self._rebind_turn_lease(
                                                 _quick_key, run_generation, _hyg_new_sid
                                             )
-                                            await self.async_session_store._save()
+                                            await self.async_session_store._save_entry(session_key)
                                             await asyncio.to_thread(
                                                 self._sync_telegram_topic_binding,
                                                 source, session_entry,
@@ -18085,7 +18085,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     self._rebind_turn_lease(
                         _quick_key, run_generation, session_entry.session_id
                     )
-                    await self.async_session_store._save()
+                    await self.async_session_store._save_entry(session_key)
                     await self.async_session_store._record_gateway_session_peer(
                         session_entry.session_id,
                         session_key,
