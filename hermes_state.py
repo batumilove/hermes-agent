@@ -3567,23 +3567,43 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         scope: str = "",
         reason: str = "unspecified",
     ) -> None:
-        """Atomically replace the routing index for *scope* with *entries*.
+        """Atomically reconcile the routing index for *scope* with *entries*.
 
-        Mirrors the sessions.json full-rewrite semantics: keys absent from
-        *entries* are removed (pruned/reset sessions disappear from the
-        index).  Runs as a single write transaction.  Other scopes are
-        untouched. ``reason`` is a bounded, content-free routing call-site
-        label used only for latency attribution.
+        Keys absent from *entries* are removed, changed/new entries are
+        upserted, and identical rows retain their existing ``updated_at``.
+        Other scopes are untouched. ``reason`` is a bounded, content-free
+        routing call-site label used only for latency attribution.
         """
         now = time.time()
+        desired = {key: value for key, value in entries.items() if key and value}
 
         def _do(conn):
-            conn.execute("DELETE FROM gateway_routing WHERE scope = ?", (scope,))
-            if entries:
+            existing = {
+                row["session_key"]: row["entry_json"]
+                for row in conn.execute(
+                    "SELECT session_key, entry_json FROM gateway_routing "
+                    "WHERE scope = ?",
+                    (scope,),
+                )
+            }
+            stale_keys = existing.keys() - desired.keys()
+            if stale_keys:
                 conn.executemany(
-                    "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
-                    "VALUES (?, ?, ?, ?)",
-                    [(scope, k, v, now) for k, v in entries.items() if k and v],
+                    "DELETE FROM gateway_routing WHERE scope = ? AND session_key = ?",
+                    [(scope, key) for key in stale_keys],
+                )
+            changed = [
+                (scope, key, value, now)
+                for key, value in desired.items()
+                if existing.get(key) != value
+            ]
+            if changed:
+                conn.executemany(
+                    "INSERT INTO gateway_routing "
+                    "(scope, session_key, entry_json, updated_at) VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(scope, session_key) DO UPDATE SET "
+                    "entry_json = excluded.entry_json, updated_at = excluded.updated_at",
+                    changed,
                 )
 
         reason_label = re.sub(
