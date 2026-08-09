@@ -69,6 +69,34 @@ class TestChangedValuesAlwaysPersist:
         assert _routing_row(store, entry.session_key)["session_id"] == entry.session_id
         store._db.close()
 
+    def test_point_upsert_and_sessions_json_refresh_are_decoupled(
+        self, tmp_path, monkeypatch
+    ):
+        """Refreshing the compatibility mirror must not trigger DB reconciliation."""
+        store = _make_store(tmp_path, monkeypatch, write_sessions_json=True)
+        point_writes = []
+        full_reconciles = []
+        real_point = store._db.save_gateway_routing_entry
+
+        def recording_point(session_key, entry_json, *, scope="", reason=None):
+            point_writes.append((session_key, reason))
+            return real_point(session_key, entry_json, scope=scope)
+
+        monkeypatch.setattr(store._db, "save_gateway_routing_entry", recording_point)
+        monkeypatch.setattr(
+            store._db,
+            "replace_gateway_routing_entries",
+            lambda *a, **k: full_reconciles.append((a, k)),
+        )
+
+        created = store.get_or_create_session(_source())
+
+        mirror = json.loads((store.sessions_dir / "sessions.json").read_text())
+        assert point_writes == [(created.session_key, "create")]
+        assert full_reconciles == []
+        assert mirror[created.session_key]["session_id"] == created.session_id
+        store._db.close()
+
     def test_force_new_uses_point_upsert_not_full_reconciliation(
         self, tmp_path, monkeypatch
     ):
