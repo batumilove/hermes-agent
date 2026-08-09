@@ -20,109 +20,138 @@ and _save() semantics are correct without requiring a live gateway.
 from __future__ import annotations
 
 import ast
-import inspect
-import textwrap
+from pathlib import Path
 from unittest.mock import MagicMock, call
 
-from gateway import run as gateway_run
 from gateway.session_context import set_current_session_id, get_session_env
 
 
-def _session_id_assignments_followed_by_point_save(source: str) -> list[tuple[int, bool]]:
-    """For each ``session_entry.session_id = ...`` assignment in *source*,
-    return ``(lineno, saved_within_5_stmts)`` — True iff a
-    ``self.session_store._save_entry(session_key)`` call appears in the same block within the
-    next 5 statements (covers normal control flow without false-flagging
-    cleanup that lives 200 lines away).
-    """
-    tree = ast.parse(textwrap.dedent(source))
-    results: list[tuple[int, bool]] = []
+_ROOT = Path(__file__).resolve().parents[2]
 
-    class _Visitor(ast.NodeVisitor):
-        def _is_session_id_assign(self, node: ast.AST) -> bool:
-            if not isinstance(node, ast.Assign):
-                return False
-            for target in node.targets:
-                if (
+
+def _dotted(node: ast.AST) -> str | None:
+    """Return a simple dotted-name representation, or None for dynamic code."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = _dotted(node.value)
+        return f"{parent}.{node.attr}" if parent else None
+    return None
+
+
+def _iter_statement_blocks(node: ast.AST):
+    """Yield every statement list exactly once (no recursive overcount)."""
+    for _field, value in ast.iter_fields(node):
+        if isinstance(value, list):
+            statements = [item for item in value if isinstance(item, ast.stmt)]
+            if statements:
+                yield statements
+            for item in value:
+                if isinstance(item, ast.AST):
+                    yield from _iter_statement_blocks(item)
+        elif isinstance(value, ast.AST):
+            yield from _iter_statement_blocks(value)
+
+
+def _point_save_contract(
+    path: Path,
+    *,
+    function_name: str,
+    target_name: str,
+    save_receiver: str,
+    save_argument: str,
+) -> list[tuple[int, bool]]:
+    """Check exact receiver/key persistence after session-id assignments."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    functions = [
+        node for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == function_name
+    ]
+    assert functions, f"expected {function_name} in {path}"
+    results: list[tuple[int, bool]] = []
+    for function in functions:
+        for body in _iter_statement_blocks(function):
+            for index, statement in enumerate(body):
+                is_target = isinstance(statement, ast.Assign) and any(
                     isinstance(target, ast.Attribute)
                     and target.attr == "session_id"
-                    and isinstance(target.value, ast.Name)
-                    and target.value.id == "session_entry"
-                ):
-                    return True
-            return False
-
-        def _block_has_save_after(self, body: list[ast.stmt], idx: int) -> bool:
-            for stmt in body[idx : idx + 6]:
-                for sub in ast.walk(stmt):
-                    if (
-                        isinstance(sub, ast.Call)
-                        and isinstance(sub.func, ast.Attribute)
-                        and sub.func.attr == "_save_entry"
-                        and len(sub.args) == 1
-                    ):
-                        return True
-            return False
-
-        def _walk_body(self, body: list[ast.stmt]) -> None:
-            for i, stmt in enumerate(body):
-                if self._is_session_id_assign(stmt):
-                    results.append((stmt.lineno, self._block_has_save_after(body, i)))
-                # Recurse into the stmt itself when it is a control-flow node
-                # whose body/orelse/finalbody may carry assignments that are
-                # not also reachable as iter_child_nodes children of the stmt
-                # (e.g. an ``else`` block whose statements are all assigns).
-                if isinstance(stmt, (ast.If, ast.For, ast.While, ast.With,
-                                     ast.Try, ast.AsyncWith, ast.AsyncFor)):
-                    self._walk_node(stmt)
-                for child in ast.iter_child_nodes(stmt):
-                    if isinstance(child, (ast.If, ast.For, ast.While, ast.With,
-                                          ast.Try, ast.AsyncWith, ast.AsyncFor)):
-                        self._walk_node(child)
-
-        def _walk_node(self, node: ast.AST) -> None:
-            for attr in ("body", "orelse", "finalbody"):
-                inner = getattr(node, attr, None)
-                if isinstance(inner, list):
-                    self._walk_body(inner)
-            if hasattr(node, "handlers"):
-                for handler in node.handlers:
-                    self._walk_body(handler.body)
-
-        def visit(self, node: ast.AST) -> None:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                self._walk_body(node.body)
-            for child in ast.iter_child_nodes(node):
-                self.visit(child)
-
-    _Visitor().visit(tree)
+                    and _dotted(target.value) == target_name
+                    for target in statement.targets
+                )
+                if not is_target:
+                    continue
+                saved = any(
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "_save_entry"
+                    and _dotted(node.func.value) == save_receiver
+                    and len(node.args) == 1
+                    and _dotted(node.args[0]) == save_argument
+                    and not node.keywords
+                    for later in body[index : index + 6]
+                    for node in ast.walk(later)
+                )
+                results.append((statement.lineno, saved))
     return results
 
 
-def test_every_post_compression_session_id_assignment_uses_point_persistence():
-    """Every ``session_entry.session_id = ...`` in gateway/run.py must be
-    followed by a one-key ``session_store._save_entry(...)`` call within the same block.
+def test_point_save_contract_rejects_wrong_key_and_deduplicates(tmp_path):
+    source = tmp_path / "synthetic.py"
+    source.write_text(
+        """\
+def run_sync(self, ctx):
+    if ctx:
+        entry.session_id = 'child'
+        unrelated._save_entry('wrong-key')
+""",
+        encoding="utf-8",
+    )
 
-    Regression for #29335 — the assignment at the end of
-    ``_handle_message_with_agent`` used to skip ``_save()`` while two sibling
-    sites (hygiene rewrite, manual /compress) already persisted. The agent
-    would compress correctly, the gateway would update its in-memory
-    session_id, then drop it on next gateway restart.
+    result = _point_save_contract(
+        source,
+        function_name="run_sync",
+        target_name="entry",
+        save_receiver="self._runner.session_store",
+        save_argument="ctx.session_key",
+    )
+
+    assert result == [(3, False)]
+
+
+def test_every_post_compression_session_id_assignment_uses_point_persistence():
+    """Every compression rotation persists its exact routing key by UPSERT.
+
+    This covers executor ``run_sync``, both async gateway rotation branches,
+    and manual ``/compress``.  Receiver and key expressions are part of the
+    contract: an unrelated one-argument ``_save_entry`` call must not pass.
     """
-    source = inspect.getsource(gateway_run)
-    assignments = _session_id_assignments_followed_by_point_save(source)
-    assert assignments, (
-        "No ``session_entry.session_id = ...`` assignments found in gateway/run.py — "
-        "either the structure changed or the AST walker is broken."
-    )
-    missing = [lineno for lineno, saved in assignments if not saved]
-    assert not missing, (
-        f"{len(missing)} ``session_entry.session_id = ...`` site(s) in gateway/run.py "
-        f"are not followed by ``session_store._save_entry(...)`` within the same block "
-        f"(lines: {missing}). Every post-compression session_id update must persist "
-        f"or the next turn loads the pre-compression transcript and triggers an "
-        f"infinite compression loop. See issue #29335."
-    )
+    contracts = [
+        _point_save_contract(
+            _ROOT / "gateway" / "run.py",
+            function_name="run_sync",
+            target_name="entry",
+            save_receiver="self._runner.session_store",
+            save_argument="ctx.session_key",
+        ),
+        _point_save_contract(
+            _ROOT / "gateway" / "run.py",
+            function_name="_handle_message_with_agent",
+            target_name="session_entry",
+            save_receiver="self.async_session_store",
+            save_argument="session_key",
+        ),
+        _point_save_contract(
+            _ROOT / "gateway" / "slash_commands.py",
+            function_name="_handle_compress_command_inner",
+            target_name="session_entry",
+            save_receiver="self.async_session_store",
+            save_argument="session_entry.session_key",
+        ),
+    ]
+    assert [len(group) for group in contracts] == [1, 2, 1]
+    missing = [line for group in contracts for line, saved in group if not saved]
+    assert not missing, f"compression route point-save missing at lines {missing}"
 
 
 class TestCompressionSessionPropagation:
