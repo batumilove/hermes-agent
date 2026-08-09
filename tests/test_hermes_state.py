@@ -3147,6 +3147,70 @@ class TestApplyWalProbe:
             "set-pragma must fire when probe returns 'delete'"
         )
 
+    def test_ambiguous_eio_never_downgrades_nonempty_database(self, tmp_path):
+        """Unknown mode after repeated EIO must fail closed without issuing DELETE."""
+        import sqlite3
+        from hermes_state import apply_wal_with_fallback
+
+        class _AmbiguousEioConn(sqlite3.Connection):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                normalized = sql.strip().lower()
+                if normalized == "pragma journal_mode" or normalized == "pragma journal_mode=wal":
+                    raise sqlite3.OperationalError("disk I/O error")
+                return super().execute(sql, params)
+
+        db_path = tmp_path / "existing.db"
+        seed = sqlite3.connect(db_path)
+        seed.execute("CREATE TABLE data (value TEXT)")
+        seed.execute("INSERT INTO data VALUES ('preserve me')")
+        seed.commit()
+        seed.close()
+        before = db_path.read_bytes()[:100]
+
+        conn = _AmbiguousEioConn(str(db_path))
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+                apply_wal_with_fallback(conn, db_label="existing.db")
+        finally:
+            conn.close()
+
+        assert not any(sql.strip().lower() == "pragma journal_mode=delete" for sql in conn.executed)
+        assert db_path.read_bytes()[:100] == before
+
+    def test_ambiguous_eio_allows_delete_fallback_for_empty_database(self, tmp_path):
+        """A proven empty file retains the compatibility fallback for WAL-incompatible FSes."""
+        import sqlite3
+        from hermes_state import apply_wal_with_fallback
+
+        class _AmbiguousEioConn(sqlite3.Connection):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                normalized = sql.strip().lower()
+                if normalized == "pragma journal_mode" or normalized == "pragma journal_mode=wal":
+                    raise sqlite3.OperationalError("disk I/O error")
+                return super().execute(sql, params)
+
+        db_path = tmp_path / "empty.db"
+        sqlite3.connect(db_path).close()
+        assert db_path.stat().st_size == 0
+
+        conn = _AmbiguousEioConn(str(db_path))
+        try:
+            assert apply_wal_with_fallback(conn, db_label="empty.db") == "delete"
+        finally:
+            conn.close()
+
+        assert any(sql.strip().lower() == "pragma journal_mode=delete" for sql in conn.executed)
+
 
 class TestSessionArchive:
     """Soft-archiving hides a session from default listings without deleting it."""

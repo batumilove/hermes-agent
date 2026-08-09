@@ -668,7 +668,7 @@ def format_session_db_unavailable(prefix: str = "Session database not available"
 
 
 def _on_disk_journal_mode(conn: sqlite3.Connection) -> Optional[str]:
-    """Read the journal mode from the SQLite DB header on disk.
+    """Read the journal mode reported for the database.
 
     Returns the mode string (e.g. ``"wal"``, ``"delete"``), or ``None``
     if the value cannot be determined (new DB, or PRAGMA read failed).
@@ -686,6 +686,32 @@ def _on_disk_journal_mode(conn: sqlite3.Connection) -> Optional[str]:
         except UnicodeDecodeError:
             return None
     return str(mode).strip().lower() if mode is not None else None
+
+
+def _main_database_file_is_empty(conn: sqlite3.Connection) -> Optional[bool]:
+    """Return whether the main on-disk DB is proven absent or empty.
+
+    ``None`` is deliberately distinct from ``False``: an unreadable path or an
+    in-memory/unknown database must fail closed at a journal-mode transition.
+    Only a positively identified absent/zero-byte file is safe for the legacy
+    WAL-incompatible-filesystem fallback to DELETE.
+    """
+    try:
+        rows = conn.execute("PRAGMA database_list").fetchall()
+    except sqlite3.OperationalError:
+        return None
+    for seq, name, filename in rows:
+        if seq != 0 or name != "main":
+            continue
+        if not filename:
+            return None
+        try:
+            return Path(filename).stat().st_size == 0
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return None
+    return None
 
 
 def _apply_macos_checkpoint_barrier(conn: sqlite3.Connection) -> None:
@@ -980,6 +1006,12 @@ def apply_wal_with_fallback(
         # Don't downgrade if another process already set WAL on disk.
         existing = _on_disk_journal_mode(conn)
         if existing == "wal":
+            raise
+        if existing is None and _main_database_file_is_empty(conn) is not True:
+            # The EIO is ambiguous and the current/on-disk mode is unknown.
+            # Only a proven absent/zero-byte file may use the compatibility
+            # fallback; changing a non-empty or unreadable database to DELETE
+            # can race sibling WAL connections and corrupt page 1.
             raise
         if require_wal:
             # Caller mandates WAL — fail loudly instead of degrading to DELETE.
