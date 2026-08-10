@@ -42,13 +42,12 @@ def test_agent_compression_does_not_sync_after_route_rebind_rejection(
     assert result["failed"] is True
     assert result["session_id"] == "session-after-compression"
     assert session_store.entry.session_id == "session-before-compression"
-    assert session_store.rebind_calls
-    assert set(session_store.rebind_calls) == {
+    assert session_store.rebind_calls == [
         (
             SESSION_KEY,
             "session-before-compression",
             "session-after-compression",
         )
-    }
+    ]
     assert session_store.peer_records == []
     runner._sync_telegram_topic_binding.assert_not_called()
