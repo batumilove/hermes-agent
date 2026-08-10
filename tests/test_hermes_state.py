@@ -1521,6 +1521,62 @@ class TestTitleLineage:
         """With no existing sessions, base title is returned as-is."""
         assert db.get_next_title_in_lineage("my project") == "my project"
 
+    def test_next_title_uses_only_numeric_suffixes_for_exact_base(self, db):
+        titles = [
+            "my project",
+            "my project #2",
+            "my project #10",
+            "my project #not-a-number",
+            "my project #12 extra",
+            "my project extra #99",
+        ]
+        for index, title in enumerate(titles):
+            session_id = f"lineage-{index}"
+            db.create_session(session_id, "cli")
+            db.set_session_title(session_id, title)
+
+        assert db.get_next_title_in_lineage("my project") == "my project #11"
+        assert db.get_next_title_in_lineage("my project #7") == "my project #11"
+
+    def test_next_title_treats_like_wildcards_as_literal_text(self, db):
+        db.create_session("wildcard-base", "cli")
+        db.set_session_title("wildcard-base", r"100%_done")
+        db.create_session("wildcard-numbered", "cli")
+        db.set_session_title("wildcard-numbered", r"100%_done #4")
+        db.create_session("wildcard-decoy", "cli")
+        db.set_session_title("wildcard-decoy", "100XXdone #99")
+
+        assert db.get_next_title_in_lineage(r"100%_done") == r"100%_done #5"
+
+    def test_next_title_query_uses_title_index(self, db, monkeypatch):
+        db.create_session("indexed-title", "cli")
+        db.set_session_title("indexed-title", "indexed project #2")
+        real_ctx = db._read_ctx
+        seen_plans = []
+
+        from contextlib import contextmanager
+
+        @contextmanager
+        def plan_checking_ctx():
+            with real_ctx() as conn:
+                class PlanCheckingConnection:
+                    def execute(self, sql, parameters=()):
+                        if sql.lstrip().upper().startswith("SELECT TITLE FROM SESSIONS"):
+                            plan = conn.execute(
+                                "EXPLAIN QUERY PLAN " + sql, parameters
+                            ).fetchall()
+                            seen_plans.append(" | ".join(str(row[3]) for row in plan))
+                        return conn.execute(sql, parameters)
+
+                yield PlanCheckingConnection()
+
+        monkeypatch.setattr(db, "_read_ctx", plan_checking_ctx)
+
+        assert db.get_next_title_in_lineage("indexed project") == "indexed project #3"
+        assert seen_plans
+        assert all("SCAN sessions" not in plan for plan in seen_plans)
+        assert all("idx_sessions_title_unique" in plan for plan in seen_plans)
+
 
 
 

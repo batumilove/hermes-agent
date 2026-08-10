@@ -127,6 +127,7 @@ def test_close_drains_reader_opened_by_another_thread(tmp_path):
 @pytest.mark.requires_wal
 def test_reads_do_not_take_writer_lock(db):
     """Reads must complete while another thread holds self._lock."""
+    db.set_session_title("s1", "writer-lock-lineage")
     acquired = db._lock.acquire()
     assert acquired
     try:
@@ -136,6 +137,7 @@ def test_reads_do_not_take_writer_lock(db):
             done["session"] = db.get_session("s1")
             done["search"] = db.search_messages("graphiti", limit=10)
             done["messages"] = db.get_messages("s1")
+            done["next_title"] = db.get_next_title_in_lineage("writer-lock-lineage")
 
         t = threading.Thread(target=reader)
         t.start()
@@ -144,6 +146,7 @@ def test_reads_do_not_take_writer_lock(db):
         assert done["session"]["id"] == "s1"
         assert any("graphiti" in (m.get("snippet") or "") for m in done["search"])
         assert len(done["messages"]) == 2
+        assert done["next_title"] == "writer-lock-lineage #2"
     finally:
         db._lock.release()
 

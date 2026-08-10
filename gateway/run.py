@@ -5434,14 +5434,22 @@ class TurnRunner:
                         entry_session_id,
                     )
                 else:
-                    entry.session_id = agent_session_id
-                    self._runner.session_store._save()
-                    self._runner.session_store._record_gateway_session_peer(
-                        agent_session_id,
-                        ctx.session_key,
-                        ctx.source,
-                    )
-                    _session_split_entry_persisted = True
+                    if self._runner.session_store.rebind_session_id(
+                        ctx.session_key, ctx.session_id, agent_session_id
+                    ):
+                        self._runner.session_store._record_gateway_session_peer(
+                            agent_session_id,
+                            ctx.session_key,
+                            ctx.source,
+                        )
+                        _session_split_entry_persisted = True
+                    else:
+                        logger.info(
+                            "Skipping session split sync for %s because its "
+                            "routing compare-and-swap no longer matched %s",
+                            ctx.session_key or "?",
+                            ctx.session_id,
+                        )
 
             # If this is a Telegram DM and source.thread_id was lost during
             # the session split (synthetic / recovered event), restore it
@@ -17595,20 +17603,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             _hyg_rotated = False
                                             _hyg_in_place = False
                                         else:
-                                            session_entry.session_id = _hyg_new_sid
-                                            # The held turn lease follows the
-                                            # rotation so an alias key resolving
-                                            # the fresh child still serializes
-                                            # against this turn (#64934).
-                                            self._rebind_turn_lease(
-                                                _quick_key, run_generation, _hyg_new_sid
-                                            )
-                                            await self.async_session_store._save()
-                                            await asyncio.to_thread(
-                                                self._sync_telegram_topic_binding,
-                                                source, session_entry,
-                                                reason="hygiene-compression",
-                                            )
+                                            _hyg_old_sid = session_entry.session_id
+                                            if await self.async_session_store.rebind_session_id(
+                                                session_key,
+                                                _hyg_old_sid,
+                                                _hyg_new_sid,
+                                            ):
+                                                # The held turn lease follows the
+                                                # rotation so an alias key resolving
+                                                # the fresh child still serializes
+                                                # against this turn (#64934).
+                                                self._rebind_turn_lease(
+                                                    _quick_key,
+                                                    run_generation,
+                                                    _hyg_new_sid,
+                                                )
+                                                await asyncio.to_thread(
+                                                    self._sync_telegram_topic_binding,
+                                                    source, session_entry,
+                                                    reason="hygiene-compression",
+                                                )
+                                            else:
+                                                logger.info(
+                                                    "Session hygiene: routing binding "
+                                                    "moved before compression rebind "
+                                                    "%s → %s; preserving newer binding",
+                                                    _hyg_old_sid,
+                                                    _hyg_new_sid,
+                                                )
+                                                _hyg_rotated = False
 
                                     if _hyg_rotated:
                                         # Reset stored token count — transcript rewritten
@@ -18072,29 +18095,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 response = _sanitize_gateway_final_response(source.platform, response)
 
             # Ordering contract: the agent thread already updated the contextvar
-            # in conversation_compression.py; propagate to SessionEntry + _save().
+            # in conversation_compression.py; atomically rebind SessionEntry.
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
                 if session_entry.session_id == _run_start_session_id:
-                    session_entry.session_id = agent_result["session_id"]
-                    # The held turn lease follows the rotation: the transcript
-                    # persistence below writes to the NEW id, so the
-                    # serialization boundary must move with it or an alias
-                    # key resolving the fresh child could interleave (#64934).
-                    self._rebind_turn_lease(
-                        _quick_key, run_generation, session_entry.session_id
-                    )
-                    await self.async_session_store._save()
-                    await self.async_session_store._record_gateway_session_peer(
-                        session_entry.session_id,
+                    _agent_new_sid = agent_result["session_id"]
+                    if await self.async_session_store.rebind_session_id(
                         session_key,
-                        source,
-                    )
-                    await asyncio.to_thread(
-                        self._sync_telegram_topic_binding,
-                        source, session_entry, reason="agent-result-compression",
-                    )
+                        _run_start_session_id,
+                        _agent_new_sid,
+                    ):
+                        # The held turn lease follows the rotation: the transcript
+                        # persistence below writes to the NEW id, so the
+                        # serialization boundary must move with it or an alias
+                        # key resolving the fresh child could interleave (#64934).
+                        self._rebind_turn_lease(
+                            _quick_key, run_generation, _agent_new_sid
+                        )
+                        await self.async_session_store._record_gateway_session_peer(
+                            _agent_new_sid,
+                            session_key,
+                            source,
+                        )
+                        await asyncio.to_thread(
+                            self._sync_telegram_topic_binding,
+                            source, session_entry, reason="agent-result-compression",
+                        )
+                    else:
+                        logger.info(
+                            "Skipping agent-result session split sync for %s "
+                            "because its routing compare-and-swap no longer "
+                            "matched %s",
+                            session_key or "?",
+                            _run_start_session_id,
+                        )
                 else:
                     logger.info(
                         "Skipping agent-result session split sync for %s because "

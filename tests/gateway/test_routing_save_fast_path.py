@@ -41,6 +41,129 @@ def _routing_row(store: SessionStore, session_key: str) -> dict:
 
 
 class TestChangedValuesAlwaysPersist:
+    def test_new_session_uses_point_upsert_not_full_reconciliation(
+        self, tmp_path, monkeypatch
+    ):
+        """Creating one route must never scan/reconcile the whole scope."""
+        store = _make_store(tmp_path, monkeypatch, write_sessions_json=False)
+        point_writes = []
+        full_reconciles = []
+        real_point = store._db.save_gateway_routing_entry
+
+        def recording_point(session_key, entry_json, *, scope=""):
+            point_writes.append(session_key)
+            return real_point(session_key, entry_json, scope=scope)
+
+        monkeypatch.setattr(store._db, "save_gateway_routing_entry", recording_point)
+        monkeypatch.setattr(
+            store._db,
+            "replace_gateway_routing_entries",
+            lambda *a, **k: full_reconciles.append((a, k)),
+        )
+
+        entry = store.get_or_create_session(_source())
+
+        assert point_writes == [entry.session_key]
+        assert full_reconciles == []
+        assert _routing_row(store, entry.session_key)["session_id"] == entry.session_id
+        store._db.close()
+
+    def test_force_new_uses_point_upsert_not_full_reconciliation(
+        self, tmp_path, monkeypatch
+    ):
+        """A generation-ordered one-key reset must remain a point write."""
+        store = _make_store(tmp_path, monkeypatch, write_sessions_json=False)
+        first = store.get_or_create_session(_source())
+        point_writes = []
+        full_reconciles = []
+        real_point = store._db.save_gateway_routing_entry
+
+        def recording_point(session_key, entry_json, *, scope=""):
+            point_writes.append(session_key)
+            return real_point(session_key, entry_json, scope=scope)
+
+        monkeypatch.setattr(store._db, "save_gateway_routing_entry", recording_point)
+        monkeypatch.setattr(
+            store._db,
+            "replace_gateway_routing_entries",
+            lambda *a, **k: full_reconciles.append((a, k)),
+        )
+
+        fresh = store.get_or_create_session(_source(), force_new=True)
+
+        assert fresh.session_id != first.session_id
+        assert point_writes == [fresh.session_key]
+        assert full_reconciles == []
+        assert _routing_row(store, fresh.session_key)["session_id"] == fresh.session_id
+        store._db.close()
+
+    def test_recovered_session_uses_point_upsert_not_full_reconciliation(
+        self, tmp_path, monkeypatch
+    ):
+        """Recovering one missing route must write only that routing key."""
+        store = _make_store(tmp_path, monkeypatch, write_sessions_json=False)
+        recovered = store.get_or_create_session(_source())
+        with store._lock:
+            store._entries.pop(recovered.session_key)
+        monkeypatch.setattr(store, "_query_recoverable_session", lambda **_k: recovered)
+        point_writes = []
+        full_reconciles = []
+        real_point = store._db.save_gateway_routing_entry
+
+        def recording_point(session_key, entry_json, *, scope=""):
+            point_writes.append(session_key)
+            return real_point(session_key, entry_json, scope=scope)
+
+        monkeypatch.setattr(store._db, "save_gateway_routing_entry", recording_point)
+        monkeypatch.setattr(
+            store._db,
+            "replace_gateway_routing_entries",
+            lambda *a, **k: full_reconciles.append((a, k)),
+        )
+
+        result = store.get_or_create_session(_source())
+
+        assert result is recovered
+        assert point_writes == [recovered.session_key]
+        assert full_reconciles == []
+        assert _routing_row(store, recovered.session_key)["session_id"] == recovered.session_id
+        store._db.close()
+
+    def test_compression_tip_heal_uses_point_upsert_not_full_reconciliation(
+        self, tmp_path, monkeypatch
+    ):
+        """Healing one route to its compression child is a point transition."""
+        store = _make_store(tmp_path, monkeypatch, write_sessions_json=False)
+        entry = store.get_or_create_session(_source())
+        healed_id = entry.session_id + "_child"
+        monkeypatch.setattr(
+            store,
+            "_compression_tip_for_session_id",
+            lambda sid: healed_id if sid == entry.session_id else sid,
+        )
+        point_writes = []
+        full_reconciles = []
+        real_point = store._db.save_gateway_routing_entry
+
+        def recording_point(session_key, entry_json, *, scope=""):
+            point_writes.append(session_key)
+            return real_point(session_key, entry_json, scope=scope)
+
+        monkeypatch.setattr(store._db, "save_gateway_routing_entry", recording_point)
+        monkeypatch.setattr(
+            store._db,
+            "replace_gateway_routing_entries",
+            lambda *a, **k: full_reconciles.append((a, k)),
+        )
+
+        healed = store.get_or_create_session(_source())
+
+        assert healed.session_id == healed_id
+        assert point_writes == [entry.session_key]
+        assert full_reconciles == []
+        assert _routing_row(store, entry.session_key)["session_id"] == healed_id
+        store._db.close()
+
     def test_update_session_persists_last_prompt_tokens_to_db(
         self, tmp_path, monkeypatch
     ):
@@ -212,6 +335,81 @@ class TestRestartRebindWithoutMirror:
         durable = _routing_row(store, entry.session_key)
         assert durable["expiry_finalized"] is True
         assert durable.get("model_override") is None
+        store._db.close()
+
+
+class TestStructuralPointRebind:
+    def test_rebind_updates_db_and_mirror_without_full_reconciliation(
+        self, tmp_path, monkeypatch
+    ):
+        store = _make_store(tmp_path, monkeypatch)
+        entry = store.get_or_create_session(_source())
+        old_id = entry.session_id
+        new_id = old_id + "_child"
+        replacements = []
+        real_replace = store._db.replace_gateway_routing_entries
+
+        def recording_replace(entries, *, scope="", reason=None):
+            replacements.append((reason, len(entries)))
+            return real_replace(entries, scope=scope, reason=reason)
+
+        monkeypatch.setattr(
+            store._db, "replace_gateway_routing_entries", recording_replace
+        )
+
+        assert store.rebind_session_id(entry.session_key, old_id, new_id)
+
+        assert replacements == []
+        assert _routing_row(store, entry.session_key)["session_id"] == new_id
+        mirror = json.loads(
+            (tmp_path / "sessions" / "sessions.json").read_text(encoding="utf-8")
+        )
+        assert mirror[entry.session_key]["session_id"] == new_id
+        store._db.close()
+
+    def test_rebind_is_compare_and_swap_for_stale_runs(self, tmp_path, monkeypatch):
+        store = _make_store(tmp_path, monkeypatch)
+        entry = store.get_or_create_session(_source())
+        current_id = entry.session_id
+
+        assert not store.rebind_session_id(
+            entry.session_key, "superseded-parent", "stale-child"
+        )
+
+        assert store._entries[entry.session_key].session_id == current_id
+        assert _routing_row(store, entry.session_key)["session_id"] == current_id
+        store._db.close()
+
+    def test_rebind_falls_back_to_full_reconciliation_when_point_save_fails(
+        self, tmp_path, monkeypatch
+    ):
+        store = _make_store(tmp_path, monkeypatch)
+        entry = store.get_or_create_session(_source())
+        old_id = entry.session_id
+        new_id = old_id + "_child"
+        replacements = []
+        real_replace = store._db.replace_gateway_routing_entries
+
+        def fail_point_save(*args, **kwargs):
+            raise RuntimeError("point save failed")
+
+        def recording_replace(entries, *, scope="", reason=None):
+            replacements.append((reason, len(entries)))
+            return real_replace(entries, scope=scope, reason=reason)
+
+        monkeypatch.setattr(store._db, "save_gateway_routing_entry", fail_point_save)
+        monkeypatch.setattr(
+            store._db, "replace_gateway_routing_entries", recording_replace
+        )
+
+        assert store.rebind_session_id(entry.session_key, old_id, new_id)
+
+        assert replacements == [("rebind_session_id_fallback", 1)]
+        assert _routing_row(store, entry.session_key)["session_id"] == new_id
+        mirror = json.loads(
+            (tmp_path / "sessions" / "sessions.json").read_text(encoding="utf-8")
+        )
+        assert mirror[entry.session_key]["session_id"] == new_id
         store._db.close()
 
 
