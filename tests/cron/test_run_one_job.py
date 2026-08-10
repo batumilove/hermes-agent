@@ -56,7 +56,16 @@ def test_run_one_job_emits_activegraph_cron_events(monkeypatch):
     monkeypatch.setattr(s, "_ag_emit", lambda event_type, payload: events.append((event_type, payload)))
     monkeypatch.setattr(s, "_ag_import_attempted", True)
     monkeypatch.setattr(s, "claim_dispatch", lambda jid: True)
-    monkeypatch.setattr(s, "run_job", lambda job, *, defer_agent_teardown=None: (True, "out", "final", None))
+    monkeypatch.setattr(
+        s,
+        "run_job",
+        lambda job, *, defer_agent_teardown=None, extra_prompt=None: (
+            True,
+            "out",
+            "final",
+            None,
+        ),
+    )
     monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.md")
     monkeypatch.setattr(s, "_deliver_result", lambda *a, **k: None)
     monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
@@ -116,7 +125,7 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
     """Patch the job pipeline primitives and record the call order."""
     calls = []
 
-    def fake_run_job(job, *, defer_agent_teardown=None):
+    def fake_run_job(job, *, defer_agent_teardown=None, **kw):
         calls.append(("run_job", job["id"]))
         fr = final if silent_marker_in is None else silent_marker_in
         return (success, output, fr, error)
@@ -129,7 +138,7 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
         calls.append(("deliver", job["id"]))
         return None
 
-    def fake_mark(jid, ok, err=None, delivery_error=None):
+    def fake_mark(jid, ok, err=None, delivery_error=None, **_kw):
         calls.append(("mark", jid, ok))
 
     monkeypatch.setattr(s, "run_job", fake_run_job)
@@ -181,7 +190,7 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
 
     scope_during_run = {}
 
-    def fake_run_job(job, *, defer_agent_teardown=None):
+    def fake_run_job(job, *, defer_agent_teardown=None, **kw):
         # This is where resolve_runtime_provider() would read a secret. Prove a
         # scope is installed and the profile's secret resolves without raising.
         scope_during_run["scope"] = ss.current_secret_scope()

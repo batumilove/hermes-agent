@@ -316,6 +316,33 @@ class RelayRuntime:
 
     def close_session(self, event: dict[str, Any]) -> None:
         """Close one session scope and remove it from the core registry."""
+        session_id, session, failures = self._begin_close_session(event)
+        if session is None:
+            return
+        try:
+            self.relay.subscribers.flush()
+        except Exception as exc:
+            failures.append(f"subscriber flush failed: {exc}")
+        self._finish_close_session(session_id, session, failures)
+
+    async def close_session_async(self, event: dict[str, Any]) -> None:
+        """Close one session scope without blocking the caller's event loop."""
+        session_id, session, failures = self._begin_close_session(event)
+        if session is None:
+            return
+        try:
+            try:
+                await self.relay.subscribers.flush_async()
+            except Exception as exc:
+                failures.append(f"subscriber flush failed: {exc}")
+        finally:
+            self._finish_close_session(session_id, session, failures)
+
+    def _begin_close_session(
+        self,
+        event: dict[str, Any],
+    ) -> tuple[str, RelaySession | None, list[str]]:
+        """Pop a session scope once, ready for a sync or async flush barrier."""
         session_id = _session_id(event)
         with self._sessions_lock:
             session = self._sessions.get(session_id)
@@ -323,11 +350,11 @@ class RelayRuntime:
             with self._sessions_lock:
                 self._subagent_parents.pop(session_id, None)
                 self._subagent_parent_handles.pop(session_id, None)
-            return
+            return session_id, None, []
         failures: list[str] = []
         with session.lock:
             if session.closing:
-                return
+                return session_id, None, failures
             session.closing = True
             if session.handle is not None:
                 try:
@@ -344,10 +371,15 @@ class RelayRuntime:
                     )
                 except Exception as exc:
                     failures.append(f"session scope close failed: {exc}")
-        try:
-            self.relay.subscribers.flush()
-        except Exception as exc:
-            failures.append(f"subscriber flush failed: {exc}")
+        return session_id, session, failures
+
+    def _finish_close_session(
+        self,
+        session_id: str,
+        session: RelaySession,
+        failures: list[str],
+    ) -> None:
+        """Remove a closed session after its subscriber barrier completes."""
         with self._sessions_lock:
             if self._sessions.get(session_id) is session:
                 self._sessions.pop(session_id, None)
@@ -514,6 +546,34 @@ class RelayTurnContext:
 _CURRENT_TURN: contextvars.ContextVar[RelayTurnContext | None] = contextvars.ContextVar(
     "hermes_relay_turn", default=None
 )
+
+# Depth of managed Relay callbacks executing on the current logical call path.
+# Set >0 while the native Relay pipeline is mid-dispatch of a Hermes callback
+# (tool or LLM). Nested managed execution inside that window is structurally
+# broken — the native pipeline binds its Futures to the outer, blocked event
+# loop — so resolve_execution_context() bypasses Relay while the flag is set.
+# ContextVar so the marker follows contextvars.copy_context() into the worker
+# threads / per-thread loops that tools use for their internal async work.
+_MANAGED_CALLBACK_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "hermes_relay_managed_callback_depth", default=0
+)
+
+
+class managed_callback_guard:
+    """Mark the current context as inside a managed Relay callback.
+
+    Synchronous context manager used by the relay adapters around the
+    ``invoke()`` callbacks they hand to the native pipeline. Everything the
+    callback transitively calls (including work it forwards to worker threads
+    via ``contextvars.copy_context()``) sees the marker and runs unmanaged.
+    """
+
+    def __enter__(self) -> "managed_callback_guard":
+        self._token = _MANAGED_CALLBACK_DEPTH.set(_MANAGED_CALLBACK_DEPTH.get() + 1)
+        return self
+
+    def __exit__(self, *exc_info: Any) -> None:
+        _MANAGED_CALLBACK_DEPTH.reset(self._token)
 
 
 class RelaySessionCoordinator:
@@ -821,6 +881,16 @@ class RelaySessionCoordinator:
         if isinstance(host, RelayRuntime):
             host.close_session({"session_id": session_id})
 
+    async def finalize_conversation_async(
+        self,
+        *,
+        profile_key: str,
+        session_id: str,
+    ) -> None:
+        host = self.registry.for_profile(profile_key, create=False)
+        if isinstance(host, RelayRuntime):
+            await host.close_session_async({"session_id": session_id})
+
     def shutdown_profile(self, profile_key: str) -> None:
         self.registry.shutdown_profile(profile_key)
 
@@ -865,6 +935,20 @@ def resolve_execution_context(
     session_id: str,
 ) -> tuple[RelayRuntime | None, RelaySession | None, Any]:
     """Resolve one active turn/session parent for managed Relay execution."""
+    if _MANAGED_CALLBACK_DEPTH.get() > 0:
+        # A managed Relay callback is already executing on this logical call
+        # path (e.g. the native ``tools.execute`` pipeline is mid-dispatch of
+        # a Hermes tool). Nested managed execution here is structurally
+        # impossible: the native pipeline binds its Futures to the OUTER
+        # call's event loop, which is blocked inside the synchronous tool
+        # callback until the tool returns. A nested managed LLM call (the
+        # vision_analyze auxiliary path) therefore awaits a foreign-loop
+        # Future that can never complete — "attached to a different loop"
+        # at best, deadlock at worst, and "Event loop is closed" during
+        # shutdown when the orphaned Future is completed late (#77244).
+        # Run nested calls unmanaged; the outer tool scope still records
+        # the tool-level event for observability.
+        return None, None, None
     inherited_turn = current_turn()
     if inherited_turn is not None and (
         not inherited_turn.relay_enabled or inherited_turn.closed

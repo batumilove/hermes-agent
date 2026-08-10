@@ -67,13 +67,23 @@ patches:
       missing-final-newline defects so the fork remains clean under diff checks
       after advancing its recorded upstream baseline.
     paths:
+      - agent/agent_init.py
+      - apps/desktop/src/styles.css
       - hermes_cli/bang_shell.py
       - nix/desktop.nix
+      - optional-skills/mlops/pytorch-fsdp/references/common-patterns.md
+      - skills/research/research-paper-writing/references/phase5-paper-drafting.md
       - tests/cli/test_bang_shell_mode.py
+      - tests/gateway/test_branch_routing_columns.py
+      - tests/hermes_cli/test_auth_store_windows_encoding.py
       - tests/hermes_cli/test_model_switch_context_offload.py
+      - tests/tools/test_file_operations.py
     tests:
       - git diff --check $(cat .github/upstream-base)..HEAD
+      - python -m py_compile agent/agent_init.py
+      - npm run check --workspace apps/desktop
       - scripts/run_tests.sh tests/cli/test_bang_shell_mode.py tests/hermes_cli/test_model_switch_context_offload.py
+      - scripts/run_tests.sh tests/gateway/test_branch_routing_columns.py tests/hermes_cli/test_auth_store_windows_encoding.py tests/tools/test_file_operations.py
     retirement: Remove when the recorded upstream baseline contains byte-identical diff-check-clean versions of these files.
 
   - id: upstream-sync-1be70d63-linearization
@@ -287,11 +297,18 @@ patches:
       - agent/relay_llm.py
       - agent/relay_runtime.py
       - agent/relay_tools.py
+      - gateway/run.py
+      - gateway/slash_commands.py
+      - hermes_cli/lifecycle.py
       - hermes_cli/observability/relay_shared_metrics.py
       - tests/agent/test_relay_tools.py
+      - tests/gateway/test_session_boundary_hooks.py
+      - tests/gateway/test_session_model_reset.py
+      - tests/hermes_cli/test_lifecycle.py
       - tests/hermes_cli/test_relay_shared_metrics_runtime.py
     tests:
       - scripts/run_tests.sh tests/hermes_cli/test_relay_shared_metrics_runtime.py tests/hermes_cli/test_relay_shared_metrics.py tests/agent/test_relay_llm.py tests/agent/test_relay_tools.py tests/agent/test_auxiliary_relay.py
+      - scripts/run_tests.sh tests/hermes_cli/test_lifecycle.py tests/gateway/test_session_boundary_hooks.py tests/gateway/test_session_model_reset.py
     retirement: Remove when upstream isolates overlapping Relay scope lifetimes, preserves owner-loop execution for nested synchronous LLM calls and streams, and passes the same real-binding lifecycle contracts.
 
   - id: cron-activegraph-lifecycle-telemetry
@@ -521,6 +538,7 @@ patches:
       - gateway/run.py
       - plugins/platforms/telegram/adapter.py
       - tests/gateway/test_delivery_ledger_producer.py
+      - tests/gateway/test_api_server_active_work_drain.py
       - tests/gateway/test_gateway_shutdown.py
       - tests/gateway/test_restart_drain.py
       - tests/gateway/test_session_hygiene.py

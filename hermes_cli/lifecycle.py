@@ -61,3 +61,29 @@ def finalize_session(**kwargs: Any) -> List[Any]:
     from hermes_cli import plugins
 
     return plugins.invoke_hook("on_session_finalize", **kwargs)
+
+
+async def finalize_session_async(**kwargs: Any) -> List[Any]:
+    """Notify observers and asynchronously close one core Relay conversation."""
+    try:
+        from hermes_cli.observability import observe_lifecycle
+
+        observe_lifecycle("on_session_finalize", **kwargs)
+    except Exception:
+        logger.warning("Built-in observability hook failed", exc_info=True)
+
+    session_id = str(kwargs.get("session_id") or "")
+    if session_id:
+        try:
+            from agent import relay_runtime
+
+            await relay_runtime.SESSION_COORDINATOR.finalize_conversation_async(
+                profile_key=relay_runtime.current_profile_key(),
+                session_id=session_id,
+            )
+        except Exception:
+            logger.warning("Core Relay session finalization failed", exc_info=True)
+
+    from hermes_cli import plugins
+
+    return plugins.invoke_hook("on_session_finalize", **kwargs)

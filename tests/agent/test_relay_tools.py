@@ -134,15 +134,17 @@ def test_tool_error_is_preserved_from_relay_wrapper_suffix(relay_turn, monkeypat
     assert caught.value is tool_error
 
 
-def test_tool_callback_can_make_nested_sync_llm_call(relay_turn):
+def test_tool_callback_nested_sync_llm_call_bypasses_managed_relay(relay_turn):
     relay = relay_turn
     provider_calls = []
+    intercept_calls = []
 
     def provider(request):
         provider_calls.append(request)
         return {"choices": [{"message": {"content": "expanded"}}]}
 
     async def annotate_nested_llm(_name, request, next_call):
+        intercept_calls.append(request)
         response = await next_call(request)
         return {**response, "relay_intercepted": True}
 
@@ -171,8 +173,11 @@ def test_tool_callback_can_make_nested_sync_llm_call(relay_turn):
 
     assert observed_args == {"prompt": "recover context"}
     assert provider_calls == [{"model": "test-model", "messages": []}]
-    assert result.relay_intercepted is True
-    assert result.choices[0].message.content == "expanded"
+    # Managed tool callbacks carry the cross-loop guard (#77244), so nested
+    # provider calls run directly rather than re-entering Relay's blocked loop.
+    assert intercept_calls == []
+    assert "relay_intercepted" not in result
+    assert result["choices"][0]["message"]["content"] == "expanded"
 
 
 def test_tool_callback_can_make_nested_sync_llm_stream(relay_turn):
