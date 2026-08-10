@@ -1514,10 +1514,11 @@ class SessionStore:
     ) -> None:
         """Serialize routing persistence through one durable write lock.
 
-        ``point_key`` is reserved for a compare-and-swap session-id rebind:
-        the routing key set is unchanged, so state.db needs one UPSERT while
-        the complete snapshot still refreshes the restart-critical legacy
-        mirror. If the UPSERT is unavailable or fails, fall back to the
+        ``point_key`` requests one state.db UPSERT while the complete snapshot
+        still refreshes the restart-critical legacy mirror. A point write is
+        tracked per key: it cannot advance the complete-snapshot watermark,
+        because an older delayed reconciliation may carry an unrelated key
+        deletion. If the UPSERT is unavailable or fails, fall back to the
         ordinary atomic full reconciliation.
         """
         save_lock = getattr(self, "_save_lock", None)
@@ -1533,23 +1534,32 @@ class SessionStore:
             # serialized after us and a delayed full rewrite must not
             # regress it.
             fast_persisted = getattr(self, "_fast_persisted_entries", None)
+            if point_key is not None and fast_persisted:
+                persisted_point = fast_persisted.get(point_key)
+                if persisted_point is not None and persisted_point[0] >= generation:
+                    return
             if fast_persisted:
                 for key, (revision, entry_json) in fast_persisted.items():
                     if revision > generation:
                         data[key] = json.loads(entry_json)
             db_saved = False
+            point_saved = False
+            full_reconciled = False
+            point_entry_json: Optional[str] = None
             _db = getattr(self, "_db", None)
             if _db:
                 point_failed = False
                 point_saver = getattr(_db, "save_gateway_routing_entry", None)
                 if point_key is not None and point_key in data and callable(point_saver):
                     try:
+                        point_entry_json = json.dumps(data[point_key])
                         point_saver(
                             point_key,
-                            json.dumps(data[point_key]),
+                            point_entry_json,
                             scope=self._routing_scope(),
                         )
                         db_saved = True
+                        point_saved = True
                     except Exception as exc:
                         point_failed = True
                         logger.warning(
@@ -1569,21 +1579,33 @@ class SessionStore:
                             )[:64],
                         )
                         db_saved = True
+                        full_reconciled = True
                     except Exception as exc:
                         logger.warning(
                             "gateway.session: state.db routing save failed: %s", exc
                         )
             if getattr(self, "_write_sessions_json", True) or not db_saved:
                 self._save_sessions_json(data)
-            self._persisted_routing_generation = generation
-            # This rewrite supersedes fast records at or below its
-            # generation; newer ones stay for the next delayed full writer.
-            if fast_persisted:
-                for key in [
-                    k for k, (rev, _) in fast_persisted.items()
-                    if rev <= generation
-                ]:
-                    del fast_persisted[key]
+
+            # Only a complete durable reconciliation can supersede every older
+            # generation. Point UPSERTs cover one key and therefore join the
+            # same per-key ordering ledger as _save_entry.
+            persisted_complete = (
+                point_key is None or full_reconciled or _db is None
+            )
+            if persisted_complete:
+                self._persisted_routing_generation = generation
+                if fast_persisted:
+                    for key in [
+                        k for k, (rev, _) in fast_persisted.items()
+                        if rev <= generation
+                    ]:
+                        del fast_persisted[key]
+            elif point_saved and point_key is not None and point_entry_json is not None:
+                if fast_persisted is None:
+                    fast_persisted = {}
+                    self._fast_persisted_entries = fast_persisted
+                fast_persisted[point_key] = (generation, point_entry_json)
 
     def _save_sessions_json(self, data: Dict[str, Any]) -> None:
         """Write the legacy sessions.json mirror of the routing index."""
