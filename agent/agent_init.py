@@ -832,7 +832,6 @@ def init_agent(
     # Context engines are owned per Python agent.  Cleanup may race between a
     # cache-eviction worker and hard session teardown, so claim shutdown once.
     agent._context_engine_shutdown_lock = threading.Lock()
-    
 
     # Background memory/skill review state (agent/background_review.py). Holds
     # the forked review AIAgent while its run_conversation() is in flight, so
