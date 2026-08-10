@@ -367,6 +367,54 @@ class TestStructuralPointRebind:
         assert mirror[entry.session_key]["session_id"] == new_id
         store._db.close()
 
+    def test_rebind_refreshes_mirror_after_newer_fast_save(
+        self, tmp_path, monkeypatch
+    ):
+        """A newer point save must not suppress the rebind's mirror refresh."""
+        store = _make_store(tmp_path, monkeypatch)
+        entry = store.get_or_create_session(_source())
+        old_id = entry.session_id
+        new_id = old_id + "_child"
+        snapshot_ready = threading.Barrier(2)
+        fast_save_done = threading.Barrier(2)
+        real_persist = store._persist_routing_data
+        point_writes = []
+        real_point_save = store._db.save_gateway_routing_entry
+
+        def delay_rebind_persistence(*args, **kwargs):
+            snapshot_ready.wait(timeout=5)
+            fast_save_done.wait(timeout=5)
+            return real_persist(*args, **kwargs)
+
+        def record_point_save(session_key, entry_json, *, scope=""):
+            point_writes.append(json.loads(entry_json)["session_id"])
+            return real_point_save(session_key, entry_json, scope=scope)
+
+        monkeypatch.setattr(store, "_persist_routing_data", delay_rebind_persistence)
+        monkeypatch.setattr(store._db, "save_gateway_routing_entry", record_point_save)
+        result = []
+        worker = threading.Thread(
+            target=lambda: result.append(
+                store.rebind_session_id(entry.session_key, old_id, new_id)
+            )
+        )
+        worker.start()
+
+        snapshot_ready.wait(timeout=5)
+        store._save_entry(entry.session_key)
+        fast_save_done.wait(timeout=5)
+        worker.join(timeout=5)
+
+        assert not worker.is_alive()
+        assert result == [True]
+        assert point_writes == [new_id]
+        assert _routing_row(store, entry.session_key)["session_id"] == new_id
+        mirror = json.loads(
+            (tmp_path / "sessions" / "sessions.json").read_text(encoding="utf-8")
+        )
+        assert mirror[entry.session_key]["session_id"] == new_id
+        store._db.close()
+
     def test_rebind_is_compare_and_swap_for_stale_runs(self, tmp_path, monkeypatch):
         store = _make_store(tmp_path, monkeypatch)
         entry = store.get_or_create_session(_source())

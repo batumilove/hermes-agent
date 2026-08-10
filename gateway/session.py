@@ -1535,24 +1535,33 @@ class SessionStore:
             # generation counter, so a fast record numbered above us was
             # serialized after us and a delayed full rewrite must not
             # regress it.
+            point_already_saved = False
             fast_persisted = getattr(self, "_fast_persisted_entries", None)
             if point_key is not None and fast_persisted:
                 persisted_point = fast_persisted.get(point_key)
                 if persisted_point is not None and persisted_point[0] >= generation:
-                    return True
+                    # A newer fast writer already made this point transition
+                    # durable. Keep going: fold its value into ``data`` and
+                    # refresh the restart-critical legacy mirror below.
+                    point_already_saved = True
             if fast_persisted:
                 for key, (revision, entry_json) in fast_persisted.items():
                     if revision > generation:
                         data[key] = json.loads(entry_json)
-            db_saved = False
             point_saved = False
             full_reconciled = False
             point_entry_json: Optional[str] = None
             _db = getattr(self, "_db", None)
+            db_saved = bool(_db and point_already_saved)
             if _db:
                 point_failed = False
                 point_saver = getattr(_db, "save_gateway_routing_entry", None)
-                if point_key is not None and point_key in data and callable(point_saver):
+                if (
+                    not db_saved
+                    and point_key is not None
+                    and point_key in data
+                    and callable(point_saver)
+                ):
                     try:
                         point_entry_json = json.dumps(data[point_key])
                         point_saver(
