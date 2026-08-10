@@ -3658,7 +3658,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         return {r["session_key"]: r["entry_json"] for r in rows}
 
     def delete_gateway_routing_entries(
-        self, session_keys: List[str], *, scope: str = ""
+        self,
+        session_keys: List[str],
+        *,
+        scope: str = "",
+        reason: str = "unspecified",
     ) -> None:
         """Remove routing entries for the given session keys in *scope*."""
         if not session_keys:
@@ -3670,7 +3674,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 [(scope, k) for k in session_keys],
             )
 
-        self._execute_write(_do)
+        reason_label = re.sub(
+            r"[^A-Za-z0-9_.-]+", "_", str(reason or "unspecified")
+        )[:64]
+        self._execute_write(
+            _do,
+            operation="delete_gateway_routing_entries",
+            items=len(session_keys),
+            reason=reason_label,
+        )
 
     def list_gateway_sessions(
         self,

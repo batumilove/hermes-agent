@@ -1225,6 +1225,11 @@ class SessionStore:
         self._save_lock = threading.Lock()
         self._routing_generation = 0
         self._persisted_routing_generation = 0
+        # Generations captured under ``_lock`` but not yet durably resolved.
+        # Pruning may use an exact-key DELETE only when no older generation is
+        # pending; otherwise it retains full-reconciliation ordering.
+        self._pending_routing_lock = threading.Lock()
+        self._pending_routing_generations: set[int] = set()
         # Single-entry upserts persisted since the last full rewrite:
         # session_key -> (revision, entry_json). Revisions are allocated
         # from _routing_generation, so fast and full snapshots are totally
@@ -1498,11 +1503,40 @@ class SessionStore:
         return self._routing_generation
 
     def _snapshot_routing_locked(self) -> tuple[Dict[str, Any], int]:
-        """Capture immutable routing data and a monotonic generation."""
-        return (
-            {key: entry.to_dict() for key, entry in self._entries.items()},
-            self._next_routing_generation_locked(),
-        )
+        """Capture immutable routing data and a monotonic pending generation."""
+        data = {key: entry.to_dict() for key, entry in self._entries.items()}
+        generation = self._next_routing_generation_locked()
+        self._register_pending_routing_generation(generation)
+        return data, generation
+
+    def _register_pending_routing_generation(self, generation: int) -> None:
+        pending_lock = getattr(self, "_pending_routing_lock", None)
+        if pending_lock is None:
+            pending_lock = threading.Lock()
+            self._pending_routing_lock = pending_lock
+        with pending_lock:
+            pending = getattr(self, "_pending_routing_generations", None)
+            if pending is None:
+                pending = set()
+                self._pending_routing_generations = pending
+            pending.add(generation)
+
+    def _unregister_pending_routing_generation(self, generation: int) -> None:
+        pending_lock = getattr(self, "_pending_routing_lock", None)
+        if pending_lock is None:
+            return
+        with pending_lock:
+            pending = getattr(self, "_pending_routing_generations", None)
+            if pending is not None:
+                pending.discard(generation)
+
+    def _has_older_pending_routing_generation(self, generation: int) -> bool:
+        pending_lock = getattr(self, "_pending_routing_lock", None)
+        if pending_lock is None:
+            return False
+        with pending_lock:
+            pending = getattr(self, "_pending_routing_generations", set())
+            return any(candidate < generation for candidate in pending)
 
     def _persist_routing_data(
         self,
@@ -1511,101 +1545,128 @@ class SessionStore:
         *,
         reason: str = "unspecified",
         point_key: Optional[str] = None,
+        delete_keys: Optional[list[str]] = None,
     ) -> None:
         """Serialize routing persistence through one durable write lock.
 
         ``point_key`` requests one state.db UPSERT while the complete snapshot
-        still refreshes the restart-critical legacy mirror. A point write is
-        tracked per key: it cannot advance the complete-snapshot watermark,
-        because an older delayed reconciliation may carry an unrelated key
-        deletion. If the UPSERT is unavailable or fails, fall back to the
+        still refreshes the restart-critical legacy mirror. ``delete_keys``
+        requests an exact structural delete, but only when every older captured
+        generation has already resolved; otherwise ordering safety requires the
         ordinary atomic full reconciliation.
         """
+        self._register_pending_routing_generation(generation)
         save_lock = getattr(self, "_save_lock", None)
         if save_lock is None:
             save_lock = threading.Lock()
             self._save_lock = save_lock
-        with save_lock:
-            if generation <= getattr(self, "_persisted_routing_generation", 0):
-                return
-            # Fold in single-entry upserts with a newer revision than this
-            # snapshot (see _save_entry): revisions share the routing
-            # generation counter, so a fast record numbered above us was
-            # serialized after us and a delayed full rewrite must not
-            # regress it.
-            fast_persisted = getattr(self, "_fast_persisted_entries", None)
-            if point_key is not None and fast_persisted:
-                persisted_point = fast_persisted.get(point_key)
-                if persisted_point is not None and persisted_point[0] >= generation:
+        try:
+            with save_lock:
+                if generation <= getattr(self, "_persisted_routing_generation", 0):
                     return
-            if fast_persisted:
-                for key, (revision, entry_json) in fast_persisted.items():
-                    if revision > generation:
-                        data[key] = json.loads(entry_json)
-            db_saved = False
-            point_saved = False
-            full_reconciled = False
-            point_entry_json: Optional[str] = None
-            _db = getattr(self, "_db", None)
-            if _db:
-                point_failed = False
-                point_saver = getattr(_db, "save_gateway_routing_entry", None)
-                if point_key is not None and point_key in data and callable(point_saver):
-                    try:
-                        point_entry_json = json.dumps(data[point_key])
-                        point_saver(
-                            point_key,
-                            point_entry_json,
-                            scope=self._routing_scope(),
-                        )
-                        db_saved = True
-                        point_saved = True
-                    except Exception as exc:
-                        point_failed = True
-                        logger.warning(
-                            "gateway.session: structural point routing save failed "
-                            "for %r (%s); falling back to full reconciliation",
-                            point_key,
-                            exc,
-                        )
-                replacer = getattr(_db, "replace_gateway_routing_entries", None)
-                if not db_saved and callable(replacer):
-                    try:
-                        replacer(
-                            {k: json.dumps(v) for k, v in data.items()},
-                            scope=self._routing_scope(),
-                            reason=(
-                                f"{reason}_fallback" if point_failed else reason
-                            )[:64],
-                        )
-                        db_saved = True
-                        full_reconciled = True
-                    except Exception as exc:
-                        logger.warning(
-                            "gateway.session: state.db routing save failed: %s", exc
-                        )
-            if getattr(self, "_write_sessions_json", True) or not db_saved:
-                self._save_sessions_json(data)
-
-            # Only a complete durable reconciliation can supersede every older
-            # generation. Point UPSERTs cover one key and therefore join the
-            # same per-key ordering ledger as _save_entry.
-            persisted_complete = (
-                point_key is None or full_reconciled or _db is None
-            )
-            if persisted_complete:
-                self._persisted_routing_generation = generation
+                # Fold in single-entry upserts with a newer revision than this
+                # snapshot so a delayed full write cannot regress them.
+                fast_persisted = getattr(self, "_fast_persisted_entries", None)
+                if point_key is not None and fast_persisted:
+                    persisted_point = fast_persisted.get(point_key)
+                    if persisted_point is not None and persisted_point[0] >= generation:
+                        return
                 if fast_persisted:
-                    for key in [
-                        k for k, (rev, _) in fast_persisted.items()
-                        if rev <= generation
-                    ]:
-                        del fast_persisted[key]
-            elif point_saved and point_key is not None and point_entry_json is not None:
-                if fast_persisted is None:
-                    fast_persisted = {}
-                    self._fast_persisted_entries = fast_persisted
-                fast_persisted[point_key] = (generation, point_entry_json)
+                    for key, (revision, entry_json) in fast_persisted.items():
+                        if revision > generation:
+                            data[key] = json.loads(entry_json)
+
+                db_saved = False
+                point_saved = False
+                full_reconciled = False
+                point_entry_json: Optional[str] = None
+                point_failed = False
+                _db = getattr(self, "_db", None)
+                if _db:
+                    exact_delete = getattr(_db, "delete_gateway_routing_entries", None)
+                    if (
+                        delete_keys
+                        and callable(exact_delete)
+                        and not self._has_older_pending_routing_generation(generation)
+                    ):
+                        try:
+                            exact_delete(
+                                delete_keys,
+                                scope=self._routing_scope(),
+                                reason=reason,
+                            )
+                            db_saved = True
+                            full_reconciled = True
+                        except Exception as exc:
+                            logger.warning(
+                                "gateway.session: exact routing delete failed (%s); "
+                                "falling back to full reconciliation",
+                                exc,
+                            )
+
+                    point_saver = getattr(_db, "save_gateway_routing_entry", None)
+                    if (
+                        not db_saved
+                        and point_key is not None
+                        and point_key in data
+                        and callable(point_saver)
+                    ):
+                        try:
+                            point_entry_json = json.dumps(data[point_key])
+                            point_saver(
+                                point_key,
+                                point_entry_json,
+                                scope=self._routing_scope(),
+                            )
+                            db_saved = True
+                            point_saved = True
+                        except Exception as exc:
+                            point_failed = True
+                            logger.warning(
+                                "gateway.session: structural point routing save failed "
+                                "for %r (%s); falling back to full reconciliation",
+                                point_key,
+                                exc,
+                            )
+
+                    replacer = getattr(_db, "replace_gateway_routing_entries", None)
+                    if not db_saved and callable(replacer):
+                        try:
+                            fallback = point_failed or bool(delete_keys)
+                            replacer(
+                                {k: json.dumps(v) for k, v in data.items()},
+                                scope=self._routing_scope(),
+                                reason=(f"{reason}_fallback" if fallback else reason)[:64],
+                            )
+                            db_saved = True
+                            full_reconciled = True
+                        except Exception as exc:
+                            logger.warning(
+                                "gateway.session: state.db routing save failed: %s", exc
+                            )
+
+                if getattr(self, "_write_sessions_json", True) or not db_saved:
+                    self._save_sessions_json(data)
+
+                # Only a complete durable reconciliation (including a safe exact
+                # delete with no older pending generation) can supersede every
+                # older revision. Point UPSERTs remain per-key ordered.
+                persisted_complete = point_key is None or full_reconciled or _db is None
+                if persisted_complete:
+                    self._persisted_routing_generation = generation
+                    if fast_persisted:
+                        for key in [
+                            k for k, (rev, _) in fast_persisted.items()
+                            if rev <= generation
+                        ]:
+                            del fast_persisted[key]
+                elif point_saved and point_key is not None and point_entry_json is not None:
+                    if fast_persisted is None:
+                        fast_persisted = {}
+                        self._fast_persisted_entries = fast_persisted
+                    fast_persisted[point_key] = (generation, point_entry_json)
+        finally:
+            self._unregister_pending_routing_generation(generation)
 
     def _save_sessions_json(self, data: Dict[str, Any]) -> None:
         """Write the legacy sessions.json mirror of the routing index."""
@@ -1742,6 +1803,7 @@ class SessionStore:
                 return
             entry_json = json.dumps(entry.to_dict())
             revision = self._next_routing_generation_locked()
+            self._register_pending_routing_generation(revision)
         _db = getattr(self, "_db", None)
         saver = getattr(_db, "save_gateway_routing_entry", None) if _db else None
         if callable(saver):
@@ -1752,6 +1814,7 @@ class SessionStore:
             try:
                 with save_lock:
                     if getattr(self, "_persisted_routing_generation", 0) >= revision:
+                        self._unregister_pending_routing_generation(revision)
                         return
                     fast_persisted = getattr(self, "_fast_persisted_entries", None)
                     if fast_persisted is None:
@@ -1759,9 +1822,11 @@ class SessionStore:
                         self._fast_persisted_entries = fast_persisted
                     persisted = fast_persisted.get(session_key)
                     if persisted is not None and persisted[0] >= revision:
+                        self._unregister_pending_routing_generation(revision)
                         return
                     saver(session_key, entry_json, scope=self._routing_scope())
                     fast_persisted[session_key] = (revision, entry_json)
+                self._unregister_pending_routing_generation(revision)
                 return
             except Exception as exc:
                 logger.warning(
@@ -1769,7 +1834,10 @@ class SessionStore:
                     "(%s); falling back to full index rewrite",
                     session_key, exc,
                 )
-        self._save_entries(reason="single_entry_fallback")
+        try:
+            self._save_entries(reason="single_entry_fallback")
+        finally:
+            self._unregister_pending_routing_generation(revision)
 
     def _resolve_profile_for_key(self, source: Optional[SessionSource] = None) -> Optional[str]:
         """Return the profile namespace for session keys, or None when off.
@@ -2951,7 +3019,13 @@ class SessionStore:
             for key in removed_keys:
                 self._entries.pop(key, None)
             if removed_keys:
-                self._save()
+                data, generation = self._snapshot_routing_locked()
+                self._persist_routing_data(
+                    data,
+                    generation,
+                    reason="prune_old_entries",
+                    delete_keys=removed_keys,
+                )
 
         if removed_keys:
             logger.info(

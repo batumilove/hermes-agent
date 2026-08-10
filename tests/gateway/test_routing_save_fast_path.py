@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import threading
+from datetime import datetime, timedelta
 
 import hermes_state
 from gateway.config import GatewayConfig, Platform
@@ -459,6 +460,30 @@ class TestFullRewriteTelemetry:
         }]
         store._db.close()
 
+    def test_exact_delete_latency_contains_reason_and_deleted_count(
+        self, tmp_path, monkeypatch
+    ):
+        store = _make_store(tmp_path, monkeypatch)
+        captured = []
+
+        def capture_execute_write(fn, *args, **kwargs):
+            captured.append(kwargs)
+
+        monkeypatch.setattr(store._db, "_execute_write", capture_execute_write)
+
+        store._db.delete_gateway_routing_entries(
+            ["route-a", "route-b"],
+            scope="test",
+            reason="prune_old_entries",
+        )
+
+        assert captured == [{
+            "operation": "delete_gateway_routing_entries",
+            "items": 2,
+            "reason": "prune_old_entries",
+        }]
+        store._db.close()
+
 
 class TestFallbacks:
     def test_no_db_falls_back_to_full_rewrite(self, tmp_path, monkeypatch):
@@ -753,6 +778,87 @@ class TestDelayedWriteOrdering:
 
         assert upserts == []  # the delayed UPSERT was skipped
         assert _routing_row(store, entry.session_key)["last_prompt_tokens"] == 2
+        store._db.close()
+
+    def test_prune_preserves_change_from_older_parked_point_save(
+        self, tmp_path, monkeypatch
+    ):
+        """Exact pruning must not discard an older point save parked pre-write."""
+        store = _make_store(tmp_path, monkeypatch, write_sessions_json=False)
+        stale = store.get_or_create_session(SessionSource(
+            platform=Platform.TELEGRAM, chat_id="stale", chat_name="stale",
+            chat_type="dm", user_id="stale",
+        ))
+        fresh = store.get_or_create_session(SessionSource(
+            platform=Platform.TELEGRAM, chat_id="fresh", chat_name="fresh",
+            chat_type="dm", user_id="fresh",
+        ))
+        with store._lock:
+            store._entries[stale.session_key].updated_at = (
+                datetime.now() - timedelta(days=500)
+            )
+
+        gate = _GatedSaveLock(store._save_lock)
+        store._save_lock = gate
+        older = threading.Thread(
+            target=store.update_session,
+            args=(fresh.session_key,),
+            kwargs={"last_prompt_tokens": 17},
+        )
+        gate.gated_thread = older
+        older.start()
+        try:
+            assert gate.reached.wait(timeout=5)
+            assert store.prune_old_entries(max_age_days=90) == 1
+        finally:
+            gate.release.set()
+            older.join(timeout=5)
+        assert not older.is_alive()
+
+        rows = store._db.load_gateway_routing_entries(scope=store._routing_scope())
+        assert stale.session_key not in rows
+        assert json.loads(rows[fresh.session_key])["last_prompt_tokens"] == 17
+        store._db.close()
+
+    def test_prune_preserves_change_from_older_parked_full_save(
+        self, tmp_path, monkeypatch
+    ):
+        """A prune superseding a parked full save must persist its newer snapshot."""
+        store = _make_store(tmp_path, monkeypatch, write_sessions_json=False)
+        stale = store.get_or_create_session(SessionSource(
+            platform=Platform.TELEGRAM, chat_id="stale-full",
+            chat_name="stale-full", chat_type="dm", user_id="stale-full",
+        ))
+        fresh = store.get_or_create_session(SessionSource(
+            platform=Platform.TELEGRAM, chat_id="fresh-full",
+            chat_name="fresh-full", chat_type="dm", user_id="fresh-full",
+        ))
+        with store._lock:
+            store._entries[stale.session_key].updated_at = (
+                datetime.now() - timedelta(days=500)
+            )
+            store._entries[fresh.session_key].last_prompt_tokens = 23
+            data, generation = store._snapshot_routing_locked()
+
+        gate = _GatedSaveLock(store._save_lock)
+        store._save_lock = gate
+        older = threading.Thread(
+            target=store._persist_routing_data,
+            args=(data, generation),
+        )
+        gate.gated_thread = older
+        older.start()
+        try:
+            assert gate.reached.wait(timeout=5)
+            assert store.prune_old_entries(max_age_days=90) == 1
+        finally:
+            gate.release.set()
+            older.join(timeout=5)
+        assert not older.is_alive()
+
+        rows = store._db.load_gateway_routing_entries(scope=store._routing_scope())
+        assert stale.session_key not in rows
+        assert json.loads(rows[fresh.session_key])["last_prompt_tokens"] == 23
         store._db.close()
 
 
