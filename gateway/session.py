@@ -1511,7 +1511,7 @@ class SessionStore:
         *,
         reason: str = "unspecified",
         point_key: Optional[str] = None,
-    ) -> None:
+    ) -> bool:
         """Serialize routing persistence through one durable write lock.
 
         ``point_key`` requests one state.db UPSERT while the complete snapshot
@@ -1519,7 +1519,9 @@ class SessionStore:
         tracked per key: it cannot advance the complete-snapshot watermark,
         because an older delayed reconciliation may carry an unrelated key
         deletion. If the UPSERT is unavailable or fails, fall back to the
-        ordinary atomic full reconciliation.
+        ordinary atomic full reconciliation. Return ``False`` only when a
+        structural point rebind cannot reach either state.db write path; its
+        caller then rolls the in-memory compare-and-swap back.
         """
         save_lock = getattr(self, "_save_lock", None)
         if save_lock is None:
@@ -1527,7 +1529,7 @@ class SessionStore:
             self._save_lock = save_lock
         with save_lock:
             if generation <= getattr(self, "_persisted_routing_generation", 0):
-                return
+                return True
             # Fold in single-entry upserts with a newer revision than this
             # snapshot (see _save_entry): revisions share the routing
             # generation counter, so a fast record numbered above us was
@@ -1537,7 +1539,7 @@ class SessionStore:
             if point_key is not None and fast_persisted:
                 persisted_point = fast_persisted.get(point_key)
                 if persisted_point is not None and persisted_point[0] >= generation:
-                    return
+                    return True
             if fast_persisted:
                 for key, (revision, entry_json) in fast_persisted.items():
                     if revision > generation:
@@ -1584,9 +1586,10 @@ class SessionStore:
                         logger.warning(
                             "gateway.session: state.db routing save failed: %s", exc
                         )
+            if point_key is not None and _db and not db_saved:
+                return False
             if getattr(self, "_write_sessions_json", True) or not db_saved:
                 self._save_sessions_json(data)
-
             # Only a complete durable reconciliation can supersede every older
             # generation. Point UPSERTs cover one key and therefore join the
             # same per-key ordering ledger as _save_entry.
@@ -1606,6 +1609,7 @@ class SessionStore:
                     fast_persisted = {}
                     self._fast_persisted_entries = fast_persisted
                 fast_persisted[point_key] = (generation, point_entry_json)
+            return True
 
     def _save_sessions_json(self, data: Dict[str, Any]) -> None:
         """Write the legacy sessions.json mirror of the routing index."""
@@ -1688,13 +1692,19 @@ class SessionStore:
                 return False
             entry.session_id = new_session_id
             data, generation = self._snapshot_routing_locked()
-        self._persist_routing_data(
+        persisted = self._persist_routing_data(
             data,
             generation,
             reason="rebind_session_id",
             point_key=session_key,
         )
-        return True
+        if persisted:
+            return True
+        with self._lock:
+            current = self._entries.get(session_key)
+            if current is entry and current.session_id == new_session_id:
+                current.session_id = expected_session_id
+        return False
 
     def _save_entry(self, session_key: str) -> None:
         """Persist ONE routing entry via UPSERT — the per-turn fast path.
