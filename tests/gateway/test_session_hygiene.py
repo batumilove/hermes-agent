@@ -316,6 +316,7 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
 @pytest.mark.asyncio
 async def test_session_hygiene_rotation_rebinds_expected_route(monkeypatch, tmp_path):
     """Hygiene rotation persists the child before rebinding the live route."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
