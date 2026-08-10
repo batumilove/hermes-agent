@@ -174,14 +174,17 @@ class TestDrainWaitsForApiWork:
 
         assert timed_out is True
 
-    def test_shutdown_interrupt_reaches_api_server_runs(self):
+    @pytest.mark.asyncio
+    async def test_shutdown_interrupt_reaches_api_server_runs(self):
         runner, _adapter = make_restart_runner()
         api = APIServerAdapter(PlatformConfig(enabled=True))
         agent = MagicMock()
         api._active_run_agents = {"run-1": agent}
         runner.adapters = {Platform.API_SERVER: api}
 
-        runner._interrupt_running_agents("gateway shutdown")
+        await runner._interrupt_running_agents(
+            "gateway shutdown", asyncio.get_running_loop().time() + 5.0
+        )
 
         agent.interrupt.assert_called_once_with("gateway shutdown")
 
@@ -443,7 +446,10 @@ class TestShutdownInterruptReachesEveryApiTurn:
                     # hook can reach it.
                     assert runner._running_agents == {}
 
-                    runner._interrupt_running_agents(_INTERRUPT_REASON_GATEWAY_SHUTDOWN)
+                    await runner._interrupt_running_agents(
+                        _INTERRUPT_REASON_GATEWAY_SHUTDOWN,
+                        asyncio.get_running_loop().time() + 5.0,
+                    )
 
                     agent.interrupt.assert_called_once_with(
                         _INTERRUPT_REASON_GATEWAY_SHUTDOWN
@@ -485,7 +491,10 @@ class TestShutdownInterruptReachesEveryApiTurn:
                     assert runner._active_api_run_count() == 1
                     assert runner._running_agents == {}
 
-                    runner._interrupt_running_agents(_INTERRUPT_REASON_GATEWAY_SHUTDOWN)
+                    await runner._interrupt_running_agents(
+                        _INTERRUPT_REASON_GATEWAY_SHUTDOWN,
+                        asyncio.get_running_loop().time() + 5.0,
+                    )
 
                     agent.interrupt.assert_called_once_with(
                         _INTERRUPT_REASON_GATEWAY_SHUTDOWN
@@ -501,12 +510,16 @@ class TestShutdownInterruptReachesEveryApiTurn:
 
         assert api._shutdown_interruptible_agents == {}
 
-    def test_interrupt_running_agents_is_a_noop_without_an_api_adapter(self):
+    @pytest.mark.asyncio
+    async def test_interrupt_running_agents_is_a_noop_without_an_api_adapter(self):
         """The hook is duck-typed — an adapterless runner must not raise."""
         runner, _adapter = make_restart_runner()
         runner.adapters = {}
 
-        runner._interrupt_running_agents(_INTERRUPT_REASON_GATEWAY_SHUTDOWN)
+        await runner._interrupt_running_agents(
+            _INTERRUPT_REASON_GATEWAY_SHUTDOWN,
+            asyncio.get_running_loop().time() + 5.0,
+        )
 
         assert runner._interrupt_api_server_runs("x") == 0
 

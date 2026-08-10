@@ -1632,6 +1632,62 @@ class TestTitleLineage:
         """With no existing sessions, base title is returned as-is."""
         assert db.get_next_title_in_lineage("my project") == "my project"
 
+    def test_next_title_uses_only_numeric_suffixes_for_exact_base(self, db):
+        titles = [
+            "my project",
+            "my project #2",
+            "my project #10",
+            "my project #not-a-number",
+            "my project #12 extra",
+            "my project extra #99",
+        ]
+        for index, title in enumerate(titles):
+            session_id = f"lineage-{index}"
+            db.create_session(session_id, "cli")
+            db.set_session_title(session_id, title)
+
+        assert db.get_next_title_in_lineage("my project") == "my project #11"
+        assert db.get_next_title_in_lineage("my project #7") == "my project #11"
+
+    def test_next_title_treats_like_wildcards_as_literal_text(self, db):
+        db.create_session("wildcard-base", "cli")
+        db.set_session_title("wildcard-base", r"100%_done")
+        db.create_session("wildcard-numbered", "cli")
+        db.set_session_title("wildcard-numbered", r"100%_done #4")
+        db.create_session("wildcard-decoy", "cli")
+        db.set_session_title("wildcard-decoy", "100XXdone #99")
+
+        assert db.get_next_title_in_lineage(r"100%_done") == r"100%_done #5"
+
+    def test_next_title_query_uses_title_index(self, db, monkeypatch):
+        db.create_session("indexed-title", "cli")
+        db.set_session_title("indexed-title", "indexed project #2")
+        real_ctx = db._read_ctx
+        seen_plans = []
+
+        from contextlib import contextmanager
+
+        @contextmanager
+        def plan_checking_ctx():
+            with real_ctx() as conn:
+                class PlanCheckingConnection:
+                    def execute(self, sql, parameters=()):
+                        if sql.lstrip().upper().startswith("SELECT TITLE FROM SESSIONS"):
+                            plan = conn.execute(
+                                "EXPLAIN QUERY PLAN " + sql, parameters
+                            ).fetchall()
+                            seen_plans.append(" | ".join(str(row[3]) for row in plan))
+                        return conn.execute(sql, parameters)
+
+                yield PlanCheckingConnection()
+
+        monkeypatch.setattr(db, "_read_ctx", plan_checking_ctx)
+
+        assert db.get_next_title_in_lineage("indexed project") == "indexed project #3"
+        assert seen_plans
+        assert all("SCAN sessions" not in plan for plan in seen_plans)
+        assert all("idx_sessions_title_unique" in plan for plan in seen_plans)
+
 
 
 
@@ -1770,6 +1826,101 @@ class TestListSessionsRich:
         assert rows[0]["last_active"] == heartbeat
         activity = db.get_session_activity("gw-1")
         assert activity["last_activity_description"] == "compressing context"
+
+    def test_gateway_routing_origins_excludes_heavy_session_payloads(self, db):
+        db.create_session(
+            "gw-routing",
+            "telegram",
+            session_key="agent:main:telegram:dm:routing",
+            chat_id="routing",
+            chat_type="dm",
+            system_prompt="large prompt that channel discovery must not resolve",
+        )
+        db.record_gateway_session_peer(
+            "gw-routing",
+            source="telegram",
+            session_key="agent:main:telegram:dm:routing",
+            chat_id="routing",
+            chat_type="dm",
+            thread_id="topic-1",
+            display_name="Routing chat",
+            origin_json=json.dumps({"chat_id": "routing", "chat_name": "Routing chat"}),
+        )
+        db.append_message("gw-routing", "user", "message table must not be read")
+
+        def deny_heavy_tables(action, table, _column, _database, _trigger):
+            if action == sqlite3.SQLITE_READ and table in {"messages", "system_prompts"}:
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        db._conn.set_authorizer(deny_heavy_tables)
+        try:
+            rows = db.list_gateway_routing_origins(platform="telegram")
+        finally:
+            db._conn.set_authorizer(None)
+
+        assert rows == [{
+            "origin_json": json.dumps({"chat_id": "routing", "chat_name": "Routing chat"}),
+            "chat_id": "routing",
+            "thread_id": "topic-1",
+            "display_name": "Routing chat",
+            "chat_type": "dm",
+        }]
+
+    def test_gateway_routing_origins_uses_newest_row_per_key_and_platform(self, db):
+        lane_key = "agent:main:telegram:dm:lane"
+        for session_id, source, chat_id, started_at in (
+            ("old", "telegram", "old-chat", 100.0),
+            ("new", "telegram", "new-chat", 200.0),
+            ("buzz", "buzz", "buzz-chat", 300.0),
+        ):
+            key = lane_key if source == "telegram" else "agent:main:buzz:dm:lane"
+            db.create_session(
+                session_id,
+                source,
+                session_key=key,
+                chat_id=chat_id,
+                chat_type="dm",
+            )
+            db.record_gateway_session_peer(
+                session_id,
+                source=source,
+                session_key=key,
+                chat_id=chat_id,
+                chat_type="dm",
+                display_name=chat_id,
+            )
+            with db._lock:
+                db._conn.execute(
+                    "UPDATE sessions SET started_at = ? WHERE id = ?",
+                    (started_at, session_id),
+                )
+                db._conn.commit()
+
+        rows = db.list_gateway_routing_origins(platform="TELEGRAM", active_only=False)
+
+        assert [row["chat_id"] for row in rows] == ["new-chat"]
+
+    def test_gateway_routing_origins_active_filter_applies_after_newest_row(self, db):
+        lane_key = "agent:main:telegram:dm:ended-lane"
+        db.create_session("active-old", "telegram", session_key=lane_key, chat_id="old")
+        db.create_session("ended-new", "telegram", session_key=lane_key, chat_id="new")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET started_at = 100 WHERE id = 'active-old'"
+            )
+            db._conn.execute(
+                "UPDATE sessions SET started_at = 200, ended_at = 201 WHERE id = 'ended-new'"
+            )
+            db._conn.commit()
+
+        assert db.list_gateway_routing_origins(platform="telegram", active_only=True) == []
+        assert [
+            row["chat_id"]
+            for row in db.list_gateway_routing_origins(
+                platform="telegram", active_only=False
+            )
+        ] == ["new"]
 
     def test_order_by_last_active_surfaces_recently_touched_older_session_first(self, db):
         t0 = 1709500000.0
@@ -3276,6 +3427,70 @@ class TestApplyWalProbe:
         assert any("journal_mode=WAL" in sql for sql in conn.executed), (
             "set-pragma must fire when probe returns 'delete'"
         )
+
+    def test_ambiguous_eio_never_downgrades_nonempty_database(self, tmp_path):
+        """Unknown mode after repeated EIO must fail closed without issuing DELETE."""
+        import sqlite3
+        from hermes_state import apply_wal_with_fallback
+
+        class _AmbiguousEioConn(sqlite3.Connection):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                normalized = sql.strip().lower()
+                if normalized == "pragma journal_mode" or normalized == "pragma journal_mode=wal":
+                    raise sqlite3.OperationalError("disk I/O error")
+                return super().execute(sql, params)
+
+        db_path = tmp_path / "existing.db"
+        seed = sqlite3.connect(db_path)
+        seed.execute("CREATE TABLE data (value TEXT)")
+        seed.execute("INSERT INTO data VALUES ('preserve me')")
+        seed.commit()
+        seed.close()
+        before = db_path.read_bytes()[:100]
+
+        conn = _AmbiguousEioConn(str(db_path))
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+                apply_wal_with_fallback(conn, db_label="existing.db")
+        finally:
+            conn.close()
+
+        assert not any(sql.strip().lower() == "pragma journal_mode=delete" for sql in conn.executed)
+        assert db_path.read_bytes()[:100] == before
+
+    def test_ambiguous_eio_allows_delete_fallback_for_empty_database(self, tmp_path):
+        """A proven empty file retains the compatibility fallback for WAL-incompatible FSes."""
+        import sqlite3
+        from hermes_state import apply_wal_with_fallback
+
+        class _AmbiguousEioConn(sqlite3.Connection):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                normalized = sql.strip().lower()
+                if normalized == "pragma journal_mode" or normalized == "pragma journal_mode=wal":
+                    raise sqlite3.OperationalError("disk I/O error")
+                return super().execute(sql, params)
+
+        db_path = tmp_path / "empty.db"
+        sqlite3.connect(db_path).close()
+        assert db_path.stat().st_size == 0
+
+        conn = _AmbiguousEioConn(str(db_path))
+        try:
+            assert apply_wal_with_fallback(conn, db_label="empty.db") == "delete"
+        finally:
+            conn.close()
+
+        assert any(sql.strip().lower() == "pragma journal_mode=delete" for sql in conn.executed)
 
 
 class TestSessionArchive:

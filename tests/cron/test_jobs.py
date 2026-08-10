@@ -16,10 +16,12 @@ from cron.jobs import (
     update_job,
     pause_job,
     resume_job,
+    trigger_job,
     remove_job,
     mark_job_run,
     advance_next_run,
     claim_dispatch,
+    clear_pending_trigger,
     claim_job_for_fire,
     heartbeat_run_claim,
     get_due_jobs,
@@ -418,6 +420,112 @@ class TestResolveJobRef:
         with pytest.raises(AmbiguousJobReference):
             remove_job("dup")
 
+    def test_trigger_job_persists_manual_origin_until_due_scan(
+        self, tmp_cron_dir, tmp_path, monkeypatch
+    ):
+        import cron.executions as executions
+
+        monkeypatch.setattr(
+            executions, "EXECUTIONS_FILE", tmp_path / "cron" / "executions.db"
+        )
+        job = create_job(prompt="manual provenance", schedule="every 1h")
+
+        triggered = trigger_job(job["id"])
+        persisted = get_job(job["id"])
+
+        marker = triggered["pending_trigger"]
+        assert marker["origin"] == "manual"
+        assert persisted["pending_trigger"] == marker
+        ledger = executions.latest_execution(job["id"])
+        assert ledger["id"] == marker["execution_id"]
+        assert ledger["trigger_origin"] == "manual"
+
+        due = get_due_jobs()
+        assert due[0]["_execution_trigger_origin"] == "manual"
+        assert due[0]["_execution_triggered_at"] == marker["at"]
+        assert due[0]["_execution_id"] == marker["execution_id"]
+        # Merely scanning due jobs must not consume provenance: a crash between
+        # get_due_jobs() and ledger binding must remain restart-safe.
+        assert get_job(job["id"])["pending_trigger"] == marker
+        assert clear_pending_trigger(job["id"], marker["execution_id"])
+        assert get_job(job["id"]).get("pending_trigger") is None
+
+    def test_retrigger_is_idempotent_while_manual_execution_is_pending(
+        self, tmp_cron_dir, tmp_path, monkeypatch
+    ):
+        import cron.executions as executions
+
+        monkeypatch.setattr(
+            executions, "EXECUTIONS_FILE", tmp_path / "cron" / "executions.db"
+        )
+        job = create_job(prompt="manual provenance", schedule="every 1h")
+        first = trigger_job(job["id"])["pending_trigger"]
+        second = trigger_job(job["id"])["pending_trigger"]
+
+        records = executions.list_executions(job_id=job["id"], limit=10)
+        assert second == first
+        assert len(records) == 1
+        assert records[0]["id"] == first["execution_id"]
+        assert records[0]["status"] == "claimed"
+        assert get_job(job["id"])["pending_trigger"] == first
+
+    def test_retrigger_reuses_pending_identity_when_newer_execution_exists(
+        self, tmp_cron_dir, tmp_path, monkeypatch
+    ):
+        import cron.executions as executions
+
+        monkeypatch.setattr(
+            executions, "EXECUTIONS_FILE", tmp_path / "cron" / "executions.db"
+        )
+        job = create_job(prompt="manual provenance", schedule="every 1h")
+        first = trigger_job(job["id"])["pending_trigger"]
+        newer = executions.create_execution(
+            job["id"], source="direct", trigger_origin="direct"
+        )
+
+        second = trigger_job(job["id"])["pending_trigger"]
+
+        records = executions.list_executions(job_id=job["id"], limit=10)
+        assert second == first
+        assert {record["id"] for record in records} == {
+            first["execution_id"],
+            newer["id"],
+        }
+
+    def test_concurrent_retrigger_creates_one_pending_execution(
+        self, tmp_cron_dir, tmp_path, monkeypatch
+    ):
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
+        import cron.executions as executions
+
+        monkeypatch.setattr(
+            executions, "EXECUTIONS_FILE", tmp_path / "cron" / "executions.db"
+        )
+        original_create = executions.create_execution
+        create_barrier = threading.Barrier(2)
+
+        def synchronized_create(*args, **kwargs):
+            try:
+                create_barrier.wait(timeout=1)
+            except threading.BrokenBarrierError:
+                pass
+            return original_create(*args, **kwargs)
+
+        monkeypatch.setattr(executions, "create_execution", synchronized_create)
+        job = create_job(prompt="manual provenance", schedule="every 1h")
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            triggered = list(pool.map(lambda _: trigger_job(job["id"]), range(2)))
+
+        markers = [result["pending_trigger"] for result in triggered]
+        records = executions.list_executions(job_id=job["id"], limit=10)
+        assert markers[0] == markers[1]
+        assert len(records) == 1
+        assert records[0]["id"] == markers[0]["execution_id"]
+        assert records[0]["status"] == "claimed"
+
 
 class TestMarkJobRun:
     def test_increments_completed(self, tmp_cron_dir):
@@ -664,6 +772,7 @@ class TestGetDueJobs:
 
         due = get_due_jobs()
         assert [j["id"] for j in due] == [job["id"]], "long-execution job was skipped (perpetual-defer bug)"
+        assert due[0]["_execution_trigger_origin"] == "catchup"
         # next_run_at fast-forwarded into the future (no burst of missed slots).
         nxt = _ensure_aware(datetime.fromisoformat(get_job(job["id"])["next_run_at"]))
         assert nxt > _hermes_now()

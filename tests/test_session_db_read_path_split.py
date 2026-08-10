@@ -44,8 +44,90 @@ def test_read_conn_reused_within_thread(db):
 
 
 @pytest.mark.requires_wal
+def test_short_lived_reader_threads_release_connections(db):
+    """A process-wide SessionDB must not retain one FD pair per dead worker."""
+    worker_count = 24
+    failures = []
+    opened = []
+
+    def read_once():
+        try:
+            opened.append(db._get_read_conn())
+            assert db.get_session("s1")["id"] == "s1"
+        except BaseException as exc:
+            failures.append(exc)
+
+    threads = [threading.Thread(target=read_once) for _ in range(worker_count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5.0)
+        assert not thread.is_alive()
+
+    assert not failures
+    assert len(db._read_conns) == 0, (
+        "dead reader threads retained SQLite connections: "
+        f"{len(db._read_conns)} for {worker_count} completed workers"
+    )
+    assert len(opened) == worker_count
+    for conn in opened:
+        with pytest.raises(Exception, match="closed database"):
+            conn.execute("SELECT 1")
+
+
+@pytest.mark.requires_wal
+def test_live_reader_lease_is_retained_then_released(db):
+    ready = threading.Event()
+    release = threading.Event()
+
+    def reader():
+        assert db.get_session("s1")["id"] == "s1"
+        ready.set()
+        assert release.wait(timeout=5.0)
+
+    thread = threading.Thread(target=reader)
+    thread.start()
+    assert ready.wait(timeout=5.0)
+    assert len(db._read_conns) == 1
+
+    release.set()
+    thread.join(timeout=5.0)
+    assert not thread.is_alive()
+    assert len(db._read_conns) == 0
+
+
+@pytest.mark.requires_wal
+def test_close_drains_reader_opened_by_another_thread(tmp_path):
+    fresh = SessionDB(db_path=tmp_path / "cross-thread-close.db")
+    fresh.create_session(session_id="x", source="cli", model="m")
+    ready = threading.Event()
+    release = threading.Event()
+    held = []
+
+    def reader():
+        held.append(fresh._get_read_conn())
+        ready.set()
+        assert release.wait(timeout=5.0)
+
+    thread = threading.Thread(target=reader)
+    thread.start()
+    assert ready.wait(timeout=5.0)
+    assert len(fresh._read_conns) == 1
+
+    fresh.close()
+    assert len(fresh._read_conns) == 0
+    with pytest.raises(Exception, match="closed database"):
+        held[0].execute("SELECT 1")
+
+    release.set()
+    thread.join(timeout=5.0)
+    assert not thread.is_alive()
+
+
+@pytest.mark.requires_wal
 def test_reads_do_not_take_writer_lock(db):
     """Reads must complete while another thread holds self._lock."""
+    db.set_session_title("s1", "writer-lock-lineage")
     acquired = db._lock.acquire()
     assert acquired
     try:
@@ -55,6 +137,7 @@ def test_reads_do_not_take_writer_lock(db):
             done["session"] = db.get_session("s1")
             done["search"] = db.search_messages("graphiti", limit=10)
             done["messages"] = db.get_messages("s1")
+            done["next_title"] = db.get_next_title_in_lineage("writer-lock-lineage")
 
         t = threading.Thread(target=reader)
         t.start()
@@ -63,6 +146,7 @@ def test_reads_do_not_take_writer_lock(db):
         assert done["session"]["id"] == "s1"
         assert any("graphiti" in (m.get("snippet") or "") for m in done["search"])
         assert len(done["messages"]) == 2
+        assert done["next_title"] == "writer-lock-lineage #2"
     finally:
         db._lock.release()
 

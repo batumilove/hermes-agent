@@ -14,6 +14,7 @@ import concurrent.futures
 import contextvars
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -58,6 +59,69 @@ from agent.delegation_context import (
 
 logger = logging.getLogger(__name__)
 
+# ActiveGraph event bridge — optional/user-plugin owned.
+# Keep this lazy and fail-open: cron must never depend on observability being
+# installed or initialized, and scheduler.py can be imported before the plugin
+# manager has loaded user plugins.
+_ag_emit = None
+_ag_import_attempted = False
+
+
+def _ag(event_type: str, payload: dict) -> None:
+    """Emit an ActiveGraph event when the optional activegraph plugin is loaded.
+
+    Directory plugins are importable as ``hermes_plugins.<slug>`` only after the
+    plugin manager has discovered them. Cron runs from scheduler threads where
+    this helper can be reached before that namespace exists, so fall back to a
+    best-effort plugin discovery before giving up.  Failure stays fail-open:
+    cron execution must not depend on observability.
+    """
+    global _ag_emit, _ag_import_attempted
+    if _ag_emit is None and not _ag_import_attempted:
+        _ag_import_attempted = True
+        try:
+            import importlib
+            try:
+                _plugin = importlib.import_module("hermes_plugins.activegraph")
+            except Exception:
+                from hermes_cli.plugins import discover_plugins
+
+                discover_plugins()
+                _plugin = importlib.import_module("hermes_plugins.activegraph")
+            _ag_emit = getattr(_plugin, "_emit")
+        except Exception:
+            _ag_emit = None
+    if _ag_emit is None:
+        return
+    try:
+        _ag_emit(event_type, payload)
+    except Exception:
+        logger.debug("ActiveGraph cron emit failed for %s", event_type, exc_info=True)
+
+
+def _cron_ag_job_name(job: dict) -> str:
+    return str(job.get("name") or str(job.get("prompt") or "")[:60] or job.get("id") or "cron job")
+
+
+def _cron_ag_schedule(job: dict) -> str:
+    display = str(job.get("schedule_display") or "").strip()
+    if display:
+        return display
+    schedule = job.get("schedule")
+    if isinstance(schedule, dict):
+        for key in ("display", "value", "expr", "run_at"):
+            value = str(schedule.get(key) or "").strip()
+            if value:
+                return value
+        kind = str(schedule.get("kind") or "").strip()
+        if kind == "interval" and schedule.get("minutes"):
+            return f"every {schedule.get('minutes')}m"
+        if kind:
+            return kind
+    if schedule is not None:
+        return str(schedule)
+    return ""
+
 
 def _set_cron_session_title(session_db, session_id, base_title):
     """Robustly title a finished cron session before it is closed.
@@ -98,6 +162,136 @@ def _set_cron_session_title(session_db, session_id, base_title):
         return deduped
 
 
+def _classify_no_agent_script_failure(job_name: str, text: str) -> str:
+    """Classify a ``no_agent=True`` script failure for chat delivery.
+
+    ``no_agent`` jobs never touch a provider/fallback chain — the script IS
+    the job. So every provider classifier (rate-limit, timeout, auth) is
+    semantically wrong here, even when the raw error string happens to
+    contain ``timeout``, ``429``, or ``authentication`` (those tokens
+    routinely appear *inside* the script's own stdout/JSON).
+
+    Produces a bounded, sanitized script-failure message. When the script
+    emitted a safe structured ``kind`` (e.g. ``collector_timeout``) we
+    surface it so the operator knows *what* broke, alongside any
+    ``timeout_seconds``. Malformed / oversized stdout is truncated and
+    never claims provider involvement.
+    """
+    import json as _json
+
+    lower = text.lower()
+
+    # A script-timeout signal (subprocess ``SIGTERM``/exit 124, or a
+    # structured ``kind`` naming a timeout). Never a provider timeout.
+    is_timeout = (
+        "timed out" in lower
+        or "timeout" in lower
+        or "collector_timeout" in lower
+        or "exit code 124" in lower
+        or "signal 15" in lower
+    )
+
+    # Try to lift a safe structured ``kind`` (+ optional ``timeout_seconds``)
+    # from the first JSON object on the script's stdout. Only short, safe
+    # scalar fields are surfaced — never nested blobs.
+    kind: str | None = None
+    timeout_seconds: str | None = None
+    # Bound the scan window so a multi-KB stdout blob is never fully parsed.
+    for candidate in _extract_json_candidates(text[:4000]):
+        try:
+            obj = _json.loads(candidate)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(obj, dict):
+            continue
+        k = obj.get("kind")
+        if isinstance(k, str) and k and _is_safe_kind(k):
+            kind = k
+        ts = obj.get("timeout_seconds")
+        if (
+            isinstance(ts, (int, float))
+            and not isinstance(ts, bool)
+            and math.isfinite(float(ts))
+            and 0 <= float(ts) <= 31_536_000
+        ):
+            timeout_seconds = str(int(ts))
+        if kind:
+            break
+
+    if kind:
+        detail = f"script failure: {kind}"
+        if timeout_seconds:
+            detail += f" (timeout {timeout_seconds}s)"
+    elif is_timeout:
+        detail = "script timed out"
+    else:
+        # Generic script failure — sanitize and bound the raw text. Keep the
+        # excerpt short so the fixed prefix/suffix never pushes the delivery
+        # message past the chat-channel bound.
+        cleaned = re.sub(r"\s+", " ", text[:2000]).strip()
+        if len(cleaned) > 120:
+            cleaned = cleaned[:117].rstrip() + "..."
+        detail = f"script failed: {cleaned}" if cleaned else "script failed"
+
+    return (
+        f"⚠️ Cron '{job_name}' failed: {detail}. "
+        "Full output saved in cron output."
+    )
+
+
+def _extract_json_candidates(text: str) -> list[str]:
+    """Yield plausible JSON object substrings from ``text``.
+
+    A no_agent error looks like ``Script exited with code 1\\nstdout:\\n{...}``.
+    We scan for ``{`` ... matching ``}`` spans. Bounded to the first few to
+    avoid quadratic scans on adversarial input.
+    """
+    candidates: list[str] = []
+    search_from = 0
+    while len(candidates) < 3:
+        start = text.find("{", search_from)
+        if start == -1:
+            break
+        depth = 0
+        end = start
+        in_str = False
+        escape = False
+        for i in range(start, min(len(text), start + 4000)):
+            ch = text[i]
+            if in_str:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_str = False
+            else:
+                if ch == '"':
+                    in_str = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = i + 1
+                        break
+        if depth == 0 and end > start:
+            candidates.append(text[start:end])
+            search_from = end
+        else:
+            break
+    return candidates
+
+
+def _is_safe_kind(kind: str) -> bool:
+    """Only allow ``[a-z0-9_]+`` kind tokens into the delivery message.
+
+    Prevents a malicious/buggy script from injecting arbitrary formatting or
+    control characters via the ``kind`` field.
+    """
+    return bool(re.fullmatch(r"[a-z0-9_]{1,48}", kind))
+
+
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     """Return a compact one-line failure message for chat delivery.
 
@@ -107,6 +301,14 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     """
     job_name = job.get("name") or job.get("id") or "cron job"
     text = (error or "unknown error").strip()
+
+    # no_agent jobs have no provider/fallback involvement — the script IS the
+    # job. Classify the script failure directly so timeout/rate/auth tokens
+    # that live inside the script's own stdout are never mis-rendered as
+    # provider failures. Must run BEFORE every provider classifier.
+    if job.get("no_agent"):
+        return _classify_no_agent_script_failure(job_name, text)
+
     lower = text.lower()
 
     # Provider/API failures are the common noisy path. Keep these short.
@@ -290,8 +492,21 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_runs, claim_dispatch, heartbeat_run_claim
-from cron.executions import create_execution, finish_execution, mark_execution_running
+from cron.jobs import (
+    advance_next_runs,
+    claim_dispatch,
+    clear_pending_trigger,
+    get_due_jobs,
+    heartbeat_run_claim,
+    mark_job_run,
+    save_job_output,
+)
+from cron.executions import (
+    create_execution,
+    finish_execution,
+    get_execution,
+    mark_execution_running,
+)
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -1399,6 +1614,63 @@ def _normalize_deliver_value(deliver) -> str:
     return str(deliver)
 
 
+def _cron_new_telegram_thread_per_output_enabled(config: Optional[dict]) -> bool:
+    """Return whether cron should create a fresh Telegram DM topic per output."""
+    try:
+        return bool(
+            (config or {})
+            .get("cron", {})
+            .get("telegram_new_thread_per_output", False)
+        )
+    except (AttributeError, TypeError):
+        return False
+
+
+def _cron_output_topic_name(job: dict) -> str:
+    """Build a Telegram-safe topic name for one cron output."""
+    raw_name = str(job.get("name") or job.get("id") or "cron")
+    clean_name = re.sub(r"\s+", " ", raw_name).strip() or "cron"
+    job_id = str(job.get("id") or "")[:8]
+    try:
+        timestamp = _hermes_now().astimezone().strftime("%m-%d %H:%M:%S UTC")
+    except Exception:
+        timestamp = "now UTC"
+    prefix = "Cron: "
+    suffix = f" · {job_id} · {timestamp}" if job_id else f" · {timestamp}"
+    room = max(8, 128 - len(prefix) - len(suffix))
+    if len(clean_name) > room:
+        clean_name = clean_name[: max(0, room - 1)].rstrip() + "…"
+    return f"{prefix}{clean_name}{suffix}"[:128]
+
+
+def _maybe_assign_fresh_telegram_cron_thread(
+    job: dict,
+    target: dict,
+    config: Optional[dict],
+    *,
+    can_create_named_dm_topic: bool = True,
+) -> dict:
+    """Replace a private Telegram target's thread with a fresh topic name."""
+    if not can_create_named_dm_topic:
+        return target
+    if not _cron_new_telegram_thread_per_output_enabled(config):
+        return target
+    if str(target.get("platform", "")).lower() != "telegram":
+        return target
+
+    from gateway.delivery import looks_like_telegram_private_chat_id
+
+    chat_id = target.get("chat_id")
+    if not looks_like_telegram_private_chat_id(
+        str(chat_id) if chat_id is not None else None
+    ):
+        return target
+
+    adjusted = dict(target)
+    adjusted["thread_id"] = _cron_output_topic_name(job)
+    return adjusted
+
+
 # Routing intent tokens — resolved at fire time, not create time, so a
 # job created before Telegram was wired up will pick up Telegram once it
 # comes online.  ``all`` expands into the set of connected platforms
@@ -1639,13 +1911,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     from gateway.config import load_gateway_config, Platform
 
     # Optionally wrap the content with a header/footer so the user knows this
-    # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
-    # in config.yaml for clean output.
-    wrap_response = True
+    # is a cron delivery. Wrapping is on by default for agent jobs; script-only
+    # no_agent jobs keep their documented verbatim stdout contract.
+    wrap_response = not bool(job.get("no_agent"))
     user_cfg = None
     try:
         user_cfg = load_config()
-        wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
+        wrap_response = wrap_response and user_cfg.get("cron", {}).get(
+            "wrap_response", True
+        )
     except Exception:
         pass
 
@@ -1762,6 +2036,25 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             and loop is not None
             and getattr(loop, "is_running", lambda: False)()
         )
+        fresh_telegram_topic_assigned = False
+        adjusted_target = _maybe_assign_fresh_telegram_cron_thread(
+            job,
+            target,
+            user_cfg,
+            can_create_named_dm_topic=live_adapter_ready,
+        )
+        if adjusted_target is not target:
+            target = adjusted_target
+            chat_id = target["chat_id"]
+            thread_id = target.get("thread_id")
+            fresh_telegram_topic_assigned = True
+            logger.info(
+                "Job '%s': using fresh Telegram cron topic %r for %s:%s",
+                job.get("id", "?"),
+                thread_id,
+                platform_name,
+                chat_id,
+            )
         delivered = False
         target_errors = []
 
@@ -1923,7 +2216,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # adapter route via a plain message_thread_id.
                 route_thread_id = str(thread_id) if thread_id is not None else None
                 route_metadata = {"job_id": job["id"]}
-                if route_thread_id:
+                route_is_named_private_topic = (
+                    platform == Platform.TELEGRAM
+                    and route_thread_id is not None
+                    and looks_like_telegram_private_chat_id(str(chat_id))
+                    and not _looks_like_int(route_thread_id)
+                )
+                if fresh_telegram_topic_assigned and route_is_named_private_topic:
+                    route_metadata["_telegram_ephemeral_dm_topic"] = True
+                if route_thread_id and not route_is_named_private_topic:
                     route_metadata["thread_id"] = route_thread_id
                 media_metadata = {"thread_id": thread_id} if thread_id else None
 
@@ -2954,6 +3255,26 @@ def _guard_job_credential_exfil(job: dict) -> None:
         raise RuntimeError(f"Cron job '{job_id}' blocked for safety: {err}")
 
 
+def _cron_agent_result_error(result: dict) -> Optional[str]:
+    """Return a cron-fatal error for an unusable agent terminal result.
+
+    Interactive surfaces may expose a labeled reasoning excerpt when every
+    empty-response retry and provider fallback has been exhausted.  That text
+    is diagnostic evidence, not a final answer.  Cron must therefore fail the
+    run even though the generic agent result is ``completed=True`` and carries
+    non-empty ``final_response`` text.
+    """
+    turn_exit_reason = str(result.get("turn_exit_reason") or "")
+    if turn_exit_reason != "empty_response_exhausted":
+        return None
+
+    session_id = str(result.get("session_id") or "unknown")
+    return (
+        "Agent produced no final answer after empty-response retries and "
+        "provider fallback "
+        f"(turn_exit_reason={turn_exit_reason}, session_id={session_id}); "
+        "collected tool evidence remains available in the cron session transcript."
+    )
 # Marker prefix stamped into the error string returned by ``run_job`` when the
 # pre-dispatch configuration validation (T1-26) refuses to run the agent.
 # ``run_one_job`` keys off it to record ``last_status='blocked_config'`` and to
@@ -4252,6 +4573,9 @@ def run_job(
         # builds the proper failure tuple. (issue #17855)
         turn_exit_reason = str(result.get("turn_exit_reason") or "")
         final_response_text = (result.get("final_response") or "").strip()
+        unusable_terminal_error = _cron_agent_result_error(result)
+        if unusable_terminal_error:
+            raise RuntimeError(unusable_terminal_error)
         max_iteration_summary = (
             result.get("failed") is not True
             and result.get("completed") is False
@@ -4556,7 +4880,9 @@ def run_one_job(
     """
     execution_id = job.get("execution_id")
     if not execution_id:
-        execution_id = create_execution(job["id"], source="direct")["id"]
+        execution_id = create_execution(
+            job["id"], source="direct", trigger_origin="direct"
+        )["id"]
     try:
         # Pre-run dispatch claim (issue #38758): atomically commit a finite
         # one-shot's dispatch BEFORE its side effect runs, so a tick that dies
@@ -4580,6 +4906,19 @@ def run_one_job(
         # The attempt is claimed durably before executor/provider dispatch and
         # becomes running only immediately before the actual run.
         mark_execution_running(execution_id)
+
+        job_id = str(job.get("id", "?"))
+        job_name = _cron_ag_job_name(job)
+        _ag(
+            "hermes.cron.started",
+            {
+                "job_id": job_id,
+                "job_name": job_name,
+                "schedule": _cron_ag_schedule(job),
+                "no_agent": bool(job.get("no_agent", False)),
+                "has_script": bool(job.get("script")),
+            },
+        )
 
         # Run the job under the profile's secret scope. get_secret() fails
         # closed outside a scope once profile isolation is in play (multiple
@@ -4745,6 +5084,22 @@ def run_one_job(
             error=error,
             delivery_outcome=delivery_outcome,
         )
+        # Emit the terminal event only after canonical bookkeeping succeeds.
+        # Otherwise a bookkeeping exception enters the outer failure handler;
+        # emitting earlier would produce both completed and failed terminals
+        # for one started event.
+        _ag(
+            "hermes.cron.completed" if success else "hermes.cron.failed",
+            {
+                "job_id": job_id,
+                "job_name": job_name,
+                "success": bool(success),
+                "output_len": len(output) if output else 0,
+                "response_len": len(final_response) if final_response else 0,
+                "error": (error or "")[:500],
+                "delivery_error": (delivery_error or "")[:500],
+            },
+        )
         return True
 
     except BaseException as e:  # noqa: BLE001 — deliberate: see below
@@ -4759,6 +5114,15 @@ def run_one_job(
         # anything that isn't a plain Exception.
         _err_text = str(e) or type(e).__name__
         logger.error("Error processing job %s: %s", job['id'], _err_text)
+        _ag(
+            "hermes.cron.failed",
+            {
+                "job_id": str(job.get("id", "?")),
+                "job_name": _cron_ag_job_name(job),
+                "success": False,
+                "error": f"{type(e).__name__}: {_err_text}"[:500],
+            },
+        )
         try:
             if not _consume_interrupted_flag(job["id"]):
                 mark_job_run(job["id"], False, _err_text)
@@ -4999,7 +5363,49 @@ def tick(
                 return None
             # Record the attempt before executor dispatch. Recovery classifies
             # abandoned records as unknown; it never automatically retries them.
-            execution = create_execution(job_id, source="builtin")
+            pending_execution_id = job.get("_execution_id")
+            pending_execution = (
+                get_execution(pending_execution_id) if pending_execution_id else None
+            )
+            bound_manual_trigger = (
+                pending_execution is not None
+                and pending_execution["id"] == pending_execution_id
+                and pending_execution["job_id"] == job_id
+                and pending_execution["trigger_origin"] == "manual"
+            )
+            if bound_manual_trigger and pending_execution["status"] == "claimed":
+                execution = pending_execution
+            else:
+                if pending_execution_id:
+                    # A syntactic jobs.json marker is not provenance. Preserve
+                    # manual origin only when it binds to an immutable prior
+                    # manual request that recovery classified as unknown.
+                    recovered_manual = (
+                        bound_manual_trigger
+                        and pending_execution["status"] == "unknown"
+                    )
+                    trigger_origin = "manual" if recovered_manual else "unknown"
+                    scheduled_for = None
+                    triggered_at = (
+                        job.get("_execution_triggered_at") if recovered_manual else None
+                    )
+                else:
+                    trigger_origin = job.get("_execution_trigger_origin", "unknown")
+                    scheduled_for = job.get(
+                        "_execution_scheduled_for", job.get("next_run_at")
+                    )
+                    triggered_at = job.get("_execution_triggered_at")
+                execution = create_execution(
+                    job_id,
+                    source="builtin",
+                    trigger_origin=trigger_origin,
+                    scheduled_for=scheduled_for,
+                    triggered_at=triggered_at,
+                )
+            if pending_execution_id:
+                # Clear only the marker that produced this due item. A newer
+                # concurrent manual trigger keeps its own marker for the next tick.
+                clear_pending_trigger(job_id, pending_execution_id)
             dispatched_job = dict(job, execution_id=execution["id"])
             _ctx = contextvars.copy_context()
 

@@ -379,6 +379,7 @@ class ManagedLlmStream(Iterator[Any]):
     ) -> None:
         self.final_response: Any = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._owns_loop = False
         self._stream: Any = None
         self._raw_stream_resource: Any = None
         self._closed = False
@@ -520,11 +521,16 @@ class ManagedLlmStream(Iterator[Any]):
                 self._callback_error = exc
                 raise
 
-        loop = asyncio.new_event_loop()
+        bridge_loop = relay_runtime.sync_bridge_loop()
+        if bridge_loop is not None and bridge_loop.is_running():
+            loop = bridge_loop
+        else:
+            loop = asyncio.new_event_loop()
+            self._owns_loop = True
         self._loop = loop
         self._relay_observes_chunks = True
         try:
-            self._stream = loop.run_until_complete(
+            self._stream = self._run_on_loop(
                 runtime.run_in_session_async(
                     session,
                     runtime.relay.llm.stream_execute,
@@ -538,7 +544,8 @@ class ManagedLlmStream(Iterator[Any]):
                     model_name=model_name,
                     codec=_codec(runtime.relay, metadata),
                     response_codec=_codec(runtime.relay, metadata),
-                )
+                ),
+                loop,
             )
         except BaseException as exc:
             if (
@@ -562,9 +569,23 @@ class ManagedLlmStream(Iterator[Any]):
                     response_model_name=self._logical_response_model_name,
                 )
                 self._logical = None
-            loop.close()
+            if self._owns_loop:
+                loop.close()
             self._loop = None
             raise
+
+    def _run_on_loop(
+        self,
+        value: Any,
+        loop: asyncio.AbstractEventLoop,
+    ) -> Any:
+        if self._owns_loop:
+            return loop.run_until_complete(value)
+
+        async def await_value() -> Any:
+            return await value
+
+        return asyncio.run_coroutine_threadsafe(await_value(), loop).result()
 
     def __iter__(self) -> "ManagedLlmStream":
         return self
@@ -587,7 +608,7 @@ class ManagedLlmStream(Iterator[Any]):
             return await anext(self._stream)
 
         try:
-            chunk = self._loop.run_until_complete(next_chunk())
+            chunk = self._run_on_loop(next_chunk(), self._loop)
         except StopAsyncIteration:
             if self._raw_chunks:
                 self.output_modified = True
@@ -663,13 +684,14 @@ class ManagedLlmStream(Iterator[Any]):
                     await close()
 
                 try:
-                    loop.run_until_complete(close_stream())
+                    self._run_on_loop(close_stream(), loop)
                 except Exception:
                     logger.debug(
                         "Relay stream cleanup failed during provider fallback",
                         exc_info=True,
                     )
-            loop.close()
+            if self._owns_loop:
+                loop.close()
         if not self._defer_logical_completion:
             _complete_logical(
                 self._logical,
@@ -723,7 +745,7 @@ class ManagedLlmStream(Iterator[Any]):
                 await close()
 
             try:
-                loop.run_until_complete(close_stream())
+                self._run_on_loop(close_stream(), loop)
             except Exception as exc:
                 if self._close_error is None:
                     self._close_error = exc
@@ -736,7 +758,8 @@ class ManagedLlmStream(Iterator[Any]):
                 response_model_name=self._logical_response_model_name,
             )
             self._logical = None
-        loop.close()
+        if self._owns_loop:
+            loop.close()
 
     def __del__(self) -> None:
         self._close(logical_outcome="cancelled")
@@ -850,22 +873,27 @@ def _logical_parent(
         with turn.logical_llm_lock:
             handle = turn.logical_llm_calls.get(request_id)
             if handle is None:
-                handle = runtime.run_in_session(
-                    session,
-                    runtime.relay.scope.push,
-                    relay_runtime.LOGICAL_LLM_SCOPE,
-                    runtime.relay.ScopeType.Function,
-                    handle=parent,
-                    input={},
-                    metadata={
-                        relay_runtime.RUNTIME_SCHEMA_KEY: relay_runtime.RUNTIME_SCHEMA_VERSION,
-                        relay_runtime.RUNTIME_INSTANCE_KEY: runtime.runtime_id,
-                        "hermes.call_role": str(
-                            (metadata or {}).get("call_role") or "primary"
-                        ),
-                    },
-                )
+                logical_context = contextvars.Context()
+
+                def push_logical() -> Any:
+                    runtime.relay.get_scope_stack()
+                    return runtime.relay.scope.push(
+                        relay_runtime.LOGICAL_LLM_SCOPE,
+                        runtime.relay.ScopeType.Function,
+                        handle=parent,
+                        input={},
+                        metadata={
+                            relay_runtime.RUNTIME_SCHEMA_KEY: relay_runtime.RUNTIME_SCHEMA_VERSION,
+                            relay_runtime.RUNTIME_INSTANCE_KEY: runtime.runtime_id,
+                            "hermes.call_role": str(
+                                (metadata or {}).get("call_role") or "primary"
+                            ),
+                        },
+                    )
+
+                handle = logical_context.run(push_logical)
                 turn.logical_llm_calls[request_id] = handle
+                turn.logical_llm_contexts[request_id] = logical_context
     return turn, handle, request_id
 
 
@@ -887,6 +915,9 @@ def _complete_logical(
         with turn.logical_llm_lock:
             if turn.logical_llm_calls.get(request_id) is not handle:
                 return
+            logical_context = turn.logical_llm_contexts.get(request_id)
+            if logical_context is None:
+                return
         if lease.session is None:
             return
         try:
@@ -895,8 +926,7 @@ def _complete_logical(
                 output.update({"model": model_name, "provider": provider_name})
                 if response_model_name is not None:
                     output["response_model"] = response_model_name
-            lease.host.run_in_session(
-                lease.session,
+            logical_context.run(
                 lease.host.relay.scope.pop,
                 handle,
                 output=output,
@@ -916,6 +946,7 @@ def _complete_logical(
         with turn.logical_llm_lock:
             if turn.logical_llm_calls.get(request_id) is handle:
                 turn.logical_llm_calls.pop(request_id, None)
+                turn.logical_llm_contexts.pop(request_id, None)
 
 
 def _recover_successful_callback(
@@ -1258,6 +1289,14 @@ def _run_awaitable(value: Any) -> Any:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
+        bridge_loop = relay_runtime.sync_bridge_loop()
+        if bridge_loop is not None and bridge_loop.is_running():
+            async def await_value() -> Any:
+                return await value
+
+            return asyncio.run_coroutine_threadsafe(
+                await_value(), bridge_loop
+            ).result()
         return asyncio.run(value)
     raise RuntimeError(
         "Synchronous Relay LLM execution cannot run on an event-loop thread"

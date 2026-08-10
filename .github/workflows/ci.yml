@@ -17,7 +17,8 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, batumi/live]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -60,6 +61,45 @@ jobs:
         uses: ./.github/actions/detect-changes
         with:
           github-token: ${{ github.token }}
+
+  fork-delta:
+    name: Fork patch ownership
+    needs: detect
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require every upstream delta path to have an owner
+        run: python3 scripts/check_fork_delta.py
+
+  fork-contracts:
+    name: Fork compatibility contracts
+    needs: detect
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          version: "0.9.28"
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+      - name: Install test dependencies
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
+      - name: Run preserved behavior contracts
+        run: python3 scripts/run_batumi_contracts.py
 
   # ─────────────────────────────────────────────────────────────────────
   # Lane-gated sub-workflows. Each runs in parallel after detect finishes.
@@ -201,6 +241,8 @@ jobs:
     name: All required checks pass
     needs:
       - detect
+      - fork-delta
+      - fork-contracts
       - tests
       - tests-os
       - lint

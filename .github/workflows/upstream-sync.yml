@@ -1,0 +1,125 @@
+name: Prepare daily upstream batch
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-sync-batumi-live
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare reviewed upstream merge
+    if: github.repository == 'batumilove/hermes-agent'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out trusted fork controller
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: batumi/live
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Configure repo-scoped deploy key
+        env:
+          DEPLOY_KEY: ${{ secrets.UPSTREAM_SYNC_DEPLOY_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_KEY"
+          key_file="$RUNNER_TEMP/upstream-sync-key"
+          known_hosts="$RUNNER_TEMP/github-known-hosts"
+          printf '%s\n' "$DEPLOY_KEY" > "$key_file"
+          chmod 0600 "$key_file"
+          gh api meta --jq '.ssh_keys[]' | sed 's/^/github.com /' > "$known_hosts"
+          chmod 0600 "$known_hosts"
+          echo "GIT_SSH_COMMAND=ssh -i $key_file -o IdentitiesOnly=yes -o UserKnownHostsFile=$known_hosts -o StrictHostKeyChecking=yes" >> "$GITHUB_ENV"
+          git remote set-url origin git@github.com:batumilove/hermes-agent.git
+
+      - name: Merge the latest upstream batch without executing it
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2016
+          open_prs=$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --limit 100 \
+            --json headRefName \
+            --jq '[.[] | select(.headRefName | startswith("sync/upstream-batch-"))] | length')
+          if [ "$open_prs" != "0" ]; then
+            echo "::notice::An upstream batch PR is already open."
+            echo "has_update=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          baseline=$(tr -d '[:space:]' < .github/upstream-base)
+          [[ "$baseline" =~ ^[0-9a-f]{40}$ ]]
+          git remote add upstream https://github.com/NousResearch/hermes-agent.git
+          git fetch --no-tags upstream main
+          upstream_sha=$(git rev-parse upstream/main)
+          git merge-base --is-ancestor "$baseline" upstream/main
+
+          if [ "$baseline" = "$upstream_sha" ]; then
+            echo "::notice::batumi/live already contains the recorded upstream head."
+            echo "has_update=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          branch="sync/upstream-batch-${upstream_sha:0:12}"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            echo "::error::Remote batch branch already exists: $branch"
+            exit 1
+          fi
+
+          git config user.name "hermes-upstream-sync[bot]"
+          git config user.email "189313529+batumilove@users.noreply.github.com"
+          git switch -c "$branch"
+          if ! git merge --no-ff --no-commit upstream/main; then
+            echo "::error::Upstream batch conflicts with the current patch stack; resolve it in a dedicated workspace."
+            git diff --name-only --diff-filter=U
+            exit 1
+          fi
+          printf '%s\n' "$upstream_sha" > .github/upstream-base
+          git add .github/upstream-base
+          git commit -m "sync(upstream): merge ${upstream_sha:0:12} batch"
+          git diff --check batumi/live...HEAD
+
+          git push origin "HEAD:refs/heads/$branch"
+          # shellcheck disable=SC2016
+          {
+            printf 'Batched official upstream changes into the fork patch stack.\n\n'
+            printf -- '- Previous upstream base: `%s`\n' "$baseline"
+            printf -- '- New upstream base: `%s`\n\n' "$upstream_sha"
+            printf 'The privileged preparation job fetched and merged bytes but did not execute upstream code. Required CI and human review run on this PR.\n'
+          } > "$RUNNER_TEMP/body.md"
+          pr_url=$(gh pr create \
+            --repo "$GITHUB_REPOSITORY" \
+            --base batumi/live \
+            --head "$branch" \
+            --title "sync(upstream): daily batch ${upstream_sha:0:12}" \
+            --body-file "$RUNNER_TEMP/body.md")
+
+          echo "Created $pr_url"
+          echo "has_update=true" >> "$GITHUB_OUTPUT"
+
+      - name: Remove deploy key material
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          key_file="$RUNNER_TEMP/upstream-sync-key"
+          if [ -f "$key_file" ]; then
+            shred -u "$key_file"
+          fi

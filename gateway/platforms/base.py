@@ -3008,7 +3008,9 @@ class BasePlatformAdapter(ABC):
         # Optional hook (e.g. Telegram DM topic recovery) that rewrites
         # ``event.source.thread_id`` before session keying. Returns the
         # corrected thread_id or None to leave the source untouched.
-        self._topic_recovery_fn: Optional[Callable[[Any], Optional[str]]] = None
+        self._topic_recovery_fn: Optional[
+            Callable[[Any], Optional[str] | Awaitable[Optional[str]]]
+        ] = None
         self._running = False
         self._fatal_error_code: Optional[str] = None
         self._fatal_error_message: Optional[str] = None
@@ -3594,7 +3596,9 @@ class BasePlatformAdapter(ABC):
 
     def set_topic_recovery_fn(
         self,
-        fn: Optional[Callable[[Any], Optional[str]]],
+        fn: Optional[
+            Callable[[Any], Optional[str] | Awaitable[Optional[str]]]
+        ],
     ) -> None:
         """Install a thread_id-recovery hook (Telegram DM topic mode).
 
@@ -3616,6 +3620,33 @@ class BasePlatformAdapter(ABC):
             return
         try:
             recovered = recover(source)
+        except Exception:
+            logger.debug("topic recovery hook failed", exc_info=True)
+            return
+        if recovered is None or str(recovered) == str(source.thread_id or ""):
+            return
+        try:
+            event.source = dataclasses.replace(source, thread_id=str(recovered))
+        except Exception:
+            logger.debug("topic recovery rewrite failed", exc_info=True)
+
+    async def _apply_topic_recovery_async(self, event: MessageEvent) -> None:
+        """Recover a thread off-loop, then publish the source rewrite on-loop."""
+        recover = getattr(self, "_topic_recovery_fn", None)
+        if recover is None:
+            return
+        source = getattr(event, "source", None)
+        if source is None:
+            return
+        try:
+            if inspect.iscoroutinefunction(recover):
+                recovered = await recover(source)
+            else:
+                recovered = await asyncio.to_thread(recover, source)
+                if inspect.isawaitable(recovered):
+                    recovered = await recovered
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.debug("topic recovery hook failed", exc_info=True)
             return
@@ -5445,6 +5476,10 @@ class BasePlatformAdapter(ABC):
             return result
 
         error_str = result.error or ""
+        # This is a polling-health gate, not transient I/O. Only external
+        # polling progress can clear it, so same-call retries cannot help.
+        if error_str == "send_path_degraded":
+            return result
         is_network = result.retryable or self._is_retryable_error(error_str)
 
         # Timeout errors are not safe to retry (message may have been
@@ -6462,14 +6497,14 @@ class BasePlatformAdapter(ABC):
                             )
 
                             if await asyncio.to_thread(ledger_enabled):
-                                _obligation_id = compute_obligation_id(
+                                candidate_obligation_id = compute_obligation_id(
                                     session_key,
                                     str(getattr(event, "message_id", "") or ""),
                                     text_content,
                                 )
                                 await asyncio.to_thread(
                                     record_obligation,
-                                    obligation_id=_obligation_id,
+                                    obligation_id=candidate_obligation_id,
                                     session_key=session_key,
                                     platform=str(
                                         getattr(event.source.platform, "value",
@@ -6479,7 +6514,14 @@ class BasePlatformAdapter(ABC):
                                     thread_id=getattr(event.source, "thread_id", None),
                                     content=text_content,
                                 )
-                                await asyncio.to_thread(mark_attempting, _obligation_id)
+                                _obligation_id = candidate_obligation_id
+                                try:
+                                    await asyncio.to_thread(mark_attempting, _obligation_id)
+                                except Exception:
+                                    logger.debug(
+                                        "delivery ledger attempting update failed",
+                                        exc_info=True,
+                                    )
                         except Exception:
                             logger.debug("delivery ledger record failed", exc_info=True)
                             _obligation_id = None

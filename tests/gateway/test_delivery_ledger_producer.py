@@ -8,6 +8,7 @@ block the send.
 """
 
 import asyncio
+import sqlite3
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -121,6 +122,79 @@ class TestProducerHook:
         rows = _rows()
         assert len(rows) == 1
         assert rows[0][1] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_attempting_failure_still_reconciles_after_send(self, monkeypatch):
+        adapter = _Adapter()
+
+        def fail_attempting(obligation_id):
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(dl, "mark_attempting", fail_attempting)
+        await _run(adapter, _event())
+
+        rows = _rows()
+        assert adapter.sent == ["final answer"]
+        assert len(rows) == 1
+        assert rows[0][1] == "delivered"
+
+    @pytest.mark.asyncio
+    async def test_locked_ledger_fails_open_before_writer_releases(self):
+        adapter = _Adapter()
+        send_started = asyncio.Event()
+
+        async def send(chat_id, content, reply_to=None, metadata=None):
+            send_started.set()
+            return SendResult(success=True, message_id="m1")
+
+        adapter.send = send
+        with dl._connect():
+            pass
+        blocker = sqlite3.connect(dl._db_path(), timeout=1, isolation_level=None)
+        blocker.execute("BEGIN IMMEDIATE")
+
+        task = asyncio.create_task(_run(adapter, _event()))
+        try:
+            await asyncio.wait_for(send_started.wait(), timeout=1.0)
+            assert blocker.in_transaction
+        finally:
+            blocker.execute("ROLLBACK")
+            blocker.close()
+
+        await task
+        assert _rows() == []
+
+    @pytest.mark.asyncio
+    async def test_in_process_ledger_lock_fails_open_before_release(self):
+        adapter = _Adapter()
+        send_started = asyncio.Event()
+        lock_held = threading.Event()
+        release_lock = threading.Event()
+
+        async def send(chat_id, content, reply_to=None, metadata=None):
+            send_started.set()
+            return SendResult(success=True, message_id="m1")
+
+        def hold_lock():
+            with dl._DB_LOCK:
+                lock_held.set()
+                release_lock.wait(timeout=5.0)
+
+        adapter.send = send
+        holder = threading.Thread(target=hold_lock)
+        holder.start()
+        assert lock_held.wait(timeout=1.0)
+
+        task = asyncio.create_task(_run(adapter, _event()))
+        try:
+            await asyncio.wait_for(send_started.wait(), timeout=1.0)
+            assert holder.is_alive()
+        finally:
+            release_lock.set()
+            holder.join(timeout=1.0)
+
+        await task
+        assert _rows() == []
 
 
     @pytest.mark.asyncio

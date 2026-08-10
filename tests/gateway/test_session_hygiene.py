@@ -477,6 +477,58 @@ async def test_session_hygiene_preserves_transcript_when_in_place_configured_but
 
 
 @pytest.mark.asyncio
+async def test_repeated_cancellation_drains_hygiene_worker_and_cleanup():
+    gateway_run = importlib.import_module("gateway.run")
+    runner = object.__new__(gateway_run.GatewayRunner)
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    cleanup_started = threading.Event()
+    release_cleanup = threading.Event()
+    cleanup_done = threading.Event()
+    agent = object()
+
+    def work():
+        worker_started.set()
+        assert release_worker.wait(timeout=3)
+
+    async def cleanup(cleanup_agent, *, context=""):
+        assert cleanup_agent is agent
+        assert context == "session hygiene cancelled"
+        cleanup_started.set()
+        await asyncio.to_thread(release_cleanup.wait, 3)
+        cleanup_done.set()
+
+    runner._cleanup_agent_resources_off_loop = cleanup
+    future = asyncio.get_running_loop().run_in_executor(None, work)
+    task = asyncio.create_task(
+        runner._drain_hygiene_future_after_cancellation(
+            future,
+            agent,
+            asyncio.CancelledError(),
+        )
+    )
+    assert await asyncio.to_thread(worker_started.wait, 1)
+
+    task.cancel()
+    await asyncio.sleep(0.05)
+    assert not task.done()
+    task.cancel()
+    await asyncio.sleep(0.05)
+    assert not task.done()
+
+    release_worker.set()
+    assert await asyncio.to_thread(cleanup_started.wait, 1)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    assert not task.done()
+
+    release_cleanup.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert cleanup_done.is_set()
+
+
+@pytest.mark.asyncio
 async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monkeypatch, tmp_path):
     """A timed-out SessionDB-bound worker cannot compact after the live turn starts.
 
@@ -985,9 +1037,6 @@ def _make_progress_runner(monkeypatch, tmp_path, agent_cls, cfg_text):
         message_id="1",
     )
     return runner, adapter, event
-
-
-
 
 # ---------------------------------------------------------------------------
 # Cooldown persistence across gateway restarts (#74136)

@@ -264,6 +264,10 @@ mistral = ["mistralai==2.4.8"]
 # tools/lazy_deps.py on first use; never a core dependency and deliberately
 # NOT in [all].
 otlp = ["opentelemetry-sdk==1.39.1", "opentelemetry-exporter-otlp-proto-http==1.39.1"]
+# Langfuse observability plugin SDK. Opt-in and lazy-installed only when the
+# bundled plugin is enabled; deliberately excluded from [all]. Exact pin must
+# match tools/lazy_deps.py and uv.lock so setup and runtime converge.
+langfuse = ["langfuse==4.6.1"]
 bedrock = ["boto3==1.42.89"]
 vertex = ["google-auth==2.55.1"]
 azure-identity = ["azure-identity==1.25.3"]

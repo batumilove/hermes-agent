@@ -197,3 +197,18 @@ class TestPostToolCompressionAttemptCap:
 
         assert len(first) == 3
         assert len(second) == 3
+
+    def test_post_tool_loop_without_context_compressor_completes(self, agent, caplog):
+        """Auxiliary agents may intentionally have no context compressor."""
+        agent.context_compressor = None
+        agent.compression_enabled = False
+
+        with caplog.at_level("ERROR", logger="agent.conversation_loop"):
+            result, compress_calls = _run_tool_loop(agent, n_tool_iterations=1)
+
+        assert result["completed"] is True
+        assert result["final_response"] == "done"
+        assert compress_calls == []
+        assert not any(
+            "Outer loop error" in record.getMessage() for record in caplog.records
+        )

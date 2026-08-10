@@ -1069,6 +1069,11 @@ from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
 from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.modal import ModalEnvironment as _ModalEnvironment
 from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
+from tools.environments.registry import (
+    get_environment_backend,
+    is_containerized_environment_backend,
+    registered_environment_backends,
+)
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 import sys
 
@@ -1492,6 +1497,26 @@ _HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
 _CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
 
 
+def _is_container_backend(name: str) -> bool:
+    return name in _CONTAINER_BACKENDS or is_containerized_environment_backend(name)
+
+
+def _is_ssh_remote_tilde_cwd(backend: str, cwd: str) -> bool:
+    """Return True when *cwd* is a tilde path that the remote SSH shell must
+    expand itself, so the Hermes host/container must NOT ``expanduser`` it.
+
+    SSH ``cwd`` is interpreted by the *remote* shell (``cd ~`` / ``cd ~/x``
+    over ``ssh ... bash -c``). Expanding ``~`` locally would rewrite it to the
+    Hermes host HOME (often ``/opt/data`` under Docker) and inject a
+    nonexistent path into the remote session. Only ``~`` / ``~/...`` on the
+    ``ssh`` backend qualify; absolute remote paths still pass through
+    unchanged, and every other backend keeps expanding locally.
+    """
+    if (backend or "").strip().lower() != "ssh":
+        return False
+    return cwd == "~" or cwd.startswith("~/")
+
+
 def _is_unusable_container_cwd(cwd: str) -> bool:
     """Return True if *cwd* is a host/relative path that won't work as the
     working directory inside a container sandbox.
@@ -1575,7 +1600,7 @@ def _get_env_config() -> Dict[str, Any]:
     env_type = os.getenv("TERMINAL_ENV", "local")
     
     mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
-    container_backend = env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}
+    container_backend = _is_container_backend(env_type)
     docker_backend = env_type == "docker"
 
     # Docker/container-only env vars may be bridged from config.yaml even when
@@ -1634,7 +1659,7 @@ def _get_env_config() -> Dict[str, Any]:
         ):
             host_cwd = candidate
             cwd = "/workspace"
-    elif env_type in _CONTAINER_BACKENDS and cwd:
+    elif _is_container_backend(env_type) and cwd:
         # Host paths and relative paths that won't work inside containers
         if _is_unusable_container_cwd(cwd) and cwd != default_cwd:
             logger.info("Ignoring TERMINAL_CWD=%r for %s backend "
@@ -1783,6 +1808,19 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     docker_env = cc.get("docker_env", {})
     docker_extra_args = cc.get("docker_extra_args", [])
     docker_network = cc.get("docker_network", True)
+
+    registered_backend = get_environment_backend(env_type)
+    if registered_backend is not None:
+        return registered_backend.factory(
+            image=image,
+            cwd=cwd,
+            timeout=timeout,
+            ssh_config=ssh_config,
+            container_config=cc,
+            local_config=local_config or {},
+            task_id=task_id,
+            host_cwd=host_cwd,
+        )
 
     if env_type == "local":
         return _LocalEnvironment(cwd=cwd, timeout=timeout)
@@ -1937,9 +1975,12 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         )
 
     else:
+        custom = ", ".join(registered_environment_backends())
+        custom_hint = f", or a registered backend ({custom})" if custom else ""
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
             f"'singularity', 'modal', 'daytona', 'vercel_sandbox', or 'ssh'"
+            f"{custom_hint}"
         )
 
 
@@ -2624,7 +2665,7 @@ def terminal_tool(
         # Valid in-container override paths (RL/benchmark sandboxes that set
         # cwd to /workspace, /root, etc.) are absolute non-host paths and pass
         # through untouched.
-        if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
+        if _is_container_backend(env_type) and _is_unusable_container_cwd(cwd):
             remapped = "/workspace" if host_cwd else config["cwd"]
             if cwd != remapped:
                 logger.info(

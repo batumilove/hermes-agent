@@ -32,21 +32,30 @@ def execute(
     raw_result: dict[str, Any] = {}
     callback_error: BaseException | None = None
     callback_context = contextvars.copy_context()
+    managed_loop: asyncio.AbstractEventLoop | None = None
 
     def invoke(next_args: Any) -> Any:
         nonlocal callback_error, observed_args
         observed_args = next_args if isinstance(next_args, dict) else args
 
-        def guarded(final_args: dict[str, Any]) -> Any:
-            # Everything the tool transitively calls (including auxiliary LLM
-            # calls it forwards to worker threads) must bypass managed Relay
-            # execution — the native pipeline's Futures bind to THIS loop,
-            # which is blocked until the tool returns (#77244).
-            with relay_runtime.managed_callback_guard():
-                return callback(final_args)
+        def call_callback() -> Any:
+            token = (
+                relay_runtime.bind_sync_bridge_loop(managed_loop)
+                if managed_loop is not None
+                else None
+            )
+            try:
+                # Everything the tool transitively calls (including auxiliary
+                # LLM work forwarded to worker threads) must bypass managed
+                # Relay execution while preserving the fork's sync bridge loop.
+                with relay_runtime.managed_callback_guard():
+                    return callback(observed_args)
+            finally:
+                if token is not None:
+                    relay_runtime.reset_sync_bridge_loop(token)
 
         try:
-            result = callback_context.copy().run(guarded, observed_args)
+            result = callback_context.copy().run(call_callback)
         except BaseException as exc:
             callback_error = exc
             raise
@@ -54,18 +63,21 @@ def execute(
         raw_result["json"] = _jsonable(result)
         return raw_result["json"]
 
-    try:
-        managed = _run_awaitable(
-            runtime.run_in_session_async(
-                session,
-                runtime.relay.tools.execute,
-                tool_name,
-                _jsonable(args),
-                invoke,
-                handle=parent,
-                metadata=_jsonable(metadata or {}),
-            )
+    async def execute_managed() -> Any:
+        nonlocal managed_loop
+        managed_loop = asyncio.get_running_loop()
+        return await runtime.run_in_session_async(
+            session,
+            runtime.relay.tools.execute,
+            tool_name,
+            _jsonable(args),
+            invoke,
+            handle=parent,
+            metadata=_jsonable(metadata or {}),
         )
+
+    try:
+        managed = _run_awaitable(execute_managed())
     except BaseException as exc:
         if (
             callback_error is not None

@@ -5706,8 +5706,8 @@ def run_conversation(
                         # still activate fallback_providers after stale
                         # pre-recovery fallback/credential-pool bookkeeping.
                         _retry.has_retried_429 = False
-                        agent._fallback_index = 0
-                        agent._fallback_activated = False
+                        from agent.chat_completion_helpers import _reset_fallback_episode
+                        _reset_fallback_episode(agent)
                         continue
                     # Try fallback before giving up entirely
                     if agent._has_pending_fallback():
@@ -6832,7 +6832,12 @@ def run_conversation(
                 # a session can grow unbounded after disconnects because
                 # should_compress(0) never fires.  (#2153)
                 _compressor = agent.context_compressor
-                if _compressor.last_prompt_tokens > 0:
+                if _compressor is None:
+                    # Auxiliary/tool-loop agents may intentionally run without
+                    # a context engine. Compression is impossible for that
+                    # agent, but tool completion must remain valid.
+                    _real_tokens = 0
+                elif _compressor.last_prompt_tokens > 0:
                     # Only use prompt_tokens — completion/reasoning
                     # tokens don't consume context window space.
                     # Thinking models (GLM-5.1, QwQ, DeepSeek R1)
@@ -6855,6 +6860,7 @@ def run_conversation(
 
                 if (
                     agent.compression_enabled
+                    and _compressor is not None
                     and compression_attempts < max_compression_attempts
                     and _compressor.should_compress(_real_tokens)
                 ):

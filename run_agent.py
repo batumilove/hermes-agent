@@ -4236,6 +4236,42 @@ class AIAgent:
         except Exception:
             pass
 
+    def _shutdown_owned_context_engine(self) -> None:
+        """Claim and shut down this agent's context engine at most once.
+
+        ``context_compressor`` is the compatibility name for every context
+        engine, including LCM clones.  Claiming it under a dedicated lock
+        before calling third-party shutdown code makes repeated and concurrent
+        cleanup paths idempotent.  Built-in/legacy engines without a shutdown
+        hook are simply detached.
+        """
+        lock = getattr(self, "_context_engine_shutdown_lock", None)
+        if lock is None:
+            # Partially constructed legacy/test agents normally retain this
+            # lock, so use it rather than racing a lazily-created lock.
+            lock = getattr(self, "_active_children_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._context_engine_shutdown_lock = lock
+
+        with lock:
+            engine = getattr(self, "context_compressor", None)
+            if engine is None:
+                return
+            self.context_compressor = None
+
+        shutdown = getattr(engine, "shutdown", None)
+        if not callable(shutdown):
+            return
+        try:
+            shutdown()
+        except Exception as exc:
+            logger.warning(
+                "Failed to shut down owned context engine %s: %s",
+                type(engine).__name__,
+                exc,
+            )
+
     def release_clients(self) -> None:
         """Release LLM client resources WITHOUT tearing down session tool state.
 
@@ -4250,6 +4286,8 @@ class AIAgent:
           - memory provider (has its own lifecycle; keeps running)
 
         We DO close:
+          - The context engine owned by this Python agent (plugin engines may
+            hold SQLite helpers; a rebuilt agent receives a fresh clone)
           - OpenAI/httpx client pool (big chunk of held memory + sockets;
             the rebuilt agent gets a fresh client anyway)
           - Active child subagents (per-turn artefacts; safe to drop)
@@ -4258,6 +4296,8 @@ class AIAgent:
         hard teardown for actual session boundaries (/new, /reset, session
         expiry).
         """
+        self._shutdown_owned_context_engine()
+
         # Close active child agents (per-turn; no cross-turn persistence).
         try:
             with self._active_children_lock:
@@ -4355,6 +4395,11 @@ class AIAgent:
                     pass
         except Exception:
             pass
+
+        # 5b. Release the context engine owned by this Python agent.  This is
+        # distinct from shared SessionDB ownership; plugin engines such as LCM
+        # close only their own cloned stores/helpers here.
+        self._shutdown_owned_context_engine()
 
         # 6. Close the OpenAI/httpx client
         try:
@@ -4831,7 +4876,7 @@ class AIAgent:
 
     @staticmethod
     def _build_keepalive_http_client(base_url: str = "", *, verify: Any = True) -> Any:
-        """Build an httpx.Client with proactive idle-connection reaping.
+        """Build an httpx.Client with a short idle reuse window.
 
         Previously this method injected a custom ``httpx.HTTPTransport``
         with ``socket_options`` (``SO_KEEPALIVE``, ``TCP_KEEPIDLE``, …) to
@@ -4843,12 +4888,11 @@ class AIAgent:
         #12952).  It also stripped ``TCP_NODELAY``, stalling TLS handshakes
         and SSE encoding.
 
-        The fix moves connection lifecycle management from the socket layer
-        to the HTTP pool layer: ``keepalive_expiry=20.0`` tells httpx to
-        close idle pooled connections *before* a reverse proxy's typical
-        30–60 s timeout drops them, preventing CLOSE-WAIT accumulation
-        without modifying socket options.  The default httpx transport
-        preserves OS TCP defaults (including ``TCP_NODELAY``).
+        ``keepalive_expiry=20.0`` limits reuse of stale idle pool entries, but
+        httpcore checks that deadline when the pool is used again; it is not a
+        background socket reaper. Request-local pools are therefore also
+        closed at the owning turn boundary (see ``turn_finalizer``), before a
+        cached AIAgent can pin a peer-FIN socket in CLOSE_WAIT.
 
         ``verify`` carries per-provider ``ssl_ca_cert`` / ``ssl_verify`` and
         ``HERMES_CA_BUNDLE`` settings.  It is passed on the client AND on
@@ -4862,9 +4906,8 @@ class AIAgent:
             # HTTP_PROXY / HTTPS_PROXY / NO_PROXY correctly.
             _proxy = _get_proxy_for_base_url(base_url)
 
-            # Proactive pool reaping: close idle connections at 20 s,
-            # before reverse proxies (30–60 s typical) send FIN and
-            # cause CLOSE-WAIT accumulation.
+            # Reuse window: expired entries are discarded on the next pool
+            # checkout; turn finalization handles idle pools with no next call.
             _limits = _httpx.Limits(
                 max_keepalive_connections=20,
                 max_connections=100,
@@ -5177,6 +5220,25 @@ class AIAgent:
                 cache["poisoned"] = False
                 cache["in_use"] = False
         self._close_openai_client(client, reason=reason, shared=False)
+
+    def _close_idle_cached_request_openai_client(self, *, reason: str) -> bool:
+        """Close the reusable request pool only when no request owns it.
+
+        A normal turn boundary uses this narrower lifecycle hook rather than
+        teardown's abort-capable close. Concurrent sibling calls are allowed
+        to finish; their own later turn boundary will reap the returned pool.
+        """
+        with self._openai_client_lock():
+            cache = getattr(self, "_request_client_cache", None)
+            if not cache or cache["client"] is None or cache["in_use"]:
+                return False
+            client = cache["client"]
+            cache["client"] = None
+            cache["kwargs"] = None
+            cache["poisoned"] = False
+            cache["in_use"] = False
+        self._close_openai_client(client, reason=reason, shared=False)
+        return True
 
     def _close_cached_request_openai_client(self, *, reason: str) -> None:
         """Teardown hook: really close the cached per-request wire client."""
@@ -8030,6 +8092,26 @@ class AIAgent:
                 finish_task_run(**task_context, error=exc)
             raise
         finally:
+            # Keep request-client reuse within one logical turn, but never pin
+            # the completed turn's httpx pool inside a cached AIAgent. This
+            # wrapper finally covers every return and exception, including
+            # partial/error exits in conversation_loop that intentionally
+            # bypass finalize_turn. The idle-only hook skips a concurrent
+            # sibling that still owns the pool (#29507).
+            try:
+                self._close_idle_cached_request_openai_client(
+                    reason="turn_complete"
+                )
+            except Exception as cleanup_exc:
+                logger.warning(
+                    "request client turn cleanup failed: %s", cleanup_exc
+                )
+                terminal_result = locals().get("result")
+                if isinstance(terminal_result, dict):
+                    terminal_result.setdefault("cleanup_errors", []).append(
+                        "close_request_client: "
+                        f"{type(cleanup_exc).__name__}: {cleanup_exc}"
+                    )
             try:
                 if relay_turn is not None:
                     relay_runtime.SESSION_COORDINATOR.end_turn(

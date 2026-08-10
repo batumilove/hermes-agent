@@ -147,6 +147,27 @@ def test_agent_close_closes_cached_request_client():
         assert len(h.closed) == before
 
 
+def test_turn_boundary_closes_only_an_idle_cached_client():
+    agent = _make_agent()
+    with _Harness(agent) as h:
+        client = agent._create_request_openai_client(reason="r")
+
+        # A sibling request still owns this pool. A turn boundary must not
+        # abort or detach it; the owner will return it through its finally.
+        assert agent._close_idle_cached_request_openai_client(
+            reason="turn_complete"
+        ) is False
+        assert h.closed == []
+        assert agent._request_client_cache["client"] is client
+
+        agent._close_request_openai_client(client, reason="request_complete")
+        assert agent._close_idle_cached_request_openai_client(
+            reason="turn_complete"
+        ) is True
+        assert (client, "turn_complete") in h.closed
+        assert agent._request_client_cache["client"] is None
+
+
 
 
 

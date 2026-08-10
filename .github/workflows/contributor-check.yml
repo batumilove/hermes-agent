@@ -24,11 +24,21 @@ jobs:
       - name: Check for unmapped contributor emails
         id: check-emails
         run: |
-          # Get the merge base between this PR and main
-          MERGE_BASE=$(git merge-base origin/main HEAD)
+          # Fork rebuilds deliberately start from current upstream rather than
+          # the fork's stale main. Do not classify accepted upstream history as
+          # newly authored fork commits.
+          COMPARE_REF=origin/main
+          if [ -f .github/upstream-base ]; then
+            COMPARE_REF=$(tr -d '[:space:]' < .github/upstream-base)
+            git merge-base --is-ancestor "$COMPARE_REF" HEAD || {
+              echo "Recorded upstream base is not an ancestor of HEAD: $COMPARE_REF"
+              exit 1
+            }
+          fi
+          MERGE_BASE=$(git merge-base "$COMPARE_REF" HEAD)
 
           # Find any new author emails in this PR's commits
-          NEW_EMAILS=$(git log ${MERGE_BASE}..HEAD --format='%ae' --no-merges | sort -u)
+          NEW_EMAILS=$(git log "${MERGE_BASE}..HEAD" --format='%ae' --no-merges | sort -u)
 
           if [ -z "$NEW_EMAILS" ]; then
             echo "No new commits to check."

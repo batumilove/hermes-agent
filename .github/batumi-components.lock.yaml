@@ -1,0 +1,35 @@
+version: 1
+
+components:
+  - id: hermes-extensions
+    repository: batumilove/hermes-extensions
+    url: https://github.com/batumilove/hermes-extensions.git
+    commit: 93c23dd26ca26632d84c49b5bd113101b1ac924d
+    kind: plugin-bundle
+    plugins:
+      - batumi-policy
+      - batumi-tools
+      - systemd-secrets
+      - terminal-backends
+
+  - id: hermes-tinyfish-plugin
+    repository: batumilove/hermes-tinyfish-plugin
+    url: https://github.com/batumilove/hermes-tinyfish-plugin.git
+    commit: a2d68823958483e213ff12863319a09af5cc9e2c
+    kind: plugin-bundle
+    plugins:
+      - web-tinyfish
+
+  - id: hermes-skills
+    repository: batumilove/hermes-skills
+    url: https://github.com/batumilove/hermes-skills.git
+    commit: 55c351c18a6f18833129b0e0bb9045065cea9d53
+    kind: skills
+    plugins: []
+
+  - id: hermes-ops
+    repository: batumilove/hermes-ops
+    url: https://github.com/batumilove/hermes-ops.git
+    commit: c57efbd425546040d6a9b7ffb446198cbd5e29b8
+    kind: operations
+    plugins: []

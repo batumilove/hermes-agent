@@ -458,6 +458,10 @@ class TestPluginLoading:
 class TestPluginHooks:
     """Tests for lifecycle hook registration and invocation."""
 
+    def test_valid_hooks_include_provider_fallback_lifecycle(self):
+        assert "on_fallback_activated" in VALID_HOOKS
+        assert "on_fallback_chain_exhausted" in VALID_HOOKS
+        assert "on_primary_restored" in VALID_HOOKS
 
 
     def test_pre_gateway_dispatch_collects_action_dicts(self, tmp_path, monkeypatch):

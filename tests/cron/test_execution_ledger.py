@@ -9,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def _point_ledger(monkeypatch, tmp_path):
     import cron.executions as executions
@@ -37,6 +39,67 @@ def test_execution_transitions_are_durable(monkeypatch, tmp_path):
 
     persisted = executions.list_executions(job_id="job-1")
     assert persisted == [completed]
+
+
+def test_mark_running_rebinds_execution_owner(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    row = executions.create_execution("job-owner", source="manual")
+    with sqlite3.connect(executions.EXECUTIONS_FILE) as conn:
+        conn.execute(
+            """UPDATE executions SET process_id='request-process', pid=-1,
+               process_started_at=NULL WHERE id=?""",
+            (row["id"],),
+        )
+
+    running = executions.mark_execution_running(row["id"])
+
+    assert running["process_id"] == executions._PROCESS_ID
+    assert running["pid"] == os.getpid()
+    assert running["process_started_at"] == executions._process_start_time(os.getpid())
+
+
+def test_execution_persists_immutable_trigger_provenance(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+
+    claimed = executions.create_execution(
+        "scheduled-job",
+        source="builtin",
+        trigger_origin="scheduled",
+        scheduled_for="2026-08-01T03:00:00+00:00",
+        triggered_at="2026-08-01T03:00:37+00:00",
+    )
+    completed = executions.finish_execution(claimed["id"], success=True)
+
+    assert completed["trigger_origin"] == "scheduled"
+    assert completed["scheduled_for"] == "2026-08-01T03:00:00+00:00"
+    assert completed["triggered_at"] == "2026-08-01T03:00:37+00:00"
+
+
+def test_existing_ledger_rows_migrate_to_unknown_provenance(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    executions.EXECUTIONS_FILE.parent.mkdir(parents=True)
+    with sqlite3.connect(executions.EXECUTIONS_FILE) as conn:
+        conn.execute(
+            """CREATE TABLE executions (
+                 id TEXT PRIMARY KEY, job_id TEXT NOT NULL, source TEXT NOT NULL,
+                 process_id TEXT NOT NULL, pid INTEGER NOT NULL,
+                 process_started_at INTEGER, status TEXT NOT NULL,
+                 claimed_at TEXT NOT NULL, started_at TEXT, finished_at TEXT,
+                 error TEXT
+               )"""
+        )
+        conn.execute(
+            """INSERT INTO executions
+               (id, job_id, source, process_id, pid, status, claimed_at)
+               VALUES ('legacy-exec', 'legacy-job', 'builtin', 'old-process', 1,
+                       'completed', '2026-07-31T03:00:37+00:00')"""
+        )
+
+    record = executions.latest_execution("legacy-job")
+
+    assert record["trigger_origin"] == "unknown"
+    assert record["scheduled_for"] is None
+    assert record["triggered_at"] is None
 
 
 def test_terminal_execution_cannot_be_rewritten(monkeypatch, tmp_path):
@@ -77,7 +140,12 @@ def test_corrupt_store_fails_closed_without_overwrite(monkeypatch, tmp_path):
 
 def test_cron_runs_cli_prints_execution_history(monkeypatch, tmp_path, capsys):
     executions = _point_ledger(monkeypatch, tmp_path)
-    row = executions.create_execution("cli-job", source="builtin")
+    row = executions.create_execution(
+        "cli-job",
+        source="builtin",
+        trigger_origin="scheduled",
+        scheduled_for="2026-08-01T03:00:00+00:00",
+    )
     executions.finish_execution(row["id"], success=False, error="boom")
     from hermes_cli.cron import cron_runs
 
@@ -87,6 +155,9 @@ def test_cron_runs_cli_prints_execution_history(monkeypatch, tmp_path, capsys):
     assert row["id"] in output
     assert "failed" in output
     assert "boom" in output
+    assert "origin=scheduled" in output
+    assert "scheduled_for=2026-08-01T03:00:00+00:00" in output
+    assert "triggered_at=" in output
 
 
 def test_quick_backup_includes_execution_ledger():
@@ -193,6 +264,172 @@ def test_generic_submit_failure_finishes_attempt_and_releases_guard(monkeypatch)
         })
     ]
     assert "submit-fail" not in scheduler.get_running_job_ids()
+
+
+def test_builtin_tick_binds_original_scheduled_slot(monkeypatch):
+    import concurrent.futures
+    import cron.scheduler as scheduler
+
+    scheduled_for = "2026-08-01T03:00:00+00:00"
+    captured = []
+
+    class InlinePool:
+        def submit(self, callable_):
+            future = concurrent.futures.Future()
+            try:
+                future.set_result(callable_())
+            except BaseException as exc:  # pragma: no cover - defensive
+                future.set_exception(exc)
+            return future
+
+    monkeypatch.setattr(
+        scheduler,
+        "get_due_jobs",
+        lambda: [{
+            "id": "scheduled-provenance",
+            "next_run_at": scheduled_for,
+            "_execution_trigger_origin": "scheduled",
+            "_execution_triggered_at": "2026-08-01T03:00:37+00:00",
+        }],
+    )
+    monkeypatch.setattr(scheduler, "advance_next_runs", lambda _job_ids: 1)
+    monkeypatch.setattr(scheduler, "_get_parallel_pool", lambda _workers: InlinePool())
+    monkeypatch.setattr(scheduler, "run_one_job", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        scheduler,
+        "create_execution",
+        lambda job_id, **kwargs: captured.append((job_id, kwargs)) or {"id": "exec-scheduled"},
+    )
+
+    assert scheduler.tick(verbose=False, sync=True) == 1
+    assert captured == [(
+        "scheduled-provenance",
+        {
+            "source": "builtin",
+            "trigger_origin": "scheduled",
+            "scheduled_for": scheduled_for,
+            "triggered_at": "2026-08-01T03:00:37+00:00",
+        },
+    )]
+
+
+def test_builtin_tick_reuses_durable_manual_execution(monkeypatch):
+    import concurrent.futures
+    import cron.scheduler as scheduler
+
+    execution = {
+        "id": "exec-manual",
+        "job_id": "manual-provenance",
+        "status": "claimed",
+        "trigger_origin": "manual",
+    }
+    dispatched = []
+
+    class InlinePool:
+        def submit(self, callable_):
+            future = concurrent.futures.Future()
+            try:
+                future.set_result(callable_())
+            except BaseException as exc:  # pragma: no cover - defensive
+                future.set_exception(exc)
+            return future
+
+    monkeypatch.setattr(
+        scheduler,
+        "get_due_jobs",
+        lambda: [{
+            "id": "manual-provenance",
+            "next_run_at": "2026-08-01T02:59:59+00:00",
+            "_execution_id": "exec-manual",
+            "_execution_trigger_origin": "manual",
+        }],
+    )
+    monkeypatch.setattr(scheduler, "advance_next_runs", lambda _job_ids: 1)
+    monkeypatch.setattr(scheduler, "_get_parallel_pool", lambda _workers: InlinePool())
+    monkeypatch.setattr(scheduler, "get_execution", lambda _execution_id: execution)
+    cleared = []
+    monkeypatch.setattr(
+        scheduler,
+        "clear_pending_trigger",
+        lambda job_id, execution_id: cleared.append((job_id, execution_id)) or True,
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "create_execution",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("manual tick created a second ledger execution")
+        ),
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "run_one_job",
+        lambda job, **_kwargs: dispatched.append(job) or True,
+    )
+
+    assert scheduler.tick(verbose=False, sync=True) == 1
+    assert dispatched[0]["execution_id"] == "exec-manual"
+    assert cleared == [("manual-provenance", "exec-manual")]
+
+
+@pytest.mark.parametrize(
+    ("exact_record", "expected_origin"),
+    [
+        (None, "unknown"),
+        (
+            {
+                "id": "missing-execution",
+                "job_id": "forged-marker",
+                "status": "unknown",
+                "trigger_origin": "manual",
+            },
+            "manual",
+        ),
+    ],
+)
+def test_builtin_tick_validates_manual_marker(
+    monkeypatch, exact_record, expected_origin
+):
+    import concurrent.futures
+    import cron.scheduler as scheduler
+
+    due_job = {
+        "id": "forged-marker",
+        "next_run_at": "2026-08-01T03:00:00+00:00",
+        "_execution_trigger_origin": "manual",
+        "_execution_triggered_at": "2026-08-01T02:59:59+00:00",
+        "_execution_scheduled_for": None,
+        "_execution_id": "missing-execution",
+    }
+    created = []
+
+    class InlinePool:
+        def submit(self, fn, *args, **kwargs):
+            future = concurrent.futures.Future()
+            try:
+                future.set_result(fn(*args, **kwargs))
+            except BaseException as exc:
+                future.set_exception(exc)
+            return future
+
+    monkeypatch.setattr(scheduler, "get_due_jobs", lambda: [due_job])
+    monkeypatch.setattr(scheduler, "advance_next_runs", lambda _job_ids: 1)
+    monkeypatch.setattr(
+        scheduler, "get_execution", lambda _execution_id: exact_record
+    )
+    monkeypatch.setattr(scheduler, "clear_pending_trigger", lambda *_args: True)
+    monkeypatch.setattr(
+        scheduler,
+        "create_execution",
+        lambda job_id, **kwargs: created.append((job_id, kwargs))
+        or {"id": "exec-unknown"},
+    )
+    monkeypatch.setattr(scheduler, "run_one_job", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(scheduler, "_get_parallel_pool", lambda *_args: InlinePool())
+    scheduler._running_job_ids.clear()
+
+    assert scheduler.tick(verbose=False, sync=True) == 1
+    assert created[0][1]["trigger_origin"] == expected_origin
+    assert created[0][1]["scheduled_for"] is None
 
 
 def test_run_one_job_records_running_then_terminal(monkeypatch):

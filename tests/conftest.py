@@ -11,7 +11,10 @@ Hermetic-test invariants enforced here (see AGENTS.md for rationale):
    CI. Code using ``Path.home() / ".hermes"`` instead of the canonical
    ``get_hermes_home()`` is a bug to fix at the callsite.)
 3. **Deterministic runtime.** TZ=UTC, LANG=C.UTF-8, PYTHONHASHSEED=0.
-4. **No HERMES_SESSION_* inheritance** — the agent's current gateway
+4. **No reserved test-host DNS leakage.** Fixture endpoints such as
+   ``stub.invalid`` and ``custom.example.com`` fail locally before libc can
+   append an operator DNS search suffix and query production resolvers.
+5. **No HERMES_SESSION_* inheritance** — the agent's current gateway
    session must not leak into tests.
 
 These invariants make the local test run match CI closely. Gaps that
@@ -34,6 +37,13 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+from hermes_constants import get_default_hermes_root
+from test_support.dns_guard import install_reserved_test_host_guard
+
+# Install before pytest imports test modules: collection-time constructors can
+# otherwise resolve fixture endpoints before any autouse fixture starts.
+install_reserved_test_host_guard()
 
 
 # ── Sandbox HERMES_HOME before ANY test module is imported ──────────────────
@@ -58,6 +68,10 @@ if str(PROJECT_ROOT) not in sys.path:
 # would silently stop protecting the operator's actual ~/.hermes (#69385).
 _PRE_SANDBOX_KANBAN_OVERRIDE = os.environ.get("HERMES_KANBAN_HOME", "").strip()
 _PRE_SANDBOX_HERMES_HOME = os.environ.get("HERMES_HOME", "")
+_PRE_SANDBOX_HERMES_ROOT = get_default_hermes_root().resolve()
+_SESSION_HERMES_HOME = tempfile.mkdtemp(prefix="hermes-test-home-")
+os.environ["HERMES_HOME"] = _SESSION_HERMES_HOME
+atexit.register(shutil.rmtree, _SESSION_HERMES_HOME, True)
 
 
 def _hermes_home_points_at_production(value: str) -> bool:
@@ -606,6 +620,11 @@ def _capture_real_kanban_root() -> Path:
     """
     if _PRE_SANDBOX_KANBAN_OVERRIDE:
         return Path(_PRE_SANDBOX_KANBAN_OVERRIDE).expanduser().resolve()
+    if _PRE_SANDBOX_HERMES_HOME:
+        # HERMES_HOME was genuinely set before the sandbox.  Use the root
+        # captured before rewiring the environment; resolving it now would
+        # return the throwaway test home instead of the operator root.
+        return _PRE_SANDBOX_HERMES_ROOT
     if _PRE_SANDBOX_HERMES_HOME and not _hermes_home_points_at_production(
         _PRE_SANDBOX_HERMES_HOME
     ):

@@ -13,6 +13,7 @@ import hashlib
 import logging
 import os
 import json
+import sys
 import threading
 import uuid
 from pathlib import Path
@@ -1509,9 +1510,17 @@ class SessionStore:
             self._save()
 
     def _save(self) -> None:
-        """Persist the routing index while the caller holds ``_lock``."""
+        """Persist the routing index while the caller holds ``_lock``.
+
+        The content-free caller name is forwarded to SessionDB latency
+        telemetry so any remaining expensive full rewrite is attributable.
+        """
         data, generation = self._snapshot_routing_locked()
-        self._persist_routing_data(data, generation)
+        self._persist_routing_data(
+            data,
+            generation,
+            reason=sys._getframe(1).f_code.co_name,
+        )
 
     def _next_routing_generation_locked(self) -> int:
         """Bump and return the shared routing counter. Caller holds ``_lock``.
@@ -1532,8 +1541,23 @@ class SessionStore:
             self._next_routing_generation_locked(),
         )
 
-    def _persist_routing_data(self, data: Dict[str, Any], generation: int) -> None:
-        """Serialize all whole-index writers through one durable write lock."""
+    def _persist_routing_data(
+        self,
+        data: Dict[str, Any],
+        generation: int,
+        *,
+        reason: str = "unspecified",
+        point_key: Optional[str] = None,
+    ) -> None:
+        """Serialize routing persistence through one durable write lock.
+
+        ``point_key`` requests one state.db UPSERT while the complete snapshot
+        still refreshes the restart-critical legacy mirror. A point write is
+        tracked per key: it cannot advance the complete-snapshot watermark,
+        because an older delayed reconciliation may carry an unrelated key
+        deletion. If the UPSERT is unavailable or fails, fall back to the
+        ordinary atomic full reconciliation.
+        """
         save_lock = getattr(self, "_save_lock", None)
         if save_lock is None:
             save_lock = threading.Lock()
@@ -1547,21 +1571,52 @@ class SessionStore:
             # serialized after us and a delayed full rewrite must not
             # regress it.
             fast_persisted = getattr(self, "_fast_persisted_entries", None)
+            if point_key is not None and fast_persisted:
+                persisted_point = fast_persisted.get(point_key)
+                if persisted_point is not None and persisted_point[0] >= generation:
+                    return
             if fast_persisted:
                 for key, (revision, entry_json) in fast_persisted.items():
                     if revision > generation:
                         data[key] = json.loads(entry_json)
             db_saved = False
+            point_saved = False
+            full_reconciled = False
+            point_entry_json: Optional[str] = None
             _db = getattr(self, "_db", None)
             if _db:
+                point_failed = False
+                point_saver = getattr(_db, "save_gateway_routing_entry", None)
+                if point_key is not None and point_key in data and callable(point_saver):
+                    try:
+                        point_entry_json = json.dumps(data[point_key])
+                        point_saver(
+                            point_key,
+                            point_entry_json,
+                            scope=self._routing_scope(),
+                        )
+                        db_saved = True
+                        point_saved = True
+                    except Exception as exc:
+                        point_failed = True
+                        logger.warning(
+                            "gateway.session: structural point routing save failed "
+                            "for %r (%s); falling back to full reconciliation",
+                            point_key,
+                            exc,
+                        )
                 replacer = getattr(_db, "replace_gateway_routing_entries", None)
-                if callable(replacer):
+                if not db_saved and callable(replacer):
                     try:
                         replacer(
                             {k: json.dumps(v) for k, v in data.items()},
                             scope=self._routing_scope(),
+                            reason=(
+                                f"{reason}_fallback" if point_failed else reason
+                            )[:64],
                         )
                         db_saved = True
+                        full_reconciled = True
                     except Exception as exc:
                         logger.warning(
                             "gateway.session: state.db routing save failed: %s", exc
@@ -1572,22 +1627,33 @@ class SessionStore:
                 except Exception as exc:
                     if not db_saved:
                         raise
-                    # state.db is authoritative. A failed legacy mirror must not
-                    # report the already-committed primary write as failed.
+                    # state.db is authoritative. A failed best-effort legacy
+                    # mirror must not roll back a transition already committed
+                    # there or leave the caller believing persistence failed.
                     logger.warning(
-                        "gateway.session: sessions.json mirror save failed "
-                        "after state.db commit: %s",
+                        "gateway.session: legacy sessions.json mirror save failed: %s",
                         exc,
                     )
-            self._persisted_routing_generation = generation
-            # This rewrite supersedes fast records at or below its
-            # generation; newer ones stay for the next delayed full writer.
-            if fast_persisted:
-                for key in [
-                    k for k, (rev, _) in fast_persisted.items()
-                    if rev <= generation
-                ]:
-                    del fast_persisted[key]
+
+            # Only a complete durable reconciliation can supersede every older
+            # generation. Point UPSERTs cover one key and therefore join the
+            # same per-key ordering ledger as _save_entry.
+            persisted_complete = (
+                point_key is None or full_reconciled or _db is None
+            )
+            if persisted_complete:
+                self._persisted_routing_generation = generation
+                if fast_persisted:
+                    for key in [
+                        k for k, (rev, _) in fast_persisted.items()
+                        if rev <= generation
+                    ]:
+                        del fast_persisted[key]
+            elif point_saved and point_key is not None and point_entry_json is not None:
+                if fast_persisted is None:
+                    fast_persisted = {}
+                    self._fast_persisted_entries = fast_persisted
+                fast_persisted[point_key] = (generation, point_entry_json)
 
     def _save_sessions_json(self, data: Dict[str, Any]) -> None:
         """Write the legacy sessions.json mirror of the routing index."""
@@ -1629,11 +1695,54 @@ class SessionStore:
                 logger.debug("Could not remove temp file %s: %s", tmp_path, e)
             raise
     
-    def _save_entries(self) -> None:
-        """Snapshot latest state under ``_lock`` and persist after releasing it."""
+    def _save_entries(
+        self,
+        *,
+        reason: Optional[str] = None,
+        point_key: Optional[str] = None,
+    ) -> None:
+        """Persist structural routing-index changes from a stable snapshot."""
         with self._lock:
             data, generation = self._snapshot_routing_locked()
-        self._persist_routing_data(data, generation)
+        self._persist_routing_data(
+            data,
+            generation,
+            reason=reason or sys._getframe(1).f_code.co_name,
+            point_key=point_key,
+        )
+
+    def rebind_session_id(
+        self,
+        session_key: str,
+        expected_session_id: str,
+        new_session_id: str,
+    ) -> bool:
+        """CAS one routing binding and durably refresh its legacy mirror.
+
+        Compression rotates a session ID without changing its routing key.
+        Persist that structural one-key transition with one state.db UPSERT,
+        rather than holding a write transaction while reconciling every route.
+        A stale run cannot overwrite a newer binding because the mutation is a
+        compare-and-swap under ``_lock``.
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return False
+            if entry.session_id == new_session_id:
+                return True
+            if entry.session_id != expected_session_id:
+                return False
+            entry.session_id = new_session_id
+            data, generation = self._snapshot_routing_locked()
+        self._persist_routing_data(
+            data,
+            generation,
+            reason="rebind_session_id",
+            point_key=session_key,
+        )
+        return True
 
     def _save_entry(
         self,
@@ -1644,13 +1753,11 @@ class SessionStore:
     ) -> None:
         """Persist ONE routing entry via UPSERT — the per-turn fast path.
 
-        The steady-state turn only bumps ``updated_at`` /
-        ``last_prompt_tokens`` on one entry; routing that through the
-        full index rewrite re-serializes every entry, DELETE+INSERTs
-        every gateway_routing row, and dumps+fsyncs a multi-MB
-        sessions.json — ~50ms p50 at ~1100 routing keys, and it runs
-        twice per turn.  A single-row UPSERT keeps the durable state.db
-        mapping current in well under a millisecond.
+        Steady-state turns and other one-key metadata/flag mutations only
+        change one entry. Routing them through the full index rewrite
+        re-serializes every entry, DELETE+INSERTs every gateway_routing row,
+        and dumps+fsyncs a multi-MB sessions.json. A single-row UPSERT keeps
+        the durable state.db mapping current without that global rewrite.
 
         Correctness constraints this path relies on:
 
@@ -2169,11 +2276,11 @@ class SessionStore:
     def set_expiry_finalized(
         self, entry: SessionEntry, *, clear_model_override: bool = True
     ) -> None:
-        """Mark a session entry expiry-finalized in memory, sessions.json, AND state.db.
+        """Mark a session entry expiry-finalized in memory and state.db.
 
         Single write-path for the expiry watcher (#9006): keeps the durable
-        state.db flag in sync with the JSON routing index so the flag
-        survives sessions.json pruning/loss.
+        session flag in sync with the primary state.db routing row.  The
+        legacy sessions.json mirror is refreshed by structural saves.
 
         ``clear_model_override=False`` preserves the give-up path's original
         behavior (flag only, no override drop).
@@ -2185,16 +2292,18 @@ class SessionStore:
                 # persisted /model override too so a later message doesn't
                 # rehydrate it after the in-memory override was popped.
                 entry.model_override = None
-            self._save()
+            session_key = entry.session_key
+            session_id = entry.session_id
+        self._save_entry(session_key)
         if self._db:
             setter = getattr(self._db, "set_expiry_finalized", None)
             if callable(setter):
                 try:
-                    setter(entry.session_id, True)
+                    setter(session_id, True)
                 except Exception as exc:
                     logger.debug(
                         "Session DB expiry_finalized write failed for %s: %s",
-                        entry.session_id, exc,
+                        session_id, exc,
                     )
             try:
                 # Expiry finalization is a real conversation boundary. Without
@@ -2206,11 +2315,11 @@ class SessionStore:
                 # live rows or rows ended with ``agent_close``.  Explicit
                 # boundaries (compression, session_reset, new_command, etc.)
                 # are preserved — the first writer wins.
-                self._db.promote_to_session_reset(entry.session_id)
+                self._db.promote_to_session_reset(session_id)
             except Exception as exc:
                 logger.debug(
                     "Session DB promote_to_session_reset failed for %s: %s",
-                    entry.session_id, exc,
+                    session_id, exc,
                 )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
@@ -2592,10 +2701,9 @@ class SessionStore:
 
         # ---- Phase 2: lock write -- apply decisions to _entries ----
         _needs_save = False
-        # Healthy-path saves only bump updated_at on one entry; they take
-        # the single-row UPSERT fast path instead of the full index rewrite
-        # (see _save_entry). Structural transitions (recover/create below)
-        # keep the full rewrite.
+        # Healthy metadata and one-key structural transitions both use a
+        # single-row UPSERT. True key-set migrations (above) retain full
+        # reconciliation so deleted legacy keys are removed atomically.
         _metadata_only_save = False
         _needs_recover = False
         entry: Optional[SessionEntry] = None
@@ -2759,7 +2867,10 @@ class SessionStore:
             if _metadata_only_save:
                 self._save_entry(session_key)
             else:
-                self._save_entries()
+                self._save_entries(
+                    reason="_get_or_create_session_impl",
+                    point_key=session_key,
+                )
 
         # SQLite operations outside the lock (unchanged).
         if self._db and db_end_session_id:
@@ -2865,9 +2976,9 @@ class SessionStore:
     ) -> bool:
         """Persist a metadata value on a live session entry.
 
-        Values must be small and JSON-serializable — they are written into
-        the routing index (state.db gateway_routing table + the legacy
-        sessions.json mirror) so they survive gateway restarts.
+        Values must be small and JSON-serializable. They are written to the
+        primary state.db routing index so they survive gateway restarts; the
+        legacy sessions.json mirror is refreshed by structural saves.
         """
         with self._lock:
             self._ensure_loaded_locked()
@@ -2876,8 +2987,8 @@ class SessionStore:
                 return False
             entry.metadata[key] = value
             entry.updated_at = _now()
-            self._save()
-            return True
+        self._save_entry(session_key)
+        return True
 
     def set_model_override(
         self, session_key: str, override: Optional[Dict[str, Any]]
@@ -2899,7 +3010,7 @@ class SessionStore:
             if entry.model_override == cleaned:
                 return
             entry.model_override = cleaned
-            self._save()
+        self._save_entry(session_key)
 
     def get_model_override(self, session_key: str) -> Optional[Dict[str, str]]:
         """Return the persisted /model override for *session_key*, if any."""
@@ -2921,9 +3032,10 @@ class SessionStore:
             self._ensure_loaded_locked()
             if session_key in self._entries:
                 self._entries[session_key].suspended = True
-                self._save()
-                return True
-        return False
+            else:
+                return False
+        self._save_entry(session_key)
+        return True
 
     def mark_turn_active(self, session_key: str) -> Optional[str]:
         """Persist exact ownership of the agent turn running for *session_key*.
@@ -3086,9 +3198,10 @@ class SessionStore:
                 entry.resume_pending = True
                 entry.resume_reason = reason
                 entry.last_resume_marked_at = _now()
-                self._save()
-                return True
-        return False
+            else:
+                return False
+        self._save_entry(session_key)
+        return True
 
     def clear_resume_pending(self, session_key: str) -> bool:
         """Clear the resume-pending flag after a successful resumed turn.
@@ -3107,8 +3220,8 @@ class SessionStore:
             entry.resume_pending = False
             entry.resume_reason = None
             entry.last_resume_marked_at = None
-            self._save()
-            return True
+        self._save_entry(session_key)
+        return True
 
     def prune_old_entries(self, max_age_days: int) -> int:
         """Drop SessionEntry records older than max_age_days.

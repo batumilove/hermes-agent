@@ -31,6 +31,7 @@ class TestCronjobRunExecutesImmediately:
         ran = {"job": "after-run", "last_status": "ok", "last_error": None}
         with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
              patch("tools.cronjob_tools.claim_job_for_fire", return_value=True) as m_claim, \
+             patch("cron.executions.create_execution", return_value={"id": "exec-manual"}) as m_execution, \
              patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
              patch("tools.cronjob_tools.get_job", return_value=ran):
             out = json.loads(cronjob(action="run", job_id="job-run-1"))
@@ -39,7 +40,12 @@ class TestCronjobRunExecutesImmediately:
         assert out["job"]["executed"] is True
         assert out["job"]["execution_success"] is True
         m_claim.assert_called_once_with("job-run-1")   # at-most-once claim taken
-        m_run.assert_called_once()                       # fired via the shared body
+        m_execution.assert_called_once_with(
+            "job-run-1",
+            source="manual",
+            trigger_origin="manual",
+        )
+        assert m_run.call_args.args[0]["execution_id"] == "exec-manual"
 
 
     def test_execute_job_now_bails_without_claim(self):
@@ -60,13 +66,14 @@ class TestCronjobRunExecutesImmediately:
 
         with patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
              patch("gateway.run._gateway_runner_ref", return_value=runner), \
+             patch("cron.executions.create_execution", return_value={"id": "exec-live"}), \
              patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
              patch("tools.cronjob_tools.get_job", return_value=completed):
             res = _execute_job_now(dict(_JOB))
 
         assert res["success"] is True
         m_run.assert_called_once_with(
-            _JOB,
+            dict(_JOB, execution_id="exec-live"),
             adapters=adapters,
             loop=gateway_loop,
             extra_prompt=None,
@@ -78,12 +85,18 @@ class TestCronjobRunExecutesImmediately:
 
         with patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
              patch.dict(sys.modules, {"gateway.run": None}), \
+             patch("cron.executions.create_execution", return_value={"id": "exec-cli"}), \
              patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
              patch("tools.cronjob_tools.get_job", return_value=completed):
             res = _execute_job_now(dict(_JOB))
 
         assert res["success"] is True
-        m_run.assert_called_once_with(_JOB, adapters=None, loop=None, extra_prompt=None)
+        m_run.assert_called_once_with(
+            dict(_JOB, execution_id="exec-cli"),
+            adapters=None,
+            loop=None,
+            extra_prompt=None,
+        )
 
     def test_execute_job_now_marks_failure_on_exception(self):
         """An exception during fire is captured, marked failed, not propagated."""

@@ -601,6 +601,9 @@ def contains_gateway_lifecycle_command_or_referenced_script(
             exc_info=True,
         )
         # Pure string scans of the top-level command — cannot raise.
+        return contains_gateway_lifecycle_command(
+            command
+        ) or contains_launchctl_submit_command(command)
         try:
             return _direct_lifecycle_scan(command)
         except Exception:

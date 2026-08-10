@@ -617,6 +617,9 @@ def _execute_job_now(
     """
     job_id = job["id"]
     try:
+        from cron.scheduler import run_one_job
+        from cron.executions import create_execution
+
         # At-most-once claim: bail without running if a tick/other fire owns it.
         if not claim_job_for_fire(job_id):
             # claim_job_for_fire returns False for paused/disabled/missing
@@ -657,6 +660,7 @@ def _run_claimed_job(
     job_id = job["id"]
     _registered = False
     try:
+        from cron.executions import create_execution
         from cron.scheduler import (
             release_running_job,
             run_one_job,
@@ -683,7 +687,12 @@ def _run_claimed_job(
 
         # run_one_job records last_run_at/last_status via mark_job_run (which
         # also clears the fire claim) and returns True iff it processed the job.
-        #
+        execution = create_execution(
+            job_id,
+            source="manual",
+            trigger_origin="manual",
+        )
+
         # A manual `run` executes the job synchronously on the caller's thread,
         # and a cron job is itself a full agent run that routinely takes
         # minutes. The calling turn emits no tool activity for that entire
@@ -756,16 +765,16 @@ def _run_claimed_job(
         gateway_loop = getattr(runner, "_gateway_loop", None) if runner is not None else None
 
         try:
-            try:
-                processed = run_one_job(
-                    job, adapters=adapters, loop=gateway_loop,
-                    extra_prompt=extra_prompt,
-                )
-            finally:
-                _heartbeat_stop.set()
-                if _heartbeat_thread is not None:
-                    _heartbeat_thread.join(timeout=_CRON_RUN_HEARTBEAT_INTERVAL + 1)
+            processed = run_one_job(
+                dict(job, execution_id=execution["id"]),
+                adapters=adapters,
+                loop=gateway_loop,
+                extra_prompt=extra_prompt,
+            )
         finally:
+            _heartbeat_stop.set()
+            if _heartbeat_thread is not None:
+                _heartbeat_thread.join(timeout=_CRON_RUN_HEARTBEAT_INTERVAL + 1)
             _registered = False
             release_running_job(job_id)
         refreshed = get_job(job_id) or {}

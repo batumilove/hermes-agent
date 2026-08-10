@@ -1271,6 +1271,43 @@ def test_sync_session_runner_releases_lock_before_callback(direct_runtime):
     assert contender.is_alive() is False
 
 
+def test_real_binding_overlapping_turns_close_out_of_order_without_orphans(
+    real_binding_runtime,
+    caplog,
+):
+    coordinator = relay_runtime.SESSION_COORDINATOR
+    profile_key = relay_runtime.current_profile_key()
+    lease_a = coordinator.acquire_conversation(
+        profile_key=profile_key,
+        session_id="overlapping-session",
+        platform="gateway",
+    )
+    lease_b = coordinator.acquire_conversation(
+        profile_key=profile_key,
+        session_id="overlapping-session",
+        platform="gateway",
+    )
+    assert lease_a.session is lease_b.session
+
+    turn_a = coordinator.begin_turn(lease_a, turn_id="turn-a", task_id="task-a")
+    turn_b = coordinator.begin_turn(lease_b, turn_id="turn-b", task_id="task-b")
+
+    coordinator.end_turn(turn_a, outcome="success")
+    coordinator.end_turn(turn_b, outcome="success")
+    coordinator.release_conversation(lease_a)
+    coordinator.release_conversation(lease_b)
+    coordinator.finalize_conversation(
+        profile_key=profile_key,
+        session_id="overlapping-session",
+    )
+
+    runtime = relay_runtime.get_runtime(create=False)
+    assert runtime is not None
+    assert runtime.get_session("overlapping-session") is None
+    assert "scope handle is not at the top of the stack" not in caplog.text
+    assert "Hermes Relay turn finalization failed" not in caplog.text
+    assert "closed with errors" not in caplog.text
+
 def test_direct_runtime_fake_enforces_lifo_scope_contract(direct_runtime):
     runtime = relay_runtime.get_runtime()
     assert runtime is not None
@@ -1297,149 +1334,252 @@ def test_direct_runtime_fake_enforces_lifo_scope_contract(direct_runtime):
     runtime.run_in_session(session, direct_runtime.scope.pop, first)
 
 
-def test_concurrent_turn_skips_relay_before_scope_stack_can_interleave(
-    direct_runtime,
+
+
+def test_real_binding_overlapping_logical_calls_close_out_of_order(
+    real_binding_runtime,
+    caplog,
 ):
+    from agent import relay_llm
+
     coordinator = relay_runtime.SESSION_COORDINATOR
     profile_key = relay_runtime.current_profile_key()
-    lease = coordinator.acquire_conversation(
+    runtime = relay_runtime.get_runtime()
+    assert runtime is not None
+    runtime.retain_managed_execution("test.overlapping-logical-calls")
+    lease_a = coordinator.acquire_conversation(
         profile_key=profile_key,
-        session_id="shared-session",
-        platform="cli",
+        session_id="logical-session",
+        platform="gateway",
     )
-    first = coordinator.begin_turn(lease, turn_id="first", task_id="first-task")
-    second = coordinator.begin_turn(
-        lease,
-        turn_id="second",
-        task_id="second-task",
+    lease_b = coordinator.acquire_conversation(
+        profile_key=profile_key,
+        session_id="logical-session",
+        platform="gateway",
     )
+    context_a = contextvars.Context()
+    context_b = contextvars.Context()
+    turn_a = context_a.run(
+        coordinator.begin_turn,
+        lease_a,
+        turn_id="turn-a",
+        task_id="task-a",
+    )
+    turn_b = context_b.run(
+        coordinator.begin_turn,
+        lease_b,
+        turn_id="turn-b",
+        task_id="task-b",
+    )
+    assert lease_a.session is not None
+    assert lease_b.session is lease_a.session
 
-    assert first.relay_enabled is True
-    assert first.handle is not None
-    assert second.relay_enabled is False
-    assert second.handle is None
-    assert relay_runtime.resolve_execution_context("shared-session") == (
-        None,
-        None,
-        None,
+    logical_a = context_a.run(
+        relay_llm._logical_parent,
+        runtime,
+        lease_a.session,
+        turn_a.handle,
+        {"api_request_id": "request-a"},
     )
+    logical_b = context_b.run(
+        relay_llm._logical_parent,
+        runtime,
+        lease_b.session,
+        turn_b.handle,
+        {"api_request_id": "request-b"},
+    )
+    assert logical_a is not None
+    assert logical_b is not None
 
-    coordinator.end_turn(first, outcome="success")
-    coordinator.end_turn(second, outcome="success")
-    coordinator.release_conversation(lease)
+    context_a.run(relay_llm._complete_logical, logical_a, outcome="success")
+    context_b.run(relay_llm._complete_logical, logical_b, outcome="success")
+    context_a.run(coordinator.end_turn, turn_a, outcome="success")
+    context_b.run(coordinator.end_turn, turn_b, outcome="success")
+    coordinator.release_conversation(lease_a)
+    coordinator.release_conversation(lease_b)
     coordinator.finalize_conversation(
         profile_key=profile_key,
-        session_id="shared-session",
+        session_id="logical-session",
     )
+    runtime.release_managed_execution("test.overlapping-logical-calls")
 
-    turn_closes = [
-        event
-        for event in direct_runtime.events
-        if event[0] == "scope.pop" and event[1] == first.handle
-    ]
-    assert len(turn_closes) == 1
-    assert not [
-        event
-        for event in direct_runtime.events
-        if event[0] == "scope.pop.rejected"
-    ]
+    assert turn_a.logical_llm_calls == {}
+    assert turn_b.logical_llm_calls == {}
+    assert "scope handle is not at the top of the stack" not in caplog.text
+    assert "finalization failed" not in caplog.text
+    assert "closed with errors" not in caplog.text
 
 
-def test_concurrent_turn_skips_shared_metrics_scope_creation(direct_runtime):
+@pytest.mark.asyncio
+async def test_real_binding_parallel_physical_calls_use_isolated_scope_stacks(
+    real_binding_runtime,
+    caplog,
+):
+    from agent import relay_llm
+
     coordinator = relay_runtime.SESSION_COORDINATOR
     profile_key = relay_runtime.current_profile_key()
-    lease = coordinator.acquire_conversation(
+    runtime = relay_runtime.get_runtime()
+    assert runtime is not None
+    runtime.retain_managed_execution("test.parallel-physical-calls")
+    lease_a = coordinator.acquire_conversation(
         profile_key=profile_key,
-        session_id="shared-session",
-        platform="cli",
+        session_id="physical-session",
+        platform="gateway",
     )
-    first = coordinator.begin_turn(lease, turn_id="first", task_id="first-task")
-    second = coordinator.begin_turn(lease, turn_id="second", task_id="second-task")
-
-    relay_shared_metrics.observe_lifecycle(
-        "pre_llm_call",
-        session_id="shared-session",
-        task_id="second-task",
-        platform="cli",
-    )
-    relay_shared_metrics.observe_lifecycle(
-        "pre_api_request",
-        session_id="shared-session",
-        task_id="second-task",
-        api_request_id="second-request",
-        platform="cli",
-    )
-
-    assert second.relay_enabled is False
-    assert not [
-        event
-        for event in direct_runtime.events
-        if event[0] == "scope.push" and event[1] == relay_shared_metrics.TASK_SCOPE
-    ]
-
-    coordinator.end_turn(first, outcome="success")
-    coordinator.end_turn(second, outcome="success")
-    coordinator.release_conversation(lease)
-
-
-def test_skipped_turn_stays_gated_after_instrumented_turn_ends(direct_runtime):
-    coordinator = relay_runtime.SESSION_COORDINATOR
-    profile_key = relay_runtime.current_profile_key()
-    lease = coordinator.acquire_conversation(
+    lease_b = coordinator.acquire_conversation(
         profile_key=profile_key,
-        session_id="shared-session",
-        platform="cli",
+        session_id="physical-session",
+        platform="gateway",
     )
-    first = coordinator.begin_turn(lease, turn_id="first", task_id="first-task")
-    second = coordinator.begin_turn(lease, turn_id="second", task_id="second-task")
-    inherited = contextvars.copy_context()
+    context_a = contextvars.Context()
+    context_b = contextvars.Context()
+    turn_a = context_a.run(
+        coordinator.begin_turn,
+        lease_a,
+        turn_id="turn-a",
+        task_id="task-a",
+    )
+    turn_b = context_b.run(
+        coordinator.begin_turn,
+        lease_b,
+        turn_id="turn-b",
+        task_id="task-b",
+    )
+    both_started = asyncio.Event()
+    release_a = asyncio.Event()
+    release_b = asyncio.Event()
+    started = 0
 
-    coordinator.end_turn(first, outcome="success")
+    async def execute(request_id, release):
+        async def provider(_request):
+            nonlocal started
+            started += 1
+            if started == 2:
+                both_started.set()
+            await both_started.wait()
+            await release.wait()
+            return {"content": "ok"}
 
-    assert relay_runtime.current_turn() is second
-    assert inherited.run(relay_runtime.current_turn) is second
-    assert not relay_runtime.relay_instrumentation_enabled()
-    assert not inherited.run(relay_runtime.relay_instrumentation_enabled)
-    assert relay_runtime.resolve_execution_context("shared-session") == (
-        None,
-        None,
-        None,
+        return await relay_llm.execute_async(
+            {"model": "test-model", "messages": []},
+            provider,
+            session_id="physical-session",
+            name="test-provider",
+            model_name="test-model",
+            metadata={"api_request_id": request_id},
+        )
+
+    task_a = context_a.run(
+        asyncio.create_task,
+        execute("request-a", release_a),
+    )
+    task_b = context_b.run(
+        asyncio.create_task,
+        execute("request-b", release_b),
+    )
+    await asyncio.wait_for(both_started.wait(), timeout=2)
+    release_a.set()
+    result_a = await asyncio.wait_for(task_a, timeout=2)
+    assert task_b.done() is False
+    release_b.set()
+    result_b = await asyncio.wait_for(task_b, timeout=2)
+    results = [result_a, result_b]
+
+    context_a.run(coordinator.end_turn, turn_a, outcome="success")
+    context_b.run(coordinator.end_turn, turn_b, outcome="success")
+    coordinator.release_conversation(lease_a)
+    coordinator.release_conversation(lease_b)
+    coordinator.finalize_conversation(
+        profile_key=profile_key,
+        session_id="physical-session",
+    )
+    runtime.release_managed_execution("test.parallel-physical-calls")
+
+    assert results == [{"content": "ok"}, {"content": "ok"}]
+    assert "scope handle is not at the top of the stack" not in caplog.text
+    assert "finalization failed" not in caplog.text
+    assert "closed with errors" not in caplog.text
+
+
+def test_real_binding_overlapping_metrics_tasks_close_out_of_order(
+    real_binding_runtime,
+    caplog,
+):
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    event_a = {
+        "session_id": "metrics-session",
+        "task_id": "task-a",
+        "turn_id": "turn-a",
+        "platform": "gateway",
+    }
+    event_b = {
+        "session_id": "metrics-session",
+        "task_id": "task-b",
+        "turn_id": "turn-b",
+        "platform": "gateway",
+    }
+
+    task_a = runtime.start_task(event_a)
+    task_b = runtime.start_task(event_b)
+    assert task_a is not None
+    assert task_b is not None
+
+    runtime.finish_task({**event_a, "completed": True})
+    runtime.finish_task({**event_b, "completed": True})
+    runtime.close_session({"session_id": "metrics-session"})
+    relay_runtime.SESSION_COORDINATOR.finalize_conversation(
+        profile_key=relay_runtime.current_profile_key(),
+        session_id="metrics-session",
     )
 
-    relay_shared_metrics.observe_lifecycle(
-        "pre_llm_call",
-        session_id="shared-session",
-        task_id="second-task",
-        platform="cli",
+    assert "scope handle is not at the top of the stack" not in caplog.text
+    assert "finalization failed" not in caplog.text
+    assert "closed with errors" not in caplog.text
+
+
+def test_real_binding_overlapping_metrics_model_calls_close_out_of_order(
+    real_binding_runtime,
+    caplog,
+):
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    task_event = {
+        "session_id": "metrics-model-session",
+        "task_id": "task",
+        "turn_id": "turn",
+        "platform": "gateway",
+    }
+    call_a = {
+        **task_event,
+        "api_request_id": "request-a",
+        "provider": "custom",
+        "model": "model-a",
+    }
+    call_b = {
+        **task_event,
+        "api_request_id": "request-b",
+        "provider": "custom",
+        "model": "model-b",
+    }
+
+    assert runtime.start_task(task_event) is not None
+    runtime.start_model_call(call_a)
+    runtime.start_model_call(call_b)
+    runtime.end_model_call(call_a)
+    runtime.end_model_call(call_b)
+    runtime.finish_task({**task_event, "completed": True})
+    runtime.close_session({"session_id": "metrics-model-session"})
+    relay_runtime.SESSION_COORDINATOR.finalize_conversation(
+        profile_key=relay_runtime.current_profile_key(),
+        session_id="metrics-model-session",
     )
-    inherited.run(
-        relay_shared_metrics.observe_lifecycle,
-        "pre_api_request",
-        session_id="shared-session",
-        task_id="second-task",
-        api_request_id="second-request",
-        platform="cli",
-    )
 
-    assert not [
-        event
-        for event in direct_runtime.events
-        if event[0] == "scope.push"
-        and event[1]
-        in {relay_shared_metrics.TASK_SCOPE, relay_shared_metrics.MODEL_CALL_SCOPE}
-    ]
-
-    coordinator.end_turn(second, outcome="success")
-    assert relay_runtime.current_turn() is None
-    assert inherited.run(relay_runtime.current_turn) is second
-    assert not inherited.run(relay_runtime.relay_instrumentation_enabled)
-    coordinator.release_conversation(lease)
-
-
-
-
-
-
+    assert "scope handle is not at the top of the stack" not in caplog.text
+    assert "model call close failed" not in caplog.text
+    assert "task close failed" not in caplog.text
+    assert "closed with errors" not in caplog.text
 
 
 @pytest.mark.parametrize(

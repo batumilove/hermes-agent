@@ -23,8 +23,14 @@ class _SessionStore:
         self.save_calls = 0
         self.peer_records = []
 
-    def _save(self):
+    def rebind_session_id(self, session_key, expected_session_id, new_session_id):
+        if session_key != self.entry.session_key:
+            return False
+        if self.entry.session_id != expected_session_id:
+            return self.entry.session_id == new_session_id
+        self.entry.session_id = new_session_id
         self.save_calls += 1
+        return True
 
     def _record_gateway_session_peer(self, session_id, session_key, source):
         # #55300 records the child's gateway peer metadata after a compression

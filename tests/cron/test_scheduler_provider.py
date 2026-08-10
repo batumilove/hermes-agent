@@ -237,20 +237,36 @@ def test_builtin_inherits_hook_defaults():
     assert hasattr(p, "fire_due")
 
 
-def test_fire_due_default_claims_then_runs(monkeypatch):
+def test_fire_due_default_claims_then_runs(monkeypatch, tmp_path):
     """The default fire_due claims via the store CAS, fetches the job, and runs
     it through the shared run_one_job body."""
+    import cron.executions as executions
     import cron.jobs as jobs
     import cron.scheduler as sched
     from cron.scheduler_provider import InProcessCronScheduler
 
+    monkeypatch.setattr(
+        executions, "EXECUTIONS_FILE", tmp_path / "cron" / "executions.db"
+    )
     ran = []
+    scheduled_for = "2026-08-01T03:00:00+00:00"
     monkeypatch.setattr(jobs, "claim_job_for_fire", lambda jid: True, raising=False)
-    monkeypatch.setattr(jobs, "get_job", lambda jid: {"id": jid, "name": "t"})
+    monkeypatch.setattr(
+        jobs,
+        "get_job",
+        lambda jid: {
+            "id": jid,
+            "name": "t",
+            "fire_claim": {"scheduled_for": scheduled_for},
+        },
+    )
     monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: ran.append(job["id"]) or True)
 
     assert InProcessCronScheduler().fire_due("j1") is True
     assert ran == ["j1"]
+    execution = executions.latest_execution("j1")
+    assert execution["trigger_origin"] == "external"
+    assert execution["scheduled_for"] == scheduled_for
 
 
 # ── F2a: ticker liveness — survival, heartbeat, honest status (#32612, #32895) ──

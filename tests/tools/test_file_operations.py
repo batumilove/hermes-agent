@@ -803,4 +803,3 @@ class TestByteLayerBinaryDetection:
         ops = ShellFileOperations(mock_env)
         result = ops.read_file("/tmp/a.out")
         assert result.is_binary is True
-

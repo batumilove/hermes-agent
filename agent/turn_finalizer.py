@@ -22,6 +22,7 @@ keep the exact logger name (``"agent.conversation_loop"``).
 
 from __future__ import annotations
 
+import copy
 import os
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
@@ -564,6 +565,12 @@ def finalize_turn(
                 session_id=agent.session_id or "",
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
+                messages=tuple(copy.deepcopy(messages)),
+                workdir=str(
+                    getattr(agent, "cwd", None)
+                    or getattr(agent, "workdir", None)
+                    or ""
+                ),
             )
             for _hook_result in _transform_results:
                 if isinstance(_hook_result, str) and _hook_result:
@@ -573,6 +580,20 @@ def finalize_turn(
                     break  # First non-empty string wins
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
+
+    # Side-effect evidence verifier footer. Run after output transforms so a
+    # plugin cannot remove the warning or introduce an unchecked success claim.
+    # The durable transcript was persisted above, making this advisory
+    # delivery-only and keeping synthetic regulator text out of model context.
+    if final_response and not interrupted:
+        try:
+            from agent.side_effect_evidence import build_side_effect_evidence_footer
+
+            footer = build_side_effect_evidence_footer(messages, final_response)
+            if footer:
+                final_response = final_response.rstrip() + "\n\n" + footer
+        except Exception as _side_effect_err:
+            logger.debug("side-effect evidence verifier footer failed: %s", _side_effect_err)
 
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.

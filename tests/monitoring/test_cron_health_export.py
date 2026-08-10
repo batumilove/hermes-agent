@@ -37,10 +37,32 @@ def test_execution_projection_is_opaque_bounded_and_content_free():
     assert event["duration_ms"] == 2250
     assert event["delivery_outcome"] == "failed"
     assert event["error_class"] == "auth_failed"
+    assert event["trigger_origin"] == "unknown"
     assert "job_id" not in event
     assert "error" not in event
     assert "alice@example.com" not in str(event)
     assert "top-secret-token" not in str(event)
+
+
+def test_cron_execution_event_projects_trigger_provenance():
+    from agent.monitoring.cron_health import project_execution_event
+
+    event = project_execution_event(
+        {
+            "id": "execution-id",
+            "job_id": "job-id",
+            "source": "builtin",
+            "trigger_origin": "scheduled",
+            "scheduled_for": "2026-08-01T03:00:00+00:00",
+            "triggered_at": "2026-08-01T03:00:37+00:00",
+            "status": "running",
+            "claimed_at": "2026-08-01T03:00:37+00:00",
+        }
+    ).to_dict()
+
+    assert event["trigger_origin"] == "scheduled"
+    assert event["scheduled_for"] == "2026-08-01T03:00:00+00:00"
+    assert event["triggered_at"] == "2026-08-01T03:00:37+00:00"
 
 
 

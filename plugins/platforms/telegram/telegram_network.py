@@ -10,16 +10,687 @@ IPv4 addresses.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import ipaddress
+import itertools
 import logging
 import socket
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 import httpx
+
+_HTTPX_ASYNC_HTTP_TRANSPORT_TYPE = httpx.AsyncHTTPTransport
 
 logger = logging.getLogger(__name__)
 
 _TELEGRAM_API_HOST = "api.telegram.org"
+
+# Strong references for asynchronous abandoned-response closes. asyncio's loop
+# only keeps weak references to tasks; without this set a cleanup can be
+# garbage-collected before it closes the response stream.
+_abandoned_response_cleanups: set[asyncio.Task] = set()
+_diagnostic_request_ids = itertools.count(1)
+_diagnostic_request_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "telegram_diagnostic_request_id", default="none"
+)
+_request_network_streams: contextvars.ContextVar[
+    list["_CancellationSafeNetworkStream"] | None
+] = contextvars.ContextVar("telegram_request_network_streams", default=None)
+
+
+def _stream_local_port(stream: Any) -> str:
+    """Return a stream's local TCP port without exposing its peer or request."""
+    try:
+        get_extra_info = getattr(stream, "get_extra_info", None)
+        if get_extra_info is None:
+            return "unknown"
+        sock = get_extra_info("socket")
+        if sock is None:
+            return "unknown"
+        sockname = sock.getsockname()
+        if isinstance(sockname, tuple) and len(sockname) >= 2:
+            port = sockname[1]
+            if type(port) is int and 1 <= port <= 65535:
+                return str(port)
+    except Exception:
+        pass
+    return "unknown"
+
+
+def _normalize_diagnostic_route(route: Any) -> str:
+    """Return only the primary marker or a public IPv4 fallback route."""
+
+    if route == "primary":
+        return "primary"
+    try:
+        addr = ipaddress.ip_address(route)
+    except (TypeError, ValueError):
+        return "unknown"
+    if addr.version != 4 or not addr.is_global or addr.is_multicast:
+        return "unknown"
+    return str(addr)
+
+
+class _SocketLifecycleState:
+    """Shared lifecycle identity across raw and TLS wrappers for one socket."""
+
+    def __init__(self, *, owner: str, route: str, stream: Any):
+        self.owner = owner
+        self.route = route
+        self.request_id = _diagnostic_request_id.get()
+        self.local_port = _stream_local_port(stream)
+        self._close_started_reported = False
+        self._closed_reported = False
+        _log_socket_lifecycle(
+            event="socket-opened",
+            owner=self.owner,
+            route=self.route,
+            local_port=self.local_port,
+            request_id=self.request_id,
+        )
+
+    def report_close_started(self) -> None:
+        if self._close_started_reported:
+            return
+        self._close_started_reported = True
+        _log_socket_lifecycle(
+            event="socket-close-started",
+            owner=self.owner,
+            route=self.route,
+            local_port=self.local_port,
+            request_id=self.request_id,
+        )
+
+    def report_closed(self, *, error: bool = False) -> None:
+        if self._closed_reported:
+            return
+        self._closed_reported = True
+        _log_socket_lifecycle(
+            event="socket-close-error" if error else "socket-closed",
+            owner=self.owner,
+            route=self.route,
+            local_port=self.local_port,
+            request_id=self.request_id,
+        )
+
+
+class _CancellationSafeNetworkStream:
+    """Close the raw TCP stream if TLS setup is cancelled.
+
+    httpcore 1.0.9's AnyIO stream closes on ``Exception`` during ``start_tls``
+    but not on asyncio's ``CancelledError`` (a ``BaseException``). Retaining the
+    pre-TLS stream here lets this Telegram transport close exactly that socket;
+    no shared pool or concurrent healthy request is interrupted.
+    """
+
+    def __init__(self, stream: Any):
+        self._stream = stream
+        self._close_task: asyncio.Task | None = None
+        request_streams = _request_network_streams.get()
+        if request_streams is not None:
+            request_streams.append(self)
+
+    async def _close_after_failure(self) -> None:
+        try:
+            await self.aclose()
+        except BaseException:
+            pass
+
+    async def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
+        try:
+            return await self._stream.read(max_bytes, timeout=timeout)
+        except BaseException:
+            # A caller cancellation can arrive after the peer has queued bytes
+            # plus FIN but before httpcore creates a Response. Close this exact
+            # stream while ownership is still local; no response-level cleanup
+            # exists yet, and an inactive pool route may never be reaped.
+            await self._close_after_failure()
+            raise
+
+    async def write(self, buffer: bytes, timeout: float | None = None) -> None:
+        try:
+            await self._stream.write(buffer, timeout=timeout)
+        except BaseException:
+            await self._close_after_failure()
+            raise
+
+    async def aclose(self) -> None:
+        if self._close_task is None:
+            self._close_started()
+            self._close_task = asyncio.create_task(self._stream.aclose())
+            _abandoned_response_cleanups.add(self._close_task)
+            self._close_task.add_done_callback(self._close_done)
+        await asyncio.shield(self._close_task)
+
+    def _close_started(self) -> None:
+        return None
+
+    def _close_done(self, task: asyncio.Task) -> None:
+        _abandoned_response_cleanups.discard(task)
+        try:
+            task.result()
+        except BaseException:
+            self._close_finished(error=True)
+        else:
+            self._close_finished(error=False)
+
+    def _close_finished(self, *, error: bool) -> None:
+        return None
+
+    async def start_tls(
+        self, ssl_context, server_hostname=None, timeout=None
+    ) -> "_CancellationSafeNetworkStream":
+        try:
+            stream = await self._stream.start_tls(
+                ssl_context, server_hostname, timeout
+            )
+        except BaseException:
+            await self._close_after_failure()
+            raise
+        return _CancellationSafeNetworkStream(stream)
+
+    def get_extra_info(self, info: str) -> Any:
+        return self._stream.get_extra_info(info)
+
+
+class _DiagnosticCancellationSafeNetworkStream(_CancellationSafeNetworkStream):
+    """Opt-in raw-stream wrapper that reports one socket lifecycle."""
+
+    def __init__(self, stream: Any, lifecycle: _SocketLifecycleState):
+        super().__init__(stream)
+        self._lifecycle = lifecycle
+
+    def _close_started(self) -> None:
+        self._lifecycle.report_close_started()
+
+    def _close_finished(self, *, error: bool) -> None:
+        self._lifecycle.report_closed(error=error)
+
+    async def start_tls(
+        self, ssl_context, server_hostname=None, timeout=None
+    ) -> "_DiagnosticCancellationSafeNetworkStream":
+        try:
+            stream = await self._stream.start_tls(
+                ssl_context, server_hostname, timeout
+            )
+        except BaseException:
+            await self._close_after_failure()
+            raise
+        return _DiagnosticCancellationSafeNetworkStream(stream, self._lifecycle)
+
+
+class _CancellationSafeNetworkBackend:
+    """Wrap httpcore-created streams with connect/TLS cancellation cleanup."""
+
+    def __init__(self, backend: Any):
+        self._backend = backend
+
+    def _wrap(self, stream: Any) -> _CancellationSafeNetworkStream:
+        return _CancellationSafeNetworkStream(stream)
+
+    async def _close_abandoned_connect_result(self, connect_task: asyncio.Task) -> None:
+        try:
+            stream = connect_task.result()
+        except BaseException:
+            return
+        try:
+            await self._wrap(stream).aclose()
+        except BaseException:
+            pass
+
+    def _abandoned_connect_done(self, connect_task: asyncio.Task) -> None:
+        _abandoned_response_cleanups.discard(connect_task)
+        cleanup_task = connect_task.get_loop().create_task(
+            self._close_abandoned_connect_result(connect_task)
+        )
+        _abandoned_response_cleanups.add(cleanup_task)
+        cleanup_task.add_done_callback(_abandoned_response_cleanups.discard)
+
+    async def _connect(self, awaitable: Any) -> _CancellationSafeNetworkStream:
+        # The backend may own a live socket before connect_* returns it. Shield
+        # that ownership transfer so caller cancellation cannot destroy the only
+        # coroutine able to return the socket. If the caller exits first, retain
+        # the connect task and close any eventual result independently.
+        connect_task = asyncio.ensure_future(awaitable)
+        _abandoned_response_cleanups.add(connect_task)
+        try:
+            stream = await asyncio.shield(connect_task)
+        except BaseException:
+            # A done callback captures its registration Context by default. Do not
+            # retain the failed request's stream registry while an abandoned
+            # backend connect finishes, or append the eventual wrapper to a stale
+            # request list after that request has already unwound.
+            connect_task.add_done_callback(
+                self._abandoned_connect_done,
+                context=contextvars.Context(),
+            )
+            raise
+        _abandoned_response_cleanups.discard(connect_task)
+        return self._wrap(stream)
+
+    async def connect_tcp(self, *args, **kwargs) -> _CancellationSafeNetworkStream:
+        return await self._connect(self._backend.connect_tcp(*args, **kwargs))
+
+    async def connect_unix_socket(self, *args, **kwargs) -> _CancellationSafeNetworkStream:
+        return await self._connect(self._backend.connect_unix_socket(*args, **kwargs))
+
+    async def sleep(self, seconds: float) -> None:
+        await self._backend.sleep(seconds)
+
+
+class _DiagnosticCancellationSafeNetworkBackend(_CancellationSafeNetworkBackend):
+    """Opt-in backend that binds raw sockets to a request owner and route."""
+
+    def __init__(self, backend: Any, *, owner: str, route: str):
+        super().__init__(backend)
+        self._owner = owner if owner in {"general", "polling"} else "unknown"
+        self._route = _normalize_diagnostic_route(route)
+
+    def _wrap(self, stream: Any) -> _DiagnosticCancellationSafeNetworkStream:
+        lifecycle = _SocketLifecycleState(
+            owner=self._owner,
+            route=self._route,
+            stream=stream,
+        )
+        return _DiagnosticCancellationSafeNetworkStream(stream, lifecycle)
+
+
+def _new_async_http_transport(
+    *,
+    socket_diagnostics: bool = False,
+    diagnostic_owner: str = "unknown",
+    diagnostic_route: str = "primary",
+    **kwargs,
+) -> httpx.AsyncBaseTransport:
+    """Build an HTTPX transport whose raw TLS sockets are cancellation-safe."""
+    transport = httpx.AsyncHTTPTransport(**kwargs)
+    pool = getattr(transport, "_pool", None)
+    backend = getattr(pool, "_network_backend", None)
+    if pool is None or backend is None:
+        # Tests and extension code may intentionally replace the concrete HTTPX
+        # transport with another AsyncBaseTransport. Only fail closed when the
+        # real HTTPX type changes shape; custom transports own their lifecycle.
+        if isinstance(transport, httpx.AsyncBaseTransport) and not isinstance(
+            transport, _HTTPX_ASYNC_HTTP_TRANSPORT_TYPE
+        ):
+            return transport
+        raise RuntimeError(
+            "Unsupported httpx/httpcore transport internals: expected "
+            "AsyncHTTPTransport._pool._network_backend"
+        )
+    if socket_diagnostics:
+        pool._network_backend = _DiagnosticCancellationSafeNetworkBackend(
+            backend,
+            owner=diagnostic_owner,
+            route=diagnostic_route,
+        )
+    else:
+        # Preserve the exact pre-diagnostics hot path when the opt-in is off.
+        pool._network_backend = _CancellationSafeNetworkBackend(backend)
+    return transport
+
+
+async def _close_response(response: httpx.Response) -> None:
+    """Close an abandoned response, observing terminal exceptions.
+
+    This helper runs inside a fire-and-forget cleanup task, so it must not let
+    caller cancellation (``asyncio.CancelledError``) leave the response socket
+    open. All exceptions are swallowed after the close attempt so that the
+    cleanup task terminates cleanly.
+    """
+    try:
+        await response.aclose()
+    except BaseException:
+        logger.debug("Failed to close abandoned Telegram response", exc_info=True)
+
+
+class _RetryingCloseResponseStream(httpx.AsyncByteStream):
+    """Guarantee a response socket is released even under close cancellation.
+
+    httpcore 1.0.9's ``PoolByteStream.aclose()`` marks itself closed *before*
+    its cancellable pool bookkeeping runs. A caller cancellation delivered
+    during that bookkeeping interrupts the first close while the raw OS socket
+    lingers in ``CLOSE_WAIT``; a second ``aclose()`` then no-ops because the
+    stream already believes it is closed. Retrying ``aclose()`` would therefore
+    report false success without releasing the socket.
+
+    The first ``aclose()`` is run inside ``asyncio.shield`` so an *external*
+    cancellation cannot strand it: the shielded coroutine keeps running to
+    completion on its own, releasing the socket. Only when the close fails for
+    a real reason — the coroutine itself raised ``CancelledError`` (e.g. a
+    transport-level cancel injected into the stream) or any other exception —
+    does a detached bounded task retry the close once and, if that also fails,
+    force-close the exact raw OS socket via ``get_extra_info('socket')`` as a
+    guaranteed terminal fallback.
+    """
+
+    def __init__(
+        self,
+        stream: httpx.AsyncByteStream,
+        *,
+        network_stream: Any | None = None,
+    ):
+        self._stream = stream
+        self._network_stream = network_stream
+        self._close_task: asyncio.Task | None = None
+        self._cleanup_scheduled = False
+        self._raw_socket_closed = False
+
+    async def __aiter__(self):
+        async for chunk in self._stream:
+            yield chunk
+
+    async def aclose(self) -> None:
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._stream.aclose())
+            _abandoned_response_cleanups.add(self._close_task)
+            self._close_task.add_done_callback(self._initial_close_done)
+        await asyncio.shield(self._close_task)
+
+    def _initial_close_done(self, task: asyncio.Task) -> None:
+        """Observe the first close and recover any synchronous or late failure."""
+        _abandoned_response_cleanups.discard(task)
+        try:
+            task.result()
+        except BaseException:
+            self._schedule_detached_retry()
+
+    def _schedule_detached_retry(self) -> None:
+        if self._cleanup_scheduled:
+            return
+        self._cleanup_scheduled = True
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # The response close has already failed and no event loop remains
+            # to drive async recovery. Close only its exact raw socket.
+            self._close_raw_socket_fallback()
+            return
+        task = loop.create_task(self._retry_close())
+        _abandoned_response_cleanups.add(task)
+        task.add_done_callback(_abandoned_response_cleanups.discard)
+
+    async def _retry_close(self) -> None:
+        # Terminal cleanup: swallow any exception thrown at us while we are
+        # trying to close the socket, so caller cancellation or process exit
+        # cannot abandon an open FD.
+        try:
+            await asyncio.wait_for(self._stream.aclose(), timeout=5.0)
+        except BaseException:
+            pass
+        if self._raw_socket_is_closed():
+            return
+        # A response stream may mark itself closed before failing, making this
+        # retry return successfully without completing pool/socket cleanup.
+        # Once the first close failed, always drive the exact network-stream
+        # terminal path and verify the raw OS socket is really gone before
+        # returning.
+        await self._force_close_network_stream()
+
+    def _raw_socket_is_closed(self) -> bool:
+        """Return true only when the exact exposed OS socket is already closed."""
+        try:
+            get_extra_info = getattr(self._network_stream, "get_extra_info", None)
+            if get_extra_info is None:
+                return False
+            raw_socket = get_extra_info("socket")
+            fileno = getattr(raw_socket, "fileno", None)
+            return fileno is not None and fileno() == -1
+        except Exception:
+            return False
+
+    async def _force_close_network_stream(self) -> None:
+        if self._network_stream is None:
+            return
+
+        # Prefer the network stream's cooperative async close path.  A
+        # "successful" return is not enough: a pooled connection may be
+        # released rather than closed, leaving the OS socket in CLOSE_WAIT.
+        try:
+            aclose = getattr(self._network_stream, "aclose", None)
+            if aclose is not None:
+                await asyncio.wait_for(aclose(), timeout=2.0)
+        except asyncio.CancelledError:
+            # We are racing caller cancellation. Continue to synchronous close
+            # so the socket does not outlive the cancelled task.
+            pass
+        except BaseException:
+            pass
+
+        if self._raw_socket_is_closed():
+            return
+
+        # Fall back to the synchronous close() hook if the stream provides one.
+        close = getattr(self._network_stream, "close", None)
+        if close is not None:
+            try:
+                close()
+            except BaseException:
+                pass
+
+        if self._raw_socket_is_closed():
+            return
+
+        # Last resort: close the exact raw OS socket exposed by the network stream.
+        self._close_raw_socket_fallback()
+
+    def _close_raw_socket_fallback(self) -> None:
+        """Close the exact raw OS socket exposed by the network stream.
+
+        This is the terminal fallback when cooperative stream close did not
+        actually close the FD.  asyncio exposes a ``TransportSocket`` view
+        whose disruptive ``close()`` method is intentionally absent; in that
+        case close its exact wrapped socket object instead.  Idempotent once
+        the exposed socket reports ``fileno() == -1``.
+        """
+        if self._raw_socket_closed:
+            return
+        try:
+            get_extra_info = getattr(self._network_stream, "get_extra_info", None)
+            if get_extra_info is None:
+                return
+            raw_socket = get_extra_info("socket")
+            if raw_socket is None:
+                return
+
+            wrapped_socket = getattr(raw_socket, "_sock", None)
+            close_targets = [raw_socket]
+            if isinstance(wrapped_socket, socket.socket):
+                close_targets.append(wrapped_socket)
+            for target in close_targets:
+                close = getattr(target, "close", None)
+                if close is None:
+                    continue
+                try:
+                    close()
+                except Exception:
+                    continue
+                if self._raw_socket_is_closed():
+                    self._raw_socket_closed = True
+                    return
+        except Exception:
+            pass
+
+        logger.debug("Failed to close raw Telegram response socket fallback")
+
+
+async def _close_request_network_streams(
+    streams: tuple[_CancellationSafeNetworkStream, ...],
+) -> None:
+    """Close only raw streams created by one failed pre-response request."""
+    await asyncio.gather(
+        *(stream.aclose() for stream in streams),
+        return_exceptions=True,
+    )
+
+
+async def _handle_transport_request(
+    transport: httpx.AsyncBaseTransport,
+    request: httpx.Request,
+    *,
+    diagnostic_context: tuple[str, str, str] | None = None,
+) -> httpx.Response:
+    """Run one transport request without leaking sockets on caller cancellation.
+
+    Cancelling httpcore while it is connecting or reading response headers can
+    detach the live socket from its pool. Under Telegram progress/edit churn,
+    those sockets persist in CLOSE_WAIT until the gateway reaches RLIMIT_NOFILE.
+    ``_CancellationSafeNetworkStream`` closes the exact raw socket when caller
+    cancellation interrupts a stream operation. A request-scoped registry also
+    retains every stream returned before response creation, so cancellation in
+    httpcore's async trace hooks detaches a strongly referenced cleanup task
+    for only those streams; concurrent requests and shared pools are untouched.
+
+    After the response has been returned, a caller that is cancelled while
+    reading the response body (e.g. PTB's
+    ``HTTPXRequest.do_request`` awaiting ``res.content``) may abandon the
+    response and leave its socket in CLOSE_WAIT. The caller-task done callback
+    closes that otherwise-unclaimed response, and the response stream wrapper
+    retries an interrupted close in a detached bounded task.
+    """
+    request_streams: list[_CancellationSafeNetworkStream] = []
+    streams_token = _request_network_streams.set(request_streams)
+    try:
+        response = await transport.handle_async_request(request)
+    except BaseException:
+        if request_streams:
+            cleanup_task = asyncio.create_task(
+                _close_request_network_streams(tuple(reversed(request_streams)))
+            )
+            _abandoned_response_cleanups.add(cleanup_task)
+            cleanup_task.add_done_callback(_abandoned_response_cleanups.discard)
+        raise
+    finally:
+        _request_network_streams.reset(streams_token)
+    network_stream = response.extensions.get("network_stream")
+    response_stream = response.stream
+    if diagnostic_context is not None:
+        owner, route, request_id = diagnostic_context
+        response_stream = _DiagnosticResponseStream(
+            response_stream,
+            owner=owner,
+            route=route,
+            local_port=_response_local_port(response),
+            request_id=request_id,
+        )
+    response.stream = _RetryingCloseResponseStream(
+        response_stream,
+        network_stream=network_stream,
+    )
+    # Guard the response against caller task cancellation/exception after
+    # we have returned it. If the caller is cancelled while consuming the
+    # body, its done callback will close the otherwise-abandoned response.
+    current_task = asyncio.current_task()
+    if current_task is not None:
+        _close_response_on_task_done(current_task, response)
+    return response
+
+
+def _close_response_on_task_done(task: asyncio.Task, response: httpx.Response) -> None:
+    """Attach a callback that closes *response* if it is still open at task end."""
+    def _on_done(finished_task: asyncio.Task) -> None:
+        # Always close if the response was not fully closed, even on normal
+        # completion: a caller may have returned without consuming the body.
+        if getattr(response, "is_closed", True):
+            return
+        close_task = asyncio.create_task(_close_response(response))
+        close_task.add_done_callback(_abandoned_response_cleanups.discard)
+        _abandoned_response_cleanups.add(close_task)
+
+    task.add_done_callback(_on_done)
+
+
+def _log_socket_lifecycle(
+    *,
+    event: str,
+    owner: str,
+    route: str,
+    local_port: str,
+    request_id: str = "none",
+) -> None:
+    """Emit one deliberately request-content-free socket lifecycle record."""
+    # Diagnostics are explicitly opt-in and must remain visible at the gateway's
+    # default WARNING stderr level so bounded staging collection can use Docker logs.
+    logger.warning(
+        "[Telegram socket] event=%s owner=%s route=%s request_id=%s local_port=%s",
+        event,
+        owner,
+        route,
+        request_id,
+        local_port,
+    )
+
+
+def _response_local_port(response: httpx.Response) -> str:
+    """Return the response socket's local ephemeral port, or ``unknown``."""
+    try:
+        network_stream = response.extensions.get("network_stream")
+        if network_stream is None:
+            return "unknown"
+        get_extra_info = getattr(network_stream, "get_extra_info", None)
+        if get_extra_info is None:
+            return "unknown"
+        sock = get_extra_info("socket")
+        if sock is None:
+            return "unknown"
+        sockname = sock.getsockname()
+        if isinstance(sockname, tuple) and len(sockname) >= 2:
+            return str(sockname[1])
+    except Exception:
+        pass
+    return "unknown"
+
+
+class _DiagnosticResponseStream(httpx.AsyncByteStream):
+    """Observe response closure without changing stream semantics."""
+
+    def __init__(
+        self,
+        stream,
+        *,
+        owner: str,
+        route: str,
+        local_port: str,
+        request_id: str,
+    ):
+        self._stream = stream
+        self._owner = owner
+        self._route = route
+        self._local_port = local_port
+        self._request_id = request_id
+        # A failed close may later succeed during the guarded retry. Report the
+        # error and terminal success independently while preserving PR #122's
+        # request correlation on both records.
+        self._close_error_reported = False
+        self._close_success_reported = False
+
+    async def __aiter__(self):
+        async for chunk in self._stream:
+            yield chunk
+
+    async def aclose(self) -> None:
+        try:
+            await self._stream.aclose()
+        except BaseException:
+            if not self._close_error_reported:
+                self._close_error_reported = True
+                _log_socket_lifecycle(
+                    event="response-close-error",
+                    owner=self._owner,
+                    route=self._route,
+                    local_port=self._local_port,
+                    request_id=self._request_id,
+                )
+            raise
+        if not self._close_success_reported:
+            self._close_success_reported = True
+            _log_socket_lifecycle(
+                event="response-closed",
+                owner=self._owner,
+                route=self._route,
+                local_port=self._local_port,
+                request_id=self._request_id,
+            )
 
 # DNS-over-HTTPS providers used to discover Telegram API IPs that may differ
 # from the (potentially unreachable) IP returned by the local system resolver.
@@ -58,67 +729,160 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
     ``curl --resolve api.telegram.org:443:<ip>``.
     """
 
-    # Bound every pool. httpx defaults to 100 connections per pool, so a wedged
-    # endpoint plus the seed IPs can outgrow the process file-descriptor limit
-    # on its own (#63311).
-    _POOL_LIMITS = httpx.Limits(max_connections=8, max_keepalive_connections=4)
+    _POOL_LIMITS = httpx.Limits(
+        max_connections=8,
+        max_keepalive_connections=0,
+        keepalive_expiry=5.0,
+    )
 
-    def __init__(self, fallback_ips: Iterable[str], **transport_kwargs):
+    def __init__(
+        self,
+        fallback_ips: Iterable[str],
+        *,
+        owner_role: str = "unknown",
+        socket_diagnostics: bool = False,
+        **transport_kwargs,
+    ):
+        self._owner_role = (
+            owner_role if owner_role in {"general", "polling"} else "unknown"
+        )
+        self._socket_diagnostics = bool(socket_diagnostics)
         self._fallback_ips = list(dict.fromkeys(_normalize_fallback_ips(fallback_ips)))
+        # Each logical PTB request owns a primary pool plus one pool per fallback
+        # route. httpcore only reaps expired/peer-closed idle connections when
+        # that same pool receives another request, so an inactive route can hold
+        # CLOSE_WAIT sockets indefinitely. Keep active-request concurrency, but
+        # do not retain completed Telegram connections as idle pool members.
+        limits = transport_kwargs.get("limits")
+        if limits is None:
+            transport_kwargs["limits"] = self._POOL_LIMITS
+        else:
+            transport_kwargs["limits"] = httpx.Limits(
+                max_connections=limits.max_connections,
+                max_keepalive_connections=0,
+                keepalive_expiry=limits.keepalive_expiry,
+            )
         proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
         if proxy_url and "proxy" not in transport_kwargs:
             transport_kwargs["proxy"] = proxy_url
-        transport_kwargs.setdefault("limits", self._POOL_LIMITS)
-        self._transport_kwargs = transport_kwargs
-        self._primary = httpx.AsyncHTTPTransport(**transport_kwargs)
+        self._primary = _new_async_http_transport(
+            socket_diagnostics=self._socket_diagnostics,
+            diagnostic_owner=self._owner_role,
+            diagnostic_route="primary",
+            **transport_kwargs,
+        )
+        self._transport_kwargs = dict(transport_kwargs)
+        self._fallbacks: dict[str, httpx.AsyncBaseTransport] = {}
         self._primary_lock = asyncio.Lock()
         self._primary_closed = False
-        # Built on demand and discarded on failure — see _reset_fallback.
-        self._fallbacks: dict[str, httpx.AsyncHTTPTransport] = {}
         self._fallback_lock = asyncio.Lock()
         self._sticky_ip: Optional[str] = None
         self._sticky_lock = asyncio.Lock()
 
-    async def _get_fallback(self, ip: str) -> httpx.AsyncHTTPTransport:
+    async def _get_fallback(self, ip: str) -> httpx.AsyncBaseTransport:
         async with self._fallback_lock:
             transport = self._fallbacks.get(ip)
             if transport is None:
-                transport = httpx.AsyncHTTPTransport(**self._transport_kwargs)
+                transport = _new_async_http_transport(
+                    socket_diagnostics=self._socket_diagnostics,
+                    diagnostic_owner=self._owner_role,
+                    diagnostic_route=ip,
+                    **self._transport_kwargs,
+                )
                 self._fallbacks[ip] = transport
             return transport
 
-    async def _reset_primary(self, transport: httpx.AsyncHTTPTransport) -> None:
+    async def _reset_primary(self, transport: httpx.AsyncBaseTransport) -> None:
         # Retryable primary failures can leave half-closed sockets in the pool;
         # replace and close the failed generation before trying fallback.
         async with self._primary_lock:
             if self._primary_closed or transport is not self._primary:
                 return
-            self._primary = httpx.AsyncHTTPTransport(**self._transport_kwargs)
+            self._primary = _new_async_http_transport(
+                socket_diagnostics=self._socket_diagnostics,
+                diagnostic_owner=self._owner_role,
+                diagnostic_route="primary",
+                **self._transport_kwargs,
+            )
         try:
             await transport.aclose()
         except Exception as exc:
             logger.debug("[Telegram] Error closing primary transport: %s", exc)
 
     async def _reset_fallback(self, ip: str) -> None:
-        """Discard a failed fallback pool so its dead sockets are released.
-
-        A connect that reaches ESTABLISHED and is then closed by the peer leaves
-        its socket in CLOSE_WAIT inside the pool. Retaining the poisoned pool
-        leaks one descriptor per retry until the process hits its file limit and
-        can no longer accept connections or resolve DNS (#63311).
-        """
+        """Discard a failed fallback pool so dead sockets are released."""
         async with self._fallback_lock:
             transport = self._fallbacks.pop(ip, None)
         if transport is None:
             return
         try:
             await transport.aclose()
-        except Exception as exc:  # closing a broken pool must never mask the real error
-            logger.debug("[Telegram] Error closing fallback transport %s: %s", ip, exc)
+        except Exception as exc:
+            logger.debug(
+                "[Telegram] Error closing fallback transport %s: %s",
+                ip,
+                exc,
+            )
+
+    async def _request_for_route(
+        self,
+        transport: httpx.AsyncBaseTransport,
+        request: httpx.Request,
+        route: str,
+    ) -> httpx.Response:
+        if not self._socket_diagnostics:
+            return await _handle_transport_request(transport, request)
+
+        request_id = str(next(_diagnostic_request_ids))
+        token = _diagnostic_request_id.set(request_id)
+        _log_socket_lifecycle(
+            event="request-started",
+            owner=self._owner_role,
+            route=route,
+            request_id=request_id,
+            local_port="none",
+        )
+        try:
+            try:
+                response = await _handle_transport_request(
+                    transport,
+                    request,
+                    diagnostic_context=(self._owner_role, route, request_id),
+                )
+            except asyncio.CancelledError:
+                _log_socket_lifecycle(
+                    event="request-cancelled",
+                    owner=self._owner_role,
+                    route=route,
+                    request_id=request_id,
+                    local_port="none",
+                )
+                raise
+            except BaseException:
+                _log_socket_lifecycle(
+                    event="request-failed",
+                    owner=self._owner_role,
+                    route=route,
+                    request_id=request_id,
+                    local_port="none",
+                )
+                raise
+
+            local_port = _response_local_port(response)
+            _log_socket_lifecycle(
+                event="response-created",
+                owner=self._owner_role,
+                route=route,
+                local_port=local_port,
+                request_id=request_id,
+            )
+            return response
+        finally:
+            _diagnostic_request_id.reset(token)
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if request.url.host != _TELEGRAM_API_HOST or not self._fallback_ips:
-            return await self._primary.handle_async_request(request)
+            return await self._request_for_route(self._primary, request, "primary")
 
         sticky_ip = self._sticky_ip
         attempt_order: list[Optional[str]] = [sticky_ip] if sticky_ip else [None]
@@ -133,7 +897,11 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
             candidate = request if ip is None else _rewrite_request_for_ip(request, ip)
             transport = self._primary if ip is None else await self._get_fallback(ip)
             try:
-                response = await transport.handle_async_request(candidate)
+                response = await self._request_for_route(
+                    transport,
+                    candidate,
+                    "primary" if ip is None else ip,
+                )
                 if ip is not None and self._sticky_ip != ip:
                     async with self._sticky_lock:
                         if self._sticky_ip != ip:

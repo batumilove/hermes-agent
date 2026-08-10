@@ -285,6 +285,77 @@ class TestDeliverResultWrapping:
         assert "Here is today's summary." in sent_content
         assert "To stop or manage this job" in sent_content
 
+    def test_agent_job_with_script_still_uses_global_wrapping(self):
+        """A data-collection script does not imply script-only semantics."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with (
+            patch("gateway.config.load_gateway_config", return_value=mock_cfg),
+            patch(
+                "tools.send_message_tool._send_to_platform",
+                new=AsyncMock(return_value={"success": True}),
+            ) as send_mock,
+            patch(
+                "cron.scheduler.load_config",
+                return_value={"cron": {"wrap_response": True}},
+            ),
+        ):
+            job = {
+                "id": "script-assisted-agent-job",
+                "name": "script-assisted report",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+                "script": "collect.py",
+                "no_agent": False,
+            }
+            _deliver_result(job, "Agent-written report.")
+
+        sent_content = (
+            send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        )
+        assert "Cronjob Response: script-assisted report" in sent_content
+        assert "Agent-written report." in sent_content
+
+    def test_no_agent_delivery_is_verbatim_when_global_wrapping_enabled(self):
+        """Script-only jobs honor the documented verbatim stdout contract."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with (
+            patch("gateway.config.load_gateway_config", return_value=mock_cfg),
+            patch(
+                "tools.send_message_tool._send_to_platform",
+                new=AsyncMock(return_value={"success": True}),
+            ) as send_mock,
+            patch(
+                "cron.scheduler.load_config",
+                return_value={"cron": {"wrap_response": True}},
+            ),
+        ):
+            job = {
+                "id": "script-only-job",
+                "name": "script-only alert",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+                "script": "alert.sh",
+                "no_agent": True,
+            }
+            _deliver_result(job, "SCRIPT_ALERT_OK")
+
+        sent_content = (
+            send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        )
+        assert sent_content == "SCRIPT_ALERT_OK"
+
 
     def test_relay_fronted_home_uses_relay_config_and_live_adapter(self, monkeypatch, tmp_path):
         """Persisted Slack home survives restart without native Slack config."""
@@ -1974,5 +2045,4 @@ class TestSetCronSessionTitle:
         out = _set_cron_session_title(db, "sess-1", "Nightly Synthesis")
         assert out == "Nightly Synthesis #2"
         db.get_next_title_in_lineage.assert_called_once_with("Nightly Synthesis")
-
 

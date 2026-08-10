@@ -3,14 +3,15 @@ after the agent's compression path mutates it.
 
 When ``_compress_context()`` rolls the agent forward into a new session, the
 agent now returns the new ``session_id`` in its result dict. The gateway
-updates ``session_entry.session_id`` in memory AND must call
-``session_store._save()`` so the new mapping survives a gateway restart.
-Without ``_save()``, the next turn loads the OLD session's transcript and
-re-triggers compression forever.
+must compare-and-swap the routing binding through
+``session_store.rebind_session_id()`` so the new mapping survives a gateway
+restart without reconciling the complete routing table in one write
+transaction. Without durable rebinding, the next turn loads the OLD session's
+transcript and re-triggers compression forever.
 
-Three sites in ``gateway/run.py`` mutate ``session_entry.session_id`` after
-a compression-induced session split. All three MUST be followed by a
-``_save()`` call. This test pins that invariant.
+Three sites in ``gateway/run.py`` publish a compression-induced session split.
+All three MUST use the compare-and-swap rebind API. This test pins that
+invariant and rejects direct assignment plus whole-index ``_save()``.
 
 ``TestCompressionSessionPropagation`` adds behavioral tests that exercise the
 actual propagation path inline, verifying that the mock session_entry update
@@ -22,7 +23,7 @@ from __future__ import annotations
 import ast
 import inspect
 import textwrap
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 from gateway import run as gateway_run
 from gateway.session_context import set_current_session_id, get_session_env
@@ -98,9 +99,20 @@ def _session_id_assignments_followed_by_save(source: str) -> list[tuple[int, boo
     return results
 
 
-def test_every_post_compression_session_id_assignment_persists():
-    """Every ``session_entry.session_id = ...`` in gateway/run.py must be
-    followed by a ``session_store._save()`` call within the same block.
+def _session_rebind_call_lines(source: str) -> list[int]:
+    """Return source lines calling the structural point-rebind API."""
+    tree = ast.parse(textwrap.dedent(source))
+    return [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "rebind_session_id"
+    ]
+
+
+def test_every_post_compression_session_id_transition_uses_point_rebind():
+    """Compression rotation must avoid whole-index routing reconciliation.
 
     Regression for #29335 — the assignment at the end of
     ``_handle_message_with_agent`` used to skip ``_save()`` while two sibling
@@ -109,18 +121,15 @@ def test_every_post_compression_session_id_assignment_persists():
     session_id, then drop it on next gateway restart.
     """
     source = inspect.getsource(gateway_run)
-    assignments = _session_id_assignments_followed_by_save(source)
-    assert assignments, (
-        "No ``session_entry.session_id = ...`` assignments found in gateway/run.py — "
-        "either the structure changed or the AST walker is broken."
+    rebind_lines = _session_rebind_call_lines(source)
+    assert len(rebind_lines) == 3, (
+        "Expected all three compression rotation sites to call "
+        f"rebind_session_id(); found {len(rebind_lines)} at {rebind_lines}."
     )
-    missing = [lineno for lineno, saved in assignments if not saved]
-    assert not missing, (
-        f"{len(missing)} ``session_entry.session_id = ...`` site(s) in gateway/run.py "
-        f"are not followed by ``session_store._save()`` within the same block "
-        f"(lines: {missing}). Every post-compression session_id update must persist "
-        f"or the next turn loads the pre-compression transcript and triggers an "
-        f"infinite compression loop. See issue #29335."
+    direct_assignments = _session_id_assignments_followed_by_save(source)
+    assert not direct_assignments, (
+        "Compression rotation must not directly assign session_entry.session_id "
+        f"and trigger whole-index _save(); found {direct_assignments}."
     )
 
 
@@ -166,19 +175,17 @@ class TestCompressionSessionPropagation:
 
         agent_result = {"session_id": new_sid, "response": "hello"}
 
-        # Inline the propagation logic exactly as it appears in gateway/run.py
-        # (around line 9459). This is the behavior we are pinning.
+        # Inline the propagation contract used by gateway/run.py.
+        session_key = "agent:main:telegram:dm:user"
         if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
-            session_entry.session_id = agent_result["session_id"]
-            session_store._save()
+            session_store.rebind_session_id(
+                session_key,
+                session_entry.session_id,
+                agent_result["session_id"],
+            )
 
-        assert session_entry.session_id == new_sid, (
-            "session_entry.session_id was not updated to the compressed session id. "
-            "The next turn would load the old transcript and re-trigger compression."
-        )
-        session_store._save.assert_called_once_with(), (
-            "session_store._save() was not called after session_entry update. "
-            "The new session mapping would not survive a gateway restart."
+        session_store.rebind_session_id.assert_called_once_with(
+            session_key, old_sid, new_sid
         )
 
 
