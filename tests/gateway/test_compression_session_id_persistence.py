@@ -22,8 +22,11 @@ class _RejectingSessionStore(_SessionStore):
         return False
 
 
-def test_agent_compression_does_not_sync_after_route_rebind_rejection(monkeypatch):
+def test_agent_compression_does_not_sync_after_route_rebind_rejection(
+    monkeypatch, tmp_path
+):
     """A failed route CAS must not publish child peer or topic bindings."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _install_compression_failure_agent(monkeypatch)
     session_store = _RejectingSessionStore()
     runner = _runner(session_store)
