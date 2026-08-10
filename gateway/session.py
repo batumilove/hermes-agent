@@ -1548,7 +1548,7 @@ class SessionStore:
         *,
         reason: str = "unspecified",
         point_key: Optional[str] = None,
-    ) -> None:
+    ) -> bool:
         """Serialize routing persistence through one durable write lock.
 
         ``point_key`` requests one state.db UPSERT while the complete snapshot
@@ -1556,7 +1556,9 @@ class SessionStore:
         tracked per key: it cannot advance the complete-snapshot watermark,
         because an older delayed reconciliation may carry an unrelated key
         deletion. If the UPSERT is unavailable or fails, fall back to the
-        ordinary atomic full reconciliation.
+        ordinary atomic full reconciliation. Return ``False`` only when a
+        structural point rebind cannot reach either state.db write path; its
+        caller then rolls the in-memory compare-and-swap back.
         """
         save_lock = getattr(self, "_save_lock", None)
         if save_lock is None:
@@ -1564,30 +1566,39 @@ class SessionStore:
             self._save_lock = save_lock
         with save_lock:
             if generation <= getattr(self, "_persisted_routing_generation", 0):
-                return
+                return True
             # Fold in single-entry upserts with a newer revision than this
             # snapshot (see _save_entry): revisions share the routing
             # generation counter, so a fast record numbered above us was
             # serialized after us and a delayed full rewrite must not
             # regress it.
+            point_already_saved = False
             fast_persisted = getattr(self, "_fast_persisted_entries", None)
             if point_key is not None and fast_persisted:
                 persisted_point = fast_persisted.get(point_key)
                 if persisted_point is not None and persisted_point[0] >= generation:
-                    return
+                    # A newer fast writer already made this point transition
+                    # durable. Keep going: fold its value into ``data`` and
+                    # refresh the restart-critical legacy mirror below.
+                    point_already_saved = True
             if fast_persisted:
                 for key, (revision, entry_json) in fast_persisted.items():
                     if revision > generation:
                         data[key] = json.loads(entry_json)
-            db_saved = False
             point_saved = False
             full_reconciled = False
             point_entry_json: Optional[str] = None
             _db = getattr(self, "_db", None)
+            db_saved = bool(_db and point_already_saved)
             if _db:
                 point_failed = False
                 point_saver = getattr(_db, "save_gateway_routing_entry", None)
-                if point_key is not None and point_key in data and callable(point_saver):
+                if (
+                    not db_saved
+                    and point_key is not None
+                    and point_key in data
+                    and callable(point_saver)
+                ):
                     try:
                         point_entry_json = json.dumps(data[point_key])
                         point_saver(
@@ -1621,6 +1632,8 @@ class SessionStore:
                         logger.warning(
                             "gateway.session: state.db routing save failed: %s", exc
                         )
+            if point_key is not None and _db and not db_saved:
+                return False
             if getattr(self, "_write_sessions_json", True) or not db_saved:
                 try:
                     self._save_sessions_json(data)
@@ -1654,6 +1667,7 @@ class SessionStore:
                     fast_persisted = {}
                     self._fast_persisted_entries = fast_persisted
                 fast_persisted[point_key] = (generation, point_entry_json)
+            return True
 
     def _save_sessions_json(self, data: Dict[str, Any]) -> None:
         """Write the legacy sessions.json mirror of the routing index."""
@@ -1736,13 +1750,19 @@ class SessionStore:
                 return False
             entry.session_id = new_session_id
             data, generation = self._snapshot_routing_locked()
-        self._persist_routing_data(
+        persisted = self._persist_routing_data(
             data,
             generation,
             reason="rebind_session_id",
             point_key=session_key,
         )
-        return True
+        if persisted:
+            return True
+        with self._lock:
+            current = self._entries.get(session_key)
+            if current is entry and current.session_id == new_session_id:
+                current.session_id = expected_session_id
+        return False
 
     def _save_entry(
         self,
@@ -1861,9 +1881,13 @@ class SessionStore:
                         for key, current in self._entries.items()
                     }
             fallback_data[session_key] = candidate_entry
-            self._persist_routing_data(fallback_data, revision)
+            self._persist_routing_data(
+                fallback_data,
+                revision,
+                reason="single_entry_fallback",
+            )
         else:
-            self._save_entries()
+            self._save_entries(reason="single_entry_fallback")
 
     def _resolve_profile_for_key(self, source: Optional[SessionSource] = None) -> Optional[str]:
         """Return the profile namespace for session keys, or None when off.
