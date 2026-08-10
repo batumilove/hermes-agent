@@ -6061,13 +6061,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         else:
             base = base_title
 
-        # Find all existing numbered variants
-        # Escape SQL LIKE wildcards (%, _) in the base to prevent false matches
-        escaped = base.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        with self._lock:
-            cursor = self._conn.execute(
-                "SELECT title FROM sessions WHERE title = ? OR title LIKE ? ESCAPE '\\'",
-                (base, f"{escaped} #%"),
+        # Use two bounded index lookups rather than a LIKE scan. ``$`` is the
+        # immediate ASCII successor of ``#``, so ["base #", "base $") is the
+        # exact binary-collation prefix range for numbered lineage candidates.
+        # The unique partial title index covers both arms; the dedicated read
+        # connection keeps this query out of the SessionDB writer-lock convoy.
+        numbered_prefix = f"{base} #"
+        numbered_prefix_end = f"{base} $"
+        with self._read_ctx() as conn:
+            cursor = conn.execute(
+                "SELECT title FROM sessions WHERE title = ? "
+                "UNION ALL "
+                "SELECT title FROM sessions WHERE title >= ? AND title < ?",
+                (base, numbered_prefix, numbered_prefix_end),
             )
             existing = [row["title"] for row in cursor.fetchall()]
 
@@ -6076,8 +6082,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         # Find the highest number
         max_num = 1  # The unnumbered original counts as #1
+        numbered_title = re.compile(rf"^{re.escape(base)} #(\d+)$")
         for t in existing:
-            m = re.match(r'^.* #(\d+)$', t)
+            m = numbered_title.match(t)
             if m:
                 max_num = max(max_num, int(m.group(1)))
 
