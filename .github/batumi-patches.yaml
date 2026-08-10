@@ -138,6 +138,18 @@ patches:
       - scripts/run_tests.sh tests/agent/test_compression_concurrent_fork.py
     retirement: Remove when upstream prevents adopted transcript duplication with equivalent concurrent-fork coverage.
 
+  - id: post-tool-none-compressor-guard
+    kind: core
+    rationale: >-
+      Allow auxiliary agents without a context compressor to complete the
+      post-tool loop without a hidden NoneType failure or outer-loop error.
+    paths:
+      - agent/conversation_loop.py
+      - tests/run_agent/test_post_tool_compression_attempt_cap.py
+    tests:
+      - scripts/run_tests.sh tests/run_agent/test_post_tool_compression_attempt_cap.py
+    retirement: Remove when upstream safely handles missing post-tool context compressors with equivalent regression coverage.
+
   - id: test-dns-isolation
     kind: compatibility
     rationale: >-
