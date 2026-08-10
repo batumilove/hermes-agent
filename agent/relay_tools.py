@@ -45,7 +45,11 @@ def execute(
                 else None
             )
             try:
-                return callback(observed_args)
+                # Everything the tool transitively calls (including auxiliary
+                # LLM work forwarded to worker threads) must bypass managed
+                # Relay execution while preserving the fork's sync bridge loop.
+                with relay_runtime.managed_callback_guard():
+                    return callback(observed_args)
             finally:
                 if token is not None:
                     relay_runtime.reset_sync_bridge_loop(token)
@@ -110,7 +114,12 @@ def _jsonable(value: Any) -> Any:
     model_dump = getattr(value, "model_dump", None)
     if callable(model_dump):
         try:
-            return _jsonable(model_dump(mode="json"))
+            # warnings=False: suppress pydantic's serializer UserWarnings on
+            # generic-union SDK models; they would leak to the CLI mid-turn.
+            try:
+                return _jsonable(model_dump(mode="json", warnings=False))
+            except TypeError:
+                return _jsonable(model_dump())
         except Exception:
             pass
     try:
