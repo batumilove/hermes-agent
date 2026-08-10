@@ -754,3 +754,56 @@ class TestDelayedWriteOrdering:
         assert upserts == []  # the delayed UPSERT was skipped
         assert _routing_row(store, entry.session_key)["last_prompt_tokens"] == 2
         store._db.close()
+
+
+def test_newer_point_write_does_not_suppress_older_full_deletion(
+    tmp_path, monkeypatch
+):
+    """A point UPSERT cannot advance the complete-snapshot watermark.
+
+    A delayed full reconciliation can carry an unrelated route deletion. If a
+    newer point write marks its generation as a complete snapshot, the delayed
+    writer is skipped and the deleted route survives in state.db forever.
+    """
+    store = _make_store(tmp_path, monkeypatch, write_sessions_json=False)
+    first_source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="first",
+        chat_name="first",
+        chat_type="dm",
+        user_id="first",
+    )
+    second_source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="second",
+        chat_name="second",
+        chat_type="dm",
+        user_id="second",
+    )
+    first = store.get_or_create_session(first_source)
+    second = store.get_or_create_session(second_source)
+
+    with store._lock:
+        store._entries.pop(first.session_key)
+        deletion_snapshot, deletion_generation = store._snapshot_routing_locked()
+
+    with store._lock:
+        store._entries[second.session_key].last_prompt_tokens = 42
+        point_snapshot, point_generation = store._snapshot_routing_locked()
+    store._persist_routing_data(
+        point_snapshot,
+        point_generation,
+        reason="newer_point",
+        point_key=second.session_key,
+    )
+
+    store._persist_routing_data(
+        deletion_snapshot,
+        deletion_generation,
+        reason="older_full_delete",
+    )
+
+    rows = store._db.load_gateway_routing_entries(scope=store._routing_scope())
+    assert first.session_key not in rows
+    assert json.loads(rows[second.session_key])["last_prompt_tokens"] == 42
+    store._db.close()
