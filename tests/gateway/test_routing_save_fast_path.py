@@ -412,6 +412,29 @@ class TestStructuralPointRebind:
         assert mirror[entry.session_key]["session_id"] == new_id
         store._db.close()
 
+    def test_rebind_rolls_back_when_all_state_db_writes_fail(
+        self, tmp_path, monkeypatch
+    ):
+        store = _make_store(tmp_path, monkeypatch)
+        entry = store.get_or_create_session(_source())
+        old_id = entry.session_id
+        new_id = old_id + "_child"
+        mirror_path = tmp_path / "sessions" / "sessions.json"
+
+        def fail_write(*args, **kwargs):
+            raise RuntimeError("state.db unavailable")
+
+        monkeypatch.setattr(store._db, "save_gateway_routing_entry", fail_write)
+        monkeypatch.setattr(store._db, "replace_gateway_routing_entries", fail_write)
+
+        assert not store.rebind_session_id(entry.session_key, old_id, new_id)
+
+        assert store._entries[entry.session_key].session_id == old_id
+        assert _routing_row(store, entry.session_key)["session_id"] == old_id
+        mirror = json.loads(mirror_path.read_text(encoding="utf-8"))
+        assert mirror[entry.session_key]["session_id"] == old_id
+        store._db.close()
+
 
 class TestFullRewriteTelemetry:
     def test_bulk_rewrite_propagates_content_free_reason(
