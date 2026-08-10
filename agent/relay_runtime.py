@@ -316,6 +316,33 @@ class RelayRuntime:
 
     def close_session(self, event: dict[str, Any]) -> None:
         """Close one session scope and remove it from the core registry."""
+        session_id, session, failures = self._begin_close_session(event)
+        if session is None:
+            return
+        try:
+            self.relay.subscribers.flush()
+        except Exception as exc:
+            failures.append(f"subscriber flush failed: {exc}")
+        self._finish_close_session(session_id, session, failures)
+
+    async def close_session_async(self, event: dict[str, Any]) -> None:
+        """Close one session scope without blocking the caller's event loop."""
+        session_id, session, failures = self._begin_close_session(event)
+        if session is None:
+            return
+        try:
+            try:
+                await self.relay.subscribers.flush_async()
+            except Exception as exc:
+                failures.append(f"subscriber flush failed: {exc}")
+        finally:
+            self._finish_close_session(session_id, session, failures)
+
+    def _begin_close_session(
+        self,
+        event: dict[str, Any],
+    ) -> tuple[str, RelaySession | None, list[str]]:
+        """Pop a session scope once, ready for a sync or async flush barrier."""
         session_id = _session_id(event)
         with self._sessions_lock:
             session = self._sessions.get(session_id)
@@ -323,11 +350,11 @@ class RelayRuntime:
             with self._sessions_lock:
                 self._subagent_parents.pop(session_id, None)
                 self._subagent_parent_handles.pop(session_id, None)
-            return
+            return session_id, None, []
         failures: list[str] = []
         with session.lock:
             if session.closing:
-                return
+                return session_id, None, failures
             session.closing = True
             if session.handle is not None:
                 try:
@@ -344,10 +371,15 @@ class RelayRuntime:
                     )
                 except Exception as exc:
                     failures.append(f"session scope close failed: {exc}")
-        try:
-            self.relay.subscribers.flush()
-        except Exception as exc:
-            failures.append(f"subscriber flush failed: {exc}")
+        return session_id, session, failures
+
+    def _finish_close_session(
+        self,
+        session_id: str,
+        session: RelaySession,
+        failures: list[str],
+    ) -> None:
+        """Remove a closed session after its subscriber barrier completes."""
         with self._sessions_lock:
             if self._sessions.get(session_id) is session:
                 self._sessions.pop(session_id, None)
@@ -848,6 +880,16 @@ class RelaySessionCoordinator:
         host = self.registry.for_profile(profile_key, create=False)
         if isinstance(host, RelayRuntime):
             host.close_session({"session_id": session_id})
+
+    async def finalize_conversation_async(
+        self,
+        *,
+        profile_key: str,
+        session_id: str,
+    ) -> None:
+        host = self.registry.for_profile(profile_key, create=False)
+        if isinstance(host, RelayRuntime):
+            await host.close_session_async({"session_id": session_id})
 
     def shutdown_profile(self, profile_key: str) -> None:
         self.registry.shutdown_profile(profile_key)

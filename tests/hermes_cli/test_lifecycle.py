@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from agent import relay_runtime
 from hermes_cli import lifecycle, observability, plugins
 
@@ -40,6 +42,37 @@ def test_finalize_session_closes_core_before_plugin_export(monkeypatch):
     monkeypatch.setattr(relay_runtime, "current_profile_key", lambda: "profile-1")
 
     lifecycle.finalize_session(session_id="session-1", platform="cli")
+
+    assert [call[0] for call in calls] == ["builtin", "core", "plugin"]
+    assert calls[1][1] == {
+        "profile_key": "profile-1",
+        "session_id": "session-1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_finalize_session_async_awaits_core_before_plugin_export(monkeypatch):
+    calls = []
+    manager = SimpleNamespace(
+        invoke_hook=lambda name, **kwargs: calls.append(("plugin", name, kwargs)) or []
+    )
+
+    async def _finalize_conversation_async(**kwargs):
+        calls.append(("core", kwargs))
+
+    coordinator = SimpleNamespace(
+        finalize_conversation_async=_finalize_conversation_async,
+    )
+    monkeypatch.setattr(
+        observability,
+        "observe_lifecycle",
+        lambda name, **kwargs: calls.append(("builtin", name, kwargs)),
+    )
+    monkeypatch.setattr(plugins, "invoke_hook", manager.invoke_hook)
+    monkeypatch.setattr(relay_runtime, "SESSION_COORDINATOR", coordinator)
+    monkeypatch.setattr(relay_runtime, "current_profile_key", lambda: "profile-1")
+
+    await lifecycle.finalize_session_async(session_id="session-1", platform="gateway")
 
     assert [call[0] for call in calls] == ["builtin", "core", "plugin"]
     assert calls[1][1] == {

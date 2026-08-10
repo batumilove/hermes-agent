@@ -12523,10 +12523,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 for key, entry in _expired_entries:
                     try:
                         try:
-                            from hermes_cli.lifecycle import finalize_session
+                            from hermes_cli.lifecycle import finalize_session_async
                             _parts = key.split(":")
                             _platform = _parts[2] if len(_parts) > 2 else ""
-                            finalize_session(
+                            await finalize_session_async(
                                 session_id=entry.session_id,
                                 platform=_platform,
                                 reason="session_expired",

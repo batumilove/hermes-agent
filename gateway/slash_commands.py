@@ -223,8 +223,8 @@ class GatewaySlashCommandsMixin:
 
         # Fire plugin on_session_finalize hook (session boundary)
         try:
-            from hermes_cli.lifecycle import finalize_session
-            finalize_session(
+            from hermes_cli.lifecycle import finalize_session_async
+            await finalize_session_async(
                 session_id=_old_sid,
                 platform=source.platform.value if source.platform else "",
                 reason="new_session",

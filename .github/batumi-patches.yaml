@@ -287,11 +287,18 @@ patches:
       - agent/relay_llm.py
       - agent/relay_runtime.py
       - agent/relay_tools.py
+      - gateway/run.py
+      - gateway/slash_commands.py
+      - hermes_cli/lifecycle.py
       - hermes_cli/observability/relay_shared_metrics.py
       - tests/agent/test_relay_tools.py
+      - tests/gateway/test_session_boundary_hooks.py
+      - tests/gateway/test_session_model_reset.py
+      - tests/hermes_cli/test_lifecycle.py
       - tests/hermes_cli/test_relay_shared_metrics_runtime.py
     tests:
       - scripts/run_tests.sh tests/hermes_cli/test_relay_shared_metrics_runtime.py tests/hermes_cli/test_relay_shared_metrics.py tests/agent/test_relay_llm.py tests/agent/test_relay_tools.py tests/agent/test_auxiliary_relay.py
+      - scripts/run_tests.sh tests/hermes_cli/test_lifecycle.py tests/gateway/test_session_boundary_hooks.py tests/gateway/test_session_model_reset.py
     retirement: Remove when upstream isolates overlapping Relay scope lifetimes, preserves owner-loop execution for nested synchronous LLM calls and streams, and passes the same real-binding lifecycle contracts.
 
   - id: cron-activegraph-lifecycle-telemetry

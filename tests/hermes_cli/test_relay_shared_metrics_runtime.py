@@ -50,6 +50,7 @@ class _Relay:
             register=self._register,
             deregister=self._deregister,
             flush=self._flush,
+            flush_async=self._flush_async,
         )
         self.get_scope_stack = self._get_scope_stack
 
@@ -205,6 +206,9 @@ class _Relay:
 
     def _flush(self) -> None:
         self.events.append(("subscribers.flush",))
+
+    async def _flush_async(self) -> None:
+        self.events.append(("subscribers.flush_async",))
 
 
 @pytest.fixture
@@ -1271,6 +1275,21 @@ def test_sync_session_runner_releases_lock_before_callback(direct_runtime):
     assert contender.is_alive() is False
 
 
+@pytest.mark.asyncio
+async def test_async_session_close_uses_async_subscriber_barrier(direct_runtime):
+    from agent import relay_runtime as core_relay_runtime
+
+    runtime = core_relay_runtime.get_runtime()
+    assert runtime is not None
+    runtime.ensure_session({"session_id": "async-close"})
+
+    await runtime.close_session_async({"session_id": "async-close"})
+
+    assert runtime.get_session("async-close") is None
+    assert ("subscribers.flush_async",) in direct_runtime.events
+    assert ("subscribers.flush",) not in direct_runtime.events
+
+
 def test_real_binding_overlapping_turns_close_out_of_order_without_orphans(
     real_binding_runtime,
     caplog,
@@ -1490,7 +1509,7 @@ async def test_real_binding_parallel_physical_calls_use_isolated_scope_stacks(
     context_b.run(coordinator.end_turn, turn_b, outcome="success")
     coordinator.release_conversation(lease_a)
     coordinator.release_conversation(lease_b)
-    coordinator.finalize_conversation(
+    await coordinator.finalize_conversation_async(
         profile_key=profile_key,
         session_id="physical-session",
     )
