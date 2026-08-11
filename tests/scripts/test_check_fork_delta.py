@@ -69,6 +69,53 @@ def _fixture_repo(tmp_path: Path, patterns: list[str]) -> tuple[Path, Path]:
     return repo, manifest_path
 
 
+def _reconciled_fixture_repo(tmp_path: Path) -> tuple[Path, Path, str]:
+    """Build a fork head whose trusted upstream base is not its ancestor."""
+    repo = tmp_path / "reconciled-repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test")
+    (repo / "upstream.txt").write_text("upstream\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "trusted upstream")
+    upstream_base = _git(repo, "rev-parse", "HEAD")
+
+    _git(repo, "checkout", "--orphan", "fork", "-q")
+    _git(repo, "rm", "-rf", "--cached", ".")
+    for path in repo.iterdir():
+        if path.name != ".git" and path.is_file():
+            path.unlink()
+    (repo / ".github").mkdir()
+    (repo / ".github" / "upstream-base").write_text(
+        f"{upstream_base}\n", encoding="utf-8"
+    )
+    manifest = {
+        "version": 1,
+        "upstream": {
+            "repository": "example/project",
+            "branch": "main",
+            "base_file": ".github/upstream-base",
+        },
+        "patches": [
+            {
+                "id": "owned",
+                "kind": "core",
+                "rationale": "fixture",
+                "paths": [".github/**", "fork.txt", "upstream.txt"],
+                "tests": ["pytest"],
+                "retirement": "when upstream is equivalent",
+            }
+        ],
+    }
+    manifest_path = repo / ".github" / "batumi-patches.yaml"
+    manifest_path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    (repo / "fork.txt").write_text("fork\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "reconciled fork")
+    return repo, manifest_path, upstream_base
+
+
 def test_classify_paths_reports_every_matching_owner() -> None:
     owners = [
         MODULE.PatchOwner("broad", "core", ("src/**",)),
@@ -96,6 +143,22 @@ def test_check_delta_passes_when_all_paths_are_owned(
     repo, manifest = _fixture_repo(tmp_path, ["src/**", ".github/**", "outside.txt"])
     monkeypatch.setattr(MODULE, "ROOT", repo)
     report = MODULE.check_delta(manifest, cwd=repo)
+    assert report["unexplained"] == []
+
+
+def test_check_delta_accepts_trusted_upstream_base_outside_fork_ancestry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, manifest, upstream_base = _reconciled_fixture_repo(tmp_path)
+    monkeypatch.setattr(MODULE, "ROOT", repo)
+
+    report = MODULE.check_delta(
+        manifest,
+        cwd=repo,
+        upstream_ref=upstream_base,
+    )
+
+    assert report["base"] == upstream_base
     assert report["unexplained"] == []
 
 

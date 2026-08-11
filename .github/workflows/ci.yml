@@ -72,8 +72,15 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Fetch canonical upstream history
+        run: |
+          git remote add canonical-upstream https://github.com/NousResearch/hermes-agent.git
+          git fetch --no-tags --filter=blob:none canonical-upstream \
+            main:refs/remotes/canonical-upstream/main
       - name: Require every upstream delta path to have an owner
-        run: python3 scripts/check_fork_delta.py
+        run: >-
+          python3 scripts/check_fork_delta.py
+          --upstream-ref refs/remotes/canonical-upstream/main
 
   fork-contracts:
     name: Fork compatibility contracts

@@ -38,9 +38,18 @@ def test_fork_contracts_install_the_canonical_test_environment() -> None:
 def test_contributor_check_excludes_accepted_upstream_history() -> None:
     text = CONTRIBUTOR_WORKFLOW.read_text(encoding="utf-8")
 
-    assert "COMPARE_REF=origin/main" in text
-    assert "COMPARE_REF=$(tr -d '[:space:]' < .github/upstream-base)" in text
-    assert 'git merge-base --is-ancestor "$COMPARE_REF" HEAD' in text
+    assert 'BASE_REF="${GITHUB_BASE_REF:-main}"' in text
+    assert 'git fetch --no-tags origin "${BASE_REF}"' in text
+    assert 'COMPARE_REF="origin/${BASE_REF}"' in text
+    assert ".github/upstream-base" not in text
     assert (ROOT / "contributors" / "emails" / "hermes@local").read_text(
         encoding="utf-8"
     ).splitlines()[0] == "batumilove"
+
+
+def test_fork_delta_fetches_and_validates_the_canonical_upstream_ref() -> None:
+    text = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "https://github.com/NousResearch/hermes-agent.git" in text
+    assert "refs/remotes/canonical-upstream/main" in text
+    assert "--upstream-ref refs/remotes/canonical-upstream/main" in text

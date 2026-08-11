@@ -138,6 +138,7 @@ def check_delta(
     manifest_path: Path,
     *,
     head: str = "HEAD",
+    upstream_ref: str | None = None,
     cwd: Path = ROOT,
 ) -> dict[str, Any]:
     base_file, owners = load_manifest(manifest_path)
@@ -150,7 +151,9 @@ def check_delta(
 
     resolved_head = _git("rev-parse", head, cwd=cwd)
     _git("cat-file", "-e", f"{base}^{{commit}}", cwd=cwd)
-    _git("merge-base", "--is-ancestor", base, resolved_head, cwd=cwd)
+    trusted_ref = upstream_ref or resolved_head
+    _git("cat-file", "-e", f"{trusted_ref}^{{commit}}", cwd=cwd)
+    _git("merge-base", "--is-ancestor", base, trusted_ref, cwd=cwd)
     changed = _git(
         "diff",
         "--name-only",
@@ -162,6 +165,7 @@ def check_delta(
     return {
         "base": base,
         "head": resolved_head,
+        "upstream_ref": upstream_ref,
         "changed_count": len(changed),
         "unexplained": classified.pop("unexplained"),
         "patches": {key: value for key, value in classified.items() if value},
@@ -172,11 +176,22 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--head", default="HEAD")
+    parser.add_argument(
+        "--upstream-ref",
+        help=(
+            "trusted canonical-upstream ref that must contain the recorded base; "
+            "when omitted, the recorded base must be an ancestor of --head"
+        ),
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
     try:
-        report = check_delta(args.manifest.resolve(), head=args.head)
+        report = check_delta(
+            args.manifest.resolve(),
+            head=args.head,
+            upstream_ref=args.upstream_ref,
+        )
     except DeltaError as exc:
         print(f"fork delta check failed: {exc}", file=sys.stderr)
         return 2

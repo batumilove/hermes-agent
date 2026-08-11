@@ -23,18 +23,22 @@ jobs:
 
       - name: Check for unmapped contributor emails
         id: check-emails
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
-          # Fork rebuilds deliberately start from current upstream rather than
-          # the fork's stale main. Do not classify accepted upstream history as
-          # newly authored fork commits.
-          COMPARE_REF=origin/main
-          if [ -f .github/upstream-base ]; then
-            COMPARE_REF=$(tr -d '[:space:]' < .github/upstream-base)
-            git merge-base --is-ancestor "$COMPARE_REF" HEAD || {
-              echo "Recorded upstream base is not an ancestor of HEAD: $COMPARE_REF"
-              exit 1
-            }
+          # Check only commits introduced by this event. The canonical upstream
+          # baseline is intentionally not an ancestor after a linear fork rebuild.
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            BASE_REF="${GITHUB_BASE_REF:-main}"
+            git fetch --no-tags origin "${BASE_REF}"
+            COMPARE_REF="origin/${BASE_REF}"
+          else
+            COMPARE_REF="${BEFORE_SHA:-HEAD^}"
+            case "$COMPARE_REF" in
+              0000000000000000000000000000000000000000) COMPARE_REF=HEAD^ ;;
+            esac
           fi
+          git cat-file -e "${COMPARE_REF}^{commit}"
           MERGE_BASE=$(git merge-base "$COMPARE_REF" HEAD)
 
           # Find any new author emails in this PR's commits
