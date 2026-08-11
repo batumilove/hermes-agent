@@ -41,6 +41,8 @@ INGESTION_STALE_SECONDS = int(os.environ.get("HONCHO_MONITOR_INGESTION_STALE_SEC
 DERIVER_STALE_ACTIVE_SECONDS = int(os.environ.get("HONCHO_MONITOR_DERIVER_STALE_ACTIVE_SECONDS", "600"))
 DREAM_STALE_ACTIVE_SECONDS = int(os.environ.get("HONCHO_MONITOR_DREAM_STALE_ACTIVE_SECONDS", "1800"))
 SSH_FAILURE_ALERT_THRESHOLD = int(os.environ.get("HONCHO_MONITOR_SSH_FAILURE_ALERT_THRESHOLD", "2"))
+SPARK_CHAT_DEGRADED_SECONDS = 5.0
+SPARK_CHAT_CRITICAL_SECONDS = 30.0
 LOCAL_DISK_MIN_FREE_BYTES = 10 * 1024**3
 LOCAL_DISK_MAX_USED_PERCENT = 95
 
@@ -283,6 +285,27 @@ def _embedding_vector_dimensions_display(embed: dict[str, str], db: dict[str, An
     return ""
 
 
+def _has_fresh_dream_contention(snapshot: HonchoSnapshot) -> bool:
+    spark = snapshot.spark_goat or {}
+    deriver = snapshot.deriver or {}
+    return (
+        bool(spark.get("ok"))
+        and not bool(spark.get("thinking"))
+        and float(spark.get("latency_s", 0.0) or 0.0) > SPARK_CHAT_DEGRADED_SECONDS
+        and int(deriver.get("active_dream_count") or 0) > 0
+        and int(float(deriver.get("active_dream_oldest_age_s") or 0)) < DREAM_STALE_ACTIVE_SECONDS
+    )
+
+
+def next_dream_contention_streak(
+    snapshot: HonchoSnapshot,
+    previous_state: dict[str, Any] | None = None,
+) -> int:
+    if not _has_fresh_dream_contention(snapshot):
+        return 0
+    return int((previous_state or {}).get("dream_contention_streak", 0)) + 1
+
+
 def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None = None) -> list[str]:
     alerts: list[str] = []
 
@@ -346,15 +369,20 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
         alerts.append("spark-goat chat failed")
     elif spark.get("thinking"):
         alerts.append("spark-goat thinking still enabled")
-    elif float(spark.get("latency_s", 0.0) or 0.0) > 5.0:
+    elif float(spark.get("latency_s", 0.0) or 0.0) > SPARK_CHAT_DEGRADED_SECONDS:
         deriver = snapshot.deriver or {}
         active_dream_count = int(deriver.get("active_dream_count") or 0)
         active_dream_age_s = int(float(deriver.get("active_dream_oldest_age_s") or 0))
         if active_dream_count > 0 and active_dream_age_s < DREAM_STALE_ACTIVE_SECONDS:
-            alerts.append(
-                "spark-goat dream contention "
-                f"(chat latency {float(spark.get('latency_s') or 0.0):.1f}s)"
-            )
+            previous_streak = int((previous_state or {}).get("dream_contention_streak", 0))
+            if (
+                float(spark.get("latency_s") or 0.0) >= SPARK_CHAT_CRITICAL_SECONDS
+                or previous_streak >= 1
+            ):
+                alerts.append(
+                    "spark-goat dream contention "
+                    f"(chat latency {float(spark.get('latency_s') or 0.0):.1f}s)"
+                )
         else:
             alerts.append("spark-goat chat latency degraded")
 
@@ -615,14 +643,22 @@ def format_report(snapshot: dict[str, Any] | HonchoSnapshot, previous_state: dic
         lines.append(f"  {trend}")
 
     lines.append(f"📋 Queue: {snapshot.queue.get('pending', 0)} pending · {snapshot.queue.get('done', 0)} done")
-    lines.append(
-        f"⚠️ Recent errors: save-repr={snapshot.errors.get('save_representation', 0)} · 401={snapshot.errors.get('four_oh_one', 0)}"
-    )
+    save_representation_errors = int(snapshot.errors.get("save_representation", 0))
+    auth_errors = int(snapshot.errors.get("four_oh_one", 0))
+    if save_representation_errors or auth_errors:
+        lines.append(f"⚠️ Recent errors: save-repr={save_representation_errors} · 401={auth_errors}")
 
     spark = snapshot.spark_goat
     spark_tag = " ⚠️thinking" if spark.get("thinking") else ""
     spark_detail = f" (model={spark.get('model', '?')})" if spark.get("model") else ""
-    lines.append(f"{ '🟢' if spark.get('ok') else '🔴' } spark-goat chat: {_fmt_s(spark.get('latency_s'))}{spark_tag}{spark_detail}")
+    spark_latency = float(spark.get("latency_s", 0.0) or 0.0)
+    if not spark.get("ok"):
+        spark_icon = "🔴"
+    elif spark.get("thinking") or spark_latency > SPARK_CHAT_DEGRADED_SECONDS:
+        spark_icon = "🟠"
+    else:
+        spark_icon = "🟢"
+    lines.append(f"{spark_icon} spark-goat chat: {_fmt_s(spark_latency)}{spark_tag}{spark_detail}")
 
     deriver = snapshot.deriver
     if deriver:
@@ -1110,6 +1146,7 @@ def should_emit_report(snapshot: HonchoSnapshot, previous_state: dict[str, Any] 
 def main() -> int:
     snapshot, current_state = collect_snapshot()
     previous_state = load_state(STATE_PATH)
+    current_state["dream_contention_streak"] = next_dream_contention_streak(snapshot, previous_state)
     report_snapshot = restore_last_valid_remote_sample(snapshot, previous_state)
     if should_emit_report(report_snapshot, previous_state=previous_state):
         report = format_report(report_snapshot, previous_state=previous_state)
