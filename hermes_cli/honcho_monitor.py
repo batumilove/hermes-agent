@@ -261,7 +261,7 @@ def _trend_line(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None)
     webhook_delta = _queue_type_delta(snapshot, previous_state, "webhook")
     dream_delta = _queue_type_delta(snapshot, previous_state, "dream")
     return (
-        "Δ15m: "
+        "Δ since previous sample: "
         f"representation +{rep_delta} · "
         f"reconciler +{reconciler_delta} · "
         f"webhook +{webhook_delta} · "
@@ -304,6 +304,66 @@ def next_dream_contention_streak(
     if not _has_fresh_dream_contention(snapshot):
         return 0
     return int((previous_state or {}).get("dream_contention_streak", 0)) + 1
+
+
+def _has_representation_stall_candidate(
+    snapshot: HonchoSnapshot,
+    previous_state: dict[str, Any] | None,
+) -> bool:
+    if not previous_state:
+        return False
+    prev_rep_state = previous_state.get("queue_by_type", {}).get("representation")
+    if prev_rep_state is None:
+        return False
+
+    deriver = snapshot.deriver or {}
+    if int(deriver.get("runs_15m") or 0) > 0:
+        return False
+
+    active_count = int(deriver.get("active_count") or 0)
+    has_per_task_active_stats = "active_representation_count" in deriver
+    active_representation_count = (
+        int(deriver.get("active_representation_count") or 0)
+        if has_per_task_active_stats
+        else active_count
+    )
+    active_dream_count = int(deriver.get("active_dream_count") or 0)
+    active_dream_oldest_age_s = int(float(deriver.get("active_dream_oldest_age_s") or 0))
+    active_other_count = int(deriver.get("active_other_count") or 0)
+    active_other_oldest_age_s = int(float(deriver.get("active_other_oldest_age_s") or 0))
+    try:
+        deriver_workers = int(snapshot.pipeline.get("deriver", {}).get("workers") or 0)
+    except (TypeError, ValueError):
+        deriver_workers = 0
+    sole_worker_has_fresh_non_representation = deriver_workers == 1 and (
+        (active_dream_count > 0 and active_dream_oldest_age_s < DREAM_STALE_ACTIVE_SECONDS)
+        or (active_other_count > 0 and active_other_oldest_age_s < DERIVER_STALE_ACTIVE_SECONDS)
+    )
+
+    rep_done = int(snapshot.queue_by_type.get("representation", {}).get("done", 0))
+    prev_rep_done = int(prev_rep_state.get("done", 0))
+    rep_delta = max(0, rep_done - prev_rep_done)
+    prev_docs = int(previous_state.get("documents_total", snapshot.db.get("documents_total", 0)))
+    docs_delta = max(0, int(snapshot.db.get("documents_total", 0)) - prev_docs)
+    rep_pending = int(snapshot.queue_by_type.get("representation", {}).get("pending", 0))
+    prev_rep_pending = int(prev_rep_state.get("pending", 0))
+    return (
+        active_representation_count == 0
+        and not sole_worker_has_fresh_non_representation
+        and rep_pending > 0
+        and prev_rep_pending > 0
+        and rep_delta == 0
+        and docs_delta == 0
+    )
+
+
+def next_representation_stall_streak(
+    snapshot: HonchoSnapshot,
+    previous_state: dict[str, Any] | None = None,
+) -> int:
+    if not _has_representation_stall_candidate(snapshot, previous_state):
+        return 0
+    return int((previous_state or {}).get("representation_stall_streak", 0)) + 1
 
 
 def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None = None) -> list[str]:
@@ -408,14 +468,6 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
     active_dream_oldest_age_s = int(float(deriver.get("active_dream_oldest_age_s") or 0))
     active_other_count = int(deriver.get("active_other_count") or 0)
     active_other_oldest_age_s = int(float(deriver.get("active_other_oldest_age_s") or 0))
-    try:
-        deriver_workers = int(snapshot.pipeline.get("deriver", {}).get("workers") or 0)
-    except (TypeError, ValueError):
-        deriver_workers = 0
-    sole_worker_has_fresh_non_representation = deriver_workers == 1 and (
-        (active_dream_count > 0 and active_dream_oldest_age_s < DREAM_STALE_ACTIVE_SECONDS)
-        or (active_other_count > 0 and active_other_oldest_age_s < DERIVER_STALE_ACTIVE_SECONDS)
-    )
 
     if previous_state:
         prev_rep_state = previous_state.get("queue_by_type", {}).get("representation")
@@ -431,19 +483,9 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
             if rep_delta >= 5 and rep_delta > docs_delta:
                 alerts.append("Representation queue advancing faster than documents")
 
-            rep_pending = int(snapshot.queue_by_type.get("representation", {}).get("pending", 0))
-            prev_rep_pending = int(prev_rep_state.get("pending", 0))
-            # Active representation work is handled by the task-aware stale-work
-            # check below. With one worker, any fresh active unit explains why the
-            # representation backlog cannot advance; with multiple workers,
-            # dream/other work must not mask an idle representation backlog.
             if (
-                active_representation_count == 0
-                and not sole_worker_has_fresh_non_representation
-                and rep_pending > 0
-                and prev_rep_pending > 0
-                and rep_delta == 0
-                and docs_delta == 0
+                _has_representation_stall_candidate(snapshot, previous_state)
+                and int(previous_state.get("representation_stall_streak", 0)) >= 1
             ):
                 alerts.append("Deriver stalled: representation backlog with no progress")
 
@@ -1147,6 +1189,9 @@ def main() -> int:
     snapshot, current_state = collect_snapshot()
     previous_state = load_state(STATE_PATH)
     current_state["dream_contention_streak"] = next_dream_contention_streak(snapshot, previous_state)
+    current_state["representation_stall_streak"] = next_representation_stall_streak(
+        snapshot, previous_state
+    )
     report_snapshot = restore_last_valid_remote_sample(snapshot, previous_state)
     if should_emit_report(report_snapshot, previous_state=previous_state):
         report = format_report(report_snapshot, previous_state=previous_state)

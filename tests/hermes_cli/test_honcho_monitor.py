@@ -89,7 +89,7 @@ def test_format_report_shows_loaded_config_dimensions_latency_and_alerts(tmp_pat
     assert "Embedding: text-embedding-3-small @ openai" in report
     assert "Embedding env: model=text-embedding-3-small base_url=https://api.openai.com/v1" in report
     assert "Embedding DB: docs 89/94 dims=768 · messages 80/80 dims=768" in report
-    assert "Δ15m: representation +5 · reconciler +5 · webhook +0 · dream +0 · docs +3" in report
+    assert "Δ since previous sample: representation +5 · reconciler +5 · webhook +0 · dream +0 · docs +3" in report
     assert "Recent errors: save-repr=2 · 401=1" in report
     assert "spark-goat chat: 1.2s" in report
     assert "⚠️" in report
@@ -589,7 +589,7 @@ def test_reconciler_churn_does_not_trigger_queue_doc_drift_alert():
 
     report = hm.format_report(snapshot, previous_state=prev, now=hm.datetime(2026, 5, 28, 23, 51))
 
-    assert "Δ15m: representation +6 · reconciler +115 · webhook +5 · dream +4 · docs +6" in report
+    assert "Δ since previous sample: representation +6 · reconciler +115 · webhook +5 · dream +4 · docs +6" in report
     assert "Representation queue advancing faster than documents" not in report
 
 
@@ -635,11 +635,13 @@ def test_representation_queue_outpacing_docs_triggers_drift_alert():
 
 
 def _representation_backlog_without_progress(
-    *, active_count: int = 0, active_age_s: int = 0
+    *, active_count: int = 0, active_age_s: int = 0, runs_15m: int = 0,
+    previous_stall_streak: int = 0,
 ) -> tuple[hm.HonchoSnapshot, dict]:
     previous_state = {
         "documents_total": 91594,
         "queue_by_type": {"representation": {"pending": 7050, "done": 373}},
+        "representation_stall_streak": previous_stall_streak,
     }
     snapshot = hm.HonchoSnapshot(
         services={"api_ok": True, "deriver_up": True, "db_ok": True, "redis_ok": True},
@@ -664,7 +666,7 @@ def _representation_backlog_without_progress(
         errors={"save_representation": 0, "four_oh_one": 0},
         spark_goat={"ok": True, "latency_s": 1.2, "thinking": False, "model": "aeon-ultimate"},
         deriver={
-            "runs_15m": 0,
+            "runs_15m": runs_15m,
             "last_duration_s": 0,
             "conclusions": 0,
             "active_count": active_count,
@@ -677,12 +679,35 @@ def _representation_backlog_without_progress(
     return snapshot, previous_state
 
 
-def test_representation_backlog_with_no_progress_triggers_deriver_stall_alert():
+def test_first_representation_backlog_sample_with_no_progress_does_not_alert():
     snapshot, previous_state = _representation_backlog_without_progress()
 
     alerts = hm.build_alerts(snapshot, previous_state=previous_state)
 
+    assert "Deriver stalled: representation backlog with no progress" not in alerts
+    assert hm.next_representation_stall_streak(snapshot, previous_state) == 1
+
+
+def test_second_representation_backlog_sample_with_no_progress_alerts():
+    snapshot, previous_state = _representation_backlog_without_progress(
+        previous_stall_streak=1
+    )
+
+    alerts = hm.build_alerts(snapshot, previous_state=previous_state)
+
     assert "Deriver stalled: representation backlog with no progress" in alerts
+    assert hm.next_representation_stall_streak(snapshot, previous_state) == 2
+
+
+def test_recent_deriver_runs_reset_representation_stall_streak():
+    snapshot, previous_state = _representation_backlog_without_progress(
+        runs_15m=10, previous_stall_streak=1
+    )
+
+    alerts = hm.build_alerts(snapshot, previous_state=previous_state)
+
+    assert "Deriver stalled: representation backlog with no progress" not in alerts
+    assert hm.next_representation_stall_streak(snapshot, previous_state) == 0
 
 
 def test_fresh_active_representation_suppresses_backlog_stall_alert():
@@ -742,7 +767,7 @@ def test_fresh_dream_suppresses_representation_backlog_stall_with_single_worker(
 
 def test_fresh_dream_does_not_suppress_representation_backlog_stall_with_multiple_workers():
     snapshot, previous_state = _representation_backlog_without_progress(
-        active_count=1, active_age_s=9 * 60
+        active_count=1, active_age_s=9 * 60, previous_stall_streak=1
     )
     snapshot.pipeline["deriver"] = {"workers": "2"}
     snapshot.deriver.update(
@@ -776,7 +801,7 @@ def test_fresh_dream_does_not_suppress_representation_backlog_when_worker_count_
     deriver_pipeline: dict[str, str], case: str
 ):
     snapshot, previous_state = _representation_backlog_without_progress(
-        active_count=1, active_age_s=9 * 60
+        active_count=1, active_age_s=9 * 60, previous_stall_streak=1
     )
     snapshot.pipeline["deriver"] = deriver_pipeline
     snapshot.deriver.update(
