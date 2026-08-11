@@ -323,6 +323,7 @@ patches:
       - gateway/run.py
       - gateway/slash_commands.py
       - hermes_cli/lifecycle.py
+      - hermes_cli/observability/__init__.py
       - hermes_cli/observability/relay_shared_metrics.py
       - tests/agent/test_relay_tools.py
       - tests/gateway/test_session_boundary_hooks.py

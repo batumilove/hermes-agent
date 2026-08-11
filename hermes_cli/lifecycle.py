@@ -66,9 +66,9 @@ def finalize_session(**kwargs: Any) -> List[Any]:
 async def finalize_session_async(**kwargs: Any) -> List[Any]:
     """Notify observers and asynchronously close one core Relay conversation."""
     try:
-        from hermes_cli.observability import observe_lifecycle
+        from hermes_cli.observability import observe_lifecycle_async
 
-        observe_lifecycle("on_session_finalize", **kwargs)
+        await observe_lifecycle_async("on_session_finalize", **kwargs)
     except Exception:
         logger.warning("Built-in observability hook failed", exc_info=True)
 

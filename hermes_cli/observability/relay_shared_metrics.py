@@ -652,6 +652,46 @@ class _Runtime:
                 "; ".join(failures),
             )
 
+    async def close_session_async(self, event: dict[str, Any]) -> None:
+        """Close one metrics session using Relay's asynchronous flush barrier."""
+        session = self._session(event)
+        if session is None:
+            return
+        failures: list[str] = []
+        with session.lock:
+            if session.closing:
+                return
+            session.closing = True
+            for task_id in list(session.tasks):
+                self._finish_task(
+                    session,
+                    task_id,
+                    {
+                        **event,
+                        "task_id": task_id,
+                        "completed": False,
+                        "failed": True,
+                        "interrupted": False,
+                        "turn_exit_reason": "system_aborted",
+                    },
+                )
+            self._end_pending_model_calls(session, event)
+        try:
+            await self.relay.subscribers.flush_async()
+        except Exception as exc:
+            failures.append(f"subscriber flush failed: {exc}")
+        else:
+            self._export()
+        with self._sessions_lock:
+            if self._sessions.get(session.session_id) is session:
+                self._sessions.pop(session.session_id, None)
+        if failures:
+            logger.warning(
+                "Hermes shared-metrics session %s closed with errors: %s",
+                session.session_id,
+                "; ".join(failures),
+            )
+
     def shutdown(self) -> None:
         with self._sessions_lock:
             self._active = False
@@ -1143,6 +1183,21 @@ def observe_lifecycle(hook_name: str, **kwargs: Any) -> None:
         logger.warning(
             "Hermes shared metrics hook failed: %s", hook_name, exc_info=True
         )
+
+
+async def observe_lifecycle_async(hook_name: str, **kwargs: Any) -> None:
+    """Project an async lifecycle event through an awaited Relay barrier."""
+    if not handles_hook(hook_name):
+        return
+    if not relay_runtime.relay_instrumentation_enabled():
+        return
+    runtime = _get_runtime()
+    if runtime is None:
+        return
+    if hook_name in {"on_session_finalize", "on_session_reset"}:
+        await runtime.close_session_async(kwargs)
+        return
+    observe_lifecycle(hook_name, **kwargs)
 
 
 def _with_runtime_toolset(event: dict[str, Any]) -> dict[str, Any]:
