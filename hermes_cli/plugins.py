@@ -381,6 +381,40 @@ class PluginContext:
         self._llm: Any = None
         self._subagent_lifecycle: Any = None
 
+    @property
+    def runtime_role(self) -> str:
+        """Return the host surface role for this plugin context.
+
+        This is a stable capability bit for plugins that need to distinguish
+        request-producing surfaces from passive supervisors. We prefer an
+        explicit role when the host set one, and otherwise fall back to the
+        safest available inference.
+        """
+        explicit = (getattr(self._manager, "_runtime_role", None) or "").strip().lower()
+        if explicit:
+            return explicit
+        cli = getattr(self._manager, "_cli_ref", None)
+        if cli is not None:
+            return "cli"
+        for env_name in (
+            "HERMES_DASHBOARD_SESSION_TOKEN",
+            "HERMES_DASHBOARD_READY",
+            "HERMES_DASHBOARD_PUBLIC_URL",
+        ):
+            if os.getenv(env_name):
+                return "dashboard"
+        return "unknown"
+
+    @property
+    def can_claim_provider_telemetry_writer(self) -> bool:
+        """True when this context is allowed to own request telemetry writing.
+
+        Passive dashboard supervisors load plugins but never produce API requests,
+        so they must not claim the provider telemetry writer lock. Request-
+        producing gateway or CLI surfaces may claim it.
+        """
+        return self.runtime_role in {"cli", "gateway"}
+
     # -- host-owned LLM access ----------------------------------------------
 
     @property
