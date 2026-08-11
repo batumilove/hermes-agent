@@ -38,18 +38,25 @@ def test_session_search_dedicated_reader_does_not_convoy_writer(tmp_path):
             return 0
 
         def run_search() -> None:
-            conn = db._get_read_conn()
             try:
-                assert conn is not None
-                conn.set_progress_handler(pause_search, 1)
-                search_rows.extend(
-                    db.search_messages('"dedicated recall reader"', limit=20)
-                )
+                # Borrow through the bounded pool contract.  Calling
+                # _get_read_conn() directly no longer reserves that connection
+                # for the current thread; _read_ctx() owns checkout and return.
+                with db._read_ctx() as conn:
+                    assert conn is not None
+                    conn.set_progress_handler(pause_search, 1)
+                    try:
+                        search_rows.extend(
+                            conn.execute(
+                                "SELECT rowid FROM messages_fts "
+                                "WHERE messages_fts MATCH ? LIMIT 20",
+                                ('"dedicated recall reader"',),
+                            ).fetchall()
+                        )
+                    finally:
+                        conn.set_progress_handler(None, 0)
             except BaseException as exc:
                 search_errors.append(exc)
-            finally:
-                if conn is not None:
-                    conn.set_progress_handler(None, 0)
 
         def run_writer() -> None:
             try:

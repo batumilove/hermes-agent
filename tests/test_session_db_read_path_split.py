@@ -1,11 +1,12 @@
-"""Tests for the SessionDB read-path split (per-thread read-only connections).
+"""Tests for the SessionDB read-path split (pooled read-only connections).
 
 The gateway shares ONE SessionDB across every agent, so recall/browse reads
 used to queue behind writer flushes on self._lock — a measured production
 convoy (a 0.2s FTS query stretched to 112s while 6-8 concurrent turns
 flushed tool results). These tests pin the new contract: reads run on a
-per-thread read-only connection under WAL, never touch self._lock, and fall
-back to the legacy locked path when WAL or the read connection is missing.
+read-only connection borrowed from a bounded pool under WAL, never touch
+self._lock, and fall back to the legacy locked path when WAL or the read
+connection is missing.
 """
 
 import threading
@@ -26,102 +27,43 @@ def db(tmp_path):
 
 
 @pytest.mark.requires_wal
-def test_read_conn_is_per_thread(db):
+def test_concurrent_read_checkouts_are_distinct_and_returned(db):
+    """Concurrent borrowers get distinct connections and return permits."""
     conns = {}
+    failures = []
+    borrowed = threading.Barrier(2)
 
     def grab(key):
-        conns[key] = db._get_read_conn()
-
-    t1 = threading.Thread(target=grab, args=(1,))
-    t2 = threading.Thread(target=grab, args=(2,))
-    t1.start(); t2.start(); t1.join(); t2.join()
-    assert conns[1] is not None and conns[2] is not None
-    assert conns[1] is not conns[2]
-
-
-def test_read_conn_reused_within_thread(db):
-    assert db._get_read_conn() is db._get_read_conn()
-
-
-@pytest.mark.requires_wal
-def test_short_lived_reader_threads_release_connections(db):
-    """A process-wide SessionDB must not retain one FD pair per dead worker."""
-    worker_count = 24
-    failures = []
-    opened = []
-
-    def read_once():
         try:
-            opened.append(db._get_read_conn())
-            assert db.get_session("s1")["id"] == "s1"
+            with db._read_ctx() as conn:
+                assert conn is not None
+                conns[key] = conn
+                borrowed.wait(timeout=5.0)
         except BaseException as exc:
             failures.append(exc)
 
-    threads = [threading.Thread(target=read_once) for _ in range(worker_count)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=5.0)
-        assert not thread.is_alive()
-
+    t1 = threading.Thread(target=grab, args=(1,))
+    t2 = threading.Thread(target=grab, args=(2,))
+    t1.start(); t2.start(); t1.join(timeout=5.0); t2.join(timeout=5.0)
+    assert not t1.is_alive() and not t2.is_alive()
     assert not failures
-    assert len(db._read_conns) == 0, (
-        "dead reader threads retained SQLite connections: "
-        f"{len(db._read_conns)} for {worker_count} completed workers"
-    )
-    assert len(opened) == worker_count
-    for conn in opened:
-        with pytest.raises(Exception, match="closed database"):
-            conn.execute("SELECT 1")
+    assert conns[1] is not conns[2]
+    assert db._read_pool.qsize() == 2
 
 
 @pytest.mark.requires_wal
-def test_live_reader_lease_is_retained_then_released(db):
-    ready = threading.Event()
-    release = threading.Event()
+def test_read_conn_reused_via_pool(db):
+    """Reuse is now the pool's job, not a per-thread memo.
 
-    def reader():
-        assert db.get_session("s1")["id"] == "s1"
-        ready.set()
-        assert release.wait(timeout=5.0)
-
-    thread = threading.Thread(target=reader)
-    thread.start()
-    assert ready.wait(timeout=5.0)
-    assert len(db._read_conns) == 1
-
-    release.set()
-    thread.join(timeout=5.0)
-    assert not thread.is_alive()
-    assert len(db._read_conns) == 0
-
-
-@pytest.mark.requires_wal
-def test_close_drains_reader_opened_by_another_thread(tmp_path):
-    fresh = SessionDB(db_path=tmp_path / "cross-thread-close.db")
-    fresh.create_session(session_id="x", source="cli", model="m")
-    ready = threading.Event()
-    release = threading.Event()
-    held = []
-
-    def reader():
-        held.append(fresh._get_read_conn())
-        ready.set()
-        assert release.wait(timeout=5.0)
-
-    thread = threading.Thread(target=reader)
-    thread.start()
-    assert ready.wait(timeout=5.0)
-    assert len(fresh._read_conns) == 1
-
-    fresh.close()
-    assert len(fresh._read_conns) == 0
-    with pytest.raises(Exception, match="closed database"):
-        held[0].execute("SELECT 1")
-
-    release.set()
-    thread.join(timeout=5.0)
-    assert not thread.is_alive()
+    The old contract (``_get_read_conn()`` returns the same object twice on one
+    thread) was the leak: that memo pinned one unclosable connection per
+    (SessionDB x thread) forever. ``_get_read_conn`` now always opens a fresh
+    connection and reuse happens via checkout/return, so assert on that.
+    """
+    with db._read_ctx() as first:
+        assert first is not None
+    with db._read_ctx() as second:
+        assert second is first, "sequential readers must reuse the pooled conn"
 
 
 @pytest.mark.requires_wal

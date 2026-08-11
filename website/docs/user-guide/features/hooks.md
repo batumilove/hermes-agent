@@ -381,35 +381,6 @@ def register(ctx):
 
 **General rules for all hooks:**
 
-- Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
-- If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
-- Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
-- Observer callbacks receive `telemetry_schema_version` automatically. When present, `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are separate correlation fields. Treat `api_request_id` as an opaque identifier; do not parse its string format.
-
-### Quick reference
-
-| Hook | Fires when | Returns |
-|------|-----------|---------|
-| [`pre_tool_call`](#pre_tool_call) | Before any tool executes | `{"action": "block", "message": str}` to veto the call |
-| [`post_tool_call`](#post_tool_call) | After any tool returns | ignored |
-| [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend context to the user message |
-| [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
-| [`pre_verify`](#pre_verify) | Once per turn when the agent edited code, before it verifies/finishes | `{"action": "continue", "message": str}` to keep going |
-| [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
-| [`on_session_end`](#on_session_end) | Session ends | ignored |
-| [`on_session_finalize`](#on_session_finalize) | CLI/gateway tears down an active session (flush, save, stats) | ignored |
-| [`on_session_reset`](#on_session_reset) | Gateway swaps in a fresh session key (e.g. `/new`, `/reset`) | ignored |
-| [`on_fallback_activated`](#provider-fallback-lifecycle-hooks) | Hermes switches to the next configured fallback provider/model | ignored |
-| [`on_fallback_chain_exhausted`](#provider-fallback-lifecycle-hooks) | A non-empty fallback chain has no remaining route | ignored |
-| [`on_primary_restored`](#provider-fallback-lifecycle-hooks) | Hermes restores the primary provider/model for a later turn | ignored |
-| [`subagent_start`](#subagent_start) | A `delegate_task` child has been constructed and is about to run | ignored |
-| [`subagent_stop`](#subagent_stop) | A `delegate_task` child has exited | ignored |
-| [`pre_gateway_dispatch`](#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch | `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow |
-| [`pre_approval_request`](#pre_approval_request) | An approval decision is requested, including smart-mode auto decisions | ignored |
-| [`post_approval_response`](#post_approval_response) | An approval decision is made (or a prompt times out) | ignored |
-| [`transform_tool_result`](#transform_tool_result) | After any tool returns, before the result is handed back to the model | `str` to replace the result, `None` to leave unchanged |
-| [`transform_terminal_output`](#transform_terminal_output) | Inside the `terminal` tool, before truncation/ANSI-strip/redact | `str` to replace the raw output, `None` to leave unchanged |
-| [`transform_llm_output`](#transform_llm_output) | After the tool-calling loop completes, before the final response is delivered | `str` to replace the response text, `None`/empty to leave unchanged |
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility.
 - Callback exceptions are logged and skipped; later callbacks continue.
 - The catalog below is descriptive: **observers** ignore returns, **transforms** accept the first valid string replacement, and **directive/control** hooks consume documented return shapes. Plugin middleware is a separate registry and surface, not another hook category.
@@ -446,62 +417,6 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `kanban_task_claimed` | Observer | After claim commit, in dispatcher process before worker spawn; return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id` | Board/task/profile/assignee identifiers. |
 | `kanban_task_completed` | Observer | After completion and cleanup, usually in worker process; return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `summary` | Summary may contain project/user content. |
 | `kanban_task_blocked` | Observer | After a blocked transition; the dependency-wait path fires before its transaction exits. Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `reason` | Reason may contain project/user content. |
-
----
-
-### Provider fallback lifecycle hooks
-
-These three hooks expose provider-routing transitions to observability plugins.
-They are **observer-only**: callback return values are ignored, and callback
-failures cannot change fallback selection, restoration, or exhaustion.
-
-#### `on_fallback_activated`
-
-Fires after Hermes successfully switches to one fallback route.
-
-```python
-def callback(from_provider: str, from_model: str,
-             to_provider: str, to_model: str,
-             reason: str | None, session_id: str,
-             platform: str, **kwargs):
-```
-
-#### `on_fallback_chain_exhausted`
-
-Fires once per fallback episode when a non-empty chain has no remaining route.
-A later episode can emit another event after Hermes resets fallback state.
-
-```python
-def callback(provider: str, model: str,
-             primary_provider: str, primary_model: str,
-             reason: str | None, chain_length: int,
-             session_id: str, platform: str, **kwargs):
-```
-
-#### `on_primary_restored`
-
-Fires after Hermes successfully restores the primary runtime for a later turn.
-
-```python
-def callback(provider: str, model: str,
-             session_id: str, platform: str, **kwargs):
-```
-
-Common payload fields:
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `provider`, `model` | `str` | Current route at exhaustion or the restored primary route. |
-| `from_provider`, `from_model` | `str` | Route that failed before fallback activation. |
-| `to_provider`, `to_model` | `str` | Newly activated fallback route. |
-| `primary_provider`, `primary_model` | `str` | Original primary route for the exhausted episode. |
-| `reason` | `str \| None` | Classified failover reason when available. |
-| `chain_length` | `int` | Number of configured fallback entries in the exhausted chain. |
-| `session_id` | `str` | Current session identifier, or an empty string when unavailable. |
-| `platform` | `str` | Current surface, or an empty string when unavailable. |
-
-As with every plugin hook, accept `**kwargs` for forward compatibility. All
-three hooks also receive the standard correlation metadata described above.
 
 ---
 
@@ -1351,8 +1266,6 @@ def my_callback(
     session_id: str,
     model: str,
     platform: str,
-    messages: tuple[dict, ...],
-    workdir: str,
     **kwargs,
 ) -> str | None:
 ```
@@ -1363,12 +1276,10 @@ def my_callback(
 | `session_id` | `str` | Session ID for this conversation (may be empty for one-shot runs). |
 | `model` | `str` | Model name that produced the response (e.g. `anthropic/claude-sonnet-4.6`). |
 | `platform` | `str` | Delivery platform (`cli`, `telegram`, `discord`, …; empty when unset). |
-| `messages` | `tuple[dict, ...]` | Detached copy of the conversation through the current turn. Mutations are discarded. |
-| `workdir` | `str` | Active agent working directory, or an empty string when none is set. |
 
 **Return value:** Non-empty `str` to replace the response text, `None` or empty string to leave it unchanged. **First non-empty string wins** when multiple plugins register. Unlike the tool and terminal transforms, an empty string is not accepted as a replacement.
 
-**Use cases:** Apply a personality/vocabulary transform (pirate-speak, Spongebob), redact user-specific identifiers from the final text, append a project-specific signature footer, enforce workspace evidence policy, or preserve an existing conversation footer without burning tokens on SOUL instructions.
+**Use cases:** Apply a personality/vocabulary transform (pirate-speak, Spongebob), redact user-specific identifiers from the final text, append a project-specific signature footer, enforce a house style guide without burning tokens on SOUL instructions.
 
 When CLI streaming is enabled, an append-only transform is printed after the
 streamed body. A transform that replaces the response is printed in full after
@@ -1387,7 +1298,7 @@ def register(ctx):
     ctx.register_hook("transform_llm_output", spongebob)
 ```
 
-The hook is guarded on a non-empty, non-interrupted response — it will not fire on stop-button interrupts or empty turns. Exceptions are logged as warnings and do not break agent execution. Plugins and their hook registrations are loaded only when a session starts; changing the plugin set does not mutate an active conversation's prompt or tool schemas.
+The hook is guarded on a non-empty, non-interrupted response — it will not fire on stop-button interrupts or empty turns. Exceptions are logged as warnings and do not break agent execution.
 
 ### API-request observer hooks
 
