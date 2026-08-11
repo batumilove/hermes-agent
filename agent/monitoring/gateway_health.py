@@ -250,18 +250,32 @@ def build_gateway_health_snapshot(
         is_degraded = state in _FATAL_PLATFORM_STATES
         if is_degraded:
             fatal_count += 1
-        metrics.append(_metric(
-            "hermes.platform.up",
-            1 if is_up else 0,
-            base,
-            **{"hermes.platform": str(platform), "hermes.platform.state": state},
-        ))
-        metrics.append(_metric(
-            "hermes.platform.degraded",
-            1 if is_degraded else 0,
-            base,
-            **{"hermes.platform": str(platform), "hermes.platform.state": state, "hermes.error_code": error_code},
-        ))
+        # Platform health gauges intentionally use only the stable
+        # ``hermes.platform`` label. Mutable state / error_code labels would
+        # produce a new time series on every lifecycle transition; the OTel
+        # Prometheus exporter retains those series forever, so a transient
+        # ``fatal`` or ``disconnected`` state would leave ghost ``up==0``
+        # observations and false-positive HermesPlatformDown alerts even after
+        # the platform reconnects. State detail is preserved in the diagnostic
+        # events emitted below and by ``emit_runtime_status_transition``.
+        # Alert rules should still aggregate by platform as defense in depth:
+        #   max by (hermes_platform) (hermes_platform_up{job="hermes-otel"}) == 0
+        metrics.append(
+            _metric(
+                "hermes.platform.up",
+                1 if is_up else 0,
+                base,
+                **{"hermes.platform": str(platform)},
+            )
+        )
+        metrics.append(
+            _metric(
+                "hermes.platform.degraded",
+                1 if is_degraded else 0,
+                base,
+                **{"hermes.platform": str(platform)},
+            )
+        )
         if is_degraded:
             events.append(GatewayDiagnosticEvent(
                 name="platform.fatal",
