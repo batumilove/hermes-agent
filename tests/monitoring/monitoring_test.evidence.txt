@@ -1,0 +1,43 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.15, pytest-9.0.2, pluggy-1.6.0 -- /home/ubuntu/.hermes/hermes-agent/venv/bin/python
+cachedir: .pytest_cache
+rootdir: /home/ubuntu/.hermes/hermes-agent/.worktrees/sessiondb-otel-ghost-series-20260811
+configfile: pyproject.toml
+plugins: anyio-4.12.1, asyncio-1.3.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 32 items
+
+tests/monitoring/test_cron_health_export.py::test_execution_projection_is_opaque_bounded_and_content_free PASSED [  3%]
+tests/monitoring/test_cron_health_export.py::test_cron_execution_event_projects_trigger_provenance PASSED [  6%]
+tests/monitoring/test_cron_health_export.py::test_error_classification_avoids_auth_substring_false_positives[oauth refresh failed] PASSED [  9%]
+tests/monitoring/test_cron_health_export.py::test_error_classification_avoids_auth_substring_false_positives[tokenizer crashed] PASSED [ 12%]
+tests/monitoring/test_cron_health_export.py::test_error_classification_avoids_auth_substring_false_positives[HTTP 4015] PASSED [ 15%]
+tests/monitoring/test_cron_health_export.py::test_terminal_execution_emission_flushes_and_failures_are_fail_open PASSED [ 18%]
+tests/monitoring/test_cron_health_export.py::test_registered_observable_metric_names_cover_snapshot_metrics PASSED [ 21%]
+tests/monitoring/test_cron_health_export.py::test_monitoring_docs_distinguish_relay_health_scope_and_terminal_flush PASSED [ 25%]
+tests/monitoring/test_emitter.py::test_emit_never_raises_when_disabled PASSED [ 28%]
+tests/monitoring/test_emitter.py::test_process_singleton_stays_dormant_until_subscribed PASSED [ 31%]
+tests/monitoring/test_emitter.py::test_unsubscribe_stops_delivery PASSED [ 34%]
+tests/monitoring/test_emitter.py::test_hot_path_is_fast PASSED           [ 37%]
+tests/monitoring/test_export_redaction.py::test_secret_key_always_stripped PASSED [ 40%]
+tests/monitoring/test_export_redaction.py::test_bearer_header_stripped PASSED [ 43%]
+tests/monitoring/test_export_redaction.py::test_structure_preserved PASSED [ 46%]
+tests/monitoring/test_export_redaction.py::test_fails_closed_when_redactor_unavailable PASSED [ 50%]
+tests/monitoring/test_gateway_health.py::test_platform_lifecycle_transitions_do_not_create_stale_label_series[connecting-connected] PASSED [ 53%]
+tests/monitoring/test_gateway_health.py::test_platform_lifecycle_transitions_do_not_create_stale_label_series[fatal-connected] PASSED [ 56%]
+tests/monitoring/test_gateway_health.py::test_platform_lifecycle_transitions_do_not_create_stale_label_series[disconnected-connected] PASSED [ 59%]
+tests/monitoring/test_gateway_health.py::test_platform_up_and_degraded_values_follow_current_state PASSED [ 62%]
+tests/monitoring/test_gateway_health.py::test_platform_health_metrics_use_only_stable_platform_label PASSED [ 65%]
+tests/monitoring/test_gateway_health.py::test_degraded_platform_emits_diagnostic_event_preserving_state_and_error PASSED [ 68%]
+tests/monitoring/test_gateway_health_export.py::test_otlp_attrs_redact_strings_and_never_export_profile PASSED [ 71%]
+tests/monitoring/test_gateway_health_export.py::test_resource_attributes_are_allowlisted_and_sanitized PASSED [ 75%]
+tests/monitoring/test_gateway_health_export.py::test_diagnostic_log_attributes_are_allowlisted_redacted_and_profile_free PASSED [ 78%]
+tests/monitoring/test_gateway_health_export.py::test_install_id_persists_across_calls PASSED [ 81%]
+tests/monitoring/test_otlp_exporter.py::test_gateway_health_event_maps_to_span_with_attrs PASSED [ 84%]
+tests/monitoring/test_otlp_exporter.py::test_headers_resolve_from_env_not_value PASSED [ 87%]
+tests/monitoring/test_otlp_exporter.py::test_trace_resource_includes_stable_hashed_instance PASSED [ 90%]
+tests/monitoring/test_otlp_exporter.py::test_trace_resource_includes_configured_deployment_environment PASSED [ 93%]
+tests/monitoring/test_otlp_exporter.py::test_streamer_receives_events_and_respects_filter PASSED [ 96%]
+tests/monitoring/test_otlp_exporter.py::test_failing_streamer_never_breaks_emitter PASSED [100%]
+
+============================== 32 passed in 4.00s ==============================
