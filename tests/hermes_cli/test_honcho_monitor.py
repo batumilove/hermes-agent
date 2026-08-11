@@ -346,11 +346,56 @@ def _spark_latency_snapshot(
     )
 
 
-def test_spark_goat_latency_during_active_dream_is_classified_as_contention():
-    alerts = hm.build_alerts(_spark_latency_snapshot(latency_s=12.5, active_dream_count=1))
+def test_first_spark_goat_latency_sample_during_fresh_dream_is_debounced():
+    snapshot = _spark_latency_snapshot(latency_s=12.5, active_dream_count=1)
+    alerts = hm.build_alerts(snapshot)
+
+    assert alerts == []
+    assert hm.should_emit_report(snapshot) is False
+
+
+def test_second_spark_goat_latency_sample_during_fresh_dream_alerts():
+    snapshot = _spark_latency_snapshot(latency_s=12.5, active_dream_count=1)
+    previous_state = {"dream_contention_streak": 1}
+    alerts = hm.build_alerts(
+        snapshot,
+        previous_state=previous_state,
+    )
 
     assert "spark-goat dream contention (chat latency 12.5s)" in alerts
-    assert "spark-goat chat latency degraded" not in alerts
+    assert hm.should_emit_report(snapshot, previous_state=previous_state) is True
+
+
+def test_critical_spark_goat_latency_during_fresh_dream_alerts_immediately():
+    alerts = hm.build_alerts(_spark_latency_snapshot(latency_s=30.0, active_dream_count=1))
+
+    assert "spark-goat dream contention (chat latency 30.0s)" in alerts
+
+
+def test_dream_contention_streak_tracks_only_fresh_dream_latency():
+    snapshot = _spark_latency_snapshot(latency_s=12.5, active_dream_count=1)
+    thinking_snapshot = _spark_latency_snapshot(latency_s=12.5, active_dream_count=1)
+    thinking_snapshot.spark_goat["thinking"] = True
+
+    assert hm.next_dream_contention_streak(snapshot, {"dream_contention_streak": 1}) == 2
+    assert hm.next_dream_contention_streak(
+        _spark_latency_snapshot(latency_s=1.0, active_dream_count=1),
+        {"dream_contention_streak": 2},
+    ) == 0
+    assert hm.next_dream_contention_streak(
+        thinking_snapshot,
+        {"dream_contention_streak": 2},
+    ) == 0
+
+
+def test_report_marks_degraded_chat_amber_and_omits_zero_error_warning():
+    report = hm.format_report(
+        _spark_latency_snapshot(latency_s=12.5, active_dream_count=1),
+        now=hm.datetime(2026, 8, 10, 16, 25),
+    )
+
+    assert "🟠 spark-goat chat: 12.5s" in report
+    assert "Recent errors" not in report
 
 
 def test_spark_goat_latency_without_active_dream_remains_degradation_alert():
