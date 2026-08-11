@@ -87,9 +87,10 @@ def _nonempty_string(value: Any, field: str) -> str:
 
 def _repo_path(value: Any, field: str) -> Path:
     relative = _nonempty_string(value, field)
-    candidate = (ROOT / relative).resolve()
+    root = ROOT.resolve()
+    candidate = (root / relative).resolve()
     try:
-        candidate.relative_to(ROOT.resolve())
+        candidate.relative_to(root)
     except ValueError as exc:
         raise DeltaError(f"{field} must stay inside the repository") from exc
     return candidate
@@ -197,7 +198,7 @@ def resolve_upstream_relationship(
     cwd: Path = ROOT,
 ) -> UpstreamRelationship:
     base_file, provenance_file, _ = load_manifest(manifest_path)
-    base = _read_sha_file(base_file, str(base_file.relative_to(ROOT)))
+    base = _read_sha_file(base_file, str(base_file.relative_to(ROOT.resolve())))
     resolved_head = _git("rev-parse", head, cwd=cwd)
     _git("cat-file", "-e", f"{base}^{{commit}}", cwd=cwd)
     if _is_ancestor(base, resolved_head, cwd=cwd):
@@ -210,6 +211,7 @@ def resolve_upstream_relationship(
         raise DeltaError("squash-sync provenance upstream base does not match the recorded base")
     source = provenance["source_head"]
     squash = provenance["squash_commit"]
+    fetch_provenance_source(manifest_path, head=head, cwd=cwd)
     _git("cat-file", "-e", f"{source}^{{commit}}", cwd=cwd)
     _git("cat-file", "-e", f"{squash}^{{commit}}", cwd=cwd)
     if not _is_ancestor(base, source, cwd=cwd):
@@ -221,7 +223,7 @@ def resolve_upstream_relationship(
     squash_tree = _git("rev-parse", f"{squash}^{{tree}}", cwd=cwd)
     if source_tree != squash_tree:
         raise DeltaError("recorded sync source and squash trees differ")
-    base_relative = base_file.relative_to(ROOT).as_posix()
+    base_relative = base_file.relative_to(ROOT.resolve()).as_posix()
     source_base = _git("show", f"{source}:{base_relative}", cwd=cwd).strip()
     if source_base != base:
         raise DeltaError("recorded sync source does not contain the recorded upstream base")
@@ -237,12 +239,17 @@ def resolve_contributor_base(
     return resolve_upstream_relationship(manifest_path, head=head, cwd=cwd).contributor_base
 
 
-def fetch_provenance_source(manifest_path: Path, *, cwd: Path = ROOT) -> str | None:
+def fetch_provenance_source(
+    manifest_path: Path,
+    *,
+    head: str = "HEAD",
+    cwd: Path = ROOT,
+) -> str | None:
     base_file, provenance_file, _ = load_manifest(manifest_path)
     if provenance_file is None:
         return None
-    base = _read_sha_file(base_file, str(base_file.relative_to(ROOT)))
-    resolved_head = _git("rev-parse", "HEAD", cwd=cwd)
+    base = _read_sha_file(base_file, str(base_file.relative_to(ROOT.resolve())))
+    resolved_head = _git("rev-parse", head, cwd=cwd)
     try:
         _git("cat-file", "-e", f"{base}^{{commit}}", cwd=cwd)
     except DeltaError:
@@ -254,8 +261,7 @@ def fetch_provenance_source(manifest_path: Path, *, cwd: Path = ROOT) -> str | N
     source = provenance["source_head"]
     try:
         _git("cat-file", "-e", f"{source}^{{commit}}", cwd=cwd)
-        if _is_ancestor(base, source, cwd=cwd):
-            return source
+        return source
     except DeltaError:
         pass
     _git(
@@ -335,7 +341,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.fetch_provenance_source:
-            source = fetch_provenance_source(args.manifest.resolve())
+            source = fetch_provenance_source(args.manifest.resolve(), head=args.head)
             if source:
                 print(source)
             return 0

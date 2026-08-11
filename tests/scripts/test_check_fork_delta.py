@@ -198,6 +198,20 @@ def test_check_delta_passes_when_all_paths_are_owned(
     assert report["unexplained"] == []
 
 
+def test_check_delta_handles_symlinked_repository_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, manifest = _fixture_repo(tmp_path, ["**"])
+    symlink_root = tmp_path / "repo-link"
+    symlink_root.symlink_to(repo, target_is_directory=True)
+    monkeypatch.setattr(MODULE, "ROOT", symlink_root)
+    symlink_manifest = symlink_root / manifest.relative_to(repo)
+
+    report = MODULE.check_delta(symlink_manifest, cwd=symlink_root)
+
+    assert report["unexplained"] == []
+
+
 def test_check_delta_accepts_verified_squash_sync_provenance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -244,6 +258,33 @@ def test_fetch_provenance_source_skips_network_when_object_is_present(
     monkeypatch.setattr(MODULE, "_git", no_fetch)
 
     assert MODULE.fetch_provenance_source(manifest, cwd=repo)
+
+
+def test_fetch_provenance_source_cli_passes_selected_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = tmp_path / "manifest.yaml"
+    selected: list[str] = []
+
+    def fetch(path: Path, *, head: str, cwd: Path = MODULE.ROOT) -> None:
+        assert path == manifest.resolve()
+        selected.append(head)
+
+    monkeypatch.setattr(MODULE, "fetch_provenance_source", fetch)
+
+    assert (
+        MODULE.main(
+            [
+                "--manifest",
+                str(manifest),
+                "--head",
+                "candidate-head",
+                "--fetch-provenance-source",
+            ]
+        )
+        == 0
+    )
+    assert selected == ["candidate-head"]
 
 
 def test_fetch_provenance_source_skips_obsolete_proof_for_direct_ancestry(
@@ -305,6 +346,49 @@ def test_fetch_provenance_source_uses_bounded_filtered_history(
     MODULE.fetch_provenance_source(manifest, cwd=repo)
 
     assert calls == [
+        (
+            "fetch",
+            "--depth=8",
+            "--filter=blob:none",
+            "--no-tags",
+            "origin",
+            source,
+        )
+    ]
+
+
+def test_check_delta_fetches_missing_provenance_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, manifest, _ = _squash_sync_fixture(tmp_path)
+    monkeypatch.setattr(MODULE, "ROOT", repo)
+    original_git = MODULE._git
+    provenance = json.loads(
+        (repo / ".github" / "upstream-sync-provenance.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    source = provenance["source_head"]
+    source_available = False
+    fetches: list[tuple[str, ...]] = []
+
+    def shallow_checkout(*args: str, cwd: Path) -> str:
+        nonlocal source_available
+        if args == ("cat-file", "-e", f"{source}^{{commit}}") and not source_available:
+            raise MODULE.DeltaError("missing source")
+        if args[0] == "fetch":
+            fetches.append(args)
+            source_available = True
+            return ""
+        return original_git(*args, cwd=cwd)
+
+    monkeypatch.setattr(MODULE, "_git", shallow_checkout)
+
+    report = MODULE.check_delta(manifest, cwd=repo)
+
+    assert report["provenance"] == "squash-sync"
+    assert report["unexplained"] == []
+    assert fetches == [
         (
             "fetch",
             "--depth=8",
