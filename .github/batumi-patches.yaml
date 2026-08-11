@@ -289,6 +289,7 @@ patches:
       - tests/gateway/test_compression_session_id_persistence.py
       - tests/gateway/test_routing_save_fast_path.py
       - tests/gateway/test_session_store_lock_io.py
+      - tests/gateway/test_session_store_prune.py
       - tests/test_gateway_routing_reconcile.py
     tests:
       - scripts/run_tests.sh tests/test_gateway_routing_reconcile.py tests/gateway/test_routing_save_fast_path.py

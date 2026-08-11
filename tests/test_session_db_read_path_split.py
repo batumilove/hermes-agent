@@ -70,6 +70,14 @@ def test_read_conn_reused_via_pool(db):
 def test_reads_do_not_take_writer_lock(db):
     """Reads must complete while another thread holds self._lock."""
     db.set_session_title("s1", "writer-lock-lineage")
+    db.record_gateway_session_peer(
+        "s1",
+        source="cli",
+        session_key="agent:main:cli:local:s1",
+        chat_id="s1",
+        chat_type="local",
+        display_name="CLI session",
+    )
     acquired = db._lock.acquire()
     assert acquired
     try:
@@ -80,6 +88,9 @@ def test_reads_do_not_take_writer_lock(db):
             done["search"] = db.search_messages("graphiti", limit=10)
             done["messages"] = db.get_messages("s1")
             done["next_title"] = db.get_next_title_in_lineage("writer-lock-lineage")
+            done["routing_origins"] = db.list_gateway_routing_origins(
+                platform="cli", active_only=False
+            )
 
         t = threading.Thread(target=reader)
         t.start()
@@ -89,6 +100,7 @@ def test_reads_do_not_take_writer_lock(db):
         assert any("graphiti" in (m.get("snippet") or "") for m in done["search"])
         assert len(done["messages"]) == 2
         assert done["next_title"] == "writer-lock-lineage #2"
+        assert done["routing_origins"][0]["chat_id"] == "s1"
     finally:
         db._lock.release()
 

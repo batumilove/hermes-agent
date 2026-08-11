@@ -4432,7 +4432,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         return {r["session_key"]: r["entry_json"] for r in rows}
 
     def delete_gateway_routing_entries(
-        self, session_keys: List[str], *, scope: str = ""
+        self,
+        session_keys: List[str],
+        *,
+        scope: str = "",
+        reason: str = "unspecified",
     ) -> None:
         """Remove routing entries for the given session keys in *scope*."""
         if not session_keys:
@@ -4444,7 +4448,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 [(scope, k) for k in session_keys],
             )
 
-        self._execute_write(_do)
+        reason_label = re.sub(
+            r"[^A-Za-z0-9_.-]+", "_", str(reason or "unspecified")
+        )[:64]
+        self._execute_write(
+            _do,
+            operation="delete_gateway_routing_entries",
+            items=len(session_keys),
+            reason=reason_label,
+        )
 
     def list_gateway_sessions(
         self,
@@ -4504,11 +4516,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         query = """
             SELECT origin_json, chat_id, thread_id, display_name, chat_type
             FROM sessions
-            WHERE session_key IS NOT NULL
-              AND started_at = (
-                  SELECT MAX(s2.started_at) FROM sessions s2
-                  WHERE s2.session_key = sessions.session_key
-              )
+            WHERE (session_key, started_at) IN (
+                SELECT session_key, MAX(started_at)
+                FROM sessions
+                WHERE session_key IS NOT NULL
+                GROUP BY session_key
+            )
         """
         params: list = []
         if platform:
@@ -4516,8 +4529,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             params.append(platform.lower())
         if active_only:
             query += " AND ended_at IS NULL"
-        with self._lock:
-            rows = self._conn.execute(query, params).fetchall()
+        with self._read_ctx() as conn:
+            rows = conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
 
     def find_session_by_origin(

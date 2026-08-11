@@ -96,6 +96,20 @@ def _no_fts_rebuild_throttle(monkeypatch):
     monkeypatch.setattr(SessionDB, "_FTS_REBUILD_DUTY_FACTOR", 0.0)
 
 
+def _trace_sessiondb_reads(monkeypatch, db, statements):
+    """Trace the writer and whichever pooled connection each read checks out."""
+    checkout = db._checkout_read_conn
+
+    def traced_checkout():
+        conn = checkout()
+        if conn is not None:
+            conn.set_trace_callback(statements.append)
+        return conn
+
+    db._conn.set_trace_callback(statements.append)
+    monkeypatch.setattr(db, "_checkout_read_conn", traced_checkout)
+
+
 # =========================================================================
 # Connection lifecycle
 # =========================================================================
@@ -695,19 +709,14 @@ class TestFTS5Search:
         ]
         assert all("context" in row and row["context"] for row in default)
 
-    def test_search_projection_skips_context_enrichment_queries(self, db):
+    def test_search_projection_skips_context_enrichment_queries(self, db, monkeypatch):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="before")
         db.append_message("s1", role="assistant", content="projectionneedle")
         db.append_message("s1", role="user", content="after")
 
         statements = []
-        read_conn = db._get_read_conn() or db._conn
-        traced_connections = [db._conn]
-        if read_conn is not db._conn:
-            traced_connections.append(read_conn)
-        for conn in traced_connections:
-            conn.set_trace_callback(statements.append)
+        _trace_sessiondb_reads(monkeypatch, db, statements)
 
         def context_query_count():
             normalized = (" ".join(sql.upper().split()) for sql in statements)
@@ -732,8 +741,7 @@ class TestFTS5Search:
             assert default[0]["context"]
             assert context_query_count() == 2
         finally:
-            for conn in traced_connections:
-                conn.set_trace_callback(None)
+            db._conn.set_trace_callback(None)
 
     def test_sanitize_fts5_query_strips_dangerous_chars(self):
         """Unit test for _sanitize_fts5_query static method."""
@@ -1921,6 +1929,32 @@ class TestListSessionsRich:
                 platform="telegram", active_only=False
             )
         ] == ["new"]
+
+    def test_gateway_routing_origins_avoids_correlated_per_row_lookup(
+        self, db, monkeypatch
+    ):
+        db.create_session(
+            "routing-plan",
+            "telegram",
+            session_key="agent:main:telegram:dm:routing-plan",
+            chat_id="routing-plan",
+        )
+        statements = []
+        _trace_sessiondb_reads(monkeypatch, db, statements)
+        try:
+            db.list_gateway_routing_origins(platform="telegram", active_only=False)
+        finally:
+            db._conn.set_trace_callback(None)
+
+        query = next(
+            statement
+            for statement in statements
+            if "origin_json" in statement and "FROM sessions" in statement
+        )
+        plan = db._conn.execute("EXPLAIN QUERY PLAN " + query).fetchall()
+        detail = " ".join(row[-1] for row in plan).upper()
+        assert "CORRELATED" not in detail, detail
+        assert "IDX_SESSIONS_SESSION_KEY" in detail, detail
 
     def test_order_by_last_active_surfaces_recently_touched_older_session_first(self, db):
         t0 = 1709500000.0
