@@ -1392,6 +1392,11 @@ class PluginManager:
         # Plugin-registered auxiliary tasks: key → {key, display_name,
         # description, defaults, plugin}. See PluginContext.register_auxiliary_task.
         self._aux_tasks: Dict[str, Dict[str, Any]] = {}
+        # Stable surface role for this process. Host surfaces set this before
+        # plugin discovery so plugins can distinguish request-producing contexts
+        # (cli, gateway) from passive supervisors (dashboard) without inspecting
+        # argv or environment.
+        self._runtime_role: str = ""
         # Slack Block Kit action handlers registered by plugins. Each entry
         # is (matcher, callback, plugin_name); the Slack adapter wires them
         # into its slack_bolt App at connect() time. ``matcher`` is whatever
@@ -1399,6 +1404,15 @@ class PluginManager:
         # ``re.Pattern``, or a constraint dict); ``callback`` is an async
         # function with the slack_bolt signature ``(ack, body, action)``.
         self._slack_action_handlers: List[tuple] = []
+
+    def set_runtime_role(self, role: str) -> None:
+        """Declare the host surface role before plugin discovery.
+
+        Passive supervisors (e.g. the dashboard) should not set this to a
+        request-producing role. Plugins may inspect ``ctx.runtime_role`` or
+        ``ctx.can_claim_provider_telemetry_writer`` to gate behavior.
+        """
+        self._runtime_role = str(role or "").strip().lower()
 
     # -----------------------------------------------------------------------
     # Public

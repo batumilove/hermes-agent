@@ -11636,7 +11636,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # so the discover_plugins() side-effect in model_tools.py is NOT
         # guaranteed to have run by the time we reach this point.
         try:
-            from hermes_cli.plugins import discover_plugins
+            from hermes_cli.plugins import discover_plugins, get_plugin_manager
+            get_plugin_manager().set_runtime_role("gateway")
             discover_plugins()
         except Exception:
             logger.warning(
