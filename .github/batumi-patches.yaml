@@ -6,6 +6,25 @@ upstream:
   base_file: .github/upstream-base
 
 patches:
+  - id: supply-chain-build-input-pinning
+    kind: operations
+    rationale: >-
+      Pin npm bootstrap and Debian container inputs to reviewed immutable
+      versions, suppress bootstrap lifecycle scripts, and enforce the
+      repository release-age policy in CI and Docker dependency installs.
+    paths:
+      - .github/workflows/deploy-site.yml
+      - .github/workflows/docs-site-checks.yml
+      - .github/workflows/e2e-desktop.yml
+      - .github/workflows/js-autofix.yml
+      - .github/workflows/js-tests.yml
+      - Dockerfile
+    tests:
+      - python3 -c "import pathlib, yaml; [yaml.safe_load(p.read_text()) for p in pathlib.Path('.github/workflows').glob('*.yml')]"
+      - hadolint Dockerfile
+      - npm run check --workspace apps/desktop
+    retirement: Remove when upstream pins equivalent npm and Debian build inputs with matching lifecycle and release-age protections.
+
   - id: fork-patch-governance
     kind: operations
     rationale: >-
