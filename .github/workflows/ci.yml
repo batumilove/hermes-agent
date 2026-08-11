@@ -74,7 +74,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Require every upstream delta path to have an owner
-        run: python3 scripts/check_fork_delta.py
+        run: |
+          python3 scripts/check_fork_delta.py --fetch-provenance-source
+          python3 scripts/check_fork_delta.py
 
   fork-contracts:
     name: Fork compatibility contracts

@@ -40,6 +40,13 @@ class PatchOwner:
     paths: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class UpstreamRelationship:
+    base: str
+    contributor_base: str
+    mode: str
+
+
 def _git(*args: str, cwd: Path = ROOT) -> str:
     result = subprocess.run(
         ["git", *args],
@@ -53,13 +60,42 @@ def _git(*args: str, cwd: Path = ROOT) -> str:
     return result.stdout.strip()
 
 
+def _is_ancestor(ancestor: str, descendant: str, *, cwd: Path) -> bool:
+    result = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    detail = (result.stderr or result.stdout).strip().splitlines()
+    raise DeltaError(
+        detail[0]
+        if detail
+        else f"git merge-base --is-ancestor {ancestor} {descendant} failed"
+    )
+
+
 def _nonempty_string(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise DeltaError(f"{field} must be a non-empty string")
     return value.strip()
 
 
-def load_manifest(path: Path) -> tuple[Path, list[PatchOwner]]:
+def _repo_path(value: Any, field: str) -> Path:
+    relative = _nonempty_string(value, field)
+    candidate = (ROOT / relative).resolve()
+    try:
+        candidate.relative_to(ROOT.resolve())
+    except ValueError as exc:
+        raise DeltaError(f"{field} must stay inside the repository") from exc
+    return candidate
+
+
+def load_manifest(path: Path) -> tuple[Path, Path | None, list[PatchOwner]]:
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:
@@ -70,12 +106,13 @@ def load_manifest(path: Path) -> tuple[Path, list[PatchOwner]]:
     upstream = raw.get("upstream")
     if not isinstance(upstream, dict):
         raise DeltaError("manifest upstream section must be a mapping")
-    base_file_value = _nonempty_string(upstream.get("base_file"), "upstream.base_file")
-    base_file = (ROOT / base_file_value).resolve()
-    try:
-        base_file.relative_to(ROOT.resolve())
-    except ValueError as exc:
-        raise DeltaError("upstream.base_file must stay inside the repository") from exc
+    base_file = _repo_path(upstream.get("base_file"), "upstream.base_file")
+    provenance_value = upstream.get("provenance_file")
+    provenance_file = (
+        _repo_path(provenance_value, "upstream.provenance_file")
+        if provenance_value is not None
+        else None
+    )
 
     patches = raw.get("patches")
     if not isinstance(patches, list) or not patches:
@@ -107,7 +144,130 @@ def load_manifest(path: Path) -> tuple[Path, list[PatchOwner]]:
         ):
             raise DeltaError(f"{prefix}.paths must be a non-empty string list")
         owners.append(PatchOwner(patch_id, kind, tuple(paths)))
-    return base_file, owners
+    return base_file, provenance_file, owners
+
+
+def _read_sha_file(path: Path, field: str) -> str:
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise DeltaError(f"could not read {field} {path}: {exc}") from exc
+    if not _SHA_RE.fullmatch(value):
+        raise DeltaError(f"{field} must contain one full lowercase SHA")
+    return value
+
+
+def _load_provenance(path: Path) -> dict[str, Any]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DeltaError(f"could not read squash-sync provenance {path}: {exc}") from exc
+    if not isinstance(raw, dict) or raw.get("version") != 1:
+        raise DeltaError("squash-sync provenance version must be 1")
+    expected = {
+        "version",
+        "upstream_base",
+        "source_head",
+        "squash_commit",
+        "fetch_depth",
+    }
+    if set(raw) != expected:
+        raise DeltaError(f"squash-sync provenance fields must be {sorted(expected)}")
+    values: dict[str, Any] = {}
+    for field in ("upstream_base", "source_head", "squash_commit"):
+        value = raw.get(field)
+        if not isinstance(value, str) or not _SHA_RE.fullmatch(value):
+            raise DeltaError(f"squash-sync provenance {field} must be a full lowercase SHA")
+        values[field] = value
+    fetch_depth = raw.get("fetch_depth")
+    if (
+        isinstance(fetch_depth, bool)
+        or not isinstance(fetch_depth, int)
+        or not 1 <= fetch_depth <= 1024
+    ):
+        raise DeltaError("squash-sync provenance fetch_depth must be an integer from 1 to 1024")
+    values["fetch_depth"] = fetch_depth
+    return values
+
+
+def resolve_upstream_relationship(
+    manifest_path: Path,
+    *,
+    head: str = "HEAD",
+    cwd: Path = ROOT,
+) -> UpstreamRelationship:
+    base_file, provenance_file, _ = load_manifest(manifest_path)
+    base = _read_sha_file(base_file, str(base_file.relative_to(ROOT)))
+    resolved_head = _git("rev-parse", head, cwd=cwd)
+    _git("cat-file", "-e", f"{base}^{{commit}}", cwd=cwd)
+    if _is_ancestor(base, resolved_head, cwd=cwd):
+        return UpstreamRelationship(base, base, "direct")
+    if provenance_file is None:
+        raise DeltaError("recorded upstream base is not an ancestor and no provenance file is configured")
+
+    provenance = _load_provenance(provenance_file)
+    if provenance["upstream_base"] != base:
+        raise DeltaError("squash-sync provenance upstream base does not match the recorded base")
+    source = provenance["source_head"]
+    squash = provenance["squash_commit"]
+    _git("cat-file", "-e", f"{source}^{{commit}}", cwd=cwd)
+    _git("cat-file", "-e", f"{squash}^{{commit}}", cwd=cwd)
+    if not _is_ancestor(base, source, cwd=cwd):
+        raise DeltaError("upstream base is not an ancestor of the recorded sync source")
+    if not _is_ancestor(squash, resolved_head, cwd=cwd):
+        raise DeltaError("recorded squash commit is not an ancestor of HEAD")
+
+    source_tree = _git("rev-parse", f"{source}^{{tree}}", cwd=cwd)
+    squash_tree = _git("rev-parse", f"{squash}^{{tree}}", cwd=cwd)
+    if source_tree != squash_tree:
+        raise DeltaError("recorded sync source and squash trees differ")
+    base_relative = base_file.relative_to(ROOT).as_posix()
+    source_base = _git("show", f"{source}:{base_relative}", cwd=cwd).strip()
+    if source_base != base:
+        raise DeltaError("recorded sync source does not contain the recorded upstream base")
+    return UpstreamRelationship(base, squash, "squash-sync")
+
+
+def resolve_contributor_base(
+    manifest_path: Path,
+    *,
+    head: str = "HEAD",
+    cwd: Path = ROOT,
+) -> str:
+    return resolve_upstream_relationship(manifest_path, head=head, cwd=cwd).contributor_base
+
+
+def fetch_provenance_source(manifest_path: Path, *, cwd: Path = ROOT) -> str | None:
+    base_file, provenance_file, _ = load_manifest(manifest_path)
+    if provenance_file is None:
+        return None
+    base = _read_sha_file(base_file, str(base_file.relative_to(ROOT)))
+    resolved_head = _git("rev-parse", "HEAD", cwd=cwd)
+    try:
+        _git("cat-file", "-e", f"{base}^{{commit}}", cwd=cwd)
+    except DeltaError:
+        pass
+    else:
+        if _is_ancestor(base, resolved_head, cwd=cwd):
+            return None
+    provenance = _load_provenance(provenance_file)
+    source = provenance["source_head"]
+    try:
+        _git("cat-file", "-e", f"{source}^{{commit}}", cwd=cwd)
+        if _is_ancestor(base, source, cwd=cwd):
+            return source
+    except DeltaError:
+        pass
+    _git(
+        "fetch",
+        f"--depth={provenance['fetch_depth']}",
+        "--filter=blob:none",
+        "--no-tags",
+        "origin",
+        source,
+        cwd=cwd,
+    )
+    return source
 
 
 def _matches(path: str, pattern: str) -> bool:
@@ -140,17 +300,10 @@ def check_delta(
     head: str = "HEAD",
     cwd: Path = ROOT,
 ) -> dict[str, Any]:
-    base_file, owners = load_manifest(manifest_path)
-    try:
-        base = base_file.read_text(encoding="utf-8").strip()
-    except OSError as exc:
-        raise DeltaError(f"could not read upstream base file {base_file}: {exc}") from exc
-    if not _SHA_RE.fullmatch(base):
-        raise DeltaError(f"{base_file.relative_to(ROOT)} must contain one full lowercase SHA")
-
+    _, _, owners = load_manifest(manifest_path)
+    relationship = resolve_upstream_relationship(manifest_path, head=head, cwd=cwd)
+    base = relationship.base
     resolved_head = _git("rev-parse", head, cwd=cwd)
-    _git("cat-file", "-e", f"{base}^{{commit}}", cwd=cwd)
-    _git("merge-base", "--is-ancestor", base, resolved_head, cwd=cwd)
     changed = _git(
         "diff",
         "--name-only",
@@ -162,6 +315,8 @@ def check_delta(
     return {
         "base": base,
         "head": resolved_head,
+        "contributor_base": relationship.contributor_base,
+        "provenance": relationship.mode,
         "changed_count": len(changed),
         "unexplained": classified.pop("unexplained"),
         "patches": {key: value for key, value in classified.items() if value},
@@ -173,9 +328,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--head", default="HEAD")
     parser.add_argument("--json", action="store_true")
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--contributor-base", action="store_true")
+    action.add_argument("--fetch-provenance-source", action="store_true")
     args = parser.parse_args(argv)
 
     try:
+        if args.fetch_provenance_source:
+            source = fetch_provenance_source(args.manifest.resolve())
+            if source:
+                print(source)
+            return 0
+        if args.contributor_base:
+            print(
+                resolve_contributor_base(
+                    args.manifest.resolve(),
+                    head=args.head,
+                )
+            )
+            return 0
         report = check_delta(args.manifest.resolve(), head=args.head)
     except DeltaError as exc:
         print(f"fork delta check failed: {exc}", file=sys.stderr)
