@@ -35,12 +35,32 @@ def test_fork_contracts_install_the_canonical_test_environment() -> None:
     assert "uv sync --locked --python 3.11" in steps[install_index]["with"]["command"]
 
 
+def test_fork_delta_fetches_the_recorded_sync_source_before_validation() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["fork-delta"]["steps"]
+    command = next(
+        step["run"]
+        for step in steps
+        if step.get("name") == "Require every upstream delta path to have an owner"
+    )
+
+    assert "python3 scripts/check_fork_delta.py --fetch-provenance-source" in command
+    assert command.index("--fetch-provenance-source") < command.index(
+        "python3 scripts/check_fork_delta.py\n"
+    )
+
+
 def test_contributor_check_excludes_accepted_upstream_history() -> None:
     text = CONTRIBUTOR_WORKFLOW.read_text(encoding="utf-8")
 
     assert "COMPARE_REF=origin/main" in text
-    assert "COMPARE_REF=$(tr -d '[:space:]' < .github/upstream-base)" in text
-    assert 'git merge-base --is-ancestor "$COMPARE_REF" HEAD' in text
+    assert 'if [ -n "${GITHUB_BASE_REF:-}" ]; then' in text
+    assert 'git fetch --no-tags origin "$GITHUB_BASE_REF"' in text
+    assert 'COMPARE_REF=$(git merge-base "origin/${GITHUB_BASE_REF}" HEAD)' in text
+    assert "elif [ -f .github/upstream-base ]; then" in text
+    assert "python3 scripts/check_fork_delta.py --fetch-provenance-source" in text
+    assert "COMPARE_REF=$(python3 scripts/check_fork_delta.py --contributor-base)" in text
+    assert 'git log "${COMPARE_REF}..HEAD"' in text
     assert (ROOT / "contributors" / "emails" / "hermes@local").read_text(
         encoding="utf-8"
     ).splitlines()[0] == "batumilove"

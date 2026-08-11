@@ -4,6 +4,7 @@ upstream:
   repository: NousResearch/hermes-agent
   branch: main
   base_file: .github/upstream-base
+  provenance_file: .github/upstream-sync-provenance.json
 
 patches:
   - id: supply-chain-build-input-pinning
@@ -53,6 +54,7 @@ patches:
       - .github/batumi-contracts.yaml
       - .github/batumi-components.lock.yaml
       - .github/upstream-base
+      - .github/upstream-sync-provenance.json
       - .github/workflows/ci.yml
       - .github/workflows/contributor-check.yml
       - .github/workflows/deploy-compose.yml
