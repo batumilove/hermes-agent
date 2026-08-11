@@ -60,13 +60,16 @@ async def test_finalize_session_async_awaits_core_before_plugin_export(monkeypat
     async def _finalize_conversation_async(**kwargs):
         calls.append(("core", kwargs))
 
+    async def _observe_lifecycle_async(name, **kwargs):
+        calls.append(("builtin", name, kwargs))
+
     coordinator = SimpleNamespace(
         finalize_conversation_async=_finalize_conversation_async,
     )
     monkeypatch.setattr(
         observability,
-        "observe_lifecycle",
-        lambda name, **kwargs: calls.append(("builtin", name, kwargs)),
+        "observe_lifecycle_async",
+        _observe_lifecycle_async,
     )
     monkeypatch.setattr(plugins, "invoke_hook", manager.invoke_hook)
     monkeypatch.setattr(relay_runtime, "SESSION_COORDINATOR", coordinator)

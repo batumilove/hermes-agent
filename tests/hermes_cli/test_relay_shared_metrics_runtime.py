@@ -1290,6 +1290,37 @@ async def test_async_session_close_uses_async_subscriber_barrier(direct_runtime)
     assert ("subscribers.flush",) not in direct_runtime.events
 
 
+@pytest.mark.asyncio
+async def test_async_lifecycle_finalize_uses_async_shared_metrics_barrier(
+    direct_runtime,
+    monkeypatch,
+):
+    from agent import relay_runtime as core_relay_runtime
+
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    runtime.ensure_session({"session_id": "async-lifecycle-finalize"})
+
+    async def finalize_core(**_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        core_relay_runtime.SESSION_COORDINATOR,
+        "finalize_conversation_async",
+        finalize_core,
+    )
+    direct_runtime.events.clear()
+
+    await lifecycle.finalize_session_async(
+        session_id="async-lifecycle-finalize",
+        platform="gateway",
+    )
+
+    assert runtime._sessions.get("async-lifecycle-finalize") is None
+    assert ("subscribers.flush_async",) in direct_runtime.events
+    assert ("subscribers.flush",) not in direct_runtime.events
+
+
 def test_real_binding_overlapping_turns_close_out_of_order_without_orphans(
     real_binding_runtime,
     caplog,
