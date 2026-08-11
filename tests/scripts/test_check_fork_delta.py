@@ -162,6 +162,36 @@ def test_check_delta_accepts_trusted_upstream_base_outside_fork_ancestry(
     assert report["unexplained"] == []
 
 
+def test_main_uses_matching_canonical_fetch_head_for_reconciled_fork(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, manifest, upstream_base = _reconciled_fixture_repo(tmp_path)
+    monkeypatch.setattr(MODULE, "ROOT", repo)
+    fetch_head = repo / _git(repo, "rev-parse", "--git-path", "FETCH_HEAD")
+    fetch_head.write_text(
+        f"{upstream_base}\t\t'{upstream_base}' of "
+        "https://github.com/example/project\n",
+        encoding="utf-8",
+    )
+
+    assert MODULE.main(["--manifest", str(manifest), "--json"], cwd=repo) == 0
+
+
+def test_main_rejects_fetch_head_from_noncanonical_repository(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, manifest, upstream_base = _reconciled_fixture_repo(tmp_path)
+    monkeypatch.setattr(MODULE, "ROOT", repo)
+    fetch_head = repo / _git(repo, "rev-parse", "--git-path", "FETCH_HEAD")
+    fetch_head.write_text(
+        f"{upstream_base}\t\t'{upstream_base}' of "
+        "https://github.com/attacker/project\n",
+        encoding="utf-8",
+    )
+
+    assert MODULE.main(["--manifest", str(manifest), "--json"], cwd=repo) == 2
+
+
 def test_manifest_rejects_duplicate_patch_ids(tmp_path: Path) -> None:
     manifest = yaml.safe_load((ROOT / ".github" / "batumi-patches.yaml").read_text())
     manifest["patches"].append(dict(manifest["patches"][0]))

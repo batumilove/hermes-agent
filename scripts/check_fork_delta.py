@@ -110,6 +110,52 @@ def load_manifest(path: Path) -> tuple[Path, list[PatchOwner]]:
     return base_file, owners
 
 
+def trusted_fetch_head(manifest_path: Path, *, cwd: Path = ROOT) -> str | None:
+    """Return a canonical-upstream SHA proven by the latest fetch, if any."""
+    try:
+        raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise DeltaError(f"could not read manifest {manifest_path}: {exc}") from exc
+    upstream = raw.get("upstream") if isinstance(raw, dict) else None
+    if not isinstance(upstream, dict):
+        raise DeltaError("manifest upstream section must be a mapping")
+    repository = _nonempty_string(
+        upstream.get("repository"), "upstream.repository"
+    )
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        raise DeltaError("upstream.repository must be a GitHub owner/repository pair")
+
+    base_file, _ = load_manifest(manifest_path)
+    try:
+        base = base_file.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise DeltaError(f"could not read upstream base file {base_file}: {exc}") from exc
+    if not _SHA_RE.fullmatch(base):
+        return None
+
+    fetch_head_value = _git("rev-parse", "--git-path", "FETCH_HEAD", cwd=cwd)
+    fetch_head = Path(fetch_head_value)
+    if not fetch_head.is_absolute():
+        fetch_head = cwd / fetch_head
+    try:
+        lines = fetch_head.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+
+    sources = {
+        f"https://github.com/{repository}",
+        f"https://github.com/{repository}.git",
+    }
+    for line in lines:
+        fields = line.split("\t")
+        if not fields or fields[0] != base:
+            continue
+        match = re.search(r" of (\S+)$", line)
+        if match and match.group(1) in sources:
+            return base
+    return None
+
+
 def _matches(path: str, pattern: str) -> bool:
     if pattern.endswith("/**") and path == pattern[:-3]:
         return True
@@ -172,7 +218,7 @@ def check_delta(
     }
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, cwd: Path = ROOT) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--head", default="HEAD")
@@ -180,17 +226,21 @@ def main(argv: list[str] | None = None) -> int:
         "--upstream-ref",
         help=(
             "trusted canonical-upstream ref that must contain the recorded base; "
-            "when omitted, the recorded base must be an ancestor of --head"
+            "when omitted, a matching canonical FETCH_HEAD is used if present, "
+            "otherwise the recorded base must be an ancestor of --head"
         ),
     )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
     try:
+        manifest = args.manifest.resolve()
+        upstream_ref = args.upstream_ref or trusted_fetch_head(manifest, cwd=cwd)
         report = check_delta(
-            args.manifest.resolve(),
+            manifest,
             head=args.head,
-            upstream_ref=args.upstream_ref,
+            upstream_ref=upstream_ref,
+            cwd=cwd,
         )
     except DeltaError as exc:
         print(f"fork delta check failed: {exc}", file=sys.stderr)
