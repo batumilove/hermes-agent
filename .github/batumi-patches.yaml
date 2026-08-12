@@ -43,6 +43,7 @@ patches:
       - .github/workflows/staging-telegram-socket-diagnostics.yml
       - .github/workflows/upstream-sync.yml
       - contributors/emails/hermes@local
+      - contributors/emails/repo-builder@batumi.works
       - scripts/check_fork_delta.py
       - scripts/install_batumi_components.py
       - scripts/run_batumi_contracts.py
@@ -275,6 +276,20 @@ patches:
     tests:
       - scripts/run_tests.sh tests/test_session_db_write_latency_logging.py tests/state/test_write_lock_patience.py
     retirement: Remove when upstream provides equivalent privacy-bounded phase timing and lock-owner attribution for SessionDB writes.
+
+  - id: doctor-bounded-state-health
+    kind: core
+    rationale: >-
+      Keep routine doctor checks bounded on multi-gigabyte live state databases
+      while retaining full SQLite integrity scans for explicit repair runs and
+      preserving schema, read, FTS read, and rolled-back write-health probes.
+    paths:
+      - hermes_cli/doctor.py
+      - tests/hermes_cli/test_doctor.py
+    tests:
+      - scripts/run_tests.sh tests/hermes_cli/test_doctor.py
+      - scripts/run_tests.sh tests/test_hermes_state.py
+    retirement: Remove when upstream routine doctor has equivalent bounded state-health checks with full-integrity repair coverage.
 
   - id: sessiondb-routing-delta-reconciliation
     kind: core

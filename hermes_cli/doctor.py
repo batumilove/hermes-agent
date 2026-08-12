@@ -1704,7 +1704,14 @@ def run_doctor(args):
             # repaired in place with --fix).
             from hermes_state import _db_opens_cleanly, repair_state_db_schema
 
-            _write_reason = _db_opens_cleanly(state_db_path)
+            # The full integrity scan is intentionally excluded from the
+            # routine doctor path: on multi-GB live stores it can take many
+            # minutes and compete with gateway writers. Explicit --fix runs
+            # retain the full scan; schema/read/FTS write-health probes always
+            # run, and repair helpers still default to the full check.
+            _write_reason = _db_opens_cleanly(
+                state_db_path, full_integrity=should_fix
+            )
             if _write_reason is not None:
                 check_warn(
                     f"{_DHH}/state.db fails a write-health probe (FTS index may be corrupt)",
