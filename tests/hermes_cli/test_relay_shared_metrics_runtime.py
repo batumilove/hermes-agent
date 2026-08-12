@@ -1692,6 +1692,23 @@ def test_deactivate_does_not_deregister_during_a_stuck_task_flush(
 
 
 
+def test_runtime_replacement_waits_for_stuck_deactivation(
+    direct_runtime,
+    monkeypatch,
+):
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    profile_key = relay_runtime.current_profile_key()
+    replacement_host = object()
+    monkeypatch.setattr(runtime, "deactivate", lambda: False)
+
+    replacement = relay_shared_metrics._get_runtime(host=replacement_host)
+
+    assert replacement is None
+    assert relay_shared_metrics._RUNTIMES[profile_key] is runtime
+
+
+
 def test_real_binding_overlapping_metrics_tasks_close_out_of_order(
     real_binding_runtime,
     caplog,

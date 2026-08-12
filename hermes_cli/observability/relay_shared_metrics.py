@@ -791,7 +791,7 @@ class _Runtime:
         except Exception:
             pass
 
-    def deactivate(self) -> None:
+    def deactivate(self) -> bool:
         """Stop collection without exporting locally aggregated metrics."""
         task_flush_stopped = self._stop_task_flush_worker()
         with self._sessions_lock:
@@ -801,7 +801,7 @@ class _Runtime:
                 "Hermes shared-metrics task flush worker did not stop; "
                 "skipping overlapping deactivation cleanup"
             )
-            return
+            return False
         self.subscriber.deactivate()
         if self._registered:
             self._safe(self.relay.subscribers.deregister, self._subscriber_name)
@@ -835,6 +835,7 @@ class _Runtime:
             atexit.unregister(self.shutdown)
         except Exception:
             pass
+        return True
 
     def _session(self, event: dict[str, Any]) -> _MetricsSession | None:
         session_id = str(event.get("session_id") or "")
@@ -1214,9 +1215,9 @@ def enabled() -> bool:
     if value:
         return True
     with _RUNTIME_LOCK:
-        runtime = _RUNTIMES.pop(profile_key, None)
-        if isinstance(runtime, _Runtime):
-            runtime.deactivate()
+        runtime = _RUNTIMES.get(profile_key)
+        if isinstance(runtime, _Runtime) and runtime.deactivate():
+            _RUNTIMES.pop(profile_key, None)
     return False
 
 
@@ -1401,7 +1402,8 @@ def _get_runtime(
         if isinstance(runtime, _Runtime):
             if host is None or runtime.host is host:
                 return runtime
-            runtime.deactivate()
+            if not runtime.deactivate():
+                return None
             _RUNTIMES.pop(profile_key, None)
         if runtime is _RUNTIME_FAILED and not retry_failed:
             return None
