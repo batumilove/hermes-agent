@@ -1552,6 +1552,53 @@ async def test_real_binding_parallel_physical_calls_use_isolated_scope_stacks(
     assert "closed with errors" not in caplog.text
 
 
+def test_task_finish_moves_subscriber_barrier_off_turn_thread(direct_runtime):
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    event = {
+        "session_id": "task-finish-defers-flush",
+        "task_id": "task",
+        "platform": "gateway",
+    }
+    assert runtime.start_task(event) is not None
+    direct_runtime.events.clear()
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking_flush() -> None:
+        entered.set()
+        assert release.wait(5)
+
+    direct_runtime.subscribers.flush = blocking_flush
+
+    runtime.finish_task({**event, "completed": True})
+
+    assert entered.wait(1)
+    release.set()
+    assert runtime._wait_for_task_flush(runtime._task_flush_requested)
+
+
+def test_task_flush_worker_stops_when_runtime_deactivates(direct_runtime):
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    event = {
+        "session_id": "task-flush-worker-stop",
+        "task_id": "task",
+        "platform": "gateway",
+    }
+    assert runtime.start_task(event) is not None
+
+    runtime.finish_task({**event, "completed": True})
+    assert runtime._wait_for_task_flush(runtime._task_flush_requested)
+    worker = runtime._task_flush_worker
+    assert worker is not None and worker.is_alive()
+
+    runtime.deactivate()
+
+    assert not worker.is_alive()
+
+
+
 def test_real_binding_overlapping_metrics_tasks_close_out_of_order(
     real_binding_runtime,
     caplog,
@@ -2516,6 +2563,10 @@ def test_failed_flush_keeps_daily_export_open_for_later_task(
 
     finish_desktop_task("t1")
 
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    assert runtime._wait_for_task_flush(runtime._task_flush_requested)
+
     root = tmp_path / "hermes-home" / "telemetry" / "shared_metrics"
     assert list((root / "outbox").glob("*.json")) == []
     with sqlite3.connect(root / "metrics.sqlite3") as connection:
@@ -2525,6 +2576,8 @@ def test_failed_flush_keeps_daily_export_open_for_later_task(
     assert package_count == 0
 
     finish_desktop_task("t2")
+
+    assert runtime._wait_for_task_flush(runtime._task_flush_requested)
 
     [package_path] = list((root / "outbox").glob("*.json"))
     package = json.loads(package_path.read_text(encoding="utf-8"))

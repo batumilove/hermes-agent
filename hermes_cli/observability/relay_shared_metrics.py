@@ -134,6 +134,11 @@ class _Runtime:
         self._task_sessions_lock = threading.RLock()
         self._task_sessions: dict[tuple[str, str], _MetricsSession] = {}
         self._turn_sessions: dict[tuple[str, str], _MetricsSession] = {}
+        self._task_flush_condition = threading.Condition(threading.Lock())
+        self._task_flush_requested = 0
+        self._task_flush_completed = 0
+        self._task_flush_worker: threading.Thread | None = None
+        self._task_flush_stopping = False
         self._subscriber_name = f"{SUBSCRIBER_NAME}.{self.host.runtime_id}"
         self.subscriber = SharedMetricsSubscriber(
             SharedMetricsStore(),
@@ -603,6 +608,41 @@ class _Runtime:
                 return
             finished = self._finish_task(session, task_id, event)
         if finished:
+            self._request_task_flush()
+
+    def _request_task_flush(self) -> int:
+        """Coalesce a task barrier onto one daemon worker off the turn thread."""
+        with self._task_flush_condition:
+            if self._task_flush_stopping:
+                return self._task_flush_requested
+            self._task_flush_requested += 1
+            requested = self._task_flush_requested
+            worker = self._task_flush_worker
+            if worker is None or not worker.is_alive():
+                worker = threading.Thread(
+                    target=self._task_flush_loop,
+                    name="hermes-relay-metrics-flush",
+                    daemon=True,
+                )
+                self._task_flush_worker = worker
+                worker.start()
+            self._task_flush_condition.notify_all()
+            return requested
+
+    def _task_flush_loop(self) -> None:
+        while True:
+            with self._task_flush_condition:
+                while (
+                    self._task_flush_completed >= self._task_flush_requested
+                    and not self._task_flush_stopping
+                ):
+                    self._task_flush_condition.wait()
+                if (
+                    self._task_flush_stopping
+                    and self._task_flush_completed >= self._task_flush_requested
+                ):
+                    return
+                requested = self._task_flush_requested
             try:
                 self.relay.subscribers.flush()
             except Exception:
@@ -612,6 +652,30 @@ class _Runtime:
                 )
             else:
                 self._export()
+            finally:
+                with self._task_flush_condition:
+                    self._task_flush_completed = max(
+                        self._task_flush_completed,
+                        requested,
+                    )
+                    self._task_flush_condition.notify_all()
+
+    def _wait_for_task_flush(self, requested: int, timeout: float = 5.0) -> bool:
+        """Wait for a requested task barrier; used by tests and orderly teardown."""
+        with self._task_flush_condition:
+            return self._task_flush_condition.wait_for(
+                lambda: self._task_flush_completed >= requested,
+                timeout=timeout,
+            )
+
+    def _stop_task_flush_worker(self, timeout: float = 5.0) -> None:
+        """Stop the coalescing worker without leaving an idle runtime thread."""
+        with self._task_flush_condition:
+            self._task_flush_stopping = True
+            worker = self._task_flush_worker
+            self._task_flush_condition.notify_all()
+        if worker is not None and worker is not threading.current_thread():
+            worker.join(timeout)
 
     def close_session(self, event: dict[str, Any]) -> None:
         session = self._session(event)
@@ -693,6 +757,7 @@ class _Runtime:
             )
 
     def shutdown(self) -> None:
+        self._stop_task_flush_worker()
         with self._sessions_lock:
             self._active = False
             session_ids = list(self._sessions)
@@ -719,6 +784,7 @@ class _Runtime:
 
     def deactivate(self) -> None:
         """Stop collection without exporting locally aggregated metrics."""
+        self._stop_task_flush_worker()
         with self._sessions_lock:
             self._active = False
         self.subscriber.deactivate()
