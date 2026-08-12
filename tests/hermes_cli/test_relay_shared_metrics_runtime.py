@@ -1598,6 +1598,99 @@ def test_task_flush_worker_stops_when_runtime_deactivates(direct_runtime):
     assert not worker.is_alive()
 
 
+def test_shutdown_does_not_overlap_a_stuck_task_flush(
+    direct_runtime,
+    monkeypatch,
+):
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    event = {
+        "session_id": "task-flush-shutdown",
+        "task_id": "task",
+        "platform": "gateway",
+    }
+    assert runtime.start_task(event) is not None
+    entered = threading.Event()
+    release = threading.Event()
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+
+    def blocking_flush() -> None:
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        entered.set()
+        try:
+            assert release.wait(5)
+        finally:
+            with lock:
+                active -= 1
+
+    direct_runtime.subscribers.flush = blocking_flush
+    monkeypatch.setattr(
+        runtime,
+        "_stop_task_flush_worker",
+        lambda timeout=5.0: type(runtime)._stop_task_flush_worker(runtime, timeout=0.05),
+    )
+    runtime.finish_task({**event, "completed": True})
+    assert entered.wait(1)
+
+    shutdown = threading.Thread(target=runtime.shutdown)
+    shutdown.start()
+    shutdown.join(0.5)
+
+    assert not shutdown.is_alive()
+    assert max_active == 1
+    assert not any(event[0] == "subscribers.deregister" for event in direct_runtime.events)
+    release.set()
+    worker = runtime._task_flush_worker
+    assert worker is not None
+    worker.join(5)
+    assert not worker.is_alive()
+    assert max_active == 1
+
+
+
+def test_deactivate_does_not_deregister_during_a_stuck_task_flush(
+    direct_runtime,
+    monkeypatch,
+):
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    event = {
+        "session_id": "task-flush-deactivate",
+        "task_id": "task",
+        "platform": "gateway",
+    }
+    assert runtime.start_task(event) is not None
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking_flush() -> None:
+        entered.set()
+        assert release.wait(5)
+
+    direct_runtime.subscribers.flush = blocking_flush
+    monkeypatch.setattr(
+        runtime,
+        "_stop_task_flush_worker",
+        lambda timeout=5.0: type(runtime)._stop_task_flush_worker(runtime, timeout=0.05),
+    )
+    runtime.finish_task({**event, "completed": True})
+    assert entered.wait(1)
+
+    runtime.deactivate()
+
+    assert not any(event[0] == "subscribers.deregister" for event in direct_runtime.events)
+    release.set()
+    worker = runtime._task_flush_worker
+    assert worker is not None
+    worker.join(5)
+    assert not worker.is_alive()
+
+
 
 def test_real_binding_overlapping_metrics_tasks_close_out_of_order(
     real_binding_runtime,

@@ -668,14 +668,15 @@ class _Runtime:
                 timeout=timeout,
             )
 
-    def _stop_task_flush_worker(self, timeout: float = 5.0) -> None:
-        """Stop the coalescing worker without leaving an idle runtime thread."""
+    def _stop_task_flush_worker(self, timeout: float = 5.0) -> bool:
+        """Stop the coalescing worker; report whether its native barrier exited."""
         with self._task_flush_condition:
             self._task_flush_stopping = True
             worker = self._task_flush_worker
             self._task_flush_condition.notify_all()
         if worker is not None and worker is not threading.current_thread():
             worker.join(timeout)
+        return worker is None or not worker.is_alive()
 
     def close_session(self, event: dict[str, Any]) -> None:
         session = self._session(event)
@@ -757,23 +758,31 @@ class _Runtime:
             )
 
     def shutdown(self) -> None:
-        self._stop_task_flush_worker()
+        task_flush_stopped = self._stop_task_flush_worker()
         with self._sessions_lock:
             self._active = False
             session_ids = list(self._sessions)
-        for session_id in session_ids:
-            self._safe(self.close_session, {"session_id": session_id})
+        if task_flush_stopped:
+            for session_id in session_ids:
+                self._safe(self.close_session, {"session_id": session_id})
+        else:
+            logger.warning(
+                "Hermes shared-metrics task flush worker did not stop; "
+                "skipping overlapping shutdown barriers"
+            )
+            return
         if not self._registered:
             return
-        try:
-            self.relay.subscribers.flush()
-        except Exception:
-            logger.warning(
-                "Hermes shared-metrics shutdown flush failed",
-                exc_info=True,
-            )
-        else:
-            self._export()
+        if task_flush_stopped:
+            try:
+                self.relay.subscribers.flush()
+            except Exception:
+                logger.warning(
+                    "Hermes shared-metrics shutdown flush failed",
+                    exc_info=True,
+                )
+            else:
+                self._export()
         self._safe(self.relay.subscribers.deregister, self._subscriber_name)
         self.host.release_managed_execution(self._subscriber_name)
         self._registered = False
@@ -784,9 +793,15 @@ class _Runtime:
 
     def deactivate(self) -> None:
         """Stop collection without exporting locally aggregated metrics."""
-        self._stop_task_flush_worker()
+        task_flush_stopped = self._stop_task_flush_worker()
         with self._sessions_lock:
             self._active = False
+        if not task_flush_stopped:
+            logger.warning(
+                "Hermes shared-metrics task flush worker did not stop; "
+                "skipping overlapping deactivation cleanup"
+            )
+            return
         self.subscriber.deactivate()
         if self._registered:
             self._safe(self.relay.subscribers.deregister, self._subscriber_name)
