@@ -97,6 +97,7 @@ patches:
       - tests/hermes_cli/test_auth_store_windows_encoding.py
       - tests/hermes_cli/test_model_switch_context_offload.py
       - tests/tools/test_file_operations.py
+      - tests/tools/test_windows_agent_loop_papercuts.py
     tests:
       - git diff --check $(cat .github/upstream-base)..HEAD
       - python -m py_compile agent/agent_init.py
