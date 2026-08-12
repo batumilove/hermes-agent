@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextvars
 import asyncio
 import json
+import logging
 import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
@@ -1689,6 +1690,70 @@ def test_deactivate_does_not_deregister_during_a_stuck_task_flush(
     assert worker is not None
     worker.join(5)
     assert not worker.is_alive()
+
+
+
+def test_late_metric_hook_is_quiet_when_core_relay_session_is_closing(
+    direct_runtime,
+    caplog,
+):
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    event = {
+        "session_id": "closing-core-session",
+        "task_id": "task",
+        "platform": "gateway",
+    }
+    assert runtime.start_task(event) is not None
+    session = runtime._session(event)
+    assert session is not None
+    with session.relay_session.lock:
+        session.relay_session.closing = True
+
+    with caplog.at_level(logging.WARNING):
+        runtime._emit_client_active(session)
+
+    assert "Hermes Relay session is closing" not in caplog.text
+
+
+
+def test_late_metric_hook_serializes_with_core_session_close(
+    direct_runtime,
+    monkeypatch,
+):
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    event = {
+        "session_id": "closing-core-session-race",
+        "task_id": "task",
+        "platform": "gateway",
+    }
+    assert runtime.start_task(event) is not None
+    session = runtime._session(event)
+    assert session is not None
+    about_to_run = threading.Event()
+    closer_finished = threading.Event()
+    original_run = runtime.host.run_in_session
+
+    def delayed_run(*args, **kwargs):
+        about_to_run.set()
+        closer_finished.wait(0.2)
+        return original_run(*args, **kwargs)
+
+    monkeypatch.setattr(runtime.host, "run_in_session", delayed_run)
+
+    def close_core_session() -> None:
+        assert about_to_run.wait(1)
+        with session.relay_session.lock:
+            session.relay_session.closing = True
+        closer_finished.set()
+
+    closer = threading.Thread(target=close_core_session)
+    closer.start()
+    runtime._emit_client_active(session)
+    closer.join(1)
+
+    assert not closer.is_alive()
 
 
 

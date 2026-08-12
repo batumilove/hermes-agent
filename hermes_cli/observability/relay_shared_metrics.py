@@ -199,12 +199,15 @@ class _Runtime:
         *args: Any,
         **kwargs: Any,
     ) -> Any:
-        return self.host.run_in_session(
-            session.relay_session,
-            callback,
-            *args,
-            **kwargs,
-        )
+        with session.relay_session.lock:
+            if session.relay_session.closing:
+                return None
+            return self.host.run_in_session(
+                session.relay_session,
+                callback,
+                *args,
+                **kwargs,
+            )
 
     def start_task(self, event: dict[str, Any]) -> _TaskRun | None:
         """Open one Relay function scope for a Hermes task run."""
