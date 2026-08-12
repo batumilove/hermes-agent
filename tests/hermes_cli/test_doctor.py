@@ -969,6 +969,78 @@ class TestGitHubTokenCheck:
         assert "GitHub authenticated via gh CLI" in out or "token configured" in out
 
 
+def test_doctor_skips_full_state_db_integrity_scan(monkeypatch, tmp_path):
+    """The default doctor path must not scan every page of a large live DB."""
+    import sqlite3
+    import hermes_state
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    db_path = home / "state.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY)")
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+    calls = []
+
+    def probe(path, *, full_integrity=True):
+        calls.append((path, full_integrity))
+        return None
+
+    monkeypatch.setattr(hermes_state, "_db_opens_cleanly", probe)
+    monkeypatch.setattr(hermes_state, "collect_state_db_stats", lambda _path: {})
+    monkeypatch.setattr(hermes_state, "count_db_holders", lambda _path: 0)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: (_ for _ in ()).throw(SystemExit(0)),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    with pytest.raises(SystemExit):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    assert calls == [(db_path, False)]
+
+
+def test_doctor_fix_runs_full_state_db_integrity_scan(monkeypatch, tmp_path):
+    """The explicit repair path must retain the complete integrity check."""
+    import sqlite3
+    import hermes_state
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    db_path = home / "state.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY)")
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+    calls = []
+
+    def probe(path, *, full_integrity=True):
+        calls.append((path, full_integrity))
+        return None
+
+    monkeypatch.setattr(hermes_state, "_db_opens_cleanly", probe)
+    monkeypatch.setattr(hermes_state, "collect_state_db_stats", lambda _path: {})
+    monkeypatch.setattr(hermes_state, "count_db_holders", lambda _path: 0)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: (_ for _ in ()).throw(SystemExit(0)),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    with pytest.raises(SystemExit):
+        doctor_mod.run_doctor(Namespace(fix=True))
+
+    assert calls == [(db_path, True)]
+
+
 def _run_doctor_with_healthy_oauth_fallback(
     monkeypatch,
     tmp_path,
