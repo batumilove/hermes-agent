@@ -12,7 +12,9 @@ Included commits
               (exact approved OTEL commit 0d3c50a5ae18cf86b992c71e598d6a3453684a2a)
   a64b7d127c fix(plugin): expose runtime role for telemetry ownership
               (cherry-picked from prior attempt 873397641c)
-  <this commit> Integrated ownership fix: gateway role + deterministic RED/GREEN tests
+  b676a73543 Integrated ownership fix: gateway role + deterministic RED/GREEN tests
+  <this commit> fix(plugin): safely re-register plugins when runtime role becomes claiming
+              (addresses startup-order bug where CLI discovery runs before gateway role set)
 
 What changed
 ------------
@@ -44,6 +46,16 @@ What changed
   - State preservation: counters are reloaded from the existing .prom file.
   - RED regression: unpatched plugin reproduces the dashboard bug.
   - GREEN regression: patched plugin gates the dashboard out.
+
+* tests/hermes_cli/test_plugin_role_registration_ordering.py (new)
+  - Deterministic RED/GREEN coverage of the real CLI/gateway startup ordering:
+    early discovery, then `set_runtime_role("gateway")`, then re-discovery.
+  - CLI `_cli_ref` set after early discovery.
+  - Dashboard stays passive and does not trigger re-registration.
+  - Re-registration happens exactly once (no duplicate hooks).
+  - `discover_plugins(force=True)` clears and re-registers correctly.
+  - Global `discover_plugins()` path.
+  - Early role set avoids transition.
 
 User plugin patch
 -----------------
