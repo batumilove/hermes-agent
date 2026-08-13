@@ -498,10 +498,11 @@ patches:
       - hermes_cli/plugins.py
       - tests/hermes_cli/test_plugins.py
       - tests/run_agent/test_24996_fallback_exhaustion_cooldown.py
+      - tests/run_agent/test_primary_runtime_restore.py
       - website/docs/developer-guide/plugins/index.md
       - website/docs/user-guide/features/hooks.md
     tests:
-      - scripts/run_tests.sh tests/run_agent/test_24996_fallback_exhaustion_cooldown.py tests/hermes_cli/test_plugins.py
+      - scripts/run_tests.sh tests/run_agent/test_24996_fallback_exhaustion_cooldown.py tests/run_agent/test_primary_runtime_restore.py tests/hermes_cli/test_plugins.py
     retirement: Remove when upstream provides equivalent observer hooks and episode reset.
 
   - id: kimi-billing-classification

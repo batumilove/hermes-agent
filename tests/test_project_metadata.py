@@ -10,11 +10,26 @@ def _load_optional_dependencies():
     return project["optional-dependencies"]
 
 
-def _load_package_data():
+def _load_setuptools():
     pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
     with pyproject_path.open("rb") as handle:
         tool = tomllib.load(handle)["tool"]
-    return tool["setuptools"]["package-data"]
+    return tool["setuptools"]
+
+
+def _load_package_data():
+    return _load_setuptools()["package-data"]
+
+
+def test_plugin_registration_lifecycle_flat_module_is_packaged():
+    """The plugin hub must import after an editable or wheel installation.
+
+    ``hermes_cli.plugins`` imports the top-level ``registration_lifecycle``
+    module. Setuptools only includes explicitly declared flat modules, so an
+    omitted entry passes source-tree tests but fails from a neutral directory
+    after installation.
+    """
+    assert "registration_lifecycle" in _load_setuptools()["py-modules"]
 
 
 def test_matrix_extra_not_in_all():
