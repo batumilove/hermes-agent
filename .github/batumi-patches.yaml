@@ -337,6 +337,28 @@ patches:
       - scripts/run_tests.sh tests/hermes_cli/test_lifecycle.py tests/gateway/test_session_boundary_hooks.py tests/gateway/test_session_model_reset.py
     retirement: Remove when upstream isolates overlapping Relay scope lifetimes, preserves owner-loop execution for nested synchronous LLM calls and streams, and passes the same real-binding lifecycle contracts.
 
+  - id: provider-telemetry-runtime-ownership
+    kind: operations
+    rationale: >-
+      Keep platform health gauges free of mutable ghost-series labels and make
+      provider telemetry writer ownership depend on the runtime role, with a
+      repository-owned plugin candidate and deterministic clean-runner tests.
+    paths:
+      - agent/monitoring/gateway_health.py
+      - evidence/README.md
+      - evidence/provider_telemetry_fixed.py
+      - evidence/provider_telemetry_writer_ownership.patch
+      - evidence/role_registration_ordering.md
+      - tests/hermes_cli/test_plugin_role_registration_ordering.py
+      - tests/hermes_cli/test_plugin_runtime_role.py
+      - tests/monitoring/monitoring_test.evidence.txt
+      - tests/monitoring/test_gateway_health.evidence.txt
+      - tests/monitoring/test_gateway_health.py
+      - tests/plugins/test_provider_telemetry_plugin.py
+    tests:
+      - scripts/run_tests.sh tests/monitoring/test_gateway_health.py tests/hermes_cli/test_plugin_runtime_role.py tests/hermes_cli/test_plugin_role_registration_ordering.py tests/plugins/test_provider_telemetry_plugin.py
+    retirement: Remove when upstream provides stable platform-health series and equivalent runtime-role-gated provider telemetry ownership with hermetic tests.
+
   - id: cron-activegraph-lifecycle-telemetry
     kind: core
     rationale: >-

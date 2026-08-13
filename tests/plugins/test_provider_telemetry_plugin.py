@@ -35,10 +35,12 @@ import pytest
 from hermes_cli.plugins import PluginContext, PluginManifest, PluginManager
 
 
-# Prefer the installed user plugin; fall back to bundled candidate path.
+# Prefer the installed user plugin for live-host verification; fall back to the
+# repository-owned candidate so clean CI runners exercise the same source.
 _PLUGIN_CANDIDATES = [
     Path.home() / ".hermes" / "plugins" / "provider_telemetry" / "__init__.py",
     Path("/home/ubuntu/.hermes/plugins/provider_telemetry/__init__.py"),
+    Path(__file__).resolve().parents[2] / "evidence" / "provider_telemetry_fixed.py",
     Path(__file__).resolve().parents[2] / "plugins" / "observability" / "provider_telemetry" / "__init__.py",
 ]
 
@@ -48,7 +50,7 @@ def _installed_plugin_path() -> Path:
         if path.is_file():
             return path
     raise FileNotFoundError(
-        "provider_telemetry plugin not found under ~/.hermes/plugins or plugins/observability"
+        "provider_telemetry plugin not found in the live install or repository candidate"
     )
 
 
