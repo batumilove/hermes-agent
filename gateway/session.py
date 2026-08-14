@@ -1858,11 +1858,11 @@ class SessionStore:
 
         Correctness constraints this path relies on:
 
-        - The key -> session_id mapping never changes here.  Structural
-          transitions (create/recover/reset/switch/prune, and
-          compression-tip heals — see get_or_create_session) still use
-          the full-rewrite path, which also refreshes the legacy
-          sessions.json mirror.  Between structural saves the mirror may
+        - The key -> session_id mapping never changes here. Structural
+          one-key transitions (create/recover/reset/switch and compression-tip
+          heals) use the generation-ordered point path, which also refreshes
+          the legacy sessions.json mirror. Multi-key structural changes still
+          use full reconciliation. Between structural saves the mirror may
           lag in metadata only; every remaining sessions.json reader is
           a legacy fallback and state.db stays primary, so restart
           rebinding is unaffected.
@@ -3616,7 +3616,22 @@ class SessionStore:
             )
 
             self._entries[session_key] = new_entry
-            self._save()
+            data, generation = self._snapshot_routing_locked()
+            # Switching changes exactly one key→session binding. Persist that
+            # structural transition through the ordered point-write path rather
+            # than reconciling every routing row. Keep the tentative binding
+            # hidden under _lock until state.db accepts either the point UPSERT
+            # or its bounded full-reconciliation fallback.
+            persisted = self._persist_routing_data(
+                data,
+                generation,
+                reason="switch_session",
+                point_key=session_key,
+                require_state_db=True,
+            )
+            if not persisted:
+                self._entries[session_key] = old_entry
+                return None
 
         if self._db and db_end_session_id:
             try:
