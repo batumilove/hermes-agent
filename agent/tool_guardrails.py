@@ -133,6 +133,7 @@ class ToolCallGuardrailConfig:
 # issuing dozens of web searches or spawning dozens of subagents is already
 # pathological, so the defaults are deliberately low.
 _DEFAULT_MAX_WEB_SEARCHES_PER_TURN = 50
+_DEFAULT_WARN_WEB_SEARCHES_PER_TURN = 40
 _DEFAULT_MAX_SUBAGENTS_PER_TURN = 50
 
 
@@ -156,6 +157,7 @@ class LoopCapConfig:
 
     max_web_searches: int = _DEFAULT_MAX_WEB_SEARCHES_PER_TURN
     max_subagents: int = _DEFAULT_MAX_SUBAGENTS_PER_TURN
+    warn_web_searches: int = _DEFAULT_WARN_WEB_SEARCHES_PER_TURN
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any] | None) -> "LoopCapConfig":
@@ -169,6 +171,9 @@ class LoopCapConfig:
             ),
             max_subagents=_non_negative_int(
                 data.get("max_subagents"), defaults.max_subagents
+            ),
+            warn_web_searches=_non_negative_int(
+                data.get("warn_web_searches"), defaults.warn_web_searches
             ),
         )
 
@@ -287,6 +292,7 @@ class ToolCallGuardrailController:
         # single agent loop rather than accumulating across the session.
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
+        self._web_search_soft_warned = False
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
@@ -461,15 +467,15 @@ class ToolCallGuardrailController:
 
         if tool_name == "web_search":
             cap = caps.max_web_searches
+            soft = caps.warn_web_searches
             if cap and self._turn_web_search_count >= cap:
                 decision = ToolGuardrailDecision(
                     action="block",
                     code="loop_web_search_cap",
                     message=(
                         f"Blocked web_search: this turn has already made {cap} "
-                        "web searches, the per-turn limit. This looks like a "
-                        "runaway search loop. Work with the results you already "
-                        "have and give the user your answer."
+                        "web searches, the per-turn search budget. Work with the results you "
+                        "already have and give the user your answer."
                     ),
                     tool_name=tool_name,
                     count=self._turn_web_search_count,
@@ -478,6 +484,26 @@ class ToolCallGuardrailController:
                 self._halt_decision = decision
                 return decision
             self._turn_web_search_count += 1
+            if (
+                soft
+                and self.config.warnings_enabled
+                and self._turn_web_search_count >= soft
+                and not self._web_search_soft_warned
+            ):
+                self._web_search_soft_warned = True
+                return ToolGuardrailDecision(
+                    action="warn",
+                    code="loop_web_search_soft_warning",
+                    message=(
+                        f"{self._turn_web_search_count} web searches this turn. "
+                        "Approaching the per-turn search budget; select the strongest "
+                        "candidates, verify direct pages if needed, and synthesize rather "
+                        "than continuing broad searching."
+                    ),
+                    tool_name=tool_name,
+                    count=self._turn_web_search_count,
+                    signature=signature,
+                )
             return None
 
         if tool_name == "delegate_task":

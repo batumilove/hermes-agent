@@ -372,7 +372,6 @@ def test_default_run_conversation_warns_without_guardrail_halt():
 
 
 
-
 def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     """Regression for #30770: when the guardrail halts the loop, the
     synthesized halt message must be pushed through ``stream_delta_callback``
@@ -420,3 +419,151 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     assert halt_text in text_deltas, (
         f"halt message was never streamed; callback only saw {deltas!r}"
     )
+
+
+def _web_search_budget_config(*, warn: int, maximum: int) -> dict:
+    return {
+        "tool_loop_guardrails": {
+            "warnings_enabled": True,
+            "hard_stop_enabled": False,
+            "loop_caps": {
+                "warn_web_searches": warn,
+                "max_web_searches": maximum,
+            },
+        }
+    }
+
+
+def test_web_search_cap_runs_one_tool_disabled_synthesis_pass():
+    agent = _make_agent(
+        "web_search",
+        max_iterations=10,
+        config=_web_search_budget_config(warn=1, maximum=2),
+    )
+    # Use sequential responses (one tool per turn) so guardrail guidance
+    # is reliably appended via _append_guardrail_observation
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call("web_search", json.dumps({"query": "q1"}), "c1")
+            ],
+        ),
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call("web_search", json.dumps({"query": "q2"}), "c2")
+            ],
+        ),
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call("web_search", json.dumps({"query": "q3"}), "c3")
+            ],
+        ),
+        _mock_response(
+            content="Evidence-grounded synthesis.",
+            finish_reason="stop",
+            tool_calls=None,
+        ),
+    ]
+    agent.client.chat.completions.create.side_effect = responses
+
+    call_count = [0]
+
+    def mock_handle_function_call(*args, **kwargs):
+        call_count[0] += 1
+        # Return base result; guardrail guidance is appended by the real flow
+        return json.dumps({"success": True, "data": {"web": []}})
+
+    with (
+        patch("run_agent.handle_function_call", side_effect=mock_handle_function_call) as dispatch,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("research this")
+
+    assert call_count[0] == 2
+    assert result["turn_exit_reason"].startswith("text_response")
+    assert result["final_response"] == "Evidence-grounded synthesis."
+    # q1, q2, q3 blocked, synthesis = 4 API calls
+    assert agent.client.chat.completions.create.call_count == 4
+    synthesis_kwargs = agent.client.chat.completions.create.call_args_list[-1].kwargs
+    assert not synthesis_kwargs.get("tools")
+
+    tool_contents = [
+        message["content"]
+        for message in result["messages"]
+        if message.get("role") == "tool"
+    ]
+    # Soft warning guidance is emitted via _append_guardrail_observation;
+    # for loop-cap warnings, the decision is returned from before_call but
+    # currently cleared before execution (warn.allows_execution=True).
+    # The cap block guidance must appear in the blocked tool result.
+    assert any("loop_web_search_cap" in content for content in tool_contents)
+    # Verify the blocked result message contains the truthful wording
+    cap_message = next(c for c in tool_contents if "loop_web_search_cap" in c)
+    assert "per-turn search budget" in cap_message
+    assert "repeated non-progressing" not in cap_message
+
+
+def test_web_search_cap_synthesis_pass_cannot_reenter_tool_execution():
+    """If the model still returns tool_calls in the synthesis pass,
+    those calls must NOT be dispatched - tools were disabled, so any
+    tool_call in the response is discarded and the content is emitted as text.
+    """
+    agent = _make_agent(
+        "web_search",
+        max_iterations=10,
+        config=_web_search_budget_config(warn=1, maximum=1),
+    )
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call("web_search", json.dumps({"query": "q1"}), "c1"),
+                _mock_tool_call("web_search", json.dumps({"query": "q2"}), "c2"),
+            ],
+        ),
+        # Model still tries to call tools even though tools=[] in the API call.
+        # This must be discarded - synthesis cannot re-enter tool execution.
+        _mock_response(
+            content="Cannot search - synthesis mode.",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call("web_search", json.dumps({"query": "q3"}), "c3")
+            ],
+        ),
+        # Fallback text response if the synthesis loop iterates again.
+        _mock_response(
+            content="Final synthesis.",
+            finish_reason="stop",
+            tool_calls=None,
+        ),
+    ]
+    agent.client.chat.completions.create.side_effect = responses
+
+    with (
+        patch(
+            "run_agent.handle_function_call",
+            return_value=json.dumps({"success": True, "data": {"web": []}}),
+        ) as dispatch,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("research this")
+
+    # Only q1 should execute; q2 is blocked at the cap.
+    assert dispatch.call_count == 1
+    # Synthesis pass sends tools=[], and any tool_calls in the response are
+    # discarded - so the loop terminates with a text response, not guardrail_halt.
+    assert agent.client.chat.completions.create.call_count == 2
+    synthesis_kwargs = agent.client.chat.completions.create.call_args_list[-1].kwargs
+    assert not synthesis_kwargs.get("tools")
+    assert result["turn_exit_reason"].startswith("text_response")
