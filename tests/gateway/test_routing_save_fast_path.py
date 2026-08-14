@@ -748,6 +748,33 @@ class TestFullRewriteTelemetry:
 
 
 class TestFallbacks:
+    def test_baseexception_during_point_save_clears_pending_generation(
+        self, tmp_path, monkeypatch
+    ):
+        """Aborted point saves must not permanently disable exact pruning."""
+        store = _make_store(tmp_path, monkeypatch, write_sessions_json=False)
+        entry = store.get_or_create_session(_source())
+
+        class InjectedBaseException(BaseException):
+            pass
+
+        def fail_point_save(*_args, **_kwargs):
+            raise InjectedBaseException("injected point-save abort")
+
+        monkeypatch.setattr(
+            store._db, "save_gateway_routing_entry", fail_point_save
+        )
+
+        try:
+            store.update_session(entry.session_key, last_prompt_tokens=123)
+        except InjectedBaseException:
+            pass
+        else:
+            raise AssertionError("expected injected point-save abort")
+
+        assert store._pending_routing_generations == set()
+        store._db.close()
+
     def test_no_db_falls_back_to_full_rewrite(self, tmp_path, monkeypatch):
         """DB-less installs keep sessions.json durable every turn."""
         store = _make_store(tmp_path, monkeypatch)
