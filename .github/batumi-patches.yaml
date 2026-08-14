@@ -88,7 +88,9 @@ patches:
       after advancing its recorded upstream baseline.
     paths:
       - agent/agent_init.py
+      - apps/bootstrap-installer/src/routes/progress.tsx
       - apps/desktop/src/styles.css
+      - contributors/emails/uperLu@users.noreply.github.com
       - hermes_cli/bang_shell.py
       - nix/desktop.nix
       - optional-skills/mlops/pytorch-fsdp/references/common-patterns.md
@@ -97,12 +99,15 @@ patches:
       - tests/gateway/test_branch_routing_columns.py
       - tests/hermes_cli/test_auth_store_windows_encoding.py
       - tests/hermes_cli/test_model_switch_context_offload.py
+      - tests/test_install_sh_node_npm_check.py
       - tests/tools/test_file_operations.py
       - tests/tools/test_windows_agent_loop_papercuts.py
     tests:
       - git diff --check $(cat .github/upstream-base)..HEAD
       - python -m py_compile agent/agent_init.py
       - npm run check --workspace apps/desktop
+      - npm run check --workspace apps/bootstrap-installer
+      - scripts/run_tests.sh tests/test_install_sh_node_npm_check.py
       - scripts/run_tests.sh tests/cli/test_bang_shell_mode.py tests/hermes_cli/test_model_switch_context_offload.py
       - scripts/run_tests.sh tests/gateway/test_branch_routing_columns.py tests/hermes_cli/test_auth_store_windows_encoding.py tests/tools/test_file_operations.py
     retirement: Remove when the recorded upstream baseline contains byte-identical diff-check-clean versions of these files.

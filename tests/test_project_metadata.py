@@ -29,7 +29,7 @@ def test_plugin_registration_lifecycle_flat_module_is_packaged():
     omitted entry passes source-tree tests but fails from a neutral directory
     after installation.
     """
-    assert "registration_lifecycle" in _load_setuptools()["py-modules"]
+    assert _load_setuptools()["py-modules"].count("registration_lifecycle") == 1
 
 
 def test_matrix_extra_not_in_all():
