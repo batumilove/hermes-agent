@@ -13,13 +13,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
 import gateway.drain_control as dc
-from gateway.run import GatewayRunner
+from gateway.run import GatewayRunner, _publish_authoritative_startup_status
+from gateway.status import read_runtime_status
 from gateway.config import Platform
 from gateway.platforms.base import MessageEvent, MessageType
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
@@ -120,6 +122,63 @@ class TestInstantiationEpoch:
             assert dc.current_instantiation_epoch() == ""
         finally:
             dc.current_instantiation_epoch.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# Authoritative startup ownership/readiness
+# ---------------------------------------------------------------------------
+
+
+class _StartupStatusRunner:
+    def __init__(self, *, shutdown_requested=False):
+        self._external_drain_active = False
+        self._shutdown_requested = shutdown_requested
+
+    def _startup_should_abort(self):
+        return self._shutdown_requested
+
+
+class TestAuthoritativeStartupStatus:
+    def test_pid_owner_acknowledges_inherited_drain_before_slow_startup(self, home):
+        dc.write_drain_request(principal="activation-controller")
+        runner = _StartupStatusRunner()
+
+        state = _publish_authoritative_startup_status(runner, default_state="starting")
+
+        payload = read_runtime_status()
+        assert state == "draining"
+        assert runner._external_drain_active is True
+        assert payload["pid"] == os.getpid()
+        assert payload["gateway_state"] == "draining"
+
+    def test_startup_without_drain_publishes_pid_bound_starting(self, home):
+        runner = _StartupStatusRunner()
+
+        state = _publish_authoritative_startup_status(runner, default_state="starting")
+
+        payload = read_runtime_status()
+        assert state == "starting"
+        assert runner._external_drain_active is False
+        assert payload["pid"] == os.getpid()
+        assert payload["gateway_state"] == "starting"
+
+    def test_slow_startup_cannot_overwrite_inherited_drain_with_running(self, home):
+        dc.write_drain_request(principal="activation-controller")
+        runner = _StartupStatusRunner()
+        _publish_authoritative_startup_status(runner, default_state="starting")
+
+        state = _publish_authoritative_startup_status(runner, default_state="running")
+
+        assert state == "draining"
+        assert read_runtime_status()["gateway_state"] == "draining"
+
+    def test_shutdown_precedence_cannot_be_resurrected_as_running(self, home):
+        runner = _StartupStatusRunner(shutdown_requested=True)
+
+        state = _publish_authoritative_startup_status(runner, default_state="running")
+
+        assert state == "stopping"
+        assert read_runtime_status()["gateway_state"] == "stopping"
 
 
 # ---------------------------------------------------------------------------

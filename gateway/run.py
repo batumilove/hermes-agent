@@ -6312,6 +6312,41 @@ class TurnRunner:
 
 
 
+def _publish_authoritative_startup_status(runner, *, default_state: str) -> str:
+    """Publish PID-owned startup state while honoring an inherited drain.
+
+    This is called only after the process has won the gateway runtime lock and
+    PID-file claim. It deliberately runs before slow MCP/plugin/platform
+    initialization so an external generation controller can distinguish a
+    live, progressing startup from stale status left by the previous PID.
+
+    A current-epoch drain marker wins over the caller's default lifecycle
+    state at every startup checkpoint. That both acknowledges maintenance
+    early and prevents a later ``running`` write from briefly reopening intake
+    before the drain watcher starts.
+    """
+    from gateway.drain_control import drain_requested
+    from gateway.status import write_runtime_status
+
+    drain_active = drain_requested()
+    runner._external_drain_active = drain_active
+    startup_should_abort = getattr(runner, "_startup_should_abort", None)
+    shutdown_active = bool(startup_should_abort()) if callable(startup_should_abort) else False
+    if shutdown_active:
+        state = "stopping"
+    else:
+        state = "draining" if drain_active else default_state
+    active_work_count = getattr(runner, "_active_work_count", None)
+    active_agents = active_work_count() if callable(active_work_count) else 0
+    write_runtime_status(
+        gateway_state=state,
+        exit_reason=None,
+        restart_requested=bool(getattr(runner, "_restart_requested", False)),
+        active_agents=active_agents,
+    )
+    return state
+
+
 class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
     """
     Main gateway controller.
@@ -11920,8 +11955,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
         try:
-            from gateway.status import write_runtime_status
-            write_runtime_status(gateway_state="starting", exit_reason=None)
+            _publish_authoritative_startup_status(self, default_state="starting")
         except Exception:
             pass
         try:
@@ -12508,7 +12542,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._running = True
         self._install_plugin_message_injector()
-        self._update_runtime_status("running")
+        _publish_authoritative_startup_status(self, default_state="running")
 
         # Loop-liveness heartbeat (#66892): an asyncio task so a frozen loop
         # stops refreshing ``state/gateway.heartbeat``. Cancelled with the
@@ -29855,6 +29889,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         return False
     atexit.register(remove_pid_file)
     atexit.register(release_gateway_runtime_lock)
+
+    # Publish authoritative PID-owned startup state before any potentially
+    # slow MCP/plugin/platform initialization. If a current-epoch external
+    # drain survived the planned process restart, acknowledge it here rather
+    # than waiting for the late background drain watcher.
+    _publish_authoritative_startup_status(runner, default_state="starting")
 
     # Lifecycle ledger (NS-608): report if the previous gateway life died
     # uncleanly (SIGKILL / OOM / VM death — no exit path ran), then claim
