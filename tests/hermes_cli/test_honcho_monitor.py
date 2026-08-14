@@ -593,6 +593,39 @@ def test_reconciler_churn_does_not_trigger_queue_doc_drift_alert():
     assert "Representation queue advancing faster than documents" not in report
 
 
+def test_one_item_representation_document_gap_does_not_trigger_drift_alert():
+    """A single-sample visibility gap is normal and must not page the operator."""
+    prev = {
+        "documents_total": 485776,
+        "queue_by_type": {"representation": {"pending": 0, "done": 100}},
+    }
+    snapshot = hm.HonchoSnapshot(
+        services={"api_ok": True, "deriver_up": True, "db_ok": True, "redis_ok": True},
+        pipeline={
+            "embedding": {
+                "model": "qwen3-embedding-8b-1536",
+                "base_url": "http://192.168.10.211:11435/v1",
+                "vector_dimensions": "1536",
+            }
+        },
+        db={
+            "probe_ok": True,
+            "documents_total": 485795,
+            "documents_dims": 1536,
+            "messages_dims": 1536,
+        },
+        queue={"pending": 0, "done": 2050},
+        queue_by_type={"representation": {"pending": 0, "done": 120}},
+        errors={"save_representation": 0, "four_oh_one": 0},
+        spark_goat={"ok": True, "latency_s": 1.5, "thinking": False},
+        deriver={},
+    )
+
+    alerts = hm.build_alerts(snapshot, previous_state=prev)
+
+    assert "Representation queue advancing faster than documents" not in alerts
+
+
 def test_representation_queue_outpacing_docs_triggers_drift_alert():
     """Representation work should still be correlated with document growth."""
     prev = {
