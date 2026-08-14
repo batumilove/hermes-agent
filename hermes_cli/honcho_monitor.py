@@ -477,10 +477,10 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
             prev_docs = int(previous_state.get("documents_total", snapshot.db.get("documents_total", 0)))
             docs_delta = max(0, snapshot.db.get("documents_total", 0) - prev_docs)
             rep_delta = max(0, rep_done - prev_rep_done)
-            # A one-or-two-item gap is normal: representation units can complete
-            # before the corresponding document counters are visible in the next
-            # snapshot. Alert only on a meaningful drift, not routine tick jitter.
-            if rep_delta >= 5 and rep_delta > docs_delta:
+            # A one-item gap is normal: a representation unit can complete before
+            # the corresponding document counter is visible in the next snapshot.
+            # Alert only on a larger drift, not routine tick jitter.
+            if rep_delta >= 5 and rep_delta - docs_delta > 1:
                 alerts.append("Representation queue advancing faster than documents")
 
             if (
