@@ -377,6 +377,86 @@ class TestRestartRebindWithoutMirror:
 
 
 class TestStructuralPointRebind:
+    def test_switch_updates_db_and_mirror_without_full_reconciliation(
+        self, tmp_path, monkeypatch
+    ):
+        """Switching one route must persist one key, not reconcile the scope."""
+        store = _make_store(tmp_path, monkeypatch)
+        entry = store.get_or_create_session(_source())
+        old_id = entry.session_id
+        target_id = old_id + "_resumed"
+        replacements = []
+        point_writes = []
+        real_point = store._db.save_gateway_routing_entry
+        real_replace = store._db.replace_gateway_routing_entries
+
+        def recording_point(session_key, entry_json, *, scope=""):
+            point_writes.append((session_key, json.loads(entry_json)["session_id"]))
+            return real_point(session_key, entry_json, scope=scope)
+
+        def recording_replace(entries, *, scope="", reason=None):
+            replacements.append((reason, len(entries)))
+            return real_replace(entries, scope=scope, reason=reason)
+
+        monkeypatch.setattr(store._db, "save_gateway_routing_entry", recording_point)
+        monkeypatch.setattr(
+            store._db, "replace_gateway_routing_entries", recording_replace
+        )
+
+        switched = store.switch_session(entry.session_key, target_id)
+
+        assert switched is not None
+        assert switched.session_id == target_id
+        assert point_writes == [(entry.session_key, target_id)]
+        assert replacements == []
+        assert _routing_row(store, entry.session_key)["session_id"] == target_id
+        mirror = json.loads(
+            (tmp_path / "sessions" / "sessions.json").read_text(encoding="utf-8")
+        )
+        assert mirror[entry.session_key]["session_id"] == target_id
+        store._db.close()
+
+        restarted = _make_store(tmp_path, monkeypatch)
+        rebound = restarted.lookup_by_session_key(entry.session_key)
+        assert rebound is not None
+        assert rebound.session_id == target_id
+        restarted._db.close()
+
+    def test_switch_rolls_back_when_all_state_db_writes_fail(
+        self, tmp_path, monkeypatch
+    ):
+        store = _make_store(tmp_path, monkeypatch)
+        entry = store.get_or_create_session(_source())
+        old_id = entry.session_id
+        target_id = old_id + "_resumed"
+        mirror_path = tmp_path / "sessions" / "sessions.json"
+        lifecycle_calls = []
+
+        def fail_write(*args, **kwargs):
+            raise RuntimeError("state.db unavailable")
+
+        monkeypatch.setattr(store._db, "save_gateway_routing_entry", fail_write)
+        monkeypatch.setattr(store._db, "replace_gateway_routing_entries", fail_write)
+        monkeypatch.setattr(
+            store._db,
+            "promote_to_session_reset",
+            lambda *args, **kwargs: lifecycle_calls.append(("end", args)),
+        )
+        monkeypatch.setattr(
+            store._db,
+            "reopen_session",
+            lambda *args, **kwargs: lifecycle_calls.append(("reopen", args)),
+        )
+
+        assert store.switch_session(entry.session_key, target_id) is None
+
+        assert store._entries[entry.session_key].session_id == old_id
+        assert _routing_row(store, entry.session_key)["session_id"] == old_id
+        mirror = json.loads(mirror_path.read_text(encoding="utf-8"))
+        assert mirror[entry.session_key]["session_id"] == old_id
+        assert lifecycle_calls == []
+        store._db.close()
+
     def test_rebind_updates_db_and_mirror_without_full_reconciliation(
         self, tmp_path, monkeypatch
     ):
