@@ -7876,6 +7876,11 @@ class AIAgent:
 
     def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
         tool = decision.tool_name or "a tool"
+        if decision.code == "loop_web_search_cap":
+            return (
+                f"I exhausted the per-turn web_search budget ({decision.count} searches). "
+                "Work with the results collected so far and give the user your answer."
+            )
         return (
             f"I stopped retrying {tool} because it hit the tool-call guardrail "
             f"({decision.code}) after {decision.count} repeated non-progressing "

@@ -2580,6 +2580,14 @@ def run_conversation(
                         tools_for_api=tools_for_api,
                     )
                 )
+                # Cap synthesis recovery: one tools-disabled pass to convert
+                # collected evidence into an answer.
+                if agent._cap_synthesis_mode:
+                    tools_for_api = []
+                    agent._cap_synthesis_mode = False
+                    agent._cap_synthesis_consumed = True
+                else:
+                    agent._cap_synthesis_consumed = False
                 if tools_for_api == agent.tools:
                     api_kwargs = agent._build_api_kwargs(api_messages)
                 else:
@@ -6493,7 +6501,24 @@ def run_conversation(
                 }
             elif hasattr(agent, "_codex_incomplete_retries"):
                 agent._codex_incomplete_retries = 0
-            
+
+            # Cap synthesis recovery: if the just-completed API call was
+            # the tools-disabled synthesis pass, discard any tool_calls in
+            # the response and force a text-only finish.
+            if agent._cap_synthesis_consumed:
+                agent._cap_synthesis_consumed = False
+                if assistant_message.tool_calls:
+                    logger.info(
+                        "Cap synthesis: discarding %d tool_call(s) from response "
+                        "because tools were disabled for this pass",
+                        len(assistant_message.tool_calls),
+                    )
+                    assistant_message.tool_calls = None
+                    if assistant_message.content:
+                        # Already has text content - keep it
+                        pass
+                    finish_reason = "stop"
+
             # Check for tool calls
             if assistant_message.tool_calls:
                 if not agent.quiet_mode:
@@ -6925,6 +6950,14 @@ def run_conversation(
 
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision
+                    # Special synthesis recovery for web_search cap: one tools-disabled pass
+                    # to convert collected evidence into an answer.
+                    if decision.code == "loop_web_search_cap":
+                        agent._cap_synthesis_mode = True
+                        agent._tool_guardrail_halt_decision = None
+                        # Continue the loop; the next API call will have tools disabled.
+                        continue
+
                     _turn_exit_reason = "guardrail_halt"
                     final_response = agent._toolguard_controlled_halt_response(decision)
                     agent._emit_status(
