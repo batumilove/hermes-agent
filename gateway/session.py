@@ -1915,37 +1915,34 @@ class SessionStore:
         if captured is None:
             return
         entry_json, revision, candidate_entry = captured
-        _db = getattr(self, "_db", None)
-        saver = getattr(_db, "save_gateway_routing_entry", None) if _db else None
-        if callable(saver):
-            save_lock = getattr(self, "_save_lock", None)
-            if save_lock is None:
-                save_lock = threading.Lock()
-                self._save_lock = save_lock
-            try:
-                with save_lock:
-                    if getattr(self, "_persisted_routing_generation", 0) >= revision:
-                        self._unregister_pending_routing_generation(revision)
-                        return
-                    fast_persisted = getattr(self, "_fast_persisted_entries", None)
-                    if fast_persisted is None:
-                        fast_persisted = {}
-                        self._fast_persisted_entries = fast_persisted
-                    persisted = fast_persisted.get(session_key)
-                    if persisted is not None and persisted[0] >= revision:
-                        self._unregister_pending_routing_generation(revision)
-                        return
-                    saver(session_key, entry_json, scope=self._routing_scope())
-                    fast_persisted[session_key] = (revision, entry_json)
-                self._unregister_pending_routing_generation(revision)
-                return
-            except Exception as exc:
-                logger.warning(
-                    "gateway.session: single-entry routing save failed for %r "
-                    "(%s); falling back to full index rewrite",
-                    session_key, exc,
-                )
         try:
+            _db = getattr(self, "_db", None)
+            saver = getattr(_db, "save_gateway_routing_entry", None) if _db else None
+            if callable(saver):
+                save_lock = getattr(self, "_save_lock", None)
+                if save_lock is None:
+                    save_lock = threading.Lock()
+                    self._save_lock = save_lock
+                try:
+                    with save_lock:
+                        if getattr(self, "_persisted_routing_generation", 0) >= revision:
+                            return
+                        fast_persisted = getattr(self, "_fast_persisted_entries", None)
+                        if fast_persisted is None:
+                            fast_persisted = {}
+                            self._fast_persisted_entries = fast_persisted
+                        persisted = fast_persisted.get(session_key)
+                        if persisted is not None and persisted[0] >= revision:
+                            return
+                        saver(session_key, entry_json, scope=self._routing_scope())
+                        fast_persisted[session_key] = (revision, entry_json)
+                    return
+                except Exception as exc:
+                    logger.warning(
+                        "gateway.session: single-entry routing save failed for %r "
+                        "(%s); falling back to full index rewrite",
+                        session_key, exc,
+                    )
             if candidate_entry is not None:
                 # DB upsert failed (or no DB): build the full snapshot now, carrying
                 # the candidate entry so the fallback persists the intended
