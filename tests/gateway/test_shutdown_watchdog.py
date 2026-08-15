@@ -9,8 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import subprocess
+import sys
+import textwrap
 import threading
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -64,5 +69,81 @@ def test_arm_shutdown_watchdog_fires_with_dump_and_exit(tmp_path):
     assert "shutdown_watchdog_fired" in text
     assert "faulthandler dump" in text
     assert get_shutdown_watchdog_dump_path(tmp_path).name == "gateway-shutdown-watchdog.log"
+
+
+def _run_watchdog_child(code: str, *, timeout: float = 2.0) -> subprocess.CompletedProcess[str]:
+    repo_root = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(repo_root)
+    return subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(code)],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def test_shutdown_watchdog_hard_exits_when_snapshot_blocks():
+    started = time.monotonic()
+    completed = _run_watchdog_child(
+        """
+        import threading
+        from gateway.shutdown_watchdog import arm_shutdown_watchdog
+
+        def blocked_snapshot():
+            threading.Event().wait()
+
+        arm_shutdown_watchdog(0.2, snapshot_fn=blocked_snapshot, exit_code=42)
+        print("WATCHDOG_ARMED", flush=True)
+        threading.Event().wait()
+        """,
+    )
+    assert "WATCHDOG_ARMED" in completed.stdout, completed.stderr
+    assert completed.returncode != 0
+    assert time.monotonic() - started < 3.0
+
+
+def test_shutdown_watchdog_hard_exits_when_dump_open_blocks(tmp_path):
+    fifo = tmp_path / "blocked-watchdog-dump"
+    os.mkfifo(fifo)
+    started = time.monotonic()
+    completed = _run_watchdog_child(
+        f"""
+        import threading
+        from pathlib import Path
+        from gateway.shutdown_watchdog import arm_shutdown_watchdog
+
+        arm_shutdown_watchdog(
+            0.2,
+            snapshot_fn=lambda: {{}},
+            dump_path=Path({str(fifo)!r}),
+            exit_code=43,
+        )
+        print("WATCHDOG_ARMED", flush=True)
+        threading.Event().wait()
+        """,
+    )
+    assert "WATCHDOG_ARMED" in completed.stdout, completed.stderr
+    assert completed.returncode != 0
+    assert time.monotonic() - started < 3.0
+
+
+def test_shutdown_watchdog_hard_exit_is_disarmed_on_completion():
+    completed = _run_watchdog_child(
+        """
+        import threading
+        import time
+        from gateway.shutdown_watchdog import arm_shutdown_watchdog
+
+        done = threading.Event()
+        arm_shutdown_watchdog(0.2, done_event=done, exit_code=44)
+        done.set()
+        time.sleep(1.5)
+        """,
+    )
+    assert completed.returncode == 0, completed.stderr
 
 

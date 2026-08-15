@@ -664,3 +664,15 @@ patches:
     tests:
       - scripts/run_tests.sh tests/gateway/test_external_drain_control.py tests/gateway/test_startup_restart_race.py tests/gateway/test_routing_save_fast_path.py
     retirement: Remove when upstream publishes authoritative PID-bound startup status with equivalent drain-epoch, shutdown-precedence, and intake-suppression coverage.
+
+  - id: gateway-shutdown-hard-deadline
+    kind: core
+    rationale: >-
+      Enforce the shutdown watchdog's supervisor-safe hard deadline even when
+      Python-level snapshot or traceback diagnostics block before os._exit().
+    paths:
+      - gateway/shutdown_watchdog.py
+      - tests/gateway/test_shutdown_watchdog.py
+    tests:
+      - scripts/run_tests.sh tests/gateway/test_shutdown_watchdog.py tests/gateway/test_gateway_shutdown.py tests/gateway/test_shutdown_aggregate_budget_contract.py
+    retirement: Remove when upstream has an equivalent GIL-independent hard-exit fallback with blocked-diagnostics and clean-disarm regression coverage.
