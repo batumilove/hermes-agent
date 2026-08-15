@@ -6514,9 +6514,11 @@ def run_conversation(
                         len(assistant_message.tool_calls),
                     )
                     assistant_message.tool_calls = None
-                    if assistant_message.content:
-                        # Already has text content - keep it
-                        pass
+                    if not assistant_message.content:
+                        assistant_message.content = (
+                            "I exhausted the per-turn web_search budget, but the "
+                            "tools-disabled synthesis pass did not return a text answer."
+                        )
                     finish_reason = "stop"
 
             # Check for tool calls
