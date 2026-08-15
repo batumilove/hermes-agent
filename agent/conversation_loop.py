@@ -6956,6 +6956,10 @@ def run_conversation(
                     # to convert collected evidence into an answer.
                     if decision.code == "loop_web_search_cap":
                         agent._cap_synthesis_mode = True
+                        # The synthesis pass is recovery, not another normal
+                        # tool-loop iteration. Permit it even when this call
+                        # consumed the final configured iteration.
+                        agent._budget_grace_call = True
                         agent._tool_guardrail_halt_decision = None
                         # Continue the loop; the next API call will have tools disabled.
                         continue
