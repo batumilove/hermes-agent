@@ -540,6 +540,7 @@ def test_cap_synthesis_state_resets_at_start_of_new_user_turn():
     agent = _make_agent("web_search", max_iterations=5)
     agent._cap_synthesis_mode = True
     agent._cap_synthesis_consumed = True
+    agent._budget_grace_call = True
     agent.client.chat.completions.create.return_value = _mock_response(
         content="fresh turn", finish_reason="stop", tool_calls=None
     )
@@ -553,7 +554,51 @@ def test_cap_synthesis_state_resets_at_start_of_new_user_turn():
 
     request_kwargs = agent.client.chat.completions.create.call_args.kwargs
     assert request_kwargs.get("tools")
+    assert agent.iteration_budget.used == 1
     assert result["final_response"] == "fresh turn"
+
+
+def test_web_search_cap_gets_one_synthesis_call_past_final_iteration():
+    agent = _make_agent(
+        "web_search",
+        max_iterations=1,
+        config=_web_search_budget_config(warn=1, maximum=1),
+    )
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call("web_search", json.dumps({"query": "q1"}), "c1"),
+                _mock_tool_call("web_search", json.dumps({"query": "q2"}), "c2"),
+            ],
+        ),
+        _mock_response(
+            content="Final synthesis from collected evidence.",
+            finish_reason="stop",
+            tool_calls=None,
+        ),
+    ]
+    agent.client.chat.completions.create.side_effect = responses
+
+    with (
+        patch(
+            "run_agent.handle_function_call",
+            return_value=json.dumps({"success": True, "data": {"web": []}}),
+        ) as dispatch,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("research this")
+
+    assert dispatch.call_count == 1
+    assert agent.client.chat.completions.create.call_count == 2
+    assert result["api_calls"] == 2
+    assert result["turn_exit_reason"].startswith("text_response")
+    synthesis_kwargs = agent.client.chat.completions.create.call_args_list[-1].kwargs
+    assert not synthesis_kwargs.get("tools")
+    assert result["final_response"] == "Final synthesis from collected evidence."
 
 
 def test_cap_synthesis_empty_response_falls_back_without_retrying():
