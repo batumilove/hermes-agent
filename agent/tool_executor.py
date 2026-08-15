@@ -900,11 +900,21 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         print(f"  ⚡ Concurrent: {num_tools} tool calls — {tool_names_str}")
 
     # ── Concurrent execution ─────────────────────────────────────────
-    # Each slot holds (function_name, function_args, function_result, duration, error_flag, blocked_flag, middleware_trace)
+    # Each slot holds (function_name, function_args, function_result, duration,
+    # error_flag, blocked_flag, middleware_trace, guardrail_warning).
     results = [None] * num_tools
     for i, (tc, name, args, middleware_trace, block_result, _scope_block) in enumerate(parsed_calls):
         if block_result is not None:
-            results[i] = (name, args, block_result, 0.0, True, True, middleware_trace)
+            results[i] = (
+                name,
+                args,
+                block_result,
+                0.0,
+                True,
+                True,
+                middleware_trace,
+                None,
+            )
 
     start_condition = threading.Condition()
     next_start_order = 0
@@ -1247,6 +1257,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                                     True,
                                     False,
                                     middleware_trace,
+                                    None,
                                 )
                         break
                     futures.append(f)
