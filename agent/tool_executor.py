@@ -615,7 +615,11 @@ def _run_agent_tool_execution_middleware(
         if guardrail_warning is not None:
             from agent.tool_guardrails import append_toolguard_guidance
 
-            result = append_toolguard_guidance(result, guardrail_warning)
+            if _is_multimodal_tool_result(result):
+                guidance = append_toolguard_guidance("", guardrail_warning)
+                _append_subdir_hint_to_multimodal(result, guidance)
+            else:
+                result = append_toolguard_guidance(result, guardrail_warning)
         return result
 
     def _hermes_pipeline(relay_args: dict[str, Any]) -> Any:
@@ -2248,9 +2252,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 function_result,
                 failed=_is_error_result,
             )
-            result_preview = function_result if agent.verbose_logging else (
-                function_result[:200] if len(function_result) > 200 else function_result
-            )
+            if _is_multimodal_tool_result(function_result):
+                result_preview = _multimodal_text_summary(function_result)
+            else:
+                result_preview = function_result if agent.verbose_logging else (
+                    function_result[:200] if len(function_result) > 200 else function_result
+                )
         if _is_error_result:
             logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
         else:

@@ -323,12 +323,19 @@ class ToolCallGuardrailController:
         # of hard_stop_enabled (which only governs the per-turn loop detector).
         # We block BEFORE the call runs once the count is already at the cap,
         # then increment for an allowed call so the (cap+1)-th is refused.
-        cap_block = self._check_loop_cap(tool_name, _coerce_args(args), signature)
-        if cap_block is not None:
-            return cap_block
+        cap_decision = self._check_loop_cap(tool_name, _coerce_args(args), signature)
+        cap_warning = None
+        if cap_decision is not None:
+            if cap_decision.action == "warn":
+                cap_warning = cap_decision
+            else:
+                return cap_decision
 
         if not self.config.hard_stop_enabled:
-            return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
+            return cap_warning or ToolGuardrailDecision(
+                tool_name=tool_name,
+                signature=signature,
+            )
 
         exact_count = self._exact_failure_counts.get(signature, 0)
         if exact_count >= self.config.exact_failure_block_after:
@@ -367,7 +374,10 @@ class ToolCallGuardrailController:
                     self._halt_decision = decision
                     return decision
 
-        return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
+        return cap_warning or ToolGuardrailDecision(
+            tool_name=tool_name,
+            signature=signature,
+        )
 
     @_serialized
     def after_call(

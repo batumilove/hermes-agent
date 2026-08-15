@@ -459,6 +459,41 @@ def test_web_search_soft_budget_warning_reaches_model_after_execution():
     assert "synthesize rather than continuing broad searching" in content
 
 
+def test_web_search_soft_budget_warning_preserves_multimodal_result():
+    agent = _make_agent(
+        "web_search",
+        max_iterations=5,
+        config=_web_search_budget_config(warn=1, maximum=2),
+    )
+    call = _mock_tool_call(
+        "web_search", json.dumps({"query": "q1"}), "c-soft-multimodal"
+    )
+    message = SimpleNamespace(content="", tool_calls=[call])
+    messages = []
+    agent._model_supports_vision = lambda: True
+    agent._provider_supports_vision_tool_messages = lambda: True
+    image_part = {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,abc"},
+    }
+    result = {
+        "_multimodal": True,
+        "content": [
+            {"type": "text", "text": "image result"},
+            image_part,
+        ],
+        "text_summary": "image result",
+    }
+
+    with patch("run_agent.handle_function_call", return_value=result):
+        agent._execute_tool_calls_sequential(message, messages, "task-1")
+
+    assert [item["role"] for item in messages] == ["tool"]
+    assert isinstance(messages[0]["content"], list)
+    assert messages[0]["content"][1] == image_part
+    assert "loop_web_search_soft_warning" in messages[0]["content"][0]["text"]
+
+
 def test_web_search_cap_runs_one_tool_disabled_synthesis_pass():
     agent = _make_agent(
         "web_search",
@@ -525,10 +560,8 @@ def test_web_search_cap_runs_one_tool_disabled_synthesis_pass():
         for message in result["messages"]
         if message.get("role") == "tool"
     ]
-    # Soft warning guidance is emitted via _append_guardrail_observation;
-    # for loop-cap warnings, the decision is returned from before_call but
-    # currently cleared before execution (warn.allows_execution=True).
-    # The cap block guidance must appear in the blocked tool result.
+    # The soft warning is appended to the executed result by the middleware.
+    # This assertion separately proves the cap-block result remains truthful.
     assert any("loop_web_search_cap" in content for content in tool_contents)
     # Verify the blocked result message contains the truthful wording
     cap_message = next(c for c in tool_contents if "loop_web_search_cap" in c)
@@ -599,6 +632,55 @@ def test_web_search_cap_gets_one_synthesis_call_past_final_iteration():
     synthesis_kwargs = agent.client.chat.completions.create.call_args_list[-1].kwargs
     assert not synthesis_kwargs.get("tools")
     assert result["final_response"] == "Final synthesis from collected evidence."
+
+
+def test_web_search_cap_synthesis_keeps_tools_disabled_across_provider_retry():
+    agent = _make_agent(
+        "web_search",
+        max_iterations=2,
+        config=_web_search_budget_config(warn=1, maximum=1),
+    )
+    capped = _mock_response(
+        content="",
+        finish_reason="tool_calls",
+        tool_calls=[
+            _mock_tool_call("web_search", json.dumps({"query": "q1"}), "c1"),
+            _mock_tool_call("web_search", json.dumps({"query": "q2"}), "c2"),
+        ],
+    )
+    agent.client.chat.completions.create.side_effect = [
+        capped,
+        RuntimeError("transient provider failure"),
+        _mock_response(
+            content="Synthesis after retry.",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call(
+                    "web_search",
+                    json.dumps({"query": "must-not-run"}),
+                    "retry-tool",
+                )
+            ],
+        ),
+    ]
+
+    with (
+        patch(
+            "run_agent.handle_function_call",
+            return_value=json.dumps({"success": True, "data": {"web": []}}),
+        ) as dispatch,
+        patch("agent.conversation_loop.time.sleep"),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("research this")
+
+    assert dispatch.call_count == 1
+    assert agent.client.chat.completions.create.call_count == 3
+    retry_calls = agent.client.chat.completions.create.call_args_list[-2:]
+    assert all(not call.kwargs.get("tools") for call in retry_calls)
+    assert result["final_response"] == "Synthesis after retry."
 
 
 def test_cap_synthesis_empty_response_falls_back_without_retrying():

@@ -2584,7 +2584,6 @@ def run_conversation(
                 # collected evidence into an answer.
                 if agent._cap_synthesis_mode:
                     tools_for_api = []
-                    agent._cap_synthesis_mode = False
                     agent._cap_synthesis_consumed = True
                 else:
                     agent._cap_synthesis_consumed = False
@@ -6507,6 +6506,7 @@ def run_conversation(
             # the response and force a text-only finish.
             if agent._cap_synthesis_consumed:
                 agent._cap_synthesis_consumed = False
+                agent._cap_synthesis_mode = False
                 if assistant_message.tool_calls:
                     logger.info(
                         "Cap synthesis: discarding %d tool_call(s) from response "

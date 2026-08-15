@@ -213,7 +213,32 @@ def test_web_search_soft_budget_obeys_warnings_enabled():
         )
     )
 
-    assert controller.before_call("web_search", {"query": "q1"}).action == "allow"
+    for i in range(3):
+        assert controller.before_call("web_search", {"query": f"q{i}"}).action == "allow"
+    blocked = controller.before_call("web_search", {"query": "q3"})
+    assert blocked.action == "block"
+    assert blocked.code == "loop_web_search_cap"
+
+
+def test_web_search_soft_budget_warning_never_bypasses_exact_failure_block():
+    args = {"query": "same"}
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            warnings_enabled=True,
+            hard_stop_enabled=True,
+            exact_failure_block_after=1,
+            loop_caps=LoopCapConfig(
+                max_web_searches=3,
+                warn_web_searches=1,
+            ),
+        )
+    )
+    controller.after_call("web_search", args, '{"error":"boom"}', failed=True)
+
+    decision = controller.before_call("web_search", args)
+
+    assert decision.action == "block"
+    assert decision.code == "repeated_exact_failure_block"
 
 
 def test_parallel_before_call_serializes_web_search_cap_accounting():
