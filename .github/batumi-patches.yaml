@@ -632,3 +632,22 @@ patches:
     tests:
       - scripts/run_tests.sh tests/gateway/test_buzz_adapter.py tests/gateway/test_buzz_websocket.py
     retirement: Remove when upstream safely recognizes p-tag-less relay DMs for explicitly allow-listed senders with equivalent channel and access-control regression coverage.
+
+  - id: web-search-budget-convergence
+    kind: core
+    rationale: >-
+      Warn truthfully before the aggregate web-search cap, serialize shared cap
+      accounting, and guarantee one tools-disabled synthesis pass that converges
+      on collected evidence without tool re-entry or empty output.
+    paths:
+      - agent/agent_init.py
+      - agent/conversation_loop.py
+      - agent/tool_executor.py
+      - agent/tool_guardrails.py
+      - agent/turn_context.py
+      - run_agent.py
+      - tests/agent/test_tool_guardrails.py
+      - tests/run_agent/test_tool_call_guardrail_runtime.py
+    tests:
+      - scripts/run_tests.sh tests/agent/test_tool_guardrails.py tests/run_agent/test_tool_call_guardrail_runtime.py tests/tools/test_tool_output_limits.py tests/tools/test_interrupt.py
+    retirement: Remove when upstream provides equivalent aggregate warning, parallel cap accounting, and bounded synthesis-only convergence contracts.
