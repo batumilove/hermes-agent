@@ -7892,18 +7892,27 @@ class AIAgent:
         self,
         tool_name: str,
         function_args: dict,
-        function_result: str,
+        function_result: Any,
         *,
         failed: bool,
-    ) -> str:
+    ) -> Any:
+        observation_result = (
+            _multimodal_text_summary(function_result)
+            if _is_multimodal_tool_result(function_result)
+            else function_result
+        )
         decision = self._tool_guardrails.after_call(
             tool_name,
             function_args,
-            function_result,
+            observation_result,
             failed=failed,
         )
         if decision.action in {"warn", "halt"}:
-            function_result = append_toolguard_guidance(function_result, decision)
+            if _is_multimodal_tool_result(function_result):
+                guidance = append_toolguard_guidance("", decision)
+                _append_subdir_hint_to_multimodal(function_result, guidance)
+            else:
+                function_result = append_toolguard_guidance(function_result, decision)
         if decision.should_halt:
             self._set_tool_guardrail_halt(decision)
         return function_result
