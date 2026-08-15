@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from dataclasses import dataclass, field
+from functools import wraps
 from typing import Any, Mapping
 
 from utils import safe_json_loads
@@ -275,13 +277,26 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
     return False, ""
 
 
+def _serialized(method):
+    """Serialize one controller state transition across parallel tool workers."""
+
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._state_lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class ToolCallGuardrailController:
     """Per-turn controller for repeated failed/non-progressing tool calls."""
 
     def __init__(self, config: ToolCallGuardrailConfig | None = None):
+        self._state_lock = threading.RLock()
         self.config = config or ToolCallGuardrailConfig()
         self.reset_for_turn()
 
+    @_serialized
     def reset_for_turn(self) -> None:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
@@ -298,6 +313,7 @@ class ToolCallGuardrailController:
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision
 
+    @_serialized
     def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
 
@@ -353,6 +369,7 @@ class ToolCallGuardrailController:
 
         return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
+    @_serialized
     def after_call(
         self,
         tool_name: str,

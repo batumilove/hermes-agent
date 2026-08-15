@@ -1,6 +1,9 @@
 """Pure tool-call guardrail primitive tests."""
 
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig,
@@ -211,6 +214,44 @@ def test_web_search_soft_budget_obeys_warnings_enabled():
     )
 
     assert controller.before_call("web_search", {"query": "q1"}).action == "allow"
+
+
+def test_parallel_before_call_serializes_web_search_cap_accounting():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=False,
+            loop_caps=LoopCapConfig(max_web_searches=1, warn_web_searches=0),
+        )
+    )
+    original = controller._check_loop_cap
+    start = threading.Barrier(2)
+    state_lock = threading.Lock()
+    active = 0
+    max_active = 0
+
+    def observed_check(*args):
+        nonlocal active, max_active
+        with state_lock:
+            active += 1
+            max_active = max(max_active, active)
+        try:
+            time.sleep(0.05)
+            return original(*args)
+        finally:
+            with state_lock:
+                active -= 1
+
+    controller._check_loop_cap = observed_check
+
+    def call(index):
+        start.wait()
+        return controller.before_call("web_search", {"query": f"q{index}"})
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        decisions = list(pool.map(call, range(2)))
+
+    assert max_active == 1
+    assert sorted(decision.action for decision in decisions) == ["allow", "block"]
 
 
 
