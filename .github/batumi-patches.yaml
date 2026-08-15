@@ -651,3 +651,16 @@ patches:
     tests:
       - scripts/run_tests.sh tests/agent/test_tool_guardrails.py tests/run_agent/test_tool_call_guardrail_runtime.py tests/tools/test_tool_output_limits.py tests/tools/test_interrupt.py
     retirement: Remove when upstream provides equivalent aggregate warning, parallel cap accounting, and bounded synthesis-only convergence contracts.
+
+  - id: gateway-startup-readiness
+    kind: core
+    rationale: >-
+      Publish PID-bound starting or draining status immediately after runtime
+      ownership so external activation can distinguish slow startup from stale
+      prior-generation state without reopening intake during inherited drain.
+    paths:
+      - gateway/run.py
+      - tests/gateway/test_external_drain_control.py
+    tests:
+      - scripts/run_tests.sh tests/gateway/test_external_drain_control.py tests/gateway/test_startup_restart_race.py tests/gateway/test_routing_save_fast_path.py
+    retirement: Remove when upstream publishes authoritative PID-bound startup status with equivalent drain-epoch, shutdown-precedence, and intake-suppression coverage.
