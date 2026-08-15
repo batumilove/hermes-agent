@@ -131,6 +131,62 @@ def test_shutdown_watchdog_hard_exits_when_dump_open_blocks(tmp_path):
     assert time.monotonic() - started < 3.0
 
 
+@pytest.mark.skipif(not hasattr(os, "set_blocking"), reason="requires blocking pipe control")
+def test_shutdown_watchdog_hard_exit_does_not_block_on_full_stderr_pipe():
+    """The final backstop must not dump to a potentially blocked stderr FD."""
+    read_fd, write_fd = os.pipe()
+    os.set_blocking(write_fd, False)
+    while True:
+        try:
+            os.write(write_fd, b"x" * 65536)
+        except BlockingIOError:
+            break
+    os.set_blocking(write_fd, True)
+
+    repo_root = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(repo_root)
+    code = textwrap.dedent(
+        """
+        import threading
+        from gateway.shutdown_watchdog import arm_shutdown_watchdog
+
+        def blocked_snapshot():
+            threading.Event().wait()
+
+        arm_shutdown_watchdog(0.2, snapshot_fn=blocked_snapshot, exit_code=45)
+        print("WATCHDOG_ARMED", flush=True)
+        threading.Event().wait()
+        """
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", code],
+        cwd=repo_root,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=write_fd,
+        text=True,
+    )
+    os.close(write_fd)
+    try:
+        try:
+            stdout, _ = proc.communicate(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, _ = proc.communicate()
+            pytest.fail(
+                "hard-exit fallback blocked while writing diagnostics to a full stderr pipe; "
+                f"stdout={stdout!r}"
+            )
+        assert "WATCHDOG_ARMED" in stdout
+        assert proc.returncode != 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=1.0)
+        os.close(read_fd)
+
+
 def test_shutdown_watchdog_hard_exit_is_disarmed_on_completion():
     completed = _run_watchdog_child(
         """

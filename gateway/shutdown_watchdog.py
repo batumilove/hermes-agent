@@ -366,23 +366,46 @@ def arm_shutdown_watchdog(
         return done
 
     hard_exit_fallback_armed = False
+    hard_exit_fallback_fd: Optional[int] = None
+    hard_exit_fallback_lock = threading.Lock()
     try:
+        # The C fallback must not write to stderr: a full journald pipe or other
+        # blocked fd 2 would wedge faulthandler before its final _exit().  Keep
+        # a dedicated non-blocking sink open until the timer is cancelled.
+        hard_exit_fallback_fd = os.open(os.devnull, os.O_WRONLY)
         faulthandler.dump_traceback_later(
             delay + _HARD_EXIT_FALLBACK_SLACK_S,
             repeat=False,
+            file=hard_exit_fallback_fd,
             exit=True,
         )
         hard_exit_fallback_armed = True
     except Exception:
+        if hard_exit_fallback_fd is not None:
+            try:
+                os.close(hard_exit_fallback_fd)
+            except OSError:
+                pass
+            hard_exit_fallback_fd = None
         logger.debug("Failed to arm C-level shutdown hard-exit fallback", exc_info=True)
 
     def _cancel_hard_exit_fallback() -> None:
-        if not hard_exit_fallback_armed:
-            return
-        try:
-            faulthandler.cancel_dump_traceback_later()
-        except Exception:
-            pass
+        nonlocal hard_exit_fallback_armed, hard_exit_fallback_fd
+        with hard_exit_fallback_lock:
+            if not hard_exit_fallback_armed:
+                return
+            hard_exit_fallback_armed = False
+            try:
+                faulthandler.cancel_dump_traceback_later()
+            except Exception:
+                pass
+            finally:
+                if hard_exit_fallback_fd is not None:
+                    try:
+                        os.close(hard_exit_fallback_fd)
+                    except OSError:
+                        pass
+                    hard_exit_fallback_fd = None
 
     def _watchdog() -> None:
         # Wait with interruptible chunks so a late disarm doesn't need the
