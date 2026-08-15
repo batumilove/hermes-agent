@@ -459,6 +459,79 @@ def test_web_search_soft_budget_warning_reaches_model_after_execution():
     assert "synthesize rather than continuing broad searching" in content
 
 
+def test_web_search_soft_budget_warning_reaches_concurrent_result_after_observation():
+    agent = _make_agent(
+        "web_search",
+        max_iterations=5,
+        config=_web_search_budget_config(warn=2, maximum=3),
+    )
+    calls = [
+        _mock_tool_call("web_search", json.dumps({"query": "q1"}), "c-soft-1"),
+        _mock_tool_call("web_search", json.dumps({"query": "q2"}), "c-soft-2"),
+    ]
+    messages = []
+
+    with patch(
+        "run_agent.handle_function_call",
+        return_value=json.dumps({"success": True, "data": {"web": []}}),
+    ) as dispatch:
+        agent._execute_tool_calls_concurrent(
+            SimpleNamespace(content="", tool_calls=calls),
+            messages,
+            "task-1",
+        )
+
+    assert dispatch.call_count == 2
+    assert [message["tool_call_id"] for message in messages] == ["c-soft-1", "c-soft-2"]
+    warned = [
+        message for message in messages
+        if "loop_web_search_soft_warning" in message["content"]
+    ]
+    assert len(warned) == 1
+    assert warned[0]["tool_call_id"] in {"c-soft-1", "c-soft-2"}
+
+
+def test_web_search_soft_warning_does_not_mask_runtime_no_progress_halt():
+    config = {
+        "tool_loop_guardrails": {
+            "warnings_enabled": True,
+            "hard_stop_enabled": True,
+            "hard_stop_after": {
+                "exact_failure": 8,
+                "same_tool_failure": 8,
+                "idempotent_no_progress": 2,
+            },
+            "loop_caps": {
+                "warn_web_searches": 2,
+                "max_web_searches": 10,
+            },
+        }
+    }
+    agent = _make_agent("web_search", max_iterations=5, config=config)
+    messages = []
+    raw_result = json.dumps({"success": True, "data": {"web": []}})
+
+    with patch("run_agent.handle_function_call", return_value=raw_result) as dispatch:
+        for index in range(1, 4):
+            call = _mock_tool_call(
+                "web_search",
+                json.dumps({"query": "same"}),
+                f"c-no-progress-{index}",
+            )
+            agent._execute_tool_calls_sequential(
+                SimpleNamespace(content="", tool_calls=[call]),
+                messages,
+                "task-1",
+            )
+
+    assert dispatch.call_count == 2
+    decision = agent._tool_guardrail_halt_decision
+    assert decision is not None
+    assert decision.code == "idempotent_no_progress_block"
+    assert "loop_web_search_soft_warning" in messages[-2]["content"]
+    assert "idempotent_no_progress_block" in messages[-1]["content"]
+
+
 def test_web_search_soft_budget_warning_preserves_multimodal_result():
     agent = _make_agent(
         "web_search",
