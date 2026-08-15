@@ -756,6 +756,63 @@ def test_web_search_cap_synthesis_keeps_tools_disabled_across_provider_retry():
     assert result["final_response"] == "Synthesis after retry."
 
 
+def test_web_search_cap_synthesis_keeps_tools_disabled_across_provider_fallback():
+    agent = _make_agent(
+        "web_search",
+        max_iterations=2,
+        config=_web_search_budget_config(warn=1, maximum=1),
+    )
+    capped = _mock_response(
+        content="",
+        finish_reason="tool_calls",
+        tool_calls=[
+            _mock_tool_call("web_search", json.dumps({"query": "q1"}), "c1"),
+            _mock_tool_call("web_search", json.dumps({"query": "q2"}), "c2"),
+        ],
+    )
+    invalid_synthesis = SimpleNamespace(choices=[])
+    fallback_synthesis = _mock_response(
+        content="Synthesis from fallback.",
+        finish_reason="tool_calls",
+        tool_calls=[
+            _mock_tool_call(
+                "web_search",
+                json.dumps({"query": "fallback-must-not-run"}),
+                "fallback-tool",
+            )
+        ],
+    )
+    agent.client.chat.completions.create.side_effect = [
+        capped,
+        invalid_synthesis,
+        fallback_synthesis,
+    ]
+
+    def activate_fallback():
+        agent.provider = "fallback"
+        agent.model = "fallback/model"
+        return True
+
+    with (
+        patch(
+            "run_agent.handle_function_call",
+            return_value=json.dumps({"success": True, "data": {"web": []}}),
+        ) as dispatch,
+        patch.object(agent, "_try_activate_fallback", side_effect=activate_fallback) as fallback,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("research this")
+
+    assert fallback.call_count == 1
+    assert dispatch.call_count == 1
+    assert agent.client.chat.completions.create.call_count == 3
+    synthesis_calls = agent.client.chat.completions.create.call_args_list[-2:]
+    assert all(not call.kwargs.get("tools") for call in synthesis_calls)
+    assert result["final_response"] == "Synthesis from fallback."
+
+
 def test_cap_synthesis_empty_response_falls_back_without_retrying():
     agent = _make_agent(
         "web_search",
