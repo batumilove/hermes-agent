@@ -6514,12 +6514,12 @@ def run_conversation(
                         len(assistant_message.tool_calls),
                     )
                     assistant_message.tool_calls = None
-                    if not assistant_message.content:
-                        assistant_message.content = (
-                            "I exhausted the per-turn web_search budget, but the "
-                            "tools-disabled synthesis pass did not return a text answer."
-                        )
-                    finish_reason = "stop"
+                if not assistant_message.content:
+                    assistant_message.content = (
+                        "I exhausted the per-turn web_search budget, but the "
+                        "tools-disabled synthesis pass did not return a text answer."
+                    )
+                finish_reason = "stop"
 
             # Check for tool calls
             if assistant_message.tool_calls:

@@ -556,6 +556,42 @@ def test_cap_synthesis_state_resets_at_start_of_new_user_turn():
     assert result["final_response"] == "fresh turn"
 
 
+def test_cap_synthesis_empty_response_falls_back_without_retrying():
+    agent = _make_agent(
+        "web_search",
+        max_iterations=10,
+        config=_web_search_budget_config(warn=1, maximum=1),
+    )
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call("web_search", json.dumps({"query": "q1"}), "c1"),
+                _mock_tool_call("web_search", json.dumps({"query": "q2"}), "c2"),
+            ],
+        ),
+        _mock_response(content="", finish_reason="stop", tool_calls=None),
+    ]
+    agent.client.chat.completions.create.side_effect = responses
+
+    with (
+        patch(
+            "run_agent.handle_function_call",
+            return_value=json.dumps({"success": True, "data": {"web": []}}),
+        ) as dispatch,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("research this")
+
+    assert dispatch.call_count == 1
+    assert agent.client.chat.completions.create.call_count == 2
+    assert result["turn_exit_reason"].startswith("text_response")
+    assert "per-turn web_search budget" in result["final_response"]
+
+
 def test_cap_synthesis_tool_only_response_falls_back_to_nonempty_text():
     agent = _make_agent(
         "web_search",
