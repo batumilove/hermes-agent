@@ -567,11 +567,14 @@ def _run_agent_tool_execution_middleware(
             )
 
         guardrail_decision = None
+        guardrail_warning = None
         if block_message is None:
             guardrail_decision = agent._tool_guardrails.before_call(
                 function_name, final_args
             )
             if guardrail_decision.allows_execution:
+                if guardrail_decision.action == "warn":
+                    guardrail_warning = guardrail_decision
                 guardrail_decision = None
 
         if block_message is not None or guardrail_decision is not None:
@@ -608,7 +611,12 @@ def _run_agent_tool_execution_middleware(
             agent._iters_since_skill = 0
 
         _advance_start_order(_begin)
-        return execute(final_args)
+        result = execute(final_args)
+        if guardrail_warning is not None:
+            from agent.tool_guardrails import append_toolguard_guidance
+
+            result = append_toolguard_guidance(result, guardrail_warning)
+        return result
 
     def _hermes_pipeline(relay_args: dict[str, Any]) -> Any:
         request_result = apply_tool_request_middleware(

@@ -434,6 +434,31 @@ def _web_search_budget_config(*, warn: int, maximum: int) -> dict:
     }
 
 
+def test_web_search_soft_budget_warning_reaches_model_after_execution():
+    agent = _make_agent(
+        "web_search",
+        max_iterations=5,
+        config=_web_search_budget_config(warn=1, maximum=2),
+    )
+    call = _mock_tool_call(
+        "web_search", json.dumps({"query": "q1"}), "c-soft-budget"
+    )
+    message = SimpleNamespace(content="", tool_calls=[call])
+    messages = []
+
+    with patch(
+        "run_agent.handle_function_call",
+        return_value=json.dumps({"success": True, "data": {"web": []}}),
+    ) as dispatch:
+        agent._execute_tool_calls_sequential(message, messages, "task-1")
+
+    dispatch.assert_called_once()
+    assert [item["role"] for item in messages] == ["tool"]
+    content = messages[0]["content"]
+    assert "loop_web_search_soft_warning" in content
+    assert "synthesize rather than continuing broad searching" in content
+
+
 def test_web_search_cap_runs_one_tool_disabled_synthesis_pass():
     agent = _make_agent(
         "web_search",
