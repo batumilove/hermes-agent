@@ -5585,6 +5585,15 @@ def tick(
         except ImportError:
             pass
 
+        # Every cron entry path must honour maintenance drain ownership, not
+        # only the gateway-wired ticker callback. This also covers standalone
+        # ticks and keeps due schedules untouched for the next allowed tick.
+        from gateway.drain_control import drain_requested as _drain_requested
+
+        if _drain_requested():
+            logger.debug("Cron dispatch paused while gateway maintenance drain is active")
+            return 0
+
         if can_dispatch is not None and not can_dispatch():
             logger.debug("Cron dispatch paused while gateway drains existing work")
             return 0

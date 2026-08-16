@@ -4170,6 +4170,7 @@ async def gateway_drain(request: Request):
     ``POST /api/gateway/restart`` force path, which supersedes a drain.
     """
     from gateway.drain_control import (
+        DrainControlBusyError,
         clear_drain_request,
         drain_requested,
         write_drain_request,
@@ -4187,7 +4188,10 @@ async def gateway_drain(request: Request):
     principal = getattr(principal_obj, "principal", None) or "dashboard"
 
     if action == "cancel":
-        existed = clear_drain_request()
+        try:
+            existed = clear_drain_request()
+        except DrainControlBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         _log.info("Gateway drain CANCEL requested by %s (existed=%s)", principal, existed)
         return {"ok": True, "action": "cancel", "was_draining": existed}
 
@@ -4197,10 +4201,13 @@ async def gateway_drain(request: Request):
             detail=f"Unknown drain action {action!r}; expected 'drain' or 'cancel'",
         )
 
-    payload = write_drain_request(
-        principal=str(principal),
-        suppress_notification=bool((body or {}).get("suppress_notification", False)),
-    )
+    try:
+        payload = write_drain_request(
+            principal=str(principal),
+            suppress_notification=bool((body or {}).get("suppress_notification", False)),
+        )
+    except DrainControlBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     _log.info(
         "Gateway drain BEGIN requested by %s (suppress_notification=%s)",
         principal,

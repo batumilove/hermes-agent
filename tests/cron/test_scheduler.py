@@ -722,6 +722,18 @@ class TestRunJobSessionPersistence:
         advance.assert_not_called()
         run_one.assert_not_called()
 
+    def test_tick_skips_due_jobs_during_owned_maintenance_drain(self):
+        """Standalone ticks cannot bypass the gateway-supplied callback."""
+        from cron.scheduler import tick
+
+        with patch("gateway.drain_control.drain_requested", return_value=True), patch(
+            "cron.scheduler.get_due_jobs"
+        ) as get_due_jobs, patch("cron.scheduler.advance_next_runs") as advance:
+            assert tick(verbose=False, sync=True) == 0
+
+        get_due_jobs.assert_not_called()
+        advance.assert_not_called()
+
 
 class TestRunJobConfigLogging:
     """Verify that config.yaml parse failures are logged, not silently swallowed."""
