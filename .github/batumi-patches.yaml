@@ -688,3 +688,24 @@ patches:
     tests:
       - scripts/run_tests.sh tests/gateway/test_external_drain_control.py tests/gateway/test_startup_restart_race.py tests/gateway/test_routing_save_fast_path.py
     retirement: Remove when upstream publishes authoritative PID-bound startup status with equivalent drain-epoch, shutdown-precedence, and intake-suppression coverage.
+
+  - id: gateway-shutdown-work-attribution
+    kind: core
+    rationale: >-
+      Preserve generation-bound, SQLite-independent identities for agent, cron,
+      and API work across gateway drain, interruption, forced-forward, and
+      clean-exit boundaries without extending the aggregate shutdown deadline.
+    paths:
+      - cron/scheduler.py
+      - gateway/drain_attribution.py
+      - gateway/platforms/api_server.py
+      - gateway/run.py
+      - tests/cron/test_running_job_attribution.py
+      - tests/gateway/test_api_server_active_work_drain.py
+      - tests/gateway/test_drain_attribution.py
+      - tests/gateway/test_drain_attribution_lifecycle.py
+      - tools/cronjob_tools.py
+    tests:
+      - scripts/run_tests.sh tests/gateway/test_drain_attribution.py tests/gateway/test_drain_attribution_lifecycle.py tests/gateway/test_gateway_shutdown.py tests/gateway/test_shutdown_watchdog.py
+      - scripts/run_tests.sh tests/gateway/test_api_server_active_work_drain.py tests/gateway/test_shutdown_cache_cleanup.py tests/cron/test_running_job_attribution.py tests/cron/test_shutdown_interrupt.py
+    retirement: Remove when upstream preserves equivalent generation-scoped shutdown work identities, bounded evidence writes, watchdog-safe snapshots, and false-clean-exit prevention.
