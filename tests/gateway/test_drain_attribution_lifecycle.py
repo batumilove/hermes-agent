@@ -147,3 +147,75 @@ async def test_attribution_write_timeout_preserves_shutdown_tail(
 
     assert observed_timeouts == [GatewayRunner._DRAIN_ATTRIBUTION_WRITE_TIMEOUT_S]
     assert observed_timeouts[0] <= 0.05
+
+
+@pytest.mark.asyncio
+async def test_gateway_stop_propagates_attribution_cancellation(
+    lifecycle_runner, monkeypatch
+):
+    runner = lifecycle_runner
+    monkeypatch.setattr(
+        runner,
+        "_drain_active_agents",
+        lambda _timeout: asyncio.sleep(0, result=({}, False)),
+    )
+
+    async def _cancelled_record(_phase: str, *, deadline: float):
+        del deadline
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(runner, "_record_drain_attribution", _cancelled_record)
+
+    with pytest.raises(asyncio.CancelledError):
+        await GatewayRunner.stop(runner)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_watchdog_snapshot_omits_work_identifiers(
+    lifecycle_runner, monkeypatch
+):
+    from gateway.drain_attribution import DrainAttributionWriteResult
+
+    runner = lifecycle_runner
+    monkeypatch.setattr(
+        runner,
+        "_drain_active_agents",
+        lambda _timeout: asyncio.sleep(0, result=({}, False)),
+    )
+    detailed_work = {
+        "counts": {"agent": 1, "cron": 1, "api": 1, "total": 3},
+        "units": [
+            {"kind": "agent", "session_id": "private-session"},
+            {"kind": "cron", "job_id": "private-job"},
+            {"kind": "api", "request_id": "private-request"},
+        ],
+        "attribution_complete": True,
+        "omissions": [],
+    }
+    monkeypatch.setattr(
+        runner,
+        "_shutdown_work_attribution_snapshot",
+        lambda: detailed_work,
+    )
+
+    async def _record(_phase: str, *, deadline: float):
+        del deadline
+        return DrainAttributionWriteResult(status="persisted")
+
+    monkeypatch.setattr(runner, "_record_drain_attribution", _record)
+    captured = {}
+
+    def _capture_watchdog(_delay, *, snapshot_fn, **_kwargs):
+        captured["snapshot_fn"] = snapshot_fn
+
+    monkeypatch.delenv("PYTEST_CURRENT_TEST")
+    monkeypatch.setattr("gateway.run.arm_shutdown_watchdog", _capture_watchdog)
+
+    await GatewayRunner.stop(runner)
+
+    watchdog_work = captured["snapshot_fn"]()["work_attribution"]
+    assert watchdog_work == {
+        "counts": detailed_work["counts"],
+        "attribution_complete": True,
+        "omissions": [],
+    }
