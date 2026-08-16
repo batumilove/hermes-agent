@@ -269,6 +269,24 @@ def test_fire_due_default_claims_then_runs(monkeypatch, tmp_path):
     assert execution["scheduled_for"] == scheduled_for
 
 
+def test_external_fire_due_is_blocked_during_owned_maintenance_drain(monkeypatch):
+    """An external provider cannot catch up while activation owns the drain."""
+    import cron.jobs as jobs
+    import gateway.drain_control as drain_control
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    claimed = []
+    monkeypatch.setattr(drain_control, "drain_requested", lambda: True)
+    monkeypatch.setattr(
+        jobs,
+        "claim_job_for_fire",
+        lambda job_id: claimed.append(job_id) or True,
+    )
+
+    assert InProcessCronScheduler().fire_due("j1") is False
+    assert claimed == []
+
+
 # ── F2a: ticker liveness — survival, heartbeat, honest status (#32612, #32895) ──
 
 

@@ -13,12 +13,20 @@ background watcher reacts to it. This module owns that marker contract so both
 sides — the dashboard endpoint (writer) and the gateway watcher (reader) —
 share one definition and can never disagree.
 
-Contract (presence-based, mirroring ``.restart_notify.json``):
+Contract (presence-based for the gateway, ownership-aware for controllers):
 
   * begin-drain  → write ``{HERMES_HOME}/.drain_request.json`` with
     ``{"action": "drain", "requested_at": <iso>, "principal": <str>,
     "epoch": <instantiation-epoch>, "suppress_notification": <bool>}``.
   * cancel-drain → remove the marker.
+  * activation controllers hold an exclusive
+    ``/run/user/<uid>/hermes-gateway-activation.lock`` for the complete
+    transaction and stamp a unique ``owner_token`` into the marker. Refresh and
+    cleanup validate that exact token. Dashboard/legacy writes take the same
+    lock transiently, so they cannot overwrite or remove a live owned drain.
+  * the held activation lock is itself a drain signal. If an uncoordinated
+    writer removes or replaces the marker, intake and cron stay paused until
+    the owner detects the mismatch and releases the transaction deliberately.
   * The gateway watcher treats **presence of a marker stamped with the current
     instantiation epoch** as "external drain active": flip
     ``gateway_state -> "draining"`` and stop accepting new turns. Absence (or a
@@ -66,9 +74,23 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import os
+import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from io import TextIOWrapper
 from pathlib import Path
 from typing import Any, Optional
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - POSIX activation control only
+    fcntl = None
+
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - Windows only
+    msvcrt = None
 
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
@@ -76,6 +98,7 @@ from utils import atomic_json_write
 _log = logging.getLogger(__name__)
 
 _DRAIN_REQUEST_FILENAME = ".drain_request.json"
+_ACTIVATION_LOCK_FILENAME = "hermes-gateway-activation.lock"
 
 # Max-age fallback for a same-epoch orphaned marker (#85433). Drain-gated
 # lifecycle actions complete in minutes; an hour is comfortably past any
@@ -161,15 +184,199 @@ def drain_request_path(home: Optional[Path] = None) -> Path:
     return Path(base) / _DRAIN_REQUEST_FILENAME
 
 
+class DrainControlBusyError(RuntimeError):
+    """Another controller owns the gateway activation transaction."""
+
+
+class DrainOwnershipLostError(RuntimeError):
+    """An owned marker was removed or replaced during its transaction."""
+
+
+def activation_lock_path(runtime_dir: Optional[Path] = None) -> Path:
+    """Return the exclusive activation lock path (override only in tests)."""
+    if runtime_dir is not None:
+        base = Path(runtime_dir)
+    elif hasattr(os, "getuid"):
+        base = Path(f"/run/user/{os.getuid()}")
+    else:  # pragma: no cover - Windows compatibility
+        base = get_hermes_home()
+    return base / _ACTIVATION_LOCK_FILENAME
+
+
+def _lock_handle(handle: TextIOWrapper) -> None:
+    if fcntl is not None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return
+    if msvcrt is not None:  # pragma: no cover - Windows only
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write("\0")
+            handle.flush()
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        return
+    raise OSError("no supported file-lock implementation")
+
+
+def _unlock_handle(handle: TextIOWrapper) -> None:
+    if fcntl is not None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    elif msvcrt is not None:  # pragma: no cover - Windows only
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+def _acquire_activation_lock(runtime_dir: Optional[Path] = None) -> TextIOWrapper:
+    path = activation_lock_path(runtime_dir)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = path.open("a+", encoding="utf-8")
+    except OSError as exc:
+        raise DrainControlBusyError(f"cannot open gateway activation lock: {path}") from exc
+    try:
+        _lock_handle(handle)
+    except (BlockingIOError, OSError) as exc:
+        handle.close()
+        raise DrainControlBusyError(f"gateway activation lock is already held: {path}") from exc
+    return handle
+
+
+def activation_lock_held(*, runtime_dir: Optional[Path] = None) -> bool:
+    """Return whether an activation owner currently holds the exclusive lock."""
+    try:
+        handle = _acquire_activation_lock(runtime_dir)
+    except DrainControlBusyError:
+        return True
+    except OSError as exc:
+        _log.error("drain-control: cannot inspect activation lock: %s", exc)
+        return True
+    try:
+        _unlock_handle(handle)
+    finally:
+        handle.close()
+    return False
+
+
+def _drain_payload(
+    *,
+    principal: str,
+    suppress_notification: bool,
+    owner_token: Optional[str] = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "action": "drain",
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+        "principal": principal,
+        "epoch": current_instantiation_epoch(),
+        "suppress_notification": bool(suppress_notification),
+    }
+    if owner_token is not None:
+        payload["owner_token"] = owner_token
+    return payload
+
+
+@dataclass
+class DrainOwnership:
+    """Exclusive generation-scoped ownership of one activation drain."""
+
+    principal: str
+    owner_token: str
+    home: Optional[Path]
+    runtime_dir: Optional[Path]
+    suppress_notification: bool
+    _lock_handle: Optional[TextIOWrapper]
+
+    def _require_lock(self) -> None:
+        if self._lock_handle is None or self._lock_handle.closed:
+            raise DrainOwnershipLostError("activation ownership lock is not held")
+
+    def assert_request_owned(self) -> dict[str, Any]:
+        self._require_lock()
+        body = read_drain_request(home=self.home)
+        if body is None:
+            raise DrainOwnershipLostError("owned drain marker was removed")
+        if body.get("owner_token") != self.owner_token:
+            raise DrainOwnershipLostError("owned drain marker was replaced")
+        return body
+
+    def write_request(self) -> dict[str, Any]:
+        self._require_lock()
+        existing = read_drain_request(home=self.home)
+        if existing is not None and existing.get("owner_token") != self.owner_token:
+            raise DrainOwnershipLostError("refusing to replace a drain marker owned elsewhere")
+        payload = _drain_payload(
+            principal=self.principal,
+            suppress_notification=self.suppress_notification,
+            owner_token=self.owner_token,
+        )
+        atomic_json_write(drain_request_path(self.home), payload)
+        return payload
+
+    def refresh_request(self) -> dict[str, Any]:
+        self.assert_request_owned()
+        return self.write_request()
+
+    def clear_request(self) -> bool:
+        self.assert_request_owned()
+        try:
+            drain_request_path(self.home).unlink()
+        except FileNotFoundError as exc:
+            raise DrainOwnershipLostError("owned drain marker disappeared before cleanup") from exc
+        return True
+
+    def release(self) -> None:
+        handle = self._lock_handle
+        self._lock_handle = None
+        if handle is None or handle.closed:
+            return
+        try:
+            _unlock_handle(handle)
+        finally:
+            handle.close()
+
+    def __enter__(self) -> "DrainOwnership":
+        self._require_lock()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        # Never clear implicitly: exceptions leave the gateway drained.
+        self.release()
+
+
+def acquire_drain_ownership(
+    *,
+    principal: str,
+    home: Optional[Path] = None,
+    runtime_dir: Optional[Path] = None,
+    suppress_notification: bool = False,
+    owner_token: Optional[str] = None,
+) -> DrainOwnership:
+    """Acquire the activation lock without changing the drain marker."""
+    handle = _acquire_activation_lock(runtime_dir)
+    return DrainOwnership(
+        principal=principal,
+        owner_token=owner_token or uuid.uuid4().hex,
+        home=home,
+        runtime_dir=runtime_dir,
+        suppress_notification=bool(suppress_notification),
+        _lock_handle=handle,
+    )
+
+
 def write_drain_request(
     *,
     principal: str = "drain-control",
     suppress_notification: bool = False,
     home: Optional[Path] = None,
+    runtime_dir: Optional[Path] = None,
 ) -> dict[str, Any]:
     """Write the begin-drain marker. Returns the payload written.
 
-    Atomic write so the gateway watcher never reads a half-written file.
+    Takes the activation lock transiently and writes atomically so the gateway
+    watcher never reads a half-written file. A live owned activation holds that
+    lock continuously, so competing dashboard/legacy writes fail with
+    :class:`DrainControlBusyError` rather than replacing its marker.
+
     Idempotent: re-writing while a drain is already in progress refreshes
     ``requested_at`` — the sanctioned keep-alive for a drain that legitimately
     needs longer than :data:`DRAIN_REQUEST_MAX_AGE_SECONDS`.
@@ -189,22 +396,30 @@ def write_drain_request(
     of which drain causes set the flag lives entirely in the caller (NAS). The
     field defaults False so legacy/operator drains behave exactly as before.
     """
-    payload = {
-        "action": "drain",
-        "requested_at": datetime.now(timezone.utc).isoformat(),
-        "principal": principal,
-        "epoch": current_instantiation_epoch(),
-        "suppress_notification": bool(suppress_notification),
-    }
-    atomic_json_write(drain_request_path(home), payload)
-    return payload
+    handle = _acquire_activation_lock(runtime_dir)
+    try:
+        payload = _drain_payload(
+            principal=principal,
+            suppress_notification=suppress_notification,
+        )
+        atomic_json_write(drain_request_path(home), payload)
+        return payload
+    finally:
+        _unlock_handle(handle)
+        handle.close()
 
 
-def clear_drain_request(*, home: Optional[Path] = None) -> bool:
+def clear_drain_request(
+    *, home: Optional[Path] = None, runtime_dir: Optional[Path] = None
+) -> bool:
     """Remove the drain marker (cancel-drain). Returns True if one existed.
 
-    Best-effort: a missing file is not an error (cancel is idempotent).
+    Takes the activation lock transiently. A live owned activation therefore
+    cannot be cancelled by a competing dashboard/legacy controller. Once an
+    owner exits and the OS releases its lock, an operator can clear an orphaned
+    marker. Best-effort: a missing file is not an error (cancel is idempotent).
     """
+    handle = _acquire_activation_lock(runtime_dir)
     path = drain_request_path(home)
     try:
         path.unlink()
@@ -214,6 +429,9 @@ def clear_drain_request(*, home: Optional[Path] = None) -> bool:
     except OSError as e:
         _log.warning("drain-control: failed to remove %s: %s", path, e)
         return False
+    finally:
+        _unlock_handle(handle)
+        handle.close()
 
 
 def _marker_epoch_is_stale(body: dict[str, Any]) -> bool:
@@ -312,8 +530,11 @@ def drain_requested(*, home: Optional[Path] = None) -> bool:
     staleness checks are lenient (see :func:`_marker_epoch_is_stale` /
     :func:`_marker_is_expired`): a legacy/corrupt marker with no epoch and no
     timestamp, or an environment without ``/proc``, still reads as
-    drain-active.
+    drain-active. The exclusive activation lock is itself a drain signal so an
+    owner remains fail-closed if its marker is removed or replaced.
     """
+    if activation_lock_held():
+        return True
     body = read_drain_request(home=home)
     if body is None:
         return False

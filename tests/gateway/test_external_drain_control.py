@@ -52,6 +52,129 @@ class TestMarkerContract:
         assert body is not None and body["principal"] == "nas"
 
 
+class TestOwnedDrainControl:
+    """Regression coverage for the competing-controller marker race."""
+
+    def test_default_lock_path_is_exact_per_user_runtime_path(self):
+        assert dc.activation_lock_path() == Path(
+            f"/run/user/{os.getuid()}/hermes-gateway-activation.lock"
+        )
+
+    def test_owned_transaction_excludes_competing_controller(self, home, tmp_path):
+        runtime_dir = tmp_path / "run-user"
+        owner = dc.acquire_drain_ownership(
+            principal="activation-a",
+            home=home,
+            runtime_dir=runtime_dir,
+            owner_token="transaction-a",
+        )
+        try:
+            payload = owner.write_request()
+            assert payload["owner_token"] == "transaction-a"
+
+            with pytest.raises(dc.DrainControlBusyError):
+                dc.acquire_drain_ownership(
+                    principal="activation-b",
+                    home=home,
+                    runtime_dir=runtime_dir,
+                    owner_token="transaction-b",
+                )
+            with pytest.raises(dc.DrainControlBusyError):
+                dc.write_drain_request(
+                    principal="dashboard",
+                    home=home,
+                    runtime_dir=runtime_dir,
+                )
+            with pytest.raises(dc.DrainControlBusyError):
+                dc.clear_drain_request(home=home, runtime_dir=runtime_dir)
+
+            assert owner.assert_request_owned()["owner_token"] == "transaction-a"
+        finally:
+            owner.clear_request()
+            owner.release()
+
+        assert dc.read_drain_request(home=home) is None
+
+    def test_operator_can_clear_orphan_after_owner_releases_lock(self, home, tmp_path):
+        runtime_dir = tmp_path / "run-user"
+        owner = dc.acquire_drain_ownership(
+            principal="activation-a",
+            home=home,
+            runtime_dir=runtime_dir,
+            owner_token="transaction-a",
+        )
+        owner.write_request()
+        owner.release()  # simulate controller exit without compare-and-delete
+
+        assert dc.clear_drain_request(home=home, runtime_dir=runtime_dir) is True
+        assert dc.read_drain_request(home=home) is None
+
+    def test_refresh_fails_closed_when_marker_is_replaced(self, home, tmp_path):
+        owner = dc.acquire_drain_ownership(
+            principal="activation-a",
+            home=home,
+            runtime_dir=tmp_path / "run-user",
+            owner_token="transaction-a",
+        )
+        try:
+            owner.write_request()
+            replacement = dc.read_drain_request(home=home)
+            assert replacement is not None
+            replacement["owner_token"] = "transaction-b"
+            dc.drain_request_path(home).write_text(json.dumps(replacement), encoding="utf-8")
+
+            with pytest.raises(dc.DrainOwnershipLostError):
+                owner.refresh_request()
+            with pytest.raises(dc.DrainOwnershipLostError):
+                owner.clear_request()
+            assert dc.read_drain_request(home=home)["owner_token"] == "transaction-b"
+        finally:
+            owner.release()
+
+    def test_refresh_fails_closed_when_marker_is_removed(self, home, tmp_path):
+        owner = dc.acquire_drain_ownership(
+            principal="activation-a",
+            home=home,
+            runtime_dir=tmp_path / "run-user",
+            owner_token="transaction-a",
+        )
+        try:
+            owner.write_request()
+            dc.drain_request_path(home).unlink()
+
+            with pytest.raises(dc.DrainOwnershipLostError):
+                owner.assert_request_owned()
+            with pytest.raises(dc.DrainOwnershipLostError):
+                owner.refresh_request()
+        finally:
+            owner.release()
+
+    def test_lock_keeps_gateway_drained_if_owned_marker_disappears(
+        self, home, tmp_path, monkeypatch
+    ):
+        runtime_dir = tmp_path / "run-user"
+        owner = dc.acquire_drain_ownership(
+            principal="activation-a",
+            home=home,
+            runtime_dir=runtime_dir,
+            owner_token="transaction-a",
+        )
+        runtime_dir_path = runtime_dir / "hermes-gateway-activation.lock"
+        monkeypatch.setattr(
+            dc,
+            "activation_lock_path",
+            lambda runtime_dir=None: runtime_dir_path,
+        )
+        try:
+            owner.write_request()
+            dc.drain_request_path(home).unlink()
+            assert dc.drain_requested(home=home) is True
+        finally:
+            owner.release()
+
+        assert dc.drain_requested(home=home) is False
+
+
 class TestSuppressNotification:
     """The generic suppress_notification flag on the drain marker.
 
