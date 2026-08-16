@@ -282,9 +282,31 @@ def test_cache_eviction_interrupts_review_without_tearing_down_worker_resources(
     assert agent._background_review_agent is review
 
 
-def test_parent_close_interrupts_review_without_tearing_down_worker_resources():
+def test_parent_close_interrupts_review_without_tearing_down_worker_resources(
+    monkeypatch,
+):
     """Hard parent teardown atomically claims tracking and leaves worker cleanup."""
     events = []
+    cleanup_calls = []
+
+    monkeypatch.setattr(
+        "tools.process_registry.process_registry.kill_all",
+        lambda *, task_id: cleanup_calls.append(("kill_all", task_id)),
+    )
+    monkeypatch.setattr(
+        run_agent_module,
+        "cleanup_vm",
+        lambda task_id: cleanup_calls.append(("cleanup_vm", task_id)),
+    )
+    monkeypatch.setattr(
+        run_agent_module,
+        "cleanup_browser",
+        lambda task_id: cleanup_calls.append(("cleanup_browser", task_id)),
+    )
+    monkeypatch.setattr(
+        "tools.computer_use.release_computer_use_session",
+        lambda task_id: cleanup_calls.append(("release_computer_use_session", task_id)),
+    )
 
     class TraceLock:
         def __init__(self, name):
@@ -327,6 +349,12 @@ def test_parent_close_interrupts_review_without_tearing_down_worker_resources():
         ("children:exit", None),
         ("background:exit", None),
         ("interrupt", "parent agent closed"),
+    ]
+    assert cleanup_calls == [
+        ("kill_all", "test-session"),
+        ("cleanup_vm", "test-session"),
+        ("cleanup_browser", "test-session"),
+        ("release_computer_use_session", "test-session"),
     ]
     assert review.context_compressor is not None
     assert agent._active_children == []
