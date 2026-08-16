@@ -119,3 +119,31 @@ async def test_gateway_stop_never_attempts_clean_exit_after_budget_exhaustion(
 
     assert "clean_exit" not in phases
     assert phases[-1] == "cleanup_incomplete"
+
+
+@pytest.mark.asyncio
+async def test_attribution_write_timeout_preserves_shutdown_tail(
+    lifecycle_runner, monkeypatch
+):
+    from gateway.drain_attribution import DrainAttributionWriteResult
+
+    observed_timeouts = []
+
+    async def _capture_timeout(_recorder, *, timeout_seconds: float, **_kwargs):
+        observed_timeouts.append(timeout_seconds)
+        return DrainAttributionWriteResult(status="persisted")
+
+    monkeypatch.setattr(
+        "gateway.drain_attribution.record_snapshot_bounded",
+        _capture_timeout,
+    )
+    loop = asyncio.get_running_loop()
+
+    await GatewayRunner._record_drain_attribution(
+        lifecycle_runner,
+        "interrupt_start",
+        deadline=loop.time() + 10.0,
+    )
+
+    assert observed_timeouts == [GatewayRunner._DRAIN_ATTRIBUTION_WRITE_TIMEOUT_S]
+    assert observed_timeouts[0] <= 0.05

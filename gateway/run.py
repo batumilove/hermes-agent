@@ -8190,14 +8190,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             self._drain_attribution_recorder = recorder
 
-        snapshot = self._shutdown_work_attribution_snapshot()
+        snapshot_helper = getattr(self, "_shutdown_work_attribution_snapshot", None)
+        snapshot = (
+            snapshot_helper()
+            if callable(snapshot_helper)
+            else GatewayRunner._shutdown_work_attribution_snapshot(self)
+        )
         # One immutable-by-convention pointer assignment lets the watchdog
         # thread report exact identities without traversing event-loop-owned
         # agent/API containers after the loop has wedged.
         self._shutdown_work_attribution = snapshot
         return await record_snapshot_bounded(
             recorder,
-            timeout_seconds=min(1.0, remaining),
+            timeout_seconds=min(
+                GatewayRunner._DRAIN_ATTRIBUTION_WRITE_TIMEOUT_S,
+                remaining,
+            ),
             phase=phase,
             counts=snapshot["counts"],
             units=snapshot["units"],
@@ -10179,9 +10187,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         async def _record_phase(phase: str) -> None:
             try:
-                result = await self._record_drain_attribution(
-                    phase,
-                    deadline=deadline,
+                record_helper = getattr(self, "_record_drain_attribution", None)
+                result = await (
+                    record_helper(phase, deadline=deadline)
+                    if callable(record_helper)
+                    else GatewayRunner._record_drain_attribution(
+                        self,
+                        phase,
+                        deadline=deadline,
+                    )
                 )
                 if result.status != "persisted":
                     logger.warning(
@@ -10657,6 +10671,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # loop is never blocked; mirrors the /new reset path's fix (#35994).
     _CLEANUP_TIMEOUT_S = 30.0
     _TOOL_SUBPROCESS_CLEANUP_TIMEOUT_S = 2.0
+    # Attribution is best-effort evidence, never a reason to consume the
+    # shutdown tail needed for cooperative interruption and resource cleanup.
+    _DRAIN_ATTRIBUTION_WRITE_TIMEOUT_S = 0.05
     _SHUTDOWN_TAIL_RESERVE_S = 10.0
     _SYSTEMD_SHUTDOWN_MARGIN_S = 5.0
 
@@ -14200,8 +14217,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _watchdog_done = threading.Event()
             self._shutdown_watchdog_done = _watchdog_done
             _stop_started_at_box: dict[str, float] = {}
+            snapshot_helper = getattr(self, "_shutdown_work_attribution_snapshot", None)
             self._shutdown_work_attribution = (
-                self._shutdown_work_attribution_snapshot()
+                snapshot_helper()
+                if callable(snapshot_helper)
+                else GatewayRunner._shutdown_work_attribution_snapshot(self)
             )
 
             def _shutdown_watchdog_snapshot() -> dict:
@@ -14259,9 +14279,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             async def _record_shutdown_phase(phase: str) -> None:
                 try:
-                    result = await self._record_drain_attribution(
-                        phase,
-                        deadline=_cleanup_deadline,
+                    record_helper = getattr(self, "_record_drain_attribution", None)
+                    result = await (
+                        record_helper(phase, deadline=_cleanup_deadline)
+                        if callable(record_helper)
+                        else GatewayRunner._record_drain_attribution(
+                            self,
+                            phase,
+                            deadline=_cleanup_deadline,
+                        )
                     )
                     if result.status != "persisted":
                         logger.warning(
@@ -14533,9 +14559,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _cleanup_budget_exhausted = True
                 await _record_shutdown_phase("interrupt_start")
                 _now = asyncio.get_running_loop().time()
-                interrupt_deadline = min(
-                    _now + self._shutdown_interrupt_timeout_secs(),
-                    _cleanup_deadline,
+                # Attribution and resume-marker writes share the cleanup budget
+                # and may consume its final milliseconds. Never pass a deadline
+                # already behind the interrupt helper's own start time: that
+                # grants no extra wait, but preserves the non-negative deadline
+                # contract and makes immediate forward progress explicit.
+                interrupt_deadline = max(
+                    _now,
+                    min(
+                        _now + self._shutdown_interrupt_timeout_secs(),
+                        _cleanup_deadline,
+                    ),
                 )
                 await self._interrupt_running_agents(
                     _INTERRUPT_REASON_GATEWAY_RESTART
@@ -14830,11 +14864,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # message).  Skip the marker in that case so the next startup
             # suspends those sessions — giving users a clean slate instead
             # of resuming a half-finished tool loop.
+            active_work_helper = getattr(self, "_active_work_count", None)
+            remaining_active_work = (
+                active_work_helper()
+                if callable(active_work_helper)
+                else GatewayRunner._active_work_count(self)
+            )
             if (
                 not timed_out
                 and not _cleanup_budget_exhausted
                 and GatewayRunner._shutdown_remaining(_cleanup_deadline) > 0
-                and self._active_work_count() == 0
+                and remaining_active_work == 0
             ):
                 await _record_shutdown_phase("clean_exit")
                 try:
