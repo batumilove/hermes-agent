@@ -687,6 +687,7 @@ def _is_cron_silence_response(text: str) -> bool:
 _parallel_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _parallel_pool_max_workers: Optional[int] = None
 _running_job_ids: set = set()
+_running_execution_ids: dict[str, str] = {}
 _running_lock = threading.Lock()
 
 # Job IDs the gateway shutdown path force-killed the tool subprocess of
@@ -718,6 +719,26 @@ def get_running_job_ids() -> "frozenset[str]":
         return frozenset(_running_job_ids)
 
 
+def bind_running_job_execution(job_id: str, execution_id: str) -> None:
+    """Bind a durable execution identity to an already-registered job."""
+    with _running_lock:
+        if job_id in _running_job_ids:
+            _running_execution_ids[job_id] = str(execution_id)
+
+
+def get_running_job_attribution() -> "tuple[dict[str, str], ...]":
+    """Return exact job/execution identities for gateway drain evidence."""
+    with _running_lock:
+        return tuple(
+            {
+                "job_id": str(job_id),
+                "execution_id": _running_execution_ids.get(job_id, ""),
+                "phase": "running",
+            }
+            for job_id in sorted(_running_job_ids)
+        )
+
+
 def try_register_running_job(job_id: str) -> bool:
     """Atomically add ``job_id`` to the in-flight running set.
 
@@ -742,9 +763,10 @@ def try_register_running_job(job_id: str) -> bool:
 
 
 def release_running_job(job_id: str) -> None:
-    """Remove ``job_id`` from the in-flight running set (idempotent)."""
+    """Remove ``job_id`` and its execution attribution (idempotent)."""
     with _running_lock:
         _running_job_ids.discard(job_id)
+        _running_execution_ids.pop(job_id, None)
 
 
 def mark_running_jobs_interrupted(reason: str) -> list:
@@ -5710,6 +5732,7 @@ def tick(
                 # concurrent manual trigger keeps its own marker for the next tick.
                 clear_pending_trigger(job_id, pending_execution_id)
             dispatched_job = dict(job, execution_id=execution["id"])
+            bind_running_job_execution(job_id, execution["id"])
             _ctx = contextvars.copy_context()
 
             def _run_and_release(j=dispatched_job, ctx=_ctx):
