@@ -4420,11 +4420,39 @@ class AIAgent:
         self._shutdown_owned_context_engine()
 
         # Close active child agents (per-turn; no cross-turn persistence).
+        # A background-review fork is different: its daemon thread owns that
+        # fork through run_conversation() and final close().  Cache eviction
+        # may race that thread, so request cancellation but never tear down its
+        # context engine or clients from this thread.
         try:
-            with self._active_children_lock:
-                children = list(self._active_children)
+            _br_lock = getattr(self, "_background_review_lock", None)
+            _ac_lock = getattr(self, "_active_children_lock", None)
+
+            def _claim_children():
+                review = getattr(self, "_background_review_agent", None)
+                claimed = list(self._active_children)
                 self._active_children.clear()
+                return review, claimed
+
+            if _br_lock is not None and _ac_lock is not None:
+                with _br_lock:
+                    with _ac_lock:
+                        background_review, children = _claim_children()
+            elif _br_lock is not None:
+                with _br_lock:
+                    background_review, children = _claim_children()
+            elif _ac_lock is not None:
+                with _ac_lock:
+                    background_review, children = _claim_children()
+            else:
+                background_review, children = _claim_children()
             for child in children:
+                if child is background_review:
+                    try:
+                        child.interrupt("parent agent released")
+                    except Exception:
+                        pass
+                    continue
                 try:
                     child.release_clients()
                 except Exception:
@@ -4504,12 +4532,39 @@ class AIAgent:
         except Exception:
             pass
 
-        # 5. Close active child agents
+        # 5. Close active child agents.  The background-review daemon thread
+        # exclusively owns its fork's final teardown; hard-closing the parent
+        # may request cancellation but must not release resources underneath
+        # that worker.
         try:
-            with self._active_children_lock:
-                children = list(self._active_children)
+            _br_lock = getattr(self, "_background_review_lock", None)
+            _ac_lock = getattr(self, "_active_children_lock", None)
+
+            def _claim_children():
+                review = getattr(self, "_background_review_agent", None)
+                claimed = list(self._active_children)
                 self._active_children.clear()
+                return review, claimed
+
+            if _br_lock is not None and _ac_lock is not None:
+                with _br_lock:
+                    with _ac_lock:
+                        background_review, children = _claim_children()
+            elif _br_lock is not None:
+                with _br_lock:
+                    background_review, children = _claim_children()
+            elif _ac_lock is not None:
+                with _ac_lock:
+                    background_review, children = _claim_children()
+            else:
+                background_review, children = _claim_children()
             for child in children:
+                if child is background_review:
+                    try:
+                        child.interrupt("parent agent closed")
+                    except Exception:
+                        pass
+                    continue
                 try:
                     child.close()
                 except Exception:

@@ -236,6 +236,84 @@ def _run_marathon_turn(
 
 
 class TestCompressionBudgetRefund:
+    def test_context_engine_teardown_after_response_does_not_retry(self, agent):
+        """A concurrent owner teardown cannot turn a returned response into an API retry."""
+        def _response_then_teardown(*_args, **_kwargs):
+            agent.context_compressor = None
+            return _stop_response(123)
+
+        agent.client.chat.completions.create.side_effect = _response_then_teardown
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("finish this turn")
+
+        assert result["completed"] is True
+        assert agent.client.chat.completions.create.call_count == 1
+
+    def test_no_usage_teardown_interleave_does_not_retry(self, agent):
+        """A no-usage latch check cannot dereference an engine detached mid-check."""
+        class DetachOnAwaiting:
+            @property
+            def awaiting_real_usage_after_compression(self):
+                agent.context_compressor = None
+                return True
+
+            def update_from_response(self, usage):
+                pass
+
+        def _response_then_arm_race(*_args, **_kwargs):
+            agent.context_compressor = DetachOnAwaiting()
+            return _stop_response(None)
+
+        agent.client.chat.completions.create.side_effect = _response_then_arm_race
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("finish without usage")
+
+        assert result["completed"] is True
+        assert agent.client.chat.completions.create.call_count == 1
+
+    def test_context_probe_teardown_interleave_does_not_retry(self, agent):
+        """Probe-state consumption uses one engine snapshot under the lifecycle lock."""
+        class DetachOnProbe:
+            threshold_tokens = THRESHOLD
+            context_length = 200_000
+            _verify_compaction_cleared_threshold = False
+            _context_probe_persistable = False
+
+            def update_from_response(self, usage):
+                pass
+
+            @property
+            def _context_probed(self):
+                agent.context_compressor = None
+                return True
+
+            @_context_probed.setter
+            def _context_probed(self, value):
+                pass
+
+        def _response_then_arm_race(*_args, **_kwargs):
+            agent.context_compressor = DetachOnProbe()
+            return _stop_response(123)
+
+        agent.client.chat.completions.create.side_effect = _response_then_arm_race
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("finish after probing")
+
+        assert result["completed"] is True
+        assert agent.client.chat.completions.create.call_count == 1
+
     def test_marathon_turn_compacts_past_the_per_turn_cap(self, agent):
         """8 oversized tool iterations → more compactions than the old cap.
 

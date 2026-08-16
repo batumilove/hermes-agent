@@ -173,6 +173,166 @@ def test_background_review_registers_on_active_children_for_interrupt(monkeypatc
     assert agent._active_children == []
 
 
+def test_background_review_tracking_updates_are_atomic(monkeypatch):
+    """Pointer and child-list ownership must share one nested lock section."""
+    events = []
+    seen = {}
+
+    class TraceLock:
+        def __init__(self, name):
+            self.name = name
+
+        def __enter__(self):
+            events.append(f"{self.name}:enter")
+            return self
+
+        def __exit__(self, *_exc):
+            events.append(f"{self.name}:exit")
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            seen["registration"] = list(events)
+
+        def shutdown_memory_provider(self):
+            seen["after_unregistration"] = list(events)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent._background_review_lock = TraceLock("background")
+    agent._active_children_lock = TraceLock("children")
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    nested = [
+        "background:enter",
+        "children:enter",
+        "children:exit",
+        "background:exit",
+    ]
+    assert seen["registration"] == nested
+    assert seen["after_unregistration"] == nested + nested
+
+
+def test_cache_eviction_interrupts_review_without_tearing_down_worker_resources():
+    """Cache eviction atomically claims tracking and leaves cleanup to worker."""
+    events = []
+
+    class TraceLock:
+        def __init__(self, name):
+            self.name = name
+
+        def __enter__(self):
+            events.append((f"{self.name}:enter", None))
+            return self
+
+        def __exit__(self, *_exc):
+            events.append((f"{self.name}:exit", None))
+
+    class FakeReviewAgent:
+        def __init__(self):
+            self.context_compressor = object()
+
+        def interrupt(self, message=None):
+            events.append(("interrupt", message))
+
+        def release_clients(self):
+            events.append(("release_clients", None))
+            self.context_compressor = None
+
+        def close(self):
+            events.append(("close", None))
+            self.context_compressor = None
+
+    agent = _bare_agent()
+    agent.context_compressor = None
+    agent.client = None
+    agent._background_review_lock = TraceLock("background")
+    agent._active_children_lock = TraceLock("children")
+    import threading as _threading
+    agent._context_engine_shutdown_lock = _threading.Lock()
+    review = FakeReviewAgent()
+    agent._background_review_agent = review
+    agent._active_children = [review]
+
+    AIAgent.release_clients(agent)
+
+    assert events == [
+        ("background:enter", None),
+        ("children:enter", None),
+        ("children:exit", None),
+        ("background:exit", None),
+        ("interrupt", "parent agent released"),
+    ]
+    assert review.context_compressor is not None
+    assert agent._active_children == []
+    # The worker clears this pointer in its own finally block after it owns
+    # shutdown_memory_provider() and close().
+    assert agent._background_review_agent is review
+
+
+def test_parent_close_interrupts_review_without_tearing_down_worker_resources():
+    """Hard parent teardown atomically claims tracking and leaves worker cleanup."""
+    events = []
+
+    class TraceLock:
+        def __init__(self, name):
+            self.name = name
+
+        def __enter__(self):
+            events.append((f"{self.name}:enter", None))
+            return self
+
+        def __exit__(self, *_exc):
+            events.append((f"{self.name}:exit", None))
+
+    class FakeReviewAgent:
+        def __init__(self):
+            self.context_compressor = object()
+
+        def interrupt(self, message=None):
+            events.append(("interrupt", message))
+
+        def close(self):
+            events.append(("close", None))
+            self.context_compressor = None
+
+    agent = _bare_agent()
+    agent.context_compressor = None
+    agent.client = None
+    agent._background_review_lock = TraceLock("background")
+    agent._active_children_lock = TraceLock("children")
+    import threading as _threading
+    agent._context_engine_shutdown_lock = _threading.Lock()
+    review = FakeReviewAgent()
+    agent._background_review_agent = review
+    agent._active_children = [review]
+
+    AIAgent.close(agent)
+
+    assert events == [
+        ("background:enter", None),
+        ("children:enter", None),
+        ("children:exit", None),
+        ("background:exit", None),
+        ("interrupt", "parent agent closed"),
+    ]
+    assert review.context_compressor is not None
+    assert agent._active_children == []
+    assert agent._background_review_agent is review
+
+
 def test_new_live_turn_cancels_still_running_background_review(monkeypatch):
     """conversation_loop.run_conversation() must proactively interrupt a
     background review still in flight from a prior turn, rather than let the
