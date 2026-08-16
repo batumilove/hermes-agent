@@ -109,25 +109,31 @@ def _start_watchdog_child(
     return proc, first_line
 
 
-def _run_watchdog_child(code: str, *, timeout: float = 2.0) -> subprocess.CompletedProcess[str]:
+def _run_watchdog_child(
+    code: str, *, timeout: float = 2.0
+) -> tuple[subprocess.CompletedProcess[str], float]:
     proc, first_line = _start_watchdog_child(code)
+    started = time.monotonic()
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.communicate()
         raise
-    return subprocess.CompletedProcess(
-        proc.args,
-        proc.returncode,
-        stdout=first_line + stdout,
-        stderr=stderr,
+    elapsed = time.monotonic() - started
+    return (
+        subprocess.CompletedProcess(
+            proc.args,
+            proc.returncode,
+            stdout=first_line + stdout,
+            stderr=stderr,
+        ),
+        elapsed,
     )
 
 
 def test_shutdown_watchdog_hard_exits_when_snapshot_blocks():
-    started = time.monotonic()
-    completed = _run_watchdog_child(
+    completed, elapsed = _run_watchdog_child(
         """
         import threading
         from gateway.shutdown_watchdog import arm_shutdown_watchdog
@@ -142,14 +148,13 @@ def test_shutdown_watchdog_hard_exits_when_snapshot_blocks():
     )
     assert "WATCHDOG_ARMED" in completed.stdout, completed.stderr
     assert completed.returncode != 0
-    assert time.monotonic() - started < 3.0
+    assert elapsed < 3.0
 
 
 def test_shutdown_watchdog_hard_exits_when_dump_open_blocks(tmp_path):
     fifo = tmp_path / "blocked-watchdog-dump"
     os.mkfifo(fifo)
-    started = time.monotonic()
-    completed = _run_watchdog_child(
+    completed, elapsed = _run_watchdog_child(
         f"""
         import threading
         from pathlib import Path
@@ -167,7 +172,7 @@ def test_shutdown_watchdog_hard_exits_when_dump_open_blocks(tmp_path):
     )
     assert "WATCHDOG_ARMED" in completed.stdout, completed.stderr
     assert completed.returncode != 0
-    assert time.monotonic() - started < 3.0
+    assert elapsed < 3.0
 
 
 @pytest.mark.skipif(not hasattr(os, "set_blocking"), reason="requires blocking pipe control")
@@ -218,7 +223,7 @@ def test_shutdown_watchdog_hard_exit_does_not_block_on_full_stderr_pipe():
 
 
 def test_shutdown_watchdog_hard_exit_is_disarmed_on_completion():
-    completed = _run_watchdog_child(
+    completed, _ = _run_watchdog_child(
         """
         import threading
         import time
