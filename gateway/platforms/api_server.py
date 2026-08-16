@@ -1100,9 +1100,21 @@ def _openai_error(message: str, err_type: str = "invalid_request_error", param: 
     }
 
 
-_api_agent_request_reservation: ContextVar[Optional[dict[str, bool]]] = ContextVar(
+_api_agent_request_reservation: ContextVar[Optional[dict[str, Any]]] = ContextVar(
     "api_agent_request_reservation", default=None
 )
+
+
+def _register_pending_api_work(adapter, *, detached: bool = False) -> dict[str, Any]:
+    request_id = uuid.uuid4().hex
+    reservation: dict[str, Any] = {
+        "active": True,
+        "detached": bool(detached),
+        "request_id": request_id,
+    }
+    adapter._pending_agent_requests += 1
+    adapter._pending_agent_request_ids.add(request_id)
+    return reservation
 
 
 def _admit_api_agent_request(handler):
@@ -1123,25 +1135,23 @@ def _admit_api_agent_request(handler):
         draining = self._draining_response()
         if draining is not None:
             return draining
-        reservation = {"active": True}
+        reservation = _register_pending_api_work(self)
         token = _api_agent_request_reservation.set(reservation)
-        self._pending_agent_requests += 1
         try:
             return await handler(self, request, *args, **kwargs)
         finally:
-            if reservation["active"]:
-                reservation["active"] = False
-                self._pending_agent_requests = max(0, self._pending_agent_requests - 1)
+            _release_pending_api_work(self, reservation)
             _api_agent_request_reservation.reset(token)
 
     return _wrapped
 
 
-def _release_pending_api_work(adapter, reservation: dict[str, bool]) -> None:
+def _release_pending_api_work(adapter, reservation: dict[str, Any]) -> None:
     """Release a pending-work reservation exactly once."""
     if reservation["active"]:
         reservation["active"] = False
         adapter._pending_agent_requests = max(0, adapter._pending_agent_requests - 1)
+        adapter._pending_agent_request_ids.discard(reservation.get("request_id"))
 
 
 @contextmanager
@@ -1151,8 +1161,7 @@ def _reserve_pending_api_work(adapter):
     A handler can detach the reservation to an asyncio task; its done callback
     then owns release so shutdown cannot miss the handoff to background work.
     """
-    reservation = {"active": True, "detached": False}
-    adapter._pending_agent_requests += 1
+    reservation = _register_pending_api_work(adapter)
     try:
         yield reservation
     finally:
@@ -1472,6 +1481,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # Shutdown counts this reservation so the request cannot slip through
         # the drain between its first await and _run_agent()/task registration.
         self._pending_agent_requests: int = 0
+        self._pending_agent_request_ids: set[str] = set()
 
     def active_agent_work_count(self) -> int:
         """Return all live agent work owned by this API adapter.
@@ -1489,6 +1499,74 @@ class APIServerAdapter(BasePlatformAdapter):
             )
         except Exception:
             return 0
+
+    def active_agent_work_snapshot(self) -> Dict[str, Any]:
+        """Return exact identities for the API work counted by shutdown drain."""
+        units: list[Dict[str, Any]] = []
+        omissions: list[str] = []
+        pending_count = max(0, int(getattr(self, "_pending_agent_requests", 0)))
+        pending_ids = sorted(getattr(self, "_pending_agent_request_ids", set()))
+        for request_id in pending_ids:
+            units.append(
+                {
+                    "unit_id": f"api:request:{request_id}",
+                    "category": "api",
+                    "request_id": request_id,
+                    "phase": "pending_agent_creation",
+                    "work_class": "api_request_admission",
+                    "drain_blocking": True,
+                }
+            )
+        if len(pending_ids) != pending_count:
+            omissions.append(
+                f"api_pending_identity_mismatch:{len(pending_ids)}:{pending_count}"
+            )
+
+        inflight_count = max(0, int(getattr(self, "_inflight_agent_runs", 0)))
+        inflight_agents = dict(getattr(self, "_shutdown_interruptible_agents", {}))
+        for agent_key, agent in sorted(inflight_agents.items(), key=lambda item: item[0]):
+            unit: Dict[str, Any] = {
+                "unit_id": f"api:agent:{agent_key}",
+                "category": "api",
+                "agent_key": str(agent_key),
+                "phase": "active",
+                "work_class": "api_turn",
+                "drain_blocking": True,
+            }
+            session_id = getattr(agent, "session_id", None)
+            if session_id:
+                unit["session_id"] = str(session_id)
+            units.append(unit)
+        if len(inflight_agents) != inflight_count:
+            omissions.append(
+                f"api_inflight_identity_mismatch:{len(inflight_agents)}:{inflight_count}"
+            )
+
+        live_run_ids = sorted(
+            str(run_id)
+            for run_id, task in getattr(self, "_active_run_tasks", {}).items()
+            if not task.done()
+        )
+        for run_id in live_run_ids:
+            units.append(
+                {
+                    "unit_id": f"api:run:{run_id}",
+                    "category": "api",
+                    "run_id": run_id,
+                    "phase": "active",
+                    "work_class": "api_run",
+                    "drain_blocking": True,
+                }
+            )
+        count = pending_count + inflight_count + len(live_run_ids)
+        if len(units) != count:
+            omissions.append(f"api_unit_count_mismatch:{len(units)}:{count}")
+        return {
+            "count": count,
+            "units": units,
+            "attribution_complete": not omissions,
+            "omissions": omissions,
+        }
 
     def interrupt_active_runs(self, reason: str) -> int:
         """Cooperatively interrupt every adapter-owned agent during shutdown.
@@ -1570,8 +1648,7 @@ class APIServerAdapter(BasePlatformAdapter):
         """Transfer this request's drain reservation to agent bookkeeping."""
         reservation = _api_agent_request_reservation.get()
         if reservation and reservation["active"]:
-            reservation["active"] = False
-            self._pending_agent_requests = max(0, self._pending_agent_requests - 1)
+            _release_pending_api_work(self, reservation)
 
     def _readiness_work_counts(self) -> tuple[int, int, int]:
         """Return bounded work counts from each subsystem's public state."""

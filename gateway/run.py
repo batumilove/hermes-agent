@@ -8123,6 +8123,59 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             return 0
 
+    async def _record_drain_attribution(
+        self,
+        phase: str,
+        *,
+        deadline: float,
+    ):
+        """Persist one exact work snapshot without extending shutdown's deadline."""
+        from gateway.drain_attribution import (
+            DrainAttributionRecorder,
+            DrainAttributionWriteResult,
+            collect_gateway_work,
+            current_drain_generation,
+            generation_is_current,
+            record_snapshot_bounded,
+        )
+        from hermes_constants import get_hermes_home
+
+        loop = asyncio.get_running_loop()
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return DrainAttributionWriteResult(
+                status="attribution_incomplete",
+                error="shutdown_deadline_exhausted",
+            )
+
+        recorder = getattr(self, "_drain_attribution_recorder", None)
+        if recorder is None:
+            home = Path(get_hermes_home())
+            generation = current_drain_generation()
+            recorder = DrainAttributionRecorder(
+                home=home,
+                generation=generation,
+                owner_probe=lambda expected: generation_is_current(
+                    expected,
+                    home=home,
+                ),
+            )
+            self._drain_attribution_recorder = recorder
+
+        snapshot = collect_gateway_work(
+            self,
+            pending_sentinel=_AGENT_PENDING_SENTINEL,
+        )
+        return await record_snapshot_bounded(
+            recorder,
+            timeout_seconds=min(1.0, remaining),
+            phase=phase,
+            counts=snapshot.counts,
+            units=snapshot.units,
+            attribution_complete=snapshot.attribution_complete,
+            omissions=snapshot.omissions,
+        )
+
     def _interrupt_api_server_runs(self, reason: str) -> int:
         """Interrupt API-server agents that are not in ``_running_agents``.
 
@@ -10091,10 +10144,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         last_cron_count = self._active_cron_job_count()
         last_api_count = self._active_api_run_count()
         last_status_at = 0.0
+        loop = asyncio.get_running_loop()
+        timeout = max(0.0, float(timeout))
+        deadline = loop.time() + timeout
+
+        async def _record_phase(phase: str) -> None:
+            try:
+                result = await self._record_drain_attribution(
+                    phase,
+                    deadline=deadline,
+                )
+                if result.status != "persisted":
+                    logger.warning(
+                        "Gateway drain attribution %s was not persisted: %s (%s)",
+                        phase,
+                        result.status,
+                        result.error or "no detail",
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Gateway drain attribution %s failed: %s",
+                    phase,
+                    exc,
+                )
 
         def _maybe_update_status(force: bool = False) -> None:
             nonlocal last_active_count, last_cron_count, last_api_count, last_status_at
-            now = asyncio.get_running_loop().time()
+            now = loop.time()
             active_count = self._running_agent_count()
             cron_count = self._active_cron_job_count()
             api_count = self._active_api_run_count()
@@ -10111,6 +10187,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 last_api_count = api_count
                 last_status_at = now
 
+        # Persist the identities seen at drain admission before waiting. The
+        # write shares the caller's deadline and can never extend it.
+        await _record_phase("drain_start")
+
         # Cron jobs run on the scheduler's own thread pool, outside
         # ``self._running_agents`` — fold their in-flight count into the
         # same wait/timeout this method already applies to chat sessions,
@@ -10125,17 +10205,46 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if timeout <= 0:
             return snapshot, True
 
-        deadline = asyncio.get_running_loop().time() + timeout
+        # Reserve a small slice of the existing drain budget for one final
+        # attributable snapshot. This is evidence work, not extra shutdown
+        # time: both the writer and the wait remain bounded by ``deadline``.
+        pre_timeout_margin = min(1.0, max(0.01, timeout * 0.1))
+        attribution_interval = max(
+            0.01,
+            float(getattr(self, "_DRAIN_ATTRIBUTION_INTERVAL_S", 10.0)),
+        )
+        next_attribution_at = loop.time() + attribution_interval
+        pre_timeout_recorded = False
         while (
             (
                 len(self._running_agents)
                 or self._active_cron_job_count()
                 or self._active_api_run_count()
             )
-            and asyncio.get_running_loop().time() < deadline
+            and loop.time() < deadline
         ):
             _maybe_update_status()
-            await asyncio.sleep(0.1)
+            remaining = deadline - loop.time()
+            now = loop.time()
+            if now >= next_attribution_at and remaining > pre_timeout_margin:
+                await _record_phase("drain_interval")
+                next_attribution_at = loop.time() + attribution_interval
+                continue
+            if not pre_timeout_recorded and remaining <= pre_timeout_margin:
+                await _record_phase("pre_timeout")
+                pre_timeout_recorded = True
+                continue
+            sleep_for = min(0.1, max(0.0, remaining))
+            if not pre_timeout_recorded:
+                sleep_for = min(
+                    sleep_for,
+                    max(0.0, remaining - pre_timeout_margin),
+                )
+            sleep_for = min(
+                sleep_for,
+                max(0.0, next_attribution_at - loop.time()),
+            )
+            await asyncio.sleep(sleep_for)
         timed_out = (
             bool(len(self._running_agents))
             or bool(self._active_cron_job_count())
