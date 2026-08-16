@@ -263,7 +263,11 @@ async def test_drain_exhaustion_reduces_interrupt_grace_budget(monkeypatch):
     await asyncio.wait_for(_run_stop(runner), timeout=2.0)
 
     assert len(observed_interrupt_budgets) == 1
-    assert 0.0 <= observed_interrupt_budgets[0] < 0.10, (
+    # Under a saturated CI event loop the aggregate deadline may expire in the
+    # scheduling gap between computing it and entering the interrupt helper.
+    # A negative remainder correctly means zero grace; only a positive budget
+    # beyond the bounded tail would violate the aggregate deadline contract.
+    assert observed_interrupt_budgets[0] < 0.10, (
         "interrupt grace exceeded the aggregate shutdown deadline: "
         f"received {observed_interrupt_budgets[0]:.3f}s"
     )
