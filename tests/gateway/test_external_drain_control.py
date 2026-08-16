@@ -387,7 +387,10 @@ class TestOwnedDrainControl:
 
         assert dc.read_drain_request(home=home) is None
 
-    def test_owner_replaces_definitely_stale_foreign_marker(self, home):
+    def test_owner_replaces_definitely_stale_foreign_marker(self, home, monkeypatch):
+        monkeypatch.setattr(
+            dc, "current_instantiation_epoch", lambda: "test-current-epoch"
+        )
         stale = dc._drain_payload(
             principal="orphan",
             suppress_notification=False,
