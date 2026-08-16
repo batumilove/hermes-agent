@@ -186,6 +186,22 @@ patches:
       - scripts/run_tests.sh tests/run_agent/test_post_tool_compression_attempt_cap.py
     retirement: Remove when upstream safely handles missing post-tool context compressors with equivalent regression coverage.
 
+  - id: background-review-teardown-ownership
+    kind: core
+    rationale: >-
+      Keep background-review pointer/list tracking atomic, leave review-fork
+      resource teardown with its worker thread, and serialize successful-response
+      context-engine accounting against concurrent owner shutdown.
+    paths:
+      - agent/background_review.py
+      - agent/conversation_loop.py
+      - run_agent.py
+      - tests/run_agent/test_background_review.py
+      - tests/run_agent/test_compression_budget_refund.py
+    tests:
+      - scripts/run_tests.sh tests/run_agent/test_background_review.py tests/run_agent/test_compression_budget_refund.py
+    retirement: Remove when upstream provides equivalent atomic review ownership, worker-owned teardown, and post-response context-engine lifecycle coverage.
+
   - id: test-dns-isolation
     kind: compatibility
     rationale: >-

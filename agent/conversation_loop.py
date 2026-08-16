@@ -23,6 +23,7 @@ import random
 import re
 import ssl
 import time
+from contextlib import nullcontext
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
@@ -189,6 +190,53 @@ def _should_rearm_compression_budget(
         and threshold_tokens > 0
         and 0 < prompt_tokens < threshold_tokens
     )
+
+
+def _record_context_engine_usage(agent: Any, usage_dict: Dict[str, Any]) -> tuple[bool, int]:
+    """Account for provider usage without racing context-engine teardown.
+
+    Returns the pre-update compaction-verification latch and current threshold.
+    A lifecycle owner that already detached the engine makes accounting a safe
+    no-op rather than converting a successful provider response into a retry.
+    """
+    lock = getattr(agent, "_context_engine_shutdown_lock", None)
+    with lock if lock is not None else nullcontext():
+        engine = getattr(agent, "context_compressor", None)
+        if engine is None:
+            return False, 0
+        pending = bool(
+            getattr(engine, "_verify_compaction_cleared_threshold", False)
+        )
+        engine.update_from_response(usage_dict)
+        threshold = int(getattr(engine, "threshold_tokens", 0) or 0)
+        return pending, threshold
+
+
+def _record_missing_context_engine_usage(agent: Any) -> None:
+    """Consume a pending post-compaction verdict for a usage-less response."""
+    lock = getattr(agent, "_context_engine_shutdown_lock", None)
+    with lock if lock is not None else nullcontext():
+        engine = getattr(agent, "context_compressor", None)
+        if engine is not None and getattr(
+            engine, "awaiting_real_usage_after_compression", False
+        ):
+            engine.update_from_response({})
+
+
+def _consume_context_probe_state(agent: Any) -> Optional[tuple[int, bool]]:
+    """Atomically snapshot and clear successful context-probe state."""
+    lock = getattr(agent, "_context_engine_shutdown_lock", None)
+    with lock if lock is not None else nullcontext():
+        engine = getattr(agent, "context_compressor", None)
+        if engine is None or not getattr(engine, "_context_probed", False):
+            return None
+        context_length = int(getattr(engine, "context_length", 0) or 0)
+        persistable = bool(
+            getattr(engine, "_context_probe_persistable", False)
+        )
+        engine._context_probed = False
+        engine._context_probe_persistable = False
+        return context_length, persistable
 
 
 # Modules that indicate a deterministic local processing error when they
@@ -3717,22 +3765,15 @@ def run_conversation(
                         "cache_write_tokens": canonical_usage.cache_write_tokens,
                         "reasoning_tokens": canonical_usage.reasoning_tokens,
                     }
-                    # Capture the boundary latch before update_from_response()
-                    # consumes it. Only a real provider prompt count for the
-                    # request immediately following a completed compaction can
-                    # prove that attempt effective and rearm the shared budget.
-                    _completed_compaction_pending = bool(
-                        getattr(
-                            agent.context_compressor,
-                            "_verify_compaction_cleared_threshold",
-                            False,
-                        )
-                    )
-                    agent.context_compressor.update_from_response(usage_dict)
-                    _compression_threshold = int(
-                        getattr(agent.context_compressor, "threshold_tokens", 0)
-                        or 0
-                    )
+                    # Serialize usage accounting with owner teardown.  A parent
+                    # close/cache eviction may detach the engine after the API
+                    # response has returned; that lifecycle event must not turn
+                    # a successful provider call into a retry.  When teardown
+                    # already claimed the engine, skip best-effort accounting.
+                    (
+                        _completed_compaction_pending,
+                        _compression_threshold,
+                    ) = _record_context_engine_usage(agent, usage_dict)
                     if _should_rearm_compression_budget(
                         compression_attempts,
                         completed_compaction_pending=_completed_compaction_pending,
@@ -3769,29 +3810,23 @@ def run_conversation(
                     # of interest is the cost/size of the latest assembled
                     # request, so we keep the most recent call's usage.
                     agent._last_turn_usage = dict(usage_dict)
-                elif getattr(
-                    agent.context_compressor,
-                    "awaiting_real_usage_after_compression",
-                    False,
-                ):
+                else:
                     # A response with no usage cannot adjudicate whether the
-                    # prior compaction cleared the threshold. Consume the pending
-                    # verdict now so a much later, unrelated reading is not
-                    # charged to that old compaction, and so preflight deferral
-                    # does not remain latched indefinitely.
-                    agent.context_compressor.update_from_response({})
+                    # prior compaction cleared the threshold. Consume any
+                    # pending verdict atomically with lifecycle teardown so a
+                    # much later reading is not charged to that old compaction.
+                    _record_missing_context_engine_usage(agent)
 
                 if hasattr(response, 'usage') and response.usage:
                     # Cache discovered context length after successful call.
                     # Only persist limits confirmed by the provider (parsed
                     # from the error message), not guessed probe tiers.
-                    if getattr(agent.context_compressor, "_context_probed", False):
-                        ctx = agent.context_compressor.context_length
-                        if getattr(agent.context_compressor, "_context_probe_persistable", False):
+                    _context_probe = _consume_context_probe_state(agent)
+                    if _context_probe is not None:
+                        ctx, _context_probe_persistable = _context_probe
+                        if _context_probe_persistable:
                             save_context_length(agent.model, agent.base_url, ctx)
                             agent._safe_print(f"{agent.log_prefix}💾 Cached context length: {ctx:,} tokens for {agent.model}")
-                        agent.context_compressor._context_probed = False
-                        agent.context_compressor._context_probe_persistable = False
 
                     agent.session_prompt_tokens += prompt_tokens
                     agent.session_completion_tokens += completion_tokens
