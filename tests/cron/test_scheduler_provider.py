@@ -293,8 +293,8 @@ def test_external_fire_due_is_blocked_during_owned_maintenance_drain(monkeypatch
     assert claimed == []
 
 
-def test_external_fire_holds_cron_admission_through_claim(monkeypatch, tmp_path):
-    """Activation cannot start after the drain check but before the fire claim."""
+def test_external_fire_holds_admission_until_execution_is_running(monkeypatch, tmp_path):
+    """Activation starts only after the external run is visible as in-flight."""
     import contextlib
     import cron.executions as executions
     import cron.jobs as jobs
@@ -323,17 +323,31 @@ def test_external_fire_holds_cron_admission_through_claim(monkeypatch, tmp_path)
         events.append("claim")
         return True
 
+    def get_job(job_id):
+        assert state["inside"] is True
+        events.append("get")
+        return {"id": job_id, "name": "t", "fire_claim": {}}
+
+    def create_execution(*args, **kwargs):
+        assert state["inside"] is True
+        events.append("create")
+        return {"id": "exec-1"}
+
+    def run_one_job(job, **kwargs):
+        assert state["inside"] is True
+        events.append("run-enter")
+        kwargs["on_execution_started"]()
+        assert state["inside"] is False
+        return True
+
     monkeypatch.setattr(drain_control, "cron_admission", admission, raising=False)
     monkeypatch.setattr(jobs, "claim_job_for_fire", claim)
-    monkeypatch.setattr(
-        jobs,
-        "get_job",
-        lambda job_id: {"id": job_id, "name": "t", "fire_claim": {}},
-    )
-    monkeypatch.setattr(sched, "run_one_job", lambda job, **kwargs: True)
+    monkeypatch.setattr(jobs, "get_job", get_job)
+    monkeypatch.setattr(executions, "create_execution", create_execution)
+    monkeypatch.setattr(sched, "run_one_job", run_one_job)
 
     assert InProcessCronScheduler().fire_due("j1") is True
-    assert events == ["enter", "claim", "exit"]
+    assert events == ["enter", "claim", "get", "create", "run-enter", "exit"]
 
 
 # ── F2a: ticker liveness — survival, heartbeat, honest status (#32612, #32895) ──

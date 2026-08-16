@@ -243,9 +243,10 @@ def activation_lock_path(home: Optional[Path] = None) -> Path:
     return base / _activation_lock_name(canonical_home)
 
 
-def _lock_handle(handle: TextIOWrapper) -> None:
+def _lock_handle(handle: TextIOWrapper, *, shared: bool = False) -> None:
     if fcntl is not None:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        mode = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+        fcntl.flock(handle.fileno(), mode | fcntl.LOCK_NB)
         return
     if msvcrt is not None:  # pragma: no cover - Windows only
         handle.seek(0, os.SEEK_END)
@@ -256,7 +257,7 @@ def _lock_handle(handle: TextIOWrapper) -> None:
         try:
             msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
         except OSError as exc:
-            if exc.errno in {errno.EACCES, errno.EAGAIN} or getattr(
+            if exc.errno in {errno.EACCES, errno.EAGAIN, errno.EDEADLK} or getattr(
                 exc, "winerror", None
             ) in {32, 33, 36}:
                 raise BlockingIOError(exc.errno, str(exc)) from exc
@@ -273,11 +274,14 @@ def _unlock_handle(handle: TextIOWrapper) -> None:
         msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
 
 
-def _lock_handle_with_retry(handle: TextIOWrapper) -> None:
+def _lock_handle_with_retry(handle: TextIOWrapper, *, shared: bool = False) -> None:
     """Acquire a lock despite a bounded transient inspection collision."""
     for attempt in range(3):
         try:
-            _lock_handle(handle)
+            if shared:
+                _lock_handle(handle, shared=True)
+            else:
+                _lock_handle(handle)
             return
         except BlockingIOError:
             if attempt == 2:
@@ -312,7 +316,9 @@ def _release_activation_lock(lock: _ActivationLock) -> None:
         raise first_error
 
 
-def _acquire_activation_lock(home: Optional[Path] = None) -> _ActivationLock:
+def _acquire_activation_lock(
+    home: Optional[Path] = None, *, shared: bool = False
+) -> _ActivationLock:
     primary = activation_lock_path(home)
     fallback = _fallback_activation_lock_path(home)
     paths = [primary] if primary == fallback else [primary, fallback]
@@ -328,7 +334,7 @@ def _acquire_activation_lock(home: Optional[Path] = None) -> _ActivationLock:
             last_error = exc
             continue
         try:
-            _lock_handle_with_retry(handle)
+            _lock_handle_with_retry(handle, shared=shared)
         except BlockingIOError as exc:
             handle.close()
             _release_activation_lock(_ActivationLock(handles))
@@ -354,10 +360,35 @@ def _acquire_activation_lock(home: Optional[Path] = None) -> _ActivationLock:
     ) from last_error
 
 
+@contextmanager
+def _activation_probe_guard(home: Optional[Path] = None):
+    """Serialize Windows probes; POSIX probes use compatible shared locks."""
+    if fcntl is not None or msvcrt is None:
+        yield
+        return
+
+    path = _fallback_activation_lock_path(home).with_suffix(".probe.lock")
+    with path.open("a+b") as handle:  # pragma: no cover - Windows only
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        try:
+            yield
+        finally:
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+
+
 def activation_lock_held(*, home: Optional[Path] = None) -> bool:
     """Return whether an activation owner currently holds the exclusive lock."""
     try:
-        handle = _acquire_activation_lock(home)
+        with _activation_probe_guard(home):
+            handle = _acquire_activation_lock(home, shared=fcntl is not None)
+            _release_activation_lock(handle)
+            return False
     except DrainControlBusyError:
         return True
     except DrainControlUnavailableError as exc:
@@ -366,8 +397,6 @@ def activation_lock_held(*, home: Optional[Path] = None) -> bool:
     except OSError as exc:
         _log.error("drain-control: cannot inspect activation lock: %s", exc)
         return True
-    _release_activation_lock(handle)
-    return False
 
 
 def _drain_payload(
@@ -415,7 +444,11 @@ class DrainOwnership:
         self._require_lock()
         existing = read_drain_request(home=self.home)
         existing_owner = existing.get("owner_token") if existing is not None else None
-        if existing_owner is not None and existing_owner != self.owner_token:
+        if (
+            existing_owner is not None
+            and existing_owner != self.owner_token
+            and not _marker_is_stale(existing)
+        ):
             raise DrainOwnershipLostError("refusing to replace a drain marker owned elsewhere")
         payload = _drain_payload(
             principal=self.principal,
