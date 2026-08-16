@@ -726,13 +726,65 @@ class TestRunJobSessionPersistence:
         """Standalone ticks cannot bypass the gateway-supplied callback."""
         from cron.scheduler import tick
 
-        with patch("gateway.drain_control.drain_requested", return_value=True), patch(
+        @contextlib.contextmanager
+        def blocked_admission():
+            yield False
+
+        with patch("gateway.drain_control.cron_admission", blocked_admission), patch(
             "cron.scheduler.get_due_jobs"
         ) as get_due_jobs, patch("cron.scheduler.advance_next_runs") as advance:
             assert tick(verbose=False, sync=True) == 0
 
         get_due_jobs.assert_not_called()
         advance.assert_not_called()
+
+    def test_tick_holds_cron_admission_through_schedule_advance_and_registration(self):
+        """Activation cannot interleave between the drain check and submission."""
+        from cron.scheduler import tick
+
+        state = {"inside": False}
+        events = []
+        job = {
+            "id": "atomic-admission",
+            "name": "atomic admission",
+            "schedule": {"kind": "interval", "seconds": 60},
+            "next_run_at": "2020-01-01T00:00:00+00:00",
+            "enabled": True,
+        }
+
+        @contextlib.contextmanager
+        def admission():
+            state["inside"] = True
+            events.append("enter")
+            try:
+                yield True
+            finally:
+                events.append("exit")
+                state["inside"] = False
+
+        def advance(job_ids):
+            assert state["inside"] is True
+            events.append("advance")
+
+        pool = MagicMock()
+        future = MagicMock()
+
+        def submit(callable_):
+            assert state["inside"] is True
+            events.append("submit")
+            return future
+
+        pool.submit.side_effect = submit
+
+        with patch("gateway.drain_control.cron_admission", admission, create=True), \
+             patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.advance_next_runs", side_effect=advance), \
+             patch("cron.scheduler._get_parallel_pool", return_value=pool), \
+             patch("cron.scheduler.try_register_running_job", return_value=True), \
+             patch("cron.scheduler.create_execution", return_value={"id": "exec-1"}):
+            assert tick(verbose=False, sync=False) == 1
+
+        assert events == ["enter", "advance", "submit", "exit"]
 
 
 class TestRunJobConfigLogging:

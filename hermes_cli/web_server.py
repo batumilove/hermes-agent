@@ -4171,6 +4171,7 @@ async def gateway_drain(request: Request):
     """
     from gateway.drain_control import (
         DrainControlBusyError,
+        DrainControlUnavailableError,
         clear_drain_request,
         drain_requested,
         write_drain_request,
@@ -4192,6 +4193,8 @@ async def gateway_drain(request: Request):
             existed = clear_drain_request()
         except DrainControlBusyError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except DrainControlUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         _log.info("Gateway drain CANCEL requested by %s (existed=%s)", principal, existed)
         return {"ok": True, "action": "cancel", "was_draining": existed}
 
@@ -4208,6 +4211,8 @@ async def gateway_drain(request: Request):
         )
     except DrainControlBusyError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except DrainControlUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     _log.info(
         "Gateway drain BEGIN requested by %s (suppress_notification=%s)",
         principal,

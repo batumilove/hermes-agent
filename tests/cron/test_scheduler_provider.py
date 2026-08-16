@@ -271,12 +271,18 @@ def test_fire_due_default_claims_then_runs(monkeypatch, tmp_path):
 
 def test_external_fire_due_is_blocked_during_owned_maintenance_drain(monkeypatch):
     """An external provider cannot catch up while activation owns the drain."""
+    import contextlib
     import cron.jobs as jobs
     import gateway.drain_control as drain_control
     from cron.scheduler_provider import InProcessCronScheduler
 
     claimed = []
-    monkeypatch.setattr(drain_control, "drain_requested", lambda: True)
+
+    @contextlib.contextmanager
+    def blocked_admission():
+        yield False
+
+    monkeypatch.setattr(drain_control, "cron_admission", blocked_admission)
     monkeypatch.setattr(
         jobs,
         "claim_job_for_fire",
@@ -285,6 +291,49 @@ def test_external_fire_due_is_blocked_during_owned_maintenance_drain(monkeypatch
 
     assert InProcessCronScheduler().fire_due("j1") is False
     assert claimed == []
+
+
+def test_external_fire_holds_cron_admission_through_claim(monkeypatch, tmp_path):
+    """Activation cannot start after the drain check but before the fire claim."""
+    import contextlib
+    import cron.executions as executions
+    import cron.jobs as jobs
+    import cron.scheduler as sched
+    import gateway.drain_control as drain_control
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    monkeypatch.setattr(
+        executions, "EXECUTIONS_FILE", tmp_path / "cron" / "executions.db"
+    )
+    state = {"inside": False}
+    events = []
+
+    @contextlib.contextmanager
+    def admission():
+        state["inside"] = True
+        events.append("enter")
+        try:
+            yield True
+        finally:
+            events.append("exit")
+            state["inside"] = False
+
+    def claim(job_id):
+        assert state["inside"] is True
+        events.append("claim")
+        return True
+
+    monkeypatch.setattr(drain_control, "cron_admission", admission, raising=False)
+    monkeypatch.setattr(jobs, "claim_job_for_fire", claim)
+    monkeypatch.setattr(
+        jobs,
+        "get_job",
+        lambda job_id: {"id": job_id, "name": "t", "fire_claim": {}},
+    )
+    monkeypatch.setattr(sched, "run_one_job", lambda job, **kwargs: True)
+
+    assert InProcessCronScheduler().fire_due("j1") is True
+    assert events == ["enter", "claim", "exit"]
 
 
 # ── F2a: ticker liveness — survival, heartbeat, honest status (#32612, #32895) ──

@@ -11,6 +11,7 @@ runs at a time if multiple processes overlap.
 import asyncio
 import atexit
 import concurrent.futures
+import contextlib
 import contextvars
 import json
 import logging
@@ -5561,6 +5562,7 @@ def tick(
 
     # Cross-platform file locking: fcntl on Unix, msvcrt on Windows
     lock_fd = None
+    admission_stack = contextlib.ExitStack()
     try:
         lock_fd = open(lock_file, "w", encoding="utf-8")
         if fcntl:
@@ -5588,9 +5590,9 @@ def tick(
         # Every cron entry path must honour maintenance drain ownership, not
         # only the gateway-wired ticker callback. This also covers standalone
         # ticks and keeps due schedules untouched for the next allowed tick.
-        from gateway.drain_control import drain_requested as _drain_requested
+        from gateway.drain_control import cron_admission as _cron_admission
 
-        if _drain_requested():
+        if not admission_stack.enter_context(_cron_admission()):
             logger.debug("Cron dispatch paused while gateway maintenance drain is active")
             return 0
 
@@ -5805,6 +5807,10 @@ def tick(
                 if not sync:
                     _results.append(True)  # optimistically counted
 
+        # Registration is complete. A new activation may now begin and wait
+        # for the jobs registered above to drain.
+        admission_stack.close()
+
         # Best-effort sweep of MCP stdio subprocesses that survived their
         # session teardown.  Must run AFTER jobs finish so active sessions
         # (including live user chats) are never touched — only PIDs explicitly
@@ -5854,6 +5860,7 @@ def tick(
 
         return sum(_results)
     finally:
+        admission_stack.close()
         if fcntl:
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
