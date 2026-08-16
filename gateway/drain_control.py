@@ -203,7 +203,7 @@ class DrainOwnershipLostError(RuntimeError):
 def _user_runtime_dir() -> Path:
     """Return the conventional per-user runtime directory."""
     getuid = getattr(os, "getuid", None)
-    if getuid is not None:
+    if callable(getuid):
         return Path(f"/run/user/{getuid()}")
     return get_hermes_home()  # pragma: no cover - Windows compatibility
 
