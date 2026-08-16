@@ -192,11 +192,9 @@ class DrainOwnershipLostError(RuntimeError):
     """An owned marker was removed or replaced during its transaction."""
 
 
-def activation_lock_path(runtime_dir: Optional[Path] = None) -> Path:
-    """Return the exclusive activation lock path (override only in tests)."""
-    if runtime_dir is not None:
-        base = Path(runtime_dir)
-    elif hasattr(os, "getuid"):
+def activation_lock_path() -> Path:
+    """Return the single canonical activation lock path."""
+    if hasattr(os, "getuid"):
         base = Path(f"/run/user/{os.getuid()}")
     else:  # pragma: no cover - Windows compatibility
         base = get_hermes_home()
@@ -226,8 +224,8 @@ def _unlock_handle(handle: TextIOWrapper) -> None:
         msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
 
 
-def _acquire_activation_lock(runtime_dir: Optional[Path] = None) -> TextIOWrapper:
-    path = activation_lock_path(runtime_dir)
+def _acquire_activation_lock() -> TextIOWrapper:
+    path = activation_lock_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         handle = path.open("a+", encoding="utf-8")
@@ -241,10 +239,10 @@ def _acquire_activation_lock(runtime_dir: Optional[Path] = None) -> TextIOWrappe
     return handle
 
 
-def activation_lock_held(*, runtime_dir: Optional[Path] = None) -> bool:
+def activation_lock_held() -> bool:
     """Return whether an activation owner currently holds the exclusive lock."""
     try:
-        handle = _acquire_activation_lock(runtime_dir)
+        handle = _acquire_activation_lock()
     except DrainControlBusyError:
         return True
     except OSError as exc:
@@ -282,7 +280,6 @@ class DrainOwnership:
     principal: str
     owner_token: str
     home: Optional[Path]
-    runtime_dir: Optional[Path]
     suppress_notification: bool
     _lock_handle: Optional[TextIOWrapper]
 
@@ -347,17 +344,15 @@ def acquire_drain_ownership(
     *,
     principal: str,
     home: Optional[Path] = None,
-    runtime_dir: Optional[Path] = None,
     suppress_notification: bool = False,
     owner_token: Optional[str] = None,
 ) -> DrainOwnership:
-    """Acquire the activation lock without changing the drain marker."""
-    handle = _acquire_activation_lock(runtime_dir)
+    """Acquire the one canonical activation lock without changing the marker."""
+    handle = _acquire_activation_lock()
     return DrainOwnership(
         principal=principal,
         owner_token=owner_token or uuid.uuid4().hex,
         home=home,
-        runtime_dir=runtime_dir,
         suppress_notification=bool(suppress_notification),
         _lock_handle=handle,
     )
@@ -368,7 +363,6 @@ def write_drain_request(
     principal: str = "drain-control",
     suppress_notification: bool = False,
     home: Optional[Path] = None,
-    runtime_dir: Optional[Path] = None,
 ) -> dict[str, Any]:
     """Write the begin-drain marker. Returns the payload written.
 
@@ -396,7 +390,7 @@ def write_drain_request(
     of which drain causes set the flag lives entirely in the caller (NAS). The
     field defaults False so legacy/operator drains behave exactly as before.
     """
-    handle = _acquire_activation_lock(runtime_dir)
+    handle = _acquire_activation_lock()
     try:
         payload = _drain_payload(
             principal=principal,
@@ -409,9 +403,7 @@ def write_drain_request(
         handle.close()
 
 
-def clear_drain_request(
-    *, home: Optional[Path] = None, runtime_dir: Optional[Path] = None
-) -> bool:
+def clear_drain_request(*, home: Optional[Path] = None) -> bool:
     """Remove the drain marker (cancel-drain). Returns True if one existed.
 
     Takes the activation lock transiently. A live owned activation therefore
@@ -419,7 +411,7 @@ def clear_drain_request(
     owner exits and the OS releases its lock, an operator can clear an orphaned
     marker. Best-effort: a missing file is not an error (cancel is idempotent).
     """
-    handle = _acquire_activation_lock(runtime_dir)
+    handle = _acquire_activation_lock()
     path = drain_request_path(home)
     try:
         path.unlink()
