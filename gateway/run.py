@@ -14235,7 +14235,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "active_agents": counts["agent"],
                     "active_cron_jobs": counts["cron"],
                     "active_api_runs": counts["api"],
-                    "work_attribution": work,
+                    "work_attribution": {
+                        "counts": dict(counts),
+                        "attribution_complete": bool(
+                            work.get("attribution_complete", False)
+                        ),
+                        "omissions": list(work.get("omissions", ())),
+                    },
                     "restart_drain_timeout": self._restart_drain_timeout,
                     "watchdog_delay_s": GatewayRunner._shutdown_watchdog_delay_secs(self),
                     "phase_elapsed_s": (
@@ -14296,7 +14302,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             result.status,
                             result.error or "no detail",
                         )
-                except BaseException as exc:
+                except Exception as exc:
                     logger.warning(
                         "Gateway shutdown attribution %s failed: %s",
                         phase,
