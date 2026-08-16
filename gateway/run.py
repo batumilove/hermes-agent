@@ -8123,6 +8123,88 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             return 0
 
+    def _shutdown_work_attribution_snapshot(self) -> Dict[str, Any]:
+        """Collect exact shutdown work on the gateway event-loop thread."""
+        try:
+            from gateway.drain_attribution import collect_gateway_work
+
+            snapshot = collect_gateway_work(
+                self,
+                pending_sentinel=_AGENT_PENDING_SENTINEL,
+            )
+            return {
+                "counts": dict(snapshot.counts),
+                "units": [dict(unit) for unit in snapshot.units],
+                "attribution_complete": snapshot.attribution_complete,
+                "omissions": list(snapshot.omissions),
+            }
+        except BaseException as exc:
+            counts = {
+                "agent": max(0, int(self._running_agent_count())),
+                "cron": max(0, int(self._active_cron_job_count())),
+                "api": max(0, int(self._active_api_run_count())),
+            }
+            counts["total"] = sum(counts.values())
+            return {
+                "counts": counts,
+                "units": [],
+                "attribution_complete": False,
+                "omissions": [f"snapshot_failed:{type(exc).__name__}"],
+            }
+
+    async def _record_drain_attribution(
+        self,
+        phase: str,
+        *,
+        deadline: float,
+    ):
+        """Persist one exact work snapshot without extending shutdown's deadline."""
+        from gateway.drain_attribution import (
+            DrainAttributionRecorder,
+            DrainAttributionWriteResult,
+            current_drain_generation,
+            generation_is_current,
+            record_snapshot_bounded,
+        )
+        from hermes_constants import get_hermes_home
+
+        loop = asyncio.get_running_loop()
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return DrainAttributionWriteResult(
+                status="attribution_incomplete",
+                error="shutdown_deadline_exhausted",
+            )
+
+        recorder = getattr(self, "_drain_attribution_recorder", None)
+        if recorder is None:
+            home = Path(get_hermes_home())
+            generation = current_drain_generation()
+            recorder = DrainAttributionRecorder(
+                home=home,
+                generation=generation,
+                owner_probe=lambda expected: generation_is_current(
+                    expected,
+                    home=home,
+                ),
+            )
+            self._drain_attribution_recorder = recorder
+
+        snapshot = self._shutdown_work_attribution_snapshot()
+        # One immutable-by-convention pointer assignment lets the watchdog
+        # thread report exact identities without traversing event-loop-owned
+        # agent/API containers after the loop has wedged.
+        self._shutdown_work_attribution = snapshot
+        return await record_snapshot_bounded(
+            recorder,
+            timeout_seconds=min(1.0, remaining),
+            phase=phase,
+            counts=snapshot["counts"],
+            units=snapshot["units"],
+            attribution_complete=snapshot["attribution_complete"],
+            omissions=snapshot["omissions"],
+        )
+
     def _interrupt_api_server_runs(self, reason: str) -> int:
         """Interrupt API-server agents that are not in ``_running_agents``.
 
@@ -10091,10 +10173,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         last_cron_count = self._active_cron_job_count()
         last_api_count = self._active_api_run_count()
         last_status_at = 0.0
+        loop = asyncio.get_running_loop()
+        timeout = max(0.0, float(timeout))
+        deadline = loop.time() + timeout
+
+        async def _record_phase(phase: str) -> None:
+            try:
+                result = await self._record_drain_attribution(
+                    phase,
+                    deadline=deadline,
+                )
+                if result.status != "persisted":
+                    logger.warning(
+                        "Gateway drain attribution %s was not persisted: %s (%s)",
+                        phase,
+                        result.status,
+                        result.error or "no detail",
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Gateway drain attribution %s failed: %s",
+                    phase,
+                    exc,
+                )
 
         def _maybe_update_status(force: bool = False) -> None:
             nonlocal last_active_count, last_cron_count, last_api_count, last_status_at
-            now = asyncio.get_running_loop().time()
+            now = loop.time()
             active_count = self._running_agent_count()
             cron_count = self._active_cron_job_count()
             api_count = self._active_api_run_count()
@@ -10111,6 +10216,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 last_api_count = api_count
                 last_status_at = now
 
+        # Persist the identities seen at drain admission before waiting. The
+        # write shares the caller's deadline and can never extend it.
+        await _record_phase("drain_start")
+
         # Cron jobs run on the scheduler's own thread pool, outside
         # ``self._running_agents`` — fold their in-flight count into the
         # same wait/timeout this method already applies to chat sessions,
@@ -10125,17 +10234,46 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if timeout <= 0:
             return snapshot, True
 
-        deadline = asyncio.get_running_loop().time() + timeout
+        # Reserve a small slice of the existing drain budget for one final
+        # attributable snapshot. This is evidence work, not extra shutdown
+        # time: both the writer and the wait remain bounded by ``deadline``.
+        pre_timeout_margin = min(1.0, max(0.01, timeout * 0.1))
+        attribution_interval = max(
+            0.01,
+            float(getattr(self, "_DRAIN_ATTRIBUTION_INTERVAL_S", 10.0)),
+        )
+        next_attribution_at = loop.time() + attribution_interval
+        pre_timeout_recorded = False
         while (
             (
                 len(self._running_agents)
                 or self._active_cron_job_count()
                 or self._active_api_run_count()
             )
-            and asyncio.get_running_loop().time() < deadline
+            and loop.time() < deadline
         ):
             _maybe_update_status()
-            await asyncio.sleep(0.1)
+            remaining = deadline - loop.time()
+            now = loop.time()
+            if now >= next_attribution_at and remaining > pre_timeout_margin:
+                await _record_phase("drain_interval")
+                next_attribution_at = loop.time() + attribution_interval
+                continue
+            if not pre_timeout_recorded and remaining <= pre_timeout_margin:
+                await _record_phase("pre_timeout")
+                pre_timeout_recorded = True
+                continue
+            sleep_for = min(0.1, max(0.0, remaining))
+            if not pre_timeout_recorded:
+                sleep_for = min(
+                    sleep_for,
+                    max(0.0, remaining - pre_timeout_margin),
+                )
+            sleep_for = min(
+                sleep_for,
+                max(0.0, next_attribution_at - loop.time()),
+            )
+            await asyncio.sleep(sleep_for)
         timed_out = (
             bool(len(self._running_agents))
             or bool(self._active_cron_job_count())
@@ -14062,16 +14200,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _watchdog_done = threading.Event()
             self._shutdown_watchdog_done = _watchdog_done
             _stop_started_at_box: dict[str, float] = {}
+            self._shutdown_work_attribution = (
+                self._shutdown_work_attribution_snapshot()
+            )
 
             def _shutdown_watchdog_snapshot() -> dict:
                 started = _stop_started_at_box.get("t")
+                work = self._shutdown_work_attribution
+                counts = work["counts"]
                 return {
                     "restart_requested": bool(self._restart_requested),
                     "draining": bool(self._draining),
                     "running": bool(self._running),
-                    "active_agents": self._running_agent_count(),
-                    "active_cron_jobs": self._active_cron_job_count(),
-                    "active_api_runs": self._active_api_run_count(),
+                    "active_agents": counts["agent"],
+                    "active_cron_jobs": counts["cron"],
+                    "active_api_runs": counts["api"],
+                    "work_attribution": work,
                     "restart_drain_timeout": self._restart_drain_timeout,
                     "watchdog_delay_s": GatewayRunner._shutdown_watchdog_delay_secs(self),
                     "phase_elapsed_s": (
@@ -14112,6 +14256,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 ),
             )
             _cleanup_budget_exhausted = False
+
+            async def _record_shutdown_phase(phase: str) -> None:
+                try:
+                    result = await self._record_drain_attribution(
+                        phase,
+                        deadline=_cleanup_deadline,
+                    )
+                    if result.status != "persisted":
+                        logger.warning(
+                            "Gateway shutdown attribution %s was not persisted: %s (%s)",
+                            phase,
+                            result.status,
+                            result.error or "no detail",
+                        )
+                except BaseException as exc:
+                    logger.warning(
+                        "Gateway shutdown attribution %s failed: %s",
+                        phase,
+                        exc,
+                    )
 
             def _phase_elapsed() -> float:
                 return time.monotonic() - _stop_started_at
@@ -14367,6 +14531,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 if not _post_mark_complete and _post_timeout_candidates:
                     _cleanup_budget_exhausted = True
+                await _record_shutdown_phase("interrupt_start")
                 _now = asyncio.get_running_loop().time()
                 interrupt_deadline = min(
                     _now + self._shutdown_interrupt_timeout_secs(),
@@ -14409,6 +14574,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.debug(
                         "Re-signaled interrupt for work still live at settle-window exit"
                     )
+
+                await _record_shutdown_phase("interrupt_settled")
+                if self._active_work_count() > 0:
+                    await _record_shutdown_phase("forced_forward")
 
                 # Kill lingering tool subprocesses NOW, before we spend more
                 # budget on adapter disconnect / session DB close.  Under
@@ -14661,12 +14830,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # message).  Skip the marker in that case so the next startup
             # suspends those sessions — giving users a clean slate instead
             # of resuming a half-finished tool loop.
-            if not timed_out and not _cleanup_budget_exhausted:
+            if (
+                not timed_out
+                and not _cleanup_budget_exhausted
+                and GatewayRunner._shutdown_remaining(_cleanup_deadline) > 0
+                and self._active_work_count() == 0
+            ):
+                await _record_shutdown_phase("clean_exit")
                 try:
                     (_hermes_home / ".clean_shutdown").touch()
                 except Exception:
                     pass
             else:
+                await _record_shutdown_phase("cleanup_incomplete")
                 if timed_out:
                     logger.info(
                         "Skipping .clean_shutdown marker — drain timed out with "

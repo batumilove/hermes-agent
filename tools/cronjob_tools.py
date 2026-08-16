@@ -726,6 +726,7 @@ def _run_claimed_job(
     try:
         from cron.executions import create_execution
         from cron.scheduler import (
+            bind_running_job_execution,
             release_running_job,
             run_one_job,
             try_register_running_job,
@@ -756,6 +757,7 @@ def _run_claimed_job(
             source="manual",
             trigger_origin="manual",
         )
+        bind_running_job_execution(job_id, execution["id"])
 
         # A manual `run` executes the job synchronously on the caller's thread,
         # and a cron job is itself a full agent run that routinely takes
