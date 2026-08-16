@@ -49,6 +49,10 @@ DEFAULT_LOOP_FLOOR_TIMER_INTERVAL_S = 5.0
 DEFAULT_LOOP_WATCHDOG_INTERVAL_S = 30.0
 DEFAULT_LOOP_WATCHDOG_TIMEOUT_S = 10.0
 DEFAULT_LOOP_WATCHDOG_MAX_STRIKES = 3
+# Give the Python diagnostics thread a short chance to preserve structured
+# evidence, then let CPython's C-level faulthandler timer terminate the process
+# even if that thread blocks in snapshot or dump I/O.
+_HARD_EXIT_FALLBACK_SLACK_S = 1.0
 _HEARTBEAT_RELATIVE = ("state", "gateway.heartbeat")
 _WATCHDOG_DUMP_RELATIVE = ("logs", "gateway-shutdown-watchdog.log")
 
@@ -361,6 +365,48 @@ def arm_shutdown_watchdog(
     if delay <= 0:
         return done
 
+    hard_exit_fallback_armed = False
+    hard_exit_fallback_fd: Optional[int] = None
+    hard_exit_fallback_lock = threading.Lock()
+    try:
+        # The C fallback must not write to stderr: a full journald pipe or other
+        # blocked fd 2 would wedge faulthandler before its final _exit().  Keep
+        # a dedicated non-blocking sink open until the timer is cancelled.
+        hard_exit_fallback_fd = os.open(os.devnull, os.O_WRONLY)
+        faulthandler.dump_traceback_later(
+            delay + _HARD_EXIT_FALLBACK_SLACK_S,
+            repeat=False,
+            file=hard_exit_fallback_fd,
+            exit=True,
+        )
+        hard_exit_fallback_armed = True
+    except Exception:
+        if hard_exit_fallback_fd is not None:
+            try:
+                os.close(hard_exit_fallback_fd)
+            except OSError:
+                pass
+            hard_exit_fallback_fd = None
+        logger.debug("Failed to arm C-level shutdown hard-exit fallback", exc_info=True)
+
+    def _cancel_hard_exit_fallback() -> None:
+        nonlocal hard_exit_fallback_armed, hard_exit_fallback_fd
+        with hard_exit_fallback_lock:
+            if not hard_exit_fallback_armed:
+                return
+            hard_exit_fallback_armed = False
+            try:
+                faulthandler.cancel_dump_traceback_later()
+            except Exception:
+                pass
+            finally:
+                if hard_exit_fallback_fd is not None:
+                    try:
+                        os.close(hard_exit_fallback_fd)
+                    except OSError:
+                        pass
+                    hard_exit_fallback_fd = None
+
     def _watchdog() -> None:
         # Wait with interruptible chunks so a late disarm doesn't need the
         # full remaining sleep to observe done_event.
@@ -368,8 +414,10 @@ def arm_shutdown_watchdog(
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
             if done.wait(timeout=min(remaining, 1.0)):
+                _cancel_hard_exit_fallback()
                 return
         if done.is_set():
+            _cancel_hard_exit_fallback()
             return
 
         snapshot: Optional[Dict[str, Any]] = None
@@ -419,11 +467,13 @@ def arm_shutdown_watchdog(
             mark_exited(exit_code, reason="shutdown_watchdog")
         except Exception:
             pass
+        _cancel_hard_exit_fallback()
         os._exit(exit_code)
 
     try:
         threading.Thread(target=_watchdog, daemon=True, name=name).start()
     except Exception:
+        _cancel_hard_exit_fallback()
         logger.debug("Failed to arm shutdown watchdog", exc_info=True)
     return done
 

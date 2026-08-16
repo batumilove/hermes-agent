@@ -721,11 +721,13 @@ patches:
       - gateway/drain_attribution.py
       - gateway/platforms/api_server.py
       - gateway/run.py
+      - gateway/shutdown_watchdog.py
       - tests/cron/test_running_job_attribution.py
       - tests/gateway/test_api_server_active_work_drain.py
       - tests/gateway/test_drain_attribution.py
       - tests/gateway/test_drain_attribution_lifecycle.py
       - tests/gateway/test_shutdown_aggregate_budget_contract.py
+      - tests/gateway/test_shutdown_watchdog.py
       - tools/cronjob_tools.py
     tests:
       - scripts/run_tests.sh tests/gateway/test_drain_attribution.py tests/gateway/test_drain_attribution_lifecycle.py tests/gateway/test_gateway_shutdown.py tests/gateway/test_shutdown_watchdog.py
