@@ -19,8 +19,9 @@ Contract (presence-based for the gateway, ownership-aware for controllers):
     ``{"action": "drain", "requested_at": <iso>, "principal": <str>,
     "epoch": <instantiation-epoch>, "suppress_notification": <bool>}``.
   * cancel-drain → remove the marker.
-  * activation controllers hold an exclusive
-    ``/run/user/<uid>/hermes-gateway-activation.lock`` for the complete
+  * activation controllers hold a profile-scoped exclusive lock named
+    ``hermes-gateway-activation-<home-hash>.lock`` in ``/run/user/<uid>`` when
+    available, with a canonical ``HERMES_HOME`` fallback, for the complete
     transaction and stamp a unique ``owner_token`` into the marker. Refresh and
     cleanup validate that exact token. Dashboard/legacy writes take the same
     lock transiently, so they cannot overwrite or remove a live owned drain.
@@ -72,6 +73,7 @@ deliberately long drain has a sanctioned keep-alive: re-calling
 from __future__ import annotations
 
 import functools
+import hashlib
 import json
 import logging
 import os
@@ -98,7 +100,6 @@ from utils import atomic_json_write
 _log = logging.getLogger(__name__)
 
 _DRAIN_REQUEST_FILENAME = ".drain_request.json"
-_ACTIVATION_LOCK_FILENAME = "hermes-gateway-activation.lock"
 
 # Max-age fallback for a same-epoch orphaned marker (#85433). Drain-gated
 # lifecycle actions complete in minutes; an hour is comfortably past any
@@ -188,17 +189,54 @@ class DrainControlBusyError(RuntimeError):
     """Another controller owns the gateway activation transaction."""
 
 
+class DrainControlUnavailableError(RuntimeError):
+    """No activation lock location is currently usable."""
+
+
 class DrainOwnershipLostError(RuntimeError):
     """An owned marker was removed or replaced during its transaction."""
 
 
-def activation_lock_path() -> Path:
-    """Return the single canonical activation lock path."""
+def _user_runtime_dir() -> Path:
+    """Return the conventional per-user runtime directory."""
     if hasattr(os, "getuid"):
-        base = Path(f"/run/user/{os.getuid()}")
-    else:  # pragma: no cover - Windows compatibility
-        base = get_hermes_home()
-    return base / _ACTIVATION_LOCK_FILENAME
+        return Path(f"/run/user/{os.getuid()}")
+    return get_hermes_home()  # pragma: no cover - Windows compatibility
+
+
+def _canonical_home(home: Optional[Path] = None) -> Path:
+    base = Path(home) if home is not None else get_hermes_home()
+    return base.expanduser().resolve(strict=False)
+
+
+def _activation_lock_name(canonical_home: Path) -> str:
+    profile_id = hashlib.sha256(os.fsencode(str(canonical_home))).hexdigest()[:16]
+    return f"hermes-gateway-activation-{profile_id}.lock"
+
+
+def _fallback_activation_lock_path(home: Optional[Path] = None) -> Path:
+    canonical_home = _canonical_home(home)
+    return canonical_home / _activation_lock_name(canonical_home)
+
+
+def activation_lock_path(home: Optional[Path] = None) -> Path:
+    """Return one canonical, profile-scoped activation lock path.
+
+    Prefer the per-user runtime directory when it already exists and is usable.
+    Otherwise place the lock in the canonical HERMES_HOME, beside the marker;
+    controllers that target the same home therefore converge on the same safe
+    fallback instead of interpreting an inaccessible runtime path as ownership.
+    """
+    canonical_home = _canonical_home(home)
+    runtime_dir = _user_runtime_dir()
+    try:
+        runtime_usable = runtime_dir.is_dir() and os.access(
+            runtime_dir, os.R_OK | os.W_OK | os.X_OK
+        )
+    except OSError:
+        runtime_usable = False
+    base = runtime_dir if runtime_usable else canonical_home
+    return base / _activation_lock_name(canonical_home)
 
 
 def _lock_handle(handle: TextIOWrapper) -> None:
@@ -224,34 +262,88 @@ def _unlock_handle(handle: TextIOWrapper) -> None:
         msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
 
 
-def _acquire_activation_lock() -> TextIOWrapper:
-    path = activation_lock_path()
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        handle = path.open("a+", encoding="utf-8")
-    except OSError as exc:
-        raise DrainControlBusyError(f"cannot open gateway activation lock: {path}") from exc
-    try:
-        _lock_handle(handle)
-    except (BlockingIOError, OSError) as exc:
-        handle.close()
-        raise DrainControlBusyError(f"gateway activation lock is already held: {path}") from exc
-    return handle
+@dataclass
+class _ActivationLock:
+    """All usable aliases for one profile's activation lock."""
+
+    handles: list[TextIOWrapper]
+
+    @property
+    def closed(self) -> bool:
+        return all(handle.closed for handle in self.handles)
 
 
-def activation_lock_held() -> bool:
+def _release_activation_lock(lock: _ActivationLock) -> None:
+    first_error: Optional[OSError] = None
+    for handle in reversed(lock.handles):
+        if handle.closed:
+            continue
+        try:
+            _unlock_handle(handle)
+        except OSError as exc:
+            if first_error is None:
+                first_error = exc
+        finally:
+            handle.close()
+    if first_error is not None:
+        raise first_error
+
+
+def _acquire_activation_lock(home: Optional[Path] = None) -> _ActivationLock:
+    primary = activation_lock_path(home)
+    fallback = _fallback_activation_lock_path(home)
+    paths = [primary] if primary == fallback else [primary, fallback]
+    last_error: Optional[OSError] = None
+    handles: list[TextIOWrapper] = []
+    fallback_acquired = False
+
+    for path in paths:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            handle = path.open("a+", encoding="utf-8")
+        except OSError as exc:
+            last_error = exc
+            continue
+        try:
+            _lock_handle(handle)
+        except BlockingIOError as exc:
+            handle.close()
+            _release_activation_lock(_ActivationLock(handles))
+            raise DrainControlBusyError(
+                f"gateway activation lock is already held: {path}"
+            ) from exc
+        except OSError as exc:
+            handle.close()
+            last_error = exc
+            continue
+        handles.append(handle)
+        if path == fallback:
+            fallback_acquired = True
+
+    if fallback_acquired:
+        return _ActivationLock(handles)
+
+    if handles:
+        _release_activation_lock(_ActivationLock(handles))
+
+    raise DrainControlUnavailableError(
+        f"cannot open gateway activation lock: {paths[-1]}"
+    ) from last_error
+
+
+def activation_lock_held(*, home: Optional[Path] = None) -> bool:
     """Return whether an activation owner currently holds the exclusive lock."""
     try:
-        handle = _acquire_activation_lock()
+        handle = _acquire_activation_lock(home)
     except DrainControlBusyError:
         return True
+    except DrainControlUnavailableError as exc:
+        _log.error("drain-control: cannot inspect activation lock: %s", exc)
+        return False
     except OSError as exc:
         _log.error("drain-control: cannot inspect activation lock: %s", exc)
         return True
-    try:
-        _unlock_handle(handle)
-    finally:
-        handle.close()
+    _release_activation_lock(handle)
     return False
 
 
@@ -281,7 +373,7 @@ class DrainOwnership:
     owner_token: str
     home: Optional[Path]
     suppress_notification: bool
-    _lock_handle: Optional[TextIOWrapper]
+    _lock_handle: Optional[_ActivationLock]
 
     def _require_lock(self) -> None:
         if self._lock_handle is None or self._lock_handle.closed:
@@ -326,10 +418,7 @@ class DrainOwnership:
         self._lock_handle = None
         if handle is None or handle.closed:
             return
-        try:
-            _unlock_handle(handle)
-        finally:
-            handle.close()
+        _release_activation_lock(handle)
 
     def __enter__(self) -> "DrainOwnership":
         self._require_lock()
@@ -348,7 +437,7 @@ def acquire_drain_ownership(
     owner_token: Optional[str] = None,
 ) -> DrainOwnership:
     """Acquire the one canonical activation lock without changing the marker."""
-    handle = _acquire_activation_lock()
+    handle = _acquire_activation_lock(home)
     return DrainOwnership(
         principal=principal,
         owner_token=owner_token or uuid.uuid4().hex,
@@ -390,7 +479,7 @@ def write_drain_request(
     of which drain causes set the flag lives entirely in the caller (NAS). The
     field defaults False so legacy/operator drains behave exactly as before.
     """
-    handle = _acquire_activation_lock()
+    handle = _acquire_activation_lock(home)
     try:
         payload = _drain_payload(
             principal=principal,
@@ -399,8 +488,7 @@ def write_drain_request(
         atomic_json_write(drain_request_path(home), payload)
         return payload
     finally:
-        _unlock_handle(handle)
-        handle.close()
+        _release_activation_lock(handle)
 
 
 def clear_drain_request(*, home: Optional[Path] = None) -> bool:
@@ -411,7 +499,7 @@ def clear_drain_request(*, home: Optional[Path] = None) -> bool:
     owner exits and the OS releases its lock, an operator can clear an orphaned
     marker. Best-effort: a missing file is not an error (cancel is idempotent).
     """
-    handle = _acquire_activation_lock()
+    handle = _acquire_activation_lock(home)
     path = drain_request_path(home)
     try:
         path.unlink()
@@ -422,8 +510,7 @@ def clear_drain_request(*, home: Optional[Path] = None) -> bool:
         _log.warning("drain-control: failed to remove %s: %s", path, e)
         return False
     finally:
-        _unlock_handle(handle)
-        handle.close()
+        _release_activation_lock(handle)
 
 
 def _marker_epoch_is_stale(body: dict[str, Any]) -> bool:
@@ -525,7 +612,7 @@ def drain_requested(*, home: Optional[Path] = None) -> bool:
     drain-active. The exclusive activation lock is itself a drain signal so an
     owner remains fail-closed if its marker is removed or replaced.
     """
-    if activation_lock_held():
+    if activation_lock_held(home=home):
         return True
     body = read_drain_request(home=home)
     if body is None:

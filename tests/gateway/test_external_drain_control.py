@@ -12,6 +12,7 @@ Q-B, exercises a real `hermes gateway run`); these lock the unit contract.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
 import os
@@ -59,7 +60,7 @@ class TestOwnedDrainControl:
     @pytest.fixture(autouse=True)
     def _isolated_activation_lock(self, tmp_path, monkeypatch):
         lock_path = tmp_path / "run-user" / "hermes-gateway-activation.lock"
-        monkeypatch.setattr(dc, "activation_lock_path", lambda: lock_path)
+        monkeypatch.setattr(dc, "activation_lock_path", lambda home=None: lock_path)
 
     def test_public_ownership_apis_cannot_override_canonical_lock_path(self):
         for func in (
@@ -70,11 +71,153 @@ class TestOwnedDrainControl:
         ):
             assert "runtime_dir" not in inspect.signature(func).parameters
 
-    def test_default_lock_path_is_exact_per_user_runtime_path(self, monkeypatch):
+    def test_default_lock_path_is_profile_scoped_in_user_runtime(self, home, monkeypatch):
         monkeypatch.undo()
-        assert dc.activation_lock_path() == Path(
-            f"/run/user/{os.getuid()}/hermes-gateway-activation.lock"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        runtime = home.parent / "runtime"
+        runtime.mkdir(exist_ok=True)
+        monkeypatch.setattr(dc, "_user_runtime_dir", lambda: runtime)
+        canonical_home = home.resolve()
+        profile_id = hashlib.sha256(
+            os.fsencode(str(canonical_home))
+        ).hexdigest()[:16]
+        assert dc.activation_lock_path() == (
+            runtime / f"hermes-gateway-activation-{profile_id}.lock"
         )
+
+    def test_user_runtime_dir_is_exact_per_user_path(self, monkeypatch):
+        monkeypatch.undo()
+        assert dc._user_runtime_dir() == Path(f"/run/user/{os.getuid()}")
+
+    def test_equivalent_home_paths_share_one_lock(self, tmp_path, monkeypatch):
+        monkeypatch.undo()
+        real_home = tmp_path / "real-home"
+        real_home.mkdir()
+        alias_home = tmp_path / "home-alias"
+        alias_home.symlink_to(real_home, target_is_directory=True)
+
+        assert dc.activation_lock_path(real_home) == dc.activation_lock_path(alias_home)
+
+    def test_distinct_profiles_under_same_uid_use_distinct_locks(self, tmp_path, monkeypatch):
+        monkeypatch.undo()
+        home_a = tmp_path / "profile-a"
+        home_b = tmp_path / "profile-b"
+        home_a.mkdir()
+        home_b.mkdir()
+
+        assert dc.activation_lock_path(home_a) != dc.activation_lock_path(home_b)
+
+        owner = dc.acquire_drain_ownership(principal="a", home=home_a)
+        try:
+            owner.write_request()
+            assert dc.drain_requested(home=home_a) is True
+            assert dc.drain_requested(home=home_b) is False
+        finally:
+            owner.clear_request()
+            owner.release()
+
+    def test_missing_user_runtime_falls_back_to_canonical_home(self, home, monkeypatch):
+        monkeypatch.undo()
+        missing_runtime = home.parent / "missing-runtime"
+        monkeypatch.setattr(dc, "_user_runtime_dir", lambda: missing_runtime)
+
+        lock_path = dc.activation_lock_path(home)
+        assert lock_path.parent == home.resolve()
+        assert dc.drain_requested(home=home) is False
+
+        owner = dc.acquire_drain_ownership(principal="fallback", home=home)
+        try:
+            owner.write_request()
+            assert dc.drain_requested(home=home) is True
+        finally:
+            owner.clear_request()
+            owner.release()
+
+    def test_runtime_open_failure_falls_back_to_canonical_home(self, home, monkeypatch):
+        monkeypatch.undo()
+        runtime = home.parent / "runtime"
+        runtime.mkdir(exist_ok=True)
+        monkeypatch.setattr(dc, "_user_runtime_dir", lambda: runtime)
+        real_open = Path.open
+
+        def _open_with_runtime_failure(path, *args, **kwargs):
+            if path.parent == runtime:
+                raise PermissionError("runtime is read-only")
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", _open_with_runtime_failure)
+        assert dc.activation_lock_path(home).parent == runtime
+
+        owner = dc.acquire_drain_ownership(principal="fallback", home=home)
+        try:
+            owner.write_request()
+            assert dc.drain_requested(home=home) is True
+        finally:
+            owner.clear_request()
+            owner.release()
+
+    def test_runtime_recovery_cannot_split_fallback_owner(self, home, monkeypatch):
+        monkeypatch.undo()
+        runtime = home.parent / "runtime"
+        runtime.mkdir(exist_ok=True)
+        monkeypatch.setattr(dc, "_user_runtime_dir", lambda: runtime)
+        real_open = Path.open
+        runtime_available = False
+
+        def _open_with_runtime_transition(path, *args, **kwargs):
+            if path.parent == runtime and not runtime_available:
+                raise PermissionError("runtime is temporarily read-only")
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", _open_with_runtime_transition)
+        owner = dc.acquire_drain_ownership(principal="fallback", home=home)
+        try:
+            runtime_available = True
+            with pytest.raises(dc.DrainControlBusyError):
+                dc.acquire_drain_ownership(principal="runtime", home=home)
+        finally:
+            owner.release()
+
+    def test_fallback_anchor_unavailable_does_not_use_runtime_only(
+        self, home, monkeypatch
+    ):
+        monkeypatch.undo()
+        runtime = home.parent / "runtime"
+        runtime.mkdir(exist_ok=True)
+        monkeypatch.setattr(dc, "_user_runtime_dir", lambda: runtime)
+        real_open = Path.open
+
+        def _deny_fallback_lock(path, *args, **kwargs):
+            if (
+                path.parent == home.resolve()
+                and path.name.startswith("hermes-gateway-activation-")
+            ):
+                raise PermissionError("fallback anchor unavailable")
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", _deny_fallback_lock)
+        with pytest.raises(dc.DrainControlUnavailableError):
+            dc.acquire_drain_ownership(principal="runtime-only", home=home)
+
+    def test_all_lock_locations_unavailable_does_not_invent_an_owner(
+        self, home, monkeypatch
+    ):
+        monkeypatch.undo()
+        runtime = home.parent / "runtime"
+        runtime.mkdir(exist_ok=True)
+        monkeypatch.setattr(dc, "_user_runtime_dir", lambda: runtime)
+        real_open = Path.open
+
+        def _deny_activation_locks(path, *args, **kwargs):
+            if path.name.startswith("hermes-gateway-activation-"):
+                raise PermissionError("lock storage unavailable")
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", _deny_activation_locks)
+
+        assert dc.drain_requested(home=home) is False
+        with pytest.raises(dc.DrainControlUnavailableError):
+            dc.acquire_drain_ownership(principal="cannot-start", home=home)
 
     def test_owned_transaction_excludes_competing_controller(self, home):
         owner = dc.acquire_drain_ownership(
