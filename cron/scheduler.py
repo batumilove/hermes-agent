@@ -36,7 +36,7 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Callable, List, Optional
 
 # Add parent directory to path for imports BEFORE repo-level imports.
 # Without this, standalone invocations (e.g. after `hermes update` reloads
@@ -5168,6 +5168,7 @@ def _teardown_cron_agent(agent, job_id: str) -> None:
 def run_one_job(
     job: dict, *, adapters=None, loop=None, verbose: bool = False,
     extra_prompt: Optional[str] = None,
+    on_execution_started: Optional[Callable[[], None]] = None,
 ) -> bool:
     """Run ONE due job end-to-end: execute → save output → deliver → mark.
 
@@ -5211,6 +5212,8 @@ def run_one_job(
         # The attempt is claimed durably before executor/provider dispatch and
         # becomes running only immediately before the actual run.
         mark_execution_running(execution_id)
+        if on_execution_started is not None:
+            on_execution_started()
 
         job_id = str(job.get("id", "?"))
         job_name = _cron_ag_job_name(job)

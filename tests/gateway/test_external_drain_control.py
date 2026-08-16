@@ -163,6 +163,33 @@ class TestOwnedDrainControl:
         finally:
             owner.release()
 
+    def test_concurrent_activation_probes_do_not_report_an_owner(self, home):
+        probe = dc._acquire_activation_lock(home, shared=True)
+        try:
+            assert dc.activation_lock_held(home=home) is False
+        finally:
+            dc._release_activation_lock(probe)
+
+    def test_windows_activation_probes_use_serializing_guard(self, home, monkeypatch):
+        modes = []
+
+        class FakeMsvcrt:
+            LK_NBLCK = 1
+            LK_LOCK = 2
+            LK_UNLCK = 3
+
+            @staticmethod
+            def locking(fd, mode, size):
+                modes.append(mode)
+
+        monkeypatch.setattr(dc, "fcntl", None)
+        monkeypatch.setattr(dc, "msvcrt", FakeMsvcrt)
+
+        assert dc.activation_lock_held(home=home) is False
+        assert modes[0] == FakeMsvcrt.LK_LOCK
+        assert FakeMsvcrt.LK_NBLCK in modes[1:]
+        assert modes[-1] == FakeMsvcrt.LK_UNLCK
+
     def test_equivalent_home_paths_share_one_lock(
         self, tmp_path, real_activation_lock_path
     ):
@@ -359,6 +386,27 @@ class TestOwnedDrainControl:
             owner.release()
 
         assert dc.read_drain_request(home=home) is None
+
+    def test_owner_replaces_definitely_stale_foreign_marker(self, home):
+        stale = dc._drain_payload(
+            principal="orphan",
+            suppress_notification=False,
+            owner_token="dead-owner",
+        )
+        stale["epoch"] = "definitely-not-this-instantiation"
+        dc.drain_request_path(home).write_text(json.dumps(stale), encoding="utf-8")
+
+        owner = dc.acquire_drain_ownership(
+            principal="activation",
+            home=home,
+            owner_token="transaction-a",
+        )
+        try:
+            payload = owner.write_request()
+            assert payload["owner_token"] == "transaction-a"
+            owner.clear_request()
+        finally:
+            owner.release()
 
     def test_cron_admission_excludes_activation_until_registration_finishes(self, home):
         with dc.cron_admission(home=home) as admitted:

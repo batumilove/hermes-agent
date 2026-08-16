@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import threading
 from abc import ABC, abstractmethod
+from contextlib import ExitStack
 from typing import Any
 
 
@@ -115,21 +116,30 @@ class CronScheduler(ABC):
         from cron.scheduler import run_one_job
         from gateway.drain_control import cron_admission
 
-        with cron_admission() as admitted:
+        admission_stack = ExitStack()
+        try:
+            admitted = admission_stack.enter_context(cron_admission())
             if not admitted:
                 return False
             if not claim_job_for_fire(job_id):
                 return False  # another machine already claimed this fire
-        job = get_job(job_id)
-        if job is None:
-            return False  # job removed (e.g. repeat-N exhausted) between arm and fire
-        job["execution_id"] = create_execution(
-            job_id,
-            source=self.name,
-            trigger_origin="external",
-            scheduled_for=(job.get("fire_claim") or {}).get("scheduled_for"),
-        )["id"]
-        return run_one_job(job, adapters=adapters, loop=loop)
+            job = get_job(job_id)
+            if job is None:
+                return False  # job removed between arm and fire
+            job["execution_id"] = create_execution(
+                job_id,
+                source=self.name,
+                trigger_origin="external",
+                scheduled_for=(job.get("fire_claim") or {}).get("scheduled_for"),
+            )["id"]
+            return run_one_job(
+                job,
+                adapters=adapters,
+                loop=loop,
+                on_execution_started=admission_stack.close,
+            )
+        finally:
+            admission_stack.close()
 
     def reconcile(self) -> None:
         """Converge the external registry toward jobs.json (the desired state):
