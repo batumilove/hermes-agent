@@ -14559,17 +14559,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _cleanup_budget_exhausted = True
                 await _record_shutdown_phase("interrupt_start")
                 _now = asyncio.get_running_loop().time()
-                # Attribution and resume-marker writes share the cleanup budget
-                # and may consume its final milliseconds. Never pass a deadline
-                # already behind the interrupt helper's own start time: that
-                # grants no extra wait, but preserves the non-negative deadline
-                # contract and makes immediate forward progress explicit.
-                interrupt_deadline = max(
-                    _now,
-                    min(
-                        _now + self._shutdown_interrupt_timeout_secs(),
-                        _cleanup_deadline,
-                    ),
+                interrupt_deadline = min(
+                    _now + self._shutdown_interrupt_timeout_secs(),
+                    _cleanup_deadline,
                 )
                 await self._interrupt_running_agents(
                     _INTERRUPT_REASON_GATEWAY_RESTART
