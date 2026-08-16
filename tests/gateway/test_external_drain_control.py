@@ -108,6 +108,12 @@ class TestOwnedDrainControl:
         monkeypatch.delattr(os, "getuid", raising=False)
         assert _ORIGINAL_USER_RUNTIME_DIR() == home
 
+    def test_user_runtime_dir_falls_back_when_getuid_is_not_callable(
+        self, home, monkeypatch, real_activation_lock_path
+    ):
+        monkeypatch.setattr(os, "getuid", None)
+        assert _ORIGINAL_USER_RUNTIME_DIR() == home
+
     def test_windows_lock_contention_becomes_busy(self, home, monkeypatch):
         class FakeMsvcrt:
             LK_NBLCK = 1
