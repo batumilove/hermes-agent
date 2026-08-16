@@ -73,11 +73,14 @@ deliberately long drain has a sanctioned keep-alive: re-calling
 from __future__ import annotations
 
 import functools
+import errno
 import hashlib
 import json
 import logging
 import os
+import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from io import TextIOWrapper
@@ -199,8 +202,9 @@ class DrainOwnershipLostError(RuntimeError):
 
 def _user_runtime_dir() -> Path:
     """Return the conventional per-user runtime directory."""
-    if hasattr(os, "getuid"):
-        return Path(f"/run/user/{os.getuid()}")
+    getuid = getattr(os, "getuid", None)
+    if getuid is not None:
+        return Path(f"/run/user/{getuid()}")
     return get_hermes_home()  # pragma: no cover - Windows compatibility
 
 
@@ -249,7 +253,14 @@ def _lock_handle(handle: TextIOWrapper) -> None:
             handle.write("\0")
             handle.flush()
         handle.seek(0)
-        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError as exc:
+            if exc.errno in {errno.EACCES, errno.EAGAIN} or getattr(
+                exc, "winerror", None
+            ) in {32, 33, 36}:
+                raise BlockingIOError(exc.errno, str(exc)) from exc
+            raise
         return
     raise OSError("no supported file-lock implementation")
 
@@ -260,6 +271,18 @@ def _unlock_handle(handle: TextIOWrapper) -> None:
     elif msvcrt is not None:  # pragma: no cover - Windows only
         handle.seek(0)
         msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+def _lock_handle_with_retry(handle: TextIOWrapper) -> None:
+    """Acquire a lock despite a bounded transient inspection collision."""
+    for attempt in range(3):
+        try:
+            _lock_handle(handle)
+            return
+        except BlockingIOError:
+            if attempt == 2:
+                raise
+            time.sleep(0.01)
 
 
 @dataclass
@@ -305,7 +328,7 @@ def _acquire_activation_lock(home: Optional[Path] = None) -> _ActivationLock:
             last_error = exc
             continue
         try:
-            _lock_handle(handle)
+            _lock_handle_with_retry(handle)
         except BlockingIOError as exc:
             handle.close()
             _release_activation_lock(_ActivationLock(handles))
@@ -391,7 +414,8 @@ class DrainOwnership:
     def write_request(self) -> dict[str, Any]:
         self._require_lock()
         existing = read_drain_request(home=self.home)
-        if existing is not None and existing.get("owner_token") != self.owner_token:
+        existing_owner = existing.get("owner_token") if existing is not None else None
+        if existing_owner is not None and existing_owner != self.owner_token:
             raise DrainOwnershipLostError("refusing to replace a drain marker owned elsewhere")
         payload = _drain_payload(
             principal=self.principal,
@@ -498,6 +522,10 @@ def clear_drain_request(*, home: Optional[Path] = None) -> bool:
     cannot be cancelled by a competing dashboard/legacy controller. Once an
     owner exits and the OS releases its lock, an operator can clear an orphaned
     marker. Best-effort: a missing file is not an error (cancel is idempotent).
+
+    Raises :class:`DrainControlBusyError` when an activation owner has the lock,
+    or :class:`DrainControlUnavailableError` when no canonical lock location can
+    be used.
     """
     handle = _acquire_activation_lock(home)
     path = drain_request_path(home)
@@ -610,7 +638,11 @@ def drain_requested(*, home: Optional[Path] = None) -> bool:
     :func:`_marker_is_expired`): a legacy/corrupt marker with no epoch and no
     timestamp, or an environment without ``/proc``, still reads as
     drain-active. The exclusive activation lock is itself a drain signal so an
-    owner remains fail-closed if its marker is removed or replaced.
+    owner remains fail-closed if its marker is removed or replaced. Transient
+    writers, cancellers, and cron admission sections also hold that lock, so a
+    watcher/tick can conservatively observe a drain and defer work until its
+    next poll. Lock inspection performs filesystem lock operations on each
+    call.
     """
     if activation_lock_held(home=home):
         return True
@@ -620,6 +652,32 @@ def drain_requested(*, home: Optional[Path] = None) -> bool:
     if _marker_is_stale(body):
         return False
     return True
+
+
+@contextmanager
+def cron_admission(*, home: Optional[Path] = None):
+    """Atomically decide and reserve one cron admission boundary.
+
+    The activation lock is held from the drain-state decision until the caller
+    has advanced/claimed the schedule and registered executor work. An
+    activation transaction therefore starts either before admission (and this
+    yields ``False``) or after registration, never in between.
+    """
+    try:
+        lock = _acquire_activation_lock(home)
+    except DrainControlBusyError:
+        yield False
+        return
+    except (DrainControlUnavailableError, OSError) as exc:
+        _log.error("drain-control: cannot reserve cron admission: %s", exc)
+        yield False
+        return
+
+    try:
+        body = read_drain_request(home=home)
+        yield body is None or _marker_is_stale(body)
+    finally:
+        _release_activation_lock(lock)
 
 
 def drain_notification_suppressed(*, home: Optional[Path] = None) -> bool:

@@ -113,12 +113,13 @@ class CronScheduler(ABC):
         from cron.jobs import claim_job_for_fire, get_job
         from cron.executions import create_execution
         from cron.scheduler import run_one_job
-        from gateway.drain_control import drain_requested
+        from gateway.drain_control import cron_admission
 
-        if drain_requested():
-            return False
-        if not claim_job_for_fire(job_id):
-            return False  # another machine already claimed this fire
+        with cron_admission() as admitted:
+            if not admitted:
+                return False
+            if not claim_job_for_fire(job_id):
+                return False  # another machine already claimed this fire
         job = get_job(job_id)
         if job is None:
             return False  # job removed (e.g. repeat-N exhausted) between arm and fire

@@ -28,6 +28,8 @@ from gateway.config import Platform
 from gateway.platforms.base import MessageEvent, MessageType
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
+_ORIGINAL_USER_RUNTIME_DIR = dc._user_runtime_dir
+
 
 # ---------------------------------------------------------------------------
 # Marker contract (drain_control.py)
@@ -57,8 +59,17 @@ class TestMarkerContract:
 class TestOwnedDrainControl:
     """Regression coverage for the competing-controller marker race."""
 
+    @pytest.fixture
+    def real_activation_lock_path(self):
+        """Opt into exercising activation_lock_path without replacing it."""
+
     @pytest.fixture(autouse=True)
-    def _isolated_activation_lock(self, tmp_path, monkeypatch):
+    def _isolated_activation_lock(self, request, tmp_path, monkeypatch):
+        if "real_activation_lock_path" in request.fixturenames:
+            runtime = tmp_path / "runtime"
+            runtime.mkdir(exist_ok=True)
+            monkeypatch.setattr(dc, "_user_runtime_dir", lambda: runtime)
+            return
         lock_path = tmp_path / "run-user" / "hermes-gateway-activation.lock"
         monkeypatch.setattr(dc, "activation_lock_path", lambda home=None: lock_path)
 
@@ -71,9 +82,9 @@ class TestOwnedDrainControl:
         ):
             assert "runtime_dir" not in inspect.signature(func).parameters
 
-    def test_default_lock_path_is_profile_scoped_in_user_runtime(self, home, monkeypatch):
-        monkeypatch.undo()
-        monkeypatch.setenv("HERMES_HOME", str(home))
+    def test_default_lock_path_is_profile_scoped_in_user_runtime(
+        self, home, monkeypatch, real_activation_lock_path
+    ):
         runtime = home.parent / "runtime"
         runtime.mkdir(exist_ok=True)
         monkeypatch.setattr(dc, "_user_runtime_dir", lambda: runtime)
@@ -85,12 +96,70 @@ class TestOwnedDrainControl:
             runtime / f"hermes-gateway-activation-{profile_id}.lock"
         )
 
-    def test_user_runtime_dir_is_exact_per_user_path(self, monkeypatch):
-        monkeypatch.undo()
-        assert dc._user_runtime_dir() == Path(f"/run/user/{os.getuid()}")
+    def test_user_runtime_dir_is_exact_per_user_path(
+        self, monkeypatch, real_activation_lock_path
+    ):
+        monkeypatch.setattr(os, "getuid", lambda: 1234)
+        assert _ORIGINAL_USER_RUNTIME_DIR() == Path("/run/user/1234")
 
-    def test_equivalent_home_paths_share_one_lock(self, tmp_path, monkeypatch):
-        monkeypatch.undo()
+    def test_user_runtime_dir_falls_back_when_getuid_is_absent(
+        self, home, monkeypatch, real_activation_lock_path
+    ):
+        monkeypatch.delattr(os, "getuid", raising=False)
+        assert _ORIGINAL_USER_RUNTIME_DIR() == home
+
+    def test_windows_lock_contention_becomes_busy(self, home, monkeypatch):
+        class FakeMsvcrt:
+            LK_NBLCK = 1
+            LK_UNLCK = 2
+
+            @staticmethod
+            def locking(fd, mode, size):
+                raise OSError(13, "permission denied")
+
+        monkeypatch.setattr(dc, "fcntl", None)
+        monkeypatch.setattr(dc, "msvcrt", FakeMsvcrt)
+
+        with pytest.raises(dc.DrainControlBusyError):
+            dc.acquire_drain_ownership(principal="windows", home=home)
+
+    def test_windows_unrelated_lock_error_remains_unavailable(self, home, monkeypatch):
+        class FakeMsvcrt:
+            LK_NBLCK = 1
+            LK_UNLCK = 2
+
+            @staticmethod
+            def locking(fd, mode, size):
+                raise OSError(5, "I/O error")
+
+        monkeypatch.setattr(dc, "fcntl", None)
+        monkeypatch.setattr(dc, "msvcrt", FakeMsvcrt)
+
+        with pytest.raises(dc.DrainControlUnavailableError):
+            dc.acquire_drain_ownership(principal="windows", home=home)
+
+    def test_activation_owner_retries_transient_probe_contention(self, home, monkeypatch):
+        real_lock = dc._lock_handle
+        attempts = 0
+
+        def transient_contention(handle):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise BlockingIOError("transient probe")
+            real_lock(handle)
+
+        monkeypatch.setattr(dc, "_lock_handle", transient_contention)
+
+        owner = dc.acquire_drain_ownership(principal="activation", home=home)
+        try:
+            assert attempts >= 2
+        finally:
+            owner.release()
+
+    def test_equivalent_home_paths_share_one_lock(
+        self, tmp_path, real_activation_lock_path
+    ):
         real_home = tmp_path / "real-home"
         real_home.mkdir()
         alias_home = tmp_path / "home-alias"
@@ -98,8 +167,9 @@ class TestOwnedDrainControl:
 
         assert dc.activation_lock_path(real_home) == dc.activation_lock_path(alias_home)
 
-    def test_distinct_profiles_under_same_uid_use_distinct_locks(self, tmp_path, monkeypatch):
-        monkeypatch.undo()
+    def test_distinct_profiles_under_same_uid_use_distinct_locks(
+        self, tmp_path, real_activation_lock_path
+    ):
         home_a = tmp_path / "profile-a"
         home_b = tmp_path / "profile-b"
         home_a.mkdir()
@@ -116,8 +186,9 @@ class TestOwnedDrainControl:
             owner.clear_request()
             owner.release()
 
-    def test_missing_user_runtime_falls_back_to_canonical_home(self, home, monkeypatch):
-        monkeypatch.undo()
+    def test_missing_user_runtime_falls_back_to_canonical_home(
+        self, home, monkeypatch, real_activation_lock_path
+    ):
         missing_runtime = home.parent / "missing-runtime"
         monkeypatch.setattr(dc, "_user_runtime_dir", lambda: missing_runtime)
 
@@ -133,8 +204,9 @@ class TestOwnedDrainControl:
             owner.clear_request()
             owner.release()
 
-    def test_runtime_open_failure_falls_back_to_canonical_home(self, home, monkeypatch):
-        monkeypatch.undo()
+    def test_runtime_open_failure_falls_back_to_canonical_home(
+        self, home, monkeypatch, real_activation_lock_path
+    ):
         runtime = home.parent / "runtime"
         runtime.mkdir(exist_ok=True)
         monkeypatch.setattr(dc, "_user_runtime_dir", lambda: runtime)
@@ -156,8 +228,9 @@ class TestOwnedDrainControl:
             owner.clear_request()
             owner.release()
 
-    def test_runtime_recovery_cannot_split_fallback_owner(self, home, monkeypatch):
-        monkeypatch.undo()
+    def test_runtime_recovery_cannot_split_fallback_owner(
+        self, home, monkeypatch, real_activation_lock_path
+    ):
         runtime = home.parent / "runtime"
         runtime.mkdir(exist_ok=True)
         monkeypatch.setattr(dc, "_user_runtime_dir", lambda: runtime)
@@ -179,9 +252,8 @@ class TestOwnedDrainControl:
             owner.release()
 
     def test_fallback_anchor_unavailable_does_not_use_runtime_only(
-        self, home, monkeypatch
+        self, home, monkeypatch, real_activation_lock_path
     ):
-        monkeypatch.undo()
         runtime = home.parent / "runtime"
         runtime.mkdir(exist_ok=True)
         monkeypatch.setattr(dc, "_user_runtime_dir", lambda: runtime)
@@ -200,9 +272,8 @@ class TestOwnedDrainControl:
             dc.acquire_drain_ownership(principal="runtime-only", home=home)
 
     def test_all_lock_locations_unavailable_does_not_invent_an_owner(
-        self, home, monkeypatch
+        self, home, monkeypatch, real_activation_lock_path
     ):
-        monkeypatch.undo()
         runtime = home.parent / "runtime"
         runtime.mkdir(exist_ok=True)
         monkeypatch.setattr(dc, "_user_runtime_dir", lambda: runtime)
@@ -261,6 +332,44 @@ class TestOwnedDrainControl:
 
         assert dc.clear_drain_request(home=home) is True
         assert dc.read_drain_request(home=home) is None
+
+    def test_owner_adopts_preexisting_unowned_marker(self, home):
+        dc.write_drain_request(principal="dashboard", home=home)
+        existing = dc.read_drain_request(home=home)
+        assert existing is not None
+        assert existing.get("owner_token") is None
+
+        owner = dc.acquire_drain_ownership(
+            principal="activation-a",
+            home=home,
+            owner_token="transaction-a",
+        )
+        try:
+            payload = owner.write_request()
+            assert payload["owner_token"] == "transaction-a"
+            assert owner.assert_request_owned()["owner_token"] == "transaction-a"
+            owner.clear_request()
+        finally:
+            owner.release()
+
+        assert dc.read_drain_request(home=home) is None
+
+    def test_cron_admission_excludes_activation_until_registration_finishes(self, home):
+        with dc.cron_admission(home=home) as admitted:
+            assert admitted is True
+            with pytest.raises(dc.DrainControlBusyError):
+                dc.acquire_drain_ownership(principal="activation", home=home)
+
+        owner = dc.acquire_drain_ownership(principal="activation", home=home)
+        owner.release()
+
+    def test_cron_admission_rejects_existing_marker_without_mutating_it(self, home):
+        marker = dc.write_drain_request(principal="dashboard", home=home)
+
+        with dc.cron_admission(home=home) as admitted:
+            assert admitted is False
+
+        assert dc.read_drain_request(home=home) == marker
 
     def test_refresh_fails_closed_when_marker_is_replaced(self, home):
         owner = dc.acquire_drain_ownership(
