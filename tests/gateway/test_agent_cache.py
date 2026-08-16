@@ -844,6 +844,516 @@ class TestAgentCacheIdleResume:
         assert "soft-session" not in vm_calls
 
 
+class TestCacheEvictionMemoryProviderRelease:
+    """Retire per-agent memory workers without destroying resumable tools."""
+
+    def test_provider_only_release_is_idempotent_and_detaches_manager(self, monkeypatch):
+        from run_agent import AIAgent
+        import run_agent as _ra
+
+        events = []
+        manager = MagicMock()
+        manager.shutdown_all.side_effect = lambda: events.append("shutdown_all")
+        agent = AIAgent.__new__(AIAgent)
+        agent._memory_manager = manager
+
+        vm_calls = []
+        browser_calls = []
+        monkeypatch.setattr(_ra, "cleanup_vm", lambda task_id: vm_calls.append(task_id))
+        monkeypatch.setattr(
+            "tools.browser_tool.cleanup_browser",
+            lambda task_id: browser_calls.append(task_id),
+        )
+
+        agent.release_memory_provider_for_cache_evict()
+        agent.release_memory_provider_for_cache_evict()
+
+        assert events == ["shutdown_all"]
+        assert agent._memory_manager is None
+        assert vm_calls == []
+        assert browser_calls == []
+
+    def test_soft_evict_commits_then_stops_memory_then_releases_clients(self):
+        from gateway.run import GatewayRunner
+
+        events = []
+
+        class _Agent:
+            _session_messages = [{"role": "user", "content": "hello"}]
+            _db_flush_scan_prefix = _session_messages[:]
+
+            def release_memory_provider_for_cache_evict(self):
+                events.append("memory_shutdown")
+
+            def release_clients(self):
+                events.append("client_release")
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._commit_memory_before_soft_evict = (
+            lambda agent, key: events.append("memory_commit")
+        )
+        runner._commit_then_release_soft(_Agent(), "session-1")
+
+        assert events == ["memory_commit", "memory_shutdown", "client_release"]
+
+
+class TestCacheEvictionMemoryProviderClaims:
+    def test_concurrent_provider_release_claims_manager_once(self):
+        import threading
+        from run_agent import AIAgent
+
+        barrier = threading.Barrier(2)
+        shutdown_calls = []
+        manager = MagicMock()
+        manager.shutdown_all.side_effect = lambda: shutdown_calls.append("shutdown")
+
+        class _RacingAgent(AIAgent):
+            @property
+            def _memory_manager(self):
+                value = self._memory_manager_value
+                if value is not None:
+                    try:
+                        barrier.wait(timeout=0.2)
+                    except threading.BrokenBarrierError:
+                        pass
+                return value
+
+            @_memory_manager.setter
+            def _memory_manager(self, value):
+                self._memory_manager_value = value
+
+        agent = _RacingAgent.__new__(_RacingAgent)
+        agent._memory_manager_value = manager
+        agent._memory_manager_release_lock = threading.Lock()
+        threads = [
+            threading.Thread(target=agent.release_memory_provider_for_cache_evict)
+            for _ in range(2)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=2)
+
+        assert all(not thread.is_alive() for thread in threads)
+        assert shutdown_calls == ["shutdown"]
+        assert agent._memory_manager is None
+
+    def test_hard_cleanup_then_soft_evict_shuts_manager_down_once(self):
+        import threading
+        from run_agent import AIAgent
+
+        manager = MagicMock()
+        agent = AIAgent.__new__(AIAgent)
+        agent._memory_manager = manager
+        agent._memory_manager_release_lock = threading.Lock()
+
+        agent.shutdown_memory_provider([{"role": "user", "content": "hello"}])
+        agent.release_memory_provider_for_cache_evict()
+
+        manager.on_session_end.assert_called_once()
+        manager.shutdown_all.assert_called_once()
+        assert agent._memory_manager is None
+
+    def test_failed_provider_shutdown_can_be_retried(self):
+        import threading
+        from run_agent import AIAgent
+
+        manager = MagicMock()
+        manager.shutdown_all.side_effect = [RuntimeError("boom"), None]
+        agent = AIAgent.__new__(AIAgent)
+        agent._memory_manager = manager
+        agent._memory_manager_release_lock = threading.Lock()
+
+        with pytest.raises(RuntimeError, match="shutdown incomplete"):
+            agent.release_memory_provider_for_cache_evict()
+        assert agent._memory_manager is manager
+
+        agent.release_memory_provider_for_cache_evict()
+        assert manager.shutdown_all.call_count == 2
+        assert agent._memory_manager is None
+
+
+class TestCacheEvictionMemoryProviderFailureOverlap:
+    def test_failed_soft_shutdown_is_retried_by_overlapping_hard_cleanup(self):
+        import threading
+        from run_agent import AIAgent
+
+        first_started = threading.Event()
+        allow_first_failure = threading.Event()
+        shutdown_calls = []
+
+        manager = MagicMock()
+
+        def shutdown_all():
+            shutdown_calls.append("shutdown")
+            if len(shutdown_calls) == 1:
+                first_started.set()
+                assert allow_first_failure.wait(timeout=2)
+                raise RuntimeError("first shutdown failed")
+
+        manager.shutdown_all.side_effect = shutdown_all
+        agent = AIAgent.__new__(AIAgent)
+        agent._memory_manager = manager
+        agent._memory_manager_release_lock = threading.Lock()
+
+        soft_errors = []
+
+        def soft_release():
+            try:
+                agent.release_memory_provider_for_cache_evict()
+            except Exception as exc:
+                soft_errors.append(exc)
+
+        soft_thread = threading.Thread(target=soft_release)
+        soft_thread.start()
+        assert first_started.wait(timeout=1)
+
+        hard_thread = threading.Thread(
+            target=lambda: agent.shutdown_memory_provider(
+                [{"role": "user", "content": "hello"}]
+            )
+        )
+        hard_thread.start()
+        allow_first_failure.set()
+
+        soft_thread.join(timeout=2)
+        hard_thread.join(timeout=2)
+
+        assert not soft_thread.is_alive()
+        assert not hard_thread.is_alive()
+        assert [type(exc) for exc in soft_errors] == [RuntimeError]
+        assert shutdown_calls == ["shutdown", "shutdown"]
+        manager.on_session_end.assert_called_once()
+        assert agent._memory_manager is None
+
+
+class TestAllSoftEvictionPathsCommitBeforeProviderShutdown:
+    def test_explicit_soft_release_scheduler_preserves_session_key_for_commit(self, monkeypatch):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        events = []
+        runner._commit_then_release_soft = (
+            lambda agent, key: events.append((agent, key))
+        )
+
+        class _InlineThread:
+            def __init__(self, *, target, args, **kwargs):
+                self.target = target
+                self.args = args
+
+            def start(self):
+                self.target(*self.args)
+
+        monkeypatch.setattr("gateway.run.threading.Thread", _InlineThread)
+        agent = object()
+
+        runner._schedule_evicted_agent_soft_release(agent, "session-explicit")
+
+        assert events == [(agent, "session-explicit")]
+
+    def test_deferred_active_eviction_preserves_session_key_until_release(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._running_agents = {}
+        runner._running_agents_lock = None
+        scheduled = []
+        runner._schedule_evicted_agent_soft_release = (
+            lambda agent, key="": scheduled.append((agent, key))
+        )
+        agent = object()
+
+        runner._defer_evicted_agent_release(agent, "session-deferred")
+        runner._drain_pending_evicted_agent_releases()
+
+        assert scheduled == [(agent, "session-deferred")]
+
+
+class TestFailedEvictedAgentCleanupRetention:
+    def test_failed_soft_release_is_retained_and_periodic_retry_removes_it(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._lifecycle_counters = None
+        attempts = []
+
+        class _Agent:
+            _session_messages = []
+            _db_flush_scan_prefix = None
+
+            def release_memory_provider_for_cache_evict(self):
+                attempts.append("shutdown")
+                if len(attempts) == 1:
+                    raise RuntimeError("temporary shutdown failure")
+
+            def release_clients(self):
+                pass
+
+        agent = _Agent()
+        runner._retain_failed_evicted_agent_cleanup(agent, "session-retry")
+        runner._release_evicted_agent_soft(agent)
+        registry, _ = runner._failed_evicted_agent_cleanup_state()
+        assert registry == {id(agent): (agent, "session-retry")}
+
+        assert runner._retry_failed_evicted_agent_cleanups() == 1
+        registry, _ = runner._failed_evicted_agent_cleanup_state()
+        assert registry == {}
+        assert attempts == ["shutdown", "shutdown"]
+
+    def test_full_soft_then_overlapping_hard_does_not_duplicate_session_end(self):
+        import threading
+        from gateway.run import GatewayRunner
+        from run_agent import AIAgent
+
+        first_started = threading.Event()
+        allow_first_failure = threading.Event()
+        shutdown_calls = []
+        manager = MagicMock()
+
+        def shutdown_all():
+            shutdown_calls.append("shutdown")
+            if len(shutdown_calls) == 1:
+                first_started.set()
+                assert allow_first_failure.wait(timeout=2)
+                raise RuntimeError("first shutdown failed")
+            return True
+
+        manager.shutdown_all.side_effect = shutdown_all
+        agent = AIAgent.__new__(AIAgent)
+        agent._memory_manager = manager
+        agent._memory_manager_release_lock = threading.Lock()
+        agent._session_messages = [{"role": "user", "content": "hello"}]
+        agent._db_flush_scan_prefix = agent._session_messages[:]
+        agent.commit_memory_session = lambda messages=None: manager.on_session_end(
+            messages or []
+        )
+        agent.release_clients = lambda: None
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._lifecycle_counters = None
+        runner._commit_memory_before_soft_evict = lambda a, key: (
+            a.commit_memory_session(a._session_messages) or True
+        )
+
+        soft_thread = threading.Thread(
+            target=lambda: runner._commit_then_release_soft(agent, "session-1")
+        )
+        soft_thread.start()
+        assert first_started.wait(timeout=1)
+        hard_thread = threading.Thread(
+            target=lambda: agent.shutdown_memory_provider(agent._session_messages)
+        )
+        hard_thread.start()
+        allow_first_failure.set()
+        soft_thread.join(timeout=2)
+        hard_thread.join(timeout=2)
+
+        assert manager.on_session_end.call_count == 1
+        assert shutdown_calls == ["shutdown", "shutdown"]
+        assert agent._memory_manager is None
+
+
+class TestBoundedMemoryProviderShutdownOwnership:
+    def test_blocking_provider_shutdown_returns_incomplete_without_duplicate_worker(self, monkeypatch):
+        import threading
+        import time
+        import run_agent as run_agent_module
+        from run_agent import AIAgent
+
+        monkeypatch.setattr(run_agent_module, "_MEMORY_PROVIDER_SHUTDOWN_TIMEOUT_S", 0.05)
+        started = threading.Event()
+        release = threading.Event()
+        calls = []
+        manager = MagicMock()
+
+        def shutdown_all():
+            calls.append("shutdown")
+            started.set()
+            release.wait(timeout=2)
+            return True
+
+        manager.shutdown_all.side_effect = shutdown_all
+        agent = AIAgent.__new__(AIAgent)
+        agent._memory_manager = manager
+        agent._memory_manager_release_lock = threading.Lock()
+
+        t0 = time.monotonic()
+        with pytest.raises(RuntimeError, match="shutdown incomplete"):
+            agent.release_memory_provider_for_cache_evict()
+        assert time.monotonic() - t0 < 0.3
+        assert started.is_set()
+        with pytest.raises(RuntimeError, match="shutdown incomplete"):
+            agent.release_memory_provider_for_cache_evict()
+        assert calls == ["shutdown"]
+
+        release.set()
+        for _ in range(50):
+            if getattr(agent, "_memory_manager_shutdown_state", None) is None:
+                break
+            time.sleep(0.01)
+        assert agent.release_memory_provider_for_cache_evict() is True
+        assert agent._memory_manager is None
+
+    def test_hard_cleanup_propagates_incomplete_memory_shutdown(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._lifecycle_counters = None
+        agent = MagicMock()
+        agent.shutdown_memory_provider.return_value = False
+        agent._memory_manager = None
+        agent._session_messages = []
+
+        assert runner._cleanup_agent_resources(agent) is False
+
+    def test_shutdown_daemon_returns_false_for_false_worker_result(self):
+        import asyncio
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+
+        async def exercise():
+            return await runner._run_shutdown_sync_daemon(
+                lambda: False,
+                timeout=1,
+                context="false-result",
+            )
+
+        assert asyncio.run(exercise()) is False
+
+
+class TestDurableEvictionOperationOwnership:
+    def test_cap_eviction_registers_full_owner_before_cleanup_thread_start(self, monkeypatch):
+        import threading
+        from collections import OrderedDict
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._agent_cache = OrderedDict()
+        runner._agent_cache_lock = threading.RLock()
+        runner._agent_cache_cap = lambda: 0
+        runner._running_agent_items = lambda: []
+        runner._lifecycle_counters = None
+        agent = MagicMock()
+        runner._agent_cache["session-1"] = (agent, "sig")
+
+        class _NeverStartedThread:
+            def __init__(self, *, target, args, **kwargs):
+                self.target = target
+                self.args = args
+
+            def start(self):
+                registry, _ = runner._failed_evicted_agent_cleanup_state()
+                assert registry[id(agent)] == (agent, "session-1")
+                raise RuntimeError("thread start failed")
+
+        monkeypatch.setattr("gateway.run.threading.Thread", _NeverStartedThread)
+        runner._commit_then_release_soft = lambda a, key: False
+
+        with runner._agent_cache_lock:
+            assert runner._enforce_agent_cache_cap() == 1
+
+        registry, _ = runner._failed_evicted_agent_cleanup_state()
+        assert runner._agent_cache == {}
+        assert registry[id(agent)] == (agent, "session-1")
+
+    def test_commit_and_shutdown_share_one_owner_against_hard_cleanup(self):
+        import threading
+        from gateway.run import GatewayRunner
+        from run_agent import AIAgent
+
+        commit_started = threading.Event()
+        allow_commit = threading.Event()
+        manager = MagicMock()
+
+        def on_session_end(messages):
+            commit_started.set()
+            assert allow_commit.wait(timeout=2)
+
+        manager.on_session_end.side_effect = on_session_end
+        manager.shutdown_all.return_value = True
+        agent = AIAgent.__new__(AIAgent)
+        agent._memory_manager = manager
+        agent._memory_manager_release_lock = threading.Lock()
+        agent._session_messages = [{"role": "user", "content": "hello"}]
+        agent.release_clients = lambda: None
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._lifecycle_counters = None
+        runner._soft_evict_memory_commit_plan = lambda a, key: (
+            True,
+            a._session_messages,
+        )
+        runner._retain_failed_evicted_agent_cleanup(agent, "session-1")
+
+        soft_thread = threading.Thread(
+            target=lambda: runner._commit_then_release_soft(agent, "session-1")
+        )
+        soft_thread.start()
+        assert commit_started.wait(timeout=1)
+        hard_results = []
+        hard_thread = threading.Thread(
+            target=lambda: hard_results.append(
+                agent.shutdown_memory_provider(agent._session_messages)
+            )
+        )
+        hard_thread.start()
+        allow_commit.set()
+        soft_thread.join(timeout=2)
+        hard_thread.join(timeout=2)
+
+        assert not soft_thread.is_alive()
+        assert not hard_thread.is_alive()
+        assert hard_results == [True]
+        assert manager.on_session_end.call_count == 1
+        assert manager.shutdown_all.call_count == 1
+        registry, _ = runner._failed_evicted_agent_cleanup_state()
+        assert registry == {}
+
+    def test_failed_commit_retry_preserves_original_transcript_until_success(self):
+        import threading
+        from gateway.run import GatewayRunner
+        from run_agent import AIAgent
+
+        payloads = []
+        manager = MagicMock()
+
+        def on_session_end(messages):
+            payloads.append(list(messages))
+            if len(payloads) == 1:
+                raise RuntimeError("temporary commit failure")
+
+        manager.on_session_end.side_effect = on_session_end
+        manager.shutdown_all.return_value = True
+        original = [{"role": "user", "content": "must survive"}]
+        agent = AIAgent.__new__(AIAgent)
+        agent._memory_manager = manager
+        agent._memory_manager_release_lock = threading.Lock()
+        agent._session_messages = list(original)
+        agent._db_flush_scan_prefix = list(original)
+        agent.release_clients = lambda: None
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._lifecycle_counters = None
+        runner._soft_evict_memory_commit_plan = lambda a, key: (
+            True,
+            list(a._session_messages),
+        )
+        runner._retain_failed_evicted_agent_cleanup(agent, "session-retry")
+
+        assert runner._commit_then_release_soft(agent, "session-retry") is False
+        assert agent._session_messages == original
+        assert agent._db_flush_scan_prefix == original
+
+        assert runner._retry_failed_evicted_agent_cleanups() == 1
+        assert payloads == [original, original]
+        assert agent._session_messages == []
+        assert agent._db_flush_scan_prefix is None
+        registry, _ = runner._failed_evicted_agent_cleanup_state()
+        assert registry == {}
+
+
 _FAKE_NOW = 10_000.0  # Fixed epoch for deterministic time assertions
 
 

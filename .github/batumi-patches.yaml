@@ -240,19 +240,27 @@ patches:
   - id: gateway-context-engine-cache-lifecycle
     kind: core
     rationale: >-
-      Release per-agent owned context-engine clones when cached agents are
-      explicitly, idle-TTL, or capacity evicted, while deferring active-turn
-      cleanup and preserving SessionDB and unrelated external tool resources.
+      Release per-agent owned context-engine clones and memory providers when
+      cached agents are explicitly, idle-TTL, capacity, or pressure evicted.
+      Keep durable cleanup ownership through commit and bounded worker drain,
+      while deferring active-turn cleanup and preserving SessionDB and
+      unrelated external tool resources.
     paths:
       - agent/agent_init.py
+      - agent/memory_manager.py
       - gateway/run.py
+      - plugins/memory/honcho/__init__.py
+      - plugins/memory/honcho/session.py
       - run_agent.py
       - tests/agent/test_context_engine_lifecycle.py
+      - tests/agent/test_memory_async_sync.py
       - tests/gateway/test_agent_cache.py
+      - tests/honcho_plugin/test_async_memory.py
     tests:
-      - scripts/run_tests.sh tests/agent/test_context_engine_lifecycle.py tests/gateway/test_agent_cache.py
-      - scripts/run_tests.sh tests/gateway/test_gateway_shutdown.py tests/gateway/test_shutdown_aggregate_budget_contract.py tests/run_agent/test_run_agent.py
-    retirement: Remove when upstream releases owned context-engine clones on every cache lifecycle path with equivalent exactly-once, active-turn, commit-ordering, and resource-preservation coverage.
+      - scripts/run_tests.sh tests/agent/test_context_engine_lifecycle.py tests/agent/test_memory_async_sync.py tests/gateway/test_agent_cache.py
+      - scripts/run_tests.sh tests/gateway/test_agent_cache_pressure.py tests/gateway/test_gateway_shutdown.py tests/gateway/test_shutdown_aggregate_budget_contract.py tests/gateway/test_shutdown_cache_cleanup.py
+      - scripts/run_tests.sh tests/honcho_plugin/test_async_memory.py tests/honcho_plugin/test_connection_lifecycle.py tests/honcho_plugin/test_session.py tests/run_agent/test_run_agent.py
+    retirement: Remove when upstream releases owned context-engine clones and memory providers on every cache lifecycle path with equivalent exactly-once commit, bounded worker-drain, retry ownership, active-turn, ordering, and resource-preservation coverage.
 
   - id: gateway-lifecycle-diagnostics
     kind: core
