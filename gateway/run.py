@@ -5200,7 +5200,20 @@ class TurnRunner:
         if _cache_lock and _cache is not None:
             with _cache_lock:
                 cached = _cache.get(ctx.session_key)
-                if cached and cached[1] == _sig:
+                if cached and cached[1] != _sig:
+                    _candidate_agent = cached[0] if cached else None
+                    if _candidate_agent and _candidate_agent is not _AGENT_PENDING_SENTINEL:
+                        self._runner._retain_failed_evicted_agent_cleanup(
+                            _candidate_agent, ctx.session_key
+                        )
+                    evicted = self._runner._agent_cache.pop(ctx.session_key, None)
+                    _cache_eviction_kind = "signature"
+                    _ev_agent = (
+                        evicted[0] if isinstance(evicted, tuple) and evicted else None
+                    )
+                    if _ev_agent and _ev_agent is not _AGENT_PENDING_SENTINEL:
+                        _xproc_evicted_agent = _ev_agent
+                elif cached and cached[1] == _sig:
                     # cached[2] is the message_count at cache time;
                     # stale when a second process appended rows.
                     # cached[3] (when present) is the session_id the
@@ -5254,6 +5267,11 @@ class TurnRunner:
                             "reusing across the routing recovery",
                             ctx.session_key, _cached_sid,
                         )
+                        _candidate_agent = cached[0] if cached else None
+                        if _candidate_agent and _candidate_agent is not _AGENT_PENDING_SENTINEL:
+                            self._runner._retain_failed_evicted_agent_cleanup(
+                                _candidate_agent, ctx.session_key
+                            )
                         evicted = self._runner._agent_cache.pop(ctx.session_key, None)
                         _cache_eviction_kind = "stale_self_heal"
                         _ev_agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
@@ -5277,6 +5295,11 @@ class TurnRunner:
                             "possible cross-process write",
                             ctx.session_key, _cached_mc, _current_msg_count,
                         )
+                        _candidate_agent = cached[0] if cached else None
+                        if _candidate_agent and _candidate_agent is not _AGENT_PENDING_SENTINEL:
+                            self._runner._retain_failed_evicted_agent_cleanup(
+                                _candidate_agent, ctx.session_key
+                            )
                         evicted = self._runner._agent_cache.pop(ctx.session_key, None)
                         _cache_eviction_kind = "cross_process"
                         _ev_agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
@@ -5344,20 +5367,9 @@ class TurnRunner:
         # teardown never blocks the gateway event loop or the cache lock
         # the session-expiry watcher needs (#52197).
         if _xproc_evicted_agent is not None:
-            try:
-                threading.Thread(
-                    target=self._runner._release_evicted_agent_soft,
-                    args=(_xproc_evicted_agent,),
-                    daemon=True,
-                    name=f"agent-xproc-evict-{str(ctx.session_key)[:24]}",
-                ).start()
-            except Exception:
-                # Interpreter shutdown or thread-spawn failure — release
-                # inline as a best-effort fallback.
-                try:
-                    self._runner._release_evicted_agent_soft(_xproc_evicted_agent)
-                except Exception:
-                    pass
+            self._runner._schedule_evicted_agent_soft_release(
+                _xproc_evicted_agent, ctx.session_key
+            )
 
         if agent is None:
             # Config changed or first message — create fresh agent
@@ -10549,11 +10561,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Bound shutdown-only synchronous work on an exit-safe daemon thread."""
         done = threading.Event()
         errors: list[BaseException] = []
+        results: list[Any] = []
         ctx = copy_context()
 
         def _worker() -> None:
             try:
-                ctx.run(func, *args)
+                results.append(ctx.run(func, *args))
             except BaseException as exc:
                 errors.append(exc)
             finally:
@@ -10577,7 +10590,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False
         if errors:
             logger.warning("Shutdown %s failed: %s", context, errors[0])
-        return True
+            return False
+        return not results or results[0] is not False
 
     def _defer_agent_cleanup_until_future_done(
         self,
@@ -10732,9 +10746,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # (``shutdown_memory_provider(messages=None)``).
                 session_messages = getattr(agent, "_session_messages", None)
                 if isinstance(session_messages, list):
-                    agent.shutdown_memory_provider(session_messages)
+                    memory_completed = agent.shutdown_memory_provider(session_messages)
                 else:
-                    agent.shutdown_memory_provider()
+                    memory_completed = agent.shutdown_memory_provider()
+                if memory_completed is False:
+                    cleanup_success = False
         except Exception:
             cleanup_success = False
         # Close tool resources (terminal sandboxes, browser daemons,
@@ -10770,6 +10786,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             attempted=False,
             success=cleanup_success,
         )
+        return cleanup_success
 
     _STUCK_LOOP_THRESHOLD = 3  # restarts while active before auto-suspend
     _STUCK_LOOP_FILE = ".restart_failure_counts"
@@ -13259,6 +13276,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "Session expiry done: %d finalized", _done,
                         )
 
+                try:
+                    _retried = self._retry_failed_evicted_agent_cleanups()
+                    if _retried:
+                        logger.info(
+                            "Agent cache cleanup retry: released %d agent(s)",
+                            _retried,
+                        )
+                except Exception as _e:
+                    logger.debug("Agent cache cleanup retry failed: %s", _e)
+
                 # Sweep agents that have been idle beyond the TTL regardless
                 # of session reset policy.  This catches sessions with very
                 # long / "never" reset windows, whose cached AIAgents would
@@ -14421,6 +14448,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 with _cache_lock:
                     _idle_agents = list(_cache.values())
                     _cache.clear()
+                _failed_registry, _failed_lock = (
+                    GatewayRunner._failed_evicted_agent_cleanup_state(self)
+                )
+                with _failed_lock:
+                    _failed_agents = [
+                        entry[0] for entry in _failed_registry.values()
+                    ]
+                _seen_idle = {
+                    id(entry[0] if isinstance(entry, tuple) else entry)
+                    for entry in _idle_agents
+                }
+                _idle_agents.extend(
+                    agent for agent in _failed_agents if id(agent) not in _seen_idle
+                )
                 _lifecycle = getattr(self, "_lifecycle_counters", None)
                 _record_lifecycle(
                     _lifecycle,
@@ -14444,6 +14485,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     ):
                         _cleanup_budget_exhausted = True
                         break
+                    with _failed_lock:
+                        _failed_entry = _failed_registry.get(id(_agent))
+                        if _failed_entry is not None and _failed_entry[0] is _agent:
+                            _failed_registry.pop(id(_agent), None)
 
             # Completion flush tasks can be sleeping in their fan-in window or
             # blocked in adapter delivery.  Cancel and await them while adapters
@@ -26215,10 +26260,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         evicted = None
         if _lock:
             with _lock:
+                candidate = self._agent_cache.get(session_key)
+                candidate_agent = (
+                    candidate[0] if isinstance(candidate, tuple) and candidate else candidate
+                )
+                if candidate_agent and candidate_agent is not _AGENT_PENDING_SENTINEL:
+                    self._retain_failed_evicted_agent_cleanup(
+                        candidate_agent, session_key
+                    )
                 evicted = self._agent_cache.pop(session_key, None)
         else:
             _cache = getattr(self, "_agent_cache", None)
             if _cache is not None:
+                candidate = _cache.get(session_key)
+                candidate_agent = (
+                    candidate[0] if isinstance(candidate, tuple) and candidate else candidate
+                )
+                if candidate_agent and candidate_agent is not _AGENT_PENDING_SENTINEL:
+                    self._retain_failed_evicted_agent_cleanup(
+                        candidate_agent, session_key
+                    )
                 evicted = _cache.pop(session_key, None)
 
         agent = evicted[0] if isinstance(evicted, tuple) and evicted else evicted
@@ -26238,7 +26299,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if a is not None and a is not _AGENT_PENDING_SENTINEL
         }
         if id(agent) in running_ids:
-            self._defer_evicted_agent_release(agent)
+            self._defer_evicted_agent_release(agent, session_key)
             return
 
         self._schedule_evicted_agent_soft_release(agent, session_key)
@@ -26247,10 +26308,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self, agent: Any, session_key: str = ""
     ) -> None:
         """Release one inactive evicted agent without blocking the caller."""
+        self._retain_failed_evicted_agent_cleanup(agent, session_key)
         try:
             threading.Thread(
-                target=self._release_evicted_agent_soft,
-                args=(agent,),
+                target=self._commit_then_release_soft,
+                args=(agent, session_key),
                 daemon=True,
                 name=f"agent-evict-{str(session_key)[:24]}",
             ).start()
@@ -26258,9 +26320,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # If we can't spawn a thread (interpreter shutdown), release
             # inline as a best-effort fallback.
             try:
-                self._release_evicted_agent_soft(agent)
+                self._commit_then_release_soft(agent, session_key)
             except Exception:
                 pass
+
+    def _failed_evicted_agent_cleanup_state(self) -> tuple[dict, Any]:
+        """Return the durable registry for every evicted cleanup owner."""
+        registry = self.__dict__.get("_failed_evicted_agent_cleanups")
+        lock = self.__dict__.get("_failed_evicted_agent_cleanups_lock")
+        if registry is None or lock is None:
+            self.__dict__.setdefault("_failed_evicted_agent_cleanups", {})
+            self.__dict__.setdefault(
+                "_failed_evicted_agent_cleanups_lock", threading.Lock()
+            )
+            registry = self.__dict__["_failed_evicted_agent_cleanups"]
+            lock = self.__dict__["_failed_evicted_agent_cleanups_lock"]
+        return registry, lock
+
+    def _retain_failed_evicted_agent_cleanup(
+        self, agent: Any, session_key: str = ""
+    ) -> None:
+        """Retain complete cleanup ownership before cache removal or launch."""
+        registry, lock = self._failed_evicted_agent_cleanup_state()
+        with lock:
+            registry[id(agent)] = (agent, session_key)
+
+    def _complete_evicted_agent_cleanup(self, agent: Any) -> None:
+        registry, lock = self._failed_evicted_agent_cleanup_state()
+        with lock:
+            entry = registry.get(id(agent))
+            if entry is not None and entry[0] is agent:
+                registry.pop(id(agent), None)
+
+    def _retry_failed_evicted_agent_cleanups(self) -> int:
+        """Retry full commit/provider/client cleanup for retained owners."""
+        registry, lock = self._failed_evicted_agent_cleanup_state()
+        with lock:
+            pending = list(registry.values())
+        completed = 0
+        for agent, session_key in pending:
+            if self._commit_then_release_soft(agent, session_key):
+                completed += 1
+        return completed
 
     def _pending_evicted_release_state(self) -> tuple[dict, Any]:
         """Return the lazy deferred-release registry and its lock."""
@@ -26275,11 +26376,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             lock = self.__dict__["_pending_evicted_agent_releases_lock"]
         return registry, lock
 
-    def _defer_evicted_agent_release(self, agent: Any) -> None:
-        """Remember an active evicted agent for event-driven turn cleanup."""
+    def _defer_evicted_agent_release(
+        self, agent: Any, session_key: str = ""
+    ) -> None:
+        """Remember an active evicted agent and key for post-turn cleanup."""
         registry, lock = self._pending_evicted_release_state()
         with lock:
-            registry[id(agent)] = agent
+            registry[id(agent)] = (agent, session_key)
 
     def _drain_pending_evicted_agent_releases(self) -> None:
         """Schedule deferred agents that no longer own a running turn."""
@@ -26289,13 +26392,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             for _, agent in self._running_agent_items()
             if agent is not None and agent is not _AGENT_PENDING_SENTINEL
         }
-        ready: list[Any] = []
+        ready: list[tuple[Any, str]] = []
         with lock:
-            for agent_id, agent in list(registry.items()):
+            for agent_id, entry in list(registry.items()):
                 if agent_id not in running_ids:
                     ready.append(registry.pop(agent_id))
-        for agent in ready:
-            self._schedule_evicted_agent_soft_release(agent)
+        for agent, session_key in ready:
+            self._schedule_evicted_agent_soft_release(agent, session_key)
 
     @staticmethod
     def _init_cached_agent_for_turn(agent: Any, interrupt_depth: int) -> None:
@@ -26325,7 +26428,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 agent._last_flushed_db_idx = 0
         agent._api_call_count = 0
 
-    def _commit_memory_before_soft_evict(self, agent: Any, key: str) -> None:
+    def _soft_evict_memory_commit_plan(
+        self, agent: Any, key: str
+    ) -> tuple[bool, list | None]:
+        """Return whether provider finalization is required and its transcript."""
+        if agent is None or getattr(agent, "_memory_manager", None) is None:
+            return False, None
+        try:
+            store = getattr(self, "session_store", None)
+            if store is None:
+                return False, None
+            store._ensure_loaded()
+            entry = store._entries.get(key)
+            if (
+                entry is None
+                or not store.is_session_finalizable(entry)
+                or store._is_session_expired(entry)
+            ):
+                return False, None
+            messages = getattr(agent, "_session_messages", None)
+            return True, messages if isinstance(messages, list) else None
+        except Exception as exc:
+            logger.debug("Pre-evict memory commit planning failed for %s: %s", key, exc)
+            return False, None
+
+    def _commit_memory_before_soft_evict(self, agent: Any, key: str) -> bool:
         """Fire on_session_end extraction before soft-evicting a live agent.
 
         Soft eviction (``_release_evicted_agent_soft``) deliberately keeps the
@@ -26377,21 +26504,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "Committed on_session_end extraction before soft-evicting "
                 "finalizable session=%s (soft eviction, pre-expiry)", key,
             )
+            return True
         except Exception as _e:
             logger.debug("Pre-evict memory commit failed for %s: %s", key, _e)
+        return False
 
-    def _commit_then_release_soft(self, agent: Any, key: str) -> None:
-        """Commit end-of-session memory (if warranted), then soft-release.
+    def _commit_then_release_soft(self, agent: Any, key: str) -> bool:
+        """Atomically commit provider memory, retire workers, then release clients."""
+        import inspect
 
-        Runs on the daemon eviction thread so the memory-provider call and the
-        client teardown never block the caller's held cache lock. Order matters:
-        commit uses the live agent's memory manager before ``release_clients``
-        drops the message buffer.
-        """
-        self._commit_memory_before_soft_evict(agent, key)
-        self._release_evicted_agent_soft(agent)
+        memory_release = getattr(
+            agent, "release_memory_provider_for_cache_evict", None
+        )
+        supports_atomic_commit = False
+        if callable(memory_release):
+            try:
+                supports_atomic_commit = "commit" in inspect.signature(
+                    memory_release
+                ).parameters
+            except Exception:
+                pass
+        if supports_atomic_commit:
+            should_commit, messages = self._soft_evict_memory_commit_plan(agent, key)
+            success = self._release_evicted_agent_soft(
+                agent,
+                commit=should_commit,
+                messages=messages,
+            )
+        else:
+            # Compatibility for pre-candidate/fake agents.
+            self._commit_memory_before_soft_evict(agent, key)
+            success = self._release_evicted_agent_soft(agent)
+        if success:
+            self._complete_evicted_agent_cleanup(agent)
+        return success
 
-    def _release_evicted_agent_soft(self, agent: Any) -> None:
+    def _release_evicted_agent_soft(
+        self,
+        agent: Any,
+        *,
+        commit: bool = False,
+        messages: list | None = None,
+    ) -> bool:
         """Soft cleanup for cache-evicted agents — preserves session tool state.
 
         Called from _enforce_agent_cache_cap and _sweep_idle_cached_agents.
@@ -26405,6 +26559,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
         success = True
         soft_release_attempted = False
+        memory_release = getattr(
+            agent, "release_memory_provider_for_cache_evict", None
+        )
+        if callable(memory_release):
+            try:
+                if commit:
+                    memory_release(messages=messages, commit=True)
+                else:
+                    memory_release()
+            except Exception:
+                success = False
         try:
             if hasattr(agent, "release_clients"):
                 soft_release_attempted = True
@@ -26422,7 +26587,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # 100+-tool-call sessions. release_clients() deliberately preserves
         # session tool state for resume, but the message list is rebuilt from
         # persisted session JSON on the next turn, so dropping it here is safe.
-        if hasattr(agent, "_session_messages"):
+        if success and hasattr(agent, "_session_messages"):
             agent._session_messages = []
         _lifecycle = getattr(self, "_lifecycle_counters", None)
         if soft_release_attempted:
@@ -26435,8 +26600,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # eviction exists to free. Pressure-evictable agents have flushed by
         # definition, so this attribute is always populated on exactly the
         # agents the memory valve targets.
-        if hasattr(agent, "_db_flush_scan_prefix"):
+        if success and hasattr(agent, "_db_flush_scan_prefix"):
             agent._db_flush_scan_prefix = None
+        return success
 
     def _agent_cache_bounds(self):
         """Operator-configured agent-cache bounds, resolved once per process.
@@ -26539,7 +26705,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 max_evictions=bounds.max_evictions_per_pass,
                 protect_recent=bounds.protect_recent,
             )
-            for key, _ in plan:
+            for key, agent in plan:
+                self._retain_failed_evicted_agent_cleanup(agent, key)
                 _cache.pop(key, None)
 
         if not plan:
@@ -26670,7 +26837,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     continue  # active mid-turn; don't evict, don't substitute
                 evict_plan.append((key, agent))
 
-        for key, _ in evict_plan:
+        for key, agent in evict_plan:
+            if agent is not None:
+                self._retain_failed_evicted_agent_cleanup(agent, key)
             _cache.pop(key, None)
 
         remaining_over_cap = len(_cache) - cap
@@ -26693,12 +26862,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # only fires for finalizable-not-yet-expired sessions whose
                 # agent would otherwise vanish before the expiry watcher can
                 # fire on_session_end (#11205, LRU-cap variant).
-                threading.Thread(
-                    target=self._commit_then_release_soft,
-                    args=(agent, key),
-                    daemon=True,
-                    name=f"agent-cache-evict-{key[:24]}",
-                ).start()
+                self._schedule_evicted_agent_soft_release(agent, key)
         return len(evict_plan)
 
     def _sweep_idle_cached_agents(self) -> int:
@@ -26743,7 +26907,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # not-yet-expired sessions; mode="none" remains a soft
                     # eviction without a synthetic session-end commit.
                     to_evict.append((key, agent))
-            for key, _ in to_evict:
+            for key, agent in to_evict:
+                self._retain_failed_evicted_agent_cleanup(agent, key)
                 _cache.pop(key, None)
         _lifecycle = getattr(self, "_lifecycle_counters", None)
         if _lifecycle is not None:
@@ -26754,12 +26919,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "Agent cache idle-TTL evict: session=%s (idle=%.0fs)",
                 key, now - getattr(agent, "_last_activity_ts", now),
             )
-            threading.Thread(
-                target=self._commit_then_release_soft,
-                args=(agent, key),
-                daemon=True,
-                name=f"agent-cache-idle-{key[:24]}",
-            ).start()
+            self._schedule_evicted_agent_soft_release(agent, key)
         return len(to_evict)
 
     # ------------------------------------------------------------------

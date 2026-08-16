@@ -326,6 +326,23 @@ class TestAsyncWriterThread:
         mgr.shutdown()
         assert mgr._async_thread is None
 
+    def test_shutdown_raises_when_writer_survives_bounded_join(self, make_manager):
+        mgr = make_manager(write_frequency="async")
+
+        class _StuckThread:
+            def is_alive(self):
+                return True
+
+            def join(self, timeout=None):
+                return None
+
+        mgr._async_thread = _StuckThread()
+        mgr.flush_all = lambda: None
+
+        with pytest.raises(RuntimeError, match="did not stop"):
+            mgr.shutdown()
+        mgr._async_thread = None
+
     def test_stop_async_writer_joins_thread_without_flushing(self, make_manager):
         mgr = make_manager(write_frequency="async")
         mgr._ensure_async_writer()

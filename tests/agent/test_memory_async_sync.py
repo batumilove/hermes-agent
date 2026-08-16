@@ -156,7 +156,7 @@ def test_shutdown_timeout_abandons_queued_write_with_state_and_log(monkeypatch, 
 
     with caplog.at_level(logging.WARNING, logger="agent.memory_manager"):
         t0 = time.monotonic()
-        mgr.shutdown_all()
+        assert mgr.shutdown_all() is False
         elapsed = time.monotonic() - t0
 
     state = mgr.shutdown_drain_state
@@ -165,4 +165,18 @@ def test_shutdown_timeout_abandons_queued_write_with_state_and_log(monkeypatch, 
     assert state["abandoned_writes"] == 1
     assert "queued" not in calls
     assert "abandoning 1 queued memory write" in caplog.text
+    assert mgr.shutdown_all() is False
+    assert not release.is_set()
     release.set()
+    assert mgr.shutdown_all() is True
+
+
+def test_shutdown_all_reports_provider_shutdown_failure():
+    class _FailingShutdownProvider(_SlowProvider):
+        def shutdown(self):
+            raise RuntimeError("provider shutdown failed")
+
+    mgr = MemoryManager()
+    mgr.add_provider(_FailingShutdownProvider(delay=0))
+
+    assert mgr.shutdown_all() is False
