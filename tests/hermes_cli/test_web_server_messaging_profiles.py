@@ -67,6 +67,68 @@ def _env_field(platform, key):
 
 
 class TestProfileScopedMessagingReads:
+    def test_unscoped_read_loads_gateway_config_once(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        import gateway.config as gateway_config
+        import hermes_cli.web_server as web_server
+
+        loaded = gateway_config.load_gateway_config()
+        calls = 0
+
+        def counting_load_gateway_config():
+            nonlocal calls
+            calls += 1
+            return loaded
+
+        monkeypatch.setattr(
+            gateway_config, "load_gateway_config", counting_load_gateway_config
+        )
+        catalog = web_server._messaging_platform_catalog()[:2]
+        monkeypatch.setattr(
+            web_server,
+            "_messaging_platform_catalog",
+            lambda: catalog,
+        )
+
+        resp = client.get("/api/messaging/platforms")
+
+        assert resp.status_code == 200
+        assert calls == 1
+
+    def test_unscoped_failed_gateway_config_load_remains_fail_soft(
+        self, isolated_profiles, monkeypatch
+    ):
+        from starlette.testclient import TestClient
+
+        import gateway.config as gateway_config
+        import hermes_cli.web_server as web_server
+
+        calls = 0
+
+        def failing_load_gateway_config():
+            nonlocal calls
+            calls += 1
+            raise RuntimeError("broken gateway config")
+
+        monkeypatch.setattr(
+            gateway_config, "load_gateway_config", failing_load_gateway_config
+        )
+        catalog = web_server._messaging_platform_catalog()[:2]
+        monkeypatch.setattr(
+            web_server,
+            "_messaging_platform_catalog",
+            lambda: catalog,
+        )
+        client = TestClient(web_server.app, raise_server_exceptions=False)
+        client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+
+        resp = client.get("/api/messaging/platforms")
+
+        assert resp.status_code == 200
+        assert len(resp.json()["platforms"]) == 2
+        assert calls == 1
+
     def test_scoped_read_does_not_show_root_credentials(
         self, client, isolated_profiles
     ):
