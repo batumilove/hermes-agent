@@ -321,14 +321,14 @@ async def test_missing_or_invalid_secondary_mode_falls_back_to_gateway_default(
     assert runner._busy_text_mode == "queue"
 
 
-def test_profile_route_and_nonmultiplexed_resolution_preserve_boundaries(monkeypatch):
-    import gateway.run as gateway_run
-
+def test_profile_route_and_nonmultiplexed_resolution_preserve_boundaries(
+    tmp_path,
+    monkeypatch,
+):
     runner = _runner(default_mode="interrupt")
     monkeypatch.setattr(
-        gateway_run,
-        "_multiplex_profile_homes",
-        lambda _config: [("default", None), ("research", None)],
+        "hermes_cli.profiles.profiles_to_serve",
+        lambda **_: [("research", tmp_path / "research")],
     )
     runner._snapshot_profile_busy_modes(
         "research",

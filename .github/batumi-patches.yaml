@@ -89,8 +89,10 @@ patches:
     paths:
       - agent/agent_init.py
       - apps/bootstrap-installer/src/routes/progress.tsx
+      - apps/desktop/src/plugins/hermes-bots/tests/session-workspace.test.mjs
       - apps/desktop/src/styles.css
       - contributors/emails/uperLu@users.noreply.github.com
+      - evals/compaction/results/SCORECARD-2026-08-15.md
       - hermes_cli/bang_shell.py
       - nix/desktop.nix
       - optional-skills/mlops/pytorch-fsdp/references/common-patterns.md
@@ -99,9 +101,13 @@ patches:
       - tests/gateway/test_branch_routing_columns.py
       - tests/hermes_cli/test_auth_store_windows_encoding.py
       - tests/hermes_cli/test_model_switch_context_offload.py
+      - tests/test_batch_runner_exit_code.py
       - tests/test_install_sh_node_npm_check.py
+      - tests/test_toolsets.py
       - tests/tools/test_file_operations.py
+      - tests/tools/test_session_search.py
       - tests/tools/test_windows_agent_loop_papercuts.py
+      - website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/image-generation.md
     tests:
       - git diff --check $(cat .github/upstream-base)..HEAD
       - python -m py_compile agent/agent_init.py
