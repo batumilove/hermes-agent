@@ -25,9 +25,12 @@ Contract (presence-based for the gateway, ownership-aware for controllers):
     transaction and stamp a unique ``owner_token`` into the marker. Refresh and
     cleanup validate that exact token. Dashboard/legacy writes take the same
     lock transiently, so they cannot overwrite or remove a live owned drain.
-  * the held activation lock is itself a drain signal. If an uncoordinated
-    writer removes or replaces the marker, intake and cron stay paused until
-    the owner detects the mismatch and releases the transaction deliberately.
+  * activation controllers additionally hold a profile-scoped drain-owner
+    signal lock for the complete transaction. Routine cron admission holds only
+    the activation-serialization lock, so it remains atomic against activation
+    without masquerading as an external drain. If an uncoordinated writer
+    removes or replaces the marker, the drain-owner lock keeps intake and cron
+    paused until the owner detects the mismatch and releases deliberately.
   * The gateway watcher treats **presence of a marker stamped with the current
     instantiation epoch** as "external drain active": flip
     ``gateway_state -> "draining"`` and stop accepting new turns. Absence (or a
@@ -85,7 +88,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from io import TextIOWrapper
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 try:
     import fcntl
@@ -218,9 +221,34 @@ def _activation_lock_name(canonical_home: Path) -> str:
     return f"hermes-gateway-activation-{profile_id}.lock"
 
 
+def _drain_owner_lock_name(canonical_home: Path) -> str:
+    profile_id = hashlib.sha256(os.fsencode(str(canonical_home))).hexdigest()[:16]
+    return f"hermes-gateway-drain-owner-{profile_id}.lock"
+
+
 def _fallback_activation_lock_path(home: Optional[Path] = None) -> Path:
     canonical_home = _canonical_home(home)
     return canonical_home / _activation_lock_name(canonical_home)
+
+
+def _fallback_drain_owner_lock_path(home: Optional[Path] = None) -> Path:
+    canonical_home = _canonical_home(home)
+    return canonical_home / _drain_owner_lock_name(canonical_home)
+
+
+def _preferred_profile_lock_path(
+    home: Optional[Path], name_factory: Callable[[Path], str]
+) -> Path:
+    canonical_home = _canonical_home(home)
+    runtime_dir = _user_runtime_dir()
+    try:
+        runtime_usable = runtime_dir.is_dir() and os.access(
+            runtime_dir, os.R_OK | os.W_OK | os.X_OK
+        )
+    except OSError:
+        runtime_usable = False
+    base = runtime_dir if runtime_usable else canonical_home
+    return base / name_factory(canonical_home)
 
 
 def activation_lock_path(home: Optional[Path] = None) -> Path:
@@ -231,16 +259,12 @@ def activation_lock_path(home: Optional[Path] = None) -> Path:
     controllers that target the same home therefore converge on the same safe
     fallback instead of interpreting an inaccessible runtime path as ownership.
     """
-    canonical_home = _canonical_home(home)
-    runtime_dir = _user_runtime_dir()
-    try:
-        runtime_usable = runtime_dir.is_dir() and os.access(
-            runtime_dir, os.R_OK | os.W_OK | os.X_OK
-        )
-    except OSError:
-        runtime_usable = False
-    base = runtime_dir if runtime_usable else canonical_home
-    return base / _activation_lock_name(canonical_home)
+    return _preferred_profile_lock_path(home, _activation_lock_name)
+
+
+def drain_owner_lock_path(home: Optional[Path] = None) -> Path:
+    """Return the profile-scoped lock used only by real drain owners."""
+    return _preferred_profile_lock_path(home, _drain_owner_lock_name)
 
 
 def _lock_handle(handle: TextIOWrapper, *, shared: bool = False) -> None:
@@ -316,11 +340,13 @@ def _release_activation_lock(lock: _ActivationLock) -> None:
         raise first_error
 
 
-def _acquire_activation_lock(
-    home: Optional[Path] = None, *, shared: bool = False
+def _acquire_profile_lock(
+    *,
+    primary: Path,
+    fallback: Path,
+    label: str,
+    shared: bool = False,
 ) -> _ActivationLock:
-    primary = activation_lock_path(home)
-    fallback = _fallback_activation_lock_path(home)
     paths = [primary] if primary == fallback else [primary, fallback]
     last_error: Optional[OSError] = None
     handles: list[TextIOWrapper] = []
@@ -339,7 +365,7 @@ def _acquire_activation_lock(
             handle.close()
             _release_activation_lock(_ActivationLock(handles))
             raise DrainControlBusyError(
-                f"gateway activation lock is already held: {path}"
+                f"gateway {label} lock is already held: {path}"
             ) from exc
         except OSError as exc:
             handle.close()
@@ -356,8 +382,30 @@ def _acquire_activation_lock(
         _release_activation_lock(_ActivationLock(handles))
 
     raise DrainControlUnavailableError(
-        f"cannot open gateway activation lock: {paths[-1]}"
+        f"cannot open gateway {label} lock: {paths[-1]}"
     ) from last_error
+
+
+def _acquire_activation_lock(
+    home: Optional[Path] = None, *, shared: bool = False
+) -> _ActivationLock:
+    return _acquire_profile_lock(
+        primary=activation_lock_path(home),
+        fallback=_fallback_activation_lock_path(home),
+        label="activation",
+        shared=shared,
+    )
+
+
+def _acquire_drain_owner_lock(
+    home: Optional[Path] = None, *, shared: bool = False
+) -> _ActivationLock:
+    return _acquire_profile_lock(
+        primary=drain_owner_lock_path(home),
+        fallback=_fallback_drain_owner_lock_path(home),
+        label="drain-owner",
+        shared=shared,
+    )
 
 
 @contextmanager
@@ -383,7 +431,7 @@ def _activation_probe_guard(home: Optional[Path] = None):
 
 
 def activation_lock_held(*, home: Optional[Path] = None) -> bool:
-    """Return whether an activation owner currently holds the exclusive lock."""
+    """Return whether the activation-serialization lock is held exclusively."""
     try:
         with _activation_probe_guard(home):
             handle = _acquire_activation_lock(home, shared=fcntl is not None)
@@ -396,6 +444,23 @@ def activation_lock_held(*, home: Optional[Path] = None) -> bool:
         return False
     except OSError as exc:
         _log.error("drain-control: cannot inspect activation lock: %s", exc)
+        return True
+
+
+def drain_owner_lock_held(*, home: Optional[Path] = None) -> bool:
+    """Return whether a real drain owner holds its dedicated signal lock."""
+    try:
+        with _activation_probe_guard(home):
+            handle = _acquire_drain_owner_lock(home, shared=fcntl is not None)
+            _release_activation_lock(handle)
+            return False
+    except DrainControlBusyError:
+        return True
+    except DrainControlUnavailableError as exc:
+        _log.error("drain-control: cannot inspect drain-owner lock: %s", exc)
+        return False
+    except OSError as exc:
+        _log.error("drain-control: cannot inspect drain-owner lock: %s", exc)
         return True
 
 
@@ -426,9 +491,15 @@ class DrainOwnership:
     home: Optional[Path]
     suppress_notification: bool
     _lock_handle: Optional[_ActivationLock]
+    _drain_signal_handle: Optional[_ActivationLock]
 
     def _require_lock(self) -> None:
-        if self._lock_handle is None or self._lock_handle.closed:
+        if (
+            self._lock_handle is None
+            or self._lock_handle.closed
+            or self._drain_signal_handle is None
+            or self._drain_signal_handle.closed
+        ):
             raise DrainOwnershipLostError("activation ownership lock is not held")
 
     def assert_request_owned(self) -> dict[str, Any]:
@@ -472,10 +543,23 @@ class DrainOwnership:
 
     def release(self) -> None:
         handle = self._lock_handle
+        signal_handle = self._drain_signal_handle
         self._lock_handle = None
-        if handle is None or handle.closed:
-            return
-        _release_activation_lock(handle)
+        self._drain_signal_handle = None
+        first_error: Optional[OSError] = None
+        if signal_handle is not None and not signal_handle.closed:
+            try:
+                _release_activation_lock(signal_handle)
+            except OSError as exc:
+                first_error = exc
+        if handle is not None and not handle.closed:
+            try:
+                _release_activation_lock(handle)
+            except OSError as exc:
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            raise first_error
 
     def __enter__(self) -> "DrainOwnership":
         self._require_lock()
@@ -495,12 +579,18 @@ def acquire_drain_ownership(
 ) -> DrainOwnership:
     """Acquire the one canonical activation lock without changing the marker."""
     handle = _acquire_activation_lock(home)
+    try:
+        signal_handle = _acquire_drain_owner_lock(home)
+    except Exception:
+        _release_activation_lock(handle)
+        raise
     return DrainOwnership(
         principal=principal,
         owner_token=owner_token or uuid.uuid4().hex,
         home=home,
         suppress_notification=bool(suppress_notification),
         _lock_handle=handle,
+        _drain_signal_handle=signal_handle,
     )
 
 
@@ -670,14 +760,14 @@ def drain_requested(*, home: Optional[Path] = None) -> bool:
     staleness checks are lenient (see :func:`_marker_epoch_is_stale` /
     :func:`_marker_is_expired`): a legacy/corrupt marker with no epoch and no
     timestamp, or an environment without ``/proc``, still reads as
-    drain-active. The exclusive activation lock is itself a drain signal so an
+    drain-active. A dedicated drain-owner lock is also a drain signal so an
     owner remains fail-closed if its marker is removed or replaced. Transient
-    writers, cancellers, and cron admission sections also hold that lock, so a
-    watcher/tick can conservatively observe a drain and defer work until its
-    next poll. Lock inspection performs filesystem lock operations on each
+    writers, cancellers, and routine cron admission hold only the separate
+    activation serialization lock and therefore do not make the gateway enter
+    draining. Lock inspection performs filesystem lock operations on each
     call.
     """
-    if activation_lock_held(home=home):
+    if drain_owner_lock_held(home=home):
         return True
     body = read_drain_request(home=home)
     if body is None:

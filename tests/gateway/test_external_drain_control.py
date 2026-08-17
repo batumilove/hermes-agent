@@ -71,7 +71,14 @@ class TestOwnedDrainControl:
             monkeypatch.setattr(dc, "_user_runtime_dir", lambda: runtime)
             return
         lock_path = tmp_path / "run-user" / "hermes-gateway-activation.lock"
+        drain_owner_path = tmp_path / "run-user" / "hermes-gateway-drain-owner.lock"
         monkeypatch.setattr(dc, "activation_lock_path", lambda home=None: lock_path)
+        monkeypatch.setattr(
+            dc,
+            "drain_owner_lock_path",
+            lambda home=None: drain_owner_path,
+            raising=False,
+        )
 
     def test_public_ownership_apis_cannot_override_canonical_lock_path(self):
         for func in (
@@ -79,6 +86,7 @@ class TestOwnedDrainControl:
             dc.write_drain_request,
             dc.clear_drain_request,
             dc.activation_lock_held,
+            dc.drain_owner_lock_held,
         ):
             assert "runtime_dir" not in inspect.signature(func).parameters
 
@@ -94,6 +102,9 @@ class TestOwnedDrainControl:
         ).hexdigest()[:16]
         assert dc.activation_lock_path() == (
             runtime / f"hermes-gateway-activation-{profile_id}.lock"
+        )
+        assert dc.drain_owner_lock_path() == (
+            runtime / f"hermes-gateway-drain-owner-{profile_id}.lock"
         )
 
     def test_user_runtime_dir_is_exact_per_user_path(
@@ -209,6 +220,7 @@ class TestOwnedDrainControl:
         home_b.mkdir()
 
         assert dc.activation_lock_path(home_a) != dc.activation_lock_path(home_b)
+        assert dc.drain_owner_lock_path(home_a) != dc.drain_owner_lock_path(home_b)
 
         owner = dc.acquire_drain_ownership(principal="a", home=home_a)
         try:
@@ -419,6 +431,37 @@ class TestOwnedDrainControl:
 
         owner = dc.acquire_drain_ownership(principal="activation", home=home)
         owner.release()
+
+    def test_cron_admission_lock_is_not_a_drain_signal(self, home):
+        with dc.cron_admission(home=home) as admitted:
+            assert admitted is True
+            assert dc.drain_requested(home=home) is False
+
+    def test_drain_owner_signals_before_marker_and_blocks_cron(self, home):
+        owner = dc.acquire_drain_ownership(principal="activation", home=home)
+        try:
+            assert dc.read_drain_request(home=home) is None
+            assert dc.drain_requested(home=home) is True
+            with dc.cron_admission(home=home) as admitted:
+                assert admitted is False
+        finally:
+            owner.release()
+
+        assert dc.drain_requested(home=home) is False
+
+    def test_drain_owner_signal_failure_releases_activation_lock(
+        self, home, monkeypatch
+    ):
+        def unavailable(*args, **kwargs):
+            raise dc.DrainControlUnavailableError("signal unavailable")
+
+        monkeypatch.setattr(dc, "_acquire_drain_owner_lock", unavailable)
+
+        with pytest.raises(dc.DrainControlUnavailableError, match="signal unavailable"):
+            dc.acquire_drain_ownership(principal="activation", home=home)
+
+        with dc.cron_admission(home=home) as admitted:
+            assert admitted is True
 
     def test_cron_admission_rejects_existing_marker_without_mutating_it(self, home):
         marker = dc.write_drain_request(principal="dashboard", home=home)
