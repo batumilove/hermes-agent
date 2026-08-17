@@ -733,3 +733,17 @@ patches:
       - scripts/run_tests.sh tests/gateway/test_drain_attribution.py tests/gateway/test_drain_attribution_lifecycle.py tests/gateway/test_gateway_shutdown.py tests/gateway/test_shutdown_watchdog.py
       - scripts/run_tests.sh tests/gateway/test_api_server_active_work_drain.py tests/gateway/test_shutdown_cache_cleanup.py tests/cron/test_running_job_attribution.py tests/cron/test_shutdown_interrupt.py
     retirement: Remove when upstream preserves equivalent generation-scoped shutdown work identities, bounded evidence writes, watchdog-safe snapshots, and false-clean-exit prevention.
+
+  - id: desktop-messaging-config-load-once
+    kind: core
+    rationale: >-
+      Keep the authenticated Desktop messaging-platform inventory within its
+      request timeout by loading the large gateway configuration once per
+      unscoped request, while preserving fail-soft cards and profile-local
+      credential isolation when configuration loading fails.
+    paths:
+      - hermes_cli/web_server.py
+      - tests/hermes_cli/test_web_server_messaging_profiles.py
+    tests:
+      - scripts/run_tests.sh tests/hermes_cli/test_web_server_messaging_profiles.py
+    retirement: Remove when upstream loads messaging gateway configuration at most once per request with equivalent fail-soft and profile-isolation coverage.
