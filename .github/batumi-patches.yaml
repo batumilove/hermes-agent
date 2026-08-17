@@ -28,6 +28,21 @@ patches:
       - scripts/run_tests.sh tests/scripts/test_js_tests_workflow.py
     retirement: Remove when upstream pins equivalent npm and Debian build inputs with matching lifecycle and release-age protections.
 
+  - id: desktop-nanoid-ghsa-2v37-remediation
+    kind: operations
+    rationale: >-
+      Keep every resolved nanoid 3.x dependency at or above 3.3.18 so Desktop's
+      sanitize-html and Vite dependency paths remain outside GHSA-2v37-7h3g-55p8.
+    paths:
+      - package.json
+      - package-lock.json
+      - tests/test_npm_security_policy.py
+    tests:
+      - scripts/run_tests.sh tests/test_npm_security_policy.py
+      - npx --yes npm@12.0.1 audit --workspace apps/desktop --omit=dev
+      - npm run check --workspace apps/desktop
+    retirement: Remove when the recorded upstream baseline enforces an equivalent nanoid 3.x security floor in both manifest and lockfile.
+
   - id: fork-patch-governance
     kind: operations
     rationale: >-
