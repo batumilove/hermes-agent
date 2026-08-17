@@ -2748,6 +2748,10 @@ def _claim_job_for_fire_locked(
                 except Exception:
                     pass  # malformed claim → overwrite
             scheduled_for = job.get("next_run_at")
+            _pre_enabled = job.get("enabled")
+            _pre_state = job.get("state")
+            _pre_paused_at = job.get("paused_at")
+            _pre_paused_reason = job.get("paused_reason")
             if force:
                 job["enabled"] = True
                 job["state"] = "scheduled"
@@ -2757,11 +2761,18 @@ def _claim_job_for_fire_locked(
             # stale lease, and the previous runner must not heartbeat the new
             # claim merely because hostname + PID are unchanged.
             owner = f"{_machine_id()}:{uuid.uuid4().hex}"
-            job["fire_claim"] = {
+            claim = {
                 "at": now.isoformat(),
                 "by": owner,
                 "scheduled_for": scheduled_for,
             }
+            if force:
+                claim["force"] = True
+                claim["_pre_enabled"] = _pre_enabled
+                claim["_pre_state"] = _pre_state
+                claim["_pre_paused_at"] = _pre_paused_at
+                claim["_pre_paused_reason"] = _pre_paused_reason
+            job["fire_claim"] = claim
             kind = job.get("schedule", {}).get("kind")
             if kind in {"cron", "interval"}:
                 nxt = compute_next_run(job["schedule"], now.isoformat())
@@ -2777,8 +2788,18 @@ def release_fire_claim(job_id: str, *, expected_owner: str) -> bool:
 
     This is the rollback half of claim-before-ledger external dispatch.  The
     owner comparison fences a stale caller from clearing a claim acquired by a
-    newer attempt.  Both the claim removal and slot restoration are persisted
-    in the same jobs-store critical section.
+    newer attempt.  Both the claim removal, slot restoration, and (for forced
+    fires) pause-state restoration are persisted in the same jobs-store
+    critical section.
+
+    If the underlying ``save_jobs`` fails, the in-memory mutation has already
+    been applied but the durable state may not reflect it.  The caller must
+    treat ``False`` or a swallowed save error as "claim possibly still held"
+    and avoid classifying a retry as a duplicate.
+
+    Returns ``True`` only when the matching claim was found and the rollback
+    was durably persisted.  Returns ``False`` when the claim is absent, belongs
+    to a different owner, or lacks the recorded slot — or when the save fails.
     """
     with _jobs_lock():
         jobs = load_jobs()
@@ -2790,9 +2811,29 @@ def release_fire_claim(job_id: str, *, expected_owner: str) -> bool:
                 return False
             if "scheduled_for" not in claim:
                 return False
+            # Restore the exact scheduled slot.
             job["next_run_at"] = claim.get("scheduled_for")
+            # If the claim was acquired with force=True, the acquisition
+            # mutated enabled/state/paused_at/paused_reason.  Restore them
+            # from the claim snapshot so a failed forced fire does not leave
+            # a previously-paused job permanently enabled/scheduled.
+            if claim.get("force"):
+                job["enabled"] = claim.get("_pre_enabled", job.get("enabled"))
+                job["state"] = claim.get("_pre_state", job.get("state"))
+                job["paused_at"] = claim.get("_pre_paused_at", job.get("paused_at"))
+                job["paused_reason"] = claim.get("_pre_paused_reason", job.get("paused_reason"))
+            # Strip the internal snapshot keys from the persisted claim if
+            # it somehow survives (defensive — the claim is set to None below).
             job["fire_claim"] = None
-            save_jobs(jobs)
+            try:
+                save_jobs(jobs)
+            except Exception:
+                logger.error(
+                    "release_fire_claim: save_jobs failed for job %s; "
+                    "durable claim may remain — treating as not-released",
+                    job_id,
+                )
+                return False
             return True
     return False
 

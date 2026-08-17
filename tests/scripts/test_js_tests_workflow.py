@@ -18,15 +18,44 @@ def _global_npm_install_tokens(text: str) -> list[list[str]]:
             if not isinstance(run, str):
                 continue
             for line in run.splitlines():
-                if not line.lstrip().startswith(("npm ", "npm\t")):
-                    continue
-                tokens = shlex.split(line, comments=True, posix=True)
-                if (
-                    len(tokens) >= 3
-                    and tokens[0] == "npm"
-                    and tokens[1] in {"install", "i"}
-                    and any(token in {"-g", "--global"} for token in tokens[2:])
-                ):
+                # Strip shell control prefixes (assignments, subshells,
+                # command separators) so an unsafe install hidden after
+                # `true;`, `X=1`, `(`, or similar cannot slip past.
+                cleaned = line.strip().lstrip("()")
+                # Split on shell separators and check each segment.
+                for sep in ["&&", "||", ";", " | "]:
+                    cleaned = cleaned.replace(sep, "\n")
+                for segment in cleaned.splitlines():
+                    segment = segment.strip().lstrip("()")
+                    # Strip leading env-var assignments: VAR=val cmd ...
+                    while segment.split() and "=" in segment.split()[0]:
+                        parts = segment.split(None, 1)
+                        if len(parts) < 2:
+                            break
+                        segment = parts[1].strip()
+                    try:
+                        tokens = shlex.split(segment, comments=True, posix=True)
+                    except ValueError:
+                        # Unbalanced quotes or other shlex error — skip.
+                        continue
+                    if len(tokens) < 3 or tokens[0] != "npm":
+                        continue
+                    # Find the install/i subcommand (may be preceded by
+                    # global flags like `npm --global install npm@12`).
+                    sub_idx = None
+                    for idx in range(1, len(tokens)):
+                        if tokens[idx] in {"install", "i"}:
+                            sub_idx = idx
+                            break
+                    if sub_idx is None:
+                        continue
+                    remaining = tokens[sub_idx + 1:]
+                    # Check -g/--global anywhere in tokens after "npm".
+                    if not any(
+                        token in {"-g", "--global"} or token.startswith("--global=")
+                        for token in tokens[1:]
+                    ):
+                        continue
                     installs.append(tokens)
     return installs
 
@@ -35,11 +64,16 @@ def _assert_approved_global_npm_installs(text: str) -> None:
     installs = _global_npm_install_tokens(text)
     assert len(installs) == 2
     for tokens in installs:
-        arguments = tokens[2:]
+        # Collect all non-flag arguments (packages) and all flags.
+        sub_idx = next(i for i, t in enumerate(tokens) if t in {"install", "i"})
+        arguments = tokens[sub_idx + 1:]
+        # Also check flags before install subcommand.
+        pre_flags = tokens[1:sub_idx]
+        all_args = pre_flags + arguments
         packages = [token for token in arguments if not token.startswith("-")]
         assert packages == ["npm@12.0.1"]
-        assert "--ignore-scripts" in arguments
-        assert "--min-release-age=14" in arguments
+        assert "--ignore-scripts" in all_args
+        assert "--min-release-age=14" in all_args
 
 
 def test_js_workflow_installs_only_the_exact_cooldown_protected_npm() -> None:
@@ -81,6 +115,13 @@ def test_contract_accepts_global_flag_and_reordered_approved_arguments(
         "npm install --global npm@latest --ignore-scripts --min-release-age=14",
         "npm i npm@12.0.1 --global --ignore-scripts",
         "npm install left-pad --ignore-scripts --min-release-age=14 --global",
+        # Shell-prefixed forms that must also be caught:
+        "true; npm install --global npm@12",
+        'X=1 npm install --global npm@12',
+        "(npm install --global npm@12)",
+        "npm --global install npm@12",
+        "npm install --global=true npm@12",
+        "echo hi && npm i -g npm@12",
     ],
 )
 def test_contract_rejects_equivalent_unapproved_global_bootstraps(

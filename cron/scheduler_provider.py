@@ -20,10 +20,13 @@ selected via the `cron.provider` config key (empty = built-in).
 from __future__ import annotations
 
 import inspect
+import logging
 import threading
 from abc import ABC, abstractmethod
 from contextlib import ExitStack
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class CronScheduler(ABC):
@@ -174,7 +177,20 @@ class CronScheduler(ABC):
                 scheduled_for=claim.get("scheduled_for"),
             )
         except BaseException:
-            release_fire_claim(job_id, expected_owner=owner)
+            # Attempt exact-owner rollback. If release_fire_claim returns
+            # False (save failed, owner changed, or claim absent), return
+            # None so the caller maps this to a retryable 503 rather than
+            # raising — the caller's exception path would also produce 503,
+            # but returning None avoids confusing the webhook's duplicate
+            # classification when the claim could not be durably released.
+            released = release_fire_claim(job_id, expected_owner=owner)
+            if not released:
+                logger.error(
+                    "claim_fire: could not durably release claim for %s "
+                    "after ledger failure; returning None for retry",
+                    job_id,
+                )
+                return None
             raise
         claimed_job["execution_id"] = execution["id"]
         return claimed_job
