@@ -37,7 +37,9 @@ def _configure_fast_forced_shutdown(runner, monkeypatch, active_agents):
     )
 
     async def _inline_executor(func, *args):
-        return func(*args)
+        # Preserve the production off-loop contract: session finalization now
+        # creates and runs an async lifecycle entry point inside this worker.
+        return await asyncio.to_thread(func, *args)
 
     runner._run_in_executor_with_context = _inline_executor
     runner._cleanup_agent_resources = MagicMock()

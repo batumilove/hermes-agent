@@ -1394,11 +1394,7 @@ class RelaySessionCoordinator:
             turn.logical_llm_contexts.clear()
         for index in range(len(logical_calls) - 1, -1, -1):
             request_id, logical_handle = logical_calls[index]
-            logical_context = (
-                logical_contexts.get(request_id)
-                or turn.context
-                or contextvars.Context()
-            )
+            logical_context = logical_contexts.get(request_id)
             failure = lease.host._close_scope_handle(
                 lease.session,
                 logical_handle,

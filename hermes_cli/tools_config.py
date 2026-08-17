@@ -2304,10 +2304,9 @@ def enabled_mcp_server_names(config: dict) -> Set[str]:
         and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
     }
     try:
-        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        from hermes_cli.plugins import get_portable_mcp_server_names_nowait
 
-        discover_plugins()
-        portable = set(get_plugin_manager().get_portable_mcp_servers())
+        portable = set(get_portable_mcp_server_names_nowait())
         # Native config wins on a name collision (mirrors _load_mcp_config).
         names |= portable - set(mcp_servers)
     except Exception:

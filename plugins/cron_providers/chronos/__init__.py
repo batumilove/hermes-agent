@@ -225,12 +225,37 @@ class ChronosCronScheduler(CronScheduler):
 
     # -- fire -------------------------------------------------------------
 
-    # NOTE: no ``fire_due`` override on purpose. The base implementation
-    # virtually dispatches through ``self.claim_fire``/``self.fire_claimed``,
-    # and ``provider_supports_split_fire`` treats ANY ``fire_due`` override
-    # (even a pure ``super()`` delegate) as the legacy single-phase signal —
-    # overriding it here would silently opt Chronos out of claim admission,
-    # duplicate detection, and the cancel-aware drain on the fire webhook.
+    def _rearm_after_fire(self, job_id: str, ran: bool) -> bool:
+        """Re-arm a consumed Chronos attempt after either fire entry point."""
+        if ran:
+            from cron.jobs import get_job
+
+            job = get_job(job_id)
+            if job and job.get("enabled") and job.get("next_run_at"):
+                try:
+                    self._arm_one_shot(job)
+                except Exception as e:
+                    logger.warning(
+                        "Chronos failed to re-arm job %s after fire: %s", job_id, e
+                    )
+        return ran
+
+    def fire_due(
+        self,
+        job_id: str,
+        *,
+        adapters: Any = None,
+        loop: Any = None,
+        force: bool = False,
+    ) -> bool:
+        """Run a direct/manual fire and re-arm its next external one-shot."""
+        ran = super().fire_due(
+            job_id,
+            adapters=adapters,
+            loop=loop,
+            force=force,
+        )
+        return self._rearm_after_fire(job_id, ran)
 
     def fire_claimed(
         self,
@@ -240,22 +265,13 @@ class ChronosCronScheduler(CronScheduler):
         loop: Any = None,
         cancel_event: Any = None,
     ) -> bool:
-        job_id = claimed_job["id"]
         ran = super().fire_claimed(
             claimed_job,
             adapters=adapters,
             loop=loop,
             cancel_event=cancel_event,
         )
-        if ran:
-            from cron.jobs import get_job
-            job = get_job(job_id)
-            if job and job.get("enabled") and job.get("next_run_at"):
-                try:
-                    self._arm_one_shot(job)
-                except Exception as e:
-                    logger.warning("Chronos failed to re-arm job %s after fire: %s", job_id, e)
-        return ran
+        return self._rearm_after_fire(claimed_job["id"], ran)
 
 
 def register(ctx) -> None:

@@ -108,6 +108,9 @@ class TestRuntimeGate:
 
     def test_missing_sdk_logs_one_warning(self, monkeypatch, caplog):
         langfuse_plugin = self._fresh_plugin()
+        # Ignore the separate import-time lazy-dependency preflight warning;
+        # this test covers the runtime gate's once-only warning contract.
+        caplog.clear()
         monkeypatch.setattr(langfuse_plugin, "Langfuse", None)
         langfuse_plugin._LANGFUSE_CLIENT = None
 

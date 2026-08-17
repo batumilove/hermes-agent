@@ -10855,7 +10855,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # transcript whose tail may be a pending tool result.  The flush is
             # idempotent (identity-tracked in ``_flush_messages_to_session_db``),
             # so agents that DID finish gracefully re-flush nothing.
-            def _persist_and_finalize() -> None:
+            def _persist_transcript() -> None:
                 _flush = getattr(agent, "_flush_messages_to_session_db", None)
                 _session_messages = getattr(agent, "_session_messages", None)
                 if (
@@ -10897,32 +10897,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             getattr(agent, "session_id", None),
                             _session_messages,
                         )
-                try:
-                    from hermes_cli.lifecycle import finalize_session
-
-                    finalize_session(
-                        session_id=getattr(agent, "session_id", None),
-                        platform="gateway",
-                        reason="shutdown",
-                    )
-                except Exception:
-                    pass
 
             remaining = self._shutdown_remaining(deadline)
             if remaining <= 0 or not await self._run_shutdown_sync_daemon(
-                _persist_and_finalize,
+                _persist_transcript,
                 timeout=remaining,
-                context="agent transcript finalization",
+                context="agent transcript persistence",
             ):
                 return False
 
             remaining = self._shutdown_remaining(deadline)
-            if remaining <= 0 or not await self._run_shutdown_sync_daemon(
-                self._cleanup_agent_resources,
-                agent,
+            if remaining <= 0:
+                return False
+            await self._finalize_session_off_loop(
+                session_id=getattr(agent, "session_id", None),
+                platform="gateway",
+                reason="shutdown",
                 timeout=remaining,
-                context="agent resource cleanup",
-            ):
+            )
+
+            remaining = self._shutdown_remaining(deadline)
+            if remaining <= 0:
+                return False
+            await self._cleanup_agent_resources_off_loop(
+                agent,
+                context="shutdown agent resource cleanup",
+                timeout=remaining,
+            )
+            if self._shutdown_remaining(deadline) <= 0:
                 return False
         return True
 
@@ -11087,6 +11089,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_id: Any,
         platform: str,
         reason: str,
+        timeout: Optional[float] = None,
         **extra: Any,
     ) -> None:
         """Run hermes_cli.lifecycle.finalize_session off the event loop, bounded.
@@ -11101,19 +11104,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
 
         def _call() -> None:
-            from hermes_cli.lifecycle import finalize_session
+            from hermes_cli.lifecycle import finalize_session_async
 
-            finalize_session(
-                session_id=session_id,
-                platform=platform,
-                reason=reason,
-                **extra,
+            asyncio.run(
+                finalize_session_async(
+                    session_id=session_id,
+                    platform=platform,
+                    reason=reason,
+                    **extra,
+                )
             )
 
+        budget = self._FINALIZE_TIMEOUT_S
+        if timeout is not None:
+            budget = max(0.0, min(budget, float(timeout)))
+        if budget <= 0:
+            return
         try:
             await asyncio.wait_for(
                 self._run_in_executor_with_context(_call),
-                timeout=self._FINALIZE_TIMEOUT_S,
+                timeout=budget,
             )
         except asyncio.TimeoutError:
             logger.warning(
@@ -11122,7 +11132,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "thread is left to finish on its own).",
                 session_id,
                 reason,
-                self._FINALIZE_TIMEOUT_S,
+                budget,
             )
         except Exception as finalize_exc:
             logger.debug(
@@ -11133,7 +11143,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
 
     async def _cleanup_agent_resources_off_loop(
-        self, agent: Any, *, context: str = ""
+        self,
+        agent: Any,
+        *,
+        context: str = "",
+        timeout: Optional[float] = None,
     ) -> None:
         """Run _cleanup_agent_resources in a worker thread with a bounded wait.
 
@@ -11150,12 +11164,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 agent._end_session_on_close = False
             except Exception:
                 pass
+        budget = self._CLEANUP_TIMEOUT_S
+        if timeout is not None:
+            budget = max(0.0, min(budget, float(timeout)))
+        if budget <= 0:
+            return
         try:
             await asyncio.wait_for(
                 self._run_in_executor_with_context(
                     self._cleanup_agent_resources, agent
                 ),
-                timeout=self._CLEANUP_TIMEOUT_S,
+                timeout=budget,
             )
         except asyncio.TimeoutError:
             logger.warning(
@@ -11163,7 +11182,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "blocking the event loop (the worker thread is left to finish "
                 "on its own). (#53175)",
                 f" ({context})" if context else "",
-                self._CLEANUP_TIMEOUT_S,
+                budget,
             )
         except Exception as cleanup_exc:
             logger.warning(
