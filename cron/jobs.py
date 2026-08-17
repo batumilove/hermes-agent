@@ -2748,11 +2748,6 @@ def _claim_job_for_fire_locked(
                 except Exception:
                     pass  # malformed claim → overwrite
             scheduled_for = job.get("next_run_at")
-            job["fire_claim"] = {
-                "at": now.isoformat(),
-                "by": _machine_id(),
-                "scheduled_for": scheduled_for,
-            }
             if force:
                 job["enabled"] = True
                 job["state"] = "scheduled"
@@ -2762,7 +2757,11 @@ def _claim_job_for_fire_locked(
             # stale lease, and the previous runner must not heartbeat the new
             # claim merely because hostname + PID are unchanged.
             owner = f"{_machine_id()}:{uuid.uuid4().hex}"
-            job["fire_claim"] = {"at": now.isoformat(), "by": owner}
+            job["fire_claim"] = {
+                "at": now.isoformat(),
+                "by": owner,
+                "scheduled_for": scheduled_for,
+            }
             kind = job.get("schedule", {}).get("kind")
             if kind in {"cron", "interval"}:
                 nxt = compute_next_run(job["schedule"], now.isoformat())

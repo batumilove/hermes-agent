@@ -19,10 +19,12 @@ patches:
       - .github/workflows/js-autofix.yml
       - .github/workflows/js-tests.yml
       - Dockerfile
+      - tests/scripts/test_js_tests_workflow.py
     tests:
       - python3 -c "import pathlib, yaml; [yaml.safe_load(p.read_text()) for p in pathlib.Path('.github/workflows').glob('*.yml')]"
       - hadolint Dockerfile
       - npm run check --workspace apps/desktop
+      - scripts/run_tests.sh tests/scripts/test_js_tests_workflow.py
     retirement: Remove when upstream pins equivalent npm and Debian build inputs with matching lifecycle and release-age protections.
 
   - id: fork-patch-governance
@@ -436,14 +438,16 @@ patches:
       - cron/scheduler.py
       - cron/scheduler_provider.py
       - hermes_cli/cron.py
+      - tests/cron/test_claim_job_for_fire.py
       - tests/cron/test_execution_ledger.py
       - tests/cron/test_jobs.py
+      - tests/cron/test_parallel_pool.py
       - tests/cron/test_scheduler_provider.py
       - tests/monitoring/test_cron_health_export.py
       - tests/tools/test_cronjob_run_immediate.py
       - tools/cronjob_tools.py
     tests:
-      - scripts/run_tests.sh tests/cron/test_execution_ledger.py tests/cron/test_jobs.py tests/cron/test_scheduler_provider.py tests/monitoring/test_cron_health_export.py tests/tools/test_cronjob_run_immediate.py
+      - scripts/run_tests.sh tests/cron/test_claim_job_for_fire.py tests/cron/test_execution_ledger.py tests/cron/test_jobs.py tests/cron/test_parallel_pool.py tests/cron/test_scheduler_provider.py tests/monitoring/test_cron_health_export.py tests/tools/test_cronjob_run_immediate.py
     retirement: Remove when upstream persists equivalent exact trigger provenance through scheduling, manual dispatch, recovery, monitoring, and execution-ledger migration.
 
   - id: sessiondb-no-more-rows-retry

@@ -35,6 +35,24 @@ def test_claim_succeeds_once_then_blocks(temp_home):
     assert get_job(jid)["next_run_at"] != before
 
 
+def test_claim_snapshot_preserves_owner_and_exact_scheduled_slot(temp_home):
+    """The owner-bearing claim keeps the slot that was atomically claimed."""
+    from cron.jobs import claim_job_for_fire, create_job
+
+    job = create_job(prompt="x", schedule="every 5m", name="snapshot")
+    scheduled_for = job["next_run_at"]
+
+    claimed = claim_job_for_fire(job["id"], return_job=True)
+
+    assert isinstance(claimed, dict)
+    claim = claimed["fire_claim"]
+    assert claim["scheduled_for"] == scheduled_for
+    assert claim["at"]
+    assert claim["by"]
+    assert ":" in claim["by"], "claim owner must include the per-acquisition UUID"
+    assert claimed["next_run_at"] != scheduled_for
+
+
 def test_claim_oneshot_cannot_be_double_claimed(temp_home):
     """A one-shot can't be double-claimed (the fresh claim blocks the retry)."""
     from cron.jobs import create_job, claim_job_for_fire

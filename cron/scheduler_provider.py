@@ -155,29 +155,22 @@ class CronScheduler(ABC):
         external scheduler, then pass the exact owner-bearing snapshot to
         ``fire_claimed`` in tracked background work.
         """
-        from cron.executions import create_execution, finish_execution
+        from cron.executions import create_execution
         from cron.jobs import claim_job_for_fire
 
-        execution = create_execution(job_id, source=self.name)
         claim_kwargs = {"return_job": True}
         if force:
             claim_kwargs["force"] = True
-        try:
-            claimed_job = claim_job_for_fire(job_id, **claim_kwargs)
-        except BaseException as exc:
-            finish_execution(
-                execution["id"],
-                success=False,
-                error=f"Fire claim failed before dispatch: {type(exc).__name__}: {exc}",
-            )
-            raise
+        claimed_job = claim_job_for_fire(job_id, **claim_kwargs)
         if not isinstance(claimed_job, dict):
-            finish_execution(
-                execution["id"],
-                success=False,
-                error="Fire claim was not acquired",
-            )
             return None
+        claim = claimed_job.get("fire_claim") or {}
+        execution = create_execution(
+            job_id,
+            source=self.name,
+            trigger_origin="external",
+            scheduled_for=claim.get("scheduled_for"),
+        )
         claimed_job["execution_id"] = execution["id"]
         return claimed_job
 

@@ -7006,54 +7006,86 @@ def tick(
             if not try_register_running_job(job_id):
                 logger.info("Job '%s' already running — skipping", job.get("name", job_id))
                 return None
-            # Record the attempt before executor dispatch. Recovery classifies
-            # abandoned records as unknown; it never automatically retries them.
-            pending_execution_id = job.get("_execution_id")
-            pending_execution = (
-                get_execution(pending_execution_id) if pending_execution_id else None
-            )
-            bound_manual_trigger = (
-                pending_execution is not None
-                and pending_execution["id"] == pending_execution_id
-                and pending_execution["job_id"] == job_id
-                and pending_execution["trigger_origin"] == "manual"
-            )
-            if bound_manual_trigger and pending_execution["status"] == "claimed":
-                execution = pending_execution
-            else:
-                if pending_execution_id:
-                    # A syntactic jobs.json marker is not provenance. Preserve
-                    # manual origin only when it binds to an immutable prior
-                    # manual request that recovery classified as unknown.
-                    recovered_manual = (
-                        bound_manual_trigger
-                        and pending_execution["status"] == "unknown"
-                    )
-                    trigger_origin = "manual" if recovered_manual else "unknown"
-                    scheduled_for = None
-                    triggered_at = (
-                        job.get("_execution_triggered_at") if recovered_manual else None
-                    )
-                else:
-                    trigger_origin = job.get("_execution_trigger_origin", "unknown")
-                    scheduled_for = job.get(
-                        "_execution_scheduled_for", job.get("next_run_at")
-                    )
-                    triggered_at = job.get("_execution_triggered_at")
-                execution = create_execution(
-                    job_id,
-                    source="builtin",
-                    trigger_origin=trigger_origin,
-                    scheduled_for=scheduled_for,
-                    triggered_at=triggered_at,
+            execution = None
+            try:
+                # Record the attempt before executor dispatch. Recovery classifies
+                # abandoned records as unknown; it never automatically retries them.
+                pending_execution_id = job.get("_execution_id")
+                pending_execution = (
+                    get_execution(pending_execution_id) if pending_execution_id else None
                 )
-            if pending_execution_id:
-                # Clear only the marker that produced this due item. A newer
-                # concurrent manual trigger keeps its own marker for the next tick.
-                clear_pending_trigger(job_id, pending_execution_id)
-            dispatched_job = dict(job, execution_id=execution["id"])
-            bind_running_job_execution(job_id, execution["id"])
-            _ctx = contextvars.copy_context()
+                bound_manual_trigger = (
+                    pending_execution is not None
+                    and pending_execution["id"] == pending_execution_id
+                    and pending_execution["job_id"] == job_id
+                    and pending_execution["trigger_origin"] == "manual"
+                )
+                if bound_manual_trigger and pending_execution["status"] == "claimed":
+                    execution = pending_execution
+                else:
+                    if pending_execution_id:
+                        # A syntactic jobs.json marker is not provenance. Preserve
+                        # manual origin only when it binds to an immutable prior
+                        # manual request that recovery classified as unknown.
+                        recovered_manual = (
+                            bound_manual_trigger
+                            and pending_execution["status"] == "unknown"
+                        )
+                        trigger_origin = "manual" if recovered_manual else "unknown"
+                        scheduled_for = None
+                        triggered_at = (
+                            job.get("_execution_triggered_at") if recovered_manual else None
+                        )
+                    else:
+                        trigger_origin = job.get("_execution_trigger_origin", "unknown")
+                        scheduled_for = job.get(
+                            "_execution_scheduled_for", job.get("next_run_at")
+                        )
+                        triggered_at = job.get("_execution_triggered_at")
+                    execution = create_execution(
+                        job_id,
+                        source="builtin",
+                        trigger_origin=trigger_origin,
+                        scheduled_for=scheduled_for,
+                        triggered_at=triggered_at,
+                    )
+                if execution is None:
+                    raise RuntimeError("execution preparation produced no record")
+                if pending_execution_id:
+                    # Clear only the marker that produced this due item. A newer
+                    # concurrent manual trigger keeps its own marker for the next tick.
+                    clear_pending_trigger(job_id, pending_execution_id)
+                dispatched_job = dict(job, execution_id=execution["id"])
+                bind_running_job_execution(job_id, execution["id"])
+                _ctx = contextvars.copy_context()
+            except BaseException as execution_err:
+                # Every failure after in-flight registration and before submit
+                # must release the guard. Otherwise a transient ledger or
+                # reconciliation error wedges this recurring job indefinitely.
+                release_running_job(job_id)
+                if execution is not None:
+                    try:
+                        finish_execution(
+                            execution["id"],
+                            success=False,
+                            error=(
+                                "Execution preparation failed before dispatch: "
+                                f"{type(execution_err).__name__}: {execution_err}"
+                            ),
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Job '%s': failed to close execution after preparation error",
+                            job.get("name", job_id),
+                        )
+                logger.exception(
+                    "Job '%s' not dispatched: execution preparation failed: %s",
+                    job.get("name", job_id),
+                    execution_err,
+                )
+                if isinstance(execution_err, Exception):
+                    return None
+                raise
 
             def _run_and_release(j=dispatched_job, ctx=_ctx):
                 try:

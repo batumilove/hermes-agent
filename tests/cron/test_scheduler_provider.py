@@ -362,19 +362,32 @@ def test_builtin_inherits_hook_defaults():
     assert hasattr(p, "fire_due")
 
 
-def test_fire_due_default_claims_then_runs(monkeypatch):
+def test_fire_due_default_claims_then_runs(monkeypatch, tmp_path):
     """The default fire_due runs the exact owner-bearing CAS snapshot."""
+    import cron.executions as executions
     import cron.jobs as jobs
     import cron.scheduler as sched
     from cron.scheduler_provider import InProcessCronScheduler
 
+    monkeypatch.setattr(
+        executions, "EXECUTIONS_FILE", tmp_path / "cron" / "executions.db"
+    )
     ran = []
     claims = []
+    scheduled_for = "2026-08-01T03:00:00+00:00"
     monkeypatch.setattr(
         jobs,
         "claim_job_for_fire",
         lambda jid, **kw: claims.append((jid, kw))
-        or {"id": jid, "name": "t", "fire_claim": {"by": "exact-owner"}},
+        or {
+            "id": jid,
+            "name": "t",
+            "fire_claim": {
+                "at": "2026-08-01T03:00:01+00:00",
+                "by": "exact-owner",
+                "scheduled_for": scheduled_for,
+            },
+        },
         raising=False,
     )
     monkeypatch.setattr(
@@ -386,6 +399,10 @@ def test_fire_due_default_claims_then_runs(monkeypatch):
     assert InProcessCronScheduler().fire_due("j1") is True
     assert claims == [("j1", {"return_job": True})]
     assert ran == [("j1", "exact-owner")]
+    execution = executions.latest_execution("j1")
+    assert execution is not None
+    assert execution["trigger_origin"] == "external"
+    assert execution["scheduled_for"] == scheduled_for
 
 
 def test_external_fire_due_is_blocked_during_owned_maintenance_drain(monkeypatch):
@@ -460,7 +477,7 @@ def test_external_fire_holds_admission_until_execution_is_running(monkeypatch, t
     monkeypatch.setattr(sched, "run_one_job", run_one_job)
 
     assert InProcessCronScheduler().fire_due("j1") is True
-    assert events == ["enter", "create", "claim", "run-enter", "exit"]
+    assert events == ["enter", "claim", "create", "run-enter", "exit"]
 
 
 def test_claim_fire_persists_attempt_before_fire_claimed(monkeypatch):
@@ -479,7 +496,7 @@ def test_claim_fire_persists_attempt_before_fire_claimed(monkeypatch):
     monkeypatch.setattr(
         executions,
         "create_execution",
-        lambda jid, source: events.append("ledger") or {"id": "exec-1"},
+        lambda jid, **kwargs: events.append("ledger") or {"id": "exec-1"},
     )
     monkeypatch.setattr(
         sched,
@@ -490,11 +507,11 @@ def test_claim_fire_persists_attempt_before_fire_claimed(monkeypatch):
     provider = InProcessCronScheduler()
     claimed = provider.claim_fire("j1")
 
-    assert events == ["ledger", "claim"]
+    assert events == ["claim", "ledger"]
     assert claimed is not None
     assert claimed["execution_id"] == "exec-1"
     assert provider.fire_claimed(claimed) is True
-    assert events == ["ledger", "claim", ("run", "exec-1")]
+    assert events == ["claim", "ledger", ("run", "exec-1")]
 
 
 def test_fire_due_forwards_manual_force_to_store_claim(monkeypatch):
