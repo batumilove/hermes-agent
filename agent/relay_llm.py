@@ -927,7 +927,8 @@ def _complete_logical(
                 if response_model_name is not None:
                     output["response_model"] = response_model_name
             logical_context.run(
-                lease.host.relay.scope.pop,
+                relay_runtime.pop_relay_scope,
+                lease.host.relay,
                 handle,
                 output=output,
                 metadata={
