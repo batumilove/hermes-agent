@@ -132,6 +132,38 @@ def _run_context_bounded(
             f"Relay scope operation exceeded {timeout}s; abandoning the native "
             "call so the agent can continue — the span for this scope is lost"
         ) from exc
+def pop_relay_scope(
+    relay: Any,
+    handle: Any,
+    *,
+    output: Any = None,
+    metadata: Any = None,
+    timestamp: Any = None,
+) -> Any:
+    """Pop a Relay scope without passing kwargs the binding rejects.
+
+    NeMo Relay ``scope.pop`` gained ``metadata`` in 0.4+. Older wheels (e.g.
+    0.3.x) raise ``TypeError: pop() got an unexpected keyword argument
+    'metadata'`` when Hermes finalization forwards runtime metadata. Filter to
+    parameters the live binding accepts so turn/session close can complete.
+    """
+    pop = relay.scope.pop
+    kwargs: dict[str, Any] = {}
+    if output is not None:
+        kwargs["output"] = output
+    if metadata is not None:
+        kwargs["metadata"] = metadata
+    if timestamp is not None:
+        kwargs["timestamp"] = timestamp
+    try:
+        params = inspect.signature(pop).parameters
+    except (TypeError, ValueError):
+        params = {}
+    if params and not any(
+        param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()
+    ):
+        kwargs = {key: value for key, value in kwargs.items() if key in params}
+    return pop(handle, **kwargs)
 
 
 @dataclass
@@ -583,6 +615,155 @@ class RelayRuntime:
         )
         return result if isinstance(result, dict) else args
 
+    def _close_scope_handle(
+        self,
+        session: RelaySession,
+        handle: Any,
+        *,
+        context: contextvars.Context | None = None,
+        output: dict[str, Any] | None = None,
+        allow_closing: bool = False,
+        failure_label: str = "scope close failed",
+        drain_limit: int = 32,
+    ) -> str | None:
+        """Pop ``handle``, draining orphaned children in the same session context.
+
+        Relay scopes are strict LIFO. Empty-stream retries + interrupt can
+        abandon a physical LLM scope above TURN/SESSION (#81521). Drain and
+        close must run inside one ``run_in_session`` callback so ContextVar
+        stack views stay consistent across pops.
+        """
+        if handle is None:
+            return None
+        metadata = {
+            RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION,
+            RUNTIME_INSTANCE_KEY: self.runtime_id,
+        }
+        close_output = output or {}
+        session_root = session.handle
+        drained_holder = {"count": 0}
+        error_holder: dict[str, BaseException] = {}
+
+        def close_with_drain() -> None:
+            def current_top() -> Any:
+                # Version-correct accessor first: the pinned nemo-relay
+                # binding exposes ``scope.get_handle()`` returning the
+                # current top-of-stack ScopeHandle.  Its
+                # ``get_scope_stack()`` returns a native ScopeStack object
+                # that ``scope.pop`` rejects with TypeError, so it must
+                # never be treated as a handle (#81601 review).
+                get_handle = getattr(
+                    getattr(self.relay, "scope", None), "get_handle", None
+                )
+                if callable(get_handle):
+                    try:
+                        return get_handle()
+                    except Exception:
+                        pass
+                top = self.relay.get_scope_stack()
+                # Some Relay builds return the live stack (list). Others
+                # return the top handle directly — including tuple handles
+                # like ("scope", name, serial) from the test fake. Only
+                # unwrap real list stacks; never index a handle tuple.
+                if isinstance(top, list):
+                    return top[-1] if top else None
+                return top
+
+            def same_handle(a: Any, b: Any) -> bool:
+                # Native ScopeHandle instances do not implement __eq__ by
+                # value — two handles for the same scope compare unequal —
+                # so compare by uuid when both sides expose one.
+                if a is None or b is None:
+                    return a is b
+                if a is b or a == b:
+                    return True
+                a_uuid = getattr(a, "uuid", None)
+                b_uuid = getattr(b, "uuid", None)
+                return a_uuid is not None and a_uuid == b_uuid
+
+            try:
+                pop_relay_scope(
+                    self.relay,
+                    handle,
+                    output=close_output,
+                    metadata=metadata,
+                )
+                return
+            except Exception as first_exc:
+                error_holder["first"] = first_exc
+
+            for _ in range(drain_limit):
+                top = current_top()
+                if top is None or same_handle(top, handle):
+                    break
+                # Never pop the session root while draining for a nested handle.
+                if (
+                    session_root is not None
+                    and same_handle(top, session_root)
+                    and handle is not session_root
+                ):
+                    break
+                try:
+                    pop_relay_scope(
+                        self.relay,
+                        top,
+                        output={
+                            "outcome": "cancelled",
+                            "hermes.orphan_drain": True,
+                        },
+                        metadata=metadata,
+                    )
+                    drained_holder["count"] += 1
+                except Exception as drain_exc:
+                    error_holder["drain"] = drain_exc
+                    logger.warning(
+                        "Hermes Relay orphaned scope drain failed",
+                        exc_info=True,
+                    )
+                    break
+
+            if drained_holder["count"]:
+                logger.warning(
+                    "Hermes Relay drained %d orphaned scope(s) before closing %s",
+                    drained_holder["count"],
+                    handle,
+                )
+            try:
+                pop_relay_scope(
+                    self.relay,
+                    handle,
+                    output=close_output,
+                    metadata=metadata,
+                )
+                error_holder.pop("first", None)
+                error_holder.pop("drain", None)
+            except Exception as retry_exc:
+                error_holder["retry"] = retry_exc
+
+        try:
+            if context is not None:
+                _run_context_bounded(
+                    context,
+                    close_with_drain,
+                    timeout=_SCOPE_OP_TIMEOUT,
+                )
+            else:
+                self.run_in_session(
+                    session,
+                    close_with_drain,
+                    allow_closing=allow_closing,
+                    # Bound the whole drain+close like the direct pops it
+                    # replaced: a wedged native pipeline must cost at most one
+                    # span, never block turn/session completion.
+                    timeout=_SCOPE_OP_TIMEOUT,
+                )
+        except Exception as exc:
+            return f"{failure_label}: {exc}"
+        retry_exc = error_holder.get("retry") or error_holder.get("first")
+        if retry_exc is not None:
+            return f"{failure_label}: {retry_exc}"
+        return None
+
     def close_session(self, event: dict[str, Any]) -> None:
         """Close one session scope and remove it from the core registry."""
         session_id, session, failures = self._begin_close_session(event)
@@ -633,21 +814,15 @@ class RelayRuntime:
                 return session_id, None, failures
             session.closing = True
             if session.handle is not None:
-                try:
-                    self.run_in_session(
-                        session,
-                        self.relay.scope.pop,
-                        session.handle,
-                        output={},
-                        metadata={
-                            RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION,
-                            RUNTIME_INSTANCE_KEY: self.runtime_id,
-                        },
-                        allow_closing=True,
-                        timeout=_SCOPE_OP_TIMEOUT,
-                    )
-                except Exception as exc:
-                    failures.append(f"session scope close failed: {exc}")
+                failure = self._close_scope_handle(
+                    session,
+                    session.handle,
+                    output={},
+                    allow_closing=True,
+                    failure_label="session scope close failed",
+                )
+                if failure:
+                    failures.append(failure)
         return session_id, session, failures
 
     def _finish_close_session(
@@ -1031,22 +1206,18 @@ class RelaySessionCoordinator:
             try:
                 if isinstance(lease.host, RelayRuntime) and lease.session is not None:
                     self._finish_logical_calls(turn, outcome=outcome)
-                    if turn.handle is not None and turn.context is not None:
-                        try:
-                            _run_context_bounded(
-                                turn.context,
-                                lease.host.relay.scope.pop,
-                                turn.handle,
-                                output={"outcome": outcome},
-                                metadata={
-                                    RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION,
-                                    RUNTIME_INSTANCE_KEY: lease.host.runtime_id,
-                                },
-                                timeout=_SCOPE_OP_TIMEOUT,
-                            )
-                        except Exception:
+                    if turn.handle is not None:
+                        failure = lease.host._close_scope_handle(
+                            lease.session,
+                            turn.handle,
+                            context=turn.context,
+                            output={"outcome": outcome},
+                            failure_label="turn scope close failed",
+                        )
+                        if failure:
                             logger.warning(
-                                "Hermes Relay turn finalization failed", exc_info=True
+                                "Hermes Relay turn finalization failed: %s",
+                                failure,
                             )
             finally:
                 try:
@@ -1223,46 +1394,36 @@ class RelaySessionCoordinator:
             turn.logical_llm_contexts.clear()
         for index in range(len(logical_calls) - 1, -1, -1):
             request_id, logical_handle = logical_calls[index]
-            logical_context = (
-                logical_contexts.get(request_id)
-                or turn.context
-                or contextvars.Context()
+            logical_context = logical_contexts.get(request_id)
+            failure = lease.host._close_scope_handle(
+                lease.session,
+                logical_handle,
+                context=logical_context,
+                output={"outcome": outcome},
+                failure_label="logical LLM scope close failed",
             )
-            try:
-                _run_context_bounded(
-                    logical_context,
-                    lease.host.relay.scope.pop,
-                    logical_handle,
-                    output={"outcome": outcome},
-                    metadata={
-                        RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION,
-                        RUNTIME_INSTANCE_KEY: lease.host.runtime_id,
-                    },
-                    timeout=_SCOPE_OP_TIMEOUT,
-                )
-            except Exception:
-                with turn.logical_llm_lock:
-                    # Relay scopes are stack-owned. If the newest remaining
-                    # handle cannot close, older handles cannot close safely
-                    # either, so retain the unclosed prefix for diagnostics.
-                    for pending_request_id, pending_handle in logical_calls[
-                        : index + 1
-                    ]:
-                        turn.logical_llm_calls.setdefault(
+            if failure is None:
+                continue
+            with turn.logical_llm_lock:
+                # Relay scopes are stack-owned. If the newest remaining
+                # handle cannot close even after orphan drain, older
+                # handles cannot close safely either — retain the
+                # unclosed prefix for diagnostics (#81521).
+                for pending_request_id, pending_handle in logical_calls[
+                    : index + 1
+                ]:
+                    turn.logical_llm_calls.setdefault(
+                        pending_request_id,
+                        pending_handle,
+                    )
+                    pending_context = logical_contexts.get(pending_request_id)
+                    if pending_context is not None:
+                        turn.logical_llm_contexts.setdefault(
                             pending_request_id,
-                            pending_handle,
+                            pending_context,
                         )
-                        pending_context = logical_contexts.get(pending_request_id)
-                        if pending_context is not None:
-                            turn.logical_llm_contexts.setdefault(
-                                pending_request_id,
-                                pending_context,
-                            )
-                logger.warning(
-                    "Hermes Relay logical LLM finalization failed",
-                    exc_info=True,
-                )
-                break
+            logger.warning("Hermes Relay logical LLM finalization failed: %s", failure)
+            break
 
     @staticmethod
     def _reset_turn_context(turn: RelayTurnContext) -> None:

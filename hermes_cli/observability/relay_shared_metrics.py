@@ -1153,8 +1153,10 @@ class _Runtime:
             retry_count=task.retry_count,
         )
         try:
-            task.context.run(
-                self.relay.scope.pop,
+            self._run_in_task(
+                task,
+                relay_runtime.pop_relay_scope,
+                self.relay,
                 task.handle,
                 output=fields,
                 metadata=self._event_metadata(),

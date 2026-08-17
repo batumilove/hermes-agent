@@ -100,6 +100,22 @@ def test_existing_ledger_rows_migrate_to_unknown_provenance(monkeypatch, tmp_pat
     assert record["trigger_origin"] == "unknown"
     assert record["scheduled_for"] is None
     assert record["triggered_at"] is None
+def test_execution_ledger_follows_the_current_profile_home(monkeypatch, tmp_path):
+    import cron.executions as executions
+
+    current_home = {"path": tmp_path / "default"}
+    monkeypatch.setattr(executions, "EXECUTIONS_FILE", None)
+    monkeypatch.setattr(executions, "get_hermes_home", lambda: current_home["path"])
+
+    default_row = executions.create_execution("default-job", source="builtin")
+    current_home["path"] = tmp_path / "worker"
+    worker_row = executions.create_execution("worker-job", source="builtin")
+
+    assert executions.list_executions() == [worker_row]
+    current_home["path"] = tmp_path / "default"
+    assert executions.list_executions() == [default_row]
+    assert (tmp_path / "default" / "cron" / "executions.db").is_file()
+    assert (tmp_path / "worker" / "cron" / "executions.db").is_file()
 
 
 def test_terminal_execution_cannot_be_rewritten(monkeypatch, tmp_path):
@@ -253,7 +269,7 @@ def test_generic_submit_failure_finishes_attempt_and_releases_guard(monkeypatch)
         lambda execution_id, **kwargs: finished.append((execution_id, kwargs)),
     )
     monkeypatch.setattr(scheduler, "get_due_jobs", lambda: [{"id": "submit-fail"}])
-    monkeypatch.setattr(scheduler, "advance_next_runs", lambda _ids: 0)
+    monkeypatch.setattr(scheduler, "claim_job_for_fire", lambda _job_id: True)
     monkeypatch.setattr(scheduler, "_get_parallel_pool", lambda _workers: BrokenPool())
 
     assert scheduler.tick(verbose=False, sync=False) == 0
@@ -347,6 +363,14 @@ def test_builtin_tick_reuses_durable_manual_execution(monkeypatch):
     monkeypatch.setattr(scheduler, "advance_next_runs", lambda _job_ids: 1)
     monkeypatch.setattr(scheduler, "_get_parallel_pool", lambda _workers: InlinePool())
     monkeypatch.setattr(scheduler, "get_execution", lambda _execution_id: execution)
+    monkeypatch.setattr(
+        scheduler,
+        "claim_job_for_fire",
+        lambda job_id, **_kwargs: {
+            "id": job_id,
+            "fire_claim": {"by": "manual-owner"},
+        },
+    )
     cleared = []
     monkeypatch.setattr(
         scheduler,

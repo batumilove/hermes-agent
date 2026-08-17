@@ -10,8 +10,9 @@ patches:
     kind: operations
     rationale: >-
       Pin npm bootstrap and Debian container inputs to reviewed immutable
-      versions, suppress bootstrap lifecycle scripts, and enforce the
-      repository release-age policy in CI and Docker dependency installs.
+      versions, suppress bootstrap lifecycle scripts, enforce the repository
+      release-age policy, and reject equivalent unapproved global npm install
+      syntax in CI and Docker dependency installs.
     paths:
       - .github/workflows/deploy-site.yml
       - .github/workflows/docs-site-checks.yml
@@ -19,10 +20,12 @@ patches:
       - .github/workflows/js-autofix.yml
       - .github/workflows/js-tests.yml
       - Dockerfile
+      - tests/scripts/test_js_tests_workflow.py
     tests:
       - python3 -c "import pathlib, yaml; [yaml.safe_load(p.read_text()) for p in pathlib.Path('.github/workflows').glob('*.yml')]"
       - hadolint Dockerfile
       - npm run check --workspace apps/desktop
+      - scripts/run_tests.sh tests/scripts/test_js_tests_workflow.py
     retirement: Remove when upstream pins equivalent npm and Debian build inputs with matching lifecycle and release-age protections.
 
   - id: fork-patch-governance
@@ -89,8 +92,10 @@ patches:
     paths:
       - agent/agent_init.py
       - apps/bootstrap-installer/src/routes/progress.tsx
+      - apps/desktop/src/plugins/hermes-bots/tests/session-workspace.test.mjs
       - apps/desktop/src/styles.css
       - contributors/emails/uperLu@users.noreply.github.com
+      - evals/compaction/results/SCORECARD-2026-08-15.md
       - hermes_cli/bang_shell.py
       - nix/desktop.nix
       - optional-skills/mlops/pytorch-fsdp/references/common-patterns.md
@@ -99,9 +104,13 @@ patches:
       - tests/gateway/test_branch_routing_columns.py
       - tests/hermes_cli/test_auth_store_windows_encoding.py
       - tests/hermes_cli/test_model_switch_context_offload.py
+      - tests/test_batch_runner_exit_code.py
       - tests/test_install_sh_node_npm_check.py
+      - tests/test_toolsets.py
       - tests/tools/test_file_operations.py
+      - tests/tools/test_session_search.py
       - tests/tools/test_windows_agent_loop_papercuts.py
+      - website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/image-generation.md
     tests:
       - git diff --check $(cat .github/upstream-base)..HEAD
       - python -m py_compile agent/agent_init.py
@@ -271,11 +280,13 @@ patches:
       - tests/agent/test_context_engine_lifecycle.py
       - tests/agent/test_memory_async_sync.py
       - tests/gateway/test_agent_cache.py
+      - tests/gateway/test_shutdown_cache_cleanup.py
       - tests/honcho_plugin/test_async_memory.py
+      - tests/run_agent/test_memory_provider_init.py
     tests:
       - scripts/run_tests.sh tests/agent/test_context_engine_lifecycle.py tests/agent/test_memory_async_sync.py tests/gateway/test_agent_cache.py
       - scripts/run_tests.sh tests/gateway/test_agent_cache_pressure.py tests/gateway/test_gateway_shutdown.py tests/gateway/test_shutdown_aggregate_budget_contract.py tests/gateway/test_shutdown_cache_cleanup.py
-      - scripts/run_tests.sh tests/honcho_plugin/test_async_memory.py tests/honcho_plugin/test_connection_lifecycle.py tests/honcho_plugin/test_session.py tests/run_agent/test_run_agent.py
+      - scripts/run_tests.sh tests/honcho_plugin/test_async_memory.py tests/honcho_plugin/test_connection_lifecycle.py tests/honcho_plugin/test_session.py tests/run_agent/test_run_agent.py tests/run_agent/test_memory_provider_init.py
     retirement: Remove when upstream releases owned context-engine clones and memory providers on every cache lifecycle path with equivalent exactly-once commit, bounded worker-drain, retry ownership, active-turn, ordering, and resource-preservation coverage.
 
   - id: gateway-lifecycle-diagnostics
@@ -372,13 +383,14 @@ patches:
       - hermes_cli/observability/__init__.py
       - hermes_cli/observability/relay_shared_metrics.py
       - tests/agent/test_relay_tools.py
+      - tests/gateway/test_finalize_session_off_loop.py
       - tests/gateway/test_session_boundary_hooks.py
       - tests/gateway/test_session_model_reset.py
       - tests/hermes_cli/test_lifecycle.py
       - tests/hermes_cli/test_relay_shared_metrics_runtime.py
     tests:
       - scripts/run_tests.sh tests/hermes_cli/test_relay_shared_metrics_runtime.py tests/hermes_cli/test_relay_shared_metrics.py tests/agent/test_relay_llm.py tests/agent/test_relay_tools.py tests/agent/test_auxiliary_relay.py
-      - scripts/run_tests.sh tests/hermes_cli/test_lifecycle.py tests/gateway/test_session_boundary_hooks.py tests/gateway/test_session_model_reset.py
+      - scripts/run_tests.sh tests/hermes_cli/test_lifecycle.py tests/gateway/test_finalize_session_off_loop.py tests/gateway/test_session_boundary_hooks.py tests/gateway/test_session_model_reset.py
     retirement: Remove when upstream isolates overlapping Relay scope lifetimes, preserves owner-loop execution for nested synchronous LLM calls and streams, and passes the same real-binding lifecycle contracts.
 
   - id: provider-telemetry-runtime-ownership
@@ -421,7 +433,8 @@ patches:
     rationale: >-
       Persist exact cron trigger origin, due slot, and trigger time so natural
       scheduler runs cannot be confused with manual, external, catch-up, direct,
-      recovered, or unknown executions across restart and reconciliation.
+      recovered, or unknown executions across restart and reconciliation, and
+      transactionally re-arm an exact owner claim if ledger creation fails.
     paths:
       - agent/monitoring/cron_health.py
       - agent/monitoring/events.py
@@ -430,14 +443,18 @@ patches:
       - cron/scheduler.py
       - cron/scheduler_provider.py
       - hermes_cli/cron.py
+      - plugins/cron_providers/chronos/__init__.py
+      - tests/cron/test_claim_job_for_fire.py
       - tests/cron/test_execution_ledger.py
       - tests/cron/test_jobs.py
+      - tests/cron/test_parallel_pool.py
       - tests/cron/test_scheduler_provider.py
       - tests/monitoring/test_cron_health_export.py
+      - tests/plugins/test_chronos_cron.py
       - tests/tools/test_cronjob_run_immediate.py
       - tools/cronjob_tools.py
     tests:
-      - scripts/run_tests.sh tests/cron/test_execution_ledger.py tests/cron/test_jobs.py tests/cron/test_scheduler_provider.py tests/monitoring/test_cron_health_export.py tests/tools/test_cronjob_run_immediate.py
+      - scripts/run_tests.sh tests/cron/test_claim_job_for_fire.py tests/cron/test_execution_ledger.py tests/cron/test_jobs.py tests/cron/test_parallel_pool.py tests/cron/test_scheduler_provider.py tests/monitoring/test_cron_health_export.py tests/plugins/test_chronos_cron.py tests/tools/test_cronjob_run_immediate.py
     retirement: Remove when upstream persists equivalent exact trigger provenance through scheduling, manual dispatch, recovery, monitoring, and execution-ledger migration.
 
   - id: sessiondb-no-more-rows-retry
