@@ -156,7 +156,7 @@ class CronScheduler(ABC):
         ``fire_claimed`` in tracked background work.
         """
         from cron.executions import create_execution
-        from cron.jobs import claim_job_for_fire
+        from cron.jobs import claim_job_for_fire, release_fire_claim
 
         claim_kwargs = {"return_job": True}
         if force:
@@ -165,12 +165,17 @@ class CronScheduler(ABC):
         if not isinstance(claimed_job, dict):
             return None
         claim = claimed_job.get("fire_claim") or {}
-        execution = create_execution(
-            job_id,
-            source=self.name,
-            trigger_origin="external",
-            scheduled_for=claim.get("scheduled_for"),
-        )
+        owner = str(claim["by"])
+        try:
+            execution = create_execution(
+                job_id,
+                source=self.name,
+                trigger_origin="external",
+                scheduled_for=claim.get("scheduled_for"),
+            )
+        except BaseException:
+            release_fire_claim(job_id, expected_owner=owner)
+            raise
         claimed_job["execution_id"] = execution["id"]
         return claimed_job
 

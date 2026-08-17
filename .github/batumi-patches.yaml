@@ -10,8 +10,9 @@ patches:
     kind: operations
     rationale: >-
       Pin npm bootstrap and Debian container inputs to reviewed immutable
-      versions, suppress bootstrap lifecycle scripts, and enforce the
-      repository release-age policy in CI and Docker dependency installs.
+      versions, suppress bootstrap lifecycle scripts, enforce the repository
+      release-age policy, and reject equivalent unapproved global npm install
+      syntax in CI and Docker dependency installs.
     paths:
       - .github/workflows/deploy-site.yml
       - .github/workflows/docs-site-checks.yml
@@ -429,7 +430,8 @@ patches:
     rationale: >-
       Persist exact cron trigger origin, due slot, and trigger time so natural
       scheduler runs cannot be confused with manual, external, catch-up, direct,
-      recovered, or unknown executions across restart and reconciliation.
+      recovered, or unknown executions across restart and reconciliation, and
+      transactionally re-arm an exact owner claim if ledger creation fails.
     paths:
       - agent/monitoring/cron_health.py
       - agent/monitoring/events.py

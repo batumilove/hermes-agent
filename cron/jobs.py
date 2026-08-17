@@ -2772,6 +2772,31 @@ def _claim_job_for_fire_locked(
         return False
 
 
+def release_fire_claim(job_id: str, *, expected_owner: str) -> bool:
+    """Release one exact fire owner and re-arm its exact scheduled slot.
+
+    This is the rollback half of claim-before-ledger external dispatch.  The
+    owner comparison fences a stale caller from clearing a claim acquired by a
+    newer attempt.  Both the claim removal and slot restoration are persisted
+    in the same jobs-store critical section.
+    """
+    with _jobs_lock():
+        jobs = load_jobs()
+        for job in jobs:
+            if job.get("id") != job_id:
+                continue
+            claim = job.get("fire_claim")
+            if not isinstance(claim, dict) or claim.get("by") != expected_owner:
+                return False
+            if "scheduled_for" not in claim:
+                return False
+            job["next_run_at"] = claim.get("scheduled_for")
+            job["fire_claim"] = None
+            save_jobs(jobs)
+            return True
+    return False
+
+
 # Completed one-shot job records are retained in jobs.json (final status +
 # delivery error stay inspectable via `cronjob list`) instead of being deleted
 # at completion, then pruned by _sweep_completed_oneshots once they age out.

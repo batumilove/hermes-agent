@@ -457,7 +457,7 @@ def test_external_fire_holds_admission_until_execution_is_running(monkeypatch, t
     def claim(job_id, **kwargs):
         assert state["inside"] is True
         events.append("claim")
-        return {"id": job_id, "name": "t", "fire_claim": {}}
+        return {"id": job_id, "name": "t", "fire_claim": {"by": "owner"}}
 
     def create_execution(*args, **kwargs):
         assert state["inside"] is True
@@ -512,6 +512,47 @@ def test_claim_fire_persists_attempt_before_fire_claimed(monkeypatch):
     assert claimed["execution_id"] == "exec-1"
     assert provider.fire_claimed(claimed) is True
     assert events == ["claim", "ledger", ("run", "exec-1")]
+
+
+def test_claim_fire_ledger_oserror_releases_claim_and_restores_retry_slot(
+    monkeypatch, tmp_path
+):
+    """A durable claim is rolled back if the execution ledger cannot be written."""
+    import pytest
+
+    import cron.executions as executions
+    import cron.jobs as jobs
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    job = jobs.create_job(prompt="x", schedule="every 5m", name="ledger-failure")
+    scheduled_for = job["next_run_at"]
+    ledger_calls = 0
+
+    def create_execution(*args, **kwargs):
+        nonlocal ledger_calls
+        ledger_calls += 1
+        if ledger_calls == 1:
+            raise OSError("disk full")
+        return {"id": "retry-execution"}
+
+    monkeypatch.setattr(
+        executions,
+        "create_execution",
+        create_execution,
+    )
+
+    provider = InProcessCronScheduler()
+    with pytest.raises(OSError, match="disk full"):
+        provider.claim_fire(job["id"])
+
+    released = jobs.get_job(job["id"])
+    assert released["fire_claim"] is None
+    assert released["next_run_at"] == scheduled_for
+    retried = provider.claim_fire(job["id"])
+    assert isinstance(retried, dict)
+    assert retried["fire_claim"]["scheduled_for"] == scheduled_for
+    assert retried["execution_id"] == "retry-execution"
 
 
 def test_fire_due_forwards_manual_force_to_store_claim(monkeypatch):
