@@ -1346,10 +1346,10 @@ def test_deriver_conclusions_uses_db_count_not_stale_log_grep(monkeypatch):
 
     def fake_ssh(cmd: str, timeout: int = 20) -> str:
         ssh_calls.append((cmd, timeout))
-        if "conclusions" in cmd and "psql" in cmd:
+        if "level IN ('inductive','deductive')" in cmd and "psql" in cmd:
             return "2083"
         if "Observation Count" in cmd:
-            return "count|6\nlast|  4,000 ms\nconcl|\n"
+            return "count|6\nlast|  4,000 ms\n"
         raise AssertionError(f"unexpected ssh command: {cmd}")
 
     monkeypatch.setattr(hm, "ssh", fake_ssh)
