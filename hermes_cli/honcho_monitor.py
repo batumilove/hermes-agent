@@ -974,6 +974,23 @@ def build_db_stats_query() -> str:
     )
 
 
+def collect_deriver_conclusions(ssh_fn=ssh) -> int:
+    """Count deriver conclusions from the database.
+
+    The old source — grepping deriver logs for ``N total conclusions`` — went
+    stale: the deployed Honcho version never emits that line (and has no
+    ``conclusions`` table); conclusions live as ``documents`` rows with level
+    ``inductive`` or ``deductive``. Fall back to 0 only when the query fails.
+    """
+    raw = ssh_fn(
+        "docker exec honcho-database-1 psql -U postgres -t -A -c \""
+        "SELECT count(*) FROM documents WHERE deleted_at IS NULL "
+        "AND level IN ('inductive','deductive');\"",
+        timeout=20,
+    )
+    return _int_or_zero(raw.strip().splitlines()[-1]) if raw and not raw.startswith("__SSH_ERROR__") else 0
+
+
 def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
     disk_usage = shutil.disk_usage(STATE_PATH.parent)
     observer = {
@@ -1066,16 +1083,15 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
     logs_raw = ssh(
         "docker logs honcho-deriver-1 --since 15m > /tmp/honcho-deriver-monitor.log 2>&1; "
         "printf 'count|%s\n' \"$(grep -c 'Observation Count' /tmp/honcho-deriver-monitor.log || true)\"; "
-        "printf 'last|%s\n' \"$(grep 'Llm Call Duration' /tmp/honcho-deriver-monitor.log | tail -1 || true)\"; "
-        "printf 'concl|%s\n' \"$(grep -o '[0-9][0-9]* total conclusions' /tmp/honcho-deriver-monitor.log | tail -1 || true)\"",
+        "printf 'last|%s\\n' \\\"$(grep 'Llm Call Duration' /tmp/honcho-deriver-monitor.log | tail -1 || true)\\\"",
         timeout=30,
     )
     log_parts = _parse_kv_lines(logs_raw)
     runs_15m = _int_or_zero(log_parts.get("count", "0"))
-    conclusions = 0
-    concl_match = re.search(r"(\d+)", log_parts.get("concl", "") or "")
-    if concl_match:
-        conclusions = _int_or_zero(concl_match.group(1))
+    # Conclusions come from the DB now (collect_deriver_conclusions); the old
+    # log-grep source went stale — the "N total conclusions" line no longer
+    # exists in the deployed Honcho version.
+    conclusions = collect_deriver_conclusions(ssh_fn=ssh)
     last_duration_s = 0
     last_match = re.search(r"([\d,]+)\s+ms", log_parts.get("last", ""))
     if last_match:
