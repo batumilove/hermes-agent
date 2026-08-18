@@ -1336,3 +1336,28 @@ def test_should_emit_report_can_be_forced_for_manual_debug(monkeypatch):
     monkeypatch.setenv("HONCHO_MONITOR_ALWAYS_PRINT", "1")
 
     assert hm.should_emit_report(snapshot, previous_state={}) is True
+
+
+def test_deriver_conclusions_uses_db_count_not_stale_log_grep(monkeypatch):
+    """The conclusions metric must come from the DB (inductive+deductive
+    documents), because the 'N total conclusions' log line no longer exists in
+    the deployed Honcho version and the grep always yielded 0."""
+    ssh_calls: list[tuple[str, int]] = []
+
+    def fake_ssh(cmd: str, timeout: int = 20) -> str:
+        ssh_calls.append((cmd, timeout))
+        if "level IN ('inductive','deductive')" in cmd and "psql" in cmd:
+            return "2083"
+        if "Observation Count" in cmd:
+            return "count|6\nlast|  4,000 ms\n"
+        raise AssertionError(f"unexpected ssh command: {cmd}")
+
+    monkeypatch.setattr(hm, "ssh", fake_ssh)
+
+    conclusions = hm.collect_deriver_conclusions(ssh_fn=fake_ssh)
+
+    assert conclusions == 2083
+    assert any(
+        "level IN ('inductive','deductive')" in cmd and "psql" in cmd
+        for cmd, _ in ssh_calls
+    )
