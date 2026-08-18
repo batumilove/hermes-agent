@@ -154,13 +154,45 @@ def has_reasoning_stream_observer_hooks() -> bool:
     return stream_reasoning_deltas_enabled() and bool(_registered_callbacks("on_stream_delta"))
 
 
+_STREAM_REASONING_CACHE = None  # (path, mtime_ns, size) -> bool
+
+
+def _load_config_once():
+    from hermes_cli import config as config_mod
+
+    return config_mod.load_config()
+
+
 def stream_reasoning_deltas_enabled() -> bool:
-    """Return True only when the user opted plugins into reasoning deltas."""
+    """Return True only when the user opted plugins into reasoning deltas.
+
+    Called once per reasoning delta of every stream (#watchdog-convoy 2026-08-18:
+    per-delta load_config() convoyed 15 threads on _CONFIG_LOCK and starved the
+    gateway liveness probe). Cache the boolean keyed on the config file's
+    (mtime_ns, size) so an edit is picked up on the next delta, but an
+    unchanged config costs one stat() instead of a full locked load+deepcopy.
+    """
+    global _STREAM_REASONING_CACHE
     try:
         from hermes_cli import config as config_mod
 
-        config = config_mod.load_config()
-        return bool(config_mod.cfg_get(config, "plugins", "stream_reasoning_deltas", default=False))
+        config_path = config_mod.get_config_path()
+        try:
+            st = config_path.stat()
+            sig = (str(config_path), st.st_mtime_ns, st.st_size)
+        except FileNotFoundError:
+            sig = (str(config_path), None, None)
+
+        cached = _STREAM_REASONING_CACHE
+        if cached is not None and cached[0] == sig:
+            return cached[1]
+
+        config = _load_config_once()
+        enabled = bool(
+            config_mod.cfg_get(config, "plugins", "stream_reasoning_deltas", default=False)
+        )
+        _STREAM_REASONING_CACHE = (sig, enabled)
+        return enabled
     except Exception:
         logger.debug("failed to read plugins.stream_reasoning_deltas", exc_info=True)
         return False
