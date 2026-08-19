@@ -4839,6 +4839,59 @@ class TestApplyDatabasePragmas:
         finally:
             conn.close()
 
+    def test_honors_synchronous_from_config(self, tmp_path, monkeypatch):
+        """database.synchronous=NORMAL (1) must reach the connection on
+        non-Darwin platforms (the live-deploy latency fix depends on it)."""
+        import sqlite3
+        import hermes_state
+        from hermes_state import apply_database_pragmas
+
+        if hermes_state.sys.platform == "darwin":
+            pytest.skip("synchronous operator value is Darwin-exempt")
+
+        conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            self._patch_cfg(monkeypatch, {"database": {"synchronous": 1}})
+            apply_database_pragmas(conn, db_label="test.db")
+            assert conn.execute("PRAGMA synchronous").fetchone()[0] == 1
+        finally:
+            conn.close()
+
+    def test_synchronous_excluded_on_darwin(self, tmp_path, monkeypatch):
+        """On Darwin the operator synchronous value must be ignored —
+        _enforce_macos_synchronous_full owns that pragma (F_FULLFSYNC)."""
+        import sqlite3
+        import hermes_state
+        from hermes_state import apply_database_pragmas
+
+        conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            before = conn.execute("PRAGMA synchronous").fetchone()[0]
+            monkeypatch.setattr(hermes_state.sys, "platform", "darwin")
+            self._patch_cfg(monkeypatch, {"database": {"synchronous": 1}})
+            apply_database_pragmas(conn, db_label="test.db")
+            after = conn.execute("PRAGMA synchronous").fetchone()[0]
+            assert after == before  # untouched on Darwin
+        finally:
+            conn.close()
+
+    def test_synchronous_ignored_when_unset(self, tmp_path, monkeypatch):
+        """Absence of database.synchronous must leave the compile default
+        (FULL, 2) alone — no behavior change for existing installs."""
+        import sqlite3
+        from hermes_state import apply_database_pragmas
+
+        conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            self._patch_cfg(monkeypatch, {"database": {"cache_size": -2000}})
+            apply_database_pragmas(conn, db_label="test.db")
+            assert conn.execute("PRAGMA synchronous").fetchone()[0] == 2
+        finally:
+            conn.close()
+
     def test_noop_when_database_section_missing(self, tmp_path, monkeypatch):
         import sqlite3
         from hermes_state import apply_database_pragmas

@@ -1687,10 +1687,32 @@ def apply_database_pragmas(
     * ``temp_store`` — 0=DEFAULT(file), 1=FILE, 2=MEMORY, 3=ALWAYS
     * ``wal_autocheckpoint`` — WAL auto-checkpoint threshold in pages
     * ``journal_size_limit`` — max journal/WAL size in bytes
+    * ``synchronous`` — 0=OFF, 1=NORMAL, 2=FULL, 3=EXTRA. **macOS
+      connections are exempt**: ``_enforce_macos_synchronous_full`` forces
+      FULL on Darwin regardless of this setting (fsync does not guarantee
+      durability there without F_FULLFSYNC), so on that platform the
+      operator value is deliberately ignored here.
 
     Best-effort: config load or pragma failures are ignored so DB init
     never breaks on a malformed ``database:`` section.
     """
+    if sys.platform == "darwin":
+        # Darwin always runs FULL via _enforce_macos_synchronous_full;
+        # honoring an operator NORMAL here would be silently re-forced
+        # (or, if ordering changed, corruption-prone). Skip entirely.
+        synchronous_supported = False
+    else:
+        synchronous_supported = True
+    pragma_names = [
+        "cache_size",
+        "mmap_size",
+        "temp_store",
+        "wal_autocheckpoint",
+        "journal_size_limit",
+    ]
+    if synchronous_supported:
+        pragma_names.append("synchronous")
+
     try:
         # Local import avoids a circular import with hermes_cli.config.
         from hermes_cli.config import cfg_get, load_config_readonly
@@ -1701,13 +1723,7 @@ def apply_database_pragmas(
 
     # Performance PRAGMAs (applied to ALL connection types: writer, read_only,
     # and WAL per-thread readers).
-    for pragma_name in (
-        "cache_size",
-        "mmap_size",
-        "temp_store",
-        "wal_autocheckpoint",
-        "journal_size_limit",
-    ):
+    for pragma_name in pragma_names:
         raw_value = cfg_get(cfg, "database", pragma_name, default=None)
         if raw_value is None:
             continue
