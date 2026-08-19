@@ -53,6 +53,7 @@ def test_ag_discovers_directory_plugin_before_giving_up(monkeypatch):
 def test_run_one_job_emits_activegraph_cron_events(monkeypatch):
     """Cron emits ActiveGraph started/completed events from the shared fire path."""
     events = []
+    monkeypatch.setattr(s, "create_execution", lambda *a, **k: {"id": "exec-ag-1"})
     monkeypatch.setattr(s, "_ag_emit", lambda event_type, payload: events.append((event_type, payload)))
     monkeypatch.setattr(s, "_ag_import_attempted", True)
     monkeypatch.setattr(s, "claim_dispatch", lambda jid: True)
@@ -82,6 +83,7 @@ def test_run_one_job_emits_activegraph_cron_events(monkeypatch):
     assert [event for event, _ in events] == ["hermes.cron.started", "hermes.cron.completed"]
     assert events[0][1] == {
         "job_id": "cron-ag-1",
+        "execution_id": "exec-ag-1",
         "job_name": "cron AG",
         "schedule": "every 5m",
         "no_agent": True,
