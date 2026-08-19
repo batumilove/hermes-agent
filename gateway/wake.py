@@ -82,6 +82,7 @@ async def deliver_wake(
             message_type=MessageType.TEXT,
             source=source,
             internal=True,
+            metadata={"drain_admission": "new_agent_turn"},
         )
         await adapter.handle_message(synth_event)
         return

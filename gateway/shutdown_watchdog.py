@@ -83,12 +83,23 @@ class _LoopFloorTimerHandle:
 class _LoopLivenessWatchdogHandle:
     """Small lifecycle handle for the daemon liveness thread."""
 
-    def __init__(self, stop_event: threading.Event, thread: threading.Thread):
+    def __init__(
+        self,
+        stop_event: threading.Event,
+        thread: threading.Thread,
+        on_stop: Optional[Callable[[], None]] = None,
+    ):
         self._stop_event = stop_event
         self._thread = thread
+        self._on_stop = on_stop
 
     def stop(self) -> None:
         self._stop_event.set()
+        if self._on_stop is not None:
+            try:
+                self._on_stop()
+            except Exception:
+                logger.debug("Loop watchdog hard-exit cleanup failed", exc_info=True)
 
     def join(self, timeout: Optional[float] = None) -> None:
         self._thread.join(timeout=timeout)
@@ -118,6 +129,7 @@ def start_loop_liveness_watchdog(
     probe_timeout: float = DEFAULT_LOOP_WATCHDOG_TIMEOUT_S,
     max_strikes: int = DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
     exit_code: int = GATEWAY_SERVICE_RESTART_EXIT_CODE,
+    hard_deadline_s: Optional[float] = None,
 ) -> Optional[_LoopLivenessWatchdogHandle]:
     """Start an out-of-loop watchdog that hard-exits after missed probes.
 
@@ -130,6 +142,45 @@ def start_loop_liveness_watchdog(
     timeout = probe_timeout
     strikes_limit = max_strikes
     stop_event = threading.Event()
+
+    def _cancel_hard_exit_fallback() -> None:
+        """Disarm the C-level hard-exit timer and release its sink fd."""
+        try:
+            faulthandler.cancel_dump_traceback_later()
+        except Exception:
+            logger.debug("Failed to cancel hard-exit fallback timer", exc_info=True)
+        nonlocal hard_exit_fd
+        if hard_exit_fd is not None:
+            try:
+                os.close(hard_exit_fd)
+            except OSError:
+                pass
+            hard_exit_fd = None
+
+    # Independent lifetime backstop: a loop frozen hard enough to miss every
+    # probe forever would otherwise strike out only if probe logic stays
+    # healthy. Arm a monotonic wall-clock deadline so the process still
+    # hard-exits (supervisor restarts it) even if the probe path itself wedges.
+    hard_deadline_abs: Optional[float] = None
+    hard_exit_fd: Optional[int] = None
+    if hard_deadline_s is not None and hard_deadline_s > 0.0:
+        hard_deadline_abs = time.monotonic() + float(hard_deadline_s)
+        try:
+            # Never write the C-level dump to stderr: a blocked fd 2 would
+            # wedge faulthandler before its final _exit(). Devnull keeps the
+            # sink non-blocking for the process lifetime.
+            hard_exit_fd = os.open(os.devnull, os.O_WRONLY)
+            faulthandler.dump_traceback_later(
+                float(hard_deadline_s), repeat=False, file=hard_exit_fd, exit=True
+            )
+        except Exception:
+            if hard_exit_fd is not None:
+                try:
+                    os.close(hard_exit_fd)
+                except OSError:
+                    pass
+                hard_exit_fd = None
+            hard_deadline_abs = None
 
     def _wait_for_probe(probe_event: threading.Event) -> Optional[bool]:
         deadline = time.monotonic() + timeout
@@ -209,8 +260,9 @@ def start_loop_liveness_watchdog(
         thread.start()
     except Exception:
         logger.debug("Failed to start gateway loop liveness watchdog", exc_info=True)
+        _cancel_hard_exit_fallback()
         return None
-    return _LoopLivenessWatchdogHandle(stop_event, thread)
+    return _LoopLivenessWatchdogHandle(stop_event, thread, _cancel_hard_exit_fallback)
 
 
 def _process_hermes_home() -> Path:

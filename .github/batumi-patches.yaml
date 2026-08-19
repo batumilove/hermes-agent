@@ -772,6 +772,25 @@ patches:
       - scripts/run_tests.sh tests/gateway/test_api_server_active_work_drain.py tests/gateway/test_shutdown_cache_cleanup.py tests/cron/test_running_job_attribution.py tests/cron/test_shutdown_interrupt.py
     retirement: Remove when upstream preserves equivalent generation-scoped shutdown work identities, bounded evidence writes, watchdog-safe snapshots, and false-clean-exit prevention.
 
+  - id: gateway-lifecycle-drain-incident-contracts
+    kind: core
+    rationale: >-
+      Include detached delegation work in aggregate maintenance-drain accounting,
+      refuse completion wakes explicitly marked as new agent turns while an
+      external drain owns intake, and bind the loop-freeze hard-exit fallback to
+      the supervisor stop deadline without leaking its timer or descriptor.
+    paths:
+      - gateway/run.py
+      - gateway/shutdown_watchdog.py
+      - gateway/wake.py
+      - tests/gateway/test_loop_liveness_watchdog.py
+      - tests/gateway/test_shutdown_cache_cleanup.py
+      - tests/gateway/test_shutdown_incident_contract.py
+    tests:
+      - scripts/run_tests.sh tests/gateway/test_shutdown_incident_contract.py tests/gateway/test_loop_liveness_watchdog.py tests/gateway/test_shutdown_cache_cleanup.py
+      - scripts/run_tests.sh tests/gateway/test_gateway_shutdown.py tests/gateway/test_restart_drain.py tests/gateway/test_external_drain_control.py tests/gateway/test_shutdown_aggregate_budget_contract.py
+    retirement: Remove when upstream accounts for detached delegations during drain, preserves marked completion-wake admission boundaries, and supplies an equivalent supervisor-bounded loop-freeze backstop with cleanup coverage.
+
   - id: desktop-messaging-config-load-once
     kind: core
     rationale: >-
