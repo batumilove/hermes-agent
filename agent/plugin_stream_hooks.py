@@ -159,7 +159,11 @@ def stream_reasoning_deltas_enabled() -> bool:
     try:
         from hermes_cli import config as config_mod
 
-        config = config_mod.load_config()
+        # Hot path: called once per streaming reasoning delta. Must never take
+        # the load_config() write path (global lock + defensive deepcopy of the
+        # full merged config) — that serialized concurrent streams on
+        # _CONFIG_LOCK and starved the gateway event loop (watchdog exit 75).
+        config = config_mod.load_config_readonly()
         return bool(config_mod.cfg_get(config, "plugins", "stream_reasoning_deltas", default=False))
     except Exception:
         logger.debug("failed to read plugins.stream_reasoning_deltas", exc_info=True)
