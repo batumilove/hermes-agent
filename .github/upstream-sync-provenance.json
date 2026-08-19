@@ -1,7 +1,7 @@
 {
-  "version": 1,
-  "upstream_base": "5a3920b7344787fa1d4f0d4cec1f8cf4a445c189",
-  "source_head": "54e1aef68f4537074880f1f38ffe4bae0fa8d99d",
-  "squash_commit": "74e78848e2328fcc544be069744a5428205e9cfa",
-  "fetch_depth": 8
+  "fetch_depth": 8,
+  "source_head": "670b6b24e02f13bb924eb07373619e384252af70",
+  "squash_commit": "b656e9e95734243f9f3d1e5143338df50cd80d92",
+  "upstream_base": "e88d8831d223417c30d99c1584f8d77de35f8921",
+  "version": 1
 }
