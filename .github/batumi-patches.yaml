@@ -794,3 +794,17 @@ patches:
     tests:
       - scripts/run_tests.sh tests/hermes_cli/test_profiles_sidebar_scope.py
     retirement: Remove when upstream carries equivalent endpoint-level coverage that rejects heavyweight profile inventory while preserving default and named-profile results.
+
+  - id: stream-reasoning-readonly-config
+    kind: core
+    rationale: >-
+      stream_reasoning_deltas_enabled runs once per streaming reasoning delta;
+      keep it on load_config_readonly() so concurrent streams never serialize
+      on the load_config() global lock (gateway event loop starvation,
+      shutdown-watchdog exit 75, observed 2026-08-18).
+    paths:
+      - agent/plugin_stream_hooks.py
+      - tests/test_plugin_stream_reasoning_deltas_hotpath.py
+    tests:
+      - scripts/run_tests.sh tests/test_plugin_stream_reasoning_deltas_hotpath.py
+    retirement: Remove when upstream ships an equivalent readonly config read on this hot path.
