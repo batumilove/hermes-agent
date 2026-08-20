@@ -320,42 +320,39 @@ def context_as_json(ctx: Dict[str, Any]) -> str:
 
 
 def _default_gateway_remaining_pids() -> List[int]:
-    """Discover remaining non-self processes in our own cgroup (Linux only).
+    """Discover remaining processes in our own cgroup (Linux only).
 
-    Reads /proc/<pid>/cgroup for every visible pid and keeps the ones whose
-    cgroup-v2 path matches ours.  Pure stdlib, best-effort, never raises.
-    Returns ``[]`` on non-Linux or on any read failure.
+    Bounded discovery: derives the unified (cgroup-v2) path from the
+    ``0::/path`` entry of ``/proc/self/cgroup`` and performs ONE direct
+    read of ``/sys/fs/cgroup/<path>/cgroup.procs``.  No global /proc
+    enumeration, no subprocesses.  Pure stdlib, best-effort, never
+    raises.  Returns ``[]`` on non-v2 systems or any read failure.
     """
     try:
         with open("/proc/self/cgroup", encoding="utf-8") as fh:
             lines = [line.strip() for line in fh if line.strip()]
     except (OSError, ValueError):
         return []
-    # Match any of our own cgroup lines; ignore the hierarchy id prefix.
-    self_keys = set()
+    v2_path = ""
     for line in lines:
         parts = line.split(":", 2)
-        if len(parts) == 3 and parts[2]:
-            self_keys.add(parts[2])
-    if not self_keys:
+        if len(parts) == 3 and parts[0] == "0" and parts[1] == "" and parts[2]:
+            v2_path = parts[2]
+            break
+    if not v2_path:
+        # No unified (v2) membership → bounded discovery unavailable.
+        return []
+    try:
+        with open(
+            f"/sys/fs/cgroup{v2_path}/cgroup.procs", encoding="utf-8"
+        ) as fh:
+            procs_text = fh.read()
+    except (OSError, ValueError):
         return []
     pids: List[int] = []
-    try:
-        entries = os.listdir("/proc")
-    except OSError:
-        return []
-    for entry in entries:
-        if not entry.isdigit():
-            continue
-        try:
-            with open(f"/proc/{entry}/cgroup", encoding="utf-8") as fh:
-                for line in fh:
-                    parts = line.strip().split(":", 2)
-                    if len(parts) == 3 and parts[2] in self_keys:
-                        pids.append(int(entry))
-                        break
-        except (OSError, ValueError):
-            continue
+    for token in procs_text.split():
+        if token.isdigit():
+            pids.append(int(token))
     return pids
 
 
@@ -403,6 +400,9 @@ def _redacted_command_description(pid: int) -> Optional[str]:
         executable = data.split(b"\x00", 1)[0]
         if executable:
             basename = os.path.basename(executable.decode("utf-8", errors="replace"))
+            # Squeeze whitespace so an executable name containing spaces can
+            # never smuggle what looks like raw argv into the record.
+            basename = "".join(basename.split())
             if basename:
                 return basename[:64]
     # Kernel threads / gone pids: fall back to the Name field or opaque marker.

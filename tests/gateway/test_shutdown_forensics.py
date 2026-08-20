@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import json
 import os
 import signal
@@ -285,7 +286,7 @@ class TestCaptureResidualChildren:
             assert data["children"][0].get("registered") is None
 
     def test_default_remaining_pids_fn_reads_proc_children_of_self(self, tmp_path):
-        # Default /proc-based discovery: returns at least a list, never raises.
+        # Default cgroup-based discovery: returns at least a list, never raises.
         result = sf.capture_residual_children(
             phase="test",
             deadline_remaining=1.0,
@@ -295,3 +296,150 @@ class TestCaptureResidualChildren:
         # May or may not write depending on live children; must not raise and
         # must return dict|None.
         assert result is None or isinstance(result, dict)
+
+
+# ---------------------------------------------------------------------------
+# _default_gateway_remaining_pids — bounded cgroup-v2 cgroup.procs discovery
+# ---------------------------------------------------------------------------
+
+class TestDefaultGatewayRemainingPidsBoundedCgroup:
+    """Discovery must read exactly one cgroup.procs file, never /proc scans."""
+
+    def _install(self, monkeypatch, tmp_path, cgroup_self_lines, procs_content):
+        procs_file = tmp_path / "cgroup.procs"
+        procs_file.write_text(procs_content, encoding="utf-8")
+        self_file = tmp_path / "self_cgroup"
+        self_file.write_text(cgroup_self_lines, encoding="utf-8")
+        reads = {"cgroup_self": 0, "cgroup_procs": 0, "proc_entries": []}
+
+        real_open = builtins.open
+
+        def fake_open(path, *args, **kwargs):
+            p = str(path)
+            if p == "/proc/self/cgroup":
+                reads["cgroup_self"] += 1
+                return real_open(self_file, *args, **kwargs)
+            if p.endswith("/cgroup.procs"):
+                reads["cgroup_procs"] += 1
+                return real_open(procs_file, *args, **kwargs)
+            raise AssertionError(f"unexpected read: {p}")
+
+        monkeypatch.setattr(builtins, "open", fake_open)
+
+        def fake_listdir(path):
+            if str(path) == "/proc":
+                reads["proc_entries"].append("listed")
+                raise AssertionError("global /proc enumeration is forbidden")
+            raise AssertionError(f"unexpected listdir: {path}")
+
+        monkeypatch.setattr(sf.os, "listdir", fake_listdir)
+        return reads
+
+    def test_reads_single_cgroup_procs_file_derived_from_v2_entry(
+        self, monkeypatch, tmp_path
+    ):
+        reads = self._install(
+            monkeypatch,
+            tmp_path,
+            cgroup_self_lines="0::/hermes-gateway.service\n",
+            procs_content=f"{os.getpid()}\n4242\n4243\n",
+        )
+        pids = sf._default_gateway_remaining_pids()
+        assert reads["cgroup_self"] == 1
+        assert reads["cgroup_procs"] == 1
+        assert sorted(pids) == sorted([os.getpid(), 4242, 4243])
+
+    def test_ignores_non_v2_cgroup_lines(self, monkeypatch, tmp_path):
+        # Only the 0:: entry may be used; v1 lines must not seed a path.
+        reads = self._install(
+            monkeypatch,
+            tmp_path,
+            cgroup_self_lines=(
+                "10:devices:/user.slice\n"
+                "2:cpu,cpuacct:/\n"
+                "0::/hermes-gateway.service\n"
+            ),
+            procs_content="4242\n",
+        )
+        assert sf._default_gateway_remaining_pids() == [4242]
+        assert reads["cgroup_procs"] == 1
+
+    def test_no_v2_entry_returns_empty(self, monkeypatch, tmp_path):
+        reads = self._install(
+            monkeypatch,
+            tmp_path,
+            cgroup_self_lines="10:devices:/user.slice\n",
+            procs_content="4242\n",
+        )
+        assert sf._default_gateway_remaining_pids() == []
+        assert reads["cgroup_procs"] == 0
+
+    def test_unreadable_cgroup_procs_returns_empty_without_raising(
+        self, monkeypatch, tmp_path
+    ):
+        self_file = tmp_path / "self_cgroup"
+        self_file.write_text("0::/hermes-gateway.service\n", encoding="utf-8")
+        real_open = builtins.open
+
+        def fake_open(path, *args, **kwargs):
+            if str(path) == "/proc/self/cgroup":
+                return real_open(self_file, *args, **kwargs)
+            if str(path).endswith("/cgroup.procs"):
+                raise OSError("permission denied")
+            raise AssertionError(f"unexpected read: {path}")
+
+        monkeypatch.setattr(builtins, "open", fake_open)
+        assert sf._default_gateway_remaining_pids() == []
+
+    def test_unreadable_proc_self_cgroup_returns_empty(self, monkeypatch):
+        real_open = builtins.open
+
+        def fake_open(path, *args, **kwargs):
+            if str(path) == "/proc/self/cgroup":
+                raise OSError("no such file")
+            raise AssertionError(f"unexpected read: {path}")
+
+        monkeypatch.setattr(builtins, "open", fake_open)
+        assert sf._default_gateway_remaining_pids() == []
+
+
+class TestRedactedCommandPrivacy:
+    """Command description must never leak paths, NULs, or raw argv."""
+
+    def test_command_has_no_slash_nul_or_raw_argv(self, monkeypatch, tmp_path):
+        exe = tmp_path / "secretuser" / "binary name with spaces"
+        exe.parent.mkdir()
+        exe.write_bytes(b"#!/bin/sh\n")
+        args = b"/tmp/secretuser/binary name with spaces\x00--password=hunter2\x00file.txt\x00"
+        real_open = builtins.open
+
+        def fake_open(path, *a, **k):
+            if str(path) == f"/proc/12345/cmdline":
+                import io
+
+                return io.BytesIO(args)
+            raise AssertionError(f"unexpected read: {path}")
+
+        monkeypatch.setattr(builtins, "open", fake_open)
+        cmd = sf._redacted_command_description(12345)
+        assert cmd is not None and cmd != ""
+        assert "/" not in cmd
+        assert "\x00" not in cmd
+        assert " " not in cmd
+        assert "--password" not in cmd
+        assert "file.txt" not in cmd
+        assert "secretuser" not in cmd
+        # falls back to opaque marker when nothing safe remains
+        def name_open(path, *a, **k):
+            if str(path) == f"/proc/12345/cmdline":
+                import io
+
+                return io.BytesIO(b"\x00arg1\x00arg2\x00")
+            raise AssertionError(f"unexpected read: {path}")
+
+        monkeypatch.setattr(builtins, "open", name_open)
+        monkeypatch.setattr(
+            sf, "_read_proc_field", lambda pid, key: None if key == "Name" else "x"
+        )
+        cmd2 = sf._redacted_command_description(12345)
+        assert cmd2 == "[redacted]"
