@@ -6620,6 +6620,7 @@ def _run_one_job_body(
             "hermes.cron.started",
             {
                 "job_id": job_id,
+                "execution_id": execution_id,
                 "job_name": job_name,
                 "schedule": _cron_ag_schedule(job),
                 "no_agent": bool(job.get("no_agent", False)),
@@ -6943,6 +6944,7 @@ def _run_one_job_body(
             "hermes.cron.completed" if success else "hermes.cron.failed",
             {
                 "job_id": job_id,
+                "execution_id": execution_id,
                 "job_name": job_name,
                 "success": bool(success),
                 "output_len": len(output) if output else 0,
@@ -6970,6 +6972,7 @@ def _run_one_job_body(
             "hermes.cron.failed",
             {
                 "job_id": str(job.get("id", "?")),
+                "execution_id": execution_id,
                 "job_name": _cron_ag_job_name(job),
                 "success": False,
                 "error": f"{type(e).__name__}: {_err_text}"[:500],
