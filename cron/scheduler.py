@@ -65,70 +65,6 @@ from agent.delegation_context import (
 
 logger = logging.getLogger(__name__)
 
-# ActiveGraph event bridge — optional/user-plugin owned.
-# Keep this lazy and fail-open: cron must never depend on observability being
-# installed or initialized, and scheduler.py can be imported before the plugin
-# manager has loaded user plugins.
-_ag_emit = None
-_ag_import_attempted = False
-
-
-def _ag(event_type: str, payload: dict) -> None:
-    """Emit an ActiveGraph event when the optional activegraph plugin is loaded.
-
-    Directory plugins are importable as ``hermes_plugins.<slug>`` only after the
-    plugin manager has discovered them. Cron runs from scheduler threads where
-    this helper can be reached before that namespace exists, so fall back to a
-    best-effort plugin discovery before giving up.  Failure stays fail-open:
-    cron execution must not depend on observability.
-    """
-    global _ag_emit, _ag_import_attempted
-    if _ag_emit is None and not _ag_import_attempted:
-        _ag_import_attempted = True
-        try:
-            import importlib
-            try:
-                _plugin = importlib.import_module("hermes_plugins.activegraph")
-            except Exception:
-                from hermes_cli.plugins import discover_plugins
-
-                discover_plugins()
-                _plugin = importlib.import_module("hermes_plugins.activegraph")
-            _ag_emit = getattr(_plugin, "_emit")
-        except Exception:
-            _ag_emit = None
-    if _ag_emit is None:
-        return
-    try:
-        _ag_emit(event_type, payload)
-    except Exception:
-        logger.debug("ActiveGraph cron emit failed for %s", event_type, exc_info=True)
-
-
-def _cron_ag_job_name(job: dict) -> str:
-    return str(job.get("name") or str(job.get("prompt") or "")[:60] or job.get("id") or "cron job")
-
-
-def _cron_ag_schedule(job: dict) -> str:
-    display = str(job.get("schedule_display") or "").strip()
-    if display:
-        return display
-    schedule = job.get("schedule")
-    if isinstance(schedule, dict):
-        for key in ("display", "value", "expr", "run_at"):
-            value = str(schedule.get(key) or "").strip()
-            if value:
-                return value
-        kind = str(schedule.get("kind") or "").strip()
-        if kind == "interval" and schedule.get("minutes"):
-            return f"every {schedule.get('minutes')}m"
-        if kind:
-            return kind
-    if schedule is not None:
-        return str(schedule)
-    return ""
-
-
 def _close_late_session_db_result(future: "concurrent.futures.Future") -> None:
     """Done-callback: close a SessionDB whose constructor finished after run_job's timeout.
 
@@ -6639,17 +6575,10 @@ def _run_one_job_body(
             on_execution_started()
 
         job_id = str(job.get("id", "?"))
-        job_name = _cron_ag_job_name(job)
-        _ag(
-            "hermes.cron.started",
-            {
-                "job_id": job_id,
-                "execution_id": execution_id,
-                "job_name": job_name,
-                "schedule": _cron_ag_schedule(job),
-                "no_agent": bool(job.get("no_agent", False)),
-                "has_script": bool(job.get("script")),
-            },
+        logger.info(
+            "cron_execution_started job_id=%s execution_id=%s",
+            job_id,
+            execution_id,
         )
 
         # Run the job under the profile's secret scope. get_secret() fails
@@ -6960,27 +6889,17 @@ def _run_one_job_body(
             error=error,
             delivery_outcome=delivery_outcome,
         )
-        # Emit the terminal event only after canonical bookkeeping succeeds.
-        # Otherwise a bookkeeping exception enters the outer failure handler;
-        # emitting earlier would produce both completed and failed terminals
-        # for one started event.
-        _ag(
-            "hermes.cron.completed" if success else "hermes.cron.failed",
-            {
-                "job_id": job_id,
-                "execution_id": execution_id,
-                "job_name": job_name,
-                "success": bool(success),
-                "output_len": len(output) if output else 0,
-                "response_len": len(final_response) if final_response else 0,
-                "error": (error or "")[:500],
-                "delivery_error": (delivery_error or "")[:500],
-            },
+        logger.info(
+            "cron_execution_finished job_id=%s execution_id=%s success=%s",
+            job_id,
+            execution_id,
+            success,
         )
         return True
 
     except BaseException as e:  # noqa: BLE001 — deliberate: see below
-        # BaseException, not Exception (#73973): the inner run_job handler
+        # BaseException, not Exception: cancellation and shutdown signals must
+        # still reach the canonical failure bookkeeping below.
         # re-raises CancelledError / KeyboardInterrupt / SystemExit after agent
         # teardown, and none of those are Exception subclasses. If they escape
         # without mark_job_run(False), a finite one-shot is left wedged —
@@ -6992,16 +6911,6 @@ def _run_one_job_body(
         # a stale worker must not record over a replacement claim owner.
         _err_text = str(e) or type(e).__name__
         logger.error("Error processing job %s: %s", job['id'], _err_text)
-        _ag(
-            "hermes.cron.failed",
-            {
-                "job_id": str(job.get("id", "?")),
-                "execution_id": execution_id,
-                "job_name": _cron_ag_job_name(job),
-                "success": False,
-                "error": f"{type(e).__name__}: {_err_text}"[:500],
-            },
-        )
         delivery_outcome = "suppressed"
         # Owner fencing: a stale worker whose fire claim was taken over (or a
         # transport-cancelled worker) must not send a failure alert on top of
