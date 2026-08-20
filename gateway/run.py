@@ -15629,6 +15629,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
 
             from gateway.status import remove_pid_file, release_gateway_runtime_lock
+
+            # Final-boundary forensic snapshot: record any residual
+            # gateway-cgroup processes before we drop the PID file and
+            # runtime lock.  Observability-only, bounded, best-effort —
+            # never delays or fails teardown.  Uses getattr throughout so
+            # bare GatewayRunner doubles in tests stay safe.
+            try:
+                from gateway.shutdown_forensics import capture_residual_children
+
+                _remaining_s = GatewayRunner._shutdown_remaining(_cleanup_deadline)
+                capture_residual_children(
+                    phase="pre_lock_release",
+                    deadline_remaining=max(_remaining_s, 0.0),
+                    artifact_path=_hermes_home
+                    / "logs"
+                    / "gateway-shutdown-children.json",
+                )
+            except Exception as _e:
+                logger.debug("residual-child forensics skipped: %s", _e)
+
             remove_pid_file()
             release_gateway_runtime_lock()
 

@@ -142,3 +142,156 @@ class TestCheckSystemdTimingAlignment:
         # for whatever unit pytest IS in.  Both are valid; we just ensure
         # the function doesn't raise.
         assert result is None or isinstance(result, dict)
+
+
+# ---------------------------------------------------------------------------
+# capture_residual_children — final-boundary child-process forensic snapshot
+# ---------------------------------------------------------------------------
+
+class TestCaptureResidualChildren:
+    """Bounded, privacy-preserving snapshot of remaining gateway-cgroup pids."""
+
+    def test_remaining_pid_produces_bounded_redacted_record_and_artifact(
+        self, tmp_path
+    ):
+        artifact_path = tmp_path / "logs" / "gateway-shutdown-children.json"
+
+        def fake_pids():
+            return [os.getpid()]  # self only → excluded, nothing residual
+
+        def fake_registry_pids():
+            return [os.getpid()]
+
+        captured = sf.capture_residual_children(
+            phase="pre_lock_release",
+            deadline_remaining=1.5,
+            remaining_pids_fn=fake_pids,
+            registered_pids_fn=fake_registry_pids,
+            artifact_path=artifact_path,
+        )
+
+        # Self is excluded → no residual children → no artifact.
+        assert captured is None
+        assert not artifact_path.exists()
+
+        # Now with a real non-self pid (use the pytest parent process).
+        parent_pid = os.getppid()
+
+        def fake_pids_with_parent():
+            return [os.getpid(), parent_pid]
+
+        artifact2 = tmp_path / "logs2" / "gateway-shutdown-children.json"
+        captured2 = sf.capture_residual_children(
+            phase="pre_lock_release",
+            deadline_remaining=2.0,
+            remaining_pids_fn=fake_pids_with_parent,
+            registered_pids_fn=lambda: [],
+            artifact_path=artifact2,
+        )
+        assert captured2 is not None
+        data2 = json.loads(artifact2.read_text(encoding="utf-8"))
+        assert len(data2["children"]) == 1
+        rec = data2["children"][0]
+        assert rec["pid"] == parent_pid
+        # bounded record: only allowlisted keys
+        allowed = {
+            "pid",
+            "ppid",
+            "name",
+            "state",
+            "start_ticks",
+            "command",
+            "registered",
+        }
+        assert set(rec.keys()) <= allowed
+        # redacted command: basename or opaque marker, never raw argv
+        assert rec["command"] != ""
+        assert " " not in rec["command"] or rec["command"] == "[redacted]"
+        # registry membership recorded and False here
+        assert rec["registered"] is False
+
+    def test_registered_flag_marks_registry_pids(self, tmp_path):
+        parent_pid = os.getppid()
+        artifact = tmp_path / "gateway-shutdown-children.json"
+        sf.capture_residual_children(
+            phase="final",
+            deadline_remaining=0.5,
+            remaining_pids_fn=lambda: [parent_pid],
+            registered_pids_fn=lambda: [parent_pid, 999999],
+            artifact_path=artifact,
+        )
+        data = json.loads(artifact.read_text(encoding="utf-8"))
+        rec = data["children"][0]
+        assert rec["registered"] is True
+
+    def test_no_remaining_pids_writes_no_artifact(self, tmp_path):
+        artifact = tmp_path / "logs" / "gateway-shutdown-children.json"
+
+        def fake_pids():
+            return [os.getpid()]  # only self → nothing remaining
+
+        result = sf.capture_residual_children(
+            phase="pre_lock_release",
+            deadline_remaining=1.0,
+            remaining_pids_fn=fake_pids,
+            registered_pids_fn=lambda: [],
+            artifact_path=artifact,
+        )
+        assert result is None
+        assert not artifact.exists()
+
+    def test_unreadable_proc_and_failed_write_never_raise(self, tmp_path):
+        # remaining_pids_fn raising must be swallowed
+        def boom():
+            raise OSError("proc wedged")
+
+        assert (
+            sf.capture_residual_children(
+                phase="pre_lock_release",
+                deadline_remaining=1.0,
+                remaining_pids_fn=boom,
+                registered_pids_fn=lambda: [],
+                artifact_path=tmp_path / "x.json",
+            )
+            is None
+        )
+
+        # write to an impossible path must be swallowed
+        assert (
+            sf.capture_residual_children(
+                phase="pre_lock_release",
+                deadline_remaining=1.0,
+                remaining_pids_fn=lambda: [os.getppid()],
+                registered_pids_fn=lambda: [],
+                artifact_path=tmp_path / "nope" / "\x00bad" / "x.json",
+            )
+            is None
+        )
+
+        # registry probe raising must be swallowed
+        def registry_boom():
+            raise RuntimeError("registry locked")
+
+        result = sf.capture_residual_children(
+            phase="pre_lock_release",
+            deadline_remaining=1.0,
+            remaining_pids_fn=lambda: [os.getppid()],
+            registered_pids_fn=registry_boom,
+            artifact_path=tmp_path / "y.json",
+        )
+        assert result is None or isinstance(result, dict)
+        if result is not None:
+            data = json.loads((tmp_path / "y.json").read_text(encoding="utf-8"))
+            assert data["children"][0].get("registered") is None
+
+    def test_default_remaining_pids_fn_reads_proc_children_of_self(self, tmp_path):
+        # Default /proc-based discovery: returns at least a list, never raises.
+        result = sf.capture_residual_children(
+            phase="test",
+            deadline_remaining=1.0,
+            registered_pids_fn=lambda: [],
+            artifact_path=tmp_path / "z.json",
+        )
+        # May or may not write depending on live children; must not raise and
+        # must return dict|None.
+        assert result is None or isinstance(result, dict)

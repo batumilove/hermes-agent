@@ -319,6 +319,214 @@ def context_as_json(ctx: Dict[str, Any]) -> str:
         return "{}"
 
 
+def _default_gateway_remaining_pids() -> List[int]:
+    """Discover remaining non-self processes in our own cgroup (Linux only).
+
+    Reads /proc/<pid>/cgroup for every visible pid and keeps the ones whose
+    cgroup-v2 path matches ours.  Pure stdlib, best-effort, never raises.
+    Returns ``[]`` on non-Linux or on any read failure.
+    """
+    try:
+        with open("/proc/self/cgroup", encoding="utf-8") as fh:
+            lines = [line.strip() for line in fh if line.strip()]
+    except (OSError, ValueError):
+        return []
+    # Match any of our own cgroup lines; ignore the hierarchy id prefix.
+    self_keys = set()
+    for line in lines:
+        parts = line.split(":", 2)
+        if len(parts) == 3 and parts[2]:
+            self_keys.add(parts[2])
+    if not self_keys:
+        return []
+    pids: List[int] = []
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return []
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/cgroup", encoding="utf-8") as fh:
+                for line in fh:
+                    parts = line.strip().split(":", 2)
+                    if len(parts) == 3 and parts[2] in self_keys:
+                        pids.append(int(entry))
+                        break
+        except (OSError, ValueError):
+            continue
+    return pids
+
+
+def _registry_registered_pids() -> Optional[set]:
+    """PIDs currently registered in ``tools.process_registry`` (guarded import).
+
+    Returns ``None`` when the registry can't be consulted (import failure,
+    unexpected API shape, or an internal error) — callers treat that as
+    "unknown" rather than "not registered".  Never raises, never blocks on
+    subprocesses: it only reads the in-memory session table.
+    """
+    try:  # guarded local import — never at module import time
+        from tools.process_registry import process_registry
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        sessions = process_registry.list_sessions()
+    except Exception:  # noqa: BLE001
+        return None
+    pids = set()
+    try:
+        for session in sessions or []:
+            pid = getattr(session, "pid", None)
+            if isinstance(pid, int) and pid > 0:
+                pids.add(pid)
+    except Exception:  # noqa: BLE001
+        return None
+    return pids
+
+
+def _redacted_command_description(pid: int) -> Optional[str]:
+    """Privacy-safe command descriptor for a residual pid.
+
+    Returns the *executable basename* only — never raw argv, arguments,
+    environment, or full paths (an executable path could embed a username
+    or user-content directory).  ``[redacted]`` when even the basename
+    can't be safely determined.  Never raises.
+    """
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as fh:
+            data = fh.read()
+    except (OSError, ValueError):
+        data = b""
+    if data:
+        executable = data.split(b"\x00", 1)[0]
+        if executable:
+            basename = os.path.basename(executable.decode("utf-8", errors="replace"))
+            if basename:
+                return basename[:64]
+    # Kernel threads / gone pids: fall back to the Name field or opaque marker.
+    name = _read_proc_field(pid, "Name")
+    if name:
+        return name[:64]
+    return "[redacted]"
+
+
+def capture_residual_children(
+    *,
+    phase: str,
+    deadline_remaining: float,
+    remaining_pids_fn=None,
+    registered_pids_fn=None,
+    artifact_path: Optional[Path] = None,
+) -> Optional[Dict[str, Any]]:
+    """Capture a bounded, privacy-safe snapshot of residual child processes.
+
+    Runs at the *final* shutdown boundary — right before the runtime PID
+    file / gateway lock are released — so the artifact records exactly
+    which processes would be left behind in the gateway cgroup.
+
+    Design constraints (all mandatory):
+
+    * **Bounded & best-effort** — pure /proc reads, no subprocesses, no
+      terminal calls, no blocking.  Every failure is swallowed; this must
+      never delay teardown or cause it to fail.
+    * **Privacy** — records only pid/ppid/name/state/start ticks plus a
+      *redacted* command description (executable basename or opaque
+      marker).  Never raw argv, environment, credentials, or user content.
+    * **Atomic persistence** — written via ``utils.atomic_json_write``
+      under ``<HERMES_HOME>/logs/gateway-shutdown-children.json`` so the
+      file is never partially written.
+
+    Args:
+        phase: shutdown phase label supplied by the caller (run.py).
+        deadline_remaining: seconds left in the shutdown deadline budget.
+        remaining_pids_fn: injectable pid-discovery callable (defaults to
+            cgroup-based discovery; used by tests).
+        registered_pids_fn: injectable registry-probe callable returning
+            registered pids (defaults to a guarded process_registry read;
+            ``None`` return means "unknown").
+        artifact_path: explicit artifact destination (defaults to
+            ``$HERMES_HOME/logs/gateway-shutdown-children.json``).
+
+    Returns:
+        The written snapshot dict, or ``None`` when nothing remained, the
+        environment is unsupported, or any step failed.  Never raises.
+    """
+    try:
+        self_pid = os.getpid()
+        if remaining_pids_fn is None:
+            remaining_pids_fn = _default_gateway_remaining_pids
+        try:
+            all_pids = list(remaining_pids_fn() or [])
+        except Exception:  # noqa: BLE001 — wedged /proc must not fail teardown
+            return None
+        residual = [pid for pid in all_pids if isinstance(pid, int) and pid != self_pid]
+        if not residual:
+            return None
+
+        registered = None
+        if registered_pids_fn is None:
+            registered_pids_fn = _registry_registered_pids
+        try:
+            registered = registered_pids_fn()
+        except Exception:  # noqa: BLE001
+            registered = None
+
+        children: List[Dict[str, Any]] = []
+        for pid in residual[:64]:  # bounded — no unbounded pid lists
+            record: Dict[str, Any] = {"pid": pid}
+            ppid = _read_proc_field(pid, "PPid")
+            if ppid is not None:
+                try:
+                    record["ppid"] = int(ppid)
+                except ValueError:
+                    pass
+            name = _read_proc_field(pid, "Name")
+            if name is not None:
+                record["name"] = name[:64]
+            state = _read_proc_field(pid, "State")
+            if state is not None:
+                record["state"] = state[:32]
+            try:
+                from gateway.status import get_process_start_time
+
+                start = get_process_start_time(pid)
+            except Exception:  # noqa: BLE001
+                start = None
+            if start is not None:
+                record["start_ticks"] = start
+            command = _redacted_command_description(pid)
+            if command is not None:
+                record["command"] = command
+            if registered is not None:
+                record["registered"] = pid in registered
+            children.append(record)
+
+        if not children:
+            return None
+
+        if artifact_path is None:
+            hermes_home = os.environ.get("HERMES_HOME")
+            if not hermes_home:
+                return None
+            artifact_path = Path(hermes_home) / "logs" / "gateway-shutdown-children.json"
+
+        snapshot: Dict[str, Any] = {
+            "ts": time.time(),
+            "phase": str(phase)[:64],
+            "deadline_remaining_s": deadline_remaining,
+            "self_pid": self_pid,
+            "children": children,
+        }
+        from utils import atomic_json_write
+
+        atomic_json_write(artifact_path, snapshot, default=str)
+        return snapshot
+    except Exception:  # noqa: BLE001 — never fail teardown
+        return None
+
+
 def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, Any]]:
     """At startup, sanity-check that systemd's TimeoutStopSec >= drain_timeout.
 
