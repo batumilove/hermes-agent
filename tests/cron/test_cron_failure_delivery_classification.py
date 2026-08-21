@@ -88,6 +88,29 @@ def test_no_agent_generic_timed_out_text_not_provider():
     assert "timed out" in msg.lower() or "timeout" in msg.lower(), msg
 
 
+def test_no_agent_stage_timeout_annotations_do_not_claim_script_timeout():
+    """Configured stage limits are context, not proof that the script timed out."""
+    error = (
+        "Script exited with code 1\n"
+        "stderr:\n"
+        "JORDANIA_REFRESH_FAILED stage=remote_pipeline rc=1\n"
+        "JORDANIA_STAGE_START stage=identity timeout=25s\n"
+        "JORDANIA_STAGE_OK stage=identity elapsed=15s\n"
+        "JORDANIA_EXPORT_OK cameras_online=2/3 snapshots=3/3\n"
+        "JORDANIA_STAGE_FAILED stage=export rc=1 elapsed=13s"
+    )
+    msg = _summarize_cron_failure_for_delivery(
+        _no_agent_job("Office Jordania camera dashboard refresh"), error
+    )
+
+    assert "script timed out" not in msg.lower(), msg
+    assert "no model was invoked" not in msg.lower(), msg
+    assert "script failed" in msg.lower(), msg
+    assert "cameras_online=2/3" in msg, msg
+    assert "stage=export" in msg, msg
+    assert "JORDANIA_" not in msg, msg
+
+
 # ---------------------------------------------------------------------------
 # Case 3 — agent-backed provider timeout (UNCHANGED behavior)
 # ---------------------------------------------------------------------------
