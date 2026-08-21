@@ -188,7 +188,7 @@ def test_gateway_runner_liveness_guards_start_and_stop():
         runner._start_loop_liveness_guards(loop)
 
     arm_floor.assert_called_once_with(loop)
-    start_watchdog.assert_called_once_with(loop)
+    start_watchdog.assert_called_once_with(loop, hard_deadline_s=None)
     assert runner._loop_floor_timer_handle is floor_timer
     assert runner._loop_liveness_watchdog is watchdog
 

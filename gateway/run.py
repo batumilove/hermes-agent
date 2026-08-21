@@ -8450,7 +8450,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._running_agent_count()
             + self._active_cron_job_count()
             + self._active_api_run_count()
+            + self._active_delegation_count()
         )
+
+    def _active_delegation_count(self) -> int:
+        """Count detached async-delegation units running outside this gateway.
+
+        Background delegation fan-outs keep running after the dispatching
+        session's turn ends, so neither ``_running_agents`` nor the API-run
+        registry can see them. Without this the maintenance-drain total is
+        structurally blind to detached work and can declare quiescence (or
+        time out without attributing it) while a delegation is still live.
+        Best-effort: returns 0 if the delegation module is unavailable.
+        """
+        try:
+            from tools.async_delegation import active_count
+
+            return max(0, int(active_count()))
+        except Exception:
+            return 0
 
     def _active_cron_job_count(self) -> int:
         """Count of cron jobs currently executing, from the cron scheduler's
@@ -10631,7 +10649,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # or a cron job's tool work gets killed with zero warning the
         # instant it's the only active thing running (#60432).
         # API-server / desk sessions have the same structural gap (#63529).
-        if not self._running_agents and last_cron_count == 0 and last_api_count == 0:
+        last_delegation_count = self._active_delegation_count()
+        if (
+            not self._running_agents
+            and last_cron_count == 0
+            and last_api_count == 0
+            and last_delegation_count == 0
+        ):
             _maybe_update_status(force=True)
             return snapshot, False
 
@@ -10651,9 +10675,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         def _still_draining() -> bool:
             now = loop.time()
             chat_or_api = bool(self._running_agents) or bool(self._active_api_run_count())
+            delegation_live = bool(self._active_delegation_count())
             return (chat_or_api and now < deadline) or (
                 bool(self._active_cron_job_count()) and now < cron_deadline
-            )
+            ) or (delegation_live and now < deadline)
 
         # Chat/API and cron work retain separate budgets, while attribution
         # shares the later deadline and never extends either drain lane.
@@ -10684,6 +10709,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             bool(len(self._running_agents))
             or bool(self._active_cron_job_count())
             or bool(self._active_api_run_count())
+            or bool(self._active_delegation_count())
         )
         _maybe_update_status(force=True)
         return snapshot, timed_out
@@ -12584,9 +12610,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         watchdog = getattr(self, "_loop_liveness_watchdog", None)
         if watchdog is None or not watchdog.is_alive():
             try:
-                self._loop_liveness_watchdog = start_loop_liveness_watchdog(loop)
+                self._loop_liveness_watchdog = start_loop_liveness_watchdog(
+                    loop,
+                    hard_deadline_s=self._loop_freeze_hard_deadline_s(),
+                )
             except Exception:
                 logger.debug("Failed to start gateway loop liveness watchdog", exc_info=True)
+
+    def _loop_freeze_hard_deadline_s(self) -> Optional[float]:
+        """Bound the loop-freeze backstop before systemd's SIGKILL boundary.
+
+        A frozen event loop cannot run the shutdown path, so the out-of-loop
+        liveness watchdog must hard-exit while the service supervisor still
+        honors the restart. When the systemd stop timeout is unknown, return
+        ``None`` and keep the probe-strike behavior as the only backstop.
+        """
+        timeout_stop = getattr(self, "_systemd_timeout_stop_s", None)
+        try:
+            timeout_stop = float(timeout_stop) if timeout_stop is not None else None
+        except (TypeError, ValueError):
+            timeout_stop = None
+        if timeout_stop is None or timeout_stop <= 0.0:
+            return None
+        margin = getattr(
+            self,
+            "_SYSTEMD_SHUTDOWN_MARGIN_S",
+            GatewayRunner._SYSTEMD_SHUTDOWN_MARGIN_S,
+        )
+        return max(0.0, timeout_stop - margin)
 
     def _stop_loop_liveness_guards(self) -> None:
         """Disarm lifetime liveness guards before shutdown can load the loop."""
@@ -18590,10 +18641,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # replays, background-process completions) bypass the gate — they are
         # not user-initiated new work and must still flow during a drain.
         # Reversible: once the marker is removed the gate opens again.
-        if self._external_drain_active and not is_internal:
+        drain_admission = (getattr(event, "metadata", None) or {}).get(
+            "drain_admission"
+        )
+        if (
+            self._external_drain_active
+            and drain_admission == "new_agent_turn"
+        ) or (self._external_drain_active and not is_internal):
             logger.info(
-                "Refusing new turn for session %s — external drain active.",
+                "Refusing new turn for session %s (%s) — external drain active.",
                 _quick_key,
+                "internal completion" if is_internal else "user turn",
             )
             return (
                 "⏳ This agent is draining for a maintenance action and isn't "
