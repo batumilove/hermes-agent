@@ -206,11 +206,11 @@ def _classify_no_agent_script_failure(job_name: str, text: str) -> str:
     lower = text.lower()
 
     # A script-timeout signal (subprocess ``SIGTERM``/exit 124, or a
-    # structured ``kind`` naming a timeout). Never a provider timeout.
+    # structured ``kind`` naming a timeout). Never infer a timeout from a bare
+    # ``timeout`` token: scripts routinely print configured limits such as
+    # ``stage=identity timeout=25s`` even when they fail for another reason.
     is_timeout = (
-        "timed out" in lower
-        or "timeout" in lower
-        or "collector_timeout" in lower
+        bool(re.search(r"\btimed\s+out\b|\btimeout\s+expired\b|\bcollector_timeout\b", lower))
         or "exit code 124" in lower
         or "signal 15" in lower
     )
@@ -249,10 +249,34 @@ def _classify_no_agent_script_failure(job_name: str, text: str) -> str:
     elif is_timeout:
         detail = "script timed out"
     else:
-        # Generic script failure — sanitize and bound the raw text. Keep the
-        # excerpt short so the fixed prefix/suffix never pushes the delivery
-        # message past the chat-channel bound.
-        cleaned = re.sub(r"\s+", " ", text[:2000]).strip()
+        # Prefer concise operational evidence over wrapper boilerplate. Ratio
+        # mismatches (for example cameras_online=2/3) explain the impact, and
+        # the final FAILED line explains where the script stopped.
+        lines = [re.sub(r"\s+", " ", line).strip() for line in text[:4000].splitlines()]
+        lines = [line for line in lines if line]
+
+        def _has_degraded_ratio(line: str) -> bool:
+            for numerator, denominator in re.findall(r"\b\w+=([0-9]+)/([0-9]+)\b", line):
+                if int(numerator) < int(denominator):
+                    return True
+            return False
+
+        degraded = [line for line in lines if _has_degraded_ratio(line)]
+        failed = [
+            line
+            for line in lines
+            if "failed" in line.lower()
+            and not line.lower().startswith("script exited with code")
+        ]
+        selected: list[str] = []
+        if degraded:
+            selected.append(degraded[0])
+        if failed:
+            selected.append(failed[-1])
+        selected = [re.sub(r"^[A-Z][A-Z0-9_]{2,}\s+", "", line) for line in selected]
+        cleaned = "; ".join(dict.fromkeys(selected))
+        if not cleaned:
+            cleaned = re.sub(r"\s+", " ", text[:2000]).strip()
         if len(cleaned) > 120:
             cleaned = cleaned[:117].rstrip() + "..."
         detail = f"script failed: {cleaned}" if cleaned else "script failed"
