@@ -11,15 +11,16 @@ Decision table enforced here:
 | # | job.no_agent | error shape                                  | expected classification       |
 |---|--------------|----------------------------------------------|-------------------------------|
 | 1 | True         | structured ``collector_timeout`` stdout      | script timeout (NOT provider) |
-| 2 | True         | generic ``timed out`` text                   | script timeout (NOT provider) |
-| 3 | False        | provider ``ReadTimeout`` error               | provider timeout (unchanged)  |
-| 4 | True         | malformed / oversized stdout                 | bounded + sanitized script msg|
-| 5 | False        | 429 / rate limit                             | rate limit (unchanged)        |
-| 6 | False        | auth / 401                                   | auth error (unchanged)        |
-| 7 | True         | 429 inside script stdout                     | script failure (NOT rate)     |
-| 8 | True         | auth text inside script stdout               | script failure (NOT auth)     |
+| 2 | True         | exit 124 plus ``timed out`` text             | script timeout (NOT provider) |
+| 3 | True         | service-layer ``DNS timeout`` output         | generic script failure        |
+| 4 | False        | provider ``ReadTimeout`` error               | provider timeout (unchanged)  |
+| 5 | True         | malformed / oversized stdout                 | bounded + sanitized script msg|
+| 6 | False        | 429 / rate limit                             | rate limit (unchanged)        |
+| 7 | False        | auth / 401                                   | auth error (unchanged)        |
+| 8 | True         | 429 inside script stdout                     | script failure (NOT rate)     |
+| 9 | True         | auth text inside script stdout               | script failure (NOT auth)     |
 
-Cases 1, 2, 4, 7, 8 are the regression guards for the bug. Cases 3, 5, 6
+Cases 1, 2, 3, 5, 8, 9 are regression guards for the bug. Cases 4, 6, 7
 protect the existing provider-path wording from collateral damage.
 """
 
@@ -85,7 +86,25 @@ def test_no_agent_generic_timed_out_text_not_provider():
     assert "provider" not in msg.lower(), msg
     assert "fallback" not in msg.lower(), msg
     assert "watchdog" in msg, msg
-    assert "timed out" in msg.lower() or "timeout" in msg.lower(), msg
+    assert "script timed out" in msg.lower(), msg
+    assert "No model was invoked" in msg, msg
+
+
+def test_no_agent_service_timeout_text_is_not_script_execution_timeout():
+    """A completed watchdog's service-layer timeout must retain its context."""
+    error = (
+        "Script exited with code 1\n"
+        "stdout:\n"
+        "router.home.arpa: got 'DNS timeout/unreachable'\n"
+        "uncached recursion: got RCODE 'TIMEOUT'"
+    )
+    msg = _summarize_cron_failure_for_delivery(
+        _no_agent_job("technitium-dns-synthetic-watchdog"), error
+    )
+
+    assert "script timed out" not in msg.lower(), msg
+    assert "No model was invoked" not in msg, msg
+    assert "DNS timeout/unreachable" in msg, msg
 
 
 def test_no_agent_stage_timeout_annotations_do_not_claim_script_timeout():
