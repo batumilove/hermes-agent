@@ -442,8 +442,9 @@ patches:
       - cron/scheduler.py
       - tests/cron/conftest.py
       - tests/cron/test_run_one_job.py
+      - tests/cron/test_run_one_job_execution_id.py
     tests:
-      - scripts/run_tests.sh tests/cron/test_run_one_job.py
+      - scripts/run_tests.sh tests/cron/test_run_one_job.py tests/cron/test_run_one_job_execution_id.py
     retirement: Remove when upstream emits equivalent lazy, fail-open, exactly-once cron lifecycle telemetry after bookkeeping.
 
   - id: cron-trigger-provenance
@@ -756,16 +757,18 @@ patches:
       - gateway/drain_attribution.py
       - gateway/platforms/api_server.py
       - gateway/run.py
+      - gateway/shutdown_forensics.py
       - gateway/shutdown_watchdog.py
       - tests/cron/test_running_job_attribution.py
       - tests/gateway/test_api_server_active_work_drain.py
       - tests/gateway/test_drain_attribution.py
       - tests/gateway/test_drain_attribution_lifecycle.py
       - tests/gateway/test_shutdown_aggregate_budget_contract.py
+      - tests/gateway/test_shutdown_forensics.py
       - tests/gateway/test_shutdown_watchdog.py
       - tools/cronjob_tools.py
     tests:
-      - scripts/run_tests.sh tests/gateway/test_drain_attribution.py tests/gateway/test_drain_attribution_lifecycle.py tests/gateway/test_gateway_shutdown.py tests/gateway/test_shutdown_watchdog.py
+      - scripts/run_tests.sh tests/gateway/test_drain_attribution.py tests/gateway/test_drain_attribution_lifecycle.py tests/gateway/test_gateway_shutdown.py tests/gateway/test_shutdown_forensics.py tests/gateway/test_shutdown_watchdog.py
       - scripts/run_tests.sh tests/gateway/test_api_server_active_work_drain.py tests/gateway/test_shutdown_cache_cleanup.py tests/cron/test_running_job_attribution.py tests/cron/test_shutdown_interrupt.py
     retirement: Remove when upstream preserves equivalent generation-scoped shutdown work identities, bounded evidence writes, watchdog-safe snapshots, and false-clean-exit prevention.
 
