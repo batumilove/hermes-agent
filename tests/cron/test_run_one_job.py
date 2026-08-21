@@ -15,111 +15,28 @@ import pytest
 import cron.scheduler as s
 
 
-def test_ag_discovers_directory_plugin_before_giving_up(monkeypatch):
-    """Cron ActiveGraph emission discovers directory plugins if the namespace is cold."""
-    events = []
-    imports = []
-    discovered = []
-
-    class FakePlugin:
-        @staticmethod
-        def _emit(event_type, payload):
-            events.append((event_type, payload))
-
-    def fake_import_module(name):
-        imports.append(name)
-        if len(imports) == 1:
-            raise ModuleNotFoundError("No module named 'hermes_plugins'")
-        return FakePlugin
-
-    def fake_discover_plugins():
-        discovered.append(True)
-
-    import importlib
-    import hermes_cli.plugins as plugins
-
-    monkeypatch.setattr(s, "_ag_emit", None)
-    monkeypatch.setattr(s, "_ag_import_attempted", False)
-    monkeypatch.setattr(importlib, "import_module", fake_import_module)
-    monkeypatch.setattr(plugins, "discover_plugins", fake_discover_plugins)
-
-    s._ag("hermes.cron.started", {"job_id": "cold-plugin"})
-
-    assert discovered == [True]
-    assert imports == ["hermes_plugins.activegraph", "hermes_plugins.activegraph"]
-    assert events == [("hermes.cron.started", {"job_id": "cold-plugin"})]
+def test_scheduler_has_no_activegraph_bridge():
+    """Cron execution depends only on canonical bookkeeping, never ActiveGraph."""
+    assert not hasattr(s, "_ag")
 
 
-def test_run_one_job_emits_activegraph_cron_events(monkeypatch):
-    """Cron emits ActiveGraph started/completed events from the shared fire path."""
-    events = []
-    monkeypatch.setattr(s, "create_execution", lambda *a, **k: {"id": "exec-ag-1"})
-    monkeypatch.setattr(s, "_ag_emit", lambda event_type, payload: events.append((event_type, payload)))
-    monkeypatch.setattr(s, "_ag_import_attempted", True)
-    monkeypatch.setattr(s, "claim_dispatch", lambda jid: True)
-    monkeypatch.setattr(
-        s,
-        "run_job",
-        lambda job, *, defer_agent_teardown=None, extra_prompt=None: (
-            True,
-            "out",
-            "final",
-            None,
-        ),
-    )
-    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.md")
-    monkeypatch.setattr(s, "_deliver_result", lambda *a, **k: None)
-    monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
-
-    ok = s.run_one_job({
-        "id": "cron-ag-1",
-        "name": "cron AG",
-        "schedule": {"kind": "interval", "minutes": 5},
-        "no_agent": True,
-        "script": "watchdog.sh",
-    })
-
-    assert ok is True
-    assert [event for event, _ in events] == ["hermes.cron.started", "hermes.cron.completed"]
-    assert events[0][1] == {
-        "job_id": "cron-ag-1",
-        "execution_id": "exec-ag-1",
-        "job_name": "cron AG",
-        "schedule": "every 5m",
-        "no_agent": True,
-        "has_script": True,
-    }
-    assert events[1][1]["job_id"] == "cron-ag-1"
-    assert events[1][1]["success"] is True
-    assert events[1][1]["output_len"] == 3
-    assert events[1][1]["response_len"] == 5
-
-
-@pytest.mark.parametrize("failing_bookkeeper", ["mark_job_run", "finish_execution"])
-def test_run_one_job_emits_exactly_one_terminal_event_when_bookkeeping_fails(
-    monkeypatch, failing_bookkeeper
-):
-    """A post-run bookkeeping error must not emit both completed and failed."""
-    events = []
-    monkeypatch.setattr(s, "_ag_emit", lambda event_type, payload: events.append((event_type, payload)))
-    monkeypatch.setattr(s, "_ag_import_attempted", True)
-    monkeypatch.setattr(s, "create_execution", lambda *a, **k: {"id": "exec-ag-bookkeeping"})
+def test_run_one_job_logs_canonical_execution_lifecycle(monkeypatch, caplog):
+    """The journal supplies the independent event leg without a telemetry plugin."""
+    monkeypatch.setattr(s, "create_execution", lambda *_a, **_kw: {"id": "exec-journal-1"})
     monkeypatch.setattr(s, "claim_dispatch", lambda _jid: True)
-    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: None)
-    monkeypatch.setattr(s, "run_job", lambda job, *, defer_agent_teardown=None: (True, "out", "final", None))
-    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.md")
-    monkeypatch.setattr(s, "_deliver_result", lambda *a, **k: None)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _eid: None)
+    monkeypatch.setattr(s, "run_job", lambda *_a, **_kw: (True, "out", "final", None))
+    monkeypatch.setattr(s, "save_job_output", lambda jid, _out: f"/tmp/{jid}.txt")
+    monkeypatch.setattr(s, "_deliver_result", lambda *_a, **_kw: None)
+    monkeypatch.setattr(s, "mark_job_run", lambda *_a, **_kw: True)
+    monkeypatch.setattr(s, "finish_execution", lambda *_a, **_kw: None)
+    caplog.set_level("INFO", logger=s.__name__)
 
-    def fail(*_args, **_kwargs):
-        raise RuntimeError(f"{failing_bookkeeper} failed")
+    assert s.run_one_job({"id": "journal-job", "name": "journal job"}) is True
 
-    monkeypatch.setattr(s, "mark_job_run", fail if failing_bookkeeper == "mark_job_run" else lambda *a, **k: None)
-    monkeypatch.setattr(s, "finish_execution", fail if failing_bookkeeper == "finish_execution" else lambda *a, **k: None)
-
-    ok = s.run_one_job({"id": "cron-ag-bookkeeping", "name": "cron AG bookkeeping"})
-
-    assert ok is False
-    assert [event for event, _ in events] == ["hermes.cron.started", "hermes.cron.failed"]
+    messages = [record.getMessage() for record in caplog.records]
+    assert "cron_execution_started job_id=journal-job execution_id=exec-journal-1" in messages
+    assert "cron_execution_finished job_id=journal-job execution_id=exec-journal-1 success=True" in messages
 
 
 def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final response",
