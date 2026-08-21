@@ -141,13 +141,18 @@ def _classify_no_agent_script_failure(job_name: str, text: str) -> str:
 
     lower = text.lower()
 
-    # A script-timeout signal (subprocess ``SIGTERM``/exit 124, or a
-    # structured ``kind`` naming a timeout). Never infer a timeout from a bare
-    # ``timeout`` token: scripts routinely print configured limits such as
-    # ``stage=identity timeout=25s`` even when they fail for another reason.
+    # A script-execution timeout signal (subprocess ``SIGTERM``/exit 124, an
+    # explicit scheduler timeout phrase, or a structured timeout ``kind``).
+    # Do not infer execution timeout from arbitrary service output such as
+    # ``DNS timeout/unreachable`` or configured limits like ``timeout=25s``
+    # emitted by a script that exited normally.
     is_timeout = (
-        bool(re.search(r"\btimed\s+out\b|\btimeout\s+expired\b|\bcollector_timeout\b", lower))
+        "script timed out after" in lower
+        or "command timed out after" in lower
+        or "subprocess.timeoutexpired" in lower
+        or "collector_timeout" in lower
         or "exit code 124" in lower
+        or "exited with code 124" in lower
         or "signal 15" in lower
     )
 
@@ -177,6 +182,11 @@ def _classify_no_agent_script_failure(job_name: str, text: str) -> str:
             timeout_seconds = str(int(ts))
         if kind:
             break
+
+    # Preserve timeout treatment for safe structured kinds beyond the common
+    # ``collector_timeout`` spelling without scanning arbitrary prose.
+    if kind and "timeout" in kind.lower():
+        is_timeout = True
 
     if kind:
         detail = f"script failure: {kind}"
