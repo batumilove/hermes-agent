@@ -153,14 +153,24 @@ def test_retention_fairly_preserves_low_cadence_job_provenance(monkeypatch, tmp_
         row = executions.create_execution("cold", source="builtin")
         executions.finish_execution(row["id"], success=True)
         cold_ids.append(row["id"])
-    for index in range(8):
+    hot_rows = []
+    for _index in range(8):
         row = executions.create_execution("hot", source="builtin")
         executions.finish_execution(row["id"], success=True)
+        hot_rows.append(row)
 
     records = executions.list_executions(limit=100)
     assert len(records) == 5
     assert {row["id"] for row in records if row["job_id"] == "cold"} == set(cold_ids)
-    assert len([row for row in records if row["job_id"] == "hot"]) == 3
+    expected_hot_ids = {
+        row["id"]
+        for row in sorted(
+            hot_rows,
+            key=lambda row: (row["claimed_at"], row["id"]),
+            reverse=True,
+        )[:3]
+    }
+    assert {row["id"] for row in records if row["job_id"] == "hot"} == expected_hot_ids
 
 
 def test_corrupt_store_fails_closed_without_overwrite(monkeypatch, tmp_path):
