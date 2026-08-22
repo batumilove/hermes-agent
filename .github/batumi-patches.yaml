@@ -442,8 +442,9 @@ patches:
       - cron/scheduler.py
       - tests/cron/conftest.py
       - tests/cron/test_run_one_job.py
+      - tests/cron/test_run_one_job_execution_id.py
     tests:
-      - scripts/run_tests.sh tests/cron/test_run_one_job.py
+      - scripts/run_tests.sh tests/cron/test_run_one_job.py tests/cron/test_run_one_job_execution_id.py
     retirement: Remove when upstream emits equivalent lazy, fail-open, exactly-once cron lifecycle telemetry after bookkeeping.
 
   - id: cron-trigger-provenance
