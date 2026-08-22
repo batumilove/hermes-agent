@@ -153,11 +153,21 @@ def _owner_is_live(pid: int, started_at: Optional[int]) -> bool:
 def _prune_unlocked(conn: sqlite3.Connection) -> None:
     limit = max(0, int(MAX_TERMINAL_EXECUTIONS))
     conn.execute(
-        """DELETE FROM executions WHERE id IN (
-             SELECT id FROM executions
+        """WITH ranked AS (
+             SELECT id, claimed_at,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY job_id ORDER BY claimed_at DESC, id DESC
+                    ) AS job_rank
+             FROM executions
              WHERE status IN ('completed','failed','unknown')
-             ORDER BY claimed_at DESC, id DESC LIMIT -1 OFFSET ?
-           )""",
+           ), retained AS (
+             SELECT id FROM ranked
+             ORDER BY job_rank ASC, claimed_at DESC, id DESC
+             LIMIT ?
+           )
+           DELETE FROM executions
+           WHERE status IN ('completed','failed','unknown')
+             AND id NOT IN (SELECT id FROM retained)""",
         (limit,),
     )
 
