@@ -144,6 +144,25 @@ def test_retention_bounds_terminal_history_but_preserves_inflight(monkeypatch, t
     assert executions.latest_execution("live")["status"] == "running"
 
 
+def test_retention_fairly_preserves_low_cadence_job_provenance(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    monkeypatch.setattr(executions, "MAX_TERMINAL_EXECUTIONS", 5)
+
+    cold_ids = []
+    for _index in range(2):
+        row = executions.create_execution("cold", source="builtin")
+        executions.finish_execution(row["id"], success=True)
+        cold_ids.append(row["id"])
+    for index in range(8):
+        row = executions.create_execution("hot", source="builtin")
+        executions.finish_execution(row["id"], success=True)
+
+    records = executions.list_executions(limit=100)
+    assert len(records) == 5
+    assert {row["id"] for row in records if row["job_id"] == "cold"} == set(cold_ids)
+    assert len([row for row in records if row["job_id"] == "hot"]) == 3
+
+
 def test_corrupt_store_fails_closed_without_overwrite(monkeypatch, tmp_path):
     executions = _point_ledger(monkeypatch, tmp_path)
     executions.EXECUTIONS_FILE.parent.mkdir(parents=True)
