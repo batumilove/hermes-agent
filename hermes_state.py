@@ -3525,7 +3525,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self._write_count = 0
         self._last_checkpoint_monotonic = None
         self._checkpoint_worker = None
-        self._checkpoint_request = threading.Event()
+        self._checkpoint_schedule_lock = threading.Lock()
         # One-shot guard for the runtime FTS rebuild recovery on the write
         # path. A corrupt FTS shadow table makes EVERY message write raise
         # the malformed/corrupt error class via the sync triggers; we repair
@@ -4319,6 +4319,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         self._conn.commit()
                         commit_time = time.monotonic() - commit_started
                         transaction_time = time.monotonic() - transaction_started
+                        # Keep cadence accounting inside the same serialized
+                        # critical section as the successful write.  The
+                        # maintenance work itself remains outside this lock.
+                        self._write_count += 1
+                        pending_checkpoint = (
+                            self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0
+                        )
+                        pending_fts_merge = (
+                            self._write_count % self._FTS_MERGE_EVERY_N_WRITES == 0
+                        )
                     except BaseException:
                         try:
                             self._conn.rollback()
@@ -4373,11 +4383,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 # lock storm). _try_wal_checkpoint is now lock-free and
                 # time-throttled; schedule it after the write lock is
                 # released.
-                self._write_count += 1
-                pending_checkpoint = (
-                    self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0
-                )
-                if self._write_count % self._FTS_MERGE_EVERY_N_WRITES == 0:
+                if pending_fts_merge:
                     self._try_incremental_merge_fts()
                 if pending_checkpoint:
                     self._try_wal_checkpoint()
@@ -4700,20 +4706,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 except Exception:
                     pass
 
-    def _checkpoint_worker_loop(self) -> None:
-        """Dedicated background checkpoint worker.
+    def _checkpoint_worker_once(self) -> None:
+        """Run one checkpoint and retire the daemon worker.
 
-        Waits for requests and coalesces them: while a checkpoint is
-        running, further requests collapse into one pending flag. Never
-        holds the instance writer mutex.
+        A permanent bound-method worker would retain ``self`` (and therefore
+        a closed SessionDB) forever.  A one-shot worker retains the instance
+        only for the bounded in-flight checkpoint and then clears its slot.
         """
-        while True:
-            self._checkpoint_request.wait()
-            self._checkpoint_request.clear()
-            try:
-                self._checkpoint_now()
-            except Exception:
-                pass  # _checkpoint_now already logs its own failures
+        try:
+            self._checkpoint_now()
+        finally:
+            with self._checkpoint_schedule_lock:
+                if self._checkpoint_worker is threading.current_thread():
+                    self._checkpoint_worker = None
 
     def _try_wal_checkpoint(self) -> None:
         """Throttled best-effort PASSIVE WAL checkpoint.  Never raises.
@@ -4740,26 +4745,35 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         from checkpointing thousands of frames at once (issue #45383).
         """
         now = time.monotonic()
-        last = getattr(self, "_last_checkpoint_monotonic", None)
-        if last is not None and (now - last) < self._CHECKPOINT_MIN_INTERVAL_S:
-            return
-        self._last_checkpoint_monotonic = now
         # Never run the checkpoint synchronously on the calling writer's
         # thread: a PASSIVE checkpoint fsync costs seconds on a multi-GB
         # database (observed 24-81s), and the calling writer would pay that
-        # latency directly. Hand it to a single dedicated daemon worker.
-        try:
-            if self._checkpoint_worker is None:
-                self._checkpoint_worker = threading.Thread(
-                    target=self._checkpoint_worker_loop,
-                    name=f"sessiondb-wal-checkpoint-{id(self):x}",
-                    daemon=True,
-                )
-                self._checkpoint_worker.start()
-            self._checkpoint_request.set()
-        except Exception:
-            # Worker machinery failure must never break the write path.
-            self._checkpoint_now()
+        # latency directly. Scheduling is serialized so simultaneous writers
+        # cannot start overlapping workers or race the throttle timestamp.
+        with self._checkpoint_schedule_lock:
+            last = self._last_checkpoint_monotonic
+            if last is not None and (now - last) < self._CHECKPOINT_MIN_INTERVAL_S:
+                return
+            worker = self._checkpoint_worker
+            if worker is not None and worker.is_alive():
+                return
+            self._last_checkpoint_monotonic = now
+            worker = threading.Thread(
+                target=self._checkpoint_worker_once,
+                name=f"sessiondb-wal-checkpoint-{id(self):x}",
+                daemon=True,
+            )
+            self._checkpoint_worker = worker
+            try:
+                worker.start()
+            except Exception as exc:
+                # Under thread/resource exhaustion, skipping a best-effort
+                # checkpoint is safer than reintroducing an 80-second
+                # synchronous stall on the writer/event-loop thread.
+                if self._checkpoint_worker is worker:
+                    self._checkpoint_worker = None
+                self._last_checkpoint_monotonic = last
+                logger.warning("WAL checkpoint worker start failed: %s", exc)
 
     def __enter__(self) -> "SessionDB":
         """Enter a scope that closes this handle on the way out.
