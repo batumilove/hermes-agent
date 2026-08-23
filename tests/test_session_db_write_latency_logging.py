@@ -441,20 +441,28 @@ def test_attributed_lock_clears_owner_after_exception_and_cancellation(tmp_path)
     db.close()
 
 
-def test_passive_checkpoint_is_attributed_as_maintenance(tmp_path, caplog):
+def test_periodic_checkpoint_never_holds_instance_lock(tmp_path, caplog):
+    """The periodic WAL checkpoint must not appear as a maintenance lock
+    holder: the 2026-08-23 lock storm came from running the PASSIVE
+    checkpoint inside the instance writer mutex (24-81s holds, watchdog
+    exit 75 twice). It now runs lock-free on a dedicated worker."""
     db = SessionDB(db_path=tmp_path / "state.db")
     db._SLOW_LOCK_HOLD_WARN_S = 0.0
+    db._CHECKPOINT_MIN_INTERVAL_S = 0.0
 
     with caplog.at_level(logging.WARNING, logger="hermes_state"):
         db._try_wal_checkpoint()
 
-    message = next(
+    checkpoint_lock_holds = [
         record.getMessage()
         for record in caplog.records
         if "SessionDB lock latency" in record.getMessage()
+        and "_try_wal_checkpoint" in record.getMessage()
+    ]
+    assert checkpoint_lock_holds == [], (
+        "periodic checkpoint acquired the instance lock: "
+        f"{checkpoint_lock_holds}"
     )
-    assert "operation=_try_wal_checkpoint" in message
-    assert "holder_kind=maintenance" in message
     db.close()
 
 
