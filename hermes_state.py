@@ -3377,6 +3377,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     _SLOW_LOCK_HOLD_WARN_S = 1.0
     # Attempt a WAL checkpoint every N successful writes (PASSIVE mode).
     _CHECKPOINT_EVERY_N_WRITES = 50
+    # Minimum wall-clock interval between best-effort PASSIVE checkpoints.
+    # Checkpoint fsync cost scales with the main database file size (9+ GB in
+    # production), so a burst of writes past the counter threshold must not
+    # fire back-to-back checkpoints (2026-08-23 lock storm: holder_kind=
+    # maintenance observed holding the instance mutex 24-81s, queue_depth=10).
+    _CHECKPOINT_MIN_INTERVAL_S = 60.0
     # Retain the existing coarse 1000-write maintenance cadence, but replace
     # the unbounded FTS5 ``'optimize'`` (measured holding the write lock for
     # 9-18 s per index on a 10 GB production DB — longer than a competing
@@ -3517,6 +3523,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self._read_open_failed_at = 0.0
         self._wal_active = False
         self._write_count = 0
+        self._last_checkpoint_monotonic = None
+        self._checkpoint_worker = None
+        self._checkpoint_request = threading.Event()
         # One-shot guard for the runtime FTS rebuild recovery on the write
         # path. A corrupt FTS shadow table makes EVERY message write raise
         # the malformed/corrupt error class via the sync triggers; we repair
@@ -4358,11 +4367,20 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         lock_holder,
                     )
                 # Success — periodic best-effort checkpoint + FTS merge.
+                # The checkpoint call must stay OUTSIDE the writer-lock
+                # scope above: invoking it inside held the instance mutex
+                # for the whole checkpoint fsync (writer convoy, 2026-08-23
+                # lock storm). _try_wal_checkpoint is now lock-free and
+                # time-throttled; schedule it after the write lock is
+                # released.
                 self._write_count += 1
-                if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
-                    self._try_wal_checkpoint()
+                pending_checkpoint = (
+                    self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0
+                )
                 if self._write_count % self._FTS_MERGE_EVERY_N_WRITES == 0:
                     self._try_incremental_merge_fts()
+                if pending_checkpoint:
+                    self._try_wal_checkpoint()
                 return result
             except SessionCompressionInProgressError:
                 # A live foreign compression lock is transient: the compressor
@@ -4645,13 +4663,71 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         )
         return True
 
+    def _checkpoint_now(self) -> None:
+        """Run one PASSIVE checkpoint WITHOUT holding the instance mutex.
+
+        The periodic checkpoint used to run inside
+        ``_attributed_lock(..., holder_kind="maintenance")`` — the same
+        instance mutex every writer needs. PASSIVE never blocks at the
+        SQLite level, so the mutex is not required for it, and holding it
+        turned multi-second checkpoint fsyncs (cost scales with the main
+        file size; 9+ GB in production) into a writer convoy: observed
+        24-81s holds with queue_depth=10, writer waits of 29-49s, and a
+        close() hold of 188.7s — enough to trip the gateway loop-liveness
+        watchdog (exit 75, 2026-08-23, twice).
+
+        Uses a dedicated short-lived connection: sqlite3 connections are
+        not safe for cross-thread use, and this runs on the checkpoint
+        worker thread, not the writer thread that owns ``self._conn``.
+        """
+        conn = None
+        try:
+            conn = sqlite3.connect(
+                str(self.db_path), timeout=5.0, isolation_level=None
+            )
+            result = conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+            if result and result[1] > 0:
+                logger.debug(
+                    "WAL checkpoint: %d/%d pages checkpointed",
+                    result[2], result[1],
+                )
+        except Exception as exc:
+            logger.warning("WAL checkpoint (PASSIVE) failed: %s", exc)
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    def _checkpoint_worker_loop(self) -> None:
+        """Dedicated background checkpoint worker.
+
+        Waits for requests and coalesces them: while a checkpoint is
+        running, further requests collapse into one pending flag. Never
+        holds the instance writer mutex.
+        """
+        while True:
+            self._checkpoint_request.wait()
+            self._checkpoint_request.clear()
+            try:
+                self._checkpoint_now()
+            except Exception:
+                pass  # _checkpoint_now already logs its own failures
+
     def _try_wal_checkpoint(self) -> None:
-        """Best-effort PASSIVE WAL checkpoint.  Never raises.
+        """Throttled best-effort PASSIVE WAL checkpoint.  Never raises.
 
         Flushes committed WAL frames back into the main DB file without
         requiring an exclusive lock.  PASSIVE is safe for frequent
         periodic use because it does not block concurrent writers and
         cannot corrupt B-tree pages under I/O pressure.
+
+        Throttled: at most one checkpoint per ``_CHECKPOINT_MIN_INTERVAL_S``
+        so a write burst past the counter threshold cannot fire
+        back-to-back checkpoints (each costing an fsync scaled to the main
+        file size). The checkpoint itself runs in ``_checkpoint_now``
+        WITHOUT the instance mutex — see that method for the convoy history.
 
         PASSIVE does not truncate the WAL file — it stays at its
         high-water mark. Explicit checkpoints on the shared ``state.db`` no
@@ -4663,20 +4739,27 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         databases (65K+ pages) due to the exclusive-lock I/O pressure
         from checkpointing thousands of frames at once (issue #45383).
         """
+        now = time.monotonic()
+        last = getattr(self, "_last_checkpoint_monotonic", None)
+        if last is not None and (now - last) < self._CHECKPOINT_MIN_INTERVAL_S:
+            return
+        self._last_checkpoint_monotonic = now
+        # Never run the checkpoint synchronously on the calling writer's
+        # thread: a PASSIVE checkpoint fsync costs seconds on a multi-GB
+        # database (observed 24-81s), and the calling writer would pay that
+        # latency directly. Hand it to a single dedicated daemon worker.
         try:
-            with self._attributed_lock(
-                "_try_wal_checkpoint", holder_kind="maintenance"
-            ):
-                result = self._conn.execute(
-                    "PRAGMA wal_checkpoint(PASSIVE)"
-                ).fetchone()
-                if result and result[1] > 0:
-                    logger.debug(
-                        "WAL checkpoint: %d/%d pages checkpointed",
-                        result[2], result[1],
-                    )
-        except Exception as exc:
-            logger.warning("WAL checkpoint (PASSIVE) failed: %s", exc)
+            if self._checkpoint_worker is None:
+                self._checkpoint_worker = threading.Thread(
+                    target=self._checkpoint_worker_loop,
+                    name=f"sessiondb-wal-checkpoint-{id(self):x}",
+                    daemon=True,
+                )
+                self._checkpoint_worker.start()
+            self._checkpoint_request.set()
+        except Exception:
+            # Worker machinery failure must never break the write path.
+            self._checkpoint_now()
 
     def __enter__(self) -> "SessionDB":
         """Enter a scope that closes this handle on the way out.
