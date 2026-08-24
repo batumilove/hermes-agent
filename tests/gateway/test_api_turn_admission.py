@@ -140,6 +140,64 @@ class TestTurnAdmissionAtDecorator:
             await client.close()
 
     @pytest.mark.asyncio
+    async def test_queued_turn_waits_for_first_handler_to_release(
+        self, adapter, admission_profile
+    ):
+        adm = gwa.get_admission_for_profile(admission_profile)
+
+        started = []
+        first_entered = asyncio.Event()
+        release_first = asyncio.Event()
+        second_entered = asyncio.Event()
+
+        async def handler(self, request):
+            idx = len(started) + 1
+            started.append(idx)
+            if idx == 1:
+                first_entered.set()
+                await release_first.wait()
+            else:
+                second_entered.set()
+            return web.json_response({"ok": True, "idx": idx})
+
+        from gateway.platforms.api_server import _admit_api_agent_request
+
+        wrapped = _admit_api_agent_request(handler)
+        app = web.Application()
+        app.router.add_post("/v1/probe", wrapped.__get__(adapter))
+        server = TestServer(app)
+        client = TestClient(server)
+        await client.start_server()
+        try:
+            first = asyncio.create_task(
+                client.post("/v1/probe", headers={"Authorization": "Bearer sk-test"})
+            )
+            await first_entered.wait()
+
+            second = asyncio.create_task(
+                client.post("/v1/probe", headers={"Authorization": "Bearer sk-test"})
+            )
+
+            await asyncio.sleep(0)
+            assert started == [1]
+            assert adm.stats()["in_flight"] == 1
+            assert not second_entered.is_set()
+
+            release_first.set()
+
+            resp1 = await first
+            resp2 = await second
+            assert resp1.status == 200
+            assert resp2.status == 200
+            assert await resp1.json() == {"ok": True, "idx": 1}
+            assert await resp2.json() == {"ok": True, "idx": 2}
+            assert started == [1, 2]
+            assert second_entered.is_set()
+            assert adm.stats()["in_flight"] == 0
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
     async def test_admission_fails_open_without_home(self, adapter):
         async def handler(self, request):
             return web.json_response({"ok": True})
