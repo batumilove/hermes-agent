@@ -799,6 +799,34 @@ patches:
       - scripts/run_tests.sh tests/gateway/test_api_server_active_work_drain.py tests/gateway/test_shutdown_cache_cleanup.py tests/cron/test_running_job_attribution.py tests/cron/test_shutdown_interrupt.py
     retirement: Remove when upstream preserves equivalent generation-scoped shutdown work identities, bounded evidence writes, watchdog-safe snapshots, and false-clean-exit prevention.
 
+  - id: sessiondb-p0-write-admission-handle-leaks
+    kind: core
+    rationale: >-
+      Bound SessionDB write concurrency with per-path admission so concurrent
+      gateway writers stop contending into SQLite "database is locked"
+      failures; allow the database.synchronous operator override on Linux;
+      close handle leaks on cron gate returns, make the channel directory
+      read-only, and close ACP session teardown handles; await queued turn
+      admission in the API server. Evidence: 2026-08-24/25 hermes-vm LCM
+      SQLite lock-contention incident; PR #274.
+    paths:
+      - acp_adapter/entry.py
+      - acp_adapter/session.py
+      - cron/scheduler.py
+      - gateway/channel_directory.py
+      - gateway/platforms/api_server.py
+      - gateway/write_admission.py
+      - hermes_state.py
+      - tests/acp_adapter/test_session_manager_close.py
+      - tests/cron/test_run_job_gate_sessiondb.py
+      - tests/gateway/test_api_turn_admission.py
+      - tests/gateway/test_channel_directory_readonly.py
+      - tests/state/test_session_db_write_admission.py
+      - tests/test_hermes_state.py
+    tests:
+      - scripts/run_tests.sh tests/state/test_session_db_write_admission.py tests/acp_adapter/test_session_manager_close.py tests/gateway/test_api_turn_admission.py tests/gateway/test_channel_directory_readonly.py tests/cron/test_run_job_gate_sessiondb.py tests/test_hermes_state.py
+    retirement: Remove when upstream bounds SessionDB write concurrency with admission control, closes cron-gate and ACP-teardown handle leaks, exposes a synchronous-mode override, and awaits queued API turn admission.
+
   - id: gateway-lifecycle-drain-incident-contracts
     kind: core
     rationale: >-
