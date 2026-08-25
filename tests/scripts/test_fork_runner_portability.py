@@ -26,3 +26,14 @@ def test_fork_ci_uses_public_github_hosted_runner_labels() -> None:
         "larger-runner labels queue forever in batumilove/hermes-agent:\n"
         + "\n".join(unavailable)
     )
+
+
+def test_python_suite_worker_count_auto_sizes_to_public_runner() -> None:
+    workflow = (WORKFLOWS / "tests.yml").read_text()
+
+    assert "HERMES_TEST_WORKERS:" not in workflow, (
+        "The public ubuntu-latest test runner must let scripts/run_tests.sh "
+        "derive bounded parallelism from its actual CPU count; a worker count "
+        "copied from a Nous larger runner overloads the public runner."
+    )
+    assert "96-core" not in workflow

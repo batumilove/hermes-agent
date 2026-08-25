@@ -24,6 +24,18 @@ def test_ci_emits_the_required_aggregate_check_for_live_pushes() -> None:
     assert workflow["jobs"]["all-checks-pass"]["name"] == "All required checks pass"
 
 
+def test_required_aggregate_fails_closed_on_cancelled_dependencies() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    evaluate = next(
+        step["run"]
+        for step in workflow["jobs"]["all-checks-pass"]["steps"]
+        if step.get("name") == "Evaluate job results"
+    )
+
+    assert "info['result'] not in ('success', 'skipped')" in evaluate
+    assert "info['result'] == 'failure'" not in evaluate
+
+
 def test_fork_contracts_install_the_canonical_test_environment() -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     steps = workflow["jobs"]["fork-contracts"]["steps"]
