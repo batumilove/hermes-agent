@@ -63,6 +63,7 @@ patches:
       - .github/workflows/stack-ci-shadow.yml
       - .github/workflows/staging-telegram-socket-diagnostics.yml
       - .github/workflows/upstream-sync.yml
+      - contributors/emails/1396641434@qq.com
       - contributors/emails/agent@agents-Mac-mini.local
       - contributors/emails/aleman@batumi.works
       - contributors/emails/hermes@local
