@@ -61,14 +61,13 @@ patches:
       - .github/batumi-components.lock.yaml
       - .github/upstream-base
       - .github/upstream-sync-provenance.json
-      - .github/workflows/ci.yml
+      - .github/workflows/ci.yaml
       - .github/workflows/contributor-check.yml
       - .github/workflows/deploy-compose.yml
       - .github/workflows/promote-compose.yml
       - .github/workflows/stack-ci-shadow.yml
       - .github/workflows/staging-telegram-socket-diagnostics.yml
       - .github/workflows/upstream-sync.yml
-      - contributors/emails/agent@agents-Mac-mini.local
       - contributors/emails/aleman@batumi.works
       - contributors/emails/hermes@local
       - contributors/emails/repo-builder@batumi.works

@@ -43,6 +43,9 @@ def test_tool_adapter_bypasses_relay_without_an_active_consumer(
     runtime = relay_runtime.get_runtime()
     assert runtime is not None
     runtime.release_managed_execution("test.relay_tools")
+    runtime.release_managed_execution(
+        relay_runtime.RELAY_PLUGINS_EXECUTION_CONSUMER
+    )
     args = {"command": "pwd"}
 
     monkeypatch.setattr(
@@ -225,6 +228,7 @@ def test_tool_callback_can_make_nested_sync_llm_stream(relay_turn):
         tool_callback,
         session_id="session-1",
     )
+
 
     assert observed_args == {"prompt": "recover context"}
     assert provider_calls == [{"model": "test-model", "messages": []}]

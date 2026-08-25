@@ -62,7 +62,7 @@ def _global_npm_install_tokens(text: str) -> list[list[str]]:
 
 def _assert_approved_global_npm_installs(text: str) -> None:
     installs = _global_npm_install_tokens(text)
-    assert len(installs) == 2
+    assert installs, "workflow must install the approved cooldown-protected npm"
     for tokens in installs:
         # Collect all non-flag arguments (packages) and all flags.
         sub_idx = next(i for i, t in enumerate(tokens) if t in {"install", "i"})

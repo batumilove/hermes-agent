@@ -4,7 +4,7 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+WORKFLOW = ROOT / ".github" / "workflows" / "ci.yaml"
 CONTRIBUTOR_WORKFLOW = ROOT / ".github" / "workflows" / "contributor-check.yml"
 
 
