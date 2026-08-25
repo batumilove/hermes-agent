@@ -56,6 +56,7 @@ patches:
       - .github/upstream-base
       - .github/upstream-sync-provenance.json
       - .github/workflows/ci.yml
+      - .github/workflows/ci.yaml
       - .github/workflows/contributor-check.yml
       - .github/workflows/deploy-compose.yml
       - .github/workflows/promote-compose.yml
