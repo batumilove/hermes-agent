@@ -1792,6 +1792,16 @@ class RelaySessionCoordinator:
         """Release a caller lease without closing a resumable conversation."""
         lease.released = True
 
+    async def finalize_conversation_async(
+        self,
+        *,
+        profile_key: str,
+        session_id: str,
+    ) -> None:
+        host = self.registry.for_profile(profile_key, create=False)
+        if isinstance(host, RelayRuntime):
+            await host.close_session_async({"session_id": session_id})
+
     def finalize_conversation(
         self,
         *,
