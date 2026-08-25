@@ -53,11 +53,13 @@ patches:
       lanes run slower on ubuntu-latest/windows-latest but complete at zero cost
       on this public repository.
     paths:
+      - .github/workflows/ci.yml
       - .github/workflows/docker.yml
       - .github/workflows/nix.yml
       - .github/workflows/rust-tests.yml
       - .github/workflows/tests-os.yml
       - .github/workflows/tests.yml
+      - tests/ci/test_classify_changes.py
     tests:
       - python3 -c "import pathlib, yaml; [yaml.safe_load(p.read_text()) for p in pathlib.Path('.github/workflows').glob('*.yml')]"
       - python3 scripts/check_fork_delta.py
