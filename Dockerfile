@@ -40,7 +40,7 @@ RUN apt-get -o Acquire::Retries=3 update && \
     make -j"$(nproc)" && \
     make install
 
-FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b AS uv_source
+FROM ghcr.io/astral-sh/uv:0.12.5-python3.13-trixie@sha256:7527c447eefbe4aa1ab927a0cd25c4f8224f9dd29ef53091679031ab3f069f66 AS uv_source
 # Node 26 source stage. Debian trixie's bundled nodejs is pinned to 20.x
 # which reached EOL in April 2026 — we copy node + npm from the upstream
 # node:26 image instead (Hermes pins its toolchain to Node 26 everywhere).
@@ -48,7 +48,43 @@ FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df228
 # against glibc 2.36, which runs cleanly on our Debian 13 (trixie, glibc
 # 2.41) runtime.  Bumping to a new Node major is a one-line ARG change; see
 # #4977.
-FROM node:26-bookworm-slim@sha256:9e6f9357d371591e32ab6f2d8a26d63bdd0d17c29eee3f4f3e7e454d9634bf73 AS node_source
+FROM node:26-bookworm-slim@sha256:4db36457f406501e6f608802e5da617e5fbd0e80b75901b6a09de1ae5a667d32 AS node_source
+# npm 11.19.0 bundled vulnerable copies of these libraries. Replace only
+# those copies from exact registry tarballs, verify the downloaded bytes, and
+# extract directly so dependency lifecycle scripts never execute.
+ARG NPM_BRACE_EXPANSION_VERSION=5.0.9
+ARG NPM_BRACE_EXPANSION_SHA256=5d06001fddd25cbee90c96db4dc5b7b57711b984c3141e28d10f143deb52dbaf
+ARG NPM_IP_ADDRESS_VERSION=10.5.0
+ARG NPM_IP_ADDRESS_SHA256=35e23227dfeca9179f03f899a9e3a21faf542a8079821bce95d5620642d75873
+ARG NPM_TAR_VERSION=7.5.22
+ARG NPM_TAR_SHA256=b792c2d1c7fc770910522ca1ffc29eee02ee38de4fa3a01e7832eb705879c6c6
+RUN apt-get -o Acquire::Retries=3 update && \
+    apt-get -o Acquire::Retries=3 install -y --no-install-recommends ca-certificates curl && \
+    curl -fsSL --retry 3 -o /tmp/brace-expansion.tgz \
+      "https://registry.npmjs.org/brace-expansion/-/brace-expansion-${NPM_BRACE_EXPANSION_VERSION}.tgz" && \
+    curl -fsSL --retry 3 -o /tmp/ip-address.tgz \
+      "https://registry.npmjs.org/ip-address/-/ip-address-${NPM_IP_ADDRESS_VERSION}.tgz" && \
+    curl -fsSL --retry 3 -o /tmp/tar.tgz \
+      "https://registry.npmjs.org/tar/-/tar-${NPM_TAR_VERSION}.tgz" && \
+    { \
+      printf '%s  %s\n' "${NPM_BRACE_EXPANSION_SHA256}" /tmp/brace-expansion.tgz; \
+      printf '%s  %s\n' "${NPM_IP_ADDRESS_SHA256}" /tmp/ip-address.tgz; \
+      printf '%s  %s\n' "${NPM_TAR_SHA256}" /tmp/tar.tgz; \
+    } > /tmp/npm-security.sha256 && \
+    sha256sum -c /tmp/npm-security.sha256 && \
+    rm -rf /usr/local/lib/node_modules/npm/node_modules/brace-expansion \
+      /usr/local/lib/node_modules/npm/node_modules/ip-address \
+      /usr/local/lib/node_modules/npm/node_modules/tar && \
+    mkdir -p /usr/local/lib/node_modules/npm/node_modules/brace-expansion \
+      /usr/local/lib/node_modules/npm/node_modules/ip-address \
+      /usr/local/lib/node_modules/npm/node_modules/tar && \
+    tar -xzf /tmp/brace-expansion.tgz -C /usr/local/lib/node_modules/npm/node_modules/brace-expansion --strip-components=1 && \
+    tar -xzf /tmp/ip-address.tgz -C /usr/local/lib/node_modules/npm/node_modules/ip-address --strip-components=1 && \
+    tar -xzf /tmp/tar.tgz -C /usr/local/lib/node_modules/npm/node_modules/tar --strip-components=1 && \
+    test "$(node -p "require('/usr/local/lib/node_modules/npm/node_modules/brace-expansion/package.json').version")" = "${NPM_BRACE_EXPANSION_VERSION}" && \
+    test "$(node -p "require('/usr/local/lib/node_modules/npm/node_modules/ip-address/package.json').version")" = "${NPM_IP_ADDRESS_VERSION}" && \
+    test "$(node -p "require('/usr/local/lib/node_modules/npm/node_modules/tar/package.json').version")" = "${NPM_TAR_VERSION}" && \
+    rm -rf /var/lib/apt/lists/* /tmp/*.tgz /tmp/npm-security.sha256
 FROM debian:13.4@sha256:e2d08da6f42ef4b09b165d55528a12727aeed8240dc9edf888e3ec07e10ef9da
 
 # Disable Python stdout buffering to ensure logs are printed immediately.
@@ -61,7 +97,8 @@ ENV PYTHONDONTWRITEBYTECODE=1
 # install survives the /opt/data volume overlay at runtime.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 
-# Install system dependencies in one layer, clear APT cache.
+# Install system dependencies in one layer, upgrade packages already present in
+# the pinned Debian base, then clear APT cache.
 # tini was previously PID 1 to reap orphaned zombie processes (MCP stdio
 # subprocesses, git, bun, etc.) that would otherwise accumulate when hermes
 # ran as PID 1. See #15012. Phase 2 of the s6-overlay supervision plan
@@ -69,6 +106,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 # zombies non-blockingly on SIGCHLD and additionally supervises the main
 # hermes process, the dashboard, and per-profile gateways.
 RUN apt-get -o Acquire::Retries=3 update && \
+    apt-get -o Acquire::Retries=3 dist-upgrade -y --no-install-recommends && \
     apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
     ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev libatomic1 procps git openssh-client docker-cli xz-utils && \
     rm -rf /var/lib/apt/lists/*
