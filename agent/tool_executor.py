@@ -2157,7 +2157,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     task_id=effective_task_id,
                     agent=agent,
                 )
-            function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
+            function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched, guardrail_warning = _managed_values(_run_agent_tool_execution_middleware(
                 agent,
                 function_name=function_name,
                 function_args=function_args,
@@ -2321,7 +2321,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     limit=next_args.get("max"),
                     callback=getattr(agent, "drive_preview_callback", None),
                 )
-            function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
+            function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched, guardrail_warning = _managed_values(_run_agent_tool_execution_middleware(
                 agent,
                 function_name=function_name,
                 function_args=function_args,
@@ -2344,7 +2344,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     label=next_args.get("label"),
                     callback=getattr(agent, "drive_preview_callback", None),
                 )
-            function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
+            function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched, guardrail_warning = _managed_values(_run_agent_tool_execution_middleware(
                 agent,
                 function_name=function_name,
                 function_args=function_args,
@@ -2390,7 +2390,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     step_index=next_args.get("step_index"),
                     callback=getattr(agent, "tour_callback", None),
                 )
-            function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
+            function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched, guardrail_warning = _managed_values(_run_agent_tool_execution_middleware(
                 agent,
                 function_name=function_name,
                 function_args=function_args,
