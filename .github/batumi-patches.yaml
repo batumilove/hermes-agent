@@ -72,6 +72,7 @@ patches:
       - contributors/emails/aleman@batumi.works
       - contributors/emails/hermes@local
       - contributors/emails/repo-builder@batumi.works
+      - contributors/emails/repo-ops-glm-5-1@hermes.local
       - scripts/check_fork_delta.py
       - scripts/install_batumi_components.py
       - scripts/run_batumi_contracts.py
