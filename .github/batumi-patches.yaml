@@ -64,6 +64,11 @@ patches:
       - .github/workflows/staging-telegram-socket-diagnostics.yml
       - .github/workflows/upstream-sync.yml
       - contributors/emails/1396641434@qq.com
+      - contributors/emails/brooklyn@nousresearch.com
+      - contributors/emails/dcdexhome@gmail.com
+      - contributors/emails/muhammedeminkamay92@gmail.com
+      - contributors/emails/rroveri@nvidia.com
+      - contributors/emails/tom@spoct.com
       - contributors/emails/agent@Agents-Mac-mini.local
       - contributors/emails/agent@agents-Mac-mini.local
       - contributors/emails/aleman@batumi.works
