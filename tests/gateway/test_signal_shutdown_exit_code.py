@@ -66,19 +66,8 @@ def _patch_gateway_run(monkeypatch, tmp_path):
     monkeypatch.setattr("gateway.run._start_cron_ticker", lambda *args, **kwargs: None)
 
 
-@pytest.mark.asyncio
-async def test_signal_shutdown_exits_zero(monkeypatch, tmp_path):
-    """SIGTERM during normal operation should result in start_gateway returning True.
-
-    Regression for: gateway main process exiting 1 on signal-initiated shutdown,
-    which caused systemd to mark the unit failed and prevented auto-restart.
-    """
-    _patch_gateway_run(monkeypatch, tmp_path)
-    monkeypatch.setattr("gateway.run.GatewayRunner", _SignalShutdownRunner)
-
-    # Capture the registered signal handler and invoke it directly instead of
-    # sending a real signal to the test process (which conflicts with the
-    # global SIGALRM timeout fixture).
+def _register_signal_handler(monkeypatch):
+    """Set up a fake signal handler registry and return (task, registered_handlers)."""
     registered_handlers = {}
 
     def _fake_add_signal_handler(sig, callback, *args):
@@ -88,18 +77,115 @@ async def test_signal_shutdown_exits_zero(monkeypatch, tmp_path):
 
     from gateway.run import start_gateway
 
-    # Run start_gateway in a background task so we can trigger the handler.
     task = asyncio.create_task(start_gateway(config=GatewayConfig(), replace=False, verbosity=None))
 
-    # Let the gateway get past signal handler registration and into wait_for_shutdown().
+    return task, registered_handlers
+
+
+async def _run_until_handler_registered(registered_handlers):
+    """Busy-wait until SIGTERM handler is registered."""
     for _ in range(100):
         await asyncio.sleep(0.01)
         if signal.SIGTERM in registered_handlers:
             break
-
     assert signal.SIGTERM in registered_handlers, "SIGTERM handler was not registered"
 
+
+@pytest.mark.asyncio
+async def test_signal_shutdown_exits_zero_in_systemd_context(monkeypatch, tmp_path):
+    """SIGTERM under systemd management should result in start_gateway returning True.
+
+    Regression for: gateway main process exiting 1 on signal-initiated shutdown,
+    which caused systemd to mark the unit failed and prevented auto-restart.
+    """
+    _patch_gateway_run(monkeypatch, tmp_path)
+    monkeypatch.setattr("gateway.run.GatewayRunner", _SignalShutdownRunner)
+    # Simulate a systemd-managed service invocation.
+    monkeypatch.setenv("INVOCATION_ID", "test-invocation-id-12345")
+
+    task, registered_handlers = _register_signal_handler(monkeypatch)
+
+    await _run_until_handler_registered(registered_handlers)
+
     # Trigger the captured handler directly.
+    registered_handlers[signal.SIGTERM]()
+
+    ok = await task
+    assert ok is True
+
+
+@pytest.mark.asyncio
+async def test_stray_signal_shutdown_exits_one_outside_systemd_context(monkeypatch, tmp_path):
+    """Stray SIGTERM outside systemd context should exit 1 so on-failure recovery runs."""
+    _patch_gateway_run(monkeypatch, tmp_path)
+    monkeypatch.setattr("gateway.run.GatewayRunner", _SignalShutdownRunner)
+    # Explicitly clear any systemd context variables.
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.delenv("NOTIFY_SOCKET", raising=False)
+    monkeypatch.delenv("MANAGERPID", raising=False)
+
+    task, registered_handlers = _register_signal_handler(monkeypatch)
+
+    await _run_until_handler_registered(registered_handlers)
+
+    registered_handlers[signal.SIGTERM]()
+
+    ok = await task
+    assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_signal_shutdown_exits_zero_with_notify_socket(monkeypatch, tmp_path):
+    """SIGTERM with NOTIFY_SOCKET present (systemd notify protocol) should exit 0."""
+    _patch_gateway_run(monkeypatch, tmp_path)
+    monkeypatch.setattr("gateway.run.GatewayRunner", _SignalShutdownRunner)
+    monkeypatch.setenv("NOTIFY_SOCKET", "/run/systemd/notify")
+
+    task, registered_handlers = _register_signal_handler(monkeypatch)
+
+    await _run_until_handler_registered(registered_handlers)
+
+    registered_handlers[signal.SIGTERM]()
+
+    ok = await task
+    assert ok is True
+
+
+@pytest.mark.asyncio
+async def test_stray_signal_shutdown_exits_one_with_managerpid_mismatch(monkeypatch, tmp_path):
+    """MANAGERPID that does not match our parent PID should be treated as stray."""
+    _patch_gateway_run(monkeypatch, tmp_path)
+    monkeypatch.setattr("gateway.run.GatewayRunner", _SignalShutdownRunner)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.delenv("NOTIFY_SOCKET", raising=False)
+    # Parent PID is mocked to 12345; set MANAGERPID to something else.
+    monkeypatch.setenv("MANAGERPID", "99999")
+
+    task, registered_handlers = _register_signal_handler(monkeypatch)
+
+    await _run_until_handler_registered(registered_handlers)
+
+    registered_handlers[signal.SIGTERM]()
+
+    ok = await task
+    assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_signal_shutdown_exits_zero_with_managerpid_match(monkeypatch, tmp_path):
+    """MANAGERPID matching our parent PID should be treated as systemd-managed."""
+    _patch_gateway_run(monkeypatch, tmp_path)
+    monkeypatch.setattr("gateway.run.GatewayRunner", _SignalShutdownRunner)
+    # os.getpid is mocked to 12345 in _patch_gateway_run; on Linux getppid() returns
+    # the real parent, so we use MANAGERPID matching the real parent to avoid
+    # relying on the getpid mock. getppid is not mocked so the helper sees the
+    # actual test runner parent PID.
+    monkeypatch.setenv("MANAGERPID", str(os.getppid()))
+
+    task, registered_handlers = _register_signal_handler(monkeypatch)
+
+    await _run_until_handler_registered(registered_handlers)
+
     registered_handlers[signal.SIGTERM]()
 
     ok = await task

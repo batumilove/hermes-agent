@@ -12431,6 +12431,27 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                  Useful for systemd services to avoid restart-loop deadlocks
                  when the previous process hasn't fully exited yet.
     """
+
+    def _is_systemd_managed_stop() -> bool:
+        """Detect whether the incoming SIGTERM is part of a systemd-managed stop.
+
+        systemd sets INVOCATION_ID for every service invocation and supplies
+        NOTIFY_SOCKET when NotifyAccess= is enabled. MANAGERPID points to the
+        PID of the service manager (systemd). If none of these are present,
+        the signal is treated as stray/crash-adjacent and should exit 1 so
+        Restart=on-failure can recover the gateway.
+        """
+        if os.environ.get("INVOCATION_ID"):
+            return True
+        if os.environ.get("NOTIFY_SOCKET"):
+            return True
+        manager_pid = os.environ.get("MANAGERPID")
+        if manager_pid:
+            try:
+                return int(manager_pid) == os.getppid()
+            except ValueError:
+                pass
+        return False
     # ── Duplicate-instance guard ──────────────────────────────────────
     # Prevent two gateways from running under the same HERMES_HOME.
     # The PID file is scoped to HERMES_HOME, so future multi-profile
@@ -12579,10 +12600,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # automatic recovery.  Exit 1 is reserved for genuine startup/config
     # failures.
     _signal_initiated_shutdown = False
+    _systemd_managed_stop = False
 
     # Set up signal handlers
     def shutdown_signal_handler():
-        nonlocal _signal_initiated_shutdown
+        nonlocal _signal_initiated_shutdown, _systemd_managed_stop
         # Planned --replace takeover check: when a sibling gateway is
         # taking over via --replace, it wrote a marker naming this PID
         # before sending SIGTERM. If present, treat the signal as a
@@ -12603,7 +12625,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             )
         else:
             _signal_initiated_shutdown = True
-            logger.info("Received SIGTERM/SIGINT — initiating shutdown")
+            _systemd_managed_stop = _is_systemd_managed_stop()
+            logger.info(
+                "Received SIGTERM/SIGINT — initiating shutdown (systemd_managed_stop=%s)",
+                _systemd_managed_stop,
+            )
         # Diagnostic: log all hermes-related processes so we can identify
         # what triggered the signal (hermes update, hermes gateway restart,
         # a stale detached subprocess, etc.).
@@ -12741,12 +12767,24 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # the unit failed during a stop/restart job and prevents the
     # service manager from auto-reviving the gateway.  Exit 1 is now
     # reserved for genuine startup/config failures.
+    #
+    # Round-5 remediation: only exit 0 when the signal is part of a
+    # systemd-managed stop (INVOCATION_ID, NOTIFY_SOCKET, or MANAGERPID).
+    # Stray SIGTERMs outside systemd context still exit 1 so that
+    # Restart=on-failure can recover crash-adjacent terminations.
     if _signal_initiated_shutdown and not runner._restart_requested:
-        logger.info(
-            "Exiting with code 0 (signal-initiated shutdown without restart "
-            "request) so systemd treats the shutdown as clean."
-        )
-        return True
+        if _systemd_managed_stop:
+            logger.info(
+                "Exiting with code 0 (systemd-managed signal-initiated shutdown without restart "
+                "request) so systemd treats the shutdown as clean."
+            )
+            return True
+        else:
+            logger.warning(
+                "Exiting with code 1 (stray SIGTERM outside systemd context) so "
+                "Restart=on-failure can recover the gateway."
+            )
+            return False
 
     return True
 
