@@ -105,6 +105,9 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 # replaces tini with s6-overlay's /init (PID 1 = s6-svscan), which reaps
 # zombies non-blockingly on SIGCHLD and additionally supervises the main
 # hermes process, the dashboard, and per-profile gateways.
+# DL3005 normally avoids unconstrained base drift; here the immutable base stays
+# pinned while the security gate requires applying repository-fixed packages.
+# hadolint ignore=DL3005
 RUN apt-get -o Acquire::Retries=3 update && \
     apt-get -o Acquire::Retries=3 dist-upgrade -y --no-install-recommends && \
     apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
