@@ -815,6 +815,8 @@ patches:
       - tests/gateway/test_shutdown_incident_contract.py
     tests:
       - scripts/run_tests.sh tests/gateway/test_shutdown_incident_contract.py tests/gateway/test_loop_liveness_watchdog.py tests/gateway/test_shutdown_cache_cleanup.py
+      - scripts/run_tests.sh tests/gateway/test_gateway_shutdown.py tests/gateway/test_restart_drain.py tests/gateway/test_external_drain_control.py tests/gateway/test_shutdown_aggregate_budget_contract.py
+    retirement: Remove when upstream accounts for detached delegations during drain, preserves marked completion-wake admission boundaries, and supplies an equivalent supervisor-bounded loop-freeze backstop with cleanup coverage.
   - id: gateway-reliability-revival-heartbeat-stopsec
     kind: core
     rationale: >-
@@ -832,8 +834,7 @@ patches:
       - tests/gateway/test_gateway_reliability_20260825.py
     tests:
       - scripts/run_tests.sh tests/gateway/test_gateway_reliability_20260825.py tests/gateway/test_gateway_shutdown.py tests/hermes_cli/test_systemd_optional_directives.py
-      - scripts/run_tests.sh tests/gateway/test_gateway_shutdown.py tests/gateway/test_restart_drain.py tests/gateway/test_external_drain_control.py tests/gateway/test_shutdown_aggregate_budget_contract.py
-    retirement: Remove when upstream accounts for detached delegations during drain, preserves marked completion-wake admission boundaries, and supplies an equivalent supervisor-bounded loop-freeze backstop with cleanup coverage.
+    retirement: Remove when upstream exits a whitelisted relaunch code on signal-initiated shutdown, starts and supervises the loop-liveness heartbeat before adapter bring-up, and sizes the generated unit's TimeoutStopSec to cover the cron drain floor plus cleanup reserve.
 
   - id: desktop-messaging-config-load-once
     kind: core
