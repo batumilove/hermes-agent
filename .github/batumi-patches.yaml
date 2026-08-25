@@ -793,6 +793,8 @@ patches:
       - tests/gateway/test_drain_attribution_lifecycle.py
       - tests/gateway/test_shutdown_aggregate_budget_contract.py
       - tests/gateway/test_shutdown_forensics.py
+      - tests/gateway/test_goal_continuation_drain.py
+      - tests/gateway/test_systemd_notify.py
       - tests/gateway/test_shutdown_watchdog.py
       - tools/cronjob_tools.py
     tests:
