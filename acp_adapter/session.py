@@ -204,6 +204,10 @@ class SessionManager:
         self._lock = Lock()
         self._agent_factory = agent_factory
         self._db_instance = db  # None → lazy-init on first use
+        # Ownership flag for close(): a caller-injected ``db`` stays the
+        # caller's handle (P0-C contract — close() must not close what it
+        # does not own); only the lazily-opened instance is ours to close.
+        self._owns_db = db is None
 
     # ---- public API ---------------------------------------------------------
 
@@ -384,6 +388,27 @@ class SessionManager:
                     db.delete_session(sid)
             except Exception:
                 logger.debug("Failed to cleanup ACP sessions from DB", exc_info=True)
+
+    def close(self) -> None:
+        """Close the lazily-opened SessionDB, if this manager owns one.
+
+        Called on ACP server teardown so the writable handle is closed
+        deterministically (draining its PASSIVE checkpoint) instead of
+        being left to GC/process exit. Idempotent; a caller-injected
+        ``db`` (``SessionManager(db=...)``) stays the caller's handle and
+        is never closed here.
+        """
+        with self._lock:
+            if not self._owns_db:
+                return
+            db = self._db_instance
+            self._db_instance = None
+        if db is None:
+            return
+        try:
+            db.close()
+        except Exception:
+            logger.debug("Failed to close ACP SessionDB", exc_info=True)
 
     def save_session(self, session_id: str) -> None:
         """Persist the current state of a session to the database.
