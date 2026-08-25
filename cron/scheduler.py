@@ -1891,6 +1891,42 @@ def _open_continuable_cron_thread(
         return None
 
 
+def _persist_cron_thread_binding(job: dict, platform_name: str, chat_id: str, thread_id: str) -> None:
+    """Pin a freshly-created continuable thread into the job's origin target.
+
+    Without this, a ``deliver: origin`` job whose ``origin.thread_id`` is null
+    opens a NEW named topic on every non-silent delivery (topic spam) and the
+    null-thread fallback can deliver into the chat's warm flat session instead
+    of a dedicated lane. Persisting the created thread makes the second and
+    later deliveries explicit routed targets (the scheduler's "never override
+    an explicit origin thread" guard then skips thread creation entirely).
+
+    Best-effort: a persistence failure never fails a delivery that already
+    succeeded — it is logged and the next delivery retries the pin.
+    """
+    try:
+        from cron.jobs import update_job
+
+        origin = dict(job.get("origin") or {})
+        if str(origin.get("thread_id") or ""):
+            return  # already pinned — never override an explicit thread
+        if str(origin.get("platform", "")).lower() != str(platform_name).lower():
+            return
+        if str(origin.get("chat_id", "")) != str(chat_id):
+            return
+        origin["thread_id"] = str(thread_id)
+        update_job(job["id"], {"origin": origin})
+        logger.info(
+            "Job '%s': pinned continuable thread %s:%s:%s into origin",
+            job.get("id", "?"), platform_name, chat_id, thread_id,
+        )
+    except Exception as e:
+        logger.warning(
+            "Job '%s': failed to pin continuable thread %s:%s:%s into origin: %s",
+            job.get("id", "?"), platform_name, chat_id, thread_id, e,
+        )
+
+
 def _seed_cron_thread_session(
     job: dict,
     adapter,
@@ -3359,6 +3395,12 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             chat_name=origin.get("chat_name"),
                         )
                         thread_seeded = True
+                        # Pin the created thread into the job's origin so the
+                        # NEXT delivery routes explicitly to this lane instead
+                        # of creating yet another fresh topic per output.
+                        _persist_cron_thread_binding(
+                            job, platform_name, chat_id, opened_thread_id,
+                        )
                     # in_channel surface: CREATE + seed the flat channel/DM
                     # session (the shipped mirror only appends to an existing
                     # session — the flat row is otherwise absent for a
