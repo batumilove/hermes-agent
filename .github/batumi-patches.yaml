@@ -12,22 +12,25 @@ patches:
     rationale: >-
       Pin npm bootstrap and Debian container inputs to reviewed immutable
       versions, suppress bootstrap lifecycle scripts, enforce the repository
-      release-age policy, and reject equivalent unapproved global npm install
-      syntax in CI and Docker dependency installs.
+      release-age policy, restrict reusable test workflow permissions, cover
+      every tracked dependency lockfile in OSV, and reject equivalent
+      unapproved global npm install syntax in CI and Docker dependency installs.
     paths:
       - .github/workflows/deploy-site.yml
       - .github/workflows/docs-site-checks.yml
       - .github/workflows/e2e-desktop.yml
       - .github/workflows/js-autofix.yml
       - .github/workflows/js-tests.yml
+      - .github/workflows/osv-scanner.yml
       - Dockerfile
       - tests/scripts/test_js_tests_workflow.py
+      - tests/scripts/test_osv_scanner_workflow.py
     tests:
       - python3 -c "import pathlib, yaml; [yaml.safe_load(p.read_text()) for p in pathlib.Path('.github/workflows').glob('*.yml')]"
       - hadolint Dockerfile
       - npm run check --workspace apps/desktop
-      - scripts/run_tests.sh tests/scripts/test_js_tests_workflow.py
-    retirement: Remove when upstream pins equivalent npm and Debian build inputs with matching lifecycle and release-age protections.
+      - scripts/run_tests.sh tests/scripts/test_js_tests_workflow.py tests/scripts/test_osv_scanner_workflow.py
+    retirement: Remove when upstream pins equivalent npm and Debian build inputs, restricts reusable workflow permissions, and scans every tracked dependency lockfile with matching lifecycle and release-age protections.
 
   - id: desktop-nanoid-ghsa-2v37-remediation
     kind: operations
