@@ -49,42 +49,6 @@ FROM ghcr.io/astral-sh/uv:0.12.5-python3.13-trixie@sha256:7527c447eefbe4aa1ab927
 # 2.41) runtime.  Bumping to a new Node major is a one-line ARG change; see
 # #4977.
 FROM node:26-bookworm-slim@sha256:4db36457f406501e6f608802e5da617e5fbd0e80b75901b6a09de1ae5a667d32 AS node_source
-# npm 11.19.0 bundled vulnerable copies of these libraries. Replace only
-# those copies from exact registry tarballs, verify the downloaded bytes, and
-# extract directly so dependency lifecycle scripts never execute.
-ARG NPM_BRACE_EXPANSION_VERSION=5.0.9
-ARG NPM_BRACE_EXPANSION_SHA256=5d06001fddd25cbee90c96db4dc5b7b57711b984c3141e28d10f143deb52dbaf
-ARG NPM_IP_ADDRESS_VERSION=10.5.0
-ARG NPM_IP_ADDRESS_SHA256=35e23227dfeca9179f03f899a9e3a21faf542a8079821bce95d5620642d75873
-ARG NPM_TAR_VERSION=7.5.22
-ARG NPM_TAR_SHA256=b792c2d1c7fc770910522ca1ffc29eee02ee38de4fa3a01e7832eb705879c6c6
-RUN apt-get -o Acquire::Retries=3 update && \
-    apt-get -o Acquire::Retries=3 install -y --no-install-recommends ca-certificates curl && \
-    curl -fsSL --retry 3 -o /tmp/brace-expansion.tgz \
-      "https://registry.npmjs.org/brace-expansion/-/brace-expansion-${NPM_BRACE_EXPANSION_VERSION}.tgz" && \
-    curl -fsSL --retry 3 -o /tmp/ip-address.tgz \
-      "https://registry.npmjs.org/ip-address/-/ip-address-${NPM_IP_ADDRESS_VERSION}.tgz" && \
-    curl -fsSL --retry 3 -o /tmp/tar.tgz \
-      "https://registry.npmjs.org/tar/-/tar-${NPM_TAR_VERSION}.tgz" && \
-    { \
-      printf '%s  %s\n' "${NPM_BRACE_EXPANSION_SHA256}" /tmp/brace-expansion.tgz; \
-      printf '%s  %s\n' "${NPM_IP_ADDRESS_SHA256}" /tmp/ip-address.tgz; \
-      printf '%s  %s\n' "${NPM_TAR_SHA256}" /tmp/tar.tgz; \
-    } > /tmp/npm-security.sha256 && \
-    sha256sum -c /tmp/npm-security.sha256 && \
-    rm -rf /usr/local/lib/node_modules/npm/node_modules/brace-expansion \
-      /usr/local/lib/node_modules/npm/node_modules/ip-address \
-      /usr/local/lib/node_modules/npm/node_modules/tar && \
-    mkdir -p /usr/local/lib/node_modules/npm/node_modules/brace-expansion \
-      /usr/local/lib/node_modules/npm/node_modules/ip-address \
-      /usr/local/lib/node_modules/npm/node_modules/tar && \
-    tar -xzf /tmp/brace-expansion.tgz -C /usr/local/lib/node_modules/npm/node_modules/brace-expansion --strip-components=1 && \
-    tar -xzf /tmp/ip-address.tgz -C /usr/local/lib/node_modules/npm/node_modules/ip-address --strip-components=1 && \
-    tar -xzf /tmp/tar.tgz -C /usr/local/lib/node_modules/npm/node_modules/tar --strip-components=1 && \
-    test "$(node -p "require('/usr/local/lib/node_modules/npm/node_modules/brace-expansion/package.json').version")" = "${NPM_BRACE_EXPANSION_VERSION}" && \
-    test "$(node -p "require('/usr/local/lib/node_modules/npm/node_modules/ip-address/package.json').version")" = "${NPM_IP_ADDRESS_VERSION}" && \
-    test "$(node -p "require('/usr/local/lib/node_modules/npm/node_modules/tar/package.json').version")" = "${NPM_TAR_VERSION}" && \
-    rm -rf /var/lib/apt/lists/* /tmp/*.tgz /tmp/npm-security.sha256
 FROM debian:13.4@sha256:e2d08da6f42ef4b09b165d55528a12727aeed8240dc9edf888e3ec07e10ef9da
 
 # Disable Python stdout buffering to ensure logs are printed immediately.
@@ -213,6 +177,42 @@ WORKDIR /opt/hermes
 # the cooldown explicitly. The copied policy applies to later root installs.
 COPY .npmrc ./
 RUN npm install -g npm@12.0.1 --ignore-scripts --min-release-age=14 --fetch-retries=5
+
+# npm 12.0.1 bundles vulnerable copies of these libraries. Apply the repair
+# after the global npm bootstrap, which replaces the complete npm tree.
+# Download exact registry tarballs, verify their bytes, and extract directly
+# so dependency lifecycle scripts never execute.
+ARG NPM_BRACE_EXPANSION_VERSION=5.0.9
+ARG NPM_BRACE_EXPANSION_SHA256=5d06001fddd25cbee90c96db4dc5b7b57711b984c3141e28d10f143deb52dbaf
+ARG NPM_IP_ADDRESS_VERSION=10.5.0
+ARG NPM_IP_ADDRESS_SHA256=35e23227dfeca9179f03f899a9e3a21faf542a8079821bce95d5620642d75873
+ARG NPM_TAR_VERSION=7.5.22
+ARG NPM_TAR_SHA256=b792c2d1c7fc770910522ca1ffc29eee02ee38de4fa3a01e7832eb705879c6c6
+RUN curl -fsSL --retry 3 -o /tmp/brace-expansion.tgz \
+      "https://registry.npmjs.org/brace-expansion/-/brace-expansion-${NPM_BRACE_EXPANSION_VERSION}.tgz" && \
+    curl -fsSL --retry 3 -o /tmp/ip-address.tgz \
+      "https://registry.npmjs.org/ip-address/-/ip-address-${NPM_IP_ADDRESS_VERSION}.tgz" && \
+    curl -fsSL --retry 3 -o /tmp/tar.tgz \
+      "https://registry.npmjs.org/tar/-/tar-${NPM_TAR_VERSION}.tgz" && \
+    { \
+      printf '%s  %s\n' "${NPM_BRACE_EXPANSION_SHA256}" /tmp/brace-expansion.tgz; \
+      printf '%s  %s\n' "${NPM_IP_ADDRESS_SHA256}" /tmp/ip-address.tgz; \
+      printf '%s  %s\n' "${NPM_TAR_SHA256}" /tmp/tar.tgz; \
+    } > /tmp/npm-security.sha256 && \
+    sha256sum -c /tmp/npm-security.sha256 && \
+    rm -rf /usr/local/lib/node_modules/npm/node_modules/brace-expansion \
+      /usr/local/lib/node_modules/npm/node_modules/ip-address \
+      /usr/local/lib/node_modules/npm/node_modules/tar && \
+    mkdir -p /usr/local/lib/node_modules/npm/node_modules/brace-expansion \
+      /usr/local/lib/node_modules/npm/node_modules/ip-address \
+      /usr/local/lib/node_modules/npm/node_modules/tar && \
+    tar -xzf /tmp/brace-expansion.tgz -C /usr/local/lib/node_modules/npm/node_modules/brace-expansion --strip-components=1 && \
+    tar -xzf /tmp/ip-address.tgz -C /usr/local/lib/node_modules/npm/node_modules/ip-address --strip-components=1 && \
+    tar -xzf /tmp/tar.tgz -C /usr/local/lib/node_modules/npm/node_modules/tar --strip-components=1 && \
+    test "$(node -p "require('/usr/local/lib/node_modules/npm/node_modules/brace-expansion/package.json').version")" = "${NPM_BRACE_EXPANSION_VERSION}" && \
+    test "$(node -p "require('/usr/local/lib/node_modules/npm/node_modules/ip-address/package.json').version")" = "${NPM_IP_ADDRESS_VERSION}" && \
+    test "$(node -p "require('/usr/local/lib/node_modules/npm/node_modules/tar/package.json').version")" = "${NPM_TAR_VERSION}" && \
+    rm -f /tmp/*.tgz /tmp/npm-security.sha256
 
 # ---------- Layer-cached dependency install ----------
 # Copy only package manifests first so npm install + Playwright are cached
