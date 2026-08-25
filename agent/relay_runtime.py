@@ -1140,6 +1140,69 @@ class RelayRuntime:
                 "; ".join(failures),
             )
 
+    async def close_session_async(self, event: dict[str, Any]) -> None:
+        """Close one session scope without blocking the caller's event loop."""
+        session_id, session, failures = self._begin_close_session(event)
+        if session is None:
+            return
+        try:
+            try:
+                await self.relay.subscribers.flush_async()
+            except Exception as exc:
+                failures.append(f"subscriber flush failed: {exc}")
+        finally:
+            self._finish_close_session(session_id, session, failures)
+
+    def _begin_close_session(
+        self,
+        event: dict[str, Any],
+    ) -> tuple[str, RelaySession | None, list[str]]:
+        """Pop a session scope once, ready for a sync or async flush barrier."""
+        session_id = _session_id(event)
+        with self._sessions_lock:
+            session = self._sessions.get(session_id)
+        if session is None:
+            with self._sessions_lock:
+                self._subagent_parents.pop(session_id, None)
+                self._subagent_parent_handles.pop(session_id, None)
+            return session_id, None, []
+        failures: list[str] = []
+        with session.lock:
+            if session.closing:
+                return session_id, None, failures
+            session.closing = True
+            if session.handle is not None:
+                failure = self._close_scope_handle(
+                    session,
+                    session.handle,
+                    output={},
+                    allow_closing=True,
+                    failure_label="session scope close failed",
+                    operation_already_held=True,
+                )
+                if failure:
+                    failures.append(failure)
+        return session_id, session, failures
+
+    def _finish_close_session(
+        self,
+        session_id: str,
+        session: RelaySession,
+        failures: list[str],
+    ) -> None:
+        """Remove a closed session after its subscriber barrier completes."""
+        with self._sessions_lock:
+            if self._sessions.get(session_id) is session:
+                self._sessions.pop(session_id, None)
+            self._subagent_parents.pop(session_id, None)
+            self._subagent_parent_handles.pop(session_id, None)
+        if failures:
+            logger.warning(
+                "Hermes Relay session %s closed with errors: %s",
+                session_id,
+                "; ".join(failures),
+            )
+
     def shutdown(self) -> None:
         """Close core scopes and release process plugin configuration."""
         with self._sessions_lock:
