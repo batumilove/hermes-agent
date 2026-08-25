@@ -32,6 +32,8 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 from gateway.config import coerce_systemd_watchdog_seconds, load_gateway_config
 from gateway.status import terminate_pid
 from gateway.restart import (
+    CRON_DRAIN_CLEANUP_RESERVE_S,
+    DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
     DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT,
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     EXTERNAL_GATEWAY_SUPERVISOR_ENV,
@@ -3324,8 +3326,21 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     # 60s minimum for installs that use the default immediate drain. Positive
     # drain values extend the deadline directly instead of inheriting a second
     # 60s floor, so a configured 45s drain yields 75s rather than 90s.
+    #
+    # The stop-path budget is the MAX of the restart drain and the cron drain
+    # floor (agent.cron_drain_timeout, default 30s) plus its cleanup reserve
+    # (CRON_DRAIN_CLEANUP_RESERVE_S, 10s) — resolve_cron_drain_budget may keep
+    # the drain alive for that full span during stop(), and TimeoutStopSec
+    # must cover it or systemd SIGKILLs ~30 processes mid-drain and the unit
+    # lands in failed state (observed 2026-08-25: 60s drain + 90s cap →
+    # SIGKILL churn). Defaults: max(60, max(0, 30) + 10 + 30) = 70s.
     _drain_timeout = int(_get_restart_drain_timeout() or 0)
-    restart_timeout = max(60, _drain_timeout + 30)
+    _stop_budget = max(
+        _drain_timeout,
+        int(DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT or 0)
+        + int(CRON_DRAIN_CLEANUP_RESERVE_S),
+    )
+    restart_timeout = max(60, _stop_budget + 30)
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
