@@ -322,6 +322,73 @@ def test_execute_write_routes_through_admission(tmp_path):
         db.close()
 
 
+def test_shared_sqlite_path_never_starts_overlapping_begin_immediate(tmp_path):
+    """One SQLite file has one writer; admission must serialize BEGIN attempts.
+
+    The process-wide controller exists to keep independent ``SessionDB``
+    wrappers from convoying on SQLite's WAL writer lock.  Granting more than
+    one wrapper at a time merely moves the queue into ``BEGIN IMMEDIATE``,
+    where it is neither FIFO nor attributable to admission.  Hold the first
+    wrapper inside its transaction and observe whether the second wrapper is
+    allowed to attempt BEGIN before the first one releases.
+    """
+
+    class _BeginProbeConnection:
+        def __init__(self, connection, attempted):
+            self._connection = connection
+            self._attempted = attempted
+
+        def execute(self, sql, *args, **kwargs):
+            if str(sql).strip().upper() == "BEGIN IMMEDIATE":
+                self._attempted.set()
+            return self._connection.execute(sql, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._connection, name)
+
+    path = tmp_path / "state.db"
+    first = SessionDB(db_path=path)
+    second = SessionDB(db_path=path)
+    first_inside = threading.Event()
+    release_first = threading.Event()
+    second_begin_attempted = threading.Event()
+    object.__setattr__(
+        second,
+        "_conn",
+        _BeginProbeConnection(second._conn, second_begin_attempted),
+    )
+
+    def _hold_first(cx):
+        cx.execute("CREATE TABLE IF NOT EXISTS single_writer_probe (k TEXT)")
+        first_inside.set()
+        assert release_first.wait(timeout=5), "test failed to release first writer"
+
+    def _write_second(cx):
+        cx.execute("INSERT INTO single_writer_probe (k) VALUES ('second')")
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first_future = pool.submit(
+                first._execute_write, _hold_first, operation="hold_first"
+            )
+            assert first_inside.wait(timeout=5), "first writer did not enter callback"
+            second_future = pool.submit(
+                second._execute_write, _write_second, operation="write_second"
+            )
+            overlapped = second_begin_attempted.wait(timeout=0.5)
+            release_first.set()
+            first_future.result(timeout=5)
+            second_future.result(timeout=5)
+        assert not overlapped, (
+            "a second SessionDB wrapper attempted BEGIN IMMEDIATE while the "
+            "same SQLite path already had an active writer"
+        )
+    finally:
+        release_first.set()
+        first.close()
+        second.close()
+
+
 def test_execute_write_surfaces_full_as_operational_error(tmp_path):
     """Queue-full must surface as a sqlite OperationalError subclass the
     write paths already handle, carrying retry_after for 429 mapping."""
