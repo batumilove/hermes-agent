@@ -121,6 +121,28 @@ def _run_bounded_on_exit_thread(fn: Callable[[], Any], timeout: float) -> Any:
     return result[0] if result else None
 
 
+
+def _run_context_bounded(
+    context: contextvars.Context,
+    callback: Callable[..., Any],
+    *args: Any,
+    timeout: float,
+    **kwargs: Any,
+) -> Any:
+    """Run one context-isolated native operation with the lifecycle bound."""
+    invoke = lambda: context.run(callback, *args, **kwargs)
+    try:
+        future = _scope_op_executor().submit(invoke)
+    except RuntimeError:
+        return _run_bounded_on_exit_thread(invoke, timeout)
+    try:
+        return future.result(timeout=timeout)
+    except FuturesTimeoutError as exc:
+        raise TimeoutError(
+            f"Relay scope operation exceeded {timeout}s; abandoning the native "
+            "call so the agent can continue — the span for this scope is lost"
+        ) from exc
+
 def pop_relay_scope(
     relay: Any,
     handle: Any,
@@ -915,6 +937,7 @@ class RelayRuntime:
         session: RelaySession,
         handle: Any,
         *,
+        context: contextvars.Context | None = None,
         output: dict[str, Any] | None = None,
         allow_closing: bool = False,
         failure_label: str = "scope close failed",
@@ -1036,15 +1059,22 @@ class RelayRuntime:
                 error_holder["retry"] = retry_exc
 
         try:
-            run_in_session = (
-                self._run_in_session_untracked
-                if operation_already_held
-                else self.run_in_session
-            )
-            run_in_session(
-                session,
-                close_with_drain,
-                allow_closing=allow_closing,
+            if context is not None:
+                _run_context_bounded(
+                    context,
+                    close_with_drain,
+                    timeout=_SCOPE_OP_TIMEOUT,
+                )
+            else:
+                run_in_session = (
+                    self._run_in_session_untracked
+                    if operation_already_held
+                    else self.run_in_session
+                )
+                run_in_session(
+                    session,
+                    close_with_drain,
+                    allow_closing=allow_closing,
                 # Bound the whole drain+close like the direct pops it
                 # replaced: a wedged native pipeline must cost at most one
                 # span, never block turn/session completion (see
@@ -1289,6 +1319,10 @@ class RelayTurnContext:
     task_id: str
     handle: Any = None
     logical_llm_calls: dict[str, Any] = field(default_factory=dict, repr=False)
+    logical_llm_contexts: dict[str, contextvars.Context] = field(
+        default_factory=dict,
+        repr=False,
+    )
     logical_llm_lock: threading.RLock = field(
         default_factory=threading.RLock,
         repr=False,
@@ -1703,11 +1737,15 @@ class RelaySessionCoordinator:
         with turn.logical_llm_lock:
             logical_calls = list(turn.logical_llm_calls.items())
             turn.logical_llm_calls.clear()
+            logical_contexts = dict(turn.logical_llm_contexts)
+            turn.logical_llm_contexts.clear()
         for index in range(len(logical_calls) - 1, -1, -1):
             request_id, logical_handle = logical_calls[index]
+            logical_context = logical_contexts.get(request_id)
             failure = lease.host._close_scope_handle(
                 lease.session,
                 logical_handle,
+                context=logical_context,
                 output={"outcome": outcome},
                 failure_label="logical LLM scope close failed",
             )
@@ -1725,6 +1763,12 @@ class RelaySessionCoordinator:
                         pending_request_id,
                         pending_handle,
                     )
+                    pending_context = logical_contexts.get(pending_request_id)
+                    if pending_context is not None:
+                        turn.logical_llm_contexts.setdefault(
+                            pending_request_id,
+                            pending_context,
+                        )
             logger.warning("Hermes Relay logical LLM finalization failed: %s", failure)
             break
 
