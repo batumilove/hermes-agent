@@ -68,6 +68,13 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 # ``config.yaml`` ``agent.gateway_auto_continue_freshness``.
 _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
 
+# Heartbeat writer tuning.
+# The heartbeat file is written by a supervised background task.  This must be
+# fast enough for external watchdogs to notice a stuck gateway, but not so fast
+# that it hammers the filesystem.
+_HEARTBEAT_INTERVAL_SECONDS = 10.0
+_HEARTBEAT_STALL_THRESHOLD_SECONDS = 60.0
+
 
 def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
     """Best-effort conversion of stored gateway timestamps to epoch seconds.
@@ -1007,6 +1014,11 @@ class GatewayRunner:
 
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
+
+        # Supervised heartbeat writer.  Started before platform adapters so a
+        # stuck startup cannot silently leave the gateway without liveness.
+        self._heartbeat_task: Optional[asyncio.Task] = None
+        self._heartbeat_writer_running: bool = False
 
 
     def _warn_if_docker_media_delivery_is_risky(self) -> None:
@@ -2377,6 +2389,33 @@ class GatewayRunner:
         task.add_done_callback(self._background_tasks.discard)
         return True
 
+    async def _heartbeat_writer(self) -> None:
+        """Write a heartbeat file periodically while the gateway is alive.
+
+        This coroutine is started *before* platform adapters connect and runs
+        on the event loop.  It writes to a small JSON file so external
+        watchdogs can detect a wedged gateway without relying on the event
+        loop's health.  The file write is synchronous and swallowed, so a
+        full disk or permission problem will not stall the gateway.
+        """
+        try:
+            from gateway.status import write_heartbeat
+        except Exception:
+            logger.exception("Heartbeat writer could not import write_heartbeat")
+            return
+
+        logger.info("Gateway heartbeat writer started")
+        self._heartbeat_writer_running = True
+        try:
+            while True:
+                write_heartbeat()
+                await asyncio.sleep(_HEARTBEAT_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            # Expected during shutdown.
+            pass
+        finally:
+            self._heartbeat_writer_running = False
+
     async def start(self) -> bool:
         """
         Start the gateway and all configured platform adapters.
@@ -2693,7 +2732,12 @@ class GatewayRunner:
         
         self._running = True
         self._update_runtime_status("running")
-        
+
+        # Start supervised heartbeat writer BEFORE platform adapters are fully
+        # depended on.  If this task cannot start, the gateway will not present
+        # a false-alive state to external watchdogs.
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_writer())
+
         # Emit gateway:startup hook
         hook_count = len(self.hooks.loaded_hooks)
         if hook_count:
@@ -3211,6 +3255,15 @@ class GatewayRunner:
                     continue
                 _task.cancel()
             self._background_tasks.clear()
+
+            # Cancel and await the supervised heartbeat writer.
+            if self._heartbeat_task is not None:
+                self._heartbeat_task.cancel()
+                try:
+                    await self._heartbeat_task
+                except asyncio.CancelledError:
+                    pass
+                self._heartbeat_task = None
 
             self.adapters.clear()
             self._running_agents.clear()
