@@ -1381,6 +1381,7 @@ class RelayTurnContext:
     turn_id: str
     task_id: str
     handle: Any = None
+    context: contextvars.Context | None = field(default=None, repr=False)
     logical_llm_calls: dict[str, Any] = field(default_factory=dict, repr=False)
     logical_llm_contexts: dict[str, contextvars.Context] = field(
         default_factory=dict,
@@ -1540,63 +1541,60 @@ class RelaySessionCoordinator:
         turn = RelayTurnContext(lease=lease, turn_id=turn_id, task_id=task_id)
         key = (lease.profile_key, lease.session_id)
         with self._active_turns_lock:
-            active = self._active_turns.get(key)
-            if active:
-                # A Relay session owns one physical scope stack. Concurrent
-                # Hermes turns would create sibling scopes on that stack, but
-                # their completion order is not guaranteed to be LIFO.
-                turn.relay_enabled = False
-                logger.warning(
-                    "Skipping Relay instrumentation for concurrent Hermes turn "
-                    "%s in session %s",
-                    turn_id,
-                    lease.session_id,
-                )
-            else:
-                self._active_turns[key] = {id(turn)}
-                turn._active_registered = True
+            had_active_turn = bool(self._active_turns.get(key))
+            self._active_turns.setdefault(key, set()).add(id(turn))
+            turn._active_registered = True
         if (
-            turn.relay_enabled
-            and isinstance(lease.host, RelayRuntime)
+            isinstance(lease.host, RelayRuntime)
             and lease.session is not None
         ):
-            # Session-span segmentation: consume a pending rotation (set by
-            # compaction) or the max_turns cap HERE — the only point where
-            # no turn scope is live on this session's stack, so the session
-            # scope can close/reopen without violating LIFO order.
-            try:
-                config = _segments_config()
-                session = lease.session
-                cap = config["max_turns"]
-                if (config["on_compaction"] and session.rotate_pending) or (
-                    cap > 0 and session.segment_turns >= cap
-                ):
-                    reason = (
-                        "compaction"
-                        if config["on_compaction"] and session.rotate_pending
-                        else "max_turns"
+            # Session-span segmentation may only rotate at a boundary with no
+            # older live turn. Concurrent turns keep their isolated contexts;
+            # a pending rotation remains queued for the next idle boundary.
+            if not had_active_turn:
+                try:
+                    config = _segments_config()
+                    session = lease.session
+                    cap = config["max_turns"]
+                    if (config["on_compaction"] and session.rotate_pending) or (
+                        cap > 0 and session.segment_turns >= cap
+                    ):
+                        reason = (
+                            "compaction"
+                            if config["on_compaction"] and session.rotate_pending
+                            else "max_turns"
+                        )
+                        lease.host.rotate_session_scope(session, reason=reason)
+                except Exception:
+                    logger.warning(
+                        "Hermes Relay segment rotation failed", exc_info=True
                     )
-                    lease.host.rotate_session_scope(session, reason=reason)
-            except Exception:
-                logger.warning(
-                    "Hermes Relay segment rotation failed", exc_info=True
-                )
             try:
-                turn.handle = lease.host.run_in_session(
-                    lease.session,
-                    lease.host.relay.scope.push,
-                    TURN_SCOPE,
-                    lease.host.relay.ScopeType.Function,
-                    handle=lease.session.handle,
-                    input={},
-                    metadata={
-                        RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION,
-                        RUNTIME_INSTANCE_KEY: lease.host.runtime_id,
-                        "hermes.execution_surface": lease.platform or "unknown",
-                    },
+                host = lease.host
+                turn_context = contextvars.Context()
+                turn.context = turn_context
+
+                def push_turn() -> Any:
+                    host.relay.get_scope_stack()
+                    return host.relay.scope.push(
+                        TURN_SCOPE,
+                        host.relay.ScopeType.Function,
+                        handle=lease.session.handle,
+                        input={},
+                        metadata={
+                            RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION,
+                            RUNTIME_INSTANCE_KEY: host.runtime_id,
+                            "hermes.execution_surface": lease.platform or "unknown",
+                        },
+                    )
+
+                turn.handle = _run_context_bounded(
+                    turn_context,
+                    push_turn,
                     timeout=_SCOPE_OP_TIMEOUT,
                 )
             except Exception:
+                turn.context = None
                 logger.warning("Hermes Relay turn initialization failed", exc_info=True)
         turn._previous_turn = _CURRENT_TURN.get()
         _CURRENT_TURN.set(turn)
@@ -1621,6 +1619,7 @@ class RelaySessionCoordinator:
                         failure = lease.host._close_scope_handle(
                             lease.session,
                             turn.handle,
+                            context=turn.context,
                             output={"outcome": outcome},
                             failure_label="turn scope close failed",
                         )
