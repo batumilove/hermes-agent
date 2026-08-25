@@ -815,6 +815,23 @@ patches:
       - tests/gateway/test_shutdown_incident_contract.py
     tests:
       - scripts/run_tests.sh tests/gateway/test_shutdown_incident_contract.py tests/gateway/test_loop_liveness_watchdog.py tests/gateway/test_shutdown_cache_cleanup.py
+  - id: gateway-reliability-revival-heartbeat-stopsec
+    kind: core
+    rationale: >-
+      Exit 75 (whitelisted relaunch code) instead of 1 on signal-initiated
+      shutdown so stop-phase exits are not left permanently failed by systemd;
+      start and supervise the loop-liveness heartbeat from the top of gateway
+      start() so a gateway life cannot run heartbeat-less; size TimeoutStopSec
+      to cover the cron drain floor plus its cleanup reserve so systemd does
+      not SIGKILL an in-budget drain. Evidence: 2026-08-24/25 hermes-vm
+      incident chain (42-min outage, 7h heartbeat-less life, drain SIGKILL
+      churn); PR #273.
+    paths:
+      - gateway/run.py
+      - hermes_cli/gateway.py
+      - tests/gateway/test_gateway_reliability_20260825.py
+    tests:
+      - scripts/run_tests.sh tests/gateway/test_gateway_reliability_20260825.py tests/gateway/test_gateway_shutdown.py tests/hermes_cli/test_systemd_optional_directives.py
       - scripts/run_tests.sh tests/gateway/test_gateway_shutdown.py tests/gateway/test_restart_drain.py tests/gateway/test_external_drain_control.py tests/gateway/test_shutdown_aggregate_budget_contract.py
     retirement: Remove when upstream accounts for detached delegations during drain, preserves marked completion-wake admission boundaries, and supplies an equivalent supervisor-bounded loop-freeze backstop with cleanup coverage.
 
