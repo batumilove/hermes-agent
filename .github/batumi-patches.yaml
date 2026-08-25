@@ -12,22 +12,28 @@ patches:
     rationale: >-
       Pin npm bootstrap and Debian container inputs to reviewed immutable
       versions, suppress bootstrap lifecycle scripts, enforce the repository
-      release-age policy, and reject equivalent unapproved global npm install
-      syntax in CI and Docker dependency installs.
+      release-age policy, upgrade fixable packages already present in the
+      pinned runtime base, replace vulnerable bundled npm and uv components,
+      restrict reusable test workflow permissions, cover every tracked
+      dependency lockfile in OSV, and reject equivalent unapproved global npm
+      install syntax in CI and Docker dependency installs.
     paths:
       - .github/workflows/deploy-site.yml
       - .github/workflows/docs-site-checks.yml
       - .github/workflows/e2e-desktop.yml
       - .github/workflows/js-autofix.yml
       - .github/workflows/js-tests.yml
+      - .github/workflows/osv-scanner.yml
       - Dockerfile
       - tests/scripts/test_js_tests_workflow.py
+      - tests/scripts/test_osv_scanner_workflow.py
+      - tests/tools/test_dockerfile_vulnerability_floors.py
     tests:
       - python3 -c "import pathlib, yaml; [yaml.safe_load(p.read_text()) for p in pathlib.Path('.github/workflows').glob('*.yml')]"
       - hadolint Dockerfile
       - npm run check --workspace apps/desktop
-      - scripts/run_tests.sh tests/scripts/test_js_tests_workflow.py
-    retirement: Remove when upstream pins equivalent npm and Debian build inputs with matching lifecycle and release-age protections.
+      - scripts/run_tests.sh tests/scripts/test_js_tests_workflow.py tests/scripts/test_osv_scanner_workflow.py tests/tools/test_dockerfile_vulnerability_floors.py
+    retirement: Remove when upstream pins equivalent npm and Debian build inputs, restricts reusable workflow permissions, and scans every tracked dependency lockfile with matching lifecycle and release-age protections.
 
   - id: desktop-nanoid-ghsa-2v37-remediation
     kind: operations
@@ -95,6 +101,7 @@ patches:
       - contributors/emails/aleman@batumi.works
       - contributors/emails/hermes@local
       - contributors/emails/repo-builder@batumi.works
+      - contributors/emails/repo-ops-glm-5-1@hermes.local
       - scripts/check_fork_delta.py
       - scripts/install_batumi_components.py
       - scripts/run_batumi_contracts.py
@@ -815,12 +822,42 @@ patches:
       - tests/gateway/test_drain_attribution_lifecycle.py
       - tests/gateway/test_shutdown_aggregate_budget_contract.py
       - tests/gateway/test_shutdown_forensics.py
+      - tests/gateway/test_goal_continuation_drain.py
+      - tests/gateway/test_systemd_notify.py
       - tests/gateway/test_shutdown_watchdog.py
       - tools/cronjob_tools.py
     tests:
       - scripts/run_tests.sh tests/gateway/test_drain_attribution.py tests/gateway/test_drain_attribution_lifecycle.py tests/gateway/test_gateway_shutdown.py tests/gateway/test_shutdown_forensics.py tests/gateway/test_shutdown_watchdog.py
       - scripts/run_tests.sh tests/gateway/test_api_server_active_work_drain.py tests/gateway/test_shutdown_cache_cleanup.py tests/cron/test_running_job_attribution.py tests/cron/test_shutdown_interrupt.py
     retirement: Remove when upstream preserves equivalent generation-scoped shutdown work identities, bounded evidence writes, watchdog-safe snapshots, and false-clean-exit prevention.
+
+  - id: sessiondb-p0-write-admission-handle-leaks
+    kind: core
+    rationale: >-
+      Bound SessionDB write concurrency with per-path admission so concurrent
+      gateway writers stop contending into SQLite "database is locked"
+      failures; allow the database.synchronous operator override on Linux;
+      close handle leaks on cron gate returns, make the channel directory
+      read-only, and close ACP session teardown handles; await queued turn
+      admission in the API server. Evidence: 2026-08-24/25 hermes-vm LCM
+      SQLite lock-contention incident; PR #274.
+    paths:
+      - acp_adapter/entry.py
+      - acp_adapter/session.py
+      - cron/scheduler.py
+      - gateway/channel_directory.py
+      - gateway/platforms/api_server.py
+      - gateway/write_admission.py
+      - hermes_state.py
+      - tests/acp_adapter/test_session_manager_close.py
+      - tests/cron/test_run_job_gate_sessiondb.py
+      - tests/gateway/test_api_turn_admission.py
+      - tests/gateway/test_channel_directory_readonly.py
+      - tests/state/test_session_db_write_admission.py
+      - tests/test_hermes_state.py
+    tests:
+      - scripts/run_tests.sh tests/state/test_session_db_write_admission.py tests/acp_adapter/test_session_manager_close.py tests/gateway/test_api_turn_admission.py tests/gateway/test_channel_directory_readonly.py tests/cron/test_run_job_gate_sessiondb.py tests/test_hermes_state.py
+    retirement: Remove when upstream bounds SessionDB write concurrency with admission control, closes cron-gate and ACP-teardown handle leaks, exposes a synchronous-mode override, and awaits queued API turn admission.
 
   - id: gateway-lifecycle-drain-incident-contracts
     kind: core
@@ -840,6 +877,24 @@ patches:
       - scripts/run_tests.sh tests/gateway/test_shutdown_incident_contract.py tests/gateway/test_loop_liveness_watchdog.py tests/gateway/test_shutdown_cache_cleanup.py
       - scripts/run_tests.sh tests/gateway/test_gateway_shutdown.py tests/gateway/test_restart_drain.py tests/gateway/test_external_drain_control.py tests/gateway/test_shutdown_aggregate_budget_contract.py
     retirement: Remove when upstream accounts for detached delegations during drain, preserves marked completion-wake admission boundaries, and supplies an equivalent supervisor-bounded loop-freeze backstop with cleanup coverage.
+  - id: gateway-reliability-revival-heartbeat-stopsec
+    kind: core
+    rationale: >-
+      Exit 75 (whitelisted relaunch code) instead of 1 on signal-initiated
+      shutdown so stop-phase exits are not left permanently failed by systemd;
+      start and supervise the loop-liveness heartbeat from the top of gateway
+      start() so a gateway life cannot run heartbeat-less; size TimeoutStopSec
+      to cover the cron drain floor plus its cleanup reserve so systemd does
+      not SIGKILL an in-budget drain. Evidence: 2026-08-24/25 hermes-vm
+      incident chain (42-min outage, 7h heartbeat-less life, drain SIGKILL
+      churn); PR #273.
+    paths:
+      - gateway/run.py
+      - hermes_cli/gateway.py
+      - tests/gateway/test_gateway_reliability_20260825.py
+    tests:
+      - scripts/run_tests.sh tests/gateway/test_gateway_reliability_20260825.py tests/gateway/test_gateway_shutdown.py tests/hermes_cli/test_systemd_optional_directives.py
+    retirement: Remove when upstream exits a whitelisted relaunch code on signal-initiated shutdown, starts and supervises the loop-liveness heartbeat before adapter bring-up, and sizes the generated unit's TimeoutStopSec to cover the cron drain floor plus cleanup reserve.
 
   - id: desktop-messaging-config-load-once
     kind: core

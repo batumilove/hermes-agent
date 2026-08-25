@@ -1263,9 +1263,43 @@ def _admit_api_agent_request(handler):
         draining = self._draining_response()
         if draining is not None:
             return draining
+        # Gateway-wide write admission (P0-A): bound write-heavy runs before
+        # any agent work is spawned. Queue-full answers 429 + Retry-After
+        # here; per-transaction disk admission lives in hermes_state.
+        admission_exc = None
+        try:
+            from gateway import write_admission as _gwa
+
+            try:
+                from hermes_constants import get_hermes_home
+
+                _profile_home = get_hermes_home()
+            except Exception:
+                _profile_home = None
+            if _profile_home is not None:
+                _key = request.headers.get("X-Hermes-Session-Key") or ""
+                admission_exc = _gwa.try_acquire_turn_admission(
+                    _profile_home, session_key=(_key or None)
+                )
+                if isinstance(admission_exc, Exception):
+                    _body = _gwa.admission_limit_response(admission_exc)
+                    return web.json_response(
+                        _body["body"],
+                        status=_body["status"],
+                        headers=_body["headers"],
+                    )
+        except Exception:
+            logger.debug("turn admission unavailable; failing open", exc_info=True)
         reservation = _register_pending_api_work(self)
         token = _api_agent_request_reservation.set(reservation)
         try:
+            if admission_exc is not None and not isinstance(admission_exc, Exception):
+                # The admission controller returned a queued token. Entering the
+                # token context manager is what waits for the grant; without it,
+                # a queued-but-not-full request would skip straight into the
+                # handler instead of waiting for capacity.
+                with admission_exc:
+                    return await handler(self, request, *args, **kwargs)
             return await handler(self, request, *args, **kwargs)
         finally:
             _release_pending_api_work(self, reservation)

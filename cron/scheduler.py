@@ -1979,6 +1979,42 @@ def _open_continuable_cron_thread(
         return None
 
 
+def _persist_cron_thread_binding(job: dict, platform_name: str, chat_id: str, thread_id: str) -> None:
+    """Pin a freshly-created continuable thread into the job's origin target.
+
+    Without this, a ``deliver: origin`` job whose ``origin.thread_id`` is null
+    opens a NEW named topic on every non-silent delivery (topic spam) and the
+    null-thread fallback can deliver into the chat's warm flat session instead
+    of a dedicated lane. Persisting the created thread makes the second and
+    later deliveries explicit routed targets (the scheduler's "never override
+    an explicit origin thread" guard then skips thread creation entirely).
+
+    Best-effort: a persistence failure never fails a delivery that already
+    succeeded — it is logged and the next delivery retries the pin.
+    """
+    try:
+        from cron.jobs import update_job
+
+        origin = dict(job.get("origin") or {})
+        if str(origin.get("thread_id") or ""):
+            return  # already pinned — never override an explicit thread
+        if str(origin.get("platform", "")).lower() != str(platform_name).lower():
+            return
+        if str(origin.get("chat_id", "")) != str(chat_id):
+            return
+        origin["thread_id"] = str(thread_id)
+        update_job(job["id"], {"origin": origin})
+        logger.info(
+            "Job '%s': pinned continuable thread %s:%s:%s into origin",
+            job.get("id", "?"), platform_name, chat_id, thread_id,
+        )
+    except Exception as e:
+        logger.warning(
+            "Job '%s': failed to pin continuable thread %s:%s:%s into origin: %s",
+            job.get("id", "?"), platform_name, chat_id, thread_id, e,
+        )
+
+
 def _seed_cron_thread_session(
     job: dict,
     adapter,
@@ -3763,6 +3799,12 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             scope_id=origin.get("scope_id"),
                         )
                         thread_seeded = True
+                        # Pin the created thread into the job's origin so the
+                        # NEXT delivery routes explicitly to this lane instead
+                        # of creating yet another fresh topic per output.
+                        _persist_cron_thread_binding(
+                            job, platform_name, chat_id, opened_thread_id,
+                        )
                     # in_channel surface: CREATE + seed the flat channel/DM
                     # session (the shipped mirror only appends to an existing
                     # session — the flat row is otherwise absent for a
@@ -5598,13 +5640,78 @@ def run_job(
             )
 
     # ---------------------------------------------------------------
-    # Default (LLM) path — import and construct the agent machinery now
-    # that we know we actually need it. Doing these imports here instead of
-    # at module top keeps no_agent ticks from paying for AIAgent / SessionDB
-    # construction costs.
+    # Default (LLM) path — import the agent machinery now that we know
+    # we actually need it. Doing this import here instead of at module
+    # top keeps no_agent ticks from paying for AIAgent construction cost.
     # ---------------------------------------------------------------
     from run_agent import AIAgent
 
+    # Wake-gate: if this job has a pre-check script, run it BEFORE building
+    # the prompt so a ``{"wakeAgent": false}`` response can short-circuit
+    # the whole agent run. We pass the result into _build_job_prompt so
+    # the script is only executed once.
+    prerun_script = None
+    script_path = job.get("script")
+    if script_path:
+        prerun_script = _run_job_script_with_claim_heartbeat(
+            job, script_path, cancel_event=cancel_event,
+        )
+        _ran_ok, _script_output = prerun_script
+        if _ran_ok and not _parse_wake_gate(_script_output):
+            logger.info(
+                "Job '%s' (ID: %s): wakeAgent=false, skipping agent run",
+                job_name, job_id,
+            )
+            silent_doc = (
+                f"# Cron Job: {job_name}\n\n"
+                f"**Job ID:** {job_id}\n"
+                f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                "Script gate returned `wakeAgent=false` — agent skipped.\n"
+            )
+            return True, silent_doc, SILENT_MARKER, None
+
+    try:
+        prompt = _build_job_prompt(
+            job, prerun_script=prerun_script, extra_prompt=extra_prompt
+        )
+    except CronPromptInjectionBlocked as block_exc:
+        # Assembled prompt (user prompt + loaded skill content) tripped the
+        # injection scanner. Refuse to run the agent this tick and surface
+        # a clear failure to the operator so they see WHY the scheduled job
+        # didn't run and can audit the offending skill.
+        logger.warning(
+            "Job '%s' (ID: %s): blocked by prompt-injection scanner — %s",
+            job_name, job_id, block_exc,
+        )
+        blocked_doc = (
+            f"# Cron Job: {job_name}\n\n"
+            f"**Job ID:** {job_id}\n"
+            f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"**Status:** BLOCKED\n\n"
+            "The assembled prompt (user prompt + loaded skill content) tripped "
+            "the cron injection scanner and the agent was NOT run.\n\n"
+            f"**Scanner result:** {block_exc}\n\n"
+            "Audit the skill(s) attached to this job for prompt-injection "
+            "payloads or invisible-unicode markers. If the skill is legitimate "
+            "and the match is a false positive, rephrase the content to avoid "
+            "the threat pattern (`tools/cronjob_tools.py::_CRON_THREAT_PATTERNS`)."
+        )
+        return False, blocked_doc, "", str(block_exc)
+    if prompt is None:
+        logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
+        return True, "", SILENT_MARKER, None
+
+    # ---------------------------------------------------------------
+    # All early-return gates (no_agent, monitor, wake-gate, injection
+    # block, empty prompt) are now behind us: the job WILL run the agent.
+    # Only now open the per-job SQLite session store — every one of those
+    # gates used to strand this writable handle with no deterministic
+    # close (the guarded ``finally`` far below only owns exits after the
+    # ``try``), skipping the PASSIVE checkpoint at close and leaning on
+    # GC for teardown. With script-gated watchdogs firing every 5–30 min,
+    # the wake-gate path alone leaked dozens of handles/hour against the
+    # hot shared state.db.
+    # ---------------------------------------------------------------
     # Initialize SQLite session store so cron job messages are persisted
     # and discoverable via session_search (same pattern as gateway/run.py).
     #
@@ -5681,60 +5788,6 @@ def run_job(
     except Exception as e:
         logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
 
-    # Wake-gate: if this job has a pre-check script, run it BEFORE building
-    # the prompt so a ``{"wakeAgent": false}`` response can short-circuit
-    # the whole agent run. We pass the result into _build_job_prompt so
-    # the script is only executed once.
-    prerun_script = None
-    script_path = job.get("script")
-    if script_path:
-        prerun_script = _run_job_script_with_claim_heartbeat(
-            job, script_path, cancel_event=cancel_event,
-        )
-        _ran_ok, _script_output = prerun_script
-        if _ran_ok and not _parse_wake_gate(_script_output):
-            logger.info(
-                "Job '%s' (ID: %s): wakeAgent=false, skipping agent run",
-                job_name, job_id,
-            )
-            silent_doc = (
-                f"# Cron Job: {job_name}\n\n"
-                f"**Job ID:** {job_id}\n"
-                f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-                "Script gate returned `wakeAgent=false` — agent skipped.\n"
-            )
-            return True, silent_doc, SILENT_MARKER, None
-
-    try:
-        prompt = _build_job_prompt(
-            job, prerun_script=prerun_script, extra_prompt=extra_prompt
-        )
-    except CronPromptInjectionBlocked as block_exc:
-        # Assembled prompt (user prompt + loaded skill content) tripped the
-        # injection scanner. Refuse to run the agent this tick and surface
-        # a clear failure to the operator so they see WHY the scheduled job
-        # didn't run and can audit the offending skill.
-        logger.warning(
-            "Job '%s' (ID: %s): blocked by prompt-injection scanner — %s",
-            job_name, job_id, block_exc,
-        )
-        blocked_doc = (
-            f"# Cron Job: {job_name}\n\n"
-            f"**Job ID:** {job_id}\n"
-            f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"**Status:** BLOCKED\n\n"
-            "The assembled prompt (user prompt + loaded skill content) tripped "
-            "the cron injection scanner and the agent was NOT run.\n\n"
-            f"**Scanner result:** {block_exc}\n\n"
-            "Audit the skill(s) attached to this job for prompt-injection "
-            "payloads or invisible-unicode markers. If the skill is legitimate "
-            "and the match is a false positive, rephrase the content to avoid "
-            "the threat pattern (`tools/cronjob_tools.py::_CRON_THREAT_PATTERNS`)."
-        )
-        return False, blocked_doc, "", str(block_exc)
-    if prompt is None:
-        logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
-        return True, "", SILENT_MARKER, None
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
 
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)

@@ -440,7 +440,17 @@ def _build_from_sessions_db(platform_name: str) -> List[Dict[str, str]]:
     entries: List[Dict[str, str]] = []
     try:
         from hermes_state import SessionDB
-        db = SessionDB()
+
+        # SELECT-only work (list_gateway_routing_origins): attach read-only.
+        # This tick runs every 5 minutes per connected platform, and a
+        # writable open both takes a construction-time write interest in the
+        # hot state.db and runs PRAGMA wal_checkpoint(PASSIVE) at every
+        # close — avoidable write-lock traffic 12–24x/hour under backup-I/O
+        # contention. A read-only close never checkpoints. The DB must
+        # already exist for a read-only attach; on a fresh install the
+        # open raises and the outer except degrades to the sessions.json
+        # fallback path below.
+        db = SessionDB(read_only=True)
         try:
             lister = getattr(db, "list_gateway_routing_origins", None)
             if not callable(lister):

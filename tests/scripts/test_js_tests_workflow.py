@@ -76,6 +76,11 @@ def _assert_approved_global_npm_installs(text: str) -> None:
         assert "--min-release-age=14" in all_args
 
 
+def test_js_workflow_has_read_only_permissions() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    assert workflow["permissions"] == {"contents": "read"}
+
+
 def test_js_workflow_installs_only_the_exact_cooldown_protected_npm() -> None:
     _assert_approved_global_npm_installs(WORKFLOW.read_text(encoding="utf-8"))
 

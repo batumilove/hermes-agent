@@ -13032,6 +13032,47 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 logger.debug("Failed to start gateway loop liveness watchdog", exc_info=True)
 
+    def _start_loop_heartbeat_supervised(self) -> None:
+        """(Re)start the loop-liveness heartbeat task if it is not running.
+
+        Called once at the top of ``start()`` — before adapter/plugin bring-up
+        — and again from the supervisor callback if the task ever dies, so a
+        gateway life cannot silently run heartbeat-less (2026-08-25 incident:
+        7h life, zero heartbeat writes, only discovered when it failed to
+        drain). Idempotent: an alive task is left alone.
+        """
+        existing = getattr(self, "_loop_heartbeat_task", None)
+        if existing is not None and not existing.done():
+            return
+        task = asyncio.create_task(
+            loop_heartbeat_forever(
+                interval_s=DEFAULT_HEARTBEAT_INTERVAL_S,
+                start_time=getattr(self, "_gateway_started_at", 0.0),
+            )
+        )
+        self._loop_heartbeat_task = task
+        _bg = getattr(self, "_background_tasks", None)
+        if _bg is not None:
+            _bg.add(task)
+            task.add_done_callback(_bg.discard)
+
+        def _supervise(t: "asyncio.Task[None]") -> None:
+            if t.cancelled():
+                return  # normal stop() teardown
+            if t.exception() is not None:
+                logger.warning(
+                    "Gateway loop heartbeat task died (%r); restarting it",
+                    t.exception(),
+                )
+                try:
+                    self._start_loop_heartbeat_supervised()
+                except Exception:
+                    logger.error(
+                        "Failed to restart gateway loop heartbeat", exc_info=True
+                    )
+
+        task.add_done_callback(_supervise)
+
     def _loop_freeze_hard_deadline_s(self) -> Optional[float]:
         """Bound the loop-freeze backstop before systemd's SIGKILL boundary.
 
@@ -13189,6 +13230,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._gateway_loop = None
         if self._gateway_loop is not None:
             self._start_loop_liveness_guards(self._gateway_loop)
+
+        # Start the loop-liveness heartbeat NOW — before adapters, plugins,
+        # and hooks — and supervise it for the whole gateway life. The
+        # incident of 2026-08-25 showed a gateway life that ran 7h and never
+        # wrote a single heartbeat: the task was previously created late in
+        # start() behind adapter/plugin bring-up, best-effort with a
+        # debug-only failure path, so a startup exception or early wedge
+        # silently produced a "running but not alive" gateway that external
+        # watchdogs (which key on state/gateway.heartbeat freshness) could
+        # not distinguish from a healthy one until it failed to drain.
+        # Starting it at the top of start() means the heartbeat reflects the
+        # process from the earliest possible moment; the supervisor below
+        # replaces the task if it dies, and an early-abort startup still
+        # exits before the file can go meaningfully stale.
+        try:
+            self._start_loop_heartbeat_supervised()
+        except Exception:
+            logger.warning(
+                "Failed to start gateway loop heartbeat", exc_info=True
+            )
         logger.info("Session storage: %s", self.config.sessions_dir)
 
         # Sanity-check that systemd's TimeoutStopSec covers our drain
@@ -13906,7 +13967,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._install_plugin_message_injector()
         _publish_authoritative_startup_status(self, default_state="running")
 
-        self._start_loop_heartbeat_task()
+        # Loop-liveness heartbeat (#66892): an asyncio task so a frozen loop
+        # stops refreshing ``state/gateway.heartbeat``. Cancelled with the
+        # other background tasks during stop(). Normally already started at
+        # the top of start() (supervised, before adapters) — this call is
+        # idempotent and only recreates it if somehow not alive.
+        try:
+            self._start_loop_heartbeat_supervised()
+        except Exception:
+            logger.debug("Failed to start gateway loop heartbeat", exc_info=True)
+
 
         # Emit gateway:startup hook
         hook_count = len(self.hooks.loaded_hooks)
@@ -32619,11 +32689,30 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # `hermes gateway stop` and interactive Ctrl+C are handled above as
     # planned stops and should not trigger service-manager revival.
     if _signal_initiated_shutdown and not runner._restart_requested:
+        # Exit 75 — NOT 1 — so the service manager reliably relaunches the
+        # gateway. Two independent reasons exit 1 is wrong here:
+        #
+        # 1. The generated unit ships ``Restart=always``, so this exit-1
+        #    "revive me" signal only ever mattered for Restart=on-failure
+        #    operators; under Restart=always the code is inert either way.
+        # 2. When the signal arrived as part of a systemd stop/restart JOB
+        #    (restart with active agents, TimeoutStopSec escalation,
+        #    daemon-reload), the exit happens during the job's stop phase,
+        #    where systemd applies NO restart logic at all — not Restart=,
+        #    not RestartForceExitStatus. Exit 1 just leaves the unit
+        #    ``failed`` permanently until external recovery. Exit 75 is the
+        #    existing in-band "please relaunch" code: it is whitelisted via
+        #    ``RestartForceExitStatus=75`` for the normal paths and, for the
+        #    stop-phase case, the accompanying restart job (or the operator's
+        #    autoheal watchdog) performs the relaunch instead. Real crashes
+        #    (tracebacks, config fatals) still exit non-75 and keep their
+        #    existing semantics.
         logger.info(
-            "Exiting with code 1 (signal-initiated shutdown without restart "
-            "request) so systemd Restart=on-failure can revive the gateway."
+            "Exiting with code %d (signal-initiated shutdown without restart "
+            "request) so the service manager can revive the gateway.",
+            GATEWAY_SERVICE_RESTART_EXIT_CODE,
         )
-        return False  # → sys.exit(1) in the caller
+        raise SystemExit(GATEWAY_SERVICE_RESTART_EXIT_CODE)
 
     # Older restart paths may reach here without ``runner.exit_code`` set.
     # Keep the historical non-zero fallback for service-managed restarts.
