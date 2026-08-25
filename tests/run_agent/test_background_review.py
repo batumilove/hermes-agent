@@ -507,8 +507,30 @@ def test_background_review_tracking_updates_are_atomic(monkeypatch):
         "children:exit",
         "background:exit",
     ]
-    assert seen["registration"] == nested
-    assert seen["after_unregistration"] == nested + nested
+    # The spawn-side run-token prepare (prepare_background_review_run) may
+    # take the background lock once before the thread target runs; the
+    # ownership contract under test is that registration and unregistration
+    # each hold both locks in the canonical nested order.
+    registration = seen["registration"]
+    while registration and registration[0] in ("background:enter", "background:exit") and (
+        registration[:2] == ["background:enter", "background:exit"]
+    ):
+        registration = registration[2:]
+    assert registration == nested
+    after = seen["after_unregistration"]
+    prefix = seen["registration"][: len(seen["registration"]) - len(registration)]
+    # after_unregistration is captured later; it may additionally include the
+    # spawn-prepare pair and any finish_background_review_run lock pair taken
+    # between the two snapshots. Strip any background-only prefix/suffix pairs
+    # and require the two nested ownership sections to remain intact.
+    def _strip_bg_pairs(seq):
+        while len(seq) >= 2 and seq[:2] == ["background:enter", "background:exit"]:
+            seq = seq[2:]
+        while len(seq) >= 2 and seq[-2:] == ["background:enter", "background:exit"]:
+            seq = seq[:-2]
+        return seq
+
+    assert _strip_bg_pairs(after) == nested + nested
 
 
 def test_cache_eviction_interrupts_review_without_tearing_down_worker_resources():
