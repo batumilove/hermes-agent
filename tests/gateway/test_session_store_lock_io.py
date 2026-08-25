@@ -150,10 +150,10 @@ class TestSaveOutsideLock:
 
         orig_save = store._save_entries
 
-        def tracking_save():
+        def tracking_save(*, reason=None, point_key=None):
             if lock.held:
                 save_calls_under_lock.append(True)
-            orig_save()
+            orig_save(reason=reason, point_key=point_key)
 
         store._save_entries = tracking_save  # type: ignore[method-assign]
 

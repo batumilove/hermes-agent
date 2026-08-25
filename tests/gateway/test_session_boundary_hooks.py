@@ -75,7 +75,7 @@ def _make_runner():
 
 @pytest.mark.asyncio
 @patch("hermes_cli.plugins.invoke_hook")
-async def test_idle_expiry_fires_finalize_hook(mock_invoke_hook):
+async def test_idle_expiry_fires_finalize_hook(mock_invoke_hook, monkeypatch):
     """Regression test for #14981.
 
     When ``_session_expiry_watcher`` sweeps a session that has aged past
@@ -87,6 +87,7 @@ async def test_idle_expiry_fires_finalize_hook(mock_invoke_hook):
     """
     from datetime import datetime, timedelta
 
+    from agent import relay_runtime
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
@@ -119,6 +120,18 @@ async def test_idle_expiry_fires_finalize_hook(mock_invoke_hook):
     runner._evict_cached_agent = MagicMock()
     runner._cleanup_agent_resources = MagicMock()
     runner._sweep_idle_cached_agents = MagicMock(return_value=0)
+    finalize_async = AsyncMock(return_value=None)
+    finalize_sync = MagicMock(return_value=None)
+    monkeypatch.setattr(
+        relay_runtime.SESSION_COORDINATOR,
+        "finalize_conversation_async",
+        finalize_async,
+    )
+    monkeypatch.setattr(
+        relay_runtime.SESSION_COORDINATOR,
+        "finalize_conversation",
+        finalize_sync,
+    )
 
     # The watcher starts with `await asyncio.sleep(0.2)` and loops while
     # `self._running`.  Patch sleep so the 60s initial delay is instant, and
@@ -148,6 +161,11 @@ async def test_idle_expiry_fires_finalize_hook(mock_invoke_hook):
         f"on_session_finalize was not fired during idle expiry; "
         f"got session_ids={session_ids} (regression of #14981)"
     )
+    finalize_async.assert_awaited_once_with(
+        profile_key=relay_runtime.current_profile_key(),
+        session_id="sess-expired",
+    )
+    finalize_sync.assert_not_called()
 
 
 @pytest.mark.asyncio

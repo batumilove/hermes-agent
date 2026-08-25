@@ -10,5 +10,21 @@ based on the TERMINAL_ENV configuration.
 """
 
 from tools.environments.base import BaseEnvironment
+from tools.environments.registry import (
+    EnvironmentBackend,
+    get_environment_backend,
+    is_containerized_environment_backend,
+    register_environment_backend,
+    registered_environment_backends,
+    unregister_environment_backend,
+)
 
-__all__ = ["BaseEnvironment"]
+__all__ = [
+    "BaseEnvironment",
+    "EnvironmentBackend",
+    "get_environment_backend",
+    "is_containerized_environment_backend",
+    "register_environment_backend",
+    "registered_environment_backends",
+    "unregister_environment_backend",
+]

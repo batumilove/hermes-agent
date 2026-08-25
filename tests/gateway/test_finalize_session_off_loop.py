@@ -11,7 +11,7 @@ run inline on the event loop from three call sites:
 On a wedged/slow hook the whole loop froze — adapter heartbeats stopped and
 systemd SIGKILLed the process mid-shutdown. All three sites now dispatch
 through ``GatewayRunner._finalize_session_off_loop``, which runs
-``hermes_cli.lifecycle.finalize_session`` in the gateway executor under a
+``hermes_cli.lifecycle.finalize_session_async`` in the gateway executor under a
 bounded ``asyncio.wait_for``.
 """
 
@@ -31,13 +31,13 @@ def test_finalize_off_loop_invokes_lifecycle(monkeypatch):
     """The helper reaches the real lifecycle entry point with the kwargs."""
     calls = []
 
-    def _fake_finalize(**kwargs):
+    async def _fake_finalize(**kwargs):
         calls.append(kwargs)
         return []
 
     import hermes_cli.lifecycle as lifecycle
 
-    monkeypatch.setattr(lifecycle, "finalize_session", _fake_finalize)
+    monkeypatch.setattr(lifecycle, "finalize_session_async", _fake_finalize)
 
     runner = _make_runner()
     asyncio.run(
@@ -64,13 +64,13 @@ def test_finalize_off_loop_keeps_loop_alive_and_bounds_wedged_hook(monkeypatch):
     """
     release = threading.Event()
 
-    def _wedged_finalize(**kwargs):
+    async def _wedged_finalize(**kwargs):
         # Simulates a multi-minute trace export.
         release.wait(timeout=30)
 
     import hermes_cli.lifecycle as lifecycle
 
-    monkeypatch.setattr(lifecycle, "finalize_session", _wedged_finalize)
+    monkeypatch.setattr(lifecycle, "finalize_session_async", _wedged_finalize)
 
     runner = _make_runner()
     monkeypatch.setattr(GatewayRunner, "_FINALIZE_TIMEOUT_S", 0.5, raising=False)
@@ -106,12 +106,12 @@ def test_finalize_off_loop_keeps_loop_alive_and_bounds_wedged_hook(monkeypatch):
 def test_finalize_off_loop_swallows_hook_exceptions(monkeypatch):
     """A raising hook is contained — callers proceed with shutdown."""
 
-    def _raising_finalize(**kwargs):
+    async def _raising_finalize(**kwargs):
         raise RuntimeError("exporter blew up")
 
     import hermes_cli.lifecycle as lifecycle
 
-    monkeypatch.setattr(lifecycle, "finalize_session", _raising_finalize)
+    monkeypatch.setattr(lifecycle, "finalize_session_async", _raising_finalize)
 
     runner = _make_runner()
     # Must not raise.
@@ -133,7 +133,7 @@ def test_shutdown_finalize_path_uses_off_loop_dispatch(monkeypatch):
         GatewayRunner, "_finalize_session_off_loop", _fake_off_loop
     )
 
-    async def _fake_cleanup(self, agent, *, context=""):
+    async def _fake_cleanup(self, agent, *, context="", timeout=None):
         return None
 
     monkeypatch.setattr(

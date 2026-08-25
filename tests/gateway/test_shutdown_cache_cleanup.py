@@ -65,6 +65,11 @@ class _FakeGateway:
         # This fake has no API server adapter, so it is always idle.
         return 0
 
+    def _active_delegation_count(self):
+        # Detached delegations also count as active work during shutdown;
+        # this fake never has one in flight.
+        return 0
+
     def _update_runtime_status(self, *_a, **_kw):
         pass
 
@@ -76,8 +81,10 @@ class _FakeGateway:
         # inline in tests so the bounded-cleanup path is exercised.
         return func(*args)
 
-    async def _cleanup_agent_resources_off_loop(self, agent, *, context=""):
-        # Mirror the real bounded helper, inline (no executor/timeout) so the
+    async def _cleanup_agent_resources_off_loop(
+        self, agent, *, context="", timeout=None
+    ):
+        # Mirror the real bounded helper inline (no executor/timeout) so the
         # fake exercises the same call shape stop() now uses.
         self._cleanup_agent_resources(agent)
 

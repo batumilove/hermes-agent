@@ -24,6 +24,7 @@ import re
 import ssl
 import sys
 import time
+from contextlib import nullcontext
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
@@ -273,6 +274,53 @@ def _should_rearm_compression_budget(
         and threshold_tokens > 0
         and 0 < prompt_tokens < threshold_tokens
     )
+
+
+def _record_context_engine_usage(agent: Any, usage_dict: Dict[str, Any]) -> tuple[bool, int]:
+    """Account for provider usage without racing context-engine teardown.
+
+    Returns the pre-update compaction-verification latch and current threshold.
+    A lifecycle owner that already detached the engine makes accounting a safe
+    no-op rather than converting a successful provider response into a retry.
+    """
+    lock = getattr(agent, "_context_engine_shutdown_lock", None)
+    with lock if lock is not None else nullcontext():
+        engine = getattr(agent, "context_compressor", None)
+        if engine is None:
+            return False, 0
+        pending = bool(
+            getattr(engine, "_verify_compaction_cleared_threshold", False)
+        )
+        engine.update_from_response(usage_dict)
+        threshold = int(getattr(engine, "threshold_tokens", 0) or 0)
+        return pending, threshold
+
+
+def _record_missing_context_engine_usage(agent: Any) -> None:
+    """Consume a pending post-compaction verdict for a usage-less response."""
+    lock = getattr(agent, "_context_engine_shutdown_lock", None)
+    with lock if lock is not None else nullcontext():
+        engine = getattr(agent, "context_compressor", None)
+        if engine is not None and getattr(
+            engine, "awaiting_real_usage_after_compression", False
+        ):
+            engine.update_from_response({})
+
+
+def _consume_context_probe_state(agent: Any) -> Optional[tuple[int, bool]]:
+    """Atomically snapshot and clear successful context-probe state."""
+    lock = getattr(agent, "_context_engine_shutdown_lock", None)
+    with lock if lock is not None else nullcontext():
+        engine = getattr(agent, "context_compressor", None)
+        if engine is None or not getattr(engine, "_context_probed", False):
+            return None
+        context_length = int(getattr(engine, "context_length", 0) or 0)
+        persistable = bool(
+            getattr(engine, "_context_probe_persistable", False)
+        )
+        engine._context_probed = False
+        engine._context_probe_persistable = False
+        return context_length, persistable
 
 
 # Modules that indicate a deterministic local processing error when they
@@ -2960,6 +3008,13 @@ def run_conversation(
                         tools_for_api=tools_for_api,
                     )
                 )
+                # Cap synthesis recovery: one tools-disabled pass to convert
+                # collected evidence into an answer.
+                if agent._cap_synthesis_mode:
+                    tools_for_api = []
+                    agent._cap_synthesis_consumed = True
+                else:
+                    agent._cap_synthesis_consumed = False
                 if tools_for_api == agent.tools:
                     api_kwargs = agent._build_api_kwargs(api_messages)
                 else:
@@ -4169,22 +4224,15 @@ def run_conversation(
                         "cache_write_tokens": canonical_usage.cache_write_tokens,
                         "reasoning_tokens": canonical_usage.reasoning_tokens,
                     }
-                    # Capture the boundary latch before update_from_response()
-                    # consumes it. Only a real provider prompt count for the
-                    # request immediately following a completed compaction can
-                    # prove that attempt effective and rearm the shared budget.
-                    _completed_compaction_pending = bool(
-                        getattr(
-                            agent.context_compressor,
-                            "_verify_compaction_cleared_threshold",
-                            False,
-                        )
-                    )
-                    agent.context_compressor.update_from_response(usage_dict)
-                    _compression_threshold = int(
-                        getattr(agent.context_compressor, "threshold_tokens", 0)
-                        or 0
-                    )
+                    # Serialize usage accounting with owner teardown.  A parent
+                    # close/cache eviction may detach the engine after the API
+                    # response has returned; that lifecycle event must not turn
+                    # a successful provider call into a retry.  When teardown
+                    # already claimed the engine, skip best-effort accounting.
+                    (
+                        _completed_compaction_pending,
+                        _compression_threshold,
+                    ) = _record_context_engine_usage(agent, usage_dict)
                     if _should_rearm_compression_budget(
                         compression_attempts,
                         completed_compaction_pending=_completed_compaction_pending,
@@ -4221,29 +4269,23 @@ def run_conversation(
                     # of interest is the cost/size of the latest assembled
                     # request, so we keep the most recent call's usage.
                     agent._last_turn_usage = dict(usage_dict)
-                elif getattr(
-                    agent.context_compressor,
-                    "awaiting_real_usage_after_compression",
-                    False,
-                ):
+                else:
                     # A response with no usage cannot adjudicate whether the
-                    # prior compaction cleared the threshold. Consume the pending
-                    # verdict now so a much later, unrelated reading is not
-                    # charged to that old compaction, and so preflight deferral
-                    # does not remain latched indefinitely.
-                    agent.context_compressor.update_from_response({})
+                    # prior compaction cleared the threshold. Consume any
+                    # pending verdict atomically with lifecycle teardown so a
+                    # much later reading is not charged to that old compaction.
+                    _record_missing_context_engine_usage(agent)
 
                 if hasattr(response, 'usage') and response.usage:
                     # Cache discovered context length after successful call.
                     # Only persist limits confirmed by the provider (parsed
                     # from the error message), not guessed probe tiers.
-                    if getattr(agent.context_compressor, "_context_probed", False):
-                        ctx = agent.context_compressor.context_length
-                        if getattr(agent.context_compressor, "_context_probe_persistable", False):
+                    _context_probe = _consume_context_probe_state(agent)
+                    if _context_probe is not None:
+                        ctx, _context_probe_persistable = _context_probe
+                        if _context_probe_persistable:
                             save_context_length(agent.model, agent.base_url, ctx)
                             agent._safe_print(f"{agent.log_prefix}💾 Cached context length: {ctx:,} tokens for {agent.model}")
-                        agent.context_compressor._context_probed = False
-                        agent.context_compressor._context_probe_persistable = False
 
                     agent.session_prompt_tokens += prompt_tokens
                     agent.session_completion_tokens += completion_tokens
@@ -6358,8 +6400,8 @@ def run_conversation(
                         # still activate fallback_providers after stale
                         # pre-recovery fallback/credential-pool bookkeeping.
                         _retry.has_retried_429 = False
-                        agent._fallback_index = 0
-                        agent._fallback_activated = False
+                        from agent.chat_completion_helpers import _reset_fallback_episode
+                        _reset_fallback_episode(agent)
                         continue
                     # Try fallback before giving up entirely
                     if agent._has_pending_fallback():
@@ -7026,7 +7068,27 @@ def run_conversation(
                 }
             elif hasattr(agent, "_codex_incomplete_retries"):
                 agent._codex_incomplete_retries = 0
-            
+
+            # Cap synthesis recovery: if the just-completed API call was
+            # the tools-disabled synthesis pass, discard any tool_calls in
+            # the response and force a text-only finish.
+            if agent._cap_synthesis_consumed:
+                agent._cap_synthesis_consumed = False
+                agent._cap_synthesis_mode = False
+                if assistant_message.tool_calls:
+                    logger.info(
+                        "Cap synthesis: discarding %d tool_call(s) from response "
+                        "because tools were disabled for this pass",
+                        len(assistant_message.tool_calls),
+                    )
+                    assistant_message.tool_calls = None
+                if not assistant_message.content:
+                    assistant_message.content = (
+                        "I exhausted the per-turn web_search budget, but the "
+                        "tools-disabled synthesis pass did not return a text answer."
+                    )
+                finish_reason = "stop"
+
             # Check for tool calls
             if assistant_message.tool_calls:
                 if not agent.quiet_mode:
@@ -7458,6 +7520,18 @@ def run_conversation(
 
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision
+                    # Special synthesis recovery for web_search cap: one tools-disabled pass
+                    # to convert collected evidence into an answer.
+                    if decision.code == "loop_web_search_cap":
+                        agent._cap_synthesis_mode = True
+                        # The synthesis pass is recovery, not another normal
+                        # tool-loop iteration. Permit it even when this call
+                        # consumed the final configured iteration.
+                        agent._budget_grace_call = True
+                        agent._tool_guardrail_halt_decision = None
+                        # Continue the loop; the next API call will have tools disabled.
+                        continue
+
                     _turn_exit_reason = "guardrail_halt"
                     final_response = agent._toolguard_controlled_halt_response(decision)
                     agent._emit_status(
@@ -7514,7 +7588,12 @@ def run_conversation(
                 # a session can grow unbounded after disconnects because
                 # should_compress(0) never fires.  (#2153)
                 _compressor = agent.context_compressor
-                if _compressor.last_prompt_tokens > 0:
+                if _compressor is None:
+                    # Auxiliary/tool-loop agents may intentionally run without
+                    # a context engine. Compression is impossible for that
+                    # agent, but tool completion must remain valid.
+                    _real_tokens = 0
+                elif _compressor.last_prompt_tokens > 0:
                     # Only use prompt_tokens — completion/reasoning
                     # tokens don't consume context window space.
                     # Thinking models (GLM-5.1, QwQ, DeepSeek R1)
@@ -7537,6 +7616,7 @@ def run_conversation(
 
                 if (
                     agent.compression_enabled
+                    and _compressor is not None
                     and compression_attempts < max_compression_attempts
                     and _compressor.should_compress(_real_tokens)
                 ):

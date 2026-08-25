@@ -19,7 +19,6 @@ import threading
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
-
 from gateway.config import GatewayConfig, Platform, SessionResetPolicy
 from gateway.session import SessionEntry, SessionStore
 
@@ -36,7 +35,20 @@ def test_session_store_default_db_uses_runtime_hermes_home(tmp_path, monkeypatch
     fake_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_home))
 
-    with patch("gateway.session.SessionStore._ensure_loaded"):
+    # The global isolation fixture deliberately re-points DEFAULT_DB_PATH when
+    # hermes_state was imported during collection. Restore the module's import
+    # snapshot here so this test exercises the runtime HERMES_HOME branch
+    # regardless of collection order.
+    import hermes_state
+
+    with (
+        patch.object(
+            hermes_state,
+            "DEFAULT_DB_PATH",
+            hermes_state._IMPORT_DEFAULT_DB_PATH,
+        ),
+        patch("gateway.session.SessionStore._ensure_loaded"),
+    ):
         store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
 
     try:
@@ -208,6 +220,90 @@ class TestPrunePersistsToDisk:
         store.prune_old_entries(max_age_days=90)
         saved_post = json.loads((tmp_path / "sessions.json").read_text())
         assert {k for k in saved_post if not k.startswith("_")} == {"fresh"}
+
+    def test_prune_deletes_exact_stale_keys_without_full_reconciliation(
+        self, tmp_path, monkeypatch
+    ):
+        """Hourly pruning must not scan every routing row in a write txn."""
+        config = GatewayConfig(
+            default_reset_policy=SessionResetPolicy(mode="none"),
+            session_store_max_age_days=90,
+            write_sessions_json=False,
+        )
+        # Resolve hermes_state only at test execution time. Importing it during
+        # collection freezes DEFAULT_DB_PATH before the HERMES_HOME fixture.
+        with patch("hermes_state.DEFAULT_DB_PATH", tmp_path / "state.db"):
+            store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+        store._entries["stale-a"] = _entry("stale-a", age_days=500)
+        store._entries["stale-b"] = _entry("stale-b", age_days=500)
+        store._entries["fresh"] = _entry("fresh", age_days=1)
+        store._loaded = True
+        store._save()
+
+        deletes = []
+        reconciles = []
+        real_delete = store._db.delete_gateway_routing_entries
+
+        def recording_delete(keys, *, scope="", reason="unspecified"):
+            deletes.append((list(keys), scope, reason))
+            return real_delete(keys, scope=scope, reason=reason)
+
+        monkeypatch.setattr(store._db, "delete_gateway_routing_entries", recording_delete)
+        monkeypatch.setattr(
+            store._db,
+            "replace_gateway_routing_entries",
+            lambda *a, **k: reconciles.append((a, k)),
+        )
+
+        assert store.prune_old_entries(max_age_days=90) == 2
+
+        assert deletes == [
+            (["stale-a", "stale-b"], store._routing_scope(), "prune_old_entries")
+        ]
+        assert reconciles == []
+        assert set(store._db.load_gateway_routing_entries(
+            scope=store._routing_scope()
+        )) == {"fresh"}
+        store._db.close()
+
+    def test_prune_delete_failure_falls_back_to_full_reconciliation(
+        self, tmp_path, monkeypatch
+    ):
+        """Exact-delete failure must retain the existing atomic fallback."""
+        config = GatewayConfig(
+            default_reset_policy=SessionResetPolicy(mode="none"),
+            session_store_max_age_days=90,
+            write_sessions_json=False,
+        )
+        with patch("hermes_state.DEFAULT_DB_PATH", tmp_path / "state.db"):
+            store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+        store._entries["stale"] = _entry("stale", age_days=500)
+        store._entries["fresh"] = _entry("fresh", age_days=1)
+        store._loaded = True
+        store._save()
+
+        reconciles = []
+        real_replace = store._db.replace_gateway_routing_entries
+
+        def failing_delete(*_args, **_kwargs):
+            raise RuntimeError("injected exact-delete failure")
+
+        def recording_replace(entries, *, scope="", reason="unspecified"):
+            reconciles.append((set(entries), scope, reason))
+            return real_replace(entries, scope=scope, reason=reason)
+
+        monkeypatch.setattr(store._db, "delete_gateway_routing_entries", failing_delete)
+        monkeypatch.setattr(store._db, "replace_gateway_routing_entries", recording_replace)
+
+        assert store.prune_old_entries(max_age_days=90) == 1
+
+        assert reconciles == [
+            ({"fresh"}, store._routing_scope(), "prune_old_entries_fallback")
+        ]
+        assert set(store._db.load_gateway_routing_entries(
+            scope=store._routing_scope()
+        )) == {"fresh"}
+        store._db.close()
 
 
 class TestGatewayConfigSerialization:

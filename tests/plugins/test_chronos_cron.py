@@ -118,15 +118,15 @@ def test_reconcile_arms_all_enabled(temp_home, chronos, monkeypatch):
 
 def test_fire_due_rearms_next_oneshot(chronos, monkeypatch):
     prov, fake = chronos
-    # Keep the two-phase provider flow intact while stubbing durable admission
-    # and the shared runner body.
+    # Keep the provider flow intact while stubbing durable admission and the
+    # shared runner body.
     monkeypatch.setattr(
         "cron.scheduler_provider.CronScheduler.claim_fire",
         lambda self, jid, **kw: {"id": jid, "execution_id": "exec-1"},
     )
     monkeypatch.setattr(
-        "cron.scheduler_provider.CronScheduler.fire_claimed",
-        lambda self, job, **kw: True,
+        "cron.scheduler.run_one_job",
+        lambda *args, **kwargs: True,
     )
     monkeypatch.setattr("cron.jobs.get_job",
                         lambda jid: {"id": jid, "enabled": True, "next_run_at": "2026-06-18T12:05:00+00:00"})
@@ -149,7 +149,7 @@ def test_fire_due_rearms_after_claimed_job_failure(chronos, monkeypatch):
     monkeypatch.setattr("cron.jobs.claim_job_for_fire", lambda jid, **kw: claimed)
     monkeypatch.setattr(
         "cron.executions.create_execution",
-        lambda jid, source: {"id": "exec-1"},
+        lambda jid, **kwargs: {"id": "exec-1"},
     )
     monkeypatch.setattr("cron.scheduler.run_one_job", lambda *args, **kwargs: False)
     monkeypatch.setattr("cron.jobs.get_job", lambda jid: persisted)

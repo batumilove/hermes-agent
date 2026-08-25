@@ -4899,6 +4899,8 @@ async def gateway_drain(request: Request):
     ``POST /api/gateway/restart`` force path, which supersedes a drain.
     """
     from gateway.drain_control import (
+        DrainControlBusyError,
+        DrainControlUnavailableError,
         clear_drain_request,
         drain_requested,
         write_drain_request,
@@ -4916,7 +4918,12 @@ async def gateway_drain(request: Request):
     principal = getattr(principal_obj, "principal", None) or "dashboard"
 
     if action == "cancel":
-        existed = clear_drain_request()
+        try:
+            existed = clear_drain_request()
+        except DrainControlBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except DrainControlUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         _log.info("Gateway drain CANCEL requested by %s (existed=%s)", principal, existed)
         return {"ok": True, "action": "cancel", "was_draining": existed}
 
@@ -4926,10 +4933,15 @@ async def gateway_drain(request: Request):
             detail=f"Unknown drain action {action!r}; expected 'drain' or 'cancel'",
         )
 
-    payload = write_drain_request(
-        principal=str(principal),
-        suppress_notification=bool((body or {}).get("suppress_notification", False)),
-    )
+    try:
+        payload = write_drain_request(
+            principal=str(principal),
+            suppress_notification=bool((body or {}).get("suppress_notification", False)),
+        )
+    except DrainControlBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except DrainControlUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     _log.info(
         "Gateway drain BEGIN requested by %s (suppress_notification=%s)",
         principal,
@@ -9395,10 +9407,17 @@ def _messaging_env_info(key: str) -> dict[str, Any]:
     }
 
 
-def _gateway_platform_config(platform_id: str):
+_GATEWAY_CONFIG_LOAD_FAILED = object()
+
+
+def _gateway_platform_config(platform_id: str, gateway_config=None):
     from gateway.config import Platform, load_gateway_config
 
-    config = load_gateway_config()
+    config = (
+        load_gateway_config()
+        if gateway_config is None
+        else gateway_config
+    )
     platform = Platform(platform_id)
     platform_config = config.platforms.get(platform)
     return config, platform, platform_config
@@ -9410,6 +9429,7 @@ def _messaging_platform_payload(
     runtime: dict | None,
     scoped: bool = False,
     profile_home: Optional[Path] = None,
+    gateway_config=None,
 ) -> dict[str, Any]:
     platform_id = entry["id"]
     runtime_platforms = runtime.get("platforms") if runtime else {}
@@ -9480,7 +9500,7 @@ def _messaging_platform_payload(
     else:
         try:
             gateway_config, platform, platform_config = _gateway_platform_config(
-                platform_id
+                platform_id, gateway_config
             )
             enabled = bool(platform_config and platform_config.enabled)
             configured = bool(
@@ -10457,6 +10477,17 @@ async def get_messaging_platforms(profile: Optional[str] = None):
                 if scoped_dir is not None
                 else read_runtime_status()
             )
+            gateway_config = None
+            if scoped_dir is None:
+                from gateway.config import load_gateway_config
+
+                try:
+                    gateway_config = load_gateway_config()
+                except Exception:
+                    # Preserve the historical fail-soft behavior: each card
+                    # falls back to env-derived state instead of failing the
+                    # entire endpoint. The sentinel prevents 33 retry parses.
+                    gateway_config = _GATEWAY_CONFIG_LOAD_FAILED
             return {
                 "env_path": str(get_env_path()),
                 "gateway_start_command": _gateway_display_command(profile, "start"),
@@ -10467,6 +10498,7 @@ async def get_messaging_platforms(profile: Optional[str] = None):
                         runtime,
                         scoped=scoped_dir is not None,
                         profile_home=scoped_dir,
+                        gateway_config=gateway_config,
                     )
                     for entry in _messaging_platform_catalog()
                 ]

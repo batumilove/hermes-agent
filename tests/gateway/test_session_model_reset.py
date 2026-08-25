@@ -100,3 +100,30 @@ async def test_new_command_only_clears_own_session():
     assert other_key in runner._session_reasoning_overrides
     assert session_key not in runner._pending_model_notes
     assert other_key in runner._pending_model_notes
+
+
+@pytest.mark.asyncio
+async def test_new_command_awaits_async_session_finalization(monkeypatch):
+    from hermes_cli import lifecycle
+
+    runner = _make_runner()
+    finalize_async = AsyncMock(return_value=[])
+    finalize_sync = MagicMock(return_value=[])
+    monkeypatch.setattr(
+        lifecycle,
+        "finalize_session_async",
+        finalize_async,
+        raising=False,
+    )
+    monkeypatch.setattr(lifecycle, "finalize_session", finalize_sync)
+
+    await runner._handle_reset_command(_make_event("/new"))
+
+    finalize_async.assert_awaited_once_with(
+        session_id="sess-1",
+        platform="telegram",
+        reason="new_session",
+        old_session_id="sess-1",
+        new_session_id="sess-1",
+    )
+    finalize_sync.assert_not_called()

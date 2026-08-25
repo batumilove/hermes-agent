@@ -376,6 +376,77 @@ class TestDeliverResultWrapping:
         assert "Here is today's summary." in sent_content
         assert "To stop or manage this job" in sent_content
 
+    def test_agent_job_with_script_still_uses_global_wrapping(self):
+        """A data-collection script does not imply script-only semantics."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with (
+            patch("gateway.config.load_gateway_config", return_value=mock_cfg),
+            patch(
+                "tools.send_message_tool._send_to_platform",
+                new=AsyncMock(return_value={"success": True}),
+            ) as send_mock,
+            patch(
+                "cron.scheduler.load_config",
+                return_value={"cron": {"wrap_response": True}},
+            ),
+        ):
+            job = {
+                "id": "script-assisted-agent-job",
+                "name": "script-assisted report",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+                "script": "collect.py",
+                "no_agent": False,
+            }
+            _deliver_result(job, "Agent-written report.")
+
+        sent_content = (
+            send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        )
+        assert "Cronjob Response: script-assisted report" in sent_content
+        assert "Agent-written report." in sent_content
+
+    def test_no_agent_delivery_is_verbatim_when_global_wrapping_enabled(self):
+        """Script-only jobs honor the documented verbatim stdout contract."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with (
+            patch("gateway.config.load_gateway_config", return_value=mock_cfg),
+            patch(
+                "tools.send_message_tool._send_to_platform",
+                new=AsyncMock(return_value={"success": True}),
+            ) as send_mock,
+            patch(
+                "cron.scheduler.load_config",
+                return_value={"cron": {"wrap_response": True}},
+            ),
+        ):
+            job = {
+                "id": "script-only-job",
+                "name": "script-only alert",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+                "script": "alert.sh",
+                "no_agent": True,
+            }
+            _deliver_result(job, "SCRIPT_ALERT_OK")
+
+        sent_content = (
+            send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        )
+        assert sent_content == "SCRIPT_ALERT_OK"
+
 
     def test_relay_fronted_home_uses_relay_config_and_live_adapter(self, monkeypatch, tmp_path):
         """Persisted Slack home survives restart without native Slack config."""
@@ -684,6 +755,69 @@ class TestRunJobSessionPersistence:
         claim.assert_not_called()
         run_one.assert_not_called()
 
+    def test_tick_skips_due_jobs_during_owned_maintenance_drain(self):
+        """Standalone ticks cannot bypass the gateway-supplied callback."""
+        from cron.scheduler import tick
+
+        @contextlib.contextmanager
+        def blocked_admission():
+            yield False
+
+        with patch("gateway.drain_control.cron_admission", blocked_admission), patch(
+            "cron.scheduler.get_due_jobs"
+        ) as get_due_jobs, patch("cron.scheduler.advance_next_runs") as advance:
+            assert tick(verbose=False, sync=True) == 0
+
+        get_due_jobs.assert_not_called()
+        advance.assert_not_called()
+
+    def test_tick_holds_cron_admission_through_schedule_advance_and_registration(self):
+        """Activation cannot interleave between the drain check and submission."""
+        from cron.scheduler import tick
+
+        state = {"inside": False}
+        events = []
+        job = {
+            "id": "atomic-admission",
+            "name": "atomic admission",
+            "schedule": {"kind": "interval", "seconds": 60},
+            "next_run_at": "2020-01-01T00:00:00+00:00",
+            "enabled": True,
+        }
+
+        @contextlib.contextmanager
+        def admission():
+            state["inside"] = True
+            events.append("enter")
+            try:
+                yield True
+            finally:
+                events.append("exit")
+                state["inside"] = False
+
+        def advance(job_ids):
+            assert state["inside"] is True
+            events.append("advance")
+
+        pool = MagicMock()
+        future = MagicMock()
+
+        def submit(callable_):
+            assert state["inside"] is True
+            events.append("submit")
+            return future
+
+        pool.submit.side_effect = submit
+
+        with patch("gateway.drain_control.cron_admission", admission, create=True), \
+             patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.advance_next_runs", side_effect=advance), \
+             patch("cron.scheduler._get_parallel_pool", return_value=pool), \
+             patch("cron.scheduler.try_register_running_job", return_value=True), \
+             patch("cron.scheduler.create_execution", return_value={"id": "exec-1"}):
+            assert tick(verbose=False, sync=False) == 1
+
+        assert events == ["enter", "advance", "submit", "exit"]
     def test_tick_marks_empty_response_as_error(self, tmp_path):
         """When run_job returns success=True but final_response is empty,
         tick() should mark the job as error so last_status != 'ok'.

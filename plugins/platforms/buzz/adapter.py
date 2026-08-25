@@ -954,9 +954,9 @@ class BuzzAdapter(BasePlatformAdapter):
         returns ``[]`` even when DM conversations exist (#68871).  Those DMs
         DO surface in ``channels list`` as entries named "DM" with an empty
         description, so that listing is scanned as a fallback.  Fallback
-        finds are watched as ``group`` and latch to ``dm`` via p-tag
-        detection (_is_direct_message_event) rather than trusting the name
-        alone to unlock the mention-free DM path.
+        finds are watched as ``group`` and latch to ``dm`` via structural
+        p-tag detection or, in private allow-list mode, matching sender plus
+        DM-shaped metadata. The name alone never unlocks mention-free dispatch.
         """
         code, out, _err = await self._run_cli(["dms", "list"])
         if code == 0:
@@ -1066,23 +1066,21 @@ class BuzzAdapter(BasePlatformAdapter):
     # channel mention gate.  Classification therefore keys off the Nostr
     # tags of the messages themselves.  Observed on a live hosted relay:
     #
-    #   * every message another user sends IN A DM carries a structural
+    #   * most messages another user sends IN A DM carry a structural
     #     ["p", <our pubkey>] tag, even when the text never mentions us
-    #     (recipient addressing);
+    #     (recipient addressing), but some hosted relays omit this tag;
     #   * in a real channel, a ["p", <our pubkey>] tag appears only when the
     #     text visibly @mentions us (typed mention, with or without a reply
     #     ["e", ...] tag) — never on plain broadcasts.
     #
-    # So "p-tagged to self WITHOUT a visible mention in the content" is the
-    # DM discriminator: in a channel that combination does not occur, and a
-    # channel reply/mention that p-tags us is excluded because the mention
-    # is right there in the text.  As a second, independent guard, a
-    # conversation whose ``channels list`` metadata looks like a real
+    # "p-tagged to self WITHOUT a visible mention in the content" remains the
+    # primary DM discriminator. For p-tag-less events, private allow-list mode
+    # can instead use an explicitly allowed sender plus DM-shaped metadata.
+    # A conversation whose ``channels list`` metadata looks like a real
     # community channel (real name / non-empty description) is never
-    # reclassified at all, whereas relay-materialized DMs are always named
-    # "DM" with an empty description.  Nothing is lost while unlatched: a
-    # DM message that DOES mention us dispatches through the mention gate
-    # anyway, so the latch flips exactly on the first message that needs it.
+    # reclassified at all. Nothing is lost while unlatched: a DM message that
+    # DOES mention us dispatches through the mention gate anyway, so the latch
+    # flips exactly on the first message that needs it.
 
     def _may_reclassify_as_dm(self, channel_id: str) -> bool:
         """True when the conversation's metadata does not rule out a DM.
@@ -1100,10 +1098,14 @@ class BuzzAdapter(BasePlatformAdapter):
         return name == "DM" and not description
 
     def _is_direct_message_event(self, channel_id: str, event: dict) -> bool:
-        """True when ``event`` is shaped like a direct message to us: a chat
-        message from another user, p-tagged to our pubkey, whose content does
-        NOT visibly mention us — i.e. the p-tag is structural DM addressing,
-        not the artifact of a typed @mention (see block comment above)."""
+        """True when ``event`` is safely attributable to a DM conversation.
+
+        Prefer the structural p-tag used by most hosted relays. Some relays
+        materialize the conversation as ``name=DM`` but omit that p-tag from
+        kind-9 messages; for those, trust the DM metadata only for an explicitly
+        allow-listed sender. This preserves mention gating for community-wide
+        access and for channel-like metadata.
+        """
         if not self._self_pubkey or not self._may_reclassify_as_dm(channel_id):
             return False
         if int(event.get("kind") or 0) != _CHAT_KIND:
@@ -1111,20 +1113,26 @@ class BuzzAdapter(BasePlatformAdapter):
         pubkey = str(event.get("pubkey") or "").lower()
         if not pubkey or pubkey == self._self_pubkey:
             return False
+        content = event.get("content")
+        if not isinstance(content, str) or self._is_mentioned(content):
+            return False
+
+        # Private-mode fallback for hosted relays that omit structural p-tags
+        # from DM messages. Never broaden this to allow-all mode: a channel
+        # named "DM" must not bypass mention gating for arbitrary members.
+        if self._allowed_pubkeys and pubkey in self._allowed_pubkeys:
+            return True
+
         tags = event.get("tags")
         if not isinstance(tags, list):
             return False
-        p_tagged_to_self = any(
+        return any(
             isinstance(tag, (list, tuple))
             and len(tag) > 1
             and tag[0] == "p"
             and str(tag[1]).lower() == self._self_pubkey
             for tag in tags
         )
-        if not p_tagged_to_self:
-            return False
-        content = event.get("content")
-        return isinstance(content, str) and not self._is_mentioned(content)
 
     def _maybe_latch_dm(self, channel_id: str, state: dict, event: dict) -> None:
         """Latch a group conversation to chat_type="dm" once any direct
@@ -1134,7 +1142,7 @@ class BuzzAdapter(BasePlatformAdapter):
             return
         state["chat_type"] = "dm"
         self._channel_names.setdefault(channel_id, "DM")
-        logger.info("Buzz: conversation %s reclassified as DM (message p-tagged to self)", channel_id)
+        logger.info("Buzz: conversation %s reclassified as DM", channel_id)
 
     def _is_mentioned(self, content: str) -> bool:
         """True when the message addresses this agent (npub, hex, or name)."""

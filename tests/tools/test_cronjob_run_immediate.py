@@ -31,6 +31,7 @@ class TestCronjobRunExecutesImmediately:
         ran = {"job": "after-run", "last_status": "ok", "last_error": None}
         claimed = {**_JOB, "fire_claim": {"by": "manual-owner"}}
         with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
+             patch("cron.executions.create_execution", return_value={"id": "exec-manual"}) as m_execution, \
              patch("tools.cronjob_tools.claim_job_for_fire", return_value=claimed) as m_claim, \
              patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
              patch("tools.cronjob_tools.get_job", return_value=ran):
@@ -40,7 +41,17 @@ class TestCronjobRunExecutesImmediately:
         assert out["job"]["executed"] is True
         assert out["job"]["execution_success"] is True
         m_claim.assert_called_once_with("job-run-1", return_job=True)
-        m_run.assert_called_once_with(claimed, adapters=None, loop=None, extra_prompt=None)
+        m_execution.assert_called_once_with(
+            "job-run-1",
+            source="manual",
+            trigger_origin="manual",
+        )
+        m_run.assert_called_once_with(
+            {**claimed, "execution_id": "exec-manual"},
+            adapters=None,
+            loop=None,
+            extra_prompt=None,
+        )
 
     def test_run_reconciles_external_provider_after_claimed_execution(self):
         """A direct run must re-arm Chronos after it advances next_run_at.
@@ -132,13 +143,14 @@ class TestCronjobRunExecutesImmediately:
 
         with patch("tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
              patch("gateway.run._gateway_runner_ref", return_value=runner), \
+             patch("cron.executions.create_execution", return_value={"id": "exec-live"}), \
              patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
              patch("tools.cronjob_tools.get_job", return_value=completed):
             res = _execute_job_now(dict(_JOB))
 
         assert res["success"] is True
         m_run.assert_called_once_with(
-            {**_JOB, "fire_claim": {"by": "manual-owner"}},
+            {**_JOB, "fire_claim": {"by": "manual-owner"}, "execution_id": "exec-live"},
             adapters=adapters,
             loop=gateway_loop,
             extra_prompt=None,
@@ -150,13 +162,14 @@ class TestCronjobRunExecutesImmediately:
 
         with patch("tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
              patch.dict(sys.modules, {"gateway.run": None}), \
+             patch("cron.executions.create_execution", return_value={"id": "exec-cli"}), \
              patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
              patch("tools.cronjob_tools.get_job", return_value=completed):
             res = _execute_job_now(dict(_JOB))
 
         assert res["success"] is True
         m_run.assert_called_once_with(
-            {**_JOB, "fire_claim": {"by": "manual-owner"}},
+            {**_JOB, "fire_claim": {"by": "manual-owner"}, "execution_id": "exec-cli"},
             adapters=None,
             loop=None,
             extra_prompt=None,

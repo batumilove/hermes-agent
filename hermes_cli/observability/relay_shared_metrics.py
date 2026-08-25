@@ -134,6 +134,11 @@ class _Runtime:
         self._task_sessions_lock = threading.RLock()
         self._task_sessions: dict[tuple[str, str], _MetricsSession] = {}
         self._turn_sessions: dict[tuple[str, str], _MetricsSession] = {}
+        self._task_flush_condition = threading.Condition(threading.Lock())
+        self._task_flush_requested = 0
+        self._task_flush_completed = 0
+        self._task_flush_worker: threading.Thread | None = None
+        self._task_flush_stopping = False
         self._subscriber_name = f"{SUBSCRIBER_NAME}.{self.host.runtime_id}"
         self.subscriber = SharedMetricsSubscriber(
             SharedMetricsStore(),
@@ -194,12 +199,15 @@ class _Runtime:
         *args: Any,
         **kwargs: Any,
     ) -> Any:
-        return self.host.run_in_session(
-            session.relay_session,
-            callback,
-            *args,
-            **kwargs,
-        )
+        with session.relay_session.lock:
+            if session.relay_session.closing:
+                return None
+            return self.host.run_in_session(
+                session.relay_session,
+                callback,
+                *args,
+                **kwargs,
+            )
 
     def start_task(self, event: dict[str, Any]) -> _TaskRun | None:
         """Open one Relay function scope for a Hermes task run."""
@@ -232,7 +240,11 @@ class _Runtime:
                 ):
                     return None
                 self._emit_client_active(session)
-                task_context = session.relay_session.context.copy()
+                # Keep task scopes isolated from the long-lived session
+                # Context; the fork deliberately avoids inheriting stale
+                # ContextVars while still emitting upstream's client-active
+                # signal.
+                task_context = contextvars.Context()
                 start_fields = task_start_fields(event)
                 active_turn = relay_runtime.active_turn(session.session_id)
                 parent_handle = session.relay_session.handle
@@ -599,6 +611,41 @@ class _Runtime:
                 return
             finished = self._finish_task(session, task_id, event)
         if finished:
+            self._request_task_flush()
+
+    def _request_task_flush(self) -> int:
+        """Coalesce a task barrier onto one daemon worker off the turn thread."""
+        with self._task_flush_condition:
+            if self._task_flush_stopping:
+                return self._task_flush_requested
+            self._task_flush_requested += 1
+            requested = self._task_flush_requested
+            worker = self._task_flush_worker
+            if worker is None or not worker.is_alive():
+                worker = threading.Thread(
+                    target=self._task_flush_loop,
+                    name="hermes-relay-metrics-flush",
+                    daemon=True,
+                )
+                self._task_flush_worker = worker
+                worker.start()
+            self._task_flush_condition.notify_all()
+            return requested
+
+    def _task_flush_loop(self) -> None:
+        while True:
+            with self._task_flush_condition:
+                while (
+                    self._task_flush_completed >= self._task_flush_requested
+                    and not self._task_flush_stopping
+                ):
+                    self._task_flush_condition.wait()
+                if (
+                    self._task_flush_stopping
+                    and self._task_flush_completed >= self._task_flush_requested
+                ):
+                    return
+                requested = self._task_flush_requested
             try:
                 self.relay.subscribers.flush()
             except Exception:
@@ -608,6 +655,31 @@ class _Runtime:
                 )
             else:
                 self._export()
+            finally:
+                with self._task_flush_condition:
+                    self._task_flush_completed = max(
+                        self._task_flush_completed,
+                        requested,
+                    )
+                    self._task_flush_condition.notify_all()
+
+    def _wait_for_task_flush(self, requested: int, timeout: float = 5.0) -> bool:
+        """Wait for a requested task barrier; used by tests and orderly teardown."""
+        with self._task_flush_condition:
+            return self._task_flush_condition.wait_for(
+                lambda: self._task_flush_completed >= requested,
+                timeout=timeout,
+            )
+
+    def _stop_task_flush_worker(self, timeout: float = 5.0) -> bool:
+        """Stop the coalescing worker; report whether its native barrier exited."""
+        with self._task_flush_condition:
+            self._task_flush_stopping = True
+            worker = self._task_flush_worker
+            self._task_flush_condition.notify_all()
+        if worker is not None and worker is not threading.current_thread():
+            worker.join(timeout)
+        return worker is None or not worker.is_alive()
 
     def close_session(self, event: dict[str, Any]) -> None:
         session = self._session(event)
@@ -648,23 +720,72 @@ class _Runtime:
                 "; ".join(failures),
             )
 
+    async def close_session_async(self, event: dict[str, Any]) -> None:
+        """Close one metrics session using Relay's asynchronous flush barrier."""
+        session = self._session(event)
+        if session is None:
+            return
+        failures: list[str] = []
+        with session.lock:
+            if session.closing:
+                return
+            session.closing = True
+            for task_id in list(session.tasks):
+                self._finish_task(
+                    session,
+                    task_id,
+                    {
+                        **event,
+                        "task_id": task_id,
+                        "completed": False,
+                        "failed": True,
+                        "interrupted": False,
+                        "turn_exit_reason": "system_aborted",
+                    },
+                )
+            self._end_pending_model_calls(session, event)
+        try:
+            await self.relay.subscribers.flush_async()
+        except Exception as exc:
+            failures.append(f"subscriber flush failed: {exc}")
+        else:
+            self._export()
+        with self._sessions_lock:
+            if self._sessions.get(session.session_id) is session:
+                self._sessions.pop(session.session_id, None)
+        if failures:
+            logger.warning(
+                "Hermes shared-metrics session %s closed with errors: %s",
+                session.session_id,
+                "; ".join(failures),
+            )
+
     def shutdown(self) -> None:
+        task_flush_stopped = self._stop_task_flush_worker()
         with self._sessions_lock:
             self._active = False
             session_ids = list(self._sessions)
-        for session_id in session_ids:
-            self._safe(self.close_session, {"session_id": session_id})
+        if task_flush_stopped:
+            for session_id in session_ids:
+                self._safe(self.close_session, {"session_id": session_id})
+        else:
+            logger.warning(
+                "Hermes shared-metrics task flush worker did not stop; "
+                "skipping overlapping shutdown barriers"
+            )
+            return
         if not self._registered:
             return
-        try:
-            self.relay.subscribers.flush()
-        except Exception:
-            logger.warning(
-                "Hermes shared-metrics shutdown flush failed",
-                exc_info=True,
-            )
-        else:
-            self._export()
+        if task_flush_stopped:
+            try:
+                self.relay.subscribers.flush()
+            except Exception:
+                logger.warning(
+                    "Hermes shared-metrics shutdown flush failed",
+                    exc_info=True,
+                )
+            else:
+                self._export()
         self._safe(self.relay.subscribers.deregister, self._subscriber_name)
         self.host.release_managed_execution(self._subscriber_name)
         self._registered = False
@@ -673,10 +794,17 @@ class _Runtime:
         except Exception:
             pass
 
-    def deactivate(self) -> None:
+    def deactivate(self) -> bool:
         """Stop collection without exporting locally aggregated metrics."""
+        task_flush_stopped = self._stop_task_flush_worker()
         with self._sessions_lock:
             self._active = False
+        if not task_flush_stopped:
+            logger.warning(
+                "Hermes shared-metrics task flush worker did not stop; "
+                "skipping overlapping deactivation cleanup"
+            )
+            return False
         self.subscriber.deactivate()
         if self._registered:
             self._safe(self.relay.subscribers.deregister, self._subscriber_name)
@@ -710,6 +838,7 @@ class _Runtime:
             atexit.unregister(self.shutdown)
         except Exception:
             pass
+        return True
 
     def _session(self, event: dict[str, Any]) -> _MetricsSession | None:
         session_id = str(event.get("session_id") or "")
@@ -1091,9 +1220,9 @@ def enabled() -> bool:
     if value:
         return True
     with _RUNTIME_LOCK:
-        runtime = _RUNTIMES.pop(profile_key, None)
-        if isinstance(runtime, _Runtime):
-            runtime.deactivate()
+        runtime = _RUNTIMES.get(profile_key)
+        if isinstance(runtime, _Runtime) and runtime.deactivate():
+            _RUNTIMES.pop(profile_key, None)
     return False
 
 
@@ -1141,6 +1270,21 @@ def observe_lifecycle(hook_name: str, **kwargs: Any) -> None:
         logger.warning(
             "Hermes shared metrics hook failed: %s", hook_name, exc_info=True
         )
+
+
+async def observe_lifecycle_async(hook_name: str, **kwargs: Any) -> None:
+    """Project an async lifecycle event through an awaited Relay barrier."""
+    if not handles_hook(hook_name):
+        return
+    if not relay_runtime.relay_instrumentation_enabled():
+        return
+    runtime = _get_runtime()
+    if runtime is None:
+        return
+    if hook_name in {"on_session_finalize", "on_session_reset"}:
+        await runtime.close_session_async(kwargs)
+        return
+    observe_lifecycle(hook_name, **kwargs)
 
 
 def _with_runtime_toolset(event: dict[str, Any]) -> dict[str, Any]:
@@ -1263,7 +1407,8 @@ def _get_runtime(
         if isinstance(runtime, _Runtime):
             if host is None or runtime.host is host:
                 return runtime
-            runtime.deactivate()
+            if not runtime.deactivate():
+                return None
             _RUNTIMES.pop(profile_key, None)
         if runtime is _RUNTIME_FAILED and not retry_failed:
             return None

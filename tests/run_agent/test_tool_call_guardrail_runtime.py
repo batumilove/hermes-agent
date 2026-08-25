@@ -375,7 +375,6 @@ def test_default_run_conversation_warns_without_guardrail_halt():
 
 
 
-
 def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     """Regression for #30770: when the guardrail halts the loop, the
     synthesized halt message must be pushed through ``stream_delta_callback``
@@ -423,3 +422,532 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     assert halt_text in text_deltas, (
         f"halt message was never streamed; callback only saw {deltas!r}"
     )
+
+
+def _web_search_budget_config(*, warn: int, maximum: int) -> dict:
+    return {
+        "tool_loop_guardrails": {
+            "warnings_enabled": True,
+            "hard_stop_enabled": False,
+            "loop_caps": {
+                "warn_web_searches": warn,
+                "max_web_searches": maximum,
+            },
+        }
+    }
+
+
+def test_web_search_soft_budget_warning_reaches_model_after_execution():
+    agent = _make_agent(
+        "web_search",
+        max_iterations=5,
+        config=_web_search_budget_config(warn=1, maximum=2),
+    )
+    call = _mock_tool_call(
+        "web_search", json.dumps({"query": "q1"}), "c-soft-budget"
+    )
+    message = SimpleNamespace(content="", tool_calls=[call])
+    messages = []
+
+    with patch(
+        "run_agent.handle_function_call",
+        return_value=json.dumps({"success": True, "data": {"web": []}}),
+    ) as dispatch:
+        agent._execute_tool_calls_sequential(message, messages, "task-1")
+
+    dispatch.assert_called_once()
+    assert [item["role"] for item in messages] == ["tool"]
+    content = messages[0]["content"]
+    assert "loop_web_search_soft_warning" in content
+    assert "synthesize rather than continuing broad searching" in content
+
+
+def test_web_search_soft_budget_warning_reaches_concurrent_result_after_observation():
+    agent = _make_agent(
+        "web_search",
+        max_iterations=5,
+        config=_web_search_budget_config(warn=2, maximum=3),
+    )
+    calls = [
+        _mock_tool_call("web_search", json.dumps({"query": "q1"}), "c-soft-1"),
+        _mock_tool_call("web_search", json.dumps({"query": "q2"}), "c-soft-2"),
+    ]
+    messages = []
+
+    with patch(
+        "run_agent.handle_function_call",
+        return_value=json.dumps({"success": True, "data": {"web": []}}),
+    ) as dispatch:
+        agent._execute_tool_calls_concurrent(
+            SimpleNamespace(content="", tool_calls=calls),
+            messages,
+            "task-1",
+        )
+
+    assert dispatch.call_count == 2
+    assert [message["tool_call_id"] for message in messages] == ["c-soft-1", "c-soft-2"]
+    warned = [
+        message for message in messages
+        if "loop_web_search_soft_warning" in message["content"]
+    ]
+    assert len(warned) == 1
+    assert warned[0]["tool_call_id"] in {"c-soft-1", "c-soft-2"}
+
+
+def test_web_search_soft_warning_does_not_mask_runtime_no_progress_halt():
+    config = {
+        "tool_loop_guardrails": {
+            "warnings_enabled": True,
+            "hard_stop_enabled": True,
+            "hard_stop_after": {
+                "exact_failure": 8,
+                "same_tool_failure": 8,
+                "idempotent_no_progress": 2,
+            },
+            "loop_caps": {
+                "warn_web_searches": 2,
+                "max_web_searches": 10,
+            },
+        }
+    }
+    agent = _make_agent("web_search", max_iterations=5, config=config)
+    messages = []
+    raw_result = json.dumps({"success": True, "data": {"web": []}})
+
+    with patch("run_agent.handle_function_call", return_value=raw_result) as dispatch:
+        for index in range(1, 4):
+            call = _mock_tool_call(
+                "web_search",
+                json.dumps({"query": "same"}),
+                f"c-no-progress-{index}",
+            )
+            agent._execute_tool_calls_sequential(
+                SimpleNamespace(content="", tool_calls=[call]),
+                messages,
+                "task-1",
+            )
+
+    assert dispatch.call_count == 2
+    decision = agent._tool_guardrail_halt_decision
+    assert decision is not None
+    assert decision.code == "idempotent_no_progress_block"
+    assert "loop_web_search_soft_warning" in messages[-2]["content"]
+    assert "idempotent_no_progress_block" in messages[-1]["content"]
+
+
+def test_web_search_soft_budget_warning_preserves_multimodal_result():
+    agent = _make_agent(
+        "web_search",
+        max_iterations=5,
+        config=_web_search_budget_config(warn=1, maximum=2),
+    )
+    call = _mock_tool_call(
+        "web_search", json.dumps({"query": "q1"}), "c-soft-multimodal"
+    )
+    message = SimpleNamespace(content="", tool_calls=[call])
+    messages = []
+    agent._model_supports_vision = lambda: True
+    agent._provider_supports_vision_tool_messages = lambda: True
+    image_part = {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,abc"},
+    }
+    result = {
+        "_multimodal": True,
+        "content": [
+            {"type": "text", "text": "image result"},
+            image_part,
+        ],
+        "text_summary": "image result",
+    }
+
+    with patch("run_agent.handle_function_call", return_value=result):
+        agent._execute_tool_calls_sequential(message, messages, "task-1")
+
+    assert [item["role"] for item in messages] == ["tool"]
+    assert isinstance(messages[0]["content"], list)
+    assert messages[0]["content"][1] == image_part
+    assert "loop_web_search_soft_warning" in messages[0]["content"][0]["text"]
+
+
+def test_web_search_cap_runs_one_tool_disabled_synthesis_pass():
+    agent = _make_agent(
+        "web_search",
+        max_iterations=10,
+        config=_web_search_budget_config(warn=1, maximum=2),
+    )
+    # Use sequential responses (one tool per turn) so guardrail guidance
+    # is reliably appended via _append_guardrail_observation
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call("web_search", json.dumps({"query": "q1"}), "c1")
+            ],
+        ),
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call("web_search", json.dumps({"query": "q2"}), "c2")
+            ],
+        ),
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call("web_search", json.dumps({"query": "q3"}), "c3")
+            ],
+        ),
+        _mock_response(
+            content="Evidence-grounded synthesis.",
+            finish_reason="stop",
+            tool_calls=None,
+        ),
+    ]
+    agent.client.chat.completions.create.side_effect = responses
+
+    call_count = [0]
+
+    def mock_handle_function_call(*args, **kwargs):
+        call_count[0] += 1
+        # Return base result; guardrail guidance is appended by the real flow
+        return json.dumps({"success": True, "data": {"web": []}})
+
+    with (
+        patch("run_agent.handle_function_call", side_effect=mock_handle_function_call) as dispatch,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("research this")
+
+    assert call_count[0] == 2
+    assert result["turn_exit_reason"].startswith("text_response")
+    assert result["final_response"] == "Evidence-grounded synthesis."
+    # q1, q2, q3 blocked, synthesis = 4 API calls
+    assert agent.client.chat.completions.create.call_count == 4
+    synthesis_kwargs = agent.client.chat.completions.create.call_args_list[-1].kwargs
+    assert not synthesis_kwargs.get("tools")
+
+    tool_contents = [
+        message["content"]
+        for message in result["messages"]
+        if message.get("role") == "tool"
+    ]
+    # The soft warning is appended to the executed result by the middleware.
+    # This assertion separately proves the cap-block result remains truthful.
+    assert any("loop_web_search_cap" in content for content in tool_contents)
+    # Verify the blocked result message contains the truthful wording
+    cap_message = next(c for c in tool_contents if "loop_web_search_cap" in c)
+    assert "per-turn search budget" in cap_message
+    assert "repeated non-progressing" not in cap_message
+
+
+def test_cap_synthesis_state_resets_at_start_of_new_user_turn():
+    agent = _make_agent("web_search", max_iterations=5)
+    agent._cap_synthesis_mode = True
+    agent._cap_synthesis_consumed = True
+    agent._budget_grace_call = True
+    agent.client.chat.completions.create.return_value = _mock_response(
+        content="fresh turn", finish_reason="stop", tool_calls=None
+    )
+
+    with (
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("new user request")
+
+    request_kwargs = agent.client.chat.completions.create.call_args.kwargs
+    assert request_kwargs.get("tools")
+    assert agent.iteration_budget.used == 1
+    assert result["final_response"] == "fresh turn"
+
+
+def test_web_search_cap_gets_one_synthesis_call_past_final_iteration():
+    agent = _make_agent(
+        "web_search",
+        max_iterations=1,
+        config=_web_search_budget_config(warn=1, maximum=1),
+    )
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call("web_search", json.dumps({"query": "q1"}), "c1"),
+                _mock_tool_call("web_search", json.dumps({"query": "q2"}), "c2"),
+            ],
+        ),
+        _mock_response(
+            content="Final synthesis from collected evidence.",
+            finish_reason="stop",
+            tool_calls=None,
+        ),
+    ]
+    agent.client.chat.completions.create.side_effect = responses
+
+    with (
+        patch(
+            "run_agent.handle_function_call",
+            return_value=json.dumps({"success": True, "data": {"web": []}}),
+        ) as dispatch,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("research this")
+
+    assert dispatch.call_count == 1
+    assert agent.client.chat.completions.create.call_count == 2
+    assert result["api_calls"] == 2
+    assert result["turn_exit_reason"].startswith("text_response")
+    synthesis_kwargs = agent.client.chat.completions.create.call_args_list[-1].kwargs
+    assert not synthesis_kwargs.get("tools")
+    assert result["final_response"] == "Final synthesis from collected evidence."
+
+
+def test_web_search_cap_synthesis_keeps_tools_disabled_across_provider_retry():
+    agent = _make_agent(
+        "web_search",
+        max_iterations=2,
+        config=_web_search_budget_config(warn=1, maximum=1),
+    )
+    capped = _mock_response(
+        content="",
+        finish_reason="tool_calls",
+        tool_calls=[
+            _mock_tool_call("web_search", json.dumps({"query": "q1"}), "c1"),
+            _mock_tool_call("web_search", json.dumps({"query": "q2"}), "c2"),
+        ],
+    )
+    agent.client.chat.completions.create.side_effect = [
+        capped,
+        RuntimeError("transient provider failure"),
+        _mock_response(
+            content="Synthesis after retry.",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call(
+                    "web_search",
+                    json.dumps({"query": "must-not-run"}),
+                    "retry-tool",
+                )
+            ],
+        ),
+    ]
+
+    with (
+        patch(
+            "run_agent.handle_function_call",
+            return_value=json.dumps({"success": True, "data": {"web": []}}),
+        ) as dispatch,
+        patch("agent.conversation_loop.time.sleep"),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("research this")
+
+    assert dispatch.call_count == 1
+    assert agent.client.chat.completions.create.call_count == 3
+    retry_calls = agent.client.chat.completions.create.call_args_list[-2:]
+    assert all(not call.kwargs.get("tools") for call in retry_calls)
+    assert result["final_response"] == "Synthesis after retry."
+
+
+def test_web_search_cap_synthesis_keeps_tools_disabled_across_provider_fallback():
+    agent = _make_agent(
+        "web_search",
+        max_iterations=2,
+        config=_web_search_budget_config(warn=1, maximum=1),
+    )
+    capped = _mock_response(
+        content="",
+        finish_reason="tool_calls",
+        tool_calls=[
+            _mock_tool_call("web_search", json.dumps({"query": "q1"}), "c1"),
+            _mock_tool_call("web_search", json.dumps({"query": "q2"}), "c2"),
+        ],
+    )
+    invalid_synthesis = SimpleNamespace(choices=[])
+    fallback_synthesis = _mock_response(
+        content="Synthesis from fallback.",
+        finish_reason="tool_calls",
+        tool_calls=[
+            _mock_tool_call(
+                "web_search",
+                json.dumps({"query": "fallback-must-not-run"}),
+                "fallback-tool",
+            )
+        ],
+    )
+    agent.client.chat.completions.create.side_effect = [
+        capped,
+        invalid_synthesis,
+        fallback_synthesis,
+    ]
+
+    def activate_fallback():
+        agent.provider = "fallback"
+        agent.model = "fallback/model"
+        return True
+
+    with (
+        patch(
+            "run_agent.handle_function_call",
+            return_value=json.dumps({"success": True, "data": {"web": []}}),
+        ) as dispatch,
+        patch.object(agent, "_try_activate_fallback", side_effect=activate_fallback) as fallback,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("research this")
+
+    assert fallback.call_count == 1
+    assert dispatch.call_count == 1
+    assert agent.client.chat.completions.create.call_count == 3
+    synthesis_calls = agent.client.chat.completions.create.call_args_list[-2:]
+    assert all(not call.kwargs.get("tools") for call in synthesis_calls)
+    assert result["final_response"] == "Synthesis from fallback."
+
+
+def test_cap_synthesis_empty_response_falls_back_without_retrying():
+    agent = _make_agent(
+        "web_search",
+        max_iterations=10,
+        config=_web_search_budget_config(warn=1, maximum=1),
+    )
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call("web_search", json.dumps({"query": "q1"}), "c1"),
+                _mock_tool_call("web_search", json.dumps({"query": "q2"}), "c2"),
+            ],
+        ),
+        _mock_response(content="", finish_reason="stop", tool_calls=None),
+    ]
+    agent.client.chat.completions.create.side_effect = responses
+
+    with (
+        patch(
+            "run_agent.handle_function_call",
+            return_value=json.dumps({"success": True, "data": {"web": []}}),
+        ) as dispatch,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("research this")
+
+    assert dispatch.call_count == 1
+    assert agent.client.chat.completions.create.call_count == 2
+    assert result["turn_exit_reason"].startswith("text_response")
+    assert "per-turn web_search budget" in result["final_response"]
+
+
+def test_cap_synthesis_tool_only_response_falls_back_to_nonempty_text():
+    agent = _make_agent(
+        "web_search",
+        max_iterations=10,
+        config=_web_search_budget_config(warn=1, maximum=1),
+    )
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call("web_search", json.dumps({"query": "q1"}), "c1"),
+                _mock_tool_call("web_search", json.dumps({"query": "q2"}), "c2"),
+            ],
+        ),
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call("web_search", json.dumps({"query": "q3"}), "c3")
+            ],
+        ),
+    ]
+    agent.client.chat.completions.create.side_effect = responses
+
+    with (
+        patch(
+            "run_agent.handle_function_call",
+            return_value=json.dumps({"success": True, "data": {"web": []}}),
+        ) as dispatch,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("research this")
+
+    assert dispatch.call_count == 1
+    assert agent.client.chat.completions.create.call_count == 2
+    assert result["turn_exit_reason"].startswith("text_response")
+    assert result["final_response"]
+    assert "per-turn web_search budget" in result["final_response"]
+
+
+def test_web_search_cap_synthesis_pass_cannot_reenter_tool_execution():
+    """If the model still returns tool_calls in the synthesis pass,
+    those calls must NOT be dispatched - tools were disabled, so any
+    tool_call in the response is discarded and the content is emitted as text.
+    """
+    agent = _make_agent(
+        "web_search",
+        max_iterations=10,
+        config=_web_search_budget_config(warn=1, maximum=1),
+    )
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call("web_search", json.dumps({"query": "q1"}), "c1"),
+                _mock_tool_call("web_search", json.dumps({"query": "q2"}), "c2"),
+            ],
+        ),
+        # Model still tries to call tools even though tools=[] in the API call.
+        # This must be discarded - synthesis cannot re-enter tool execution.
+        _mock_response(
+            content="Cannot search - synthesis mode.",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call("web_search", json.dumps({"query": "q3"}), "c3")
+            ],
+        ),
+        # Fallback text response if the synthesis loop iterates again.
+        _mock_response(
+            content="Final synthesis.",
+            finish_reason="stop",
+            tool_calls=None,
+        ),
+    ]
+    agent.client.chat.completions.create.side_effect = responses
+
+    with (
+        patch(
+            "run_agent.handle_function_call",
+            return_value=json.dumps({"success": True, "data": {"web": []}}),
+        ) as dispatch,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("research this")
+
+    # Only q1 should execute; q2 is blocked at the cap.
+    assert dispatch.call_count == 1
+    # Synthesis pass sends tools=[], and any tool_calls in the response are
+    # discarded - so the loop terminates with a text response, not guardrail_halt.
+    assert agent.client.chat.completions.create.call_count == 2
+    synthesis_kwargs = agent.client.chat.completions.create.call_args_list[-1].kwargs
+    assert not synthesis_kwargs.get("tools")
+    assert result["turn_exit_reason"].startswith("text_response")

@@ -2423,6 +2423,13 @@ def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str
     return None
 
 
+def _reset_fallback_episode(agent) -> None:
+    """Reset all state scoped to one fallback-chain episode."""
+    agent._fallback_activated = False
+    agent._fallback_index = 0
+    agent._fallback_exhaustion_notified = False
+
+
 
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
     """Switch to the next fallback model/provider in the chain.
@@ -2459,6 +2466,32 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 backoff_count, backoff_seconds, backoff_seconds / 60, backoff_count + 1,
             )
     if agent._fallback_index >= len(agent._fallback_chain):
+        # Emit one structured terminal event per fallback episode.  This is an
+        # observer-only seam for metrics/alerting; it must not affect routing.
+        if (
+            agent._fallback_chain
+            and not getattr(agent, "_fallback_exhaustion_notified", False)
+        ):
+            agent._fallback_exhaustion_notified = True
+            try:
+                from hermes_cli.plugins import has_hook, invoke_hook
+
+                if has_hook("on_fallback_chain_exhausted"):
+                    primary = getattr(agent, "_primary_runtime", None) or {}
+                    reason_value = getattr(reason, "value", reason) if reason is not None else None
+                    invoke_hook(
+                        "on_fallback_chain_exhausted",
+                        provider=getattr(agent, "provider", "") or "",
+                        model=getattr(agent, "model", "") or "",
+                        primary_provider=primary.get("provider") or "",
+                        primary_model=primary.get("model") or "",
+                        reason=reason_value,
+                        chain_length=len(agent._fallback_chain),
+                        session_id=getattr(agent, "session_id", None) or "",
+                        platform=getattr(agent, "platform", None) or "",
+                    )
+            except Exception:
+                pass
         # Chain exhausted.  If we actually walked a non-empty chain and the
         # failure was NOT a rate-limit/billing event (those already armed
         # their own 60s cooldown above), arm a short cooldown so the next
@@ -2563,7 +2596,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 or base_url_hostname(fb_base_url_hint) == "api.anthropic.com"
             ):
                 fb_api_mode = "anthropic_messages"
-        
+
         # For Ollama Cloud endpoints, pull OLLAMA_API_KEY from env
         # when no explicit key is in the fallback config. Host match
         # (not substring) — see GHSA-76xc-57q6-vm5m.
@@ -2832,6 +2865,27 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             "Fallback activated: %s → %s (%s)",
             old_model, fb_model, fb_provider,
         )
+        # Observer-only hook for metrics / telemetry plugins.  Must never
+        # affect activation success — fail-open and ignore return values.
+        try:
+            from hermes_cli.plugins import has_hook, invoke_hook
+
+            if has_hook("on_fallback_activated"):
+                reason_value = None
+                if reason is not None:
+                    reason_value = getattr(reason, "value", reason)
+                invoke_hook(
+                    "on_fallback_activated",
+                    from_provider=old_provider,
+                    from_model=old_model,
+                    to_provider=fb_provider,
+                    to_model=fb_model,
+                    reason=reason_value,
+                    session_id=getattr(agent, "session_id", None) or "",
+                    platform=getattr(agent, "platform", None) or "",
+                )
+        except Exception:
+            pass
         # Reset the stale-call circuit breaker (#58962): the streak measured
         # the OLD provider's unresponsiveness.  Carrying it over would
         # short-circuit the freshly activated fallback before it gets a

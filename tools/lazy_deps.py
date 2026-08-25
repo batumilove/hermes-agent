@@ -127,6 +127,11 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "opentelemetry-sdk==1.39.1",
         "opentelemetry-exporter-otlp-proto-http==1.39.1",
     ),
+    # Bundled Langfuse observability plugin. The plugin is opt-in; when enabled
+    # it preflights this feature before importing the SDK. In venv mode this
+    # rehydrates the SDK after exact uv reconciliation; immutable deployments
+    # can additionally use HERMES_LAZY_INSTALL_TARGET for durable storage.
+    "observability.langfuse": ("langfuse==4.6.1",),
 
     # ─── TTS providers ─────────────────────────────────────────────────────
     # Pinned to exact versions to match pyproject.toml's no-ranges policy

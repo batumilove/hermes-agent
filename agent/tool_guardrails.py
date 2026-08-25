@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from dataclasses import dataclass, field
+from functools import wraps
 from typing import Any, Mapping
 
 from utils import safe_json_loads
@@ -179,6 +181,7 @@ class ToolCallGuardrailConfig:
 # issuing dozens of web searches or spawning dozens of subagents is already
 # pathological, so the defaults are deliberately low.
 _DEFAULT_MAX_WEB_SEARCHES_PER_TURN = 50
+_DEFAULT_WARN_WEB_SEARCHES_PER_TURN = 40
 _DEFAULT_MAX_SUBAGENTS_PER_TURN = 50
 
 
@@ -202,6 +205,7 @@ class LoopCapConfig:
 
     max_web_searches: int = _DEFAULT_MAX_WEB_SEARCHES_PER_TURN
     max_subagents: int = _DEFAULT_MAX_SUBAGENTS_PER_TURN
+    warn_web_searches: int = _DEFAULT_WARN_WEB_SEARCHES_PER_TURN
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any] | None) -> "LoopCapConfig":
@@ -215,6 +219,9 @@ class LoopCapConfig:
             ),
             max_subagents=_non_negative_int(
                 data.get("max_subagents"), defaults.max_subagents
+            ),
+            warn_web_searches=_non_negative_int(
+                data.get("warn_web_searches"), defaults.warn_web_searches
             ),
         )
 
@@ -331,13 +338,26 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
     return False, ""
 
 
+def _serialized(method):
+    """Serialize one controller state transition across parallel tool workers."""
+
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._state_lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class ToolCallGuardrailController:
     """Per-turn controller for repeated failed/non-progressing tool calls."""
 
     def __init__(self, config: ToolCallGuardrailConfig | None = None):
+        self._state_lock = threading.RLock()
         self.config = config or ToolCallGuardrailConfig()
         self.reset_for_turn()
 
+    @_serialized
     def reset_for_turn(self) -> None:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
@@ -368,11 +388,13 @@ class ToolCallGuardrailController:
         # single agent loop rather than accumulating across the session.
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
+        self._web_search_soft_warned = False
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision
 
+    @_serialized
     def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
 
@@ -382,12 +404,19 @@ class ToolCallGuardrailController:
         # of hard_stop_enabled (which only governs the per-turn loop detector).
         # We block BEFORE the call runs once the count is already at the cap,
         # then increment for an allowed call so the (cap+1)-th is refused.
-        cap_block = self._check_loop_cap(tool_name, _coerce_args(args), signature)
-        if cap_block is not None:
-            return cap_block
+        cap_decision = self._check_loop_cap(tool_name, _coerce_args(args), signature)
+        cap_warning = None
+        if cap_decision is not None:
+            if cap_decision.action == "warn":
+                cap_warning = cap_decision
+            else:
+                return cap_decision
 
         if not self.config.hard_stop_enabled:
-            return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
+            return cap_warning or ToolGuardrailDecision(
+                tool_name=tool_name,
+                signature=signature,
+            )
 
         exact_count = self._exact_failure_counts.get(signature, 0)
         if exact_count >= self.config.exact_failure_block_after:
@@ -426,8 +455,12 @@ class ToolCallGuardrailController:
                     self._halt_decision = decision
                     return decision
 
-        return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
+        return cap_warning or ToolGuardrailDecision(
+            tool_name=tool_name,
+            signature=signature,
+        )
 
+    @_serialized
     def after_call(
         self,
         tool_name: str,
@@ -674,15 +707,15 @@ class ToolCallGuardrailController:
 
         if tool_name == "web_search":
             cap = caps.max_web_searches
+            soft = caps.warn_web_searches
             if cap and self._turn_web_search_count >= cap:
                 decision = ToolGuardrailDecision(
                     action="block",
                     code="loop_web_search_cap",
                     message=(
                         f"Blocked web_search: this turn has already made {cap} "
-                        "web searches, the per-turn limit. This looks like a "
-                        "runaway search loop. Work with the results you already "
-                        "have and give the user your answer."
+                        "web searches, the per-turn search budget. Work with the results you "
+                        "already have and give the user your answer."
                     ),
                     tool_name=tool_name,
                     count=self._turn_web_search_count,
@@ -691,6 +724,26 @@ class ToolCallGuardrailController:
                 self._halt_decision = decision
                 return decision
             self._turn_web_search_count += 1
+            if (
+                soft
+                and self.config.warnings_enabled
+                and self._turn_web_search_count >= soft
+                and not self._web_search_soft_warned
+            ):
+                self._web_search_soft_warned = True
+                return ToolGuardrailDecision(
+                    action="warn",
+                    code="loop_web_search_soft_warning",
+                    message=(
+                        f"{self._turn_web_search_count} web searches this turn. "
+                        "Approaching the per-turn search budget; select the strongest "
+                        "candidates, verify direct pages if needed, and synthesize rather "
+                        "than continuing broad searching."
+                    ),
+                    tool_name=tool_name,
+                    count=self._turn_web_search_count,
+                    signature=signature,
+                )
             return None
 
         if tool_name == "delegate_task":

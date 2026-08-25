@@ -19,6 +19,7 @@ import atexit
 import contextlib
 import errno
 import hashlib
+import itertools
 import json
 import logging
 import os
@@ -55,6 +56,7 @@ from hermes_constants import get_hermes_home
 from hermes_cli.sqlite_runtime import (
     is_sqlite_wal_reset_vulnerable as _is_sqlite_wal_reset_vulnerable,
 )
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, TypeVar
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar
 
 from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
@@ -104,6 +106,190 @@ except ImportError:  # pragma: no cover - stripped/scaffold installs only
 
 logger = logging.getLogger(__name__)
 
+_SESSION_DB_INSTANCE_IDS = itertools.count(1)
+_SESSION_DB_LOCK_KINDS = frozenset({"direct", "lifecycle", "maintenance", "read", "write"})
+
+
+class _SessionDBAttributedLock:
+    """A ``threading.Lock``-compatible mutex with content-free holder telemetry."""
+
+    def __init__(self, owner: "SessionDB") -> None:
+        # Avoid turning the lock into a new SessionDB retention root. The owner
+        # already owns this wrapper; a strong back-reference would create a
+        # cycle and delay connection cleanup when callers omit close().
+        self._owner_ref = weakref.ref(owner)
+        self._raw = threading.Lock()
+        self._active: Optional[Dict[str, Any]] = None
+
+    def _owner(self) -> "SessionDB":
+        owner = self._owner_ref()
+        if owner is None:  # pragma: no cover - wrapper is normally owner-reachable
+            raise RuntimeError("SessionDB lock owner is no longer available")
+        return owner
+
+    @staticmethod
+    def _clean_operation(operation: str) -> str:
+        return re.sub(r"[^A-Za-z0-9_.:-]+", "_", str(operation))[:96] or "unknown"
+
+    @staticmethod
+    def _infer_kind(operation: str) -> str:
+        lowered = operation.lower()
+        if operation == "_read_ctx" or lowered.startswith(
+            ("get_", "list_", "load_", "search_", "find_", "count_", "has_", "is_")
+        ):
+            return "read"
+        if any(token in lowered for token in ("checkpoint", "fts", "optimize", "rebuild", "vacuum")):
+            return "maintenance"
+        if any(token in lowered for token in ("close", "open", "init", "shutdown")):
+            return "lifecycle"
+        return "direct"
+
+    def _acquire(
+        self,
+        operation: str,
+        holder_kind: str,
+        blocking: bool = True,
+        timeout: float = -1,
+    ) -> Tuple[bool, Optional[Tuple[float, int, str, float, int, str, str, str, str]]]:
+        owner = self._owner()
+        operation_label = self._clean_operation(operation)
+        kind = holder_kind if holder_kind in _SESSION_DB_LOCK_KINDS else "direct"
+        wait_started = time.monotonic()
+        with owner._write_diag_lock:
+            owner._write_waiter_count += 1
+            queue_depth = owner._write_waiter_count
+            owner_operation = owner._write_owner_operation or "-"
+            owner_kind = owner._write_owner_kind or "-"
+            owner_generation = owner._write_owner_generation
+            owner_age_s = (
+                max(0.0, wait_started - owner._write_owner_started)
+                if owner._write_owner_started is not None
+                else 0.0
+            )
+
+        try:
+            if timeout == -1:
+                acquired = self._raw.acquire(blocking)
+            else:
+                acquired = self._raw.acquire(blocking, timeout)
+        except BaseException:
+            with owner._write_diag_lock:
+                owner._write_waiter_count -= 1
+            raise
+        if not acquired:
+            with owner._write_diag_lock:
+                owner._write_waiter_count -= 1
+            return False, None
+
+        acquired_at = time.monotonic()
+        lock_wait = acquired_at - wait_started
+        with owner._write_diag_lock:
+            owner._write_waiter_count -= 1
+            owner_transitions = owner._write_owner_generation - owner_generation
+            last_owner_operation = (
+                owner._write_last_owner_operation if owner_transitions > 0 else None
+            ) or "-"
+            last_owner_kind = (
+                owner._write_last_owner_kind if owner_transitions > 0 else None
+            ) or "-"
+            if owner_operation != "-" or owner_transitions > 0:
+                lock_holder = "attributed"
+            elif lock_wait >= 0.001:
+                lock_holder = "unattributed"
+            else:
+                lock_holder = "none"
+            owner._write_owner_generation += 1
+            owner._write_last_owner_operation = operation_label
+            owner._write_last_owner_kind = kind
+            owner._write_owner_operation = operation_label
+            owner._write_owner_kind = kind
+            owner._write_owner_started = acquired_at
+            self._active = {
+                "operation": operation_label,
+                "holder_kind": kind,
+                "wait": lock_wait,
+                "hold_started": acquired_at,
+                "queue_depth": queue_depth,
+                "thread_id": threading.get_ident(),
+            }
+        return True, (
+            lock_wait,
+            queue_depth,
+            owner_operation,
+            owner_age_s,
+            owner_transitions,
+            last_owner_operation,
+            lock_holder,
+            owner_kind,
+            last_owner_kind,
+        )
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        operation = sys._getframe(1).f_code.co_name
+        acquired, _ = self._acquire(
+            operation,
+            self._infer_kind(operation),
+            blocking=blocking,
+            timeout=timeout,
+        )
+        return acquired
+
+    def release(self) -> None:
+        owner = self._owner()
+        released_at = time.monotonic()
+        with owner._write_diag_lock:
+            active = self._active
+            if active is not None:
+                self._active = None
+                owner._write_owner_operation = None
+                owner._write_owner_kind = None
+                owner._write_owner_started = None
+        self._raw.release()
+        if active is None or active["holder_kind"] == "write":
+            return
+        hold_s = released_at - active["hold_started"]
+        if (
+            active["wait"] < owner._SLOW_LOCK_WAIT_WARN_S
+            and hold_s < owner._SLOW_LOCK_HOLD_WARN_S
+        ):
+            return
+        logger.warning(
+            "SessionDB lock latency: operation=%s holder_kind=%s wait=%.3fs "
+            "hold=%.3fs pid=%d thread_id=%d db_instance=%s queue_depth=%d",
+            active["operation"],
+            active["holder_kind"],
+            active["wait"],
+            hold_s,
+            os.getpid(),
+            active["thread_id"],
+            owner._write_instance_id,
+            active["queue_depth"],
+        )
+
+    def locked(self) -> bool:
+        return self._raw.locked()
+
+    def __enter__(self) -> "_SessionDBAttributedLock":
+        operation = sys._getframe(1).f_code.co_name
+        acquired, _ = self._acquire(operation, self._infer_kind(operation))
+        if not acquired:  # pragma: no cover - blocking acquisition cannot do this
+            raise RuntimeError("failed to acquire SessionDB lock")
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> Literal[False]:
+        self.release()
+        return False
+
+    @contextmanager
+    def hold(self, operation: str, holder_kind: str):
+        acquired, diagnostics = self._acquire(operation, holder_kind)
+        if not acquired:  # pragma: no cover - blocking acquisition cannot do this
+            raise RuntimeError("failed to acquire SessionDB lock")
+        try:
+            assert diagnostics is not None
+            yield diagnostics
+        finally:
+            self.release()
 MAX_SAFE_RESUME_MESSAGES = 20_000
 MAX_SAFE_EXPORT_MESSAGES = 20_000
 
@@ -860,7 +1046,7 @@ def format_session_db_unavailable(prefix: str = "Session database not available"
 
 
 def _on_disk_journal_mode(conn: sqlite3.Connection) -> Optional[str]:
-    """Read the journal mode from the SQLite DB header on disk.
+    """Read the journal mode reported for the database.
 
     Returns the mode string (e.g. ``"wal"``, ``"delete"``), or ``None``
     if the value cannot be determined (new DB, or PRAGMA read failed).
@@ -937,6 +1123,32 @@ def _apply_wal_size_limit(conn: sqlite3.Connection) -> None:
         conn.execute(f"PRAGMA journal_size_limit={_WAL_SIZE_LIMIT_BYTES}")
     except sqlite3.OperationalError as exc:  # pragma: no cover - defensive
         logger.debug("journal_size_limit not applied: %s", exc)
+
+
+def _main_database_file_is_empty(conn: sqlite3.Connection) -> Optional[bool]:
+    """Return whether the main on-disk DB is proven absent or empty.
+
+    ``None`` is deliberately distinct from ``False``: an unreadable path or an
+    in-memory/unknown database must fail closed at a journal-mode transition.
+    Only a positively identified absent/zero-byte file is safe for the legacy
+    WAL-incompatible-filesystem fallback to DELETE.
+    """
+    try:
+        rows = conn.execute("PRAGMA database_list").fetchall()
+    except sqlite3.OperationalError:
+        return None
+    for seq, name, filename in rows:
+        if seq != 0 or name != "main":
+            continue
+        if not filename:
+            return None
+        try:
+            return Path(filename).stat().st_size == 0
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return None
+    return None
 
 
 def _apply_macos_checkpoint_barrier(conn: sqlite3.Connection) -> None:
@@ -1240,12 +1452,21 @@ def apply_wal_with_fallback(
                     _enforce_macos_synchronous_full(conn)
                     return "wal"
                 break
-        # Don't downgrade if another process already set WAL on disk, or if
-        # the mode cannot be verified at all (probe blocked by a concurrent
-        # opener's locks) — ownership is not provably exclusive either way.
+        # Don't downgrade if another process already set WAL on disk.
         existing = _on_disk_journal_mode(conn)
-        if existing == "wal" or existing is None:
+        if existing == "wal":
             raise
+        if existing is None:
+            # An unreadable mode is safe to treat as filesystem-incompatible
+            # only for the fork's narrowly-scoped ambiguous-EIO compatibility
+            # path on a proven empty database. Other incompatibility markers
+            # (for example ``locking protocol``) may mean another opener owns
+            # the file, so they must retain upstream's fail-closed behavior.
+            if (
+                "disk i/o error" not in msg
+                or _main_database_file_is_empty(conn) is not True
+            ):
+                raise
         if require_wal:
             # Caller mandates WAL — fail loudly instead of degrading to DELETE.
             raise WalUnsupportedError(str(exc)) from exc
@@ -2745,13 +2966,15 @@ def _copy_database_snapshot(
             source.close()
 
 
-def _db_opens_cleanly(db_path: Path) -> Optional[str]:
+def _db_opens_cleanly(
+    db_path: Path, *, full_integrity: bool = True
+) -> Optional[str]:
     """Probe a DB on a fresh connection. Returns None if healthy, else a reason.
 
     Runs the same first-statement (``PRAGMA journal_mode``) that trips the
-    malformed-schema parse, then ``PRAGMA integrity_check`` and a canonical
-    ``sessions`` read, and finally a rolled-back ``messages`` write so that
-    FTS5 index corruption — which leaves base-table reads and
+    malformed-schema parse, optionally runs ``PRAGMA integrity_check``, then
+    performs a canonical ``sessions`` read and a rolled-back ``messages``
+    write so that FTS5 index corruption — which leaves base-table reads and
     ``integrity_check`` passing while every ``INSERT INTO messages`` fails
     through the FTS triggers — is reported as unhealthy rather than slipping
     past as a false "ok" (#50502).
@@ -2766,10 +2989,11 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
         # working), so tokenizer absence must never classify as corruption.
         load_fts5_cjk_extension(conn)
         conn.execute("PRAGMA journal_mode").fetchone()
-        rows = conn.execute("PRAGMA integrity_check").fetchall()
-        problems = [str(r[0]) for r in rows if r and str(r[0]).lower() != "ok"]
-        if problems:
-            return "; ".join(problems[:3])
+        if full_integrity:
+            rows = conn.execute("PRAGMA integrity_check").fetchall()
+            problems = [str(r[0]) for r in rows if r and str(r[0]).lower() != "ok"]
+            if problems:
+                return "; ".join(problems[:3])
         conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
 
         # FTS5 read probe: run a representative MATCH query against the
@@ -4100,8 +4324,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     _WRITE_RETRY_SLOW_AFTER_S = 2.0
     _WRITE_RETRY_SLOW_MIN_S = 0.250  # 250ms
     _WRITE_RETRY_SLOW_MAX_S = 1.000  # 1s
+    _SLOW_WRITE_WARN_S = 1.0
+    _SLOW_LOCK_WAIT_WARN_S = 0.25
+    _SLOW_LOCK_HOLD_WARN_S = 1.0
     # Attempt a WAL checkpoint every N successful writes (PASSIVE mode).
     _CHECKPOINT_EVERY_N_WRITES = 50
+    # Minimum wall-clock interval between best-effort PASSIVE checkpoints.
+    # Checkpoint fsync cost scales with the main database file size (9+ GB in
+    # production), so a burst of writes past the counter threshold must not
+    # fire back-to-back checkpoints (2026-08-23 lock storm: holder_kind=
+    # maintenance observed holding the instance mutex 24-81s, queue_depth=10).
+    _CHECKPOINT_MIN_INTERVAL_S = 60.0
     # Retain the existing coarse 1000-write maintenance cadence, but replace
     # the unbounded FTS5 ``'optimize'`` (measured holding the write lock for
     # 9-18 s per index on a 10 GB production DB — longer than a competing
@@ -4179,7 +4412,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         _ensure_test_isolation(self.db_path)
         self.read_only = read_only
 
-        self._lock = threading.Lock()
+        self._write_diag_lock = threading.Lock()
+        self._write_waiter_count = 0
+        self._write_owner_operation: Optional[str] = None
+        self._write_owner_kind: Optional[str] = None
+        self._write_owner_started: Optional[float] = None
+        self._write_owner_generation = 0
+        self._write_last_owner_operation: Optional[str] = None
+        self._write_last_owner_kind: Optional[str] = None
+        self._write_instance_id = f"{next(_SESSION_DB_INSTANCE_IDS):x}"
+        self._lock = _SessionDBAttributedLock(self)
         # Read-path split (WAL only): recall/browse queries borrow a
         # read-only connection from a bounded pool so they never queue
         # behind writer flushes on self._lock. See _read_ctx().
@@ -4233,6 +4475,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self._read_open_failed_at = 0.0
         self._wal_active = False
         self._write_count = 0
+        self._last_checkpoint_monotonic = None
+        self._checkpoint_worker = None
+        self._checkpoint_schedule_lock = threading.Lock()
         # One-shot guard for the runtime FTS rebuild recovery on the write
         # path. A corrupt FTS shadow table makes EVERY message write raise
         # the malformed/corrupt error class via the sync triggers; we repair
@@ -4909,10 +5154,26 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 self._warn_fts5_unavailable(exc)
             return False
 
+    @contextmanager
+    def _attributed_lock(self, operation_label: str, *, holder_kind: str):
+        """Hold the instance mutex with bounded, content-free attribution."""
+        with self._lock.hold(operation_label, holder_kind) as diagnostics:
+            yield diagnostics
+
+    @contextmanager
+    def _attributed_write_lock(self, operation_label: str):
+        """Hold the writer mutex while preserving the existing diagnostics API."""
+        with self._attributed_lock(operation_label, holder_kind="write") as diagnostics:
+            yield diagnostics
+
     def _execute_write(
         self,
         fn: Callable[[sqlite3.Connection], T],
         patience_s: Optional[float] = None,
+        *,
+        operation: Optional[str] = None,
+        items: Optional[int] = None,
+        reason: Optional[str] = None,
     ) -> T:
         """Execute a write transaction with BEGIN IMMEDIATE and jitter retry.
 
@@ -4940,40 +5201,137 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         if patience_s is None:
             patience_s = self._WRITE_PATIENCE_S
-        deadline = time.monotonic() + patience_s
+        caller_name = getattr(fn, "__name__", type(fn).__name__)
+        if operation is None and caller_name == "_do":
+            qualname = getattr(fn, "__qualname__", "")
+            enclosing = qualname.rsplit(".<locals>.", 1)[0]
+            inferred_operation = enclosing.rsplit(".", 1)[-1] if enclosing else caller_name
+        else:
+            inferred_operation = caller_name
+        operation_name = str(operation or inferred_operation)
+        operation_label = re.sub(r"[\r\n\t]+", " ", operation_name)[:96]
+        reason_label = re.sub(
+            r"[^A-Za-z0-9_.-]+", "_", str(reason or "-")
+        )[:64]
+        call_started = time.monotonic()
+        deadline = call_started + patience_s
         # Set on the first compression-busy collision so the short wait is
         # measured from then, not from the start of the write.
         compression_deadline: Optional[float] = None
-
-        # Transient engine-level error observed on contended WAL appends
-        # (dual gateway/agent writers; FTS5 trigram sync holds the write
-        # lock). The identical write succeeds standalone, so it is
-        # retryable like locked/busy. The exception CLASS varies with the
-        # SQLite build — some surface it as InterfaceError, which lives
-        # OUTSIDE DatabaseError and escaped the retry net entirely on
-        # attempt 0 — so the check is message-scoped, not class-scoped.
+        attempt = 0
+        sqlite_retry_wait = 0.0
+        # Transient engine-level error observed on contended WAL appends.
+        # SQLite's exception class varies by build: some versions surface it
+        # as InterfaceError, which is a sibling of DatabaseError. Keep the
+        # policy message-scoped so unrelated sqlite3 errors still fail fast.
         def _is_no_more_rows(exc: sqlite3.Error) -> bool:
             return "no more rows available" in str(exc).lower()
 
+        def _sleep_before_retry() -> bool:
+            nonlocal sqlite_retry_wait
+            sleep_started = time.monotonic()
+            slept = self._sleep_before_write_retry(deadline, patience_s)
+            if slept:
+                sqlite_retry_wait += time.monotonic() - sleep_started
+            return slept
+
         while True:
             try:
-                with self._lock:
+                write_started = time.monotonic()
+                with self._attributed_write_lock(operation_label) as lock_diag:
+                    (
+                        lock_wait,
+                        queue_depth,
+                        owner_operation,
+                        owner_age_s,
+                        owner_transitions,
+                        last_owner_operation,
+                        lock_holder,
+                        owner_kind,
+                        last_owner_kind,
+                    ) = lock_diag
+                    if self._conn is None:
+                        raise RuntimeError("SessionDB is closed")
+                    transaction_started = time.monotonic()
+                    begin_started = time.monotonic()
                     self._conn.execute("BEGIN IMMEDIATE")
+                    begin_wait = time.monotonic() - begin_started
                     try:
+                        callback_started = time.monotonic()
                         result = fn(self._conn)
+                        callback_time = time.monotonic() - callback_started
+                        commit_started = time.monotonic()
                         self._conn.commit()
+                        commit_time = time.monotonic() - commit_started
+                        transaction_time = time.monotonic() - transaction_started
+                        # Keep cadence accounting inside the same serialized
+                        # critical section as the successful write.  The
+                        # maintenance work itself remains outside this lock.
+                        self._write_count += 1
+                        pending_checkpoint = (
+                            self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0
+                        )
+                        pending_fts_merge = (
+                            self._write_count % self._FTS_MERGE_EVERY_N_WRITES == 0
+                        )
                     except BaseException:
                         try:
                             self._conn.rollback()
                         except Exception:
                             pass
                         raise
+                total_time = time.monotonic() - write_started
+                elapsed_total = time.monotonic() - call_started
+                if (
+                    lock_wait >= self._SLOW_LOCK_WAIT_WARN_S
+                    or elapsed_total >= self._SLOW_WRITE_WARN_S
+                ):
+                    logger.warning(
+                        "SessionDB write latency: caller=%s operation=%s "
+                        "reason=%s items=%s outcome=write lock_wait=%.3fs sqlite_retry_wait=%.3fs "
+                        "begin_wait=%.3fs callback=%.3fs commit=%.3fs "
+                        "txn=%.3fs total=%.3fs elapsed=%.3fs attempt=%d pid=%d "
+                        "thread_id=%d db_instance=%s instance_queue_depth=%d "
+                        "instance_owner_operation=%s instance_owner_kind=%s "
+                        "instance_owner_age_s=%.3f instance_owner_transitions=%d "
+                        "instance_last_owner_operation=%s instance_last_owner_kind=%s "
+                        "instance_lock_holder=%s",
+                        caller_name,
+                        operation_label,
+                        reason_label,
+                        items if items is not None else "-",
+                        lock_wait,
+                        sqlite_retry_wait,
+                        begin_wait,
+                        callback_time,
+                        commit_time,
+                        transaction_time,
+                        total_time,
+                        elapsed_total,
+                        attempt + 1,
+                        os.getpid(),
+                        threading.get_ident(),
+                        self._write_instance_id,
+                        queue_depth,
+                        owner_operation,
+                        owner_kind,
+                        owner_age_s,
+                        owner_transitions,
+                        last_owner_operation,
+                        last_owner_kind,
+                        lock_holder,
+                    )
                 # Success — periodic best-effort checkpoint + FTS merge.
-                self._write_count += 1
-                if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
-                    self._try_wal_checkpoint()
-                if self._write_count % self._FTS_MERGE_EVERY_N_WRITES == 0:
+                # The checkpoint call must stay OUTSIDE the writer-lock
+                # scope above: invoking it inside held the instance mutex
+                # for the whole checkpoint fsync (writer convoy, 2026-08-23
+                # lock storm). _try_wal_checkpoint is now lock-free and
+                # time-throttled; schedule it after the write lock is
+                # released.
+                if pending_fts_merge:
                     self._try_incremental_merge_fts()
+                if pending_checkpoint:
+                    self._try_wal_checkpoint()
                 return result
             except SessionCompressionInProgressError:
                 # A live foreign compression lock is transient: the compressor
@@ -4999,7 +5357,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             except sqlite3.OperationalError as exc:
                 err_msg = str(exc).lower()
                 if "locked" in err_msg or "busy" in err_msg:
-                    if self._sleep_before_write_retry(deadline, patience_s):
+                    if _sleep_before_retry():
+                        attempt += 1
                         continue
                     # Patience exhausted — say what actually happened so the
                     # surfaced error doesn't read as disk/permission damage.
@@ -5010,12 +5369,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         "a large WAL checkpoint, or an older pre-update "
                         "process; the database itself is healthy)"
                     ) from exc
-                if _is_no_more_rows(exc) and self._sleep_before_write_retry(deadline, patience_s):
+                if _is_no_more_rows(exc) and _sleep_before_retry():
+                    attempt += 1
                     continue
                 # Non-lock error or patience exhausted — propagate.
                 raise
             except sqlite3.DatabaseError as exc:
-                if _is_no_more_rows(exc) and self._sleep_before_write_retry(deadline, patience_s):
+                if _is_no_more_rows(exc) and _sleep_before_retry():
+                    attempt += 1
                     continue
                 # Corrupt FTS shadow tables make every write raise the
                 # malformed/corrupt error class through the FTS sync triggers
@@ -5030,26 +5391,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     continue
                 raise
             except sqlite3.Error as exc:
-                # Catch-all for builds that surface 'no more rows available'
-                # as InterfaceError (a sibling of DatabaseError, not a
-                # subclass) or another sqlite3.Error class outside the two
-                # handlers above. Message-scoped: anything else propagates
-                # untouched.
-                if _is_no_more_rows(exc) and self._sleep_before_write_retry(deadline, patience_s):
+                # Catch InterfaceError and any other sqlite3.Error sibling not
+                # covered above. Only the known transient message is retried.
+                if _is_no_more_rows(exc) and _sleep_before_retry():
+                    attempt += 1
                     continue
                 raise
 
     def _sleep_before_write_retry(
         self, deadline: float, patience_s: float
     ) -> bool:
-        """Sleep one jitter interval if the patience budget still allows it.
-
-        Returns True when the caller should retry, False when *deadline* has
-        passed and the error should propagate. Jitter stays small for the
-        first ``_WRITE_RETRY_SLOW_AFTER_S`` (fast reclaim on millisecond
-        contention) and backs off after that, and never overshoots the
-        deadline by a full slow-jitter.
-        """
+        """Sleep one jitter interval when the patience budget permits retry."""
         now = time.monotonic()
         if now >= deadline:
             return False
@@ -5064,6 +5416,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 self._WRITE_RETRY_MIN_S,
                 self._WRITE_RETRY_MAX_S,
             )
+        # Never overshoot the deadline by a full slow-jitter.
         time.sleep(min(jitter, max(deadline - now, 0.001)))
         return True
 
@@ -5372,13 +5725,70 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         )
         return True
 
+    def _checkpoint_now(self) -> None:
+        """Run one PASSIVE checkpoint WITHOUT holding the instance mutex.
+
+        The periodic checkpoint used to run inside
+        ``_attributed_lock(..., holder_kind="maintenance")`` — the same
+        instance mutex every writer needs. PASSIVE never blocks at the
+        SQLite level, so the mutex is not required for it, and holding it
+        turned multi-second checkpoint fsyncs (cost scales with the main
+        file size; 9+ GB in production) into a writer convoy: observed
+        24-81s holds with queue_depth=10, writer waits of 29-49s, and a
+        close() hold of 188.7s — enough to trip the gateway loop-liveness
+        watchdog (exit 75, 2026-08-23, twice).
+
+        Uses a dedicated short-lived connection: sqlite3 connections are
+        not safe for cross-thread use, and this runs on the checkpoint
+        worker thread, not the writer thread that owns ``self._conn``.
+        """
+        conn = None
+        try:
+            conn = sqlite3.connect(
+                str(self.db_path), timeout=5.0, isolation_level=None
+            )
+            result = conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+            if result and result[1] > 0:
+                logger.debug(
+                    "WAL checkpoint: %d/%d pages checkpointed",
+                    result[2], result[1],
+                )
+        except Exception as exc:
+            logger.warning("WAL checkpoint (PASSIVE) failed: %s", exc)
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    def _checkpoint_worker_once(self) -> None:
+        """Run one checkpoint and retire the daemon worker.
+
+        A permanent bound-method worker would retain ``self`` (and therefore
+        a closed SessionDB) forever.  A one-shot worker retains the instance
+        only for the bounded in-flight checkpoint and then clears its slot.
+        """
+        try:
+            self._checkpoint_now()
+        finally:
+            with self._checkpoint_schedule_lock:
+                if self._checkpoint_worker is threading.current_thread():
+                    self._checkpoint_worker = None
+
     def _try_wal_checkpoint(self) -> None:
-        """Best-effort PASSIVE WAL checkpoint.  Never raises.
+        """Throttled best-effort PASSIVE WAL checkpoint.  Never raises.
 
         Flushes committed WAL frames back into the main DB file without
         requiring an exclusive lock.  PASSIVE is safe for frequent
         periodic use because it does not block concurrent writers and
         cannot corrupt B-tree pages under I/O pressure.
+
+        Throttled: at most one checkpoint per ``_CHECKPOINT_MIN_INTERVAL_S``
+        so a write burst past the counter threshold cannot fire
+        back-to-back checkpoints (each costing an fsync scaled to the main
+        file size). The checkpoint itself runs in ``_checkpoint_now``
+        WITHOUT the instance mutex — see that method for the convoy history.
 
         PASSIVE does not truncate the WAL file — it stays at its
         high-water mark. Explicit checkpoints on the shared ``state.db`` no
@@ -5390,18 +5800,36 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         databases (65K+ pages) due to the exclusive-lock I/O pressure
         from checkpointing thousands of frames at once (issue #45383).
         """
-        try:
-            with self._lock:
-                result = self._conn.execute(
-                    "PRAGMA wal_checkpoint(PASSIVE)"
-                ).fetchone()
-                if result and result[1] > 0:
-                    logger.debug(
-                        "WAL checkpoint: %d/%d pages checkpointed",
-                        result[2], result[1],
-                    )
-        except Exception as exc:
-            logger.warning("WAL checkpoint (PASSIVE) failed: %s", exc)
+        now = time.monotonic()
+        # Never run the checkpoint synchronously on the calling writer's
+        # thread: a PASSIVE checkpoint fsync costs seconds on a multi-GB
+        # database (observed 24-81s), and the calling writer would pay that
+        # latency directly. Scheduling is serialized so simultaneous writers
+        # cannot start overlapping workers or race the throttle timestamp.
+        with self._checkpoint_schedule_lock:
+            last = self._last_checkpoint_monotonic
+            if last is not None and (now - last) < self._CHECKPOINT_MIN_INTERVAL_S:
+                return
+            worker = self._checkpoint_worker
+            if worker is not None and worker.is_alive():
+                return
+            self._last_checkpoint_monotonic = now
+            worker = threading.Thread(
+                target=self._checkpoint_worker_once,
+                name=f"sessiondb-wal-checkpoint-{id(self):x}",
+                daemon=True,
+            )
+            self._checkpoint_worker = worker
+            try:
+                worker.start()
+            except Exception as exc:
+                # Under thread/resource exhaustion, skipping a best-effort
+                # checkpoint is safer than reintroducing an 80-second
+                # synchronous stall on the writer/event-loop thread.
+                if self._checkpoint_worker is worker:
+                    self._checkpoint_worker = None
+                self._last_checkpoint_monotonic = last
+                logger.warning("WAL checkpoint worker start failed: %s", exc)
 
     def __enter__(self) -> "SessionDB":
         """Enter a scope that closes this handle on the way out.
@@ -5950,27 +6378,60 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self._execute_write(_do)
 
     def replace_gateway_routing_entries(
-        self, entries: Dict[str, str], *, scope: str = ""
+        self,
+        entries: Dict[str, str],
+        *,
+        scope: str = "",
+        reason: str = "unspecified",
     ) -> None:
-        """Atomically replace the routing index for *scope* with *entries*.
+        """Atomically reconcile the routing index for *scope* with *entries*.
 
-        Mirrors the sessions.json full-rewrite semantics: keys absent from
-        *entries* are removed (pruned/reset sessions disappear from the
-        index).  Runs as a single write transaction.  Other scopes are
-        untouched.
+        Keys absent from *entries* are removed, changed/new entries are
+        upserted, and identical rows retain their existing ``updated_at``.
+        Other scopes are untouched. ``reason`` is a bounded, content-free
+        routing call-site label used only for latency attribution.
         """
         now = time.time()
+        desired = {key: value for key, value in entries.items() if key and value}
 
         def _do(conn):
-            conn.execute("DELETE FROM gateway_routing WHERE scope = ?", (scope,))
-            if entries:
+            existing = {
+                row["session_key"]: row["entry_json"]
+                for row in conn.execute(
+                    "SELECT session_key, entry_json FROM gateway_routing "
+                    "WHERE scope = ?",
+                    (scope,),
+                )
+            }
+            stale_keys = existing.keys() - desired.keys()
+            if stale_keys:
                 conn.executemany(
-                    "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
-                    "VALUES (?, ?, ?, ?)",
-                    [(scope, k, v, now) for k, v in entries.items() if k and v],
+                    "DELETE FROM gateway_routing WHERE scope = ? AND session_key = ?",
+                    [(scope, key) for key in stale_keys],
+                )
+            changed = [
+                (scope, key, value, now)
+                for key, value in desired.items()
+                if existing.get(key) != value
+            ]
+            if changed:
+                conn.executemany(
+                    "INSERT INTO gateway_routing "
+                    "(scope, session_key, entry_json, updated_at) VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(scope, session_key) DO UPDATE SET "
+                    "entry_json = excluded.entry_json, updated_at = excluded.updated_at",
+                    changed,
                 )
 
-        self._execute_write(_do)
+        reason_label = re.sub(
+            r"[^A-Za-z0-9_.-]+", "_", str(reason or "unspecified")
+        )[:64]
+        self._execute_write(
+            _do,
+            operation="replace_gateway_routing_entries",
+            items=len(entries),
+            reason=reason_label,
+        )
 
     def load_gateway_routing_entries(self, *, scope: str = "") -> Dict[str, str]:
         """Load routing entries for *scope* as {session_key: entry_json}."""
@@ -5982,7 +6443,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         return {r["session_key"]: r["entry_json"] for r in rows}
 
     def delete_gateway_routing_entries(
-        self, session_keys: List[str], *, scope: str = ""
+        self,
+        session_keys: List[str],
+        *,
+        scope: str = "",
+        reason: str = "unspecified",
     ) -> None:
         """Remove routing entries for the given session keys in *scope*."""
         if not session_keys:
@@ -5994,7 +6459,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 [(scope, k) for k in session_keys],
             )
 
-        self._execute_write(_do)
+        reason_label = re.sub(
+            r"[^A-Za-z0-9_.-]+", "_", str(reason or "unspecified")
+        )[:64]
+        self._execute_write(
+            _do,
+            operation="delete_gateway_routing_entries",
+            items=len(session_keys),
+            reason=reason_label,
+        )
 
     def list_never_active_keyed_sessions(
         self, *, older_than_days: float
@@ -6153,6 +6626,40 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         with self._lock:
             rows = self._conn.execute(query, params).fetchall()
         return [self._session_row_dict(r) for r in rows]
+
+    def list_gateway_routing_origins(
+        self,
+        *,
+        platform: Optional[str] = None,
+        active_only: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """List only routing fields from the newest gateway session per key.
+
+        Channel-directory discovery does not need prompts, messages, token
+        totals, activity timestamps, or ordering.  Keep this projection narrow
+        so periodic discovery does not pay the cost of a full session listing.
+        Gateway platform names are normalized lowercase before exact matching so
+        SQLite can use the source index without wrapping the column in LOWER().
+        """
+        query = """
+            SELECT origin_json, chat_id, thread_id, display_name, chat_type
+            FROM sessions
+            WHERE (session_key, started_at) IN (
+                SELECT session_key, MAX(started_at)
+                FROM sessions
+                WHERE session_key IS NOT NULL
+                GROUP BY session_key
+            )
+        """
+        params: list = []
+        if platform:
+            query += " AND source = ?"
+            params.append(platform.lower())
+        if active_only:
+            query += " AND ended_at IS NULL"
+        with self._read_ctx() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
 
     def find_session_by_origin(
         self,
@@ -9701,13 +10208,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         else:
             base = base_title
 
-        # Find all existing numbered variants
-        # Escape SQL LIKE wildcards (%, _) in the base to prevent false matches
-        escaped = _escape_like(base)
-        with self._lock:
-            cursor = self._conn.execute(
-                "SELECT title FROM sessions WHERE title = ? OR title LIKE ? ESCAPE '\\'",
-                (base, f"{escaped} #%"),
+        # Use two bounded index lookups rather than a LIKE scan. ``$`` is the
+        # immediate ASCII successor of ``#``, so ["base #", "base $") is the
+        # exact binary-collation prefix range for numbered lineage candidates.
+        # The unique partial title index covers both arms; the dedicated read
+        # connection keeps this query out of the SessionDB writer-lock convoy.
+        numbered_prefix = f"{base} #"
+        numbered_prefix_end = f"{base} $"
+        with self._read_ctx() as conn:
+            cursor = conn.execute(
+                "SELECT title FROM sessions WHERE title = ? "
+                "UNION ALL "
+                "SELECT title FROM sessions WHERE title >= ? AND title < ?",
+                (base, numbered_prefix, numbered_prefix_end),
             )
             existing = [row["title"] for row in cursor.fetchall()]
 
@@ -9716,8 +10229,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         # Find the highest number
         max_num = 1  # The unnumbered original counts as #1
+        numbered_title = re.compile(rf"^{re.escape(base)} #(\d+)$")
         for t in existing:
-            m = re.match(r'^.* #(\d+)$', t)
+            m = numbered_title.match(t)
             if m:
                 max_num = max(max_num, int(m.group(1)))
 
@@ -11153,7 +11667,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 (total_messages, total_tool_calls, session_id),
             )
 
-        self._execute_write(_do)
+        self._execute_write(
+            _do,
+            operation="replace_messages",
+            items=len(messages),
+        )
 
     def has_archived_messages(self, session_id: str) -> bool:
         """Return True if the session has any soft-archived (``active = 0``) rows.

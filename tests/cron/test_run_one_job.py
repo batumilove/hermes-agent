@@ -15,6 +15,30 @@ import pytest
 import cron.scheduler as s
 
 
+def test_scheduler_has_no_activegraph_bridge():
+    """Cron execution depends only on canonical bookkeeping, never ActiveGraph."""
+    assert not hasattr(s, "_ag")
+
+
+def test_run_one_job_logs_canonical_execution_lifecycle(monkeypatch, caplog):
+    """The journal supplies the independent event leg without a telemetry plugin."""
+    monkeypatch.setattr(s, "create_execution", lambda *_a, **_kw: {"id": "exec-journal-1"})
+    monkeypatch.setattr(s, "claim_dispatch", lambda _jid: True)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _eid: None)
+    monkeypatch.setattr(s, "run_job", lambda *_a, **_kw: (True, "out", "final", None))
+    monkeypatch.setattr(s, "save_job_output", lambda jid, _out: f"/tmp/{jid}.txt")
+    monkeypatch.setattr(s, "_deliver_result", lambda *_a, **_kw: None)
+    monkeypatch.setattr(s, "mark_job_run", lambda *_a, **_kw: True)
+    monkeypatch.setattr(s, "finish_execution", lambda *_a, **_kw: None)
+    caplog.set_level("INFO", logger=s.__name__)
+
+    assert s.run_one_job({"id": "journal-job", "name": "journal job"}) is True
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert "cron_execution_started job_id=journal-job execution_id=exec-journal-1" in messages
+    assert "cron_execution_finished job_id=journal-job execution_id=exec-journal-1 success=True" in messages
+
+
 def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final response",
                     error=None, silent_marker_in=None):
     """Patch the job pipeline primitives and record the call order."""
@@ -78,6 +102,31 @@ def test_run_one_job_success_sequence(monkeypatch):
     assert calls[-1] == ("mark", "j2", True)
 
 
+def test_run_one_job_releases_admission_after_execution_is_running(monkeypatch):
+    """A drain owner may enter only after this run is visible as in-flight."""
+    calls = []
+    monkeypatch.setattr(s, "claim_dispatch", lambda _jid: True)
+    monkeypatch.setattr(
+        s, "mark_execution_running", lambda _execution_id: calls.append("running")
+    )
+
+    def release():
+        calls.append("released")
+
+    def fake_run_job(job, *, defer_agent_teardown=None, **kwargs):
+        assert calls == ["running", "released"]
+        return True, "out", "final", None
+
+    monkeypatch.setattr(s, "run_job", fake_run_job)
+    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
+    monkeypatch.setattr(s, "_deliver_result", lambda *args, **kwargs: None)
+    monkeypatch.setattr(s, "mark_job_run", lambda *args, **kwargs: None)
+
+    assert s.run_one_job(
+        {"id": "admitted", "name": "admitted", "execution_id": "exec-1"},
+        on_execution_started=release,
+    ) is True
+    assert calls == ["running", "released"]
 def test_run_one_job_exception_delivers_failure_alert(monkeypatch):
     """An exception escaping the run body must not become a silent error row."""
     delivered = []
@@ -368,5 +417,39 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
     assert scope_during_run["base_url"] == "https://openrouter.ai/api/v1"
     # And it was torn down after run_one_job returned (no leak).
     assert ss.current_secret_scope() is None
+
+
+def test_cron_agent_result_rejects_reasoning_only_exhaustion():
+    """A visible reasoning excerpt is failure evidence, not a successful report."""
+    result = {
+        "completed": True,
+        "failed": False,
+        "turn_exit_reason": "empty_response_exhausted",
+        "final_response": (
+            "⚠️ The model produced only internal reasoning and no final answer, "
+            "despite retries and fallback. Its last reasoning may contain the answer."
+        ),
+        "session_id": "cron_job-1_20260806_120908",
+    }
+
+    error = s._cron_agent_result_error(result)
+
+    assert error is not None
+    assert "empty_response_exhausted" in error
+    assert "cron_job-1_20260806_120908" in error
+    assert "session transcript" in error
+    assert "last reasoning" not in error
+
+
+def test_cron_agent_result_accepts_normal_final_response():
+    result = {
+        "completed": True,
+        "failed": False,
+        "turn_exit_reason": "text_response(stop)",
+        "final_response": "Acceptance PASS",
+        "session_id": "cron_job-2_20260806_121000",
+    }
+
+    assert s._cron_agent_result_error(result) is None
 
 

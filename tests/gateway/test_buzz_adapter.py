@@ -322,6 +322,55 @@ class TestDmClassification:
         assert [d["message_id"] for d in adapter._dispatched] == ["e1"]
         assert adapter._dispatched[0]["chat_type"] == "dm"
 
+    @pytest.mark.asyncio
+    async def test_allowlisted_sender_in_dm_metadata_dispatches_without_ptag(self, adapter):
+        """Private-mode DMs remain usable when a relay omits recipient p-tags."""
+        adapter._allowed_pubkeys = {OTHER_PUBKEY}
+        await self._poll_with(
+            adapter,
+            DM_CHANNEL,
+            _tagged_event("e1", DM_CHANNEL, content="hi"),
+        )
+        assert adapter._channel_state[DM_CHANNEL]["chat_type"] == "dm"
+        assert [d["message_id"] for d in adapter._dispatched] == ["e1"]
+        assert adapter._dispatched[0]["chat_type"] == "dm"
+
+    @pytest.mark.asyncio
+    async def test_unlisted_sender_without_ptag_stays_mention_gated(self, adapter):
+        """DM-shaped metadata alone must not bypass private access control."""
+        adapter._allowed_pubkeys = {"b" * 64}
+        await self._poll_with(
+            adapter,
+            DM_CHANNEL,
+            _tagged_event("e1", DM_CHANNEL, content="hi"),
+        )
+        assert adapter._channel_state[DM_CHANNEL]["chat_type"] == "group"
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_allow_all_mode_without_ptag_stays_mention_gated(self, adapter):
+        """P-tag-less metadata fallback is restricted to private allow-list mode."""
+        adapter._allowed_pubkeys = set()
+        await self._poll_with(
+            adapter,
+            DM_CHANNEL,
+            _tagged_event("e1", DM_CHANNEL, content="hi"),
+        )
+        assert adapter._channel_state[DM_CHANNEL]["chat_type"] == "group"
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_allowlisted_sender_in_real_channel_stays_mention_gated(self, adapter):
+        """An allow-listed sender cannot turn channel metadata into a DM."""
+        adapter._allowed_pubkeys = {OTHER_PUBKEY}
+        await self._poll_with(
+            adapter,
+            CHANNEL,
+            _tagged_event("e1", CHANNEL, content="hi"),
+        )
+        assert adapter._channel_state[CHANNEL]["chat_type"] == "group"
+        assert adapter._dispatched == []
+
 
     @pytest.mark.asyncio
     async def test_general_reply_ptagging_self_stays_channel(self, adapter):

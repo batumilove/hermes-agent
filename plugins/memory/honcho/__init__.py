@@ -1684,19 +1684,13 @@ class HonchoMemoryProvider(MemoryProvider):
         # I/O during interpreter finalization.
         if not getattr(self._config, "save_messages", True):
             if manager:
-                try:
-                    manager.stop_async_writer()
-                except Exception:
-                    pass
+                manager.stop_async_writer()
             return
         if manager:
-            try:
-                # manager.shutdown() = flush_all() + join the async-writer
-                # thread. Previously only flush_all() ran here, leaving the
-                # writer thread alive at exit.
-                manager.shutdown()
-            except Exception:
-                pass
+            # manager.shutdown() = flush_all() + join the async-writer thread.
+            # Let failure reach MemoryManager so eviction retains ownership and
+            # retries instead of silently orphaning the writer.
+            manager.shutdown()
 
 
 # ---------------------------------------------------------------------------

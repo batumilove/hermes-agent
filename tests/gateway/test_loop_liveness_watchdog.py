@@ -300,6 +300,7 @@ def test_gateway_runner_liveness_guards_start_and_stop():
         probe_interval=30.0,
         probe_timeout=10.0,
         max_strikes=3,
+        hard_deadline_s=None,
     )
     assert runner._loop_floor_timer_handle is floor_timer
     assert runner._loop_liveness_watchdog is watchdog

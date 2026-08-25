@@ -38,6 +38,8 @@ import hashlib
 import json
 import logging
 logger = logging.getLogger(__name__)
+
+_MEMORY_PROVIDER_SHUTDOWN_TIMEOUT_S = 15.0
 import os
 import re
 import sys
@@ -431,6 +433,10 @@ class AIAgent:
         "[hermes-agent: tool call arguments were corrupted in this session and "
         "have been dropped to keep the conversation alive. See issue #15236.]"
     )
+    # Compatibility fallback for tests/legacy instances constructed via
+    # __new__ without passing through agent.agent_init.init_agent(). Normal
+    # agents receive a per-instance lock during initialization.
+    _memory_manager_release_fallback_lock = threading.Lock()
 
     @property
     def base_url(self) -> str:
@@ -4415,25 +4421,107 @@ class AIAgent:
             },
         )
 
-    def shutdown_memory_provider(self, messages: list = None) -> None:
-        """Shut down the memory provider and context engine at session end.
+    def _memory_manager_release_guard(self):
+        """Return the per-agent lock used to claim memory-manager teardown."""
+        return getattr(
+            self,
+            "_memory_manager_release_lock",
+            self._memory_manager_release_fallback_lock,
+        )
 
-        Idempotent: gateway cleanup and AIAgent.close() may share this
-        ownership boundary.
+    def _shutdown_memory_manager_serialized(
+        self,
+        *,
+        messages: list | None = None,
+        notify_session_end: bool = False,
+    ) -> bool:
+        """Run one bounded provider teardown while preserving retry ownership.
+
+        The lock protects only the monotonic ownership state. Provider callbacks
+        run on one daemon worker outside the lock; concurrent claimants wait on
+        the same event up to the global bound and never spawn duplicate workers.
+        A failed worker restores the manager, while a timed-out in-flight worker
+        remains owned by the state object for a later retry observation.
         """
-        if getattr(self, "_memory_provider_shutdown", False):
-            return
-        self._memory_provider_shutdown = True
-        if self._memory_manager:
+        guard = self._memory_manager_release_guard()
+        with guard:
+            state = getattr(self, "_memory_manager_shutdown_state", None)
+            owner = state is None
+            if owner:
+                manager = getattr(self, "_memory_manager", None)
+                if manager is None:
+                    return True
+                self._memory_manager = None
+                state = {
+                    "manager": manager,
+                    "event": threading.Event(),
+                    "result": None,
+                }
+                self._memory_manager_shutdown_state = state
+
+        if owner:
+            def _shutdown_worker() -> None:
+                completed = False
+                manager = state["manager"]
+                try:
+                    if notify_session_end:
+                        try:
+                            manager.on_session_end(messages or [])
+                        except Exception as e:
+                            logger.warning(
+                                "Memory provider on_session_end failed during shutdown: %s",
+                                e,
+                                exc_info=True,
+                            )
+                            raise
+                        with guard:
+                            self._memory_provider_cache_evict_committed = True
+                    result = manager.shutdown_all()
+                    completed = result is not False
+                except Exception:
+                    completed = False
+                finally:
+                    with guard:
+                        state["result"] = completed
+                        if not completed:
+                            self._memory_manager = manager
+                        if getattr(self, "_memory_manager_shutdown_state", None) is state:
+                            self._memory_manager_shutdown_state = None
+                        state["event"].set()
+
             try:
-                self._memory_manager.on_session_end(messages or [])
-            except Exception as e:
-                logger.warning("Memory provider on_session_end failed during shutdown: %s", e, exc_info=True)
-            try:
-                self._memory_manager.shutdown_all()
+                threading.Thread(
+                    target=_shutdown_worker,
+                    daemon=True,
+                    name=f"memory-provider-shutdown-{id(self):x}",
+                ).start()
             except Exception:
-                pass
-        # Notify context engine of session end (flush DAG, close DBs, etc.)
+                with guard:
+                    self._memory_manager = state["manager"]
+                    self._memory_manager_shutdown_state = None
+                    state["result"] = False
+                    state["event"].set()
+                return False
+
+        if not state["event"].wait(timeout=_MEMORY_PROVIDER_SHUTDOWN_TIMEOUT_S):
+            return False
+        if state["result"] is True:
+            return True
+        if not owner:
+            return self._shutdown_memory_manager_serialized(
+                messages=messages,
+                notify_session_end=notify_session_end,
+            )
+        return False
+
+    def shutdown_memory_provider(self, messages: list = None) -> bool:
+        """Shut down the memory provider and context engine at a true boundary."""
+        completed = self._shutdown_memory_manager_serialized(
+            messages=messages,
+            notify_session_end=not bool(
+                getattr(self, "_memory_provider_cache_evict_committed", False)
+            ),
+        )
         if hasattr(self, "context_compressor") and self.context_compressor:
             try:
                 self.context_compressor.on_session_end(
@@ -4442,6 +4530,7 @@ class AIAgent:
                 )
             except Exception:
                 pass
+        return completed
 
     def commit_memory_session(self, messages: list = None) -> None:
         """Trigger end-of-session extraction without tearing providers down.
@@ -4534,6 +4623,71 @@ class AIAgent:
         except Exception:
             pass
 
+    def _shutdown_owned_context_engine(self) -> None:
+        """Claim and shut down this agent's context engine at most once.
+
+        ``context_compressor`` is the compatibility name for every context
+        engine, including LCM clones.  Claiming it under a dedicated lock
+        before calling third-party shutdown code makes repeated and concurrent
+        cleanup paths idempotent.  Built-in/legacy engines without a shutdown
+        hook are simply detached.
+        """
+        lock = getattr(self, "_context_engine_shutdown_lock", None)
+        if lock is None:
+            # Partially constructed legacy/test agents normally retain this
+            # lock, so use it rather than racing a lazily-created lock.
+            lock = getattr(self, "_active_children_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._context_engine_shutdown_lock = lock
+
+        with lock:
+            engine = getattr(self, "context_compressor", None)
+            if engine is None:
+                return
+            self.context_compressor = None
+
+        shutdown = getattr(engine, "shutdown", None)
+        if not callable(shutdown):
+            return
+        try:
+            shutdown()
+        except Exception as exc:
+            logger.warning(
+                "Failed to shut down owned context engine %s: %s",
+                type(engine).__name__,
+                exc,
+            )
+
+    def release_memory_provider_for_cache_evict(
+        self,
+        messages: list | None = None,
+        *,
+        commit: bool = False,
+    ) -> bool:
+        """Stop and detach per-agent memory workers during soft cache eviction.
+
+        Cache eviction preserves resumable terminal/browser/process state, but
+        the MemoryManager belongs to this Python AIAgent instance. Leaving it
+        attached after the cache drops the agent strands its ``mem-sync``
+        executor and external-provider workers (for Honcho, the async writer).
+
+        End-of-session extraction is intentionally NOT performed here: the
+        gateway commits it before calling this method. Detach before shutdown
+        so repeated or concurrent release attempts are idempotent.
+        """
+        if not self._shutdown_memory_manager_serialized(
+            messages=messages,
+            notify_session_end=(
+                commit
+                and not bool(
+                    getattr(self, "_memory_provider_cache_evict_committed", False)
+                )
+            ),
+        ):
+            raise RuntimeError("memory provider shutdown incomplete")
+        return True
+
     def release_clients(self) -> None:
         """Release LLM client resources WITHOUT tearing down session tool state.
 
@@ -4548,6 +4702,8 @@ class AIAgent:
           - memory provider (has its own lifecycle; keeps running)
 
         We DO close:
+          - The context engine owned by this Python agent (plugin engines may
+            hold SQLite helpers; a rebuilt agent receives a fresh clone)
           - OpenAI/httpx client pool (big chunk of held memory + sockets;
             the rebuilt agent gets a fresh client anyway)
           - Active child subagents (per-turn artefacts; safe to drop)
@@ -4556,12 +4712,42 @@ class AIAgent:
         hard teardown for actual session boundaries (/new, /reset, session
         expiry).
         """
+        self._shutdown_owned_context_engine()
+
         # Close active child agents (per-turn; no cross-turn persistence).
+        # A background-review fork is different: its daemon thread owns that
+        # fork through run_conversation() and final close().  Cache eviction
+        # may race that thread, so request cancellation but never tear down its
+        # context engine or clients from this thread.
         try:
-            with self._active_children_lock:
-                children = list(self._active_children)
+            _br_lock = getattr(self, "_background_review_lock", None)
+            _ac_lock = getattr(self, "_active_children_lock", None)
+
+            def _claim_children():
+                review = getattr(self, "_background_review_agent", None)
+                claimed = list(self._active_children)
                 self._active_children.clear()
+                return review, claimed
+
+            if _br_lock is not None and _ac_lock is not None:
+                with _br_lock:
+                    with _ac_lock:
+                        background_review, children = _claim_children()
+            elif _br_lock is not None:
+                with _br_lock:
+                    background_review, children = _claim_children()
+            elif _ac_lock is not None:
+                with _ac_lock:
+                    background_review, children = _claim_children()
+            else:
+                background_review, children = _claim_children()
             for child in children:
+                if child is background_review:
+                    try:
+                        child.interrupt("parent agent released")
+                    except Exception:
+                        pass
+                    continue
                 try:
                     child.release_clients()
                 except Exception:
@@ -4656,18 +4842,50 @@ class AIAgent:
         except Exception:
             pass
 
-        # 5. Close active child agents
+        # 5. Close active child agents.  The background-review daemon thread
+        # exclusively owns its fork's final teardown; hard-closing the parent
+        # may request cancellation but must not release resources underneath
+        # that worker.
         try:
-            with self._active_children_lock:
-                children = list(self._active_children)
+            _br_lock = getattr(self, "_background_review_lock", None)
+            _ac_lock = getattr(self, "_active_children_lock", None)
+
+            def _claim_children():
+                review = getattr(self, "_background_review_agent", None)
+                claimed = list(self._active_children)
                 self._active_children.clear()
+                return review, claimed
+
+            if _br_lock is not None and _ac_lock is not None:
+                with _br_lock:
+                    with _ac_lock:
+                        background_review, children = _claim_children()
+            elif _br_lock is not None:
+                with _br_lock:
+                    background_review, children = _claim_children()
+            elif _ac_lock is not None:
+                with _ac_lock:
+                    background_review, children = _claim_children()
+            else:
+                background_review, children = _claim_children()
             for child in children:
+                if child is background_review:
+                    try:
+                        child.interrupt("parent agent closed")
+                    except Exception:
+                        pass
+                    continue
                 try:
                     child.close()
                 except Exception:
                     pass
         except Exception:
             pass
+
+        # 5b. Release the context engine owned by this Python agent.  This is
+        # distinct from shared SessionDB ownership; plugin engines such as LCM
+        # close only their own cloned stores/helpers here.
+        self._shutdown_owned_context_engine()
 
         # 6. Close the OpenAI/httpx client
         try:
@@ -5170,7 +5388,7 @@ class AIAgent:
 
     @staticmethod
     def _build_keepalive_http_client(base_url: str = "", *, verify: Any = True) -> Any:
-        """Build an httpx.Client with proactive idle-connection reaping.
+        """Build an httpx.Client with a short idle reuse window.
 
         Previously this method injected a custom ``httpx.HTTPTransport``
         with ``socket_options`` (``SO_KEEPALIVE``, ``TCP_KEEPIDLE``, …) to
@@ -5182,12 +5400,11 @@ class AIAgent:
         #12952).  It also stripped ``TCP_NODELAY``, stalling TLS handshakes
         and SSE encoding.
 
-        The fix moves connection lifecycle management from the socket layer
-        to the HTTP pool layer: ``keepalive_expiry=20.0`` tells httpx to
-        close idle pooled connections *before* a reverse proxy's typical
-        30–60 s timeout drops them, preventing CLOSE-WAIT accumulation
-        without modifying socket options.  The default httpx transport
-        preserves OS TCP defaults (including ``TCP_NODELAY``).
+        ``keepalive_expiry=20.0`` limits reuse of stale idle pool entries, but
+        httpcore checks that deadline when the pool is used again; it is not a
+        background socket reaper. Request-local pools are therefore also
+        closed at the owning turn boundary (see ``turn_finalizer``), before a
+        cached AIAgent can pin a peer-FIN socket in CLOSE_WAIT.
 
         ``verify`` carries per-provider ``ssl_ca_cert`` / ``ssl_verify`` and
         ``HERMES_CA_BUNDLE`` settings.  It is passed on the client AND on
@@ -5201,9 +5418,8 @@ class AIAgent:
             # HTTP_PROXY / HTTPS_PROXY / NO_PROXY correctly.
             _proxy = _get_proxy_for_base_url(base_url)
 
-            # Proactive pool reaping: close idle connections at 20 s,
-            # before reverse proxies (30–60 s typical) send FIN and
-            # cause CLOSE-WAIT accumulation.
+            # Reuse window: expired entries are discarded on the next pool
+            # checkout; turn finalization handles idle pools with no next call.
             _limits = _httpx.Limits(
                 max_keepalive_connections=20,
                 max_connections=100,
@@ -5536,6 +5752,25 @@ class AIAgent:
                 cache["poisoned"] = False
                 cache["in_use"] = False
         self._close_openai_client(client, reason=reason, shared=False)
+
+    def _close_idle_cached_request_openai_client(self, *, reason: str) -> bool:
+        """Close the reusable request pool only when no request owns it.
+
+        A normal turn boundary uses this narrower lifecycle hook rather than
+        teardown's abort-capable close. Concurrent sibling calls are allowed
+        to finish; their own later turn boundary will reap the returned pool.
+        """
+        with self._openai_client_lock():
+            cache = getattr(self, "_request_client_cache", None)
+            if not cache or cache["client"] is None or cache["in_use"]:
+                return False
+            client = cache["client"]
+            cache["client"] = None
+            cache["kwargs"] = None
+            cache["poisoned"] = False
+            cache["in_use"] = False
+        self._close_openai_client(client, reason=reason, shared=False)
+        return True
 
     def _close_cached_request_openai_client(self, *, reason: str) -> None:
         """Teardown hook: really close the cached per-request wire client."""
@@ -8308,6 +8543,11 @@ class AIAgent:
 
     def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
         tool = decision.tool_name or "a tool"
+        if decision.code == "loop_web_search_cap":
+            return (
+                f"I exhausted the per-turn web_search budget ({decision.count} searches). "
+                "Work with the results collected so far and give the user your answer."
+            )
         return (
             f"I stopped retrying {tool} because it hit the tool-call guardrail "
             f"({decision.code}) after {decision.count} repeated non-progressing "
@@ -8319,15 +8559,20 @@ class AIAgent:
         self,
         tool_name: str,
         function_args: dict,
-        function_result: str,
+        function_result: Any,
         *,
         failed: bool,
         tool_call_id: str = "",
-    ) -> str:
+    ) -> Any:
+        observation_result = (
+            _multimodal_text_summary(function_result)
+            if _is_multimodal_tool_result(function_result)
+            else function_result
+        )
         decision = self._tool_guardrails.after_call(
             tool_name,
             function_args,
-            function_result,
+            observation_result,
             failed=failed,
         )
         # Identical-call stall guards (agent.stall_guards): notice-only, no
@@ -8361,7 +8606,11 @@ class AIAgent:
         if result_stub and isinstance(function_result, str):
             function_result = result_stub
         if decision.action in {"warn", "halt"}:
-            function_result = append_toolguard_guidance(function_result, decision)
+            if _is_multimodal_tool_result(function_result):
+                guidance = append_toolguard_guidance("", decision)
+                _append_subdir_hint_to_multimodal(function_result, guidance)
+            else:
+                function_result = append_toolguard_guidance(function_result, decision)
         if decision.should_halt:
             self._set_tool_guardrail_halt(decision)
         if stall_notice:
@@ -8972,6 +9221,26 @@ class AIAgent:
                 finish_task_run(**task_context, error=exc)
             raise
         finally:
+            # Keep request-client reuse within one logical turn, but never pin
+            # the completed turn's httpx pool inside a cached AIAgent. This
+            # wrapper finally covers every return and exception, including
+            # partial/error exits in conversation_loop that intentionally
+            # bypass finalize_turn. The idle-only hook skips a concurrent
+            # sibling that still owns the pool (#29507).
+            try:
+                self._close_idle_cached_request_openai_client(
+                    reason="turn_complete"
+                )
+            except Exception as cleanup_exc:
+                logger.warning(
+                    "request client turn cleanup failed: %s", cleanup_exc
+                )
+                terminal_result = locals().get("result")
+                if isinstance(terminal_result, dict):
+                    terminal_result.setdefault("cleanup_errors", []).append(
+                        "close_request_client: "
+                        f"{type(cleanup_exc).__name__}: {cleanup_exc}"
+                    )
             try:
                 if relay_turn is not None:
                     relay_runtime.SESSION_COORDINATOR.end_turn(

@@ -27,17 +27,28 @@ def db(tmp_path):
 
 
 @pytest.mark.requires_wal
-def test_read_conn_is_per_thread(db):
+def test_concurrent_read_checkouts_are_distinct_and_returned(db):
+    """Concurrent borrowers get distinct connections and return permits."""
     conns = {}
+    failures = []
+    borrowed = threading.Barrier(2)
 
     def grab(key):
-        conns[key] = db._get_read_conn()
+        try:
+            with db._read_ctx() as conn:
+                assert conn is not None
+                conns[key] = conn
+                borrowed.wait(timeout=5.0)
+        except BaseException as exc:
+            failures.append(exc)
 
     t1 = threading.Thread(target=grab, args=(1,))
     t2 = threading.Thread(target=grab, args=(2,))
-    t1.start(); t2.start(); t1.join(); t2.join()
-    assert conns[1] is not None and conns[2] is not None
+    t1.start(); t2.start(); t1.join(timeout=5.0); t2.join(timeout=5.0)
+    assert not t1.is_alive() and not t2.is_alive()
+    assert not failures
     assert conns[1] is not conns[2]
+    assert db._read_pool.qsize() == 2
 
 
 @pytest.mark.requires_wal
@@ -58,6 +69,15 @@ def test_read_conn_reused_via_pool(db):
 @pytest.mark.requires_wal
 def test_reads_do_not_take_writer_lock(db):
     """Reads must complete while another thread holds self._lock."""
+    db.set_session_title("s1", "writer-lock-lineage")
+    db.record_gateway_session_peer(
+        "s1",
+        source="cli",
+        session_key="agent:main:cli:local:s1",
+        chat_id="s1",
+        chat_type="local",
+        display_name="CLI session",
+    )
     acquired = db._lock.acquire()
     assert acquired
     try:
@@ -67,6 +87,10 @@ def test_reads_do_not_take_writer_lock(db):
             done["session"] = db.get_session("s1")
             done["search"] = db.search_messages("graphiti", limit=10)
             done["messages"] = db.get_messages("s1")
+            done["next_title"] = db.get_next_title_in_lineage("writer-lock-lineage")
+            done["routing_origins"] = db.list_gateway_routing_origins(
+                platform="cli", active_only=False
+            )
 
         t = threading.Thread(target=reader)
         t.start()
@@ -75,6 +99,8 @@ def test_reads_do_not_take_writer_lock(db):
         assert done["session"]["id"] == "s1"
         assert any("graphiti" in (m.get("snippet") or "") for m in done["search"])
         assert len(done["messages"]) == 2
+        assert done["next_title"] == "writer-lock-lineage #2"
+        assert done["routing_origins"][0]["chat_id"] == "s1"
     finally:
         db._lock.release()
 

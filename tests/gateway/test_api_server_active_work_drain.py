@@ -17,7 +17,10 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter
+from gateway.platforms.api_server import (
+    APIServerAdapter,
+    _reserve_pending_api_work,
+)
 from gateway.run import _INTERRUPT_REASON_GATEWAY_SHUTDOWN
 from hermes_state import SessionDB
 from tests.gateway.restart_test_helpers import make_restart_runner
@@ -108,6 +111,77 @@ class TestAPIServerAdapterWorkCount:
 
         assert adapter.active_agent_work_count() == 1
 
+    def test_work_snapshot_reconciles_pending_inflight_and_run_identities(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        inflight_agent = SimpleNamespace(session_id="session-api-1")
+        adapter._pending_agent_requests = 1
+        adapter._pending_agent_request_ids = {"request-1"}
+        adapter._inflight_agent_runs = 1
+        adapter._shutdown_interruptible_agents = {101: inflight_agent}
+        adapter._active_run_tasks = {
+            "run-1": _RunTask(),
+            "finished": _RunTask(done=True),
+        }
+
+        snapshot = adapter.active_agent_work_snapshot()
+
+        assert snapshot["count"] == adapter.active_agent_work_count() == 3
+        assert snapshot["attribution_complete"] is True
+        assert snapshot["omissions"] == []
+        assert all(unit["drain_blocking"] is True for unit in snapshot["units"])
+        assert {unit["work_class"] for unit in snapshot["units"]} == {
+            "api_request_admission",
+            "api_turn",
+            "api_run",
+        }
+        assert {unit["unit_id"] for unit in snapshot["units"]} == {
+            "api:request:request-1",
+            "api:agent:101",
+            "api:run:run-1",
+        }
+        inflight = next(
+            unit for unit in snapshot["units"] if unit["unit_id"] == "api:agent:101"
+        )
+        assert inflight["session_id"] == "session-api-1"
+
+    def test_pending_reservation_has_stable_identity_until_release(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+
+        with _reserve_pending_api_work(adapter) as reservation:
+            request_id = reservation["request_id"]
+            assert request_id in adapter._pending_agent_request_ids
+            snapshot = adapter.active_agent_work_snapshot()
+            assert snapshot["count"] == 1
+            assert snapshot["attribution_complete"] is True
+            assert snapshot["units"] == [
+                {
+                    "unit_id": f"api:request:{request_id}",
+                    "category": "api",
+                    "request_id": request_id,
+                    "phase": "pending_agent_creation",
+                    "work_class": "api_request_admission",
+                    "drain_blocking": True,
+                }
+            ]
+
+        assert adapter._pending_agent_requests == 0
+        assert adapter._pending_agent_request_ids == set()
+
+    def test_work_snapshot_marks_counter_without_identity_as_stale(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        adapter._pending_agent_requests = 1
+        adapter._pending_agent_request_ids = set()
+
+        snapshot = adapter.active_agent_work_snapshot()
+
+        assert snapshot["count"] == 1
+        assert snapshot["units"] == []
+        assert snapshot["attribution_complete"] is False
+        assert snapshot["omissions"] == [
+            "api_pending_identity_mismatch:0:1",
+            "api_unit_count_mismatch:0:1",
+        ]
+
     def test_interrupt_active_runs_interrupts_adapter_owned_agents(self):
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
         agent = MagicMock()
@@ -174,14 +248,17 @@ class TestDrainWaitsForApiWork:
 
         assert timed_out is True
 
-    def test_shutdown_interrupt_reaches_api_server_runs(self):
+    @pytest.mark.asyncio
+    async def test_shutdown_interrupt_reaches_api_server_runs(self):
         runner, _adapter = make_restart_runner()
         api = APIServerAdapter(PlatformConfig(enabled=True))
         agent = MagicMock()
         api._active_run_agents = {"run-1": agent}
         runner.adapters = {Platform.API_SERVER: api}
 
-        runner._interrupt_running_agents("gateway shutdown")
+        await runner._interrupt_running_agents(
+            "gateway shutdown", asyncio.get_running_loop().time() + 5.0
+        )
 
         agent.interrupt.assert_called_once_with("gateway shutdown")
 
@@ -443,7 +520,10 @@ class TestShutdownInterruptReachesEveryApiTurn:
                     # hook can reach it.
                     assert runner._running_agents == {}
 
-                    runner._interrupt_running_agents(_INTERRUPT_REASON_GATEWAY_SHUTDOWN)
+                    await runner._interrupt_running_agents(
+                        _INTERRUPT_REASON_GATEWAY_SHUTDOWN,
+                        asyncio.get_running_loop().time() + 5.0,
+                    )
 
                     agent.interrupt.assert_called_once_with(
                         _INTERRUPT_REASON_GATEWAY_SHUTDOWN
@@ -485,7 +565,10 @@ class TestShutdownInterruptReachesEveryApiTurn:
                     assert runner._active_api_run_count() == 1
                     assert runner._running_agents == {}
 
-                    runner._interrupt_running_agents(_INTERRUPT_REASON_GATEWAY_SHUTDOWN)
+                    await runner._interrupt_running_agents(
+                        _INTERRUPT_REASON_GATEWAY_SHUTDOWN,
+                        asyncio.get_running_loop().time() + 5.0,
+                    )
 
                     agent.interrupt.assert_called_once_with(
                         _INTERRUPT_REASON_GATEWAY_SHUTDOWN
@@ -501,12 +584,16 @@ class TestShutdownInterruptReachesEveryApiTurn:
 
         assert api._shutdown_interruptible_agents == {}
 
-    def test_interrupt_running_agents_is_a_noop_without_an_api_adapter(self):
+    @pytest.mark.asyncio
+    async def test_interrupt_running_agents_is_a_noop_without_an_api_adapter(self):
         """The hook is duck-typed — an adapterless runner must not raise."""
         runner, _adapter = make_restart_runner()
         runner.adapters = {}
 
-        runner._interrupt_running_agents(_INTERRUPT_REASON_GATEWAY_SHUTDOWN)
+        await runner._interrupt_running_agents(
+            _INTERRUPT_REASON_GATEWAY_SHUTDOWN,
+            asyncio.get_running_loop().time() + 5.0,
+        )
 
         assert runner._interrupt_api_server_runs("x") == 0
 
