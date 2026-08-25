@@ -17,6 +17,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
@@ -409,6 +410,14 @@ def write_runtime_status(
     payload["start_time"] = _get_process_start_time(os.getpid())
     payload["updated_at"] = _utc_now_iso()
 
+    # Always include heartbeat age when available so dashboards/watchdogs can
+    # detect a stuck gateway even if gateway_state is still "running".
+    try:
+        from gateway.status import heartbeat_age_seconds
+        payload["heartbeat_age_seconds"] = heartbeat_age_seconds()
+    except Exception:
+        pass
+
     if gateway_state is not _UNSET:
         payload["gateway_state"] = gateway_state
     if exit_reason is not _UNSET:
@@ -633,6 +642,60 @@ def release_all_scoped_locks(
 
 _TAKEOVER_MARKER_FILENAME = ".gateway-takeover.json"
 _TAKEOVER_MARKER_TTL_S = 60  # Marker older than this is treated as stale
+
+# Heartbeat file — written by a supervised background task so external
+# watchdogs can detect a wedged gateway even when the main event loop is stuck.
+_HEARTBEAT_FILENAME = "gateway.heartbeat"
+_HEARTBEAT_INTERVAL_SECONDS = 10.0
+
+
+def _get_heartbeat_path() -> Path:
+    """Return the path to the gateway heartbeat file."""
+    return _get_pid_path().with_name(_HEARTBEAT_FILENAME)
+
+
+def write_heartbeat() -> None:
+    """Write or update the gateway heartbeat file with the current timestamp.
+
+    This function is intentionally synchronous and minimal so it can run from
+    a background thread without touching the asyncio event loop.  Exceptions
+    are swallowed: a failed heartbeat write must never break the gateway.
+    """
+    try:
+        path = _get_heartbeat_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "pid": os.getpid(),
+            "last_heartbeat_at": datetime.now(timezone.utc).isoformat(),
+        }
+        path.write_text(json.dumps(payload), encoding="utf-8")
+    except Exception:
+        # Best-effort only — the heartbeat must never crash the gateway.
+        pass
+
+
+def read_heartbeat() -> Optional[dict[str, Any]]:
+    """Return the most recently written heartbeat payload, or ``None``."""
+    return _read_json_file(_get_heartbeat_path())
+
+
+def heartbeat_age_seconds(now: Optional[float] = None) -> Optional[float]:
+    """Return the number of seconds since the last heartbeat, or ``None``.
+
+    A returned value of ``0`` means a heartbeat was written in this second.
+    ``None`` means no heartbeat has ever been written.
+    """
+    payload = read_heartbeat()
+    if not payload:
+        return None
+    ts = payload.get("last_heartbeat_at")
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(ts)
+        return (now or time.time()) - dt.timestamp()
+    except (ValueError, TypeError):
+        return None
 
 
 def _get_takeover_marker_path() -> Path:
