@@ -1013,12 +1013,11 @@ def _complete_logical(
                 output.update({"model": model_name, "provider": provider_name})
                 if response_model_name is not None:
                     output["response_model"] = response_model_name
-            callback = lease.host.run_in_session
-            if operation_lease is not None:
-                callback = operation_lease.run_in_session
+            # The fork's logical-context design: run the pop directly inside
+            # the logical Context (as on batumi/live). Wrapping run_in_session
+            # here re-copies the session context over the logical one and the
+            # native pop reports the handle as not found.
             logical_context.run(
-                callback,
-                lease.session,
                 relay_runtime.pop_relay_scope,
                 lease.host.relay,
                 handle,
