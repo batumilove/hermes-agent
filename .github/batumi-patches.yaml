@@ -50,6 +50,27 @@ patches:
       - npm run check --workspace apps/desktop
     retirement: Remove when the recorded upstream baseline enforces an equivalent nanoid 3.x security floor in both manifest and lockfile.
 
+  - id: fork-free-runner-labels
+    kind: operations
+    rationale: >-
+      Run the heavy CI lanes on free standard GitHub-hosted runners instead of
+      paid larger runners (ubuntu-latest-96-core/32-core, windows-latest-32-core)
+      which the fork has no allocation for; jobs queue forever otherwise. The
+      lanes run slower on ubuntu-latest/windows-latest but complete at zero cost
+      on this public repository.
+    paths:
+      - .github/workflows/ci.yml
+      - .github/workflows/docker.yml
+      - .github/workflows/nix.yml
+      - .github/workflows/rust-tests.yml
+      - .github/workflows/tests-os.yml
+      - .github/workflows/tests.yml
+      - tests/ci/test_classify_changes.py
+    tests:
+      - python3 -c "import pathlib, yaml; [yaml.safe_load(p.read_text()) for p in pathlib.Path('.github/workflows').glob('*.yml')]"
+      - python3 scripts/check_fork_delta.py
+    retirement: Remove when the fork account has a larger-runner allocation and the upstream runner labels are restored.
+
   - id: fork-patch-governance
     kind: operations
     rationale: >-
@@ -62,12 +83,20 @@ patches:
       - .github/upstream-base
       - .github/upstream-sync-provenance.json
       - .github/workflows/ci.yml
+      - .github/workflows/ci.yaml
       - .github/workflows/contributor-check.yml
       - .github/workflows/deploy-compose.yml
       - .github/workflows/promote-compose.yml
       - .github/workflows/stack-ci-shadow.yml
       - .github/workflows/staging-telegram-socket-diagnostics.yml
       - .github/workflows/upstream-sync.yml
+      - contributors/emails/1396641434@qq.com
+      - contributors/emails/brooklyn@nousresearch.com
+      - contributors/emails/dcdexhome@gmail.com
+      - contributors/emails/muhammedeminkamay92@gmail.com
+      - contributors/emails/rroveri@nvidia.com
+      - contributors/emails/tom@spoct.com
+      - contributors/emails/agent@Agents-Mac-mini.local
       - contributors/emails/agent@agents-Mac-mini.local
       - contributors/emails/aleman@batumi.works
       - contributors/emails/hermes@local
