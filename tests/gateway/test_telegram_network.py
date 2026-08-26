@@ -657,6 +657,70 @@ async def test_cancelled_connect_closes_stream_returned_after_caller_exits(
     assert stream.closed is True
 
 
+class _BlackholedConnectBackend:
+    """Simulate a TCP connect whose SYN is blackholed: it never completes."""
+
+    def __init__(self):
+        self.connect_started = asyncio.Event()
+
+    async def connect_tcp(self, *args, **kwargs):
+        self.connect_started.set()
+        await asyncio.Event().wait()
+
+    async def connect_unix_socket(self, *args, **kwargs):
+        return await self.connect_tcp(*args, **kwargs)
+
+    async def sleep(self, _seconds):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_blackholed_connect_times_out_within_deadline(monkeypatch):
+    """#95159: the cancellation-safe shield must not wedge on a blackholed SYN.
+
+    A sticky Telegram DC IP that silently drops SYNs leaves the shielded
+    backend connect_tcp pending forever; caller cancellation (httpx's own
+    connect timeout) is deflected by the shield, so the getUpdates pool
+    never observes a failure and never retries. The shield itself must be
+    bounded: after the deadline, _connect raises TimeoutError while leaving
+    the done-callback cleanup path intact for the eventual socket.
+    """
+    monkeypatch.setenv("HERMES_TELEGRAM_TCP_CONNECT_DEADLINE", "0.1")
+    monkeypatch.setattr(tnet, "_TCP_CONNECT_DEADLINE", 0.1)
+
+    stream = _RawDiagnosticStream()
+    backend = _BlockingConnectBackend(stream)  # holds connect open, like a blackholed SYN
+    wrapped = tnet._CancellationSafeNetworkBackend(backend)
+
+    task = asyncio.create_task(wrapped.connect_tcp("149.154.167.220", 443))
+    await asyncio.wait_for(backend.connect_started.wait(), timeout=1.0)
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    with pytest.raises(asyncio.TimeoutError):
+        await task
+    elapsed = loop.time() - started
+    # Bounded well below any plausible caller timeout; generous enough to
+    # avoid flake on a loaded runner.
+    assert elapsed < 5.0
+
+    # The abandoned connect is retained for the done-callback cleanup path:
+    # when the SYN eventually "completes", the stream must still be closed.
+    backend.release_connect.set()
+    for _ in range(50):
+        if stream.closed:
+            break
+        await asyncio.sleep(0)
+    assert stream.closed is True
+
+
+@pytest.mark.asyncio
+async def test_connect_deadline_env_overrides_default(monkeypatch):
+    """The deadline is parsed once at module level, like _DOH_TIMEOUT."""
+    monkeypatch.setenv("HERMES_TELEGRAM_TCP_CONNECT_DEADLINE", "0.05")
+    assert tnet._parse_tcp_connect_deadline() == pytest.approx(0.05)
+
+
 @pytest.mark.asyncio
 async def test_cancelled_connect_cleanup_does_not_retain_request_registry():
     stream = _RawDiagnosticStream()
@@ -1874,6 +1938,53 @@ class TestFallbackTransportInit:
             assert limits.max_connections == 8
             assert limits.max_keepalive_connections == 0
             assert limits.keepalive_expiry == 5.0
+
+
+    @pytest.mark.asyncio
+    async def test_wedged_fallback_pool_is_reset_after_connect_timeout(
+        self, monkeypatch
+    ):
+        """#95159: a wedged sticky route must not wedge the shared pool.
+
+        When a fallback route raises a connect timeout, the retry must build a
+        fresh transport instead of reusing the pool whose shielded connect
+        wedged, and the sticky IP must rotate away so the next request
+        re-walks the candidate routes rather than pinning the dead DC IP.
+        """
+        calls = []
+        behavior = {
+            "149.154.167.220": "ok",
+            "149.154.167.221": "ok",
+        }
+        factory = _fake_transport_factory(calls, behavior)
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)
+
+        transport = tnet.TelegramFallbackTransport(
+            ["149.154.167.220", "149.154.167.221"]
+        )
+        # First request: .220 works, becomes sticky.
+        await transport.handle_async_request(_telegram_request())
+        assert transport._sticky_ip == "149.154.167.220"
+        wedged_pool = transport._fallbacks["149.154.167.220"]
+        assert wedged_pool is not None
+
+        # Now .220 blackholes: the sticky route times out and the request must
+        # still complete via .221 within this single handle_async_request call.
+        behavior["149.154.167.220"] = "timeout"
+        resp = await transport.handle_async_request(_telegram_request())
+        assert resp.status_code == 200
+        assert [c["url_host"] for c in calls[-2:]] == [
+            "149.154.167.220",
+            "149.154.167.221",
+        ]
+
+        # The wedged fallback pool was closed and discarded, not reused. It is
+        # not rebuilt until .220 is attempted again, so it is simply gone.
+        assert wedged_pool.closed is True
+        assert "149.154.167.220" not in transport._fallbacks
+
+        # The sticky IP rotated to the route that actually worked.
+        assert transport._sticky_ip == "149.154.167.221"
 
 
 class TestFallbackTransportClose:
