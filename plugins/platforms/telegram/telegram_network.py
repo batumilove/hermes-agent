@@ -14,6 +14,7 @@ import contextvars
 import ipaddress
 import itertools
 import logging
+import os
 import socket
 from typing import Any, Iterable, Optional
 
@@ -24,6 +25,41 @@ _HTTPX_ASYNC_HTTP_TRANSPORT_TYPE = httpx.AsyncHTTPTransport
 logger = logging.getLogger(__name__)
 
 _TELEGRAM_API_HOST = "api.telegram.org"
+
+
+def _parse_tcp_connect_deadline() -> float:
+    """Parse HERMES_TELEGRAM_TCP_CONNECT_DEADLINE once at import time.
+
+    Follows the module-level pattern of ``_DOH_TIMEOUT``: a plain float the
+    hot path can read without per-connect env parsing, with the env override
+    kept as an escape hatch for incident response.
+    """
+    raw = os.environ.get("HERMES_TELEGRAM_TCP_CONNECT_DEADLINE")
+    if not raw:
+        return 15.0
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid HERMES_TELEGRAM_TCP_CONNECT_DEADLINE %r; using 15.0s", raw
+        )
+        return 15.0
+    if value <= 0:
+        logger.warning(
+            "Non-positive HERMES_TELEGRAM_TCP_CONNECT_DEADLINE %r; using 15.0s", raw
+        )
+        return 15.0
+    return value
+
+
+# Upper bound on how long the cancellation-safe connect shield may hold a
+# caller before giving up (#95159). Default 15.0s exceeds httpx's 10s connect
+# timeout by design: healthy-but-slow connects finish inside the caller's own
+# budget, while a blackholed SYN to a sticky Telegram DC IP is abandoned here
+# so the pool retry machinery actually fires instead of wedging getUpdates
+# forever.
+_TCP_CONNECT_DEADLINE = _parse_tcp_connect_deadline()
+
 
 # Strong references for asynchronous abandoned-response closes. asyncio's loop
 # only keeps weak references to tasks; without this set a cleanup can be
@@ -251,10 +287,23 @@ class _CancellationSafeNetworkBackend:
         # that ownership transfer so caller cancellation cannot destroy the only
         # coroutine able to return the socket. If the caller exits first, retain
         # the connect task and close any eventual result independently.
+        #
+        # The shield itself is bounded (#95159). A blackholed SYN to a sticky
+        # Telegram DC IP never completes and never errors: without a deadline,
+        # the shielded connect holds the caller forever while deflecting every
+        # external cancellation, wedging the pool's retry machinery (getUpdates
+        # never returns, so PTB retry never fires). asyncio.wait_for raising
+        # TimeoutError here is indistinguishable, to the caller, from the
+        # shielded task failing — the except clause below keeps the exact same
+        # abandoned-connect retention: the connect task stays alive and its
+        # done callback closes the eventual socket if the SYN ever completes.
         connect_task = asyncio.ensure_future(awaitable)
         _abandoned_response_cleanups.add(connect_task)
         try:
-            stream = await asyncio.shield(connect_task)
+            stream = await asyncio.wait_for(
+                asyncio.shield(connect_task),
+                timeout=_TCP_CONNECT_DEADLINE,
+            )
         except BaseException:
             # A done callback captures its registration Context by default. Do not
             # retain the failed request's stream registry while an abandoned
@@ -1112,4 +1161,11 @@ def _rewrite_request_for_ip(request: httpx.Request, ip: str) -> httpx.Request:
 
 
 def _is_retryable_connect_error(exc: Exception) -> bool:
-    return isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError))
+    # asyncio.TimeoutError is the raw form that the bounded cancellation-safe
+    # connect shield raises when a blackholed SYN outlives
+    # _TCP_CONNECT_DEADLINE (#95159): httpcore surfaces it before it can wrap
+    # it into httpx.ConnectTimeout. Treating it as retryable lets the fallback
+    # transport rotate off the dead sticky IP and reset its wedged pool.
+    return isinstance(
+        exc, (httpx.ConnectTimeout, httpx.ConnectError, asyncio.TimeoutError)
+    )

@@ -699,7 +699,12 @@ patches:
     rationale: >-
       Close raw connect, TLS, response-header, and response-body streams under
       repeated caller cancellation while preserving route-safe diagnostics and
-      upstream's bounded lazy fallback pools.
+      upstream's bounded lazy fallback pools. The cancellation-safe connect
+      shield is itself bounded (HERMES_TELEGRAM_TCP_CONNECT_DEADLINE, 15s
+      default) so a blackholed SYN to a sticky Telegram DC IP cannot wedge the
+      getUpdates pool forever while the general-pool health probe clears
+      degraded state (#95159); raw connect TimeoutError is retryable so the
+      fallback transport rotates the sticky IP and resets the wedged pool.
     paths:
       - plugins/platforms/telegram/telegram_network.py
       - tests/gateway/test_telegram_fallback_pool_release_71593.py
