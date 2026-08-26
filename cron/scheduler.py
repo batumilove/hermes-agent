@@ -7151,12 +7151,6 @@ def _run_one_job_body(
             on_execution_started()
 
         job_id = str(job.get("id", "?"))
-        logger.info(
-            "cron_execution_started job_id=%s execution_id=%s",
-            job_id,
-            execution_id,
-        )
-
         # Run the job under the profile's secret scope. get_secret() fails
         # closed outside a scope once profile isolation is in play (multiple
         # gateway profiles / room→profile multiplexing), and cron fires from
@@ -7464,12 +7458,6 @@ def _run_one_job_body(
             success=success,
             error=error,
             delivery_outcome=delivery_outcome,
-        )
-        logger.info(
-            "cron_execution_finished job_id=%s execution_id=%s success=%s",
-            job_id,
-            execution_id,
-            success,
         )
         return True
 

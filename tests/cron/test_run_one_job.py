@@ -20,8 +20,8 @@ def test_scheduler_has_no_activegraph_bridge():
     assert not hasattr(s, "_ag")
 
 
-def test_run_one_job_logs_canonical_execution_lifecycle(monkeypatch, caplog):
-    """The journal supplies the independent event leg without a telemetry plugin."""
+def test_run_one_job_has_no_retired_observability_lifecycle_logs(monkeypatch, caplog):
+    """Complete retirement leaves canonical bookkeeping as the only run record."""
     monkeypatch.setattr(s, "create_execution", lambda *_a, **_kw: {"id": "exec-journal-1"})
     monkeypatch.setattr(s, "claim_dispatch", lambda _jid: True)
     monkeypatch.setattr(s, "mark_execution_running", lambda _eid: None)
@@ -35,8 +35,8 @@ def test_run_one_job_logs_canonical_execution_lifecycle(monkeypatch, caplog):
     assert s.run_one_job({"id": "journal-job", "name": "journal job"}) is True
 
     messages = [record.getMessage() for record in caplog.records]
-    assert "cron_execution_started job_id=journal-job execution_id=exec-journal-1" in messages
-    assert "cron_execution_finished job_id=journal-job execution_id=exec-journal-1 success=True" in messages
+    assert not any("cron_execution_started" in message for message in messages)
+    assert not any("cron_execution_finished" in message for message in messages)
 
 
 def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final response",
