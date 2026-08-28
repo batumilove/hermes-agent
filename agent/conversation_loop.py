@@ -6862,6 +6862,7 @@ def run_conversation(
                         assistant_content_chars=len(_assistant_text),
                         assistant_tool_call_count=len(_assistant_tool_calls),
                         moa_references=_moa_reference_metrics_for_hook(agent),
+                        first_token_at=(getattr(agent, "_last_stream_diag", None) or {}).get("first_chunk_at"),
                     )
             except Exception:
                 pass

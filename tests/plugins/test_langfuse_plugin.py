@@ -737,7 +737,7 @@ class TestToolCallOutputBackfill:
 
         ended = {}
 
-        def fake_end_observation(obs, *, output=None, metadata=None, usage_details=None, cost_details=None):
+        def fake_end_observation(obs, *, output=None, metadata=None, usage_details=None, cost_details=None, completion_start_time=None):
             ended["observation"] = obs
             ended["output"] = output
             ended["metadata"] = metadata
@@ -905,7 +905,7 @@ class TestUsageFromSanitizedResponse:
         monkeypatch.setitem(mod._TRACE_STATE, mod._trace_key("task-1", "session-1"), state)
         captured = {}
 
-        def fake_end_observation(obs, *, output=None, metadata=None, usage_details=None, cost_details=None):
+        def fake_end_observation(obs, *, output=None, metadata=None, usage_details=None, cost_details=None, completion_start_time=None):
             captured["usage_details"] = usage_details
 
         monkeypatch.setattr(mod, "_end_observation", fake_end_observation)
@@ -1116,7 +1116,7 @@ class TestCostTotal:
         monkeypatch.setitem(mod._TRACE_STATE, mod._trace_key("task-1", "session-1"), state)
         captured = {}
 
-        def fake_end_observation(obs, *, output=None, metadata=None, usage_details=None, cost_details=None):
+        def fake_end_observation(obs, *, output=None, metadata=None, usage_details=None, cost_details=None, completion_start_time=None):
             captured["cost_details"] = cost_details
 
         monkeypatch.setattr(mod, "_end_observation", fake_end_observation)
@@ -2234,6 +2234,7 @@ class TestCanonicalCostExport:
             metadata=None,
             usage_details=None,
             cost_details=None,
+            completion_start_time=None,
         ):
             captured["usage_details"] = usage_details
             captured["cost_details"] = cost_details

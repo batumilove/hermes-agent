@@ -3967,6 +3967,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         usage_obj = None
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
+        # Expose the per-attempt stream diagnostics to the post-request hook
+        # path so the Langfuse plugin can record TTFT (first_chunk_at).
+        try:
+            agent._last_stream_diag = _diag
+        except Exception:
+            pass
         _writer_token = {"value": None}
         attempt_request_client = {"value": None}
         attempt_stream_response = {"value": None}
@@ -4561,6 +4567,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         last_chunk_time["t"] = time.time()
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
+        # Expose the per-attempt stream diagnostics to the post-request hook
+        # path so the Langfuse plugin can record TTFT (first_chunk_at).
+        try:
+            agent._last_stream_diag = _diag
+        except Exception:
+            pass
         _writer_token = {"value": None}
         _stream_context = {"manager": None, "stream": None}
         base_final_message = None

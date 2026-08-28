@@ -975,7 +975,8 @@ def _start_child_observation(state: TraceState, *, client: Langfuse, name: str, 
 
 
 def _end_observation(observation: Any, *, output: Any = None, metadata: Optional[dict] = None,
-                     usage_details: Optional[dict] = None, cost_details: Optional[dict] = None) -> None:
+                     usage_details: Optional[dict] = None, cost_details: Optional[dict] = None,
+                     completion_start_time: Any = None) -> None:
     if observation is None:
         return
     try:
@@ -988,6 +989,8 @@ def _end_observation(observation: Any, *, output: Any = None, metadata: Optional
             update_kwargs["usage_details"] = usage_details
         if cost_details:
             update_kwargs["cost_details"] = cost_details
+        if completion_start_time is not None:
+            update_kwargs["completion_start_time"] = completion_start_time
         if update_kwargs:
             observation.update(**update_kwargs)
         observation.end()
@@ -1393,6 +1396,7 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
                      assistant_tool_call_count: int = 0, assistant_response: Any = None,
                      turn_id: str = "", api_request_id: str = "",
                      response_model: Any = None, moa_references: Any = None,
+                     first_token_at: Any = None,
                      **_: Any) -> None:
     client = _get_langfuse()
     if client is None:
@@ -1492,12 +1496,26 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
         gen_metadata["api_duration_s"] = round(api_duration, 3)
     if finish_reason:
         gen_metadata["finish_reason"] = finish_reason
+    # TTFT: convert the streaming first-chunk epoch to an ISO-8601 datetime
+    # for the Langfuse SDK (completion_start_time -> timeToFirstToken).
+    completion_start_time = None
+    if first_token_at:
+        try:
+            from datetime import datetime, timezone
+            completion_start_time = datetime.fromtimestamp(
+                float(first_token_at), tz=timezone.utc
+            )
+            if api_duration and api_duration > 0:
+                gen_metadata["ttft_s"] = round(max(api_duration - (time.time() - float(first_token_at)), 0.0), 3)
+        except Exception as exc:
+            _debug(f"first_token_at conversion failed: {exc}")
     _end_observation(
         generation,
         output=output,
         usage_details=usage_details,
         cost_details=cost_details,
         metadata=gen_metadata,
+        completion_start_time=completion_start_time,
     )
 
     has_tools = _assistant_has_tool_calls(assistant_message) if assistant_message else (assistant_tool_call_count > 0)
