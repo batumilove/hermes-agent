@@ -172,8 +172,19 @@ def _load_provenance(path: Path) -> dict[str, Any]:
         "squash_commit",
         "fetch_depth",
     }
-    if set(raw) != expected:
-        raise DeltaError(f"squash-sync provenance fields must be {sorted(expected)}")
+    # ``history`` is optional provenance provenance: appended by the
+    # squash-sync recorder (PR #281) to record prior merges. It does not
+    # participate in the upstream relationship computation, so accept it
+    # when present but never require it.
+    allowed = expected | {"history"}
+    if not expected <= set(raw) or not set(raw) <= allowed:
+        raise DeltaError(f"squash-sync provenance fields must be {sorted(expected)} (optional: history)")
+    history = raw.get("history")
+    if history is not None and not (
+        isinstance(history, list)
+        and all(isinstance(item, dict) for item in history)
+    ):
+        raise DeltaError("squash-sync provenance history must be a list of objects")
     values: dict[str, Any] = {}
     for field in ("upstream_base", "source_head", "squash_commit"):
         value = raw.get(field)
