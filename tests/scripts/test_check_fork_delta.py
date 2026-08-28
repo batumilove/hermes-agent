@@ -434,3 +434,31 @@ def test_manifest_rejects_duplicate_patch_ids(tmp_path: Path) -> None:
     path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
     with pytest.raises(MODULE.DeltaError, match="duplicate patch id"):
         MODULE.load_manifest(path)
+
+
+def test_load_provenance_accepts_optional_history(tmp_path: Path) -> None:
+    base = {
+        "version": 1,
+        "upstream_base": "a" * 40,
+        "source_head": "b" * 40,
+        "squash_commit": "c" * 40,
+        "fetch_depth": 8,
+    }
+    ok = tmp_path / "ok.json"
+    ok.write_text(json.dumps({**base, "history": [{"pr": 275}]}), encoding="utf-8")
+    values = MODULE._load_provenance(ok)
+    assert values["upstream_base"] == "a" * 40
+
+    bare = tmp_path / "bare.json"
+    bare.write_text(json.dumps(base), encoding="utf-8")
+    assert MODULE._load_provenance(bare)["fetch_depth"] == 8
+
+    bad_extra = tmp_path / "bad_extra.json"
+    bad_extra.write_text(json.dumps({**base, "surprise": 1}), encoding="utf-8")
+    with pytest.raises(MODULE.DeltaError, match="provenance fields must be"):
+        MODULE._load_provenance(bad_extra)
+
+    bad_history = tmp_path / "bad_history.json"
+    bad_history.write_text(json.dumps({**base, "history": "not-a-list"}), encoding="utf-8")
+    with pytest.raises(MODULE.DeltaError, match="history must be a list"):
+        MODULE._load_provenance(bad_history)
