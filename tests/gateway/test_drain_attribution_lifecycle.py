@@ -51,7 +51,7 @@ async def test_gateway_stop_records_clean_exit_only_after_zero_work(
     monkeypatch.setattr(
         runner,
         "_drain_active_agents",
-        lambda _timeout: asyncio.sleep(0, result=({}, False)),
+        lambda _timeout, **_kwargs: asyncio.sleep(0, result=({}, False)),
     )
 
     await GatewayRunner.stop(runner)
@@ -72,7 +72,7 @@ async def test_gateway_stop_records_interrupt_forced_forward_and_incomplete(
     monkeypatch.setattr(
         runner,
         "_drain_active_agents",
-        lambda _timeout: asyncio.sleep(0, result=({}, True)),
+        lambda _timeout, **_kwargs: asyncio.sleep(0, result=({}, True)),
     )
 
     await GatewayRunner.stop(runner)
@@ -99,7 +99,7 @@ async def test_gateway_stop_never_attempts_clean_exit_after_budget_exhaustion(
     monkeypatch.setattr(
         runner,
         "_drain_active_agents",
-        lambda _timeout: asyncio.sleep(0, result=({}, False)),
+        lambda _timeout, **_kwargs: asyncio.sleep(0, result=({}, False)),
     )
     runner._SHUTDOWN_TAIL_RESERVE_S = 999.0
     phases = []
@@ -157,7 +157,7 @@ async def test_gateway_stop_propagates_attribution_cancellation(
     monkeypatch.setattr(
         runner,
         "_drain_active_agents",
-        lambda _timeout: asyncio.sleep(0, result=({}, False)),
+        lambda _timeout, **_kwargs: asyncio.sleep(0, result=({}, False)),
     )
 
     async def _cancelled_record(_phase: str, *, deadline: float):
@@ -180,7 +180,7 @@ async def test_shutdown_watchdog_snapshot_omits_work_identifiers(
     monkeypatch.setattr(
         runner,
         "_drain_active_agents",
-        lambda _timeout: asyncio.sleep(0, result=({}, False)),
+        lambda _timeout, **_kwargs: asyncio.sleep(0, result=({}, False)),
     )
     detailed_work = {
         "counts": {"agent": 1, "cron": 1, "api": 1, "total": 3},

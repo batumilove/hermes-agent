@@ -39,6 +39,8 @@ class _FakeGateway:
         self._exit_reason = None
         self._exit_code = None
         self._restart_drain_timeout = 0.01
+        # stop() reads the systemd-budget-clamped effective timeout
+        self._stopsec_headroom = 10.0
         self._running_agents = {}
         self._running_agents_ts = {}
         self._agent_cache = OrderedDict()
@@ -50,6 +52,14 @@ class _FakeGateway:
         self._pending_messages = {}
         self._pending_approvals = {}
         self._busy_ack_ts = {}
+
+    @property
+    def _effective_restart_drain_timeout(self) -> float:
+        """Mirror the GatewayRunner clamp: min(configured, stop_budget-headroom)."""
+        return min(
+            self._restart_drain_timeout,
+            max(60.0, self._restart_drain_timeout) + 30.0 - self._stopsec_headroom,
+        )
 
     def _running_agent_count(self):
         return len(self._running_agents)
@@ -94,7 +104,7 @@ class _FakeGateway:
     async def _cancel_secondary_profile_reconnect_tasks(self):
         pass
 
-    async def _drain_active_agents(self, timeout, cron_timeout=None):
+    async def _drain_active_agents(self, timeout, cron_timeout=None, **kwargs):
         return {}, False
 
     async def _finalize_shutdown_agents(self, agents):

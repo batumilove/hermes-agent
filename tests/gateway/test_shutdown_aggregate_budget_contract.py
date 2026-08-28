@@ -189,7 +189,7 @@ async def test_late_pre_drain_marker_finishes_before_compensating_clear(monkeypa
         raising=False,
     )
 
-    async def _finish_gracefully(_timeout):
+    async def _finish_gracefully(_timeout, **_kwargs):
         release_marker.set()
         runner._running_agents.clear()
         return {"session": active_agent}, False
@@ -217,7 +217,7 @@ async def test_pre_drain_work_reduces_agent_drain_budget(monkeypatch):
 
     observed_drain_budgets = []
 
-    async def _capture_drain_budget(timeout):
+    async def _capture_drain_budget(timeout, **_kwargs):
         observed_drain_budgets.append(timeout)
         return {}, False
 
@@ -247,7 +247,7 @@ async def test_drain_exhaustion_reduces_interrupt_grace_budget(monkeypatch):
     )
     runner._notify_active_sessions_of_shutdown = AsyncMock()
 
-    async def _consume_drain_budget(_timeout):
+    async def _consume_drain_budget(_timeout, **_kwargs):
         await asyncio.sleep(0.20)
         return {"session": active_agent}, True
 
