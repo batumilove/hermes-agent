@@ -1245,15 +1245,92 @@ def _register_pending_api_work(adapter, *, detached: bool = False) -> dict[str, 
     return reservation
 
 
+class _TurnAdmission:
+    """One API turn admission token, including queued wait metadata."""
+
+    __slots__ = ("adapter", "reservation", "released")
+
+    def __init__(self, adapter: "APIServerAdapter", reservation: dict[str, bool]):
+        self.adapter = adapter
+        self.reservation = reservation
+        self.released = False
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self.release()
+        return False
+
+    def release(self) -> None:
+        if self.released:
+            return
+        self.released = True
+        self.reservation["active"] = False
+        self.adapter._pending_agent_requests = max(0, self.adapter._pending_agent_requests - 1)
+        self.adapter._turn_admission_release()
+
+
+class _QueuedTurnAdmission:
+    """Context manager returned when a request is queued behind capacity."""
+
+    __slots__ = ("adapter", "reservation", "released")
+
+    def __init__(self, adapter: "APIServerAdapter", reservation: dict[str, bool]):
+        self.adapter = adapter
+        self.reservation = reservation
+        self.released = False
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self.release()
+        return False
+
+    def release(self) -> None:
+        if self.released:
+            return
+        self.released = True
+        self.reservation["active"] = False
+        self.adapter._pending_agent_requests = max(0, self.adapter._pending_agent_requests - 1)
+        self.adapter._turn_admission_release()
+
+
+async def _acquire_turn_admission(adapter: "APIServerAdapter") -> Optional[object]:
+    """Wait for or reject an API turn admission slot."""
+    limit = getattr(adapter, "_turn_admission_capacity", 0)
+    if limit <= 0:
+        return _TurnAdmission(adapter, {"active": True})
+
+    queue_limit = getattr(adapter, "_turn_admission_queue_limit", 8)
+    cond = adapter._turn_admission_condition
+    async with cond:
+        if adapter._turn_admission_active < limit:
+            adapter._turn_admission_active += 1
+            return _TurnAdmission(adapter, {"active": True})
+        if adapter._turn_admission_queued >= queue_limit:
+            return None
+        adapter._turn_admission_queued += 1
+        try:
+            while adapter._turn_admission_active >= limit:
+                await cond.wait()
+            adapter._turn_admission_active += 1
+        finally:
+            adapter._turn_admission_queued = max(0, adapter._turn_admission_queued - 1)
+        return _QueuedTurnAdmission(adapter, {"active": True})
+
+
 def _admit_api_agent_request(handler):
     """Reserve an authenticated API turn before its handler first awaits.
 
     Gateway shutdown and aiohttp requests share an event loop. Keeping the
     drain check and reservation in one non-awaiting block prevents a request
     admitted immediately before shutdown from becoming invisible while it is
-    still parsing its body or resolving session state. The mutable reservation
-    is intentionally shared with child tasks so agent/task bookkeeping releases
-    this one slot exactly once.
+    still parsing its body or resolving session state. The admission slot is
+    held across the whole handler lifetime so queued requests do not enter the
+    handler until capacity frees up, and excess queue depth is rejected with
+    429 before body parsing begins.
     """
     @wraps(handler)
     async def _wrapped(self, request, *args, **kwargs):
@@ -1290,17 +1367,22 @@ def _admit_api_agent_request(handler):
                     )
         except Exception:
             logger.debug("turn admission unavailable; failing open", exc_info=True)
+        admission = await _acquire_turn_admission(self)
+        if admission is None:
+            return web.json_response(
+                _openai_error(
+                    "Too many concurrent runs waiting for admission.",
+                    err_type="rate_limit_error",
+                    code="rate_limit_exceeded",
+                ),
+                status=429,
+                headers={"Retry-After": "1"},
+            )
         reservation = _register_pending_api_work(self)
         token = _api_agent_request_reservation.set(reservation)
         try:
-            if admission_exc is not None and not isinstance(admission_exc, Exception):
-                # The admission controller returned a queued token. Entering the
-                # token context manager is what waits for the grant; without it,
-                # a queued-but-not-full request would skip straight into the
-                # handler instead of waiting for capacity.
-                with admission_exc:
-                    return await handler(self, request, *args, **kwargs)
-            return await handler(self, request, *args, **kwargs)
+            async with admission:
+                return await handler(self, request, *args, **kwargs)
         finally:
             _release_pending_api_work(self, reservation)
             _api_agent_request_reservation.reset(token)
@@ -1638,6 +1720,14 @@ class APIServerAdapter(BasePlatformAdapter):
         # the dict holds a strong reference for the life of the turn, so an
         # id() can never be recycled while it is still registered.
         self._shutdown_interruptible_agents: Dict[int, Any] = {}
+        # Admission gate shared across all agent-serving endpoints. Requests
+        # may queue here when all live slots are in use; excess waiters are
+        # rejected with 429 before body parsing begins.
+        self._turn_admission_capacity: int = self._resolve_turn_admission_capacity()
+        self._turn_admission_queue_limit: int = self._resolve_turn_admission_queue_limit()
+        self._turn_admission_condition = asyncio.Condition()
+        self._turn_admission_active: int = 0
+        self._turn_admission_queued: int = 0
         # Back-reference to the owning GatewayRunner (set by gateway/run.py)
         # so /api/platforms/{platform}/events can resolve sibling adapters.
         # BasePlatformAdapter declares the class-level default of None.
@@ -1892,6 +1982,65 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception:
             return default
         return max(0, value)
+
+    @staticmethod
+    def _resolve_turn_admission_capacity() -> int:
+        """Read the live turn-admission capacity from config.yaml.
+
+        Falls back to the concurrent-run cap, so a single knob keeps the live
+        API gate and the legacy run-count limiter aligned unless explicitly
+        overridden.
+        """
+        default = APIServerAdapter._resolve_max_concurrent_runs()
+        try:
+            from hermes_cli.config import cfg_get, load_config
+
+            raw = cfg_get(
+                load_config(),
+                "gateway",
+                "api_server",
+                "turn_admission_capacity",
+                default=default,
+            )
+            value = int(raw)
+        except Exception:
+            return default
+        return max(0, value)
+
+    @staticmethod
+    def _resolve_turn_admission_queue_limit() -> int:
+        """Read the bounded admission queue depth from config.yaml."""
+        default = 8
+        try:
+            from hermes_cli.config import cfg_get, load_config
+
+            raw = cfg_get(
+                load_config(),
+                "gateway",
+                "api_server",
+                "turn_admission_queue_limit",
+                default=default,
+            )
+            value = int(raw)
+        except Exception:
+            return default
+        return max(0, value)
+
+    def _turn_admission_release(self) -> None:
+        """Wake the next queued request after a turn finishes."""
+        self._turn_admission_active = max(0, self._turn_admission_active - 1)
+        cond = getattr(self, "_turn_admission_condition", None)
+        if cond is None:
+            return
+
+        async def _notify() -> None:
+            async with cond:
+                cond.notify_all()
+
+        try:
+            asyncio.create_task(_notify())
+        except Exception:
+            pass
 
     @staticmethod
     def _resolve_model_name(explicit: str) -> str:
@@ -5153,10 +5302,6 @@ class APIServerAdapter(BasePlatformAdapter):
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
         # Bound total in-flight agent runs (configurable; #7483).
-        limited = self._concurrency_limited_response()
-        if limited is not None:
-            return limited
-
         # Parse request body
         try:
             body = await request.json()
@@ -6315,10 +6460,6 @@ class APIServerAdapter(BasePlatformAdapter):
     async def _handle_responses(self, request: "web.Request") -> "web.Response":
         """POST /v1/responses — OpenAI Responses API format."""
         # Bound total in-flight agent runs (configurable; #7483).
-        limited = self._concurrency_limited_response()
-        if limited is not None:
-            return limited
-
         # Long-term memory scope header (see chat_completions for details).
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
@@ -7686,12 +7827,6 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
-
-        # Enforce concurrency limit (shared across all agent-serving
-        # endpoints; configurable via gateway.api_server.max_concurrent_runs).
-        limited = self._concurrency_limited_response()
-        if limited is not None:
-            return limited
 
         try:
             body = await request.json()

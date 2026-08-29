@@ -287,29 +287,46 @@ class TestDrainWaitsForApiWork:
         assert timed_out is False
 
 
-class TestDrainAdmission:
+class TestTurnAdmissionQueueing:
     @pytest.mark.asyncio
-    async def test_drain_refuses_every_agent_start_endpoint(self):
+    async def test_second_request_waits_until_first_releases_and_queue_full_429s(self):
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
-        runner = SimpleNamespace(_draining=True, _external_drain_active=False)
+        adapter._turn_admission_capacity = 1
+        adapter._turn_admission_queue_limit = 1
+        adapter._max_concurrent_runs = 1
         app = _make_admission_app(adapter)
-        paths = (
-            "/api/sessions/missing/chat",
-            "/api/sessions/missing/chat/stream",
-            "/v1/chat/completions",
-            "/v1/responses",
-            "/v1/runs",
-        )
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        second_entered = asyncio.Event()
+        third_response = None
 
-        with patch("gateway.run._gateway_runner_ref", lambda: runner):
+        async def _fake_run_agent(*args, **kwargs):
+            if not first_started.is_set():
+                first_started.set()
+                await release_first.wait()
+            else:
+                second_entered.set()
+            return ({"final_response": "ok"}, {})
+
+        with patch.object(adapter, "_run_agent", new=AsyncMock(side_effect=_fake_run_agent)):
             async with TestClient(TestServer(app)) as client:
-                for path in paths:
-                    response = await client.post(path, json={})
-                    payload = await response.json()
+                req1 = asyncio.create_task(client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "a"}]}))
+                await first_started.wait()
+                req2 = asyncio.create_task(client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "b"}]}))
+                await asyncio.sleep(0.1)
+                assert not second_entered.is_set()
+                req3 = asyncio.create_task(client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "c"}]}))
+                await asyncio.sleep(0.1)
+                third_response = await req3
+                assert third_response.status == 429
+                release_first.set()
+                resp1 = await req1
+                resp2 = await req2
 
-                    assert response.status == 503
-                    assert response.headers["Retry-After"] == "1"
-                    assert payload["error"]["code"] == "gateway_draining"
+        assert resp1.status == 200
+        assert resp2.status == 200
+        assert second_entered.is_set()
+        assert third_response is not None
 
 
 # ---------------------------------------------------------------------------
