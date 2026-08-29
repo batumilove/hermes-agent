@@ -1382,6 +1382,13 @@ def _admit_api_agent_request(handler):
         token = _api_agent_request_reservation.set(reservation)
         try:
             async with admission:
+                if admission_exc is not None and not isinstance(admission_exc, Exception):
+                    # The admission controller returned a queued token. Entering the
+                    # token context manager is what waits for the grant; without it,
+                    # a queued-but-not-full request would skip straight into the
+                    # handler instead of waiting for capacity.
+                    with admission_exc:
+                        return await handler(self, request, *args, **kwargs)
                 return await handler(self, request, *args, **kwargs)
         finally:
             _release_pending_api_work(self, reservation)
