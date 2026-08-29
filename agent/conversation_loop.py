@@ -2683,7 +2683,7 @@ def run_conversation(
         # room already reserved by _compute_threshold_tokens) and its summary-
         # LLM cooldown + anti-thrash guards (#11529). compression_attempts is a
         # hard per-turn backstop shared with the overflow error handlers.
-        _compressor = agent.context_compressor
+        _compressor = getattr(agent, "context_compressor", None)
         _preflight_threshold = int(
             getattr(_compressor, "threshold_tokens", 0) or 0
         )
@@ -2723,6 +2723,7 @@ def run_conversation(
         )()
         if (
             agent.compression_enabled
+            and _compressor is not None
             and not _review_fork_first_request_pending(agent)
             and len(messages) > 1
             and compression_attempts < max_compression_attempts
@@ -5404,57 +5405,58 @@ def run_conversation(
                 # credentials won't help.  Reduce context to 200k (the
                 # standard tier) and compress.
                 if classified.reason == FailoverReason.long_context_tier:
-                    _reduced_ctx = 200000
-                    compressor = agent.context_compressor
-                    old_ctx = compressor.context_length
-                    if old_ctx > _reduced_ctx:
-                        compressor.update_model(
-                            model=agent.model,
-                            context_length=_reduced_ctx,
-                            base_url=agent.base_url,
-                            api_key=getattr(agent, "api_key", ""),
-                            provider=agent.provider,
-                            api_mode=agent.api_mode,
-                        )
-                        # Context probing flags — only set on built-in
-                        # compressor (plugin engines manage their own).
-                        if hasattr(compressor, "_context_probed"):
-                            compressor._context_probed = True
-                            # Don't persist — this is a subscription-tier
-                            # limitation, not a model capability.  If the
-                            # user later enables extra usage the 1M limit
-                            # should come back automatically.
-                            compressor._context_probe_persistable = False
-                        agent._buffer_vprint(
-                            f"⚠️  Anthropic long-context tier "
-                            f"requires extra usage — reducing context: "
-                            f"{old_ctx:,} → {_reduced_ctx:,} tokens"
-                        )
-
-                    compression_attempts += 1
-                    if compression_attempts <= max_compression_attempts:
-                        original_len = len(messages)
-                        # Option A (LCM issue 441): overhead-aware request size so recovery arms on
-                        # the true request (msgs + tools + system), not the tool-blind message count.
-                        messages, active_system_prompt = agent._compress_context(
-                            messages, system_message,
-                            approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
-                            task_id=effective_task_id,
-                        )
-                        conversation_history = conversation_history_after_compression(
-                            agent, messages, conversation_history
-                        )
-                        if len(messages) < original_len or old_ctx > _reduced_ctx:
-                            agent._buffer_status(
-                                COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE.format(
-                                    new_ctx=_reduced_ctx, old_ctx=old_ctx
-                                )
+                    compressor = getattr(agent, "context_compressor", None)
+                    if compressor is not None:
+                        _reduced_ctx = 200000
+                        old_ctx = compressor.context_length
+                        if old_ctx > _reduced_ctx:
+                            compressor.update_model(
+                                model=agent.model,
+                                context_length=_reduced_ctx,
+                                base_url=agent.base_url,
+                                api_key=getattr(agent, "api_key", ""),
+                                provider=agent.provider,
+                                api_mode=agent.api_mode,
                             )
-                            time.sleep(2)
-                            _retry.restart_with_compressed_messages = True
-                            break
+                            # Context probing flags — only set on built-in
+                            # compressor (plugin engines manage their own).
+                            if hasattr(compressor, "_context_probed"):
+                                compressor._context_probed = True
+                                # Don't persist — this is a subscription-tier
+                                # limitation, not a model capability.  If the
+                                # user later enables extra usage the 1M limit
+                                # should come back automatically.
+                                compressor._context_probe_persistable = False
+                            agent._buffer_vprint(
+                                f"⚠️  Anthropic long-context tier "
+                                f"requires extra usage — reducing context: "
+                                f"{old_ctx:,} → {_reduced_ctx:,} tokens"
+                            )
+
+                        compression_attempts += 1
+                        if compression_attempts <= max_compression_attempts:
+                            original_len = len(messages)
+                            # Option A (LCM issue 441): overhead-aware request size so recovery arms on
+                            # the true request (msgs + tools + system), not the tool-blind message count.
+                            messages, active_system_prompt = agent._compress_context(
+                                messages, system_message,
+                                approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
+                                task_id=effective_task_id,
+                            )
+                            conversation_history = conversation_history_after_compression(
+                                agent, messages, conversation_history
+                            )
+                            if len(messages) < original_len or old_ctx > _reduced_ctx:
+                                agent._buffer_status(
+                                    COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE.format(
+                                        new_ctx=_reduced_ctx, old_ctx=old_ctx
+                                    )
+                                )
+                                time.sleep(2)
+                                _retry.restart_with_compressed_messages = True
+                                break
                     # Fall through to normal error handling if compression
-                    # is exhausted or didn't help.
+                    # is exhausted, the engine is detached, or didn't help.
 
                 # Eager fallback for rate-limit errors (429 or quota exhaustion)
                 # and transport errors (connection failure / timeout / provider
@@ -5800,51 +5802,210 @@ def run_conversation(
                 )
 
                 if is_context_length_error:
-                    compressor = agent.context_compressor
-                    old_ctx = compressor.context_length
+                    compressor = getattr(agent, "context_compressor", None)
+                    if compressor is None:
+                        # Engine detached mid-turn; cannot recover via compression.
+                        # Fall through to normal failover handling.
+                        pass
+                    else:
+                        old_ctx = compressor.context_length
 
-                    # ── Distinguish two very different errors ───────────
-                    # 1. "Prompt too long": the INPUT exceeds the context window.
-                    #    Fix: reduce context_length + compress history.
-                    # 2. "max_tokens too large": input is fine, but
-                    #    input_tokens + requested max_tokens > context_window.
-                    #    Fix: reduce max_tokens (the OUTPUT cap) for this call.
-                    #    Do NOT shrink context_length — the window is unchanged.
-                    #
-                    # Note: max_tokens = output token cap (one response).
-                    #       context_length = total window (input + output combined).
-                    available_out = parse_available_output_tokens_from_error(error_msg)
-                    if available_out is not None:
-                        # This is an output-cap error, not input overflow.
-                        # The provider's available_tokens is the authoritative
-                        # cap for the failed request, so keep it as an upper
-                        # bound.  Also estimate the current API request shape
-                        # (system prompt, injected context, tool schemas) because
-                        # Hermes may add API-only content not present in persisted
-                        # messages.  Use the smaller budget and apply a small
-                        # safety margin.  Do not alter context_length.
-                        request_input_estimate = estimate_request_tokens_rough(
-                            api_messages, tools=agent.tools or None,
+                        # ── Distinguish two very different errors ───────────
+                        # 1. "Prompt too long": the INPUT exceeds the context window.
+                        #    Fix: reduce context_length + compress history.
+                        # 2. "max_tokens too large": input is fine, but
+                        #    input_tokens + requested max_tokens > context_window.
+                        #    Fix: reduce max_tokens (the OUTPUT cap) for this call.
+                        #    Do NOT shrink context_length — the window is unchanged.
+                        #
+                        # Note: max_tokens = output token cap (one response).
+                        #       context_length = total window (input + output combined).
+                        available_out = parse_available_output_tokens_from_error(error_msg)
+                        if available_out is not None:
+                            # This is an output-cap error, not input overflow.
+                            # The provider's available_tokens is the authoritative
+                            # cap for the failed request, so keep it as an upper
+                            # bound.  Also estimate the current API request shape
+                            # (system prompt, injected context, tool schemas) because
+                            # Hermes may add API-only content not present in persisted
+                            # messages.  Use the smaller budget and apply a small
+                            # safety margin.  Do not alter context_length.
+                            request_input_estimate = estimate_request_tokens_rough(
+                                api_messages, tools=agent.tools or None,
+                            )
+                            local_available_out = old_ctx - request_input_estimate
+                            if local_available_out > 0:
+                                safe_out = max(1, min(available_out, local_available_out) - 64)
+                            else:
+                                # The rough local estimate can overshoot the real
+                                # request size.  Fall back to the provider-reported
+                                # budget, which is authoritative for the failed
+                                # request.
+                                safe_out = max(1, available_out - 64)
+                            agent._ephemeral_max_output_tokens = safe_out
+                            agent._buffer_vprint(
+                                f"⚠️  Output cap too large for current prompt — "
+                                f"retrying with max_tokens={safe_out:,} "
+                                f"(provider_available={available_out:,}, "
+                                f"estimated_request_tokens={request_input_estimate:,}; "
+                                f"context_length unchanged at {old_ctx:,})"
+                            )
+                            # Still count against compression_attempts so we don't
+                            # loop forever if the error keeps recurring.
+                            compression_attempts += 1
+                            if compression_attempts > max_compression_attempts:
+                                agent._flush_status_buffer()
+                                agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
+                                agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
+                                logger.error("%sContext compression failed after %d attempts.", agent.log_prefix, max_compression_attempts)
+                                agent._persist_session(messages, conversation_history)
+                                _final_response = f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached."
+                                return {
+                                    "final_response": _final_response,
+                                    "messages": messages,
+                                    "completed": False,
+                                    "api_calls": api_call_count,
+                                    "error": _final_response,
+                                    "partial": True,
+                                    "failed": True,
+                                    "compression_exhausted": True,
+                                }
+                            # Also compress the message history so the output-cap
+                            # retry does not just spin on max_tokens alone.  The
+                            # compressor drops the middle window, freeing enough
+                            # tokens for the total to fit inside context_length.
+                            # (#55546)
+                            try:
+                                original_len = len(messages)
+                                original_tokens = estimate_messages_tokens_rough(messages)
+                                _overflow_input = messages
+                                messages, active_system_prompt = agent._compress_context(
+                                    messages, system_message,
+                                    approx_tokens=request_input_estimate,
+                                    task_id=effective_task_id,
+                                )
+                                if messages is _overflow_input and compression_skipped_due_to_lock(agent):
+                                    compression_attempts -= 1
+                                    agent._persist_session(messages, conversation_history)
+                                    return _compression_deferred_result(
+                                        agent, messages, api_call_count
+                                    )
+                                conversation_history = conversation_history_after_compression(
+                                    agent, messages, conversation_history
+                                )
+                                new_tokens = estimate_messages_tokens_rough(messages)
+                                if len(messages) < original_len:
+                                    agent._buffer_status(COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=original_len, after=len(messages)))
+                                elif new_tokens > 0 and new_tokens < original_tokens * 0.95:
+                                    agent._buffer_status(COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE.format(before=original_tokens, after=new_tokens))
+                            except Exception:
+                                # Compression must never turn an output-cap error
+                                # fatal — fall through and retry on max_tokens alone.
+                                logger.warning(
+                                    "%sOutput-cap compression hit an error; retrying on max_tokens only.",
+                                    agent.log_prefix,
+                                )
+                            _retry.restart_with_compressed_messages = True
+                            break
+
+                        # The error is output-cap-shaped (about max_tokens being
+                        # too large) but the provider's wording didn't let us parse
+                        # the available output budget.  Compression CANNOT help here
+                        # — the input already fits; the call fails deterministically
+                        # on the oversized max_tokens.  Routing it into compression
+                        # re-sends the same max_tokens, gets the identical 400, and
+                        # death-loops until "cannot compress further" (#55546).
+                        # Fail fast with an actionable message instead of looping.
+                        if is_output_cap_error(error_msg):
+                            agent._flush_status_buffer()
+                            agent._vprint(
+                                f"{agent.log_prefix}❌ The provider rejected the request because "
+                                f"max_tokens exceeds its output cap for this model.",
+                                force=True,
+                            )
+                            agent._vprint(
+                                f"{agent.log_prefix}   💡 Lower model.max_tokens in your config.yaml to "
+                                f"at or below the model's max-output limit. "
+                                f"(This is an output-cap error, not a context overflow — "
+                                f"compression cannot fix it.)",
+                                force=True,
+                            )
+                            logger.error(
+                                f"{agent.log_prefix}Output-cap error not routed into compression "
+                                f"(max_tokens over provider cap): {error_msg[:200]}"
+                            )
+                            agent._persist_session(messages, conversation_history)
+                            _final_response = (
+                                "max_tokens exceeds the provider's output cap for this model. "
+                                "Lower model.max_tokens in config.yaml."
+                            )
+                            return {
+                                "final_response": _final_response,
+                                "messages": messages,
+                                "completed": False,
+                                "api_calls": api_call_count,
+                                "error": _final_response,
+                                "partial": True,
+                                "failed": True,
+                            }
+    
+                        # Error is about the INPUT being too large.  Only reduce
+                        # context_length when the provider explicitly reports the
+                        # real lower limit.  If the provider only says "input
+                        # exceeds the context window", keep the configured window
+                        # and try compression; guessing probe tiers can incorrectly
+                        # turn a user-configured 1M window into 256K/128K/64K.
+                        new_ctx = get_context_length_from_provider_error(error_msg, old_ctx)
+                        _provider_lower = (getattr(agent, "provider", "") or "").lower()
+                        _base_lower = (getattr(agent, "base_url", "") or "").rstrip("/").lower()
+                        is_minimax_provider = (
+                            _provider_lower in {"minimax", "minimax-cn"}
+                            or _base_lower.startswith((
+                                "https://api.minimax.io/anthropic",
+                                "https://api.minimaxi.com/anthropic",
+                            ))
                         )
-                        local_available_out = old_ctx - request_input_estimate
-                        if local_available_out > 0:
-                            safe_out = max(1, min(available_out, local_available_out) - 64)
+                        minimax_delta_only_overflow = (
+                            is_minimax_provider
+                            and new_ctx is None
+                            and "context window exceeds limit (" in error_msg
+                        )
+    
+                        if new_ctx is not None:
+                            agent._buffer_vprint(f"Context limit detected from API: {new_ctx:,} tokens (was {old_ctx:,})")
+                            compressor.update_model(
+                                model=agent.model,
+                                context_length=new_ctx,
+                                base_url=agent.base_url,
+                                api_key=getattr(agent, "api_key", ""),
+                                provider=agent.provider,
+                                api_mode=agent.api_mode,
+                            )
+                            # Persist an explicit provider-reported limit before
+                            # compression/retry. The next request can be rate
+                            # limited, omit usage, or the process can restart; none
+                            # of those should discard metadata the provider already
+                            # confirmed. Keep the probe flags as a best-effort
+                            # post-success retry if this write cannot complete.
+                            save_context_length(agent.model, agent.base_url, new_ctx)
+                            # Context probing flags — only set on built-in
+                            # compressor (plugin engines manage their own).  This
+                            # value came from the provider, so it is safe to cache.
+                            if hasattr(compressor, "_context_probed"):
+                                compressor._context_probed = True
+                                compressor._context_probe_persistable = True
+                            agent._buffer_vprint(f"⚠️  Context length exceeded — using provider limit: {old_ctx:,} → {new_ctx:,} tokens")
+                        elif minimax_delta_only_overflow:
+                            agent._buffer_vprint(
+                                f"Provider reported overflow amount only; "
+                                f"keeping context_length at {old_ctx:,} tokens and compressing."
+                            )
                         else:
-                            # The rough local estimate can overshoot the real
-                            # request size.  Fall back to the provider-reported
-                            # budget, which is authoritative for the failed
-                            # request.
-                            safe_out = max(1, available_out - 64)
-                        agent._ephemeral_max_output_tokens = safe_out
-                        agent._buffer_vprint(
-                            f"⚠️  Output cap too large for current prompt — "
-                            f"retrying with max_tokens={safe_out:,} "
-                            f"(provider_available={available_out:,}, "
-                            f"estimated_request_tokens={request_input_estimate:,}; "
-                            f"context_length unchanged at {old_ctx:,})"
-                        )
-                        # Still count against compression_attempts so we don't
-                        # loop forever if the error keeps recurring.
+                            agent._buffer_vprint(
+                                f"⚠️  Context length exceeded, but provider did not report a max context length; "
+                                f"keeping context_length at {old_ctx:,} tokens and compressing."
+                            )
+    
                         compression_attempts += 1
                         if compression_attempts > max_compression_attempts:
                             agent._flush_status_buffer()
@@ -5863,223 +6024,69 @@ def run_conversation(
                                 "failed": True,
                                 "compression_exhausted": True,
                             }
-                        # Also compress the message history so the output-cap
-                        # retry does not just spin on max_tokens alone.  The
-                        # compressor drops the middle window, freeing enough
-                        # tokens for the total to fit inside context_length.
-                        # (#55546)
-                        try:
-                            original_len = len(messages)
-                            original_tokens = estimate_messages_tokens_rough(messages)
-                            _overflow_input = messages
-                            messages, active_system_prompt = agent._compress_context(
-                                messages, system_message,
-                                approx_tokens=request_input_estimate,
-                                task_id=effective_task_id,
+                        agent._buffer_status(COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE.format(tokens=approx_tokens, attempt=compression_attempts, cap=max_compression_attempts))
+    
+                        original_len = len(messages)
+                        original_tokens = estimate_messages_tokens_rough(messages)
+                        _overflow_input = messages
+                        # Option A (LCM issue 441): pass the OVERHEAD-AWARE request size (msgs + tool
+                        # schemas + system), not the tool-blind message count, so LCM forced-overflow
+                        # recovery arms on the TRUE request that overflowed. See hermes-lcm engine
+                        # _should_force_overflow_recovery. (approx_tokens stays for the status display.)
+                        messages, active_system_prompt = agent._compress_context(
+                            messages, system_message,
+                            approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
+                            task_id=effective_task_id,
+                        )
+                        if messages is _overflow_input and compression_skipped_due_to_lock(agent):
+                            # #69870 lock-skip: the provider proved the request
+                            # does not fit, but this compression pass no-oped only
+                            # because another path holds the session's compression
+                            # lock. Temporary defer, not exhaustion — refund the
+                            # attempt and end the turn softly so the gateway does
+                            # NOT auto-reset the session (#9893/#35809).
+                            compression_attempts -= 1
+                            agent._persist_session(messages, conversation_history)
+                            return _compression_deferred_result(
+                                agent, messages, api_call_count
                             )
-                            if messages is _overflow_input and compression_skipped_due_to_lock(agent):
-                                compression_attempts -= 1
-                                agent._persist_session(messages, conversation_history)
-                                return _compression_deferred_result(
-                                    agent, messages, api_call_count
-                                )
-                            conversation_history = conversation_history_after_compression(
-                                agent, messages, conversation_history
-                            )
-                            new_tokens = estimate_messages_tokens_rough(messages)
+                        conversation_history = conversation_history_after_compression(
+                            agent, messages, conversation_history
+                        )
+    
+                        # Re-estimate tokens after compression.  Same-message-count
+                        # compression (tool-result pruning, in-place summarization)
+                        # can materially reduce request size without reducing the
+                        # message array.  (#39550)
+                        new_tokens = estimate_messages_tokens_rough(messages)
+                        approx_tokens = new_tokens  # update for downstream logging
+    
+                        if len(messages) < original_len or (new_tokens > 0 and new_tokens < original_tokens * 0.95) or (new_ctx and new_ctx < old_ctx):
                             if len(messages) < original_len:
                                 agent._buffer_status(COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=original_len, after=len(messages)))
                             elif new_tokens > 0 and new_tokens < original_tokens * 0.95:
                                 agent._buffer_status(COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE.format(before=original_tokens, after=new_tokens))
-                        except Exception:
-                            # Compression must never turn an output-cap error
-                            # fatal — fall through and retry on max_tokens alone.
-                            logger.warning(
-                                "%sOutput-cap compression hit an error; retrying on max_tokens only.",
-                                agent.log_prefix,
-                            )
-                        _retry.restart_with_compressed_messages = True
-                        break
-
-                    # The error is output-cap-shaped (about max_tokens being
-                    # too large) but the provider's wording didn't let us parse
-                    # the available output budget.  Compression CANNOT help here
-                    # — the input already fits; the call fails deterministically
-                    # on the oversized max_tokens.  Routing it into compression
-                    # re-sends the same max_tokens, gets the identical 400, and
-                    # death-loops until "cannot compress further" (#55546).
-                    # Fail fast with an actionable message instead of looping.
-                    if is_output_cap_error(error_msg):
-                        agent._flush_status_buffer()
-                        agent._vprint(
-                            f"{agent.log_prefix}❌ The provider rejected the request because "
-                            f"max_tokens exceeds its output cap for this model.",
-                            force=True,
-                        )
-                        agent._vprint(
-                            f"{agent.log_prefix}   💡 Lower model.max_tokens in your config.yaml to "
-                            f"at or below the model's max-output limit. "
-                            f"(This is an output-cap error, not a context overflow — "
-                            f"compression cannot fix it.)",
-                            force=True,
-                        )
-                        logger.error(
-                            f"{agent.log_prefix}Output-cap error not routed into compression "
-                            f"(max_tokens over provider cap): {error_msg[:200]}"
-                        )
-                        agent._persist_session(messages, conversation_history)
-                        _final_response = (
-                            "max_tokens exceeds the provider's output cap for this model. "
-                            "Lower model.max_tokens in config.yaml."
-                        )
-                        return {
-                            "final_response": _final_response,
-                            "messages": messages,
-                            "completed": False,
-                            "api_calls": api_call_count,
-                            "error": _final_response,
-                            "partial": True,
-                            "failed": True,
-                        }
-
-                    # Error is about the INPUT being too large.  Only reduce
-                    # context_length when the provider explicitly reports the
-                    # real lower limit.  If the provider only says "input
-                    # exceeds the context window", keep the configured window
-                    # and try compression; guessing probe tiers can incorrectly
-                    # turn a user-configured 1M window into 256K/128K/64K.
-                    new_ctx = get_context_length_from_provider_error(error_msg, old_ctx)
-                    _provider_lower = (getattr(agent, "provider", "") or "").lower()
-                    _base_lower = (getattr(agent, "base_url", "") or "").rstrip("/").lower()
-                    is_minimax_provider = (
-                        _provider_lower in {"minimax", "minimax-cn"}
-                        or _base_lower.startswith((
-                            "https://api.minimax.io/anthropic",
-                            "https://api.minimaxi.com/anthropic",
-                        ))
-                    )
-                    minimax_delta_only_overflow = (
-                        is_minimax_provider
-                        and new_ctx is None
-                        and "context window exceeds limit (" in error_msg
-                    )
-
-                    if new_ctx is not None:
-                        agent._buffer_vprint(f"Context limit detected from API: {new_ctx:,} tokens (was {old_ctx:,})")
-                        compressor.update_model(
-                            model=agent.model,
-                            context_length=new_ctx,
-                            base_url=agent.base_url,
-                            api_key=getattr(agent, "api_key", ""),
-                            provider=agent.provider,
-                            api_mode=agent.api_mode,
-                        )
-                        # Persist an explicit provider-reported limit before
-                        # compression/retry. The next request can be rate
-                        # limited, omit usage, or the process can restart; none
-                        # of those should discard metadata the provider already
-                        # confirmed. Keep the probe flags as a best-effort
-                        # post-success retry if this write cannot complete.
-                        save_context_length(agent.model, agent.base_url, new_ctx)
-                        # Context probing flags — only set on built-in
-                        # compressor (plugin engines manage their own).  This
-                        # value came from the provider, so it is safe to cache.
-                        if hasattr(compressor, "_context_probed"):
-                            compressor._context_probed = True
-                            compressor._context_probe_persistable = True
-                        agent._buffer_vprint(f"⚠️  Context length exceeded — using provider limit: {old_ctx:,} → {new_ctx:,} tokens")
-                    elif minimax_delta_only_overflow:
-                        agent._buffer_vprint(
-                            f"Provider reported overflow amount only; "
-                            f"keeping context_length at {old_ctx:,} tokens and compressing."
-                        )
-                    else:
-                        agent._buffer_vprint(
-                            f"⚠️  Context length exceeded, but provider did not report a max context length; "
-                            f"keeping context_length at {old_ctx:,} tokens and compressing."
-                        )
-
-                    compression_attempts += 1
-                    if compression_attempts > max_compression_attempts:
-                        agent._flush_status_buffer()
-                        agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
-                        agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
-                        logger.error("%sContext compression failed after %d attempts.", agent.log_prefix, max_compression_attempts)
-                        agent._persist_session(messages, conversation_history)
-                        _final_response = f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached."
-                        return {
-                            "final_response": _final_response,
-                            "messages": messages,
-                            "completed": False,
-                            "api_calls": api_call_count,
-                            "error": _final_response,
-                            "partial": True,
-                            "failed": True,
-                            "compression_exhausted": True,
-                        }
-                    agent._buffer_status(COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE.format(tokens=approx_tokens, attempt=compression_attempts, cap=max_compression_attempts))
-
-                    original_len = len(messages)
-                    original_tokens = estimate_messages_tokens_rough(messages)
-                    _overflow_input = messages
-                    # Option A (LCM issue 441): pass the OVERHEAD-AWARE request size (msgs + tool
-                    # schemas + system), not the tool-blind message count, so LCM forced-overflow
-                    # recovery arms on the TRUE request that overflowed. See hermes-lcm engine
-                    # _should_force_overflow_recovery. (approx_tokens stays for the status display.)
-                    messages, active_system_prompt = agent._compress_context(
-                        messages, system_message,
-                        approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
-                        task_id=effective_task_id,
-                    )
-                    if messages is _overflow_input and compression_skipped_due_to_lock(agent):
-                        # #69870 lock-skip: the provider proved the request
-                        # does not fit, but this compression pass no-oped only
-                        # because another path holds the session's compression
-                        # lock. Temporary defer, not exhaustion — refund the
-                        # attempt and end the turn softly so the gateway does
-                        # NOT auto-reset the session (#9893/#35809).
-                        compression_attempts -= 1
-                        agent._persist_session(messages, conversation_history)
-                        return _compression_deferred_result(
-                            agent, messages, api_call_count
-                        )
-                    conversation_history = conversation_history_after_compression(
-                        agent, messages, conversation_history
-                    )
-
-                    # Re-estimate tokens after compression.  Same-message-count
-                    # compression (tool-result pruning, in-place summarization)
-                    # can materially reduce request size without reducing the
-                    # message array.  (#39550)
-                    new_tokens = estimate_messages_tokens_rough(messages)
-                    approx_tokens = new_tokens  # update for downstream logging
-
-                    if len(messages) < original_len or (new_tokens > 0 and new_tokens < original_tokens * 0.95) or (new_ctx and new_ctx < old_ctx):
-                        if len(messages) < original_len:
-                            agent._buffer_status(COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=original_len, after=len(messages)))
-                        elif new_tokens > 0 and new_tokens < original_tokens * 0.95:
-                            agent._buffer_status(COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE.format(before=original_tokens, after=new_tokens))
-                        time.sleep(2)  # Brief pause between compression retries
-                        _retry.restart_with_compressed_messages = True
-                        break
-                    else:
-                        # Can't compress further and already at minimum tier
-                        agent._flush_status_buffer()
-                        agent._vprint(f"{agent.log_prefix}❌ Context length exceeded and cannot compress further.", force=True)
-                        agent._vprint(f"{agent.log_prefix}   💡 The conversation has accumulated too much content. Try /new to start fresh, or /compress to manually trigger compression.", force=True)
-                        logger.error("%sContext length exceeded: %s tokens. Cannot compress further.", agent.log_prefix, f"{new_tokens:,}")
-                        agent._persist_session(messages, conversation_history)
-                        _final_response = f"Context length exceeded ({new_tokens:,} tokens). Cannot compress further."
-                        return {
-                            "final_response": _final_response,
-                            "messages": messages,
-                            "completed": False,
-                            "api_calls": api_call_count,
-                            "error": _final_response,
-                            "partial": True,
-                            "failed": True,
-                            "compression_exhausted": True,
-                        }
+                            time.sleep(2)  # Brief pause between compression retries
+                            _retry.restart_with_compressed_messages = True
+                            break
+                        else:
+                            # Can't compress further and already at minimum tier
+                            agent._flush_status_buffer()
+                            agent._vprint(f"{agent.log_prefix}❌ Context length exceeded and cannot compress further.", force=True)
+                            agent._vprint(f"{agent.log_prefix}   💡 The conversation has accumulated too much content. Try /new to start fresh, or /compress to manually trigger compression.", force=True)
+                            logger.error("%sContext length exceeded: %s tokens. Cannot compress further.", agent.log_prefix, f"{new_tokens:,}")
+                            agent._persist_session(messages, conversation_history)
+                            _final_response = f"Context length exceeded ({new_tokens:,} tokens). Cannot compress further."
+                            return {
+                                "final_response": _final_response,
+                                "messages": messages,
+                                "completed": False,
+                                "api_calls": api_call_count,
+                                "error": _final_response,
+                                "partial": True,
+                                "failed": True,
+                                "compression_exhausted": True,
+                            }
 
                 # Check for non-retryable client errors.  The classifier
                 # already accounts for 413, 429, 529 (transient), context

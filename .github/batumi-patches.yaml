@@ -250,6 +250,19 @@ patches:
       - scripts/run_tests.sh tests/run_agent/test_post_tool_compression_attempt_cap.py
     retirement: Remove when upstream safely handles missing post-tool context compressors with equivalent regression coverage.
 
+  - id: context-engine-midturn-detach-guard
+    kind: core
+    rationale: >-
+      Tolerate mid-turn context-engine detach from cache eviction in the
+      pre-API compression gate and the long-context / context-length error
+      handlers by skipping compression instead of failing the turn.
+    paths:
+      - agent/conversation_loop.py
+      - tests/agent/test_context_engine_midturn_detach.py
+    tests:
+      - scripts/run_tests.sh tests/agent/test_context_engine_midturn_detach.py
+    retirement: Remove when upstream safely handles a detached context compressor with equivalent regression coverage.
+
   - id: background-review-teardown-ownership
     kind: core
     rationale: >-
