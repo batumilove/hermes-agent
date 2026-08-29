@@ -226,6 +226,22 @@ patches:
       - python -m py_compile cron/scheduler.py tests/cron/test_cron_failure_delivery_classification.py
     retirement: Remove when upstream classifies no-agent script failures before provider failures with equivalent bounded timeout rendering and regression coverage.
 
+  - id: api-adapter-turn-admission
+    kind: core
+    rationale: >-
+      Bound agent-run concurrency per API adapter with a queueing admission
+      gate: requests beyond the live-slot capacity wait in a bounded queue and
+      excess waiters get an OpenAI-style 429 + Retry-After before body
+      parsing. Complements the P0 write_admission layer (write-budget) by
+      capping run concurrency (#7483 request-flood exhaustion).
+    paths:
+      - gateway/platforms/api_server.py
+      - tests/gateway/test_api_server_active_work_drain.py
+    tests:
+      - scripts/run_tests.sh tests/gateway/test_api_server_active_work_drain.py
+      - python -m py_compile gateway/platforms/api_server.py
+    retirement: Remove when upstream ships an equivalent adapter-level turn admission gate with queue-full 429 and drain-wait coverage.
+
   - id: compression-adopted-transcript-deduplication
     kind: core
     rationale: >-
