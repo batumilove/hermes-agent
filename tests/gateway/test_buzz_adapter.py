@@ -27,6 +27,7 @@ validate_config = _buzz_mod.validate_config
 register = _buzz_mod.register
 _env_enablement = _buzz_mod._env_enablement
 _standalone_send = _buzz_mod._standalone_send
+_parse_target_ref = getattr(_buzz_mod, "_parse_target_ref", None)
 
 # Real key pair (Chip's public identity — public information, not a secret)
 SELF_PUBKEY = "9fd5c7ba6d3ef224da78f541e0fcb9c50f72cc63edb19aae76ac6a0474dfa860"
@@ -169,6 +170,23 @@ class TestBuzzAdapterInit:
         from gateway.config import PlatformConfig
         adapter = BuzzAdapter(PlatformConfig(enabled=True, extra={"relay_url": "https://cfg.relay"}))
         assert adapter.relay_url == "https://env.relay"
+
+    @pytest.mark.asyncio
+    async def test_list_channels_exposes_discovered_channels(self):
+        adapter = _make_adapter()
+        adapter._channel_names = {
+            CHANNEL: "general",
+            DM_CHANNEL: "DM",
+        }
+        adapter._channel_state = {
+            CHANNEL: {"chat_type": "group", "last_ts": 0, "seen": {}},
+            DM_CHANNEL: {"chat_type": "dm", "last_ts": 0, "seen": {}},
+        }
+
+        assert await adapter.list_channels() == [
+            {"id": CHANNEL, "name": "general", "type": "group"},
+            {"id": DM_CHANNEL, "name": "DM", "type": "dm"},
+        ]
 
 
 # ── CLI error contract ────────────────────────────────────────────────────
@@ -666,6 +684,12 @@ class TestEnvEnablement:
 
 class TestBuzzPluginRegistration:
 
+    def test_target_parser_accepts_channel_uuid_and_rejects_other_shapes(self):
+        assert callable(_parse_target_ref)
+        assert _parse_target_ref(f"  {CHANNEL.upper()}  ") == (CHANNEL, None)
+        assert _parse_target_ref("general") is None
+        assert _parse_target_ref("not-a-uuid") is None
+
     def test_register_platform_contract(self):
         from gateway.platform_registry import platform_registry
 
@@ -680,6 +704,7 @@ class TestBuzzPluginRegistration:
         assert kwargs["allow_all_env"] == "BUZZ_ALLOW_ALL_USERS"
         assert callable(kwargs["standalone_sender_fn"])
         assert callable(kwargs["env_enablement_fn"])
+        assert kwargs["parse_target_ref_fn"] is _parse_target_ref
         assert set(kwargs["required_env"]) == {"BUZZ_RELAY_URL", "BUZZ_PRIVATE_KEY"}
 
 
