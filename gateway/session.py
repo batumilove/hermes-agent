@@ -3017,13 +3017,21 @@ class SessionStore:
                     # ``ws_orphan_reap`` rows (preserving the transcript) but
                     # returns None for other end_reasons (e.g. /new), starting
                     # a fresh session.
-                    logger.warning(
-                        "gateway.session: routing key %r -> %s is ended in "
-                        "state.db but still live in sessions.json; dropping "
-                        "stale entry and recovering/recreating the session "
-                        "(#54878)",
-                        session_key, entry.session_id,
-                    )
+                    if entry.expiry_finalized:
+                        logger.info(
+                            "gateway.session: routing key %r -> %s reached an "
+                            "expected expiry-finalized routing boundary; rotating "
+                            "to a fresh session",
+                            session_key, entry.session_id,
+                        )
+                    else:
+                        logger.warning(
+                            "gateway.session: routing key %r -> %s is ended in "
+                            "state.db but still live in sessions.json; dropping "
+                            "stale entry and recovering/recreating the session "
+                            "(#54878)",
+                            session_key, entry.session_id,
+                        )
                     self._entries.pop(session_key, None)
                     # If an expiry watcher (daily/idle reset) already finalized
                     # this session, honour the reset decision instead of silently
