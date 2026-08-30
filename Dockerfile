@@ -71,8 +71,12 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 # hermes process, the dashboard, and per-profile gateways.
 # DL3005 normally avoids unconstrained base drift; here the immutable base stays
 # pinned while the security gate requires applying repository-fixed packages.
+# Bind this layer to the immutable source SHA supplied by publication builds so
+# BuildKit cannot reuse stale APT metadata after Debian publishes a security fix.
+ARG HERMES_GIT_SHA=
 # hadolint ignore=DL3005
-RUN apt-get -o Acquire::Retries=3 update && \
+RUN printf '%s' "${HERMES_GIT_SHA}" > /dev/null && \
+    apt-get -o Acquire::Retries=3 update && \
     apt-get -o Acquire::Retries=3 dist-upgrade -y --no-install-recommends && \
     apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
     ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev libatomic1 procps git openssh-client docker-cli xz-utils && \
@@ -375,7 +379,6 @@ RUN mkdir -p /opt/hermes/bin && \
 # omits the file, and the runtime falls back to live-git lookup.  CI
 # (.github/workflows/docker.yml) passes ${{ github.sha }} so
 # every published image has it.
-ARG HERMES_GIT_SHA=
 RUN if [ -n "${HERMES_GIT_SHA}" ]; then \
         printf '%s\n' "${HERMES_GIT_SHA}" > /opt/hermes/.hermes_build_sha; \
     fi
