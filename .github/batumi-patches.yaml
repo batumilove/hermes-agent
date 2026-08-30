@@ -426,6 +426,18 @@ patches:
       - scripts/run_tests.sh tests/test_session_db_write_latency_logging.py tests/test_hermes_state.py tests/gateway/test_session.py
     retirement: Remove when upstream persists routing snapshots with equivalent generation ordering, delta-only DML, scope isolation, and restart coverage.
 
+  - id: gateway-expiry-routing-log-precision
+    kind: core
+    rationale: >-
+      Distinguish expected expiry-finalized routing rotation from genuine stale
+      routing recovery without changing session rotation or recovery behavior.
+    paths:
+      - gateway/session.py
+      - tests/gateway/test_session_store_runtime_stale_guard.py
+    tests:
+      - scripts/run_tests.sh tests/gateway/test_session_store_runtime_stale_guard.py
+    retirement: Remove when upstream reports expected expiry-finalized routing boundaries below warning severity while retaining warning diagnostics for genuine stale routes.
+
   - id: gateway-channel-directory-routing-projection
     kind: core
     rationale: >-
