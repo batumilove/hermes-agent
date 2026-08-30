@@ -439,4 +439,35 @@ class TestContinuityFlag:
         assert "Reported: story A" in prompt
         assert "previous run" in prompt.lower()
 
+    def test_continuity_extracts_response_from_large_saved_document(self, cron_env):
+        """Continuity injects the prior response, not the archived prompt head."""
+        from tools.cronjob_tools import cronjob
+        from cron.jobs import get_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+        import json
+
+        result = json.loads(cronjob(
+            action="create",
+            prompt="Scan for news",
+            schedule="every 1h",
+            continuity=True,
+        ))
+        job = get_job(result["job_id"])
+        assert job is not None
+        out_dir = OUTPUT_DIR / job["id"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        archived_prompt = "OLD-PROMPT-FILLER " * 1000
+        saved_document = (
+            f"# Cron Job: old run\n\n## Prompt\n\n{archived_prompt}"
+            "\n\n## Response\n\nReported: story after the large prompt\n"
+        )
+        (out_dir / "2026-08-01_10-00-00.md").write_text(
+            saved_document, encoding="utf-8"
+        )
+
+        prompt = _build_job_prompt(job)
+
+        assert "Reported: story after the large prompt" in prompt
+        assert "OLD-PROMPT-FILLER" not in prompt
+
 
