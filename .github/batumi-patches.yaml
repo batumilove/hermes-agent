@@ -226,6 +226,20 @@ patches:
       - python -m py_compile cron/scheduler.py tests/cron/test_cron_failure_delivery_classification.py
     retirement: Remove when upstream classifies no-agent script failures before provider failures with equivalent bounded timeout rendering and regression coverage.
 
+  - id: cron-result-context-extraction
+    kind: core
+    rationale: >-
+      Inject the final saved cron response or error into context_from and
+      continuity prompts before applying the context cap, so large archived
+      prompts cannot displace the result that downstream jobs need.
+    paths:
+      - cron/scheduler.py
+      - tests/cron/test_cron_context_from.py
+    tests:
+      - scripts/run_tests.sh tests/cron/test_cron_context_from.py
+      - python -m py_compile cron/scheduler.py tests/cron/test_cron_context_from.py
+    retirement: Remove when upstream extracts the final saved cron result before bounded context injection with equivalent large-prompt regression coverage.
+
   - id: api-adapter-turn-admission
     kind: core
     rationale: >-
