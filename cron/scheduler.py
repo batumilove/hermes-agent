@@ -4538,6 +4538,24 @@ def _parse_wake_gate(script_output: str) -> bool:
     return gate.get("wakeAgent", True) is not False
 
 
+def _extract_saved_cron_result(document: str) -> str:
+    """Return the result section from a saved cron output document.
+
+    Agent-backed cron outputs archive the fully assembled prompt before the
+    final response.  Feeding the document head into ``context_from`` therefore
+    replays prompt/skill text and can omit the result entirely when the prompt
+    exceeds the context cap.  Prefer the final Response/Error section while
+    retaining the whole-document fallback for concise script-only outputs and
+    legacy files that have no section marker.
+    """
+    markers = ("\n## Response\n\n", "\n## Error\n\n")
+    positions = [(document.rfind(marker), marker) for marker in markers]
+    position, marker = max(positions, key=lambda item: item[0])
+    if position >= 0:
+        return document[position + len(marker):].strip()
+    return document.strip()
+
+
 def _build_job_prompt(
     job: dict,
     prerun_script: Optional[tuple] = None,
@@ -4637,7 +4655,8 @@ def _build_job_prompt(
                 )
                 if not output_files:
                     continue  # silent skip — no output yet
-                latest_output = output_files[0].read_text(encoding="utf-8").strip()
+                saved_output = output_files[0].read_text(encoding="utf-8")
+                latest_output = _extract_saved_cron_result(saved_output)
                 # Truncate to 8K characters to avoid prompt bloat
                 _MAX_CONTEXT_CHARS = 8000
                 if len(latest_output) > _MAX_CONTEXT_CHARS:
