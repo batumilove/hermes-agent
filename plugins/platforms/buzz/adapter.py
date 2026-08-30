@@ -96,6 +96,14 @@ _SEEN_CAP = 500
 # N poll sweeps to pick up conversations opened mid-run.
 _DM_DISCOVERY_EVERY = 5
 
+# Buzz channel and DM identifiers are canonical UUIDs. Register this native
+# shape with Hermes' shared send-target resolver so explicit ``buzz:<uuid>``
+# targets do not depend on channel-directory discovery.
+_CHANNEL_ID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
 _DEFAULT_POLL_INTERVAL = 4.0
 _MIN_POLL_INTERVAL = 1.0
 _CLI_TIMEOUT = 30.0
@@ -223,6 +231,14 @@ def _normalize_user_ref(ref: str) -> Optional[str]:
     if re.fullmatch(r"[0-9a-f]{64}", ref):
         return ref
     return None
+
+
+def _parse_target_ref(ref: str) -> Optional[Tuple[str, Optional[str]]]:
+    """Parse an explicit Buzz channel UUID for host-driven sends."""
+    target = (ref or "").strip()
+    if not _CHANNEL_ID_RE.fullmatch(target):
+        return None
+    return target.lower(), None
 
 
 # ---------------------------------------------------------------------------
@@ -779,6 +795,19 @@ class BuzzAdapter(BasePlatformAdapter):
                 except ValueError:
                     pass
         return {"name": name or chat_id, "type": chat_type, "chat_id": chat_id}
+
+    async def list_channels(self) -> Optional[List[Dict[str, str]]]:
+        """Expose relay-discovered conversations to Hermes' channel directory."""
+        if not self._channel_names:
+            return None
+        return [
+            {
+                "id": channel_id,
+                "name": name,
+                "type": self._channel_state.get(channel_id, {}).get("chat_type", "group"),
+            }
+            for channel_id, name in self._channel_names.items()
+        ]
 
     # ── Inbound: WebSocket transport (NIP-42 authenticated) ──────────────
     #
@@ -1575,10 +1604,13 @@ def register(ctx):
         apply_yaml_config_fn=_apply_yaml_config,
         # Cron home-channel delivery support (deliver=buzz).
         cron_deliver_env_var="BUZZ_HOME_CHANNEL",
-        # Out-of-process cron delivery.  Without this hook, deliver=buzz
+        # Out-of-process cron delivery.  Without this hook, ``deliver=buzz``
         # cron jobs fail with "No live adapter" when cron runs separately
         # from the gateway.
         standalone_sender_fn=_standalone_send,
+        # Buzz channel/DM identifiers are UUIDs. Declaring the native shape
+        # lets explicit ``buzz:<uuid>`` sends bypass directory-name lookup.
+        parse_target_ref_fn=_parse_target_ref,
         # Auth env vars for _is_user_authorized() integration
         allowed_users_env="BUZZ_ALLOWED_USERS",
         allow_all_env="BUZZ_ALLOW_ALL_USERS",
