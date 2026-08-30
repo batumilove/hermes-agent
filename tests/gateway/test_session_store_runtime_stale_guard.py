@@ -98,6 +98,27 @@ class TestIsSessionEndedInDb:
 
 class TestRuntimeStaleGuard:
 
+    def test_expiry_finalized_route_rotates_without_stale_warning(
+        self, tmp_path, caplog,
+    ):
+        """Expected expiry boundaries are not reported as stale bookkeeping."""
+        caplog.set_level("INFO", logger="gateway.session")
+        source = _source()
+        db = _db_returning(
+            {"sid_expired": {"end_reason": "session_reset", "id": "sid_expired"}}
+        )
+        store = _make_store_with_db(tmp_path, db)
+        key = store._generate_session_key(source)
+        store._entries[key] = _make_entry(
+            key, "sid_expired", expiry_finalized=True
+        )
+
+        result = store.get_or_create_session(source)
+
+        assert result.session_id != "sid_expired"
+        assert "ended in state.db but still live" not in caplog.text
+        assert "expected expiry-finalized routing boundary" in caplog.text
+
     def test_stale_ws_orphan_reap_entry_recovered_preserving_session_id(self, tmp_path):
         """Stale ``ws_orphan_reap`` entry → recovery reopens the SAME session_id (#63207)."""
         source = _source()
