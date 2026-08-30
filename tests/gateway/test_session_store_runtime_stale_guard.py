@@ -119,8 +119,10 @@ class TestRuntimeStaleGuard:
         assert "ended in state.db but still live" not in caplog.text
         assert "expected expiry-finalized routing boundary" in caplog.text
 
-    def test_stale_ws_orphan_reap_entry_recovered_preserving_session_id(self, tmp_path):
-        """Stale ``ws_orphan_reap`` entry → recovery reopens the SAME session_id (#63207)."""
+    def test_stale_ws_orphan_reap_entry_recovered_preserving_session_id(
+        self, tmp_path, caplog,
+    ):
+        """Genuine stale routes still warn and recover the SAME session_id (#63207)."""
         source = _source()
         db = _db_returning({"sid_stale": {"end_reason": "ws_orphan_reap", "id": "sid_stale"}})
         db.find_latest_gateway_session_for_peer.return_value = {
@@ -134,6 +136,9 @@ class TestRuntimeStaleGuard:
         result = store.get_or_create_session(source)
 
         assert result.session_id == "sid_stale"
+        assert "ended in state.db but still live" in caplog.text
+        assert "(#54878)" in caplog.text
+        assert "expected expiry-finalized routing boundary" not in caplog.text
         db.reopen_session.assert_called_once_with("sid_stale")
         db.create_session.assert_not_called()
 
