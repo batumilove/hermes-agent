@@ -10,6 +10,14 @@ export type HudResizeDirection = (typeof HUD_RESIZE_DIRECTIONS)[number]
 
 const HUD_WAYLAND_RESIZE_DIRECTIONS = ['e', 'se', 's'] as const satisfies readonly HudResizeDirection[]
 
+/** Resolve global-placement support across current and legacy preload bridges. */
+export function hudClientPlacement(
+  windowing: { clientPlacement: boolean } | undefined,
+  legacyNativeDrag: boolean | undefined
+): boolean {
+  return windowing?.clientPlacement ?? legacyNativeDrag !== true
+}
+
 /** Edges the HUD can honestly resize. Native Wayland cannot change a
  *  top-level's global x/y, so only edges that keep the existing origin. */
 export function hudResizeDirections(clientPlacement: boolean): readonly HudResizeDirection[] {

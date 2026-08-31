@@ -2450,6 +2450,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     await resume!('stored-A', true)
 
     const resumedState = sessionStateByRuntimeIdRef.current.get('rt-A')
+    const resumedStreamId = resumedState?.streamId
 
     const clarifyPart = resumedState?.messages
       .flatMap(message => message.parts)
@@ -2457,7 +2458,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
 
     expect($clarifyRequests.get()['rt-A']).toBeUndefined()
     expect(resumedState).toMatchObject({ needsInput: false, streamId: null })
-    expect(resumedState?.messages.find(message => message.id === resumedState.streamId)).toBeUndefined()
+    expect(resumedState?.messages.find(message => message.id === resumedStreamId)).toBeUndefined()
     expect(clarifyPart).toHaveProperty('result')
   })
 

@@ -185,6 +185,54 @@ patches:
       - python -m py_compile gateway/lifecycle_lease.py hermes_cli/lifecycle_coordination.py hermes_cli/lifecycle_lease_cmd.py hermes_cli/subcommands/lifecycle_lease.py
     retirement: Remove when upstream serializes every equivalent lifecycle mutation caller with a durable profile-wide lease, exact provenance binding, crash-orphan exclusion, tamper-resistant release, explicit reconciliation, and matching cross-controller tests.
 
+  - id: upstream-sync-review-remediation
+    kind: core
+    rationale: >-
+      Correct defects found during exact-head review of the imported upstream
+      reconciliation: MCP stdio child liveness, reconnect-cycle state, suspect
+      connection health checks, and watchdog coroutine handling; desktop preview,
+      HUD, and focus-chord compatibility; plus the associated regression coverage
+      and stale test/documentation cleanup.
+    paths:
+      - agent/lsp/client.py
+      - apps/desktop/src/app/chat/composer/focus-chord.test.ts
+      - apps/desktop/src/app/chat/right-rail/preview-browser-bar.test.tsx
+      - apps/desktop/src/app/chat/right-rail/preview-browser-bar.tsx
+      - apps/desktop/src/app/hud/hud-shell.tsx
+      - apps/desktop/src/app/hud/resize-handle.test.ts
+      - apps/desktop/src/app/hud/resize-handle.ts
+      - apps/desktop/src/app/session/hooks/use-session-actions.test.tsx
+      - apps/desktop/src/lib/keybinds/chords.ts
+      - tests/tools/test_local_setsid_descendant_sweep.py
+      - tests/tools/test_mcp_stability.py
+      - tests/tools/test_mcp_tool.py
+      - tools/mcp_tool.py
+    tests:
+      - scripts/run_tests.sh tests/tools/test_mcp_stability.py tests/tools/test_mcp_tool.py tests/tools/test_local_setsid_descendant_sweep.py
+      - cd apps/desktop && npm run typecheck && npm run lint && npm run test:ui
+    retirement: Remove when upstream includes equivalent fixes and regression coverage for every listed path.
+
+  - id: codex-attribution-opt-in-policy
+    kind: operations
+    rationale: >-
+      Do not tag official Codex requests with a Hermes-specific originator or
+      User-Agent until a generic user-facing telemetry opt-in exists. Preserve
+      the established compatibility headers and pin the fork policy with a
+      behavioral regression test.
+    paths:
+      - agent/agent_init.py
+      - agent/agent_runtime_helpers.py
+      - agent/auxiliary_client.py
+      - contributors/emails/vignesh@openai.com
+      - run_agent.py
+      - tests/agent/test_codex_attribution_policy.py
+      - tests/agent/test_codex_cloudflare_headers.py
+      - tests/agent/test_codex_usage_attribution.py
+      - website/docs/user-guide/configuration.md
+    tests:
+      - scripts/run_tests.sh tests/agent/test_codex_attribution_policy.py tests/agent/test_codex_cloudflare_headers.py
+    retirement: Remove only after a generic user-facing opt-in gate and setup/tooling controls exist for outbound attribution.
+
   - id: upstream-event-replay-revert-preservation
     kind: compatibility
     rationale: >-

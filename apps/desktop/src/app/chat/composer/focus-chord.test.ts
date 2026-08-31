@@ -46,6 +46,11 @@ describe('handleComposerFocusChord', () => {
     expect(await focusRequests(chordEvent({ shiftKey: true }))).toEqual([])
   })
 
+  it('ignores Alt-modified and IME-composition chords', async () => {
+    expect(await focusRequests(chordEvent({ altKey: true }))).toEqual([])
+    expect(await focusRequests(chordEvent({ isComposing: true }))).toEqual([])
+  })
+
   it('yields to a press someone else already claimed', async () => {
     const event = chordEvent()
     event.preventDefault()

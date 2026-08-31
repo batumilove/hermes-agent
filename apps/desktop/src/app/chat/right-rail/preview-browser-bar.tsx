@@ -199,7 +199,7 @@ export function PreviewBrowserBar({
           iconClassName="size-3"
           label={t.contextMenu.link.copyUrl}
           showLabel={false}
-          text={url}
+          text={shown}
         />
       </div>
       <PaneStripGlyph

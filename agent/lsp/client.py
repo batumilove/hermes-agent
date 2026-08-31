@@ -908,8 +908,8 @@ class LSPClient:
         ``False`` on timeout.  Callers must treat ``False`` as "no
         data", NOT as "no errors" — the diagnostic stores may still
         hold stale entries from the previous edit at that point.
-        Best-effort — never throws if the server doesn't support pull
-        diagnostics; we still get the push side.
+        Unsupported pull diagnostics are ignored; we still get the push side.
+        Raises ``LSPProtocolError`` if the server connection closes mid-wait.
         """
         if timeout is not None and timeout > 0:
             budget = timeout
