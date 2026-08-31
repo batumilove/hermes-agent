@@ -5132,6 +5132,36 @@ class TestApplyDatabasePragmas:
         finally:
             conn.close()
 
+    @pytest.mark.parametrize(
+        "cfg",
+        [
+            {},
+            {"database": {}},
+            {"database": {"wal_autocheckpoint": None}},
+        ],
+    )
+    def test_disables_wal_autocheckpoint_when_unset(
+        self, tmp_path, monkeypatch, cfg
+    ):
+        """SessionDB's explicit post-lock checkpoint path owns checkpointing.
+
+        Leaving SQLite's connection-local default of 1000 pages enabled can
+        run an automatic checkpoint inside ``Connection.commit()`` while the
+        SessionDB writer mutex is held, creating a writer convoy.
+        """
+        import sqlite3
+        from hermes_state import apply_database_pragmas
+
+        conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            assert conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == 1000
+            self._patch_cfg(monkeypatch, cfg)
+            apply_database_pragmas(conn, db_label="test.db")
+            assert conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == 0
+        finally:
+            conn.close()
+
     def test_honors_journal_size_limit_from_config(self, tmp_path, monkeypatch):
         import sqlite3
         from hermes_state import apply_database_pragmas
