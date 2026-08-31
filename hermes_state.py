@@ -2172,7 +2172,10 @@ def apply_database_pragmas(
       (e.g. ``-262144`` = 256 MB page cache)
     * ``mmap_size`` — max bytes for memory-mapped I/O (0 = disabled)
     * ``temp_store`` — 0=DEFAULT(file), 1=FILE, 2=MEMORY, 3=ALWAYS
-    * ``wal_autocheckpoint`` — WAL auto-checkpoint threshold in pages
+    * ``wal_autocheckpoint`` — WAL auto-checkpoint threshold in pages. Unset
+      or null defaults to 0 because SessionDB owns a bounded, post-lock
+      PASSIVE checkpoint path; a connection-local automatic checkpoint can
+      otherwise run inside ``commit()`` while the writer mutex is held.
     * ``journal_size_limit`` — max journal/WAL size in bytes
     * ``synchronous`` — 0=OFF, 1=NORMAL, 2=FULL, 3=EXTRA. **macOS
       connections are exempt**: ``_enforce_macos_synchronous_full`` forces
@@ -2212,6 +2215,12 @@ def apply_database_pragmas(
     # and WAL per-thread readers).
     for pragma_name in pragma_names:
         raw_value = cfg_get(cfg, "database", pragma_name, default=None)
+        if pragma_name == "wal_autocheckpoint" and raw_value is None:
+            # SQLite's default (1000 pages) may checkpoint synchronously from
+            # commit(), which is inside SessionDB's serialized writer lock.
+            # Keep checkpoint I/O on _try_wal_checkpoint's bounded post-lock
+            # path unless an operator explicitly selects another threshold.
+            raw_value = 0
         if raw_value is None:
             continue
         try:

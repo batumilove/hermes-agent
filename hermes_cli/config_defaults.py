@@ -16,7 +16,8 @@ DEFAULT_CONFIG = {
     "database": {
         "journal_mode": "wal",
         # Optional WAL sizing pragmas, applied when set to integers.
-        # None = SQLite defaults (autocheckpoint 1000 pages, no size limit).
+        # None keeps Hermes-managed post-lock checkpointing (equivalent to
+        # wal_autocheckpoint=0) and leaves SQLite's journal size unlimited.
         "wal_autocheckpoint": None,
         "journal_size_limit": None,
     },
