@@ -468,12 +468,13 @@ _COMPRESSION_LOCK_HOLDER_PID_RE = re.compile(r"(?:^|:)pid=(\d+)(?::|$)")
 _SESSION_DB_WRITE_ADMISSIONS: "Dict[str, SessionDBWriteAdmission]" = {}
 _SESSION_DB_WRITE_ADMISSIONS_LOCK = threading.Lock()
 
-# Defaults: capacity 4 concurrent write transactions per db file, queue up to
-# 64 waiters before rejecting. Sized so a healthy single-HDD writer keeps
-# pipeline depth without admitting more parallel BEGIN IMMEDIATE attempts
-# than the disk can drain; queue-full becomes 429 + Retry-After at
-# agent-serving endpoints (see gateway/write_admission.py).
-_SESSION_DB_ADMISSION_DEFAULT_CAPACITY = 4
+# Defaults: one active write transaction per db file, queue up to 64 waiters
+# before rejecting. SQLite exposes one writer slot per database file, so the
+# process-wide admission boundary uses that same granularity: independent
+# SessionDB wrappers queue before BEGIN IMMEDIATE rather than convoying inside
+# SQLite's busy wait. Queue-full becomes 429 + Retry-After at agent-serving
+# endpoints (see gateway/write_admission.py).
+_SESSION_DB_ADMISSION_DEFAULT_CAPACITY = 1
 _SESSION_DB_ADMISSION_DEFAULT_QUEUE_LIMIT = 64
 _SESSION_DB_ADMISSION_RETRY_AFTER_S = 1.0
 
@@ -513,15 +514,42 @@ class _AdmissionTicket:
     shutdown) so ``_AdmissionToken.__enter__`` can park on it.
     """
 
-    __slots__ = ("seq", "session_key", "event", "granted", "released", "cancelled")
+    __slots__ = (
+        "seq",
+        "session_key",
+        "operation",
+        "event",
+        "granted",
+        "released",
+        "cancelled",
+        "registered_at",
+        "granted_at",
+        "queue_depth",
+        "owner_operation",
+        "owner_age_s",
+        "owner_generation",
+        "owner_transitions",
+        "last_owner_operation",
+        "holder",
+    )
 
-    def __init__(self, seq: int, session_key: Optional[str]):
+    def __init__(self, seq: int, session_key: Optional[str], operation: str):
         self.seq = seq
         self.session_key = session_key
+        self.operation = operation
         self.event = threading.Event()
         self.granted = False
         self.released = False
         self.cancelled = False
+        self.registered_at = time.monotonic()
+        self.granted_at: Optional[float] = None
+        self.queue_depth = 0
+        self.owner_operation = "-"
+        self.owner_age_s = 0.0
+        self.owner_generation = 0
+        self.owner_transitions = 0
+        self.last_owner_operation = "-"
+        self.holder = "none"
 
 
 class _AdmissionToken:
@@ -577,6 +605,22 @@ class _AdmissionToken:
             return False
         return self._controller.cancel(self._ticket)
 
+    def diagnostics(self) -> Optional[Dict[str, Any]]:
+        """Return the immutable admission-wait snapshot after grant."""
+        if self._passthrough or self._ticket is None:
+            return None
+        ticket = self._ticket
+        granted_at = ticket.granted_at
+        return {
+            "wait": max(0.0, (granted_at or ticket.registered_at) - ticket.registered_at),
+            "queue_depth": ticket.queue_depth,
+            "owner_operation": ticket.owner_operation,
+            "owner_age_s": ticket.owner_age_s,
+            "owner_transitions": ticket.owner_transitions,
+            "last_owner_operation": ticket.last_owner_operation,
+            "holder": ticket.holder,
+        }
+
 
 class SessionDBWriteAdmission:
     """Bounded, FIFO, per-session-ordered write admission for one db path.
@@ -620,6 +664,9 @@ class SessionDBWriteAdmission:
         self._session_order: "Dict[str, deque[_AdmissionTicket]]" = {}
         self._in_flight = 0
         self._closed = False
+        self._active: "Dict[int, _AdmissionTicket]" = {}
+        self._owner_generation = 0
+        self._last_owner_operation: Optional[str] = None
         # Per-thread count of granted slots held (reentrancy guard — see
         # _AdmissionToken.__enter__).
         self._thread_depth = threading.local()
@@ -627,7 +674,9 @@ class SessionDBWriteAdmission:
     # -- acquisition --------------------------------------------------------
 
     def acquire(
-        self, session_key: Optional[str] = None
+        self,
+        session_key: Optional[str] = None,
+        operation: Optional[str] = None,
     ) -> _AdmissionToken:
         """Register a write intent; returns a token context manager.
 
@@ -651,7 +700,20 @@ class SessionDBWriteAdmission:
                 raise SessionDBWriteAdmissionClosedError(
                     "SessionDB write admission is shut down for this database"
                 )
-            ticket = _AdmissionTicket(next(self._seq), session_key)
+            operation_label = _SessionDBAttributedLock._clean_operation(
+                operation or "unknown"
+            )
+            ticket = _AdmissionTicket(next(self._seq), session_key, operation_label)
+            ticket.queue_depth = len(self._waiters) + 1
+            ticket.owner_generation = self._owner_generation
+            if self._active:
+                owner = next(iter(self._active.values()))
+                ticket.owner_operation = owner.operation
+                ticket.owner_age_s = max(
+                    0.0,
+                    ticket.registered_at - (owner.granted_at or ticket.registered_at),
+                )
+                ticket.holder = "attributed"
             session_queue = None
             if session_key is not None:
                 session_queue = self._session_order.setdefault(session_key, deque())
@@ -678,6 +740,14 @@ class SessionDBWriteAdmission:
         return _AdmissionToken(self, ticket)
 
     def _grant_locked(self, ticket: _AdmissionTicket) -> None:
+        ticket.owner_transitions = self._owner_generation - ticket.owner_generation
+        if ticket.owner_transitions > 0:
+            ticket.last_owner_operation = self._last_owner_operation or "-"
+            ticket.holder = "attributed"
+        ticket.granted_at = time.monotonic()
+        self._owner_generation += 1
+        self._last_owner_operation = ticket.operation
+        self._active[ticket.seq] = ticket
         ticket.granted = True
         self._in_flight += 1
         ticket.event.set()
@@ -712,6 +782,7 @@ class SessionDBWriteAdmission:
                 return
             ticket.released = True
             self._in_flight -= 1
+            self._active.pop(ticket.seq, None)
             if ticket.session_key is not None:
                 self._discard_session_ticket_locked(ticket.session_key, ticket)
             promote = True
@@ -5701,6 +5772,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         if patience_s is None:
             patience_s = self._WRITE_PATIENCE_S
+        caller_name = getattr(fn, "__name__", type(fn).__name__)
+        if operation is None and caller_name == "_do":
+            qualname = getattr(fn, "__qualname__", "")
+            enclosing = qualname.rsplit(".<locals>.", 1)[0]
+            inferred_operation = enclosing.rsplit(".", 1)[-1] if enclosing else caller_name
+        else:
+            inferred_operation = caller_name
+        operation_name = str(operation or inferred_operation)
+        operation_label = re.sub(r"[\r\n\t]+", " ", operation_name)[:96]
+        reason_label = re.sub(
+            r"[^A-Za-z0-9_.-]+", "_", str(reason or "-")
+        )[:64]
         # Gateway-wide write admission (P0-A part 2): hold a slot on the
         # shared per-path controller for the ENTIRE call — lock retries,
         # BEGIN..commit, and post-commit checkpoint work all happen inside
@@ -5715,27 +5798,21 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         else:
             try:
                 admission_ctx = self._write_admission().acquire(
-                    session_key=_current_session_key_for_admission()
+                    session_key=_current_session_key_for_admission(),
+                    operation=operation_label,
                 )
             except SessionDBWriteAdmissionClosedError:
                 # Drain in progress: endpoint admission already fails fast;
                 # the persistence layer stays fail-open so shutdown flushes
                 # and straggler writes never lose data to a fairness bound.
                 admission_ctx = nullcontext(None)
-        caller_name = getattr(fn, "__name__", type(fn).__name__)
-        if operation is None and caller_name == "_do":
-            qualname = getattr(fn, "__qualname__", "")
-            enclosing = qualname.rsplit(".<locals>.", 1)[0]
-            inferred_operation = enclosing.rsplit(".", 1)[-1] if enclosing else caller_name
-        else:
-            inferred_operation = caller_name
-        operation_name = str(operation or inferred_operation)
-        operation_label = re.sub(r"[\r\n\t]+", " ", operation_name)[:96]
-        reason_label = re.sub(
-            r"[^A-Za-z0-9_.-]+", "_", str(reason or "-")
-        )[:64]
         call_started = time.monotonic()
-        with admission_ctx:
+        with admission_ctx as admission_token:
+            admission_diag = (
+                admission_token.diagnostics()
+                if isinstance(admission_token, _AdmissionToken)
+                else None
+            )
             return self._execute_write_admitted(
                 fn,
                 patience_s,
@@ -5744,6 +5821,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 items,
                 caller_name,
                 call_started,
+                admission_diag,
             )
 
     def _execute_write_admitted(
@@ -5755,6 +5833,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         items,
         caller_name,
         call_started,
+        admission_diag,
     ):
         deadline = call_started + patience_s
         # Set on the first compression-busy collision so the short wait is
@@ -5762,6 +5841,20 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         compression_deadline: Optional[float] = None
         attempt = 0
         sqlite_retry_wait = 0.0
+        admission_diag = admission_diag or {}
+        admission_wait = float(admission_diag.get("wait", 0.0))
+        admission_queue_depth = int(admission_diag.get("queue_depth", 0))
+        admission_owner_operation = str(
+            admission_diag.get("owner_operation", "-")
+        )
+        admission_owner_age_s = float(admission_diag.get("owner_age_s", 0.0))
+        admission_owner_transitions = int(
+            admission_diag.get("owner_transitions", 0)
+        )
+        admission_last_owner_operation = str(
+            admission_diag.get("last_owner_operation", "-")
+        )
+        admission_holder = str(admission_diag.get("holder", "none"))
         # Transient engine-level error observed on contended WAL appends.
         # SQLite's exception class varies by build: some versions surface it
         # as InterfaceError, which is a sibling of DatabaseError. Keep the
@@ -5837,7 +5930,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         "instance_owner_operation=%s instance_owner_kind=%s "
                         "instance_owner_age_s=%.3f instance_owner_transitions=%d "
                         "instance_last_owner_operation=%s instance_last_owner_kind=%s "
-                        "instance_lock_holder=%s live_instances_total=%d",
+                        "instance_lock_holder=%s admission_wait=%.3fs "
+                        "admission_queue_depth=%d admission_owner_operation=%s "
+                        "admission_owner_age_s=%.3f admission_owner_transitions=%d "
+                        "admission_last_owner_operation=%s admission_holder=%s "
+                        "live_instances_total=%d",
                         caller_name,
                         operation_label,
                         reason_label,
@@ -5862,6 +5959,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         last_owner_operation,
                         last_owner_kind,
                         lock_holder,
+                        admission_wait,
+                        admission_queue_depth,
+                        admission_owner_operation,
+                        admission_owner_age_s,
+                        admission_owner_transitions,
+                        admission_last_owner_operation,
+                        admission_holder,
                         len(_SESSION_DB_LIVE_REGISTRY),
                     )
                 # Success — periodic best-effort checkpoint + FTS merge.
