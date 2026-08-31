@@ -11383,12 +11383,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     e,
                 )
 
-    async def _finalize_shutdown_agents(
-        self,
-        active_agents: Dict[str, Any],
-        *,
-        finalize_sessions: bool = True,
-    ) -> bool:
+    async def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> bool:
         deadline = getattr(self, "_shutdown_cleanup_deadline", None)
         if deadline is None:
             deadline = asyncio.get_running_loop().time() + self._CLEANUP_TIMEOUT_S
@@ -11461,17 +11456,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ):
                 return False
 
-            if finalize_sessions:
-                remaining = self._shutdown_remaining(deadline)
-                phase_timeout = min(self._CLEANUP_TIMEOUT_S, remaining)
-                if phase_timeout <= 0:
-                    return False
-                await self._finalize_session_off_loop(
-                    session_id=getattr(agent, "session_id", None),
-                    platform="gateway",
-                    reason="shutdown",
-                    timeout=phase_timeout,
-                )
+            remaining = self._shutdown_remaining(deadline)
+            phase_timeout = min(self._CLEANUP_TIMEOUT_S, remaining)
+            if phase_timeout <= 0:
+                return False
+            await self._finalize_session_off_loop(
+                session_id=getattr(agent, "session_id", None),
+                platform="gateway",
+                reason="shutdown",
+                timeout=phase_timeout,
+            )
 
             remaining = self._shutdown_remaining(deadline)
             phase_timeout = min(self._CLEANUP_TIMEOUT_S, remaining)
@@ -16193,10 +16187,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.error("Failed to launch detached gateway restart: %s", e)
 
             self._shutdown_cleanup_deadline = _cleanup_deadline
-            if not await self._finalize_shutdown_agents(
-                active_agents,
-                finalize_sessions=not timed_out,
-            ):
+            if not await self._finalize_shutdown_agents(active_agents):
                 _cleanup_budget_exhausted = True
 
             # Also shut down memory providers on idle cached agents.
