@@ -185,6 +185,25 @@ patches:
       - python -m py_compile gateway/lifecycle_lease.py hermes_cli/lifecycle_coordination.py hermes_cli/lifecycle_lease_cmd.py hermes_cli/subcommands/lifecycle_lease.py
     retirement: Remove when upstream serializes every equivalent lifecycle mutation caller with a durable profile-wide lease, exact provenance binding, crash-orphan exclusion, tamper-resistant release, explicit reconciliation, and matching cross-controller tests.
 
+  - id: upstream-event-replay-revert-preservation
+    kind: compatibility
+    rationale: >-
+      Keep the legacy sequence-stamped gateway event replay removed while the
+      recorded baseline remains a08dfab302, which still contains that upstream
+      implementation. Upstream later reverted it in 9f05b06589d and replaced
+      it with the epoch/transient-delta redesign beginning at 874fab0ce05.
+    paths:
+      - apps/desktop/src/app/gateway/hooks/use-gateway-boot.ts
+      - apps/shared/src/json-rpc-gateway-replay.test.ts
+      - apps/shared/src/json-rpc-gateway.ts
+      - tests/test_tui_gateway_event_replay.py
+      - tui_gateway/event_replay.py
+      - tui_gateway/methods_session.py
+      - tui_gateway/server.py
+    tests:
+      - python3 scripts/check_fork_delta.py
+    retirement: Remove when the recorded upstream baseline advances to the post-revert redesign and that replacement is intentionally reconciled.
+
   - id: upstream-sync-whitespace-cleanup
     kind: cleanup
     rationale: >-
