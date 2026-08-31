@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import gateway.run as gateway_run
+from gateway.config import Platform
 from tests.gateway.restart_test_helpers import make_restart_runner
 
 
@@ -344,6 +345,97 @@ async def test_wedged_agent_finalize_cannot_starve_tail_release(monkeypatch):
     assert started.is_set(), "agent finalization was never attempted"
     assert elapsed < 1.60, (
         f"agent finalization consumed aggregate budget: {elapsed:.3f}s"
+    )
+
+
+@pytest.mark.asyncio
+async def test_interrupted_resume_pending_agents_skip_session_finalize(monkeypatch):
+    """Interrupted turns are suspended for resume, not finalized as ended sessions."""
+    finalize_session = MagicMock()
+    monkeypatch.setattr("hermes_cli.lifecycle.finalize_session", finalize_session)
+    runner, _adapter = make_restart_runner()
+    runner._shutdown_cleanup_deadline = asyncio.get_running_loop().time() + 0.50
+
+    class _InterruptedAgent:
+        session_id = "resume-pending-agent"
+        _session_messages = [{"role": "user", "content": "preserve me"}]
+
+        def _drop_trailing_empty_response_scaffolding(self, _messages):
+            return None
+
+        def _flush_messages_to_session_db(self, _messages):
+            return None
+
+    agent = _InterruptedAgent()
+    runner._cleanup_agent_resources = MagicMock()
+
+    completed = await runner._finalize_shutdown_agents(
+        {"session": agent},
+        finalize_sessions=False,
+    )
+
+    assert completed is True
+    finalize_session.assert_not_called()
+    runner._cleanup_agent_resources.assert_called_once_with(agent)
+
+
+@pytest.mark.asyncio
+async def test_timed_out_drain_marks_shutdown_agents_as_resume_pending(monkeypatch):
+    """The stop path must not run end-of-session hooks for interrupted turns."""
+    runner, _adapter = make_restart_runner()
+    active_agent = MagicMock()
+    _configure_fast_forced_shutdown(runner, monkeypatch, {"session": active_agent})
+    runner._running_agents = {"session": active_agent}
+    runner._drain_active_agents = AsyncMock(
+        return_value=({"session": active_agent}, True)
+    )
+
+    async def _interrupt(_reason, _deadline):
+        runner._running_agents.clear()
+
+    runner._interrupt_running_agents = AsyncMock(side_effect=_interrupt)
+    runner._finalize_shutdown_agents = AsyncMock(return_value=True)
+
+    await asyncio.wait_for(_run_stop(runner), timeout=2.0)
+
+    runner._finalize_shutdown_agents.assert_awaited_once_with(
+        {"session": active_agent},
+        finalize_sessions=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_post_agent_teardown_receives_reserved_tail_budget(monkeypatch):
+    """A wedged interrupted-agent cleanup cannot starve adapter teardown."""
+    runner, _adapter = make_restart_runner()
+    active_agent = MagicMock()
+    _configure_fast_forced_shutdown(runner, monkeypatch, {"session": active_agent})
+    runner._running_agents = {"session": active_agent}
+    runner._SHUTDOWN_TAIL_RESERVE_S = 0.20
+    monkeypatch.setattr(
+        gateway_run, "resolve_shutdown_watchdog_delay", lambda _timeout: 0.50
+    )
+    runner._drain_active_agents = AsyncMock(
+        return_value=({"session": active_agent}, True)
+    )
+
+    async def _interrupt(_reason, _deadline):
+        runner._running_agents.clear()
+
+    async def _consume_pre_tail(*_args, **_kwargs):
+        await asyncio.sleep(0.31)
+        return False
+
+    runner._interrupt_running_agents = AsyncMock(side_effect=_interrupt)
+    runner._finalize_shutdown_agents = AsyncMock(side_effect=_consume_pre_tail)
+    adapter = MagicMock()
+    runner.adapters[Platform.TELEGRAM] = adapter
+    runner._bounded_adapter_teardown = AsyncMock(return_value=None)
+
+    await asyncio.wait_for(_run_stop(runner), timeout=1.20)
+
+    runner._bounded_adapter_teardown.assert_awaited_once_with(
+        adapter, Platform.TELEGRAM
     )
 
 
