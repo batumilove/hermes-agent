@@ -329,6 +329,31 @@ def test_force_only_observation_can_never_trigger_early_graceful_restart(
     assert ops.events.count("restart:force-kill") == 1
 
 
+def test_bootstrap_manifest_cannot_gracefully_restart_even_if_operations_report_quiet(
+    tmp_path, controller_path
+):
+    def mutate(raw):
+        raw["bootstrap"] = {
+            "mode": "legacy-force-only",
+            "old_code_sha": "c" * 40,
+        }
+        raw["authorization"]["scope"].append("bootstrap_force_only")
+
+    manifest = load_manifest(tmp_path, controller_path, mutate=mutate)
+    quiet = Occupancy(active_agents=0, cgroup_pids=(101,))
+    ops = FakeOps(
+        occupancy=[quiet, quiet, quiet, quiet],
+        replacements=[replace(replacement_identity(), n_restarts=8)],
+    )
+
+    result = BoundedRestartController(manifest, ops).run(execute=True)
+
+    assert ops.mono == 180
+    assert result["restart_mode"] == "FORCED"
+    assert "restart:graceful" not in ops.events
+    assert ops.events.count("restart:force-kill") == 1
+
+
 def test_busy_at_deadline_force_kills_cgroup_once_and_accepts_auto_restart(
     tmp_path, controller_path
 ):
@@ -788,6 +813,39 @@ def test_systemd_runtime_acceptance_binds_every_surface_to_replacement(
         "resumability": "PASS",
         "drain_marker": "PASS",
     }
+
+
+def test_bootstrap_runtime_acceptance_still_rejects_old_code_identity(
+    tmp_path, controller_path, monkeypatch
+):
+    old_code_sha = "c" * 40
+
+    def mutate(raw):
+        raw["bootstrap"] = {
+            "mode": "legacy-force-only",
+            "old_code_sha": old_code_sha,
+        }
+        raw["authorization"]["scope"].append("bootstrap_force_only")
+
+    manifest = load_manifest(tmp_path, controller_path, mutate=mutate)
+    service = replacement_identity()
+    ops = SystemdOperations()
+    payloads = {
+        "identify": {"pid": service.pid, "code_sha": old_code_sha},
+        "status": {
+            "pid": service.pid,
+            "gateway_state": "running",
+            "platforms": {
+                name: {"state": "connected", "writer_pid": service.pid}
+                for name in manifest.expected_platforms
+            },
+            "scheduler": {"status": "running", "writer_pid": service.pid},
+            "session_store": {"status": "ok", "writer_pid": service.pid},
+        },
+    }
+    monkeypatch.setattr(ops, "_query_gateway", lambda _manifest, verb: payloads[verb])
+
+    assert set(ops.runtime_acceptance(manifest, service).values()) == {"FAIL"}
 
 
 def test_systemd_runtime_acceptance_rejects_stale_scheduler_writer(

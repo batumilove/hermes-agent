@@ -723,7 +723,10 @@ class BoundedRestartController:
                         }
                     )
                     self._write(result)
-                    if last.quiet_for(old.pid):
+                    if (
+                        self.manifest.bootstrap_mode is None
+                        and last.quiet_for(old.pid)
+                    ):
                         stable += 1
                         if stable >= self.manifest.stable_zero_samples:
                             mode = "GRACEFUL"
