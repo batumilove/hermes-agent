@@ -670,6 +670,7 @@ def _build_runtime_status_record() -> dict[str, Any]:
         "active_agents": 0,
         "platforms": {},
         "session_store": {"status": "unknown"},
+        "scheduler": {"status": "unknown"},
         "updated_at": _utc_now_iso(),
     })
     payload.update(_get_code_identity_fields())
@@ -1074,6 +1075,7 @@ def write_runtime_status(
     retrying_since: Any = _UNSET,
     served_profiles: Any = _UNSET,
     session_store: Any = _UNSET,
+    scheduler: Any = _UNSET,
     clear_profile_platforms: bool = False,
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status."""
@@ -1125,7 +1127,25 @@ def write_runtime_status(
             candidate = str(session_store.get("status") or "unknown")
             if candidate in {"ok", "unavailable", "retrying", "unknown"}:
                 state = candidate
-        payload["session_store"] = {"status": state}
+        payload["session_store"] = {
+            "status": state,
+            "writer_pid": current_record["pid"],
+            "writer_start_time": current_record["start_time"],
+        }
+    if scheduler is not _UNSET:
+        scheduler_state = "unknown"
+        provider = "unknown"
+        if isinstance(scheduler, dict):
+            candidate = str(scheduler.get("status") or "unknown")
+            if candidate in {"running", "stopping", "failed", "unknown"}:
+                scheduler_state = candidate
+            provider = str(scheduler.get("provider") or "unknown")
+        payload["scheduler"] = {
+            "status": scheduler_state,
+            "provider": provider,
+            "writer_pid": current_record["pid"],
+            "writer_start_time": current_record["start_time"],
+        }
 
     if platform is not _UNSET:
         platform_payload = payload["platforms"].get(platform, {})

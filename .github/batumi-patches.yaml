@@ -819,21 +819,28 @@ patches:
     rationale: >-
       Serialize maintenance activation controllers on one canonical per-user
       process lock, bind drain marker refresh and cleanup to a unique owner,
-      keep intake fail-closed if an owned marker is removed or replaced, and
-      suppress scheduled and catch-up dispatch for the full owned transaction.
+      keep intake fail-closed if an owned marker is removed or replaced, suppress
+      scheduled and catch-up dispatch for the full owned transaction, and run a
+      sealed one-restart bounded-handoff transaction whose occupancy and
+      post-replacement acceptance are proven through PID-bound live status.
     paths:
       - cron/scheduler.py
       - cron/scheduler_provider.py
       - gateway/drain_control.py
+      - gateway/status.py
+      - hermes_cli/bounded_restart.py
       - hermes_cli/web_server.py
       - tests/cron/test_scheduler.py
       - tests/cron/test_scheduler_provider.py
       - tests/gateway/test_external_drain_control.py
+      - tests/gateway/test_status.py
+      - tests/hermes_cli/test_bounded_restart_controller.py
       - tests/hermes_cli/test_web_server.py
     tests:
-      - scripts/run_tests.sh tests/gateway/test_external_drain_control.py tests/gateway/test_restart_drain.py tests/gateway/test_gateway_shutdown.py
+      - scripts/run_tests.sh tests/gateway/test_external_drain_control.py tests/gateway/test_restart_drain.py tests/gateway/test_gateway_shutdown.py tests/gateway/test_status.py
+      - scripts/run_tests.sh tests/hermes_cli/test_bounded_restart_controller.py
       - scripts/run_tests.sh tests/cron/test_scheduler.py tests/cron/test_scheduler_provider.py tests/hermes_cli/test_web_server.py
-    retirement: Remove when upstream provides equivalent canonical cross-process ownership, compare-and-delete marker lifecycle, fail-closed intake, and scheduled/catch-up dispatch suppression.
+    retirement: Remove when upstream provides equivalent canonical cross-process ownership, compare-and-delete marker lifecycle, fail-closed intake, scheduled/catch-up dispatch suppression, and a sealed bounded-handoff restart with PID-bound live occupancy and post-replacement acceptance.
 
   - id: buzz-allowlisted-dm-metadata-fallback
     kind: compatibility

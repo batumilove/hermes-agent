@@ -143,7 +143,7 @@ def test_execute_write_logs_reason_without_changing_operation(tmp_path, caplog):
     db.close()
 
 
-def test_execute_write_attributes_lock_wait_to_observed_owner(tmp_path, caplog):
+def test_execute_write_attributes_admission_wait_to_observed_owner(tmp_path, caplog):
     db = SessionDB(db_path=tmp_path / "state.db")
     db._SLOW_WRITE_WARN_S = 0.0
     db._SLOW_LOCK_WAIT_WARN_S = 0.0
@@ -182,11 +182,11 @@ def test_execute_write_attributes_lock_wait_to_observed_owner(tmp_path, caplog):
     waiter_log = next(
         message for message in messages if "operation=wait_for_writer" in message
     )
-    assert "instance_queue_depth=1" in waiter_log
-    assert "instance_owner_operation=hold_writer" in waiter_log
-    assert "instance_owner_age_s=" in waiter_log
-    assert "instance_owner_transitions=0" in waiter_log
-    assert "instance_lock_holder=attributed" in waiter_log
+    assert "admission_queue_depth=1" in waiter_log
+    assert "admission_owner_operation=hold_writer" in waiter_log
+    assert "admission_owner_age_s=" in waiter_log
+    assert "admission_owner_transitions=0" in waiter_log
+    assert "admission_holder=attributed" in waiter_log
     db.close()
 
 
@@ -237,7 +237,7 @@ def test_execute_write_attributes_fallback_read_holder(tmp_path, caplog):
     db.close()
 
 
-def test_execute_write_counts_attributed_owner_transitions_while_queued(tmp_path, caplog):
+def test_execute_write_counts_admission_owner_transitions_while_queued(tmp_path, caplog):
     db = SessionDB(db_path=tmp_path / "state.db")
     db._SLOW_WRITE_WARN_S = 0.0
     db._SLOW_LOCK_WAIT_WARN_S = 0.0
@@ -276,13 +276,13 @@ def test_execute_write_counts_attributed_owner_transitions_while_queued(tmp_path
                 for name in ("second", "third")
             }
             deadline = time.monotonic() + 2
+            admission = db._write_admission()
             while time.monotonic() < deadline:
-                with db._write_diag_lock:
-                    if db._write_waiter_count == 2:
-                        break
+                if admission.stats()["waiting"] == 2:
+                    break
                 time.sleep(0.005)
             else:
-                raise AssertionError("queued writers did not both reach the instance lock")
+                raise AssertionError("queued writers did not both reach admission")
 
             release_first.set()
             first.result(timeout=2)
@@ -308,11 +308,11 @@ def test_execute_write_counts_attributed_owner_transitions_while_queued(tmp_path
         for record in caplog.records
         if f"operation={loser}_writer" in record.getMessage()
     )
-    transitions = re.search(r"instance_owner_transitions=([0-9]+)", loser_log)
+    transitions = re.search(r"admission_owner_transitions=([0-9]+)", loser_log)
     assert transitions is not None
     assert int(transitions.group(1)) >= 1
-    assert f"instance_last_owner_operation={winner}_writer" in loser_log
-    assert "instance_lock_holder=attributed" in loser_log
+    assert f"admission_last_owner_operation={winner}_writer" in loser_log
+    assert "admission_holder=attributed" in loser_log
     db.close()
 
 
