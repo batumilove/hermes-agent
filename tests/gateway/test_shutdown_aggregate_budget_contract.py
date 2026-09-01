@@ -429,3 +429,44 @@ async def test_wedged_database_close_cannot_starve_tail_release(monkeypatch):
 
     assert started.is_set(), "database close was never attempted"
     assert elapsed < 1.60, f"database close consumed aggregate budget: {elapsed:.3f}s"
+
+
+@pytest.mark.asyncio
+async def test_terminal_attribution_retains_budget_after_wedged_tail_teardown(monkeypatch):
+    """Tail cleanup cannot consume the terminal shutdown-evidence budget."""
+    runner, _adapter = make_restart_runner()
+    _configure_fast_forced_shutdown(runner, monkeypatch, {})
+    runner._SHUTDOWN_TAIL_RESERVE_S = 0.20
+    monkeypatch.setattr(
+        gateway_run, "resolve_shutdown_watchdog_delay", lambda _timeout: 0.50
+    )
+
+    adapter = MagicMock()
+    runner.adapters[Platform.TELEGRAM] = adapter
+    never = asyncio.Event()
+
+    async def _wedged_teardown(_adapter, _platform, *, profile=None):
+        del profile
+        await never.wait()
+
+    monkeypatch.setattr(runner, "_bounded_adapter_teardown", _wedged_teardown)
+    terminal_budgets = []
+
+    async def _record(phase: str, *, deadline: float):
+        if phase in {"clean_exit", "cleanup_incomplete"}:
+            terminal_budgets.append(
+                gateway_run.GatewayRunner._shutdown_remaining(deadline)
+            )
+        from gateway.drain_attribution import DrainAttributionWriteResult
+
+        return DrainAttributionWriteResult(status="persisted")
+
+    runner._record_drain_attribution = _record
+
+    await asyncio.wait_for(_run_stop(runner), timeout=1.20)
+
+    assert len(terminal_budgets) == 1
+    assert terminal_budgets[0] >= runner._DRAIN_ATTRIBUTION_WRITE_TIMEOUT_S, (
+        "terminal cleanup_incomplete attribution received no reserved budget: "
+        f"{terminal_budgets[0]:.3f}s"
+    )

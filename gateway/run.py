@@ -4019,6 +4019,28 @@ def _drain_gateway_watch_events(completion_queue) -> "list[dict]":
 import weakref as _weakref
 _gateway_runner_ref: _weakref.ref = lambda: None
 
+# Linearization fence between shutdown admission closure and manual cron fire
+# claims issued by turns that were already in flight. A bare ``_draining``
+# check is racy: the tool thread can observe False, then commit a fire claim
+# after the event-loop thread flips the flag. Both sides use this lock, so a
+# claim is unambiguously either admitted before drain begins or rejected after.
+_gateway_cron_fire_admission_lock = threading.Lock()
+
+
+@_contextmanager
+def gateway_cron_fire_admission():
+    """Hold shutdown admission stable while a manual cron claim is committed."""
+    with _gateway_cron_fire_admission_lock:
+        runner = _gateway_runner_ref()
+        admitted = not bool(runner and getattr(runner, "_draining", False))
+        yield admitted
+
+
+def _mark_gateway_draining(runner) -> None:
+    """Close manual-cron admission atomically with the shutdown flag."""
+    with _gateway_cron_fire_admission_lock:
+        runner._draining = True
+
 
 def _normalize_empty_agent_response(
     agent_result: dict,
@@ -11560,6 +11582,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # shutdown tail needed for cooperative interruption and resource cleanup.
     _DRAIN_ATTRIBUTION_WRITE_TIMEOUT_S = 0.05
     _SHUTDOWN_TAIL_RESERVE_S = 10.0
+    # Keep one final attribution write plus equal scheduler/watchdog headroom
+    # outside every teardown consumer's deadline. Without this sub-reserve a
+    # wedged adapter/DB close can consume the entire tail and make the terminal
+    # clean_exit/cleanup_incomplete record impossible to persist.
+    _SHUTDOWN_TERMINAL_ATTRIBUTION_RESERVE_S = 0.10
     _SYSTEMD_SHUTDOWN_MARGIN_S = 5.0
 
     def _shutdown_watchdog_delay_secs(self) -> float:
@@ -12515,7 +12542,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Refuse new turns immediately while in-flight work finishes.
         # Keep ``_running`` True so adapters stay connected and the active
         # turn can still deliver its final response (#77184).
-        self._draining = True
+        _mark_gateway_draining(self)
 
         async def _run_restart() -> None:
             await self._await_active_work_before_restart(steered_agent_ids)
@@ -15800,16 +15827,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 asyncio.get_running_loop().time()
                 + GatewayRunner._shutdown_watchdog_delay_secs(self)
             )
-            # Drain/interruption and per-agent preservation may consume only
-            # the pre-tail budget. Adapter disconnect, final tool cleanup,
-            # SessionDB close, and terminal attribution use the reserved tail
-            # up to _shutdown_deadline.
-            _cleanup_deadline = _shutdown_deadline - max(
-                0.0,
+            _terminal_attribution_reserve = max(
+                2.0
+                * getattr(
+                    self,
+                    "_DRAIN_ATTRIBUTION_WRITE_TIMEOUT_S",
+                    GatewayRunner._DRAIN_ATTRIBUTION_WRITE_TIMEOUT_S,
+                ),
                 getattr(
                     self,
-                    "_SHUTDOWN_TAIL_RESERVE_S",
-                    GatewayRunner._SHUTDOWN_TAIL_RESERVE_S,
+                    "_SHUTDOWN_TERMINAL_ATTRIBUTION_RESERVE_S",
+                    GatewayRunner._SHUTDOWN_TERMINAL_ATTRIBUTION_RESERVE_S,
+                ),
+            )
+            _teardown_deadline = _shutdown_deadline - max(
+                0.0, _terminal_attribution_reserve
+            )
+            # Drain/interruption and per-agent preservation may consume only
+            # the pre-tail budget. Adapter disconnect, final tool cleanup, and
+            # SessionDB close use the reserved tail only up to
+            # _teardown_deadline. Terminal attribution alone may use the final
+            # sub-reserve up to _shutdown_deadline.
+            _cleanup_deadline = min(
+                _teardown_deadline,
+                _shutdown_deadline
+                - max(
+                    0.0,
+                    getattr(
+                        self,
+                        "_SHUTDOWN_TAIL_RESERVE_S",
+                        GatewayRunner._SHUTDOWN_TAIL_RESERVE_S,
+                    ),
                 ),
             )
             _cleanup_budget_exhausted = False
@@ -15852,7 +15900,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             self._running = False
             self._clear_plugin_message_injector()
-            self._draining = True
+            _mark_gateway_draining(self)
 
             stop_watchdog = getattr(self, "_stop_systemd_watchdog", None)
             if callable(stop_watchdog):
@@ -16289,7 +16337,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 await cancel_completion_batches()
 
             for platform, adapter in list(self.adapters.items()):
-                _remaining = GatewayRunner._shutdown_remaining(_shutdown_deadline)
+                _remaining = GatewayRunner._shutdown_remaining(_teardown_deadline)
                 if _remaining <= 0:
                     _cleanup_budget_exhausted = True
                     break
@@ -16305,7 +16353,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Disconnect secondary-profile adapters (multiplex mode).
             for _prof, _amap in list(getattr(self, "_profile_adapters", {}).items()):
                 for platform, adapter in list(_amap.items()):
-                    _remaining = GatewayRunner._shutdown_remaining(_shutdown_deadline)
+                    _remaining = GatewayRunner._shutdown_remaining(_teardown_deadline)
                     if _remaining <= 0:
                         _cleanup_budget_exhausted = True
                         break
@@ -16374,7 +16422,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # disconnect (defense in depth; safe to call repeatedly).
             await _kill_tool_subprocesses(
                 "final-cleanup",
-                timeout=GatewayRunner._shutdown_remaining(_shutdown_deadline),
+                timeout=GatewayRunner._shutdown_remaining(_teardown_deadline),
             )
             logger.info(
                 "Shutdown phase: final-cleanup tool kill done at +%.2fs",
@@ -16390,7 +16438,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # RLIMIT_NOFILE=256.  See #14210.
             try:
                 from agent.auxiliary_client import shutdown_cached_clients
-                _remaining = GatewayRunner._shutdown_remaining(_shutdown_deadline)
+                _remaining = GatewayRunner._shutdown_remaining(_teardown_deadline)
                 if _remaining > 0:
                     if not await GatewayRunner._run_shutdown_sync_daemon(
                         self,
@@ -16417,7 +16465,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _db is None or not hasattr(_db, "close"):
                     continue
                 try:
-                    _remaining = GatewayRunner._shutdown_remaining(_shutdown_deadline)
+                    _remaining = GatewayRunner._shutdown_remaining(_teardown_deadline)
                     if _remaining <= 0:
                         _cleanup_budget_exhausted = True
                         break
@@ -16466,7 +16514,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 from gateway.shutdown_forensics import capture_residual_children
 
-                _remaining_s = GatewayRunner._shutdown_remaining(_shutdown_deadline)
+                _remaining_s = GatewayRunner._shutdown_remaining(_teardown_deadline)
                 capture_residual_children(
                     phase="pre_lock_release",
                     deadline_remaining=max(_remaining_s, 0.0),
@@ -16497,7 +16545,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if (
                 not timed_out
                 and not _cleanup_budget_exhausted
-                and GatewayRunner._shutdown_remaining(_shutdown_deadline) > 0
+                and GatewayRunner._shutdown_remaining(_teardown_deadline) > 0
                 and remaining_active_work == 0
             ):
                 await _record_shutdown_phase(
