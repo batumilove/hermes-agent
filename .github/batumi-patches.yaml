@@ -909,10 +909,12 @@ patches:
       - tests/gateway/test_goal_continuation_drain.py
       - tests/gateway/test_systemd_notify.py
       - tests/gateway/test_shutdown_watchdog.py
+      - tests/tools/test_cronjob_run_background.py
       - tools/cronjob_tools.py
     tests:
       - scripts/run_tests.sh tests/gateway/test_drain_attribution.py tests/gateway/test_drain_attribution_lifecycle.py tests/gateway/test_gateway_shutdown.py tests/gateway/test_shutdown_forensics.py tests/gateway/test_shutdown_watchdog.py
       - scripts/run_tests.sh tests/gateway/test_api_server_active_work_drain.py tests/gateway/test_shutdown_cache_cleanup.py tests/cron/test_running_job_attribution.py tests/cron/test_shutdown_interrupt.py
+      - scripts/run_tests.sh tests/tools/test_cronjob_run_background.py tests/tools/test_cronjob_run_immediate.py tests/cron/test_cron_run_stale_claim_reap_86721.py
     retirement: Remove when upstream preserves equivalent generation-scoped shutdown work identities, bounded evidence writes, watchdog-safe snapshots, and false-clean-exit prevention.
 
   - id: sessiondb-p0-write-admission-handle-leaks

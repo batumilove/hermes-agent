@@ -11,6 +11,7 @@ import re
 import sys
 import threading
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -52,6 +53,22 @@ from cron.jobs import (
     resume_job,
     update_job,
 )
+
+
+def _gateway_cron_fire_admission():
+    """Return the gateway admission fence, or an open fence for standalone CLI.
+
+    ``tools.cronjob_tools`` is also used without the gateway runtime installed
+    or imported. Only that exact absence falls back; dependency/import failures
+    inside an available gateway remain fail-closed and propagate.
+    """
+    try:
+        from gateway.run import gateway_cron_fire_admission
+    except ModuleNotFoundError as exc:
+        if exc.name != "gateway.run":
+            raise
+        return nullcontext(True)
+    return gateway_cron_fire_admission()
 
 
 def _notify_provider_jobs_changed_safe() -> None:
@@ -746,10 +763,9 @@ def _execute_job_now(
         # At-most-once claim: bail without running if a tick/other fire owns it.
         # The gateway fence linearizes claim commit against shutdown admission
         # closure, so an already-running turn cannot add fresh drain-blocking
-        # work after SIGTERM/restart drain begins.
-        from gateway.run import gateway_cron_fire_admission
-
-        with gateway_cron_fire_admission() as admitted:
+        # work after SIGTERM/restart drain begins. Standalone CLI execution uses
+        # an explicitly open local fence when gateway.run is absent.
+        with _gateway_cron_fire_admission() as admitted:
             if not admitted:
                 return {
                     "claimed": False,
@@ -1064,6 +1080,31 @@ def _try_dispatch_background_run(
     job_id = job["id"]
     job_name = str(job.get("name") or job_id)
 
+    # Reap stale ownership before the routing early return, preserving the
+    # standalone/direct-caller contract. This mutation is itself admission
+    # fenced; if drain closes after this block, the later claim fence rejects
+    # the run before any additional cron state is changed.
+    with _gateway_cron_fire_admission() as admitted:
+        if not admitted:
+            return {
+                "claimed": False,
+                "success": False,
+                "error": "Gateway is draining; manual cron run was not admitted.",
+            }
+        try:
+            from cron.executions import recover_interrupted_executions
+
+            reclaimed = recover_interrupted_executions()
+            if reclaimed:
+                logger.warning(
+                    "Reclaimed %d stale cron execution(s) from dead owner(s) "
+                    "before dispatching job '%s'",
+                    reclaimed,
+                    job_name,
+                )
+        except Exception as reap_exc:
+            logger.debug("Stale execution reclaim failed: %s", reap_exc)
+
     # ---- routing capture (on THIS thread; contextvars don't cross the pool) ----
     # Resolved BEFORE the claim: with no routable session there is no durable
     # consumer for a detached completion, so we must not claim-and-dispatch.
@@ -1110,35 +1151,15 @@ def _try_dispatch_background_run(
 
         # Same snapshot claim as _execute_job_now: carry the owner-bearing
         # record into the run so terminal writes stay fenced by this owner.
-        # Registration occurs before releasing the admission lock, making the
-        # accepted run visible to shutdown with no claim→tracking gap.
-        from gateway.run import gateway_cron_fire_admission
-
-        with gateway_cron_fire_admission() as admitted:
+        # Registration occurs before releasing the claim admission lock, making
+        # the accepted run visible to shutdown with no claim→tracking gap.
+        with _gateway_cron_fire_admission() as admitted:
             if not admitted:
                 return {
                     "claimed": False,
                     "success": False,
                     "error": "Gateway is draining; manual cron run was not admitted.",
                 }
-
-            # Reaping stale execution ownership is a state mutation and belongs
-            # inside the same admission critical section as claim/registration.
-            # A turn already in flight must have no cron side effects after
-            # shutdown admission closes.
-            try:
-                from cron.executions import recover_interrupted_executions
-
-                reclaimed = recover_interrupted_executions()
-                if reclaimed:
-                    logger.warning(
-                        "Reclaimed %d stale cron execution(s) from dead owner(s) "
-                        "before dispatching job '%s'",
-                        reclaimed,
-                        job_name,
-                    )
-            except Exception as reap_exc:
-                logger.debug("Stale execution reclaim failed: %s", reap_exc)
 
             claimed_job = claim_job_for_fire(job_id, return_job=True)
             if isinstance(claimed_job, dict):
