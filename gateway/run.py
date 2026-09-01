@@ -15761,10 +15761,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             _stop_started_at = time.monotonic()
             _stop_started_at_box["t"] = _stop_started_at
-            _cleanup_deadline = asyncio.get_running_loop().time() + max(
+            _shutdown_deadline = (
+                asyncio.get_running_loop().time()
+                + GatewayRunner._shutdown_watchdog_delay_secs(self)
+            )
+            # Drain/interruption and per-agent preservation may consume only
+            # the pre-tail budget. Adapter disconnect, final tool cleanup,
+            # SessionDB close, and terminal attribution use the reserved tail
+            # up to _shutdown_deadline.
+            _cleanup_deadline = _shutdown_deadline - max(
                 0.0,
-                GatewayRunner._shutdown_watchdog_delay_secs(self)
-                - getattr(
+                getattr(
                     self,
                     "_SHUTDOWN_TAIL_RESERVE_S",
                     GatewayRunner._SHUTDOWN_TAIL_RESERVE_S,
@@ -15772,16 +15779,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             _cleanup_budget_exhausted = False
 
-            async def _record_shutdown_phase(phase: str) -> None:
+            async def _record_shutdown_phase(
+                phase: str,
+                *,
+                deadline: Optional[float] = None,
+            ) -> None:
+                attribution_deadline = (
+                    _cleanup_deadline if deadline is None else deadline
+                )
                 try:
                     record_helper = getattr(self, "_record_drain_attribution", None)
                     result = await (
-                        record_helper(phase, deadline=_cleanup_deadline)
+                        record_helper(phase, deadline=attribution_deadline)
                         if callable(record_helper)
                         else GatewayRunner._record_drain_attribution(
                             self,
                             phase,
-                            deadline=_cleanup_deadline,
+                            deadline=attribution_deadline,
                         )
                     )
                     if result.status != "persisted":
@@ -16240,7 +16254,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 await cancel_completion_batches()
 
             for platform, adapter in list(self.adapters.items()):
-                _remaining = GatewayRunner._shutdown_remaining(_cleanup_deadline)
+                _remaining = GatewayRunner._shutdown_remaining(_shutdown_deadline)
                 if _remaining <= 0:
                     _cleanup_budget_exhausted = True
                     break
@@ -16256,7 +16270,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Disconnect secondary-profile adapters (multiplex mode).
             for _prof, _amap in list(getattr(self, "_profile_adapters", {}).items()):
                 for platform, adapter in list(_amap.items()):
-                    _remaining = GatewayRunner._shutdown_remaining(_cleanup_deadline)
+                    _remaining = GatewayRunner._shutdown_remaining(_shutdown_deadline)
                     if _remaining <= 0:
                         _cleanup_budget_exhausted = True
                         break
@@ -16325,7 +16339,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # disconnect (defense in depth; safe to call repeatedly).
             await _kill_tool_subprocesses(
                 "final-cleanup",
-                timeout=GatewayRunner._shutdown_remaining(_cleanup_deadline),
+                timeout=GatewayRunner._shutdown_remaining(_shutdown_deadline),
             )
             logger.info(
                 "Shutdown phase: final-cleanup tool kill done at +%.2fs",
@@ -16341,7 +16355,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # RLIMIT_NOFILE=256.  See #14210.
             try:
                 from agent.auxiliary_client import shutdown_cached_clients
-                _remaining = GatewayRunner._shutdown_remaining(_cleanup_deadline)
+                _remaining = GatewayRunner._shutdown_remaining(_shutdown_deadline)
                 if _remaining > 0:
                     if not await GatewayRunner._run_shutdown_sync_daemon(
                         self,
@@ -16368,7 +16382,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _db is None or not hasattr(_db, "close"):
                     continue
                 try:
-                    _remaining = GatewayRunner._shutdown_remaining(_cleanup_deadline)
+                    _remaining = GatewayRunner._shutdown_remaining(_shutdown_deadline)
                     if _remaining <= 0:
                         _cleanup_budget_exhausted = True
                         break
@@ -16417,7 +16431,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 from gateway.shutdown_forensics import capture_residual_children
 
-                _remaining_s = GatewayRunner._shutdown_remaining(_cleanup_deadline)
+                _remaining_s = GatewayRunner._shutdown_remaining(_shutdown_deadline)
                 capture_residual_children(
                     phase="pre_lock_release",
                     deadline_remaining=max(_remaining_s, 0.0),
@@ -16448,16 +16462,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if (
                 not timed_out
                 and not _cleanup_budget_exhausted
-                and GatewayRunner._shutdown_remaining(_cleanup_deadline) > 0
+                and GatewayRunner._shutdown_remaining(_shutdown_deadline) > 0
                 and remaining_active_work == 0
             ):
-                await _record_shutdown_phase("clean_exit")
+                await _record_shutdown_phase(
+                    "clean_exit",
+                    deadline=_shutdown_deadline,
+                )
                 try:
                     (_hermes_home / ".clean_shutdown").touch()
                 except Exception:
                     pass
             else:
-                await _record_shutdown_phase("cleanup_incomplete")
+                await _record_shutdown_phase(
+                    "cleanup_incomplete",
+                    deadline=_shutdown_deadline,
+                )
                 if timed_out:
                     logger.info(
                         "Skipping .clean_shutdown marker — drain timed out with "
