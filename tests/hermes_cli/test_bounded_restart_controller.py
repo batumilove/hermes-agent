@@ -169,7 +169,7 @@ def manifest_mapping(tmp_path: Path, controller_path: Path) -> dict:
     return {
         "schema": "hermes-bounded-handoff-force-restart/v1",
         "transaction_id": "txn-20260901-a",
-        "controller": {"version": 3, "sha256": digest},
+        "controller": {"version": 4, "sha256": digest},
         "service": {
             "unit": "hermes-gateway.service",
             "scope": "user",
@@ -737,6 +737,101 @@ def test_systemd_bootstrap_uses_pid_bound_legacy_status_but_never_declares_quiet
         force_only=True,
     )
     assert observed.quiet_for(service.pid) is False
+
+
+def test_systemd_bootstrap_repeated_samples_accept_owned_running_to_draining_transition(
+    tmp_path, controller_path, monkeypatch
+):
+    old_code_sha = "c" * 40
+
+    def mutate(raw):
+        raw["bootstrap"] = {
+            "mode": "legacy-force-only",
+            "old_code_sha": old_code_sha,
+        }
+        raw["authorization"]["scope"].append("bootstrap_force_only")
+
+    manifest = load_manifest(tmp_path, controller_path, mutate=mutate)
+    ops = SystemdOperations()
+    service = FakeOps().old
+    status = {
+        "pid": service.pid,
+        "answering_pid": service.pid,
+        "code_sha": old_code_sha,
+        "gateway_state": "running",
+        "active_agents": 5,
+    }
+    payloads = {
+        "identify": {"pid": service.pid, "code_sha": old_code_sha},
+        "status": status,
+    }
+    monkeypatch.setattr(ops, "_query_gateway", lambda _manifest, verb: payloads[verb])
+    monkeypatch.setattr(ops, "service_identity", lambda _manifest: service)
+    monkeypatch.setattr(ops, "_count_running_cron", lambda _home: 3)
+    monkeypatch.setattr(ops, "_cgroup_pids", lambda _cgroup: (service.pid, 111))
+
+    running = ops.sample_occupancy(manifest)
+
+    manifest.hermes_home.mkdir(parents=True)
+    (manifest.hermes_home / ".drain_request.json").write_text(
+        json.dumps(
+            {
+                "action": "drain",
+                "principal": "bounded-handoff-force-restart",
+                "owner_token": manifest.transaction_id,
+            }
+        ),
+        encoding="utf-8",
+    )
+    status["gateway_state"] = "draining"
+
+    draining = ops.sample_occupancy(manifest)
+
+    assert running == draining == Occupancy(
+        active_agents=5,
+        cron_runs=3,
+        api_runs=0,
+        detached_workers=0,
+        cgroup_pids=(service.pid, 111),
+        force_only=True,
+    )
+
+
+def test_systemd_bootstrap_rejects_draining_status_owned_by_another_transaction(
+    tmp_path, controller_path, monkeypatch
+):
+    old_code_sha = "c" * 40
+
+    def mutate(raw):
+        raw["bootstrap"] = {
+            "mode": "legacy-force-only",
+            "old_code_sha": old_code_sha,
+        }
+        raw["authorization"]["scope"].append("bootstrap_force_only")
+
+    manifest = load_manifest(tmp_path, controller_path, mutate=mutate)
+    manifest.hermes_home.mkdir(parents=True)
+    (manifest.hermes_home / ".drain_request.json").write_text(
+        json.dumps({"action": "drain", "owner_token": "foreign-transaction"}),
+        encoding="utf-8",
+    )
+    ops = SystemdOperations()
+    service = FakeOps().old
+    payloads = {
+        "identify": {"pid": service.pid, "code_sha": old_code_sha},
+        "status": {
+            "pid": service.pid,
+            "answering_pid": service.pid,
+            "code_sha": old_code_sha,
+            "gateway_state": "draining",
+            "active_agents": 5,
+        },
+    }
+    monkeypatch.setattr(ops, "_query_gateway", lambda _manifest, verb: payloads[verb])
+    monkeypatch.setattr(ops, "service_identity", lambda _manifest: service)
+
+    with pytest.raises(ControllerBlocked, match="owned drain marker"):
+        ops.sample_occupancy(manifest)
 
 
 def test_systemd_bootstrap_rejects_old_code_identity_drift(
