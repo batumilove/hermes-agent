@@ -15,6 +15,7 @@ from hermes_cli.bounded_restart import (
     Occupancy,
     ServiceIdentity,
     SourceIdentity,
+    main,
 )
 
 
@@ -213,6 +214,13 @@ def test_manifest_rejects_expired_or_incomplete_force_authorization(tmp_path, co
     raw["authorization"]["scope"].remove("force_restart")
     with pytest.raises(ValueError, match="force_restart"):
         Manifest.from_mapping(raw, controller_path=controller_path, now=NOW)
+
+
+def test_controller_hash_can_be_printed_without_a_manifest(capsys):
+    assert main(["--print-controller-sha256"]) == 0
+    output = capsys.readouterr().out.strip()
+    assert len(output) == 64
+    assert all(character in "0123456789abcdef" for character in output)
 
 
 def test_dry_run_performs_preflight_without_drain_or_restart(tmp_path, controller_path):
