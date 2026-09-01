@@ -6810,7 +6810,41 @@ def _publish_authoritative_startup_status(runner, *, default_state: str) -> str:
         restart_requested=bool(getattr(runner, "_restart_requested", False)),
         active_agents=active_agents,
     )
-    return state# Sentinel for "no explicit session DB has been pinned on this runner", so the
+    return state
+
+
+def _build_live_control_status(runner) -> Dict[str, Any]:
+    """Return a control-socket status with a live, attributed work census."""
+    from gateway.control_socket import build_status_payload
+
+    payload = build_status_payload()
+    foreground = max(0, int(runner._running_agent_count()))
+    cron_runs = max(0, int(runner._active_cron_job_count()))
+    api_runs = max(0, int(runner._active_api_run_count()))
+    detached_workers = max(0, int(runner._active_delegation_count()))
+    total = foreground + cron_runs + api_runs + detached_workers
+    cron_thread = getattr(runner, "_cron_thread", None)
+    scheduler_running = bool(cron_thread is not None and cron_thread.is_alive())
+    payload.update(
+        pid=os.getpid(),
+        answering_pid=os.getpid(),
+        active_agents=total,
+        scheduler={
+            "status": "running" if scheduler_running else "failed",
+            "writer_pid": os.getpid(),
+        },
+        occupancy={
+            "foreground_agents": foreground,
+            "cron_runs": cron_runs,
+            "api_runs": api_runs,
+            "detached_workers": detached_workers,
+            "total": total,
+        },
+    )
+    return payload
+
+
+# Sentinel for "no explicit session DB has been pinned on this runner", so the
 # ``_session_db`` property can distinguish "resolve from the active profile
 # scope" from a deliberate ``runner._session_db = None`` (which disables
 # DB-backed commands and is how many suites construct a bare runner).  A plain
@@ -6872,6 +6906,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _restart_command_source: Optional[SessionSource] = None
     _stop_task: Optional[asyncio.Task] = None
     _restart_task: Optional[asyncio.Task] = None
+    _cron_thread: Optional[threading.Thread] = None
     _profile_failed_platforms: Optional[Dict[str, Dict[Platform, asyncio.Task]]] = None
     _systemd_watchdog: Optional[Any] = None
     _startup_restore_in_progress: bool = False
@@ -32536,7 +32571,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     try:
         from gateway.control_socket import GatewayControlServer
 
-        _control_server = GatewayControlServer()
+        _control_server = GatewayControlServer(
+            verb_handlers={"status": lambda: _build_live_control_status(runner)}
+        )
         if not await _control_server.start():
             _control_server = None
         else:
@@ -32688,7 +32725,19 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         daemon=True,
         name="cron-scheduler",
     )
+    runner._cron_thread = cron_thread
     cron_thread.start()
+    try:
+        from gateway.status import write_runtime_status
+
+        write_runtime_status(
+            scheduler={
+                "status": "running" if cron_thread.is_alive() else "failed",
+                "provider": getattr(cron_provider, "name", type(cron_provider).__name__),
+            }
+        )
+    except Exception:
+        logger.debug("Could not publish cron scheduler readiness", exc_info=True)
 
     # Preflight tell for the hosted fire path: an external cron provider
     # (Chronos) delivers scheduled fires over HTTP to THIS process's

@@ -22,7 +22,11 @@ from unittest.mock import MagicMock
 import pytest
 
 import gateway.drain_control as dc
-from gateway.run import GatewayRunner, _publish_authoritative_startup_status
+from gateway.run import (
+    GatewayRunner,
+    _build_live_control_status,
+    _publish_authoritative_startup_status,
+)
 from gateway.status import read_runtime_status
 from gateway.config import Platform
 from gateway.platforms.base import MessageEvent, MessageType
@@ -606,12 +610,45 @@ class _StartupStatusRunner:
     def __init__(self, *, shutdown_requested=False):
         self._external_drain_active = False
         self._shutdown_requested = shutdown_requested
+        self._cron_thread = MagicMock()
+        self._cron_thread.is_alive.return_value = True
 
     def _startup_should_abort(self):
         return self._shutdown_requested
 
+    def _running_agent_count(self):
+        return 2
+
+    def _active_cron_job_count(self):
+        return 1
+
+    def _active_api_run_count(self):
+        return 3
+
+    def _active_delegation_count(self):
+        return 4
+
 
 class TestAuthoritativeStartupStatus:
+    def test_control_status_reports_live_attributed_occupancy(self, home):
+        runner = _StartupStatusRunner()
+        payload = _build_live_control_status(runner)
+
+        assert payload["pid"] == os.getpid()
+        assert payload["answering_pid"] == os.getpid()
+        assert payload["active_agents"] == 10
+        assert payload["scheduler"] == {
+            "status": "running",
+            "writer_pid": os.getpid(),
+        }
+        assert payload["occupancy"] == {
+            "foreground_agents": 2,
+            "cron_runs": 1,
+            "api_runs": 3,
+            "detached_workers": 4,
+            "total": 10,
+        }
+
     def test_pid_owner_acknowledges_inherited_drain_before_slow_startup(self, home):
         dc.write_drain_request(principal="activation-controller")
         runner = _StartupStatusRunner()

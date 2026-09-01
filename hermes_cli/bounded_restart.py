@@ -19,6 +19,7 @@ systemd or a production ``HERMES_HOME``.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -26,16 +27,18 @@ import sqlite3
 import subprocess
 import sys
 import time
+import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 
 SCHEMA = "hermes-bounded-handoff-force-restart/v1"
 RESULT_SCHEMA = "hermes-bounded-handoff-force-restart-result/v1"
 HANDOFF_DEADLINE_SECONDS = 180
-CONTROLLER_VERSION = 1
+CONTROLLER_VERSION = 2
 _REQUIRED_AUTHORIZATION = frozenset({"drain", "graceful_restart", "force_restart"})
 
 
@@ -86,7 +89,7 @@ def _sha256(path: Path) -> str:
 
 def _atomic_json_write(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     encoded = (json.dumps(payload, sort_keys=True, indent=2) + "\n").encode("utf-8")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
@@ -138,6 +141,7 @@ class ServiceIdentity:
     control_group: str
     restart_policy: str
     kill_mode: str
+    n_restarts: int
 
     def to_mapping(self) -> dict[str, Any]:
         return {
@@ -149,6 +153,7 @@ class ServiceIdentity:
             "control_group": self.control_group,
             "restart_policy": self.restart_policy,
             "kill_mode": self.kill_mode,
+            "n_restarts": self.n_restarts,
         }
 
     @classmethod
@@ -162,6 +167,7 @@ class ServiceIdentity:
             control_group=str(raw.get("control_group", "")),
             restart_policy=str(raw.get("restart_policy", "")),
             kill_mode=str(raw.get("kill_mode", "")),
+            n_restarts=int(raw.get("n_restarts", -1)),
         )
 
 
@@ -196,6 +202,7 @@ class Occupancy:
 @dataclass(frozen=True)
 class Manifest:
     transaction_id: str
+    manifest_sha256: str
     controller_sha256: str
     service_unit: str
     service_scope: str
@@ -203,6 +210,7 @@ class Manifest:
     old_invocation_id: str
     old_proc_start_ticks: str
     old_control_group: str
+    old_n_restarts: int
     repo: Path
     expected_source: SourceIdentity
     remote: str
@@ -221,6 +229,7 @@ class Manifest:
     hermes_home: Path
     evidence_root: Path
     health_url: str
+    expected_platforms: tuple[str, ...]
 
     @classmethod
     def from_mapping(
@@ -229,6 +238,7 @@ class Manifest:
         *,
         controller_path: Path,
         now: datetime | None = None,
+        manifest_sha256: str | None = None,
     ) -> "Manifest":
         if raw.get("schema") != SCHEMA:
             raise ValueError(f"schema must be {SCHEMA}")
@@ -246,6 +256,7 @@ class Manifest:
         source = _require_mapping(raw.get("source"), "source")
         policy = _require_mapping(raw.get("policy"), "policy")
         authorization = _require_mapping(raw.get("authorization"), "authorization")
+        acceptance = _require_mapping(raw.get("acceptance"), "acceptance")
 
         deadline = _require_int(
             policy.get("handoff_deadline_seconds"),
@@ -287,8 +298,24 @@ class Manifest:
             raise ValueError("hermes_home cannot be /")
         if evidence_root == Path("/"):
             raise ValueError("evidence_root cannot be /")
+        health_url = _require_str(raw.get("health_url"), "health_url")
+        if urllib.parse.urlparse(health_url).scheme not in {"http", "https"}:
+            raise ValueError("health_url must use http or https")
+        expected_platforms_raw = acceptance.get("expected_platforms")
+        if (
+            not isinstance(expected_platforms_raw, list)
+            or not expected_platforms_raw
+            or not all(isinstance(item, str) and item.strip() for item in expected_platforms_raw)
+        ):
+            raise ValueError("acceptance.expected_platforms must be a non-empty string array")
         return cls(
             transaction_id=_require_str(raw.get("transaction_id"), "transaction_id"),
+            manifest_sha256=(
+                manifest_sha256
+                or hashlib.sha256(
+                    json.dumps(raw, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                ).hexdigest()
+            ),
             controller_sha256=expected_hash,
             service_unit=_require_str(service.get("unit"), "service.unit"),
             service_scope=_require_str(service.get("scope"), "service.scope"),
@@ -296,6 +323,9 @@ class Manifest:
             old_invocation_id=_require_str(service.get("old_invocation_id"), "service.old_invocation_id"),
             old_proc_start_ticks=_require_str(service.get("old_proc_start_ticks"), "service.old_proc_start_ticks"),
             old_control_group=_require_str(service.get("old_control_group"), "service.old_control_group"),
+            old_n_restarts=_require_int(
+                service.get("old_n_restarts"), "service.old_n_restarts", minimum=0
+            ),
             repo=Path(_require_str(source.get("repo"), "source.repo")).expanduser().resolve(),
             expected_source=SourceIdentity(
                 head=head,
@@ -319,7 +349,8 @@ class Manifest:
             authorization_scope=scope,
             hermes_home=hermes_home,
             evidence_root=evidence_root,
-            health_url=_require_str(raw.get("health_url"), "health_url"),
+            health_url=health_url,
+            expected_platforms=tuple(expected_platforms_raw),
         )
 
 
@@ -336,6 +367,8 @@ class Operations(Protocol):
     def force_kill(self, manifest: Manifest, old: ServiceIdentity) -> None: ...
     def start(self, manifest: Manifest) -> None: ...
     def health_check(self, manifest: Manifest, service: ServiceIdentity) -> bool: ...
+    def old_cgroup_members_gone(self, manifest: Manifest, old_pids: tuple[int, ...]) -> bool: ...
+    def runtime_acceptance(self, manifest: Manifest, service: ServiceIdentity) -> dict[str, str]: ...
 
 
 class BoundedRestartController:
@@ -348,6 +381,7 @@ class BoundedRestartController:
         return {
             "schema": RESULT_SCHEMA,
             "transaction_id": self.manifest.transaction_id,
+            "manifest_sha256": self.manifest.manifest_sha256,
             "controller_sha256": self.manifest.controller_sha256,
             "state": "INITIAL",
             "source_identity": "BLOCKED",
@@ -356,6 +390,7 @@ class BoundedRestartController:
             "restart_mode": "NOT_RUN",
             "restart_budget_consumed": 0,
             "old_cgroup_gone": "BLOCKED",
+            "restart_count": "BLOCKED",
             "shutdown_cleanliness": "UNKNOWN",
             "activation_health": "BLOCKED",
             "runtime_acceptance": "BLOCKED",
@@ -378,6 +413,8 @@ class BoundedRestartController:
             raise ControllerBlocked("existing controller result has the wrong schema")
         if raw.get("transaction_id") != self.manifest.transaction_id:
             raise ControllerBlocked("evidence root belongs to another transaction")
+        if raw.get("manifest_sha256") != self.manifest.manifest_sha256:
+            raise ControllerBlocked("transaction manifest changed after evidence was written")
         return raw
 
     def _assert_authorized(self) -> None:
@@ -401,6 +438,7 @@ class BoundedRestartController:
             or actual.invocation_id != self.manifest.old_invocation_id
             or actual.proc_start_ticks != self.manifest.old_proc_start_ticks
             or actual.control_group != self.manifest.old_control_group
+            or actual.n_restarts != self.manifest.old_n_restarts
             or actual.active_state != "active"
         ):
             raise ControllerBlocked("service identity drift")
@@ -424,15 +462,20 @@ class BoundedRestartController:
         self,
         result: dict[str, Any],
         old: ServiceIdentity,
+        old_pids: tuple[int, ...],
         *,
         allow_start: bool,
-    ) -> dict[str, Any]:
+    ) -> ServiceIdentity:
         deadline = self.ops.monotonic() + self.manifest.replacement_wait_seconds
+        started_explicitly = False
         current = self.ops.service_identity(self.manifest)
         while not self._is_replacement(old, current) and self.ops.monotonic() < deadline:
             self.ops.sleep(1)
             current = self.ops.service_identity(self.manifest)
         if not self._is_replacement(old, current) and allow_start:
+            started_explicitly = True
+            result["explicit_start_issued"] = True
+            self._write(result)
             self.ops.start(self.manifest)
             deadline = self.ops.monotonic() + self.manifest.replacement_wait_seconds
             current = self.ops.service_identity(self.manifest)
@@ -444,14 +487,102 @@ class BoundedRestartController:
             self._write(result)
             raise ControllerFailed("replacement gateway generation not observed")
         result["new_service"] = current.to_mapping()
-        result["old_cgroup_gone"] = "PASS"
+        expected_n_restarts = old.n_restarts
+        if (
+            result.get("restart_mode") == "FORCED"
+            and not (started_explicitly or result.get("explicit_start_issued") is True)
+        ):
+            expected_n_restarts += 1
+        if current.n_restarts != expected_n_restarts:
+            result.update(
+                state="RESTART_COUNT_FAILED",
+                restart_count="FAIL",
+                overall="FAIL",
+            )
+            self._write(result)
+            raise ControllerFailed("replacement restart count is inconsistent")
+        result["restart_count"] = "PASS"
         if not self.ops.health_check(self.manifest, current):
             result.update(state="HEALTH_FAILED", activation_health="FAIL", overall="FAIL")
             self._write(result)
             raise ControllerFailed("replacement gateway failed health check")
+        result.update(state="HEALTH_PASS", activation_health="PASS")
+        self._write(result)
+        cgroup_deadline = self.ops.monotonic() + self.manifest.replacement_wait_seconds
+        while (
+            not self.ops.old_cgroup_members_gone(self.manifest, old_pids)
+            and self.ops.monotonic() < cgroup_deadline
+        ):
+            self.ops.sleep(1)
+        if not self.ops.old_cgroup_members_gone(self.manifest, old_pids):
+            # The replacement generation is healthy; only the cgroup proof
+            # failed.  Keep the verdict planes separate.
+            result.update(old_cgroup_gone="FAIL", activation_health="PASS", overall="FAIL")
+            self._write(result)
+            raise ControllerFailed("old cgroup members are not proven gone")
+        result.update(
+            state="ACTIVATION_PASS",
+            old_cgroup_gone="PASS",
+            activation_health="PASS",
+        )
+        self._write(result)
+        return current
+
+    def _finalize_acceptance(
+        self,
+        result: dict[str, Any],
+        replacement: ServiceIdentity,
+    ) -> dict[str, Any]:
+        required = (
+            "platforms",
+            "scheduler",
+            "session_store",
+            "resumability",
+            "drain_marker",
+        )
+        deadline = self.ops.monotonic() + self.manifest.replacement_wait_seconds
+        acceptance: Mapping[str, str] | None = None
+        last_blocked: ControllerBlocked | None = None
+        while True:
+            try:
+                acceptance = self.ops.runtime_acceptance(self.manifest, replacement)
+                last_blocked = None
+            except ControllerBlocked as exc:
+                acceptance = None
+                last_blocked = exc
+            if acceptance is not None and all(
+                acceptance.get(item) == "PASS" for item in required
+            ):
+                break
+            if self.ops.monotonic() >= deadline:
+                break
+            self.ops.sleep(1)
+        if acceptance is None:
+            result["acceptance"] = {}
+            result.update(
+                state="RUNTIME_ACCEPTANCE_BLOCKED",
+                runtime_acceptance="BLOCKED",
+                interrupted_work_resumable="BLOCKED",
+                overall="BLOCKED",
+            )
+            self._write(result)
+            raise ControllerBlocked(
+                "runtime acceptance is unavailable after replacement"
+            ) from last_blocked
+        result["acceptance"] = dict(acceptance)
+        if any(acceptance.get(item) != "PASS" for item in required):
+            result.update(
+                state="RUNTIME_ACCEPTANCE_FAILED",
+                runtime_acceptance="FAIL",
+                interrupted_work_resumable=(
+                    "PASS" if acceptance.get("resumability") == "PASS" else "FAIL"
+                ),
+                overall="FAIL",
+            )
+            self._write(result)
+            raise ControllerFailed("runtime acceptance did not prove every required surface")
         result.update(
             state="VERIFIED",
-            activation_health="PASS",
             runtime_acceptance="PASS",
             interrupted_work_resumable="PASS",
             overall="PASS",
@@ -472,7 +603,19 @@ class BoundedRestartController:
         result = dict(existing)
         result["recovered_after_restart_commit"] = True
         result["source_identity"] = "PASS"
-        return self._verify_replacement(result, old, allow_start=False)
+        old_pids = tuple(int(pid) for pid in existing.get("old_cgroup_pids", [old.pid]))
+        replacement = self._verify_replacement(
+            result,
+            old,
+            old_pids,
+            allow_start=False,
+        )
+        drain = self.ops.acquire_drain(self.manifest)
+        try:
+            drain.clear_request()
+            return self._finalize_acceptance(result, replacement)
+        finally:
+            drain.release()
 
     def run(self, *, execute: bool) -> dict[str, Any]:
         existing = self._load_existing()
@@ -485,7 +628,8 @@ class BoundedRestartController:
         }:
             raise ControllerBlocked("transaction evidence is not safely resumable")
 
-        result = self._base_result()
+        result = dict(existing) if existing else self._base_result()
+        result.setdefault("samples", [])
         try:
             self._assert_authorized()
             source = self.ops.source_identity(self.manifest)
@@ -508,17 +652,38 @@ class BoundedRestartController:
                 drain.write_request()
                 drain_written = True
                 result["state"] = "HANDOFF"
-                result["handoff_started_at"] = self.ops.wall_now().isoformat()
+                wall_now = self.ops.wall_now().astimezone(timezone.utc)
+                persisted_deadline = result.get("handoff_deadline_at")
+                if isinstance(persisted_deadline, str):
+                    deadline_at = _parse_datetime(
+                        persisted_deadline,
+                        "result.handoff_deadline_at",
+                    )
+                    remaining = max(0.0, (deadline_at - wall_now).total_seconds())
+                    remaining = min(
+                        float(self.manifest.handoff_deadline_seconds),
+                        remaining,
+                    )
+                    elapsed_before_resume = self.manifest.handoff_deadline_seconds - remaining
+                else:
+                    remaining = float(self.manifest.handoff_deadline_seconds)
+                    elapsed_before_resume = 0.0
+                    deadline_at = wall_now + timedelta(seconds=remaining)
+                    result["handoff_started_at"] = wall_now.isoformat()
+                    result["handoff_deadline_at"] = deadline_at.isoformat()
                 self._write(result)
                 start = self.ops.monotonic()
-                deadline = start + self.manifest.handoff_deadline_seconds
+                deadline = start + remaining
                 stable = 0
                 last = Occupancy()
                 while True:
                     last = self.ops.sample_occupancy(self.manifest)
                     elapsed = min(
                         self.manifest.handoff_deadline_seconds,
-                        max(0.0, self.ops.monotonic() - start),
+                        max(
+                            0.0,
+                            elapsed_before_resume + self.ops.monotonic() - start,
+                        ),
                     )
                     result["samples"].append(
                         {
@@ -556,6 +721,7 @@ class BoundedRestartController:
                 result["shutdown_cleanliness"] = "CLEAN" if mode == "GRACEFUL" else "UNCLEAN"
                 result["state"] = "RESTART_COMMITTED"
                 result["restart_budget_consumed"] = 1
+                result["old_cgroup_pids"] = list(last.cgroup_pids or (final_old.pid,))
                 self._write(result)
 
                 if mode == "GRACEFUL":
@@ -563,15 +729,16 @@ class BoundedRestartController:
                 else:
                     self.ops.prepare_interruption(self.manifest, last)
                     self.ops.force_kill(self.manifest, final_old)
-                result = self._verify_replacement(
+                replacement = self._verify_replacement(
                     result,
                     final_old,
+                    tuple(result["old_cgroup_pids"]),
                     allow_start=(mode == "FORCED"),
                 )
                 if drain_written:
                     drain.clear_request()
                     drain_written = False
-                return result
+                return self._finalize_acceptance(result, replacement)
             finally:
                 # Before the restart commit, cancellation is safe and restores
                 # admission.  After commit, preserve the marker unless the new
@@ -666,6 +833,7 @@ class SystemdOperations:
             "ControlGroup",
             "Restart",
             "KillMode",
+            "NRestarts",
         ]
         command = self._systemctl(manifest) + [
             "show",
@@ -681,8 +849,10 @@ class SystemdOperations:
                 values[key] = value
         try:
             pid = int(values.get("MainPID", "0"))
+            n_restarts = int(values.get("NRestarts", "-1"))
         except ValueError:
             pid = 0
+            n_restarts = -1
         return ServiceIdentity(
             pid=pid,
             invocation_id=values.get("InvocationID", ""),
@@ -692,6 +862,7 @@ class SystemdOperations:
             control_group=values.get("ControlGroup", ""),
             restart_policy=values.get("Restart", ""),
             kill_mode=values.get("KillMode", ""),
+            n_restarts=n_restarts,
         )
 
     def acquire_drain(self, manifest: Manifest) -> Any:
@@ -711,7 +882,7 @@ class SystemdOperations:
             return 0
         try:
             uri = f"file:{database}?mode=ro"
-            with sqlite3.connect(uri, uri=True, timeout=2) as conn:
+            with contextlib.closing(sqlite3.connect(uri, uri=True, timeout=2)) as conn:
                 row = conn.execute(
                     "SELECT COUNT(*) FROM executions "
                     "WHERE status IN ('claimed', 'running')"
@@ -721,33 +892,61 @@ class SystemdOperations:
             raise ControllerBlocked("cannot read cron running executions") from exc
 
     @staticmethod
-    def _cgroup_pids(control_group: str) -> tuple[int, ...]:
+    def _cgroup_procs_path(control_group: str) -> Path:
         if not control_group.startswith("/") or ".." in Path(control_group).parts:
             raise ControllerBlocked("unsafe systemd ControlGroup path")
-        path = Path("/sys/fs/cgroup") / control_group.lstrip("/") / "cgroup.procs"
+        return Path("/sys/fs/cgroup") / control_group.lstrip("/") / "cgroup.procs"
+
+    def _cgroup_pids(self, control_group: str) -> tuple[int, ...]:
+        path = self._cgroup_procs_path(control_group)
         try:
             return tuple(sorted(int(line) for line in path.read_text(encoding="utf-8").splitlines()))
-        except FileNotFoundError:
-            return ()
+        except FileNotFoundError as exc:
+            raise ControllerBlocked("cannot read service cgroup membership") from exc
         except (OSError, ValueError) as exc:
             raise ControllerBlocked("cannot read service cgroup membership") from exc
 
+    @staticmethod
+    def _query_gateway(manifest: Manifest, verb: str) -> dict[str, Any] | None:
+        from gateway.control_socket import query_gateway_control
+
+        return query_gateway_control(manifest.hermes_home, verb, timeout=2)
+
     def sample_occupancy(self, manifest: Manifest) -> Occupancy:
         home = manifest.hermes_home
-        active_agents = 0
-        state_path = home / "gateway_state.json"
-        try:
-            state = json.loads(state_path.read_text(encoding="utf-8"))
-            if isinstance(state, dict):
-                active_agents = int(state.get("active_agents", 0) or 0)
-        except FileNotFoundError:
-            pass
-        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
-            raise ControllerBlocked("cannot read gateway occupancy") from exc
         service = self.service_identity(manifest)
+        state = self._query_gateway(manifest, "status")
+        identify = self._query_gateway(manifest, "identify")
+        if not isinstance(state, dict) or not isinstance(identify, dict):
+            raise ControllerBlocked("live gateway occupancy is unavailable")
+        try:
+            state_pid = int(state["pid"])
+            identify_pid = int(identify["pid"])
+            live = state["occupancy"]
+            if not isinstance(live, dict):
+                raise TypeError("occupancy is not a mapping")
+            foreground_agents = int(live["foreground_agents"])
+            live_cron_runs = int(live["cron_runs"])
+            api_runs = int(live["api_runs"])
+            detached_workers = int(live["detached_workers"])
+            live_total = int(live["total"])
+            reported_total = int(state["active_agents"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ControllerBlocked("live gateway occupancy is malformed") from exc
+        counts = (foreground_agents, live_cron_runs, api_runs, detached_workers)
+        if any(count < 0 for count in counts):
+            raise ControllerBlocked("live gateway occupancy is malformed")
+        if live_total != sum(counts) or reported_total != live_total:
+            raise ControllerBlocked("live gateway occupancy total is inconsistent")
+        if state_pid != service.pid or identify_pid != service.pid:
+            raise ControllerBlocked("live gateway occupancy belongs to another generation")
+        if identify.get("code_sha") != manifest.expected_source.head:
+            raise ControllerBlocked("live gateway occupancy has the wrong code identity")
         return Occupancy(
-            active_agents=active_agents,
-            cron_runs=self._count_running_cron(home),
+            active_agents=foreground_agents,
+            cron_runs=max(live_cron_runs, self._count_running_cron(home)),
+            api_runs=api_runs,
+            detached_workers=detached_workers,
             cgroup_pids=self._cgroup_pids(service.control_group),
         )
 
@@ -794,13 +993,101 @@ class SystemdOperations:
         except Exception:
             return False
 
+    def old_cgroup_members_gone(
+        self,
+        manifest: Manifest,
+        old_pids: tuple[int, ...],
+    ) -> bool:
+        current = self.service_identity(manifest)
+        current_pids = self._cgroup_pids(current.control_group)
+        return not set(old_pids).intersection(current_pids)
+
+    def runtime_acceptance(
+        self,
+        manifest: Manifest,
+        service: ServiceIdentity,
+    ) -> dict[str, str]:
+        def matching_writer_pid(item: Mapping[str, Any]) -> bool:
+            try:
+                return int(item.get("writer_pid", 0) or 0) == service.pid
+            except (TypeError, ValueError):
+                return False
+
+        result = {
+            "platforms": "FAIL",
+            "scheduler": "FAIL",
+            "session_store": "FAIL",
+            "resumability": "FAIL",
+            "drain_marker": "FAIL",
+        }
+        state = self._query_gateway(manifest, "status")
+        identify = self._query_gateway(manifest, "identify")
+        if not isinstance(state, dict) or not isinstance(identify, dict):
+            return result
+        try:
+            exact_generation = (
+                int(state.get("pid", 0)) == service.pid
+                and int(identify.get("pid", 0)) == service.pid
+                and identify.get("code_sha") == manifest.expected_source.head
+                and state.get("gateway_state") == "running"
+            )
+        except (TypeError, ValueError):
+            return result
+        if not exact_generation:
+            return result
+        platforms = state.get("platforms")
+        if isinstance(platforms, dict):
+            required_ok = True
+            for name in manifest.expected_platforms:
+                item = platforms.get(name)
+                if not isinstance(item, dict):
+                    required_ok = False
+                    break
+                platform_state = str(item.get("state") or item.get("status") or "").lower()
+                if (
+                    platform_state not in {"connected", "running", "ok"}
+                    or not matching_writer_pid(item)
+                    or bool(item.get("needs_attention", False))
+                ):
+                    required_ok = False
+                    break
+            if required_ok:
+                result["platforms"] = "PASS"
+        scheduler = state.get("scheduler")
+        if (
+            isinstance(scheduler, dict)
+            and scheduler.get("status") == "running"
+            and matching_writer_pid(scheduler)
+        ):
+            result["scheduler"] = "PASS"
+        session_store = state.get("session_store")
+        if (
+            isinstance(session_store, dict)
+            and session_store.get("status") == "ok"
+            and matching_writer_pid(session_store)
+        ):
+            result["session_store"] = "PASS"
+            result["resumability"] = "PASS"
+        try:
+            if not (manifest.hermes_home / ".drain_request.json").exists():
+                result["drain_marker"] = "PASS"
+        except OSError:
+            pass
+        return result
+
 
 def _load_manifest(path: Path, *, now: datetime | None = None) -> Manifest:
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        encoded = path.read_bytes()
+        raw = json.loads(encoded)
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"cannot read manifest: {exc}") from exc
-    return Manifest.from_mapping(raw, controller_path=Path(__file__).resolve(), now=now)
+    return Manifest.from_mapping(
+        raw,
+        controller_path=Path(__file__).resolve(),
+        now=now,
+        manifest_sha256=hashlib.sha256(encoded).hexdigest(),
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

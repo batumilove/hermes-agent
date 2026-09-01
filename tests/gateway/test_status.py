@@ -1081,6 +1081,31 @@ class TestParseActiveAgents:
         assert status.parse_active_agents(0) == 0
 
 
+class TestSchedulerRuntimeStatus:
+    def test_scheduler_status_is_bound_to_current_writer(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            scheduler={"status": "running", "provider": "in-process"}
+        )
+
+        record = status.read_runtime_status()
+        assert record is not None
+        assert record["scheduler"]["status"] == "running"
+        assert record["scheduler"]["provider"] == "in-process"
+        assert record["scheduler"]["writer_pid"] == os.getpid()
+
+    def test_session_store_status_is_bound_to_current_writer(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(session_store={"status": "ok"})
+
+        record = status.read_runtime_status()
+        assert record is not None
+        assert record["session_store"]["status"] == "ok"
+        assert record["session_store"]["writer_pid"] == os.getpid()
+
+
 class TestActiveAgentsTurnBoundaryWrite:
     """The load-bearing Phase 1a contract: writing the in-flight count at a
     turn boundary must PRESERVE the lifecycle gateway_state. The whole readout

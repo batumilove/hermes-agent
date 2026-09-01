@@ -11,10 +11,12 @@ import pytest
 from hermes_cli.bounded_restart import (
     BoundedRestartController,
     ControllerBlocked,
+    ControllerFailed,
     Manifest,
     Occupancy,
     ServiceIdentity,
     SourceIdentity,
+    SystemdOperations,
     main,
 )
 
@@ -45,7 +47,14 @@ class FakeDrain:
 
 
 class FakeOps:
-    def __init__(self, *, occupancy=None, replacements=None):
+    def __init__(
+        self,
+        *,
+        occupancy=None,
+        replacements=None,
+        old_cgroup_gone=True,
+        runtime_acceptance=None,
+    ):
         self.wall = NOW
         self.mono = 0.0
         self.events: list[str] = []
@@ -58,6 +67,7 @@ class FakeOps:
             control_group="/user.slice/hermes.service",
             restart_policy="always",
             kill_mode="control-group",
+            n_restarts=7,
         )
         self.current_service = self.old
         self.source = SourceIdentity(
@@ -70,6 +80,17 @@ class FakeOps:
         self.occupancy = list(occupancy or [Occupancy(active_agents=0)])
         self.replacements = list(replacements or [])
         self.last_occupancy = self.occupancy[-1]
+        self.cgroup_gone = old_cgroup_gone
+        self.acceptance = dict(
+            runtime_acceptance
+            or {
+                "platforms": "PASS",
+                "scheduler": "PASS",
+                "session_store": "PASS",
+                "resumability": "PASS",
+                "drain_marker": "PASS",
+            }
+        )
 
     def wall_now(self):
         return self.wall
@@ -120,6 +141,14 @@ class FakeOps:
         self.events.append("health")
         return service.pid == 202 and service.active_state == "active"
 
+    def old_cgroup_members_gone(self, manifest, old_pids):
+        self.events.append("cgroup:verify")
+        return self.cgroup_gone
+
+    def runtime_acceptance(self, manifest, service):
+        self.events.append("acceptance")
+        return dict(self.acceptance)
+
 
 def replacement_identity():
     return ServiceIdentity(
@@ -131,6 +160,7 @@ def replacement_identity():
         control_group="/user.slice/hermes.service",
         restart_policy="always",
         kill_mode="control-group",
+        n_restarts=7,
     )
 
 
@@ -139,7 +169,7 @@ def manifest_mapping(tmp_path: Path, controller_path: Path) -> dict:
     return {
         "schema": "hermes-bounded-handoff-force-restart/v1",
         "transaction_id": "txn-20260901-a",
-        "controller": {"version": 1, "sha256": digest},
+        "controller": {"version": 2, "sha256": digest},
         "service": {
             "unit": "hermes-gateway.service",
             "scope": "user",
@@ -147,6 +177,7 @@ def manifest_mapping(tmp_path: Path, controller_path: Path) -> dict:
             "old_invocation_id": "old-invocation",
             "old_proc_start_ticks": "1001",
             "old_control_group": "/user.slice/hermes.service",
+            "old_n_restarts": 7,
         },
         "source": {
             "repo": str(tmp_path / "repo"),
@@ -175,6 +206,9 @@ def manifest_mapping(tmp_path: Path, controller_path: Path) -> dict:
         "hermes_home": str(tmp_path / "hermes-home"),
         "evidence_root": str(tmp_path / "evidence"),
         "health_url": "http://127.0.0.1:8642/health",
+        "acceptance": {
+            "expected_platforms": ["telegram", "api_server", "buzz"],
+        },
     }
 
 
@@ -202,6 +236,28 @@ def test_manifest_requires_exact_three_minute_force_policy(tmp_path, controller_
     raw["policy"]["force_after_deadline"] = False
     with pytest.raises(ValueError, match="force_after_deadline"):
         Manifest.from_mapping(raw, controller_path=controller_path, now=NOW)
+
+
+def test_forced_restart_rejects_more_than_one_systemd_restart(
+    tmp_path, controller_path
+):
+    manifest = load_manifest(tmp_path, controller_path)
+    duplicate = replace(replacement_identity(), n_restarts=9)
+    ops = FakeOps(
+        occupancy=[Occupancy(active_agents=1)] * 4,
+        replacements=[duplicate],
+    )
+    controller = BoundedRestartController(manifest, ops)
+
+    with pytest.raises(ControllerFailed, match="restart count"):
+        controller.run(execute=True)
+
+    result = json.loads(
+        (Path(manifest.evidence_root) / "controller-result.json").read_text()
+    )
+    assert result["restart_count"] == "FAIL"
+    assert ops.events.count("restart:force-kill") == 1
+    assert ops.events.count("restart:start") == 0
 
 
 def test_manifest_rejects_expired_or_incomplete_force_authorization(tmp_path, controller_path):
@@ -260,7 +316,7 @@ def test_busy_at_deadline_force_kills_cgroup_once_and_accepts_auto_restart(
     busy = Occupancy(active_agents=1, cron_runs=1, cgroup_pids=(101, 111, 112))
     ops = FakeOps(
         occupancy=[busy, busy, busy, busy],
-        replacements=[replacement_identity()],
+        replacements=[replace(replacement_identity(), n_restarts=8)],
     )
     result = BoundedRestartController(manifest, ops).run(execute=True)
 
@@ -303,7 +359,7 @@ def test_detached_worker_alone_reaches_deadline_and_is_prepared_for_interruption
         detached_workers=1,
         cgroup_pids=(101, 333),
     )
-    ops = FakeOps(occupancy=[detached] * 4, replacements=[replacement_identity()])
+    ops = FakeOps(occupancy=[detached] * 4, replacements=[replace(replacement_identity(), n_restarts=8)])
     result = BoundedRestartController(manifest, ops).run(execute=True)
 
     assert result["restart_mode"] == "FORCED"
@@ -397,6 +453,7 @@ def test_restart_budget_checkpoint_prevents_second_restart_after_crash(
             {
                 "schema": "hermes-bounded-handoff-force-restart-result/v1",
                 "transaction_id": manifest.transaction_id,
+                "manifest_sha256": manifest.manifest_sha256,
                 "state": "RESTART_COMMITTED",
                 "restart_budget_consumed": 1,
                 "old_service": FakeOps().old.to_mapping(),
@@ -420,7 +477,7 @@ def test_forced_result_is_durable_and_separates_unclean_shutdown_from_health(
 ):
     manifest = load_manifest(tmp_path, controller_path)
     busy = Occupancy(active_agents=2, cron_runs=1, cgroup_pids=(101, 111))
-    ops = FakeOps(occupancy=[busy] * 4, replacements=[replacement_identity()])
+    ops = FakeOps(occupancy=[busy] * 4, replacements=[replace(replacement_identity(), n_restarts=8)])
     result = BoundedRestartController(manifest, ops).run(execute=True)
 
     saved = json.loads(
@@ -433,3 +490,271 @@ def test_forced_result_is_durable_and_separates_unclean_shutdown_from_health(
     assert saved["shutdown_cleanliness"] == "UNCLEAN"
     assert saved["activation_health"] == "PASS"
     assert saved["overall"] == "PASS"
+
+
+def test_runtime_acceptance_must_prove_every_required_surface(
+    tmp_path, controller_path
+):
+    manifest = load_manifest(tmp_path, controller_path)
+    ops = FakeOps(
+        runtime_acceptance={
+            "platforms": "PASS",
+            "scheduler": "FAIL",
+            "session_store": "PASS",
+            "resumability": "PASS",
+        }
+    )
+
+    with pytest.raises(Exception, match="runtime acceptance"):
+        BoundedRestartController(manifest, ops).run(execute=True)
+
+    saved = json.loads(
+        (Path(manifest.evidence_root) / "controller-result.json").read_text()
+    )
+    assert saved["activation_health"] == "PASS"
+    assert saved["runtime_acceptance"] == "FAIL"
+    assert saved["overall"] == "FAIL"
+
+
+def test_runtime_acceptance_retries_transient_control_socket_unavailability(
+    tmp_path, controller_path
+):
+    manifest = load_manifest(
+        tmp_path,
+        controller_path,
+        mutate=lambda raw: raw["policy"].update(stable_zero_samples=1),
+    )
+
+    class FlakyAcceptanceOps(FakeOps):
+        def __init__(self):
+            super().__init__()
+            self.acceptance_attempts = 0
+
+        def runtime_acceptance(self, manifest, service):
+            self.acceptance_attempts += 1
+            if self.acceptance_attempts == 1:
+                raise ControllerBlocked("live gateway occupancy is unavailable")
+            return super().runtime_acceptance(manifest, service)
+
+    ops = FlakyAcceptanceOps()
+    result = BoundedRestartController(manifest, ops).run(execute=True)
+
+    assert result["runtime_acceptance"] == "PASS"
+    assert ops.acceptance_attempts == 2
+    assert ops.mono == 1
+
+
+def test_old_cgroup_members_must_be_proven_gone(tmp_path, controller_path):
+    manifest = load_manifest(tmp_path, controller_path)
+    ops = FakeOps(old_cgroup_gone=False)
+
+    with pytest.raises(Exception, match="old cgroup"):
+        BoundedRestartController(manifest, ops).run(execute=True)
+
+    saved = json.loads(
+        (Path(manifest.evidence_root) / "controller-result.json").read_text()
+    )
+    assert saved["old_cgroup_gone"] == "FAIL"
+    assert saved["activation_health"] == "PASS"
+    assert saved["overall"] == "FAIL"
+
+
+def test_systemd_occupancy_blocks_when_live_gateway_status_is_missing(
+    tmp_path, controller_path, monkeypatch
+):
+    manifest = load_manifest(tmp_path, controller_path)
+    ops = SystemdOperations()
+    monkeypatch.setattr(ops, "_query_gateway", lambda _manifest, _verb: None)
+    monkeypatch.setattr(ops, "service_identity", lambda _manifest: FakeOps().old)
+    monkeypatch.setattr(ops, "_count_running_cron", lambda _home: 0)
+    monkeypatch.setattr(ops, "_cgroup_pids", lambda _cgroup: (101,))
+
+    with pytest.raises(ControllerBlocked, match="live gateway occupancy"):
+        ops.sample_occupancy(manifest)
+
+
+def test_systemd_occupancy_uses_live_attributed_counts(
+    tmp_path, controller_path, monkeypatch
+):
+    manifest = load_manifest(tmp_path, controller_path)
+    ops = SystemdOperations()
+    service = FakeOps().old
+    payloads = {
+        "identify": {"pid": service.pid, "code_sha": manifest.expected_source.head},
+        "status": {
+            "pid": service.pid,
+            "active_agents": 10,
+            "occupancy": {
+                "foreground_agents": 2,
+                "cron_runs": 1,
+                "api_runs": 3,
+                "detached_workers": 4,
+                "total": 10,
+            },
+        },
+    }
+    monkeypatch.setattr(ops, "_query_gateway", lambda _manifest, verb: payloads[verb])
+    monkeypatch.setattr(ops, "service_identity", lambda _manifest: service)
+    monkeypatch.setattr(ops, "_count_running_cron", lambda _home: 2)
+    monkeypatch.setattr(ops, "_cgroup_pids", lambda _cgroup: (101, 111))
+
+    assert ops.sample_occupancy(manifest) == Occupancy(
+        active_agents=2,
+        cron_runs=2,
+        api_runs=3,
+        detached_workers=4,
+        cgroup_pids=(101, 111),
+    )
+
+
+def test_systemd_occupancy_blocks_on_missing_attribution(
+    tmp_path, controller_path, monkeypatch
+):
+    manifest = load_manifest(tmp_path, controller_path)
+    ops = SystemdOperations()
+    service = FakeOps().old
+    payloads = {
+        "identify": {"pid": service.pid, "code_sha": manifest.expected_source.head},
+        "status": {
+            "pid": service.pid,
+            "active_agents": 0,
+            "occupancy": {"foreground_agents": 0, "cron_runs": 0, "total": 0},
+        },
+    }
+    monkeypatch.setattr(ops, "_query_gateway", lambda _manifest, verb: payloads[verb])
+    monkeypatch.setattr(ops, "service_identity", lambda _manifest: service)
+
+    with pytest.raises(ControllerBlocked, match="malformed"):
+        ops.sample_occupancy(manifest)
+
+
+def test_systemd_cgroup_membership_missing_blocks_instead_of_becoming_empty(
+    tmp_path, controller_path, monkeypatch
+):
+    manifest = load_manifest(tmp_path, controller_path)
+    ops = SystemdOperations()
+    missing = tmp_path / "missing-cgroup.procs"
+    monkeypatch.setattr(ops, "_cgroup_procs_path", lambda _group: missing)
+
+    with pytest.raises(ControllerBlocked, match="cgroup membership"):
+        ops._cgroup_pids(manifest.old_control_group)
+
+
+def test_systemd_runtime_acceptance_binds_every_surface_to_replacement(
+    tmp_path, controller_path, monkeypatch
+):
+    manifest = load_manifest(tmp_path, controller_path)
+    service = replacement_identity()
+    ops = SystemdOperations()
+    payloads = {
+        "identify": {"pid": service.pid, "code_sha": manifest.expected_source.head},
+        "status": {
+            "pid": service.pid,
+            "gateway_state": "running",
+            "platforms": {
+                name: {
+                    "state": "connected",
+                    "writer_pid": service.pid,
+                    "needs_attention": False,
+                }
+                for name in manifest.expected_platforms
+            },
+            "scheduler": {"status": "running", "writer_pid": service.pid},
+            "session_store": {"status": "ok", "writer_pid": service.pid},
+        },
+    }
+    monkeypatch.setattr(ops, "_query_gateway", lambda _manifest, verb: payloads[verb])
+
+    assert ops.runtime_acceptance(manifest, service) == {
+        "platforms": "PASS",
+        "scheduler": "PASS",
+        "session_store": "PASS",
+        "resumability": "PASS",
+        "drain_marker": "PASS",
+    }
+
+
+def test_systemd_runtime_acceptance_rejects_stale_scheduler_writer(
+    tmp_path, controller_path, monkeypatch
+):
+    manifest = load_manifest(tmp_path, controller_path)
+    service = replacement_identity()
+    ops = SystemdOperations()
+    payloads = {
+        "identify": {"pid": service.pid, "code_sha": manifest.expected_source.head},
+        "status": {
+            "pid": service.pid,
+            "gateway_state": "running",
+            "platforms": {
+                name: {"state": "connected", "writer_pid": service.pid}
+                for name in manifest.expected_platforms
+            },
+            "scheduler": {"status": "running", "writer_pid": 101},
+            "session_store": {"status": "ok", "writer_pid": service.pid},
+        },
+    }
+    monkeypatch.setattr(ops, "_query_gateway", lambda _manifest, verb: payloads[verb])
+
+    acceptance = ops.runtime_acceptance(manifest, service)
+    assert acceptance["scheduler"] == "FAIL"
+
+
+def test_existing_evidence_rejects_manifest_identity_change(tmp_path, controller_path):
+    manifest = load_manifest(tmp_path, controller_path)
+    root = Path(manifest.evidence_root)
+    root.mkdir(parents=True)
+    (root / "controller-result.json").write_text(
+        json.dumps(
+            {
+                "schema": "hermes-bounded-handoff-force-restart-result/v1",
+                "transaction_id": manifest.transaction_id,
+                "manifest_sha256": "0" * 64,
+                "state": "PREFLIGHT_PASS",
+                "restart_budget_consumed": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ControllerBlocked, match="manifest changed"):
+        BoundedRestartController(manifest, FakeOps()).run(execute=False)
+
+
+def test_handoff_resume_preserves_original_deadline_and_samples(
+    tmp_path, controller_path
+):
+    manifest = load_manifest(tmp_path, controller_path)
+    root = Path(manifest.evidence_root)
+    root.mkdir(parents=True)
+    original_deadline = NOW + timedelta(seconds=30)
+    (root / "controller-result.json").write_text(
+        json.dumps(
+            {
+                "schema": "hermes-bounded-handoff-force-restart-result/v1",
+                "transaction_id": manifest.transaction_id,
+                "manifest_sha256": manifest.manifest_sha256,
+                "controller_sha256": manifest.controller_sha256,
+                "state": "HANDOFF",
+                "restart_budget_consumed": 0,
+                "old_service": FakeOps().old.to_mapping(),
+                "samples": [{"elapsed_seconds": 150, "active_agents": 1}],
+                "handoff_started_at": (NOW - timedelta(seconds=150)).isoformat(),
+                "handoff_deadline_at": original_deadline.isoformat(),
+            }
+        )
+    )
+    busy = Occupancy(active_agents=1, cgroup_pids=(101, 111))
+    ops = FakeOps(occupancy=[busy] * 4, replacements=[replace(replacement_identity(), n_restarts=8)])
+
+    result = BoundedRestartController(manifest, ops).run(execute=True)
+
+    assert result["restart_mode"] == "FORCED"
+    assert ops.mono <= 30
+    assert result["samples"][0]["elapsed_seconds"] == 150
+
+
+def test_health_url_rejects_non_http_schemes(tmp_path, controller_path):
+    raw = manifest_mapping(tmp_path, controller_path)
+    raw["health_url"] = "file:///etc/passwd"
+    with pytest.raises(ValueError, match="http"):
+        Manifest.from_mapping(raw, controller_path=controller_path, now=NOW)
