@@ -38,8 +38,10 @@ from typing import Any, Mapping, Protocol
 SCHEMA = "hermes-bounded-handoff-force-restart/v1"
 RESULT_SCHEMA = "hermes-bounded-handoff-force-restart-result/v1"
 HANDOFF_DEADLINE_SECONDS = 180
-CONTROLLER_VERSION = 2
+CONTROLLER_VERSION = 3
 _REQUIRED_AUTHORIZATION = frozenset({"drain", "graceful_restart", "force_restart"})
+_BOOTSTRAP_AUTHORIZATION = "bootstrap_force_only"
+_BOOTSTRAP_MODE = "legacy-force-only"
 
 
 class ControllerBlocked(RuntimeError):
@@ -178,8 +180,11 @@ class Occupancy:
     api_runs: int = 0
     detached_workers: int = 0
     cgroup_pids: tuple[int, ...] = ()
+    force_only: bool = False
 
     def quiet_for(self, main_pid: int) -> bool:
+        if self.force_only:
+            return False
         extra_pids = tuple(pid for pid in self.cgroup_pids if pid != main_pid)
         return (
             self.active_agents == 0
@@ -196,6 +201,7 @@ class Occupancy:
             "api_runs": self.api_runs,
             "detached_workers": self.detached_workers,
             "cgroup_pids": list(self.cgroup_pids),
+            "force_only": self.force_only,
         }
 
 
@@ -230,6 +236,8 @@ class Manifest:
     evidence_root: Path
     health_url: str
     expected_platforms: tuple[str, ...]
+    bootstrap_mode: str | None
+    old_code_sha: str | None
 
     @classmethod
     def from_mapping(
@@ -308,6 +316,27 @@ class Manifest:
             or not all(isinstance(item, str) and item.strip() for item in expected_platforms_raw)
         ):
             raise ValueError("acceptance.expected_platforms must be a non-empty string array")
+        bootstrap_mode: str | None = None
+        old_code_sha: str | None = None
+        bootstrap_raw = raw.get("bootstrap")
+        if bootstrap_raw is not None:
+            bootstrap = _require_mapping(bootstrap_raw, "bootstrap")
+            bootstrap_mode = _require_str(bootstrap.get("mode"), "bootstrap.mode")
+            if bootstrap_mode != _BOOTSTRAP_MODE:
+                raise ValueError(f"bootstrap.mode must be {_BOOTSTRAP_MODE}")
+            old_code_sha = _require_str(
+                bootstrap.get("old_code_sha"), "bootstrap.old_code_sha"
+            )
+            if len(old_code_sha) != 40 or any(
+                c not in "0123456789abcdef" for c in old_code_sha
+            ):
+                raise ValueError(
+                    "bootstrap.old_code_sha must be a lowercase 40-character Git object ID"
+                )
+            if old_code_sha == head:
+                raise ValueError("bootstrap old code must differ from target source")
+            if _BOOTSTRAP_AUTHORIZATION not in scope:
+                raise ValueError("authorization.scope missing bootstrap_force_only")
         return cls(
             transaction_id=_require_str(raw.get("transaction_id"), "transaction_id"),
             manifest_sha256=(
@@ -351,6 +380,8 @@ class Manifest:
             evidence_root=evidence_root,
             health_url=health_url,
             expected_platforms=tuple(expected_platforms_raw),
+            bootstrap_mode=bootstrap_mode,
+            old_code_sha=old_code_sha,
         )
 
 
@@ -692,7 +723,10 @@ class BoundedRestartController:
                         }
                     )
                     self._write(result)
-                    if last.quiet_for(old.pid):
+                    if (
+                        self.manifest.bootstrap_mode is None
+                        and last.quiet_for(old.pid)
+                    ):
                         stable += 1
                         if stable >= self.manifest.stable_zero_samples:
                             mode = "GRACEFUL"
@@ -919,6 +953,35 @@ class SystemdOperations:
         identify = self._query_gateway(manifest, "identify")
         if not isinstance(state, dict) or not isinstance(identify, dict):
             raise ControllerBlocked("live gateway occupancy is unavailable")
+        if manifest.bootstrap_mode == _BOOTSTRAP_MODE:
+            try:
+                state_pid = int(state["pid"])
+                answering_pid = int(state["answering_pid"])
+                identify_pid = int(identify["pid"])
+                reported_total = int(state["active_agents"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ControllerBlocked("legacy gateway status is malformed") from exc
+            if (
+                state_pid != service.pid
+                or answering_pid != service.pid
+                or identify_pid != service.pid
+            ):
+                raise ControllerBlocked(
+                    "legacy gateway status belongs to another generation"
+                )
+            if (
+                identify.get("code_sha") != manifest.old_code_sha
+                or state.get("code_sha") != manifest.old_code_sha
+            ):
+                raise ControllerBlocked("legacy gateway old code identity drift")
+            if state.get("gateway_state") != "running" or reported_total < 0:
+                raise ControllerBlocked("legacy gateway status is malformed")
+            return Occupancy(
+                active_agents=reported_total,
+                cron_runs=self._count_running_cron(home),
+                cgroup_pids=self._cgroup_pids(service.control_group),
+                force_only=True,
+            )
         try:
             state_pid = int(state["pid"])
             identify_pid = int(identify["pid"])

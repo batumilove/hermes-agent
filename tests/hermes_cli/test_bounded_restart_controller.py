@@ -169,7 +169,7 @@ def manifest_mapping(tmp_path: Path, controller_path: Path) -> dict:
     return {
         "schema": "hermes-bounded-handoff-force-restart/v1",
         "transaction_id": "txn-20260901-a",
-        "controller": {"version": 2, "sha256": digest},
+        "controller": {"version": 3, "sha256": digest},
         "service": {
             "unit": "hermes-gateway.service",
             "scope": "user",
@@ -307,6 +307,51 @@ def test_stable_zero_before_deadline_uses_one_graceful_restart(tmp_path, control
     assert ops.events.count("restart:graceful") == 1
     assert "restart:force-kill" not in ops.events
     assert result["activation_health"] == "PASS"
+
+
+def test_force_only_observation_can_never_trigger_early_graceful_restart(
+    tmp_path, controller_path
+):
+    manifest = load_manifest(tmp_path, controller_path)
+    unknown = Occupancy(active_agents=0, cgroup_pids=(101,), force_only=True)
+    ops = FakeOps(
+        occupancy=[unknown, unknown, unknown, unknown],
+        replacements=[replace(replacement_identity(), n_restarts=8)],
+    )
+
+    result = BoundedRestartController(manifest, ops).run(execute=True)
+
+    assert ops.mono == 180
+    assert result["restart_mode"] == "FORCED"
+    assert result["handoff_within_180s"] == "TIMEOUT"
+    assert result["remaining_occupancy"]["force_only"] is True
+    assert "restart:graceful" not in ops.events
+    assert ops.events.count("restart:force-kill") == 1
+
+
+def test_bootstrap_manifest_cannot_gracefully_restart_even_if_operations_report_quiet(
+    tmp_path, controller_path
+):
+    def mutate(raw):
+        raw["bootstrap"] = {
+            "mode": "legacy-force-only",
+            "old_code_sha": "c" * 40,
+        }
+        raw["authorization"]["scope"].append("bootstrap_force_only")
+
+    manifest = load_manifest(tmp_path, controller_path, mutate=mutate)
+    quiet = Occupancy(active_agents=0, cgroup_pids=(101,))
+    ops = FakeOps(
+        occupancy=[quiet, quiet, quiet, quiet],
+        replacements=[replace(replacement_identity(), n_restarts=8)],
+    )
+
+    result = BoundedRestartController(manifest, ops).run(execute=True)
+
+    assert ops.mono == 180
+    assert result["restart_mode"] == "FORCED"
+    assert "restart:graceful" not in ops.events
+    assert ops.events.count("restart:force-kill") == 1
 
 
 def test_busy_at_deadline_force_kills_cgroup_once_and_accepts_auto_restart(
@@ -628,6 +673,102 @@ def test_systemd_occupancy_blocks_on_missing_attribution(
         ops.sample_occupancy(manifest)
 
 
+def test_manifest_bootstrap_force_only_requires_explicit_scope(tmp_path, controller_path):
+    raw = manifest_mapping(tmp_path, controller_path)
+    raw["bootstrap"] = {
+        "mode": "legacy-force-only",
+        "old_code_sha": "c" * 40,
+    }
+
+    with pytest.raises(ValueError, match="bootstrap_force_only"):
+        Manifest.from_mapping(raw, controller_path=controller_path, now=NOW)
+
+
+def test_manifest_bootstrap_rejects_target_generation_as_legacy(tmp_path, controller_path):
+    raw = manifest_mapping(tmp_path, controller_path)
+    raw["bootstrap"] = {
+        "mode": "legacy-force-only",
+        "old_code_sha": raw["source"]["head"],
+    }
+    raw["authorization"]["scope"].append("bootstrap_force_only")
+
+    with pytest.raises(ValueError, match="must differ from target"):
+        Manifest.from_mapping(raw, controller_path=controller_path, now=NOW)
+
+
+def test_systemd_bootstrap_uses_pid_bound_legacy_status_but_never_declares_quiet(
+    tmp_path, controller_path, monkeypatch
+):
+    old_code_sha = "c" * 40
+
+    def mutate(raw):
+        raw["bootstrap"] = {
+            "mode": "legacy-force-only",
+            "old_code_sha": old_code_sha,
+        }
+        raw["authorization"]["scope"].append("bootstrap_force_only")
+
+    manifest = load_manifest(tmp_path, controller_path, mutate=mutate)
+    ops = SystemdOperations()
+    service = FakeOps().old
+    payloads = {
+        "identify": {"pid": service.pid, "code_sha": old_code_sha},
+        "status": {
+            "pid": service.pid,
+            "answering_pid": service.pid,
+            "code_sha": old_code_sha,
+            "gateway_state": "running",
+            "active_agents": 0,
+        },
+    }
+    monkeypatch.setattr(ops, "_query_gateway", lambda _manifest, verb: payloads[verb])
+    monkeypatch.setattr(ops, "service_identity", lambda _manifest: service)
+    monkeypatch.setattr(ops, "_count_running_cron", lambda _home: 0)
+    monkeypatch.setattr(ops, "_cgroup_pids", lambda _cgroup: (service.pid,))
+
+    observed = ops.sample_occupancy(manifest)
+
+    assert observed == Occupancy(
+        active_agents=0,
+        cron_runs=0,
+        api_runs=0,
+        detached_workers=0,
+        cgroup_pids=(service.pid,),
+        force_only=True,
+    )
+    assert observed.quiet_for(service.pid) is False
+
+
+def test_systemd_bootstrap_rejects_old_code_identity_drift(
+    tmp_path, controller_path, monkeypatch
+):
+    def mutate(raw):
+        raw["bootstrap"] = {
+            "mode": "legacy-force-only",
+            "old_code_sha": "c" * 40,
+        }
+        raw["authorization"]["scope"].append("bootstrap_force_only")
+
+    manifest = load_manifest(tmp_path, controller_path, mutate=mutate)
+    ops = SystemdOperations()
+    service = FakeOps().old
+    payloads = {
+        "identify": {"pid": service.pid, "code_sha": "d" * 40},
+        "status": {
+            "pid": service.pid,
+            "answering_pid": service.pid,
+            "code_sha": "d" * 40,
+            "gateway_state": "running",
+            "active_agents": 0,
+        },
+    }
+    monkeypatch.setattr(ops, "_query_gateway", lambda _manifest, verb: payloads[verb])
+    monkeypatch.setattr(ops, "service_identity", lambda _manifest: service)
+
+    with pytest.raises(ControllerBlocked, match="old code identity"):
+        ops.sample_occupancy(manifest)
+
+
 def test_systemd_cgroup_membership_missing_blocks_instead_of_becoming_empty(
     tmp_path, controller_path, monkeypatch
 ):
@@ -672,6 +813,39 @@ def test_systemd_runtime_acceptance_binds_every_surface_to_replacement(
         "resumability": "PASS",
         "drain_marker": "PASS",
     }
+
+
+def test_bootstrap_runtime_acceptance_still_rejects_old_code_identity(
+    tmp_path, controller_path, monkeypatch
+):
+    old_code_sha = "c" * 40
+
+    def mutate(raw):
+        raw["bootstrap"] = {
+            "mode": "legacy-force-only",
+            "old_code_sha": old_code_sha,
+        }
+        raw["authorization"]["scope"].append("bootstrap_force_only")
+
+    manifest = load_manifest(tmp_path, controller_path, mutate=mutate)
+    service = replacement_identity()
+    ops = SystemdOperations()
+    payloads = {
+        "identify": {"pid": service.pid, "code_sha": old_code_sha},
+        "status": {
+            "pid": service.pid,
+            "gateway_state": "running",
+            "platforms": {
+                name: {"state": "connected", "writer_pid": service.pid}
+                for name in manifest.expected_platforms
+            },
+            "scheduler": {"status": "running", "writer_pid": service.pid},
+            "session_store": {"status": "ok", "writer_pid": service.pid},
+        },
+    }
+    monkeypatch.setattr(ops, "_query_gateway", lambda _manifest, verb: payloads[verb])
+
+    assert set(ops.runtime_acceptance(manifest, service).values()) == {"FAIL"}
 
 
 def test_systemd_runtime_acceptance_rejects_stale_scheduler_writer(
