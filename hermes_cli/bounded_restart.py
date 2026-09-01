@@ -38,7 +38,7 @@ from typing import Any, Mapping, Protocol
 SCHEMA = "hermes-bounded-handoff-force-restart/v1"
 RESULT_SCHEMA = "hermes-bounded-handoff-force-restart-result/v1"
 HANDOFF_DEADLINE_SECONDS = 180
-CONTROLLER_VERSION = 3
+CONTROLLER_VERSION = 4
 _REQUIRED_AUTHORIZATION = frozenset({"drain", "graceful_restart", "force_restart"})
 _BOOTSTRAP_AUTHORIZATION = "bootstrap_force_only"
 _BOOTSTRAP_MODE = "legacy-force-only"
@@ -974,8 +974,26 @@ class SystemdOperations:
                 or state.get("code_sha") != manifest.old_code_sha
             ):
                 raise ControllerBlocked("legacy gateway old code identity drift")
-            if state.get("gateway_state") != "running" or reported_total < 0:
+            gateway_state = state.get("gateway_state")
+            if reported_total < 0 or gateway_state not in {"running", "draining"}:
                 raise ControllerBlocked("legacy gateway status is malformed")
+            if gateway_state == "draining":
+                marker_path = manifest.hermes_home / ".drain_request.json"
+                try:
+                    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise ControllerBlocked(
+                        "legacy draining status lacks the owned drain marker"
+                    ) from exc
+                if (
+                    not isinstance(marker, dict)
+                    or marker.get("action") != "drain"
+                    or marker.get("principal") != "bounded-handoff-force-restart"
+                    or marker.get("owner_token") != manifest.transaction_id
+                ):
+                    raise ControllerBlocked(
+                        "legacy draining status lacks the owned drain marker"
+                    )
             return Occupancy(
                 active_agents=reported_total,
                 cron_runs=self._count_running_cron(home),
