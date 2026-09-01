@@ -92,7 +92,7 @@ async def test_gateway_stop_records_interrupt_forced_forward_and_incomplete(
 
 
 @pytest.mark.asyncio
-async def test_gateway_stop_never_attempts_clean_exit_after_budget_exhaustion(
+async def test_gateway_stop_uses_reserved_tail_for_clean_exit_after_pre_tail_exhaustion(
     lifecycle_runner, monkeypatch
 ):
     runner = lifecycle_runner
@@ -103,22 +103,21 @@ async def test_gateway_stop_never_attempts_clean_exit_after_budget_exhaustion(
     )
     runner._SHUTDOWN_TAIL_RESERVE_S = 999.0
     phases = []
+    deadlines = []
 
     async def _record(phase: str, *, deadline: float):
         phases.append(phase)
+        deadlines.append(deadline)
         from gateway.drain_attribution import DrainAttributionWriteResult
 
-        return DrainAttributionWriteResult(
-            status="attribution_incomplete",
-            error="shutdown_deadline_exhausted",
-        )
+        return DrainAttributionWriteResult(status="persisted")
 
     monkeypatch.setattr(runner, "_record_drain_attribution", _record)
 
     await GatewayRunner.stop(runner)
 
-    assert "clean_exit" not in phases
-    assert phases[-1] == "cleanup_incomplete"
+    assert phases == ["clean_exit"]
+    assert deadlines[0] > asyncio.get_running_loop().time()
 
 
 @pytest.mark.asyncio
