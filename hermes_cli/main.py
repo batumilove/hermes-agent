@@ -10411,6 +10411,7 @@ def cmd_update(args):
         from hermes_cli.lifecycle_coordination import (
             LifecycleCoordinationBlocked,
             acquire_cli_lifecycle_transaction,
+            lifecycle_coordination_available,
         )
 
         try:
@@ -10419,15 +10420,22 @@ def cmd_update(args):
             # (merge/reset/syntax rollback). Do not acquire a nested
             # ``checkout-reconciliation`` lease there: the common lease is
             # profile-exclusive and a second acquisition would self-deadlock.
-            _update_lifecycle = acquire_cli_lifecycle_transaction(
-                home=get_hermes_home(),
-                # Bind provenance to the checkout that supplied this running
-                # CLI module. PROJECT_ROOT may be redirected later by update
-                # mechanics and by isolated tests; it is not source identity.
-                repo_root=Path(__file__).resolve().parents[1],
-                purpose="deployment",
-                operation="hermes-update",
-            )
+            if lifecycle_coordination_available():
+                _update_lifecycle = acquire_cli_lifecycle_transaction(
+                    home=get_hermes_home(),
+                    # Bind provenance to the checkout that supplied this running
+                    # CLI module. PROJECT_ROOT may be redirected later by update
+                    # mechanics and by isolated tests; it is not source identity.
+                    repo_root=Path(__file__).resolve().parents[1],
+                    purpose="deployment",
+                    operation="hermes-update",
+                )
+            else:
+                print(
+                    "Warning: lifecycle coordination is unavailable on this "
+                    "platform; continuing with the existing update lock only.",
+                    file=sys.stderr,
+                )
         except LifecycleCoordinationBlocked as exc:
             print(
                 f"Update blocked by lifecycle coordination: {exc}\n"
