@@ -174,7 +174,7 @@ def manifest_mapping(tmp_path: Path, controller_path: Path) -> dict:
     return {
         "schema": "hermes-bounded-handoff-force-restart/v1",
         "transaction_id": "txn-20260901-a",
-        "controller": {"version": 5, "sha256": digest},
+        "controller": {"version": 6, "sha256": digest},
         "service": {
             "unit": "hermes-gateway.service",
             "scope": "user",
@@ -284,7 +284,9 @@ def test_controller_hash_can_be_printed_without_a_manifest(capsys):
     assert all(character in "0123456789abcdef" for character in output)
 
 
-def test_dry_run_performs_preflight_without_drain_or_restart(tmp_path, controller_path):
+def test_dry_run_performs_preflight_without_drain_restart_or_evidence(
+    tmp_path, controller_path
+):
     manifest = load_manifest(tmp_path, controller_path)
     ops = FakeOps()
     result = BoundedRestartController(manifest, ops).run(execute=False)
@@ -293,6 +295,55 @@ def test_dry_run_performs_preflight_without_drain_or_restart(tmp_path, controlle
     assert "source" in ops.events and "service" in ops.events
     assert not any(event.startswith("drain:") for event in ops.events)
     assert not any(event.startswith("restart:") for event in ops.events)
+    assert not manifest.evidence_root.exists()
+
+
+def test_dry_run_failure_does_not_create_evidence(tmp_path, controller_path):
+    manifest = load_manifest(tmp_path, controller_path)
+
+    class FailingSourceOps(FakeOps):
+        def source_identity(self, manifest):
+            del manifest
+            raise TimeoutError("remote proof timed out")
+
+    with pytest.raises(TimeoutError, match="remote proof timed out"):
+        BoundedRestartController(manifest, FailingSourceOps()).run(execute=False)
+
+    assert not manifest.evidence_root.exists()
+
+
+def test_dry_run_refuses_committed_recovery_without_changing_evidence(
+    tmp_path, controller_path
+):
+    manifest = load_manifest(tmp_path, controller_path)
+    result_path = Path(manifest.evidence_root) / "controller-result.json"
+    result_path.parent.mkdir(parents=True)
+    result_path.write_text(
+        json.dumps(
+            {
+                "schema": "hermes-bounded-handoff-force-restart-result/v1",
+                "transaction_id": manifest.transaction_id,
+                "manifest_sha256": manifest.manifest_sha256,
+                "state": "RESTART_COMMITTED",
+                "restart_budget_consumed": 1,
+                "old_service": FakeOps().old.to_mapping(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    before = result_path.read_bytes()
+    ops = FakeOps()
+    ops.current_service = replacement_identity()
+
+    with pytest.raises(
+        ControllerBlocked, match="committed transaction requires execute-mode recovery"
+    ):
+        BoundedRestartController(manifest, ops).run(execute=False)
+
+    assert result_path.read_bytes() == before
+    assert "restart:graceful" not in ops.events
+    assert "restart:force-kill" not in ops.events
+    assert "restart:start" not in ops.events
 
 
 def test_stable_zero_before_deadline_uses_one_graceful_restart(tmp_path, controller_path):

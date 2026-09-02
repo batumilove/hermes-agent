@@ -38,7 +38,7 @@ from typing import Any, Mapping, Protocol
 SCHEMA = "hermes-bounded-handoff-force-restart/v1"
 RESULT_SCHEMA = "hermes-bounded-handoff-force-restart-result/v1"
 HANDOFF_DEADLINE_SECONDS = 180
-CONTROLLER_VERSION = 5
+CONTROLLER_VERSION = 6
 _REQUIRED_AUTHORIZATION = frozenset({"drain", "graceful_restart", "force_restart"})
 _BOOTSTRAP_AUTHORIZATION = "bootstrap_force_only"
 _BOOTSTRAP_MODE = "legacy-force-only"
@@ -703,6 +703,10 @@ class BoundedRestartController:
     def run(self, *, execute: bool) -> dict[str, Any]:
         existing = self._load_existing()
         if existing and int(existing.get("restart_budget_consumed", 0)) >= 1:
+            if not execute:
+                raise ControllerBlocked(
+                    "committed transaction requires execute-mode recovery"
+                )
             return self._recover_committed(existing)
         if existing and existing.get("state") not in {
             "PREFLIGHT_PASS",
@@ -725,9 +729,9 @@ class BoundedRestartController:
                 source=source.to_mapping(),
                 old_service=old.to_mapping(),
             )
-            self._write(result)
             if not execute:
                 return result
+            self._write(result)
 
             drain = self.ops.acquire_drain(self.manifest)
             drain_written = False
@@ -854,7 +858,8 @@ class BoundedRestartController:
             raise
         except Exception as exc:
             result.update(state="FAILED", overall="FAIL", error=f"{type(exc).__name__}: {exc}")
-            self._write(result)
+            if execute:
+                self._write(result)
             raise
 
 
