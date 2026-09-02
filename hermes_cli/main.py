@@ -10414,6 +10414,11 @@ def cmd_update(args):
         )
 
         try:
+            # One deployment lease intentionally owns the complete update,
+            # including update_cmd's checkout-reconciliation phase
+            # (merge/reset/syntax rollback). Do not acquire a nested
+            # ``checkout-reconciliation`` lease there: the common lease is
+            # profile-exclusive and a second acquisition would self-deadlock.
             _update_lifecycle = acquire_cli_lifecycle_transaction(
                 home=get_hermes_home(),
                 # Bind provenance to the checkout that supplied this running

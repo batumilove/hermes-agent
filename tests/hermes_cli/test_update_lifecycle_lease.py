@@ -61,7 +61,7 @@ def _isolate_update_boundary(monkeypatch, events):
     monkeypatch.setattr(update_lock, "UpdateLock", FakeUpdateLock)
 
 
-def test_update_holds_deployment_lease_before_impl_and_releases_after(
+def test_update_holds_one_deployment_lease_across_checkout_reconciliation(
     monkeypatch,
 ):
     events = []
@@ -77,7 +77,10 @@ def test_update_holds_deployment_lease_before_impl_and_releases_after(
     monkeypatch.setattr(
         hermes_main,
         "_cmd_update_impl",
-        lambda args, gateway_mode: events.append("impl"),
+        # _cmd_update_impl contains checkout reconciliation (merge/reset and
+        # rollback), so entering it only after acquisition proves that phase
+        # is fenced without a nested self-deadlocking lease.
+        lambda args, gateway_mode: events.append("checkout-reconciliation"),
     )
 
     hermes_main.cmd_update(_args())
@@ -86,7 +89,11 @@ def test_update_holds_deployment_lease_before_impl_and_releases_after(
     assert events[2][0] == "lease-acquire"
     assert events[2][1]["purpose"] == "deployment"
     assert events[2][1]["operation"] == "hermes-update"
-    assert events[3:6] == ["impl", "lease-release", "update-lock-release"]
+    assert events[3:6] == [
+        "checkout-reconciliation",
+        "lease-release",
+        "update-lock-release",
+    ]
 
 
 def test_update_lease_block_prevents_impl_and_releases_update_lock(
