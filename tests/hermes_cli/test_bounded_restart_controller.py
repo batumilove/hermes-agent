@@ -612,6 +612,41 @@ def test_force_kill_nonzero_after_old_generation_gone_reconciles_auto_restart(
     assert ops.events.count("drain:clear") == 1
 
 
+def test_releases_drain_owner_before_runtime_acceptance_while_lifecycle_lease_is_held(
+    tmp_path, controller_path
+):
+    manifest = load_manifest(tmp_path, controller_path)
+    busy = Occupancy(active_agents=1, cgroup_pids=(101, 111, 112))
+
+    class DrainSensitiveAcceptanceOps(FakeOps):
+        def __init__(self):
+            super().__init__(
+                occupancy=[busy] * 4,
+                replacements=[replace(replacement_identity(), n_restarts=8)],
+                force_kill_error=ForceKillCommandFailed(
+                    "command failed (1): systemctl kill: Invalid argument"
+                ),
+            )
+
+        def runtime_acceptance(self, manifest, service):
+            self.events.append("acceptance")
+            assert "lifecycle:release" not in self.events
+            if "drain:release" not in self.events:
+                return {name: "FAIL" for name in self.acceptance}
+            return dict(self.acceptance)
+
+    ops = DrainSensitiveAcceptanceOps()
+    result = BoundedRestartController(manifest, ops).run(execute=True)
+
+    assert result["state"] == "VERIFIED"
+    assert result["runtime_acceptance"] == "PASS"
+    assert ops.events.count("restart:force-kill") == 1
+    assert "restart:start" not in ops.events
+    assert ops.events.index("drain:clear") < ops.events.index("drain:release")
+    assert ops.events.index("drain:release") < ops.events.index("acceptance")
+    assert ops.events.index("acceptance") < ops.events.index("lifecycle:release")
+
+
 def test_force_kill_nonzero_retries_transient_replacement_health_before_blocking(
     tmp_path, controller_path
 ):
@@ -978,6 +1013,48 @@ def test_restart_budget_recovery_accepts_replacement_removed_drain_marker(
     assert "restart:graceful" not in ops.events
     assert "restart:force-kill" not in ops.events
     assert "restart:start" not in ops.events
+
+
+def test_committed_recovery_releases_drain_owner_before_runtime_acceptance(
+    tmp_path, controller_path
+):
+    manifest = load_manifest(tmp_path, controller_path)
+    root = Path(manifest.evidence_root)
+    root.mkdir(parents=True)
+    (root / "controller-result.json").write_text(
+        json.dumps(
+            {
+                "schema": "hermes-bounded-handoff-force-restart-result/v1",
+                "transaction_id": manifest.transaction_id,
+                "manifest_sha256": manifest.manifest_sha256,
+                "state": "RESTART_COMMITTED",
+                "restart_budget_consumed": 1,
+                "old_service": FakeOps().old.to_mapping(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class DrainSensitiveRecoveryOps(FakeOps):
+        def runtime_acceptance(self, manifest, service):
+            self.events.append("acceptance")
+            assert "lifecycle:release" not in self.events
+            if "drain:release" not in self.events:
+                return {name: "FAIL" for name in self.acceptance}
+            return dict(self.acceptance)
+
+    ops = DrainSensitiveRecoveryOps()
+    ops.current_service = replacement_identity()
+    result = BoundedRestartController(manifest, ops).run(execute=True)
+
+    assert result["state"] == "VERIFIED"
+    assert result["recovered_after_restart_commit"] is True
+    assert ops.events.index("drain:clear-if-owned-or-absent") < ops.events.index(
+        "drain:release"
+    )
+    assert ops.events.index("drain:release") < ops.events.index("acceptance")
+    assert ops.events.index("acceptance") < ops.events.index("lifecycle:release")
+    assert not any(event.startswith("restart:") for event in ops.events)
 
 
 def test_forced_result_is_durable_and_separates_unclean_shutdown_from_health(
