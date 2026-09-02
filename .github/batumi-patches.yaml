@@ -866,7 +866,9 @@ patches:
     rationale: >-
       Serialize maintenance activation controllers on one canonical per-user
       process lock, bind drain marker refresh and cleanup to a unique owner,
-      keep intake fail-closed if an owned marker is removed or replaced, suppress
+      keep intake fail-closed if an owned marker is removed or replaced before
+      replacement proof, accept an already-absent marker only during post-commit
+      recovery, release drain ownership before startup acceptance, suppress
       scheduled and catch-up dispatch for the full owned transaction, and run a
       sealed one-restart bounded-handoff transaction whose occupancy and
       post-replacement acceptance are proven through PID-bound live status.

@@ -427,6 +427,41 @@ class TestOwnedDrainControl:
         finally:
             owner.release()
 
+    def test_owner_cleanup_after_replacement_accepts_already_absent_marker(self, home):
+        owner = dc.acquire_drain_ownership(
+            principal="activation-a",
+            home=home,
+            owner_token="transaction-a",
+        )
+        try:
+            assert dc.read_drain_request(home=home) is None
+            assert owner.clear_request_if_owned_or_absent() is False
+            assert dc.read_drain_request(home=home) is None
+        finally:
+            owner.release()
+
+    def test_owner_cleanup_after_replacement_refuses_foreign_marker(self, home):
+        owner = dc.acquire_drain_ownership(
+            principal="activation-a",
+            home=home,
+            owner_token="transaction-a",
+        )
+        try:
+            foreign = dc._drain_payload(
+                principal="activation-b",
+                suppress_notification=False,
+                owner_token="transaction-b",
+            )
+            dc.drain_request_path(home).write_text(json.dumps(foreign), encoding="utf-8")
+
+            with pytest.raises(dc.DrainOwnershipLostError, match="replaced"):
+                owner.clear_request_if_owned_or_absent()
+            surviving = dc.read_drain_request(home=home)
+            assert surviving is not None
+            assert surviving["owner_token"] == "transaction-b"
+        finally:
+            owner.release()
+
     def test_cron_admission_excludes_activation_until_registration_finishes(self, home):
         with dc.cron_admission(home=home) as admitted:
             assert admitted is True
