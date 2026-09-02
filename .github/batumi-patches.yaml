@@ -50,6 +50,24 @@ patches:
       - npm run check --workspace apps/desktop
     retirement: Remove when the recorded upstream baseline enforces an equivalent nanoid 3.x security floor in both manifest and lockfile.
 
+  - id: browserslist-ghsa-73wf-remediation
+    kind: operations
+    rationale: >-
+      Keep every root and website Browserslist resolution at 4.28.7 or newer so
+      untrusted custom statistics cannot trigger the prototype-write and crash
+      paths tracked by GHSA-73wf-gq98-2v4g, CVE-2026-73088, and CVE-2026-73089.
+    paths:
+      - package.json
+      - package-lock.json
+      - website/package.json
+      - website/package-lock.json
+    tests:
+      - npx --yes npm@12.0.1 audit --audit-level=high
+      - npx --yes npm@12.0.1 --prefix website audit --audit-level=high
+      - npm run check
+      - npm --prefix website run build
+    retirement: Remove when the recorded upstream baseline resolves Browserslist 4.28.7 or newer in both root and website dependency scopes.
+
   - id: fork-free-runner-labels
     kind: operations
     rationale: >-
