@@ -38,7 +38,7 @@ from typing import Any, Mapping, Protocol
 SCHEMA = "hermes-bounded-handoff-force-restart/v1"
 RESULT_SCHEMA = "hermes-bounded-handoff-force-restart-result/v1"
 HANDOFF_DEADLINE_SECONDS = 180
-CONTROLLER_VERSION = 4
+CONTROLLER_VERSION = 5
 _REQUIRED_AUTHORIZATION = frozenset({"drain", "graceful_restart", "force_restart"})
 _BOOTSTRAP_AUTHORIZATION = "bootstrap_force_only"
 _BOOTSTRAP_MODE = "legacy-force-only"
@@ -50,6 +50,10 @@ class ControllerBlocked(RuntimeError):
 
 class ControllerFailed(RuntimeError):
     """The authorized transaction mutated state but failed verification."""
+
+
+class ForceKillCommandFailed(ControllerBlocked):
+    """The force-kill subprocess returned non-zero after invocation."""
 
 
 def _require_mapping(value: Any, field: str) -> Mapping[str, Any]:
@@ -559,6 +563,54 @@ class BoundedRestartController:
         self._write(result)
         return current
 
+    def _reconcile_force_kill_error(
+        self,
+        result: dict[str, Any],
+        old: ServiceIdentity,
+        old_pids: tuple[int, ...],
+        error: ControllerBlocked,
+    ) -> ServiceIdentity:
+        result.update(
+            force_kill_command_error=str(error),
+            force_kill_reconciled=False,
+        )
+        self._write(result)
+        deadline = self.ops.monotonic() + self.manifest.replacement_wait_seconds
+        current = self.ops.service_identity(self.manifest)
+        while not self._is_replacement(old, current) and self.ops.monotonic() < deadline:
+            self.ops.sleep(1)
+            current = self.ops.service_identity(self.manifest)
+        if not self._is_replacement(old, current):
+            result.update(
+                state="RESTART_COMMITTED",
+                activation_health="BLOCKED",
+                overall="BLOCKED",
+            )
+            self._write(result)
+            raise ControllerBlocked(
+                "kill command failed and replacement is not proven"
+            ) from error
+        try:
+            replacement = self._verify_replacement(
+                result,
+                old,
+                old_pids,
+                allow_start=False,
+            )
+        except ControllerFailed as exc:
+            result.update(
+                state="RESTART_COMMITTED",
+                force_kill_reconciled=False,
+                overall="BLOCKED",
+            )
+            self._write(result)
+            raise ControllerBlocked(
+                "kill command failed and replacement verification did not pass"
+            ) from exc
+        result["force_kill_reconciled"] = True
+        self._write(result)
+        return replacement
+
     def _finalize_acceptance(
         self,
         result: dict[str, Any],
@@ -760,15 +812,30 @@ class BoundedRestartController:
 
                 if mode == "GRACEFUL":
                     self.ops.graceful_restart(self.manifest)
+                    replacement = self._verify_replacement(
+                        result,
+                        final_old,
+                        tuple(result["old_cgroup_pids"]),
+                        allow_start=False,
+                    )
                 else:
                     self.ops.prepare_interruption(self.manifest, last)
-                    self.ops.force_kill(self.manifest, final_old)
-                replacement = self._verify_replacement(
-                    result,
-                    final_old,
-                    tuple(result["old_cgroup_pids"]),
-                    allow_start=(mode == "FORCED"),
-                )
+                    try:
+                        self.ops.force_kill(self.manifest, final_old)
+                    except ForceKillCommandFailed as exc:
+                        replacement = self._reconcile_force_kill_error(
+                            result,
+                            final_old,
+                            tuple(result["old_cgroup_pids"]),
+                            exc,
+                        )
+                    else:
+                        replacement = self._verify_replacement(
+                            result,
+                            final_old,
+                            tuple(result["old_cgroup_pids"]),
+                            allow_start=True,
+                        )
                 if drain_written:
                     drain.clear_request()
                     drain_written = False
@@ -1054,11 +1121,19 @@ class SystemdOperations:
         current = self.service_identity(manifest)
         if current.pid != old.pid or current.proc_start_ticks != old.proc_start_ticks:
             raise ControllerBlocked("service generation changed before force kill")
-        self._run(
-            self._systemctl(manifest)
-            + ["kill", "--kill-whom=all", "--signal=SIGKILL", manifest.service_unit],
-            timeout=30,
-        )
+        try:
+            self._run(
+                self._systemctl(manifest)
+                + [
+                    "kill",
+                    "--kill-whom=all",
+                    "--signal=SIGKILL",
+                    manifest.service_unit,
+                ],
+                timeout=30,
+            )
+        except ControllerBlocked as exc:
+            raise ForceKillCommandFailed(str(exc)) from exc
 
     def start(self, manifest: Manifest) -> None:
         self._run(self._systemctl(manifest) + ["start", manifest.service_unit], timeout=30)

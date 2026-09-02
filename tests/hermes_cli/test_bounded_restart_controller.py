@@ -12,6 +12,7 @@ from hermes_cli.bounded_restart import (
     BoundedRestartController,
     ControllerBlocked,
     ControllerFailed,
+    ForceKillCommandFailed,
     Manifest,
     Occupancy,
     ServiceIdentity,
@@ -54,6 +55,7 @@ class FakeOps:
         replacements=None,
         old_cgroup_gone=True,
         runtime_acceptance=None,
+        force_kill_error: ControllerBlocked | None = None,
     ):
         self.wall = NOW
         self.mono = 0.0
@@ -81,6 +83,7 @@ class FakeOps:
         self.replacements = list(replacements or [])
         self.last_occupancy = self.occupancy[-1]
         self.cgroup_gone = old_cgroup_gone
+        self.force_kill_error = force_kill_error
         self.acceptance = dict(
             runtime_acceptance
             or {
@@ -132,6 +135,8 @@ class FakeOps:
     def force_kill(self, manifest, old):
         self.events.append("restart:force-kill")
         self.current_service = replace(old, active_state="inactive", sub_state="dead")
+        if self.force_kill_error is not None:
+            raise self.force_kill_error
 
     def start(self, manifest):
         self.events.append("restart:start")
@@ -169,7 +174,7 @@ def manifest_mapping(tmp_path: Path, controller_path: Path) -> dict:
     return {
         "schema": "hermes-bounded-handoff-force-restart/v1",
         "transaction_id": "txn-20260901-a",
-        "controller": {"version": 4, "sha256": digest},
+        "controller": {"version": 5, "sha256": digest},
         "service": {
             "unit": "hermes-gateway.service",
             "scope": "user",
@@ -373,6 +378,140 @@ def test_busy_at_deadline_force_kills_cgroup_once_and_accepts_auto_restart(
     assert "restart:start" not in ops.events
     assert result["old_cgroup_gone"] == "PASS"
     assert result["activation_health"] == "PASS"
+
+
+def test_force_kill_nonzero_after_old_generation_gone_reconciles_auto_restart(
+    tmp_path, controller_path
+):
+    manifest = load_manifest(tmp_path, controller_path)
+    busy = Occupancy(active_agents=1, cgroup_pids=(101, 111, 112))
+    ops = FakeOps(
+        occupancy=[busy] * 4,
+        replacements=[replace(replacement_identity(), n_restarts=8)],
+        force_kill_error=ForceKillCommandFailed(
+            "command failed (1): systemctl kill: Invalid argument"
+        ),
+    )
+
+    result = BoundedRestartController(manifest, ops).run(execute=True)
+
+    assert result["state"] == "VERIFIED"
+    assert result["force_kill_command_error"].endswith("Invalid argument")
+    assert result["force_kill_reconciled"] is True
+    assert result["restart_count"] == "PASS"
+    assert result["old_cgroup_gone"] == "PASS"
+    assert result["activation_health"] == "PASS"
+    assert result["runtime_acceptance"] == "PASS"
+    assert ops.events.count("restart:force-kill") == 1
+    assert "restart:start" not in ops.events
+    assert ops.events.count("drain:clear") == 1
+
+
+def test_force_kill_precommand_identity_block_is_not_reconciled(tmp_path, controller_path):
+    manifest = load_manifest(tmp_path, controller_path)
+    busy = Occupancy(active_agents=1, cgroup_pids=(101, 111, 112))
+    ops = FakeOps(
+        occupancy=[busy] * 4,
+        replacements=[replace(replacement_identity(), n_restarts=8)],
+        force_kill_error=ControllerBlocked(
+            "service generation changed before force kill"
+        ),
+    )
+
+    with pytest.raises(ControllerBlocked, match="generation changed before force kill"):
+        BoundedRestartController(manifest, ops).run(execute=True)
+
+    saved = json.loads(
+        (Path(manifest.evidence_root) / "controller-result.json").read_text()
+    )
+    assert saved["restart_budget_consumed"] == 1
+    assert "force_kill_reconciled" not in saved
+    assert saved["activation_health"] == "BLOCKED"
+    assert saved["overall"] == "BLOCKED"
+    assert ops.events.count("restart:force-kill") == 1
+    assert "restart:start" not in ops.events
+    assert ops.events.count("drain:clear") == 0
+
+
+def test_systemd_force_kill_types_only_subprocess_failure_as_reconcilable(
+    tmp_path, controller_path, monkeypatch
+):
+    manifest = load_manifest(tmp_path, controller_path)
+    old = ServiceIdentity(
+        pid=101,
+        invocation_id="old-invocation",
+        proc_start_ticks="1001",
+        active_state="active",
+        sub_state="running",
+        control_group="/user.slice/hermes.service",
+        restart_policy="always",
+        kill_mode="control-group",
+        n_restarts=7,
+    )
+    ops = SystemdOperations()
+    monkeypatch.setattr(ops, "service_identity", lambda unused: old)
+
+    def fail_command(command, *, timeout, check=True):
+        raise ControllerBlocked("command failed (1): systemctl kill: Invalid argument")
+
+    monkeypatch.setattr(ops, "_run", fail_command)
+
+    with pytest.raises(ForceKillCommandFailed, match="Invalid argument"):
+        ops.force_kill(manifest, old)
+
+
+def test_force_kill_nonzero_with_unverified_replacement_stays_unreconciled(
+    tmp_path, controller_path
+):
+    manifest = load_manifest(tmp_path, controller_path)
+    busy = Occupancy(active_agents=1, cgroup_pids=(101, 111, 112))
+    ops = FakeOps(
+        occupancy=[busy] * 4,
+        replacements=[replace(replacement_identity(), n_restarts=8)],
+        old_cgroup_gone=False,
+        force_kill_error=ForceKillCommandFailed(
+            "command failed (1): systemctl kill: Invalid argument"
+        ),
+    )
+
+    with pytest.raises(ControllerBlocked, match="verification did not pass"):
+        BoundedRestartController(manifest, ops).run(execute=True)
+
+    saved = json.loads(
+        (Path(manifest.evidence_root) / "controller-result.json").read_text()
+    )
+    assert saved["force_kill_reconciled"] is False
+    assert saved["old_cgroup_gone"] == "FAIL"
+    assert saved["overall"] == "BLOCKED"
+    assert ops.events.count("drain:clear") == 0
+
+
+def test_force_kill_nonzero_without_replacement_blocks_and_preserves_drain(
+    tmp_path, controller_path
+):
+    manifest = load_manifest(tmp_path, controller_path)
+    busy = Occupancy(active_agents=1, cgroup_pids=(101, 111, 112))
+    ops = FakeOps(
+        occupancy=[busy] * 4,
+        force_kill_error=ForceKillCommandFailed(
+            "command failed (1): systemctl kill: Invalid argument"
+        ),
+    )
+
+    with pytest.raises(ControllerBlocked, match="kill command failed and replacement"):
+        BoundedRestartController(manifest, ops).run(execute=True)
+
+    saved = json.loads(
+        (Path(manifest.evidence_root) / "controller-result.json").read_text()
+    )
+    assert saved["state"] == "RESTART_COMMITTED"
+    assert saved["restart_budget_consumed"] == 1
+    assert saved["force_kill_reconciled"] is False
+    assert saved["activation_health"] == "BLOCKED"
+    assert saved["overall"] == "BLOCKED"
+    assert ops.events.count("restart:force-kill") == 1
+    assert "restart:start" not in ops.events
+    assert "drain:clear" not in ops.events
 
 
 def test_force_path_starts_unit_once_when_restart_policy_does_not_replace_it(
