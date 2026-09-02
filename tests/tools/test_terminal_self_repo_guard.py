@@ -1,6 +1,7 @@
 """terminal_tool wiring tests for the self-repo git mutation guard."""
 
 import json
+
 from contextlib import ExitStack
 from unittest.mock import MagicMock, patch
 
@@ -32,12 +33,20 @@ def repo(tmp_path):
     return root.resolve()
 
 
-def _run(command, config, monkeypatch, repo_root, session_cwds=None,
-         guard_on=True, **kwargs):
+def _run(
+    command,
+    config,
+    monkeypatch,
+    repo_root,
+    session_cwds=None,
+    guard_on: bool | None = True,
+    **kwargs,
+):
     from tools.terminal_tool import terminal_tool
 
     monkeypatch.setattr(self_repo_guard, "get_running_source_root", lambda: repo_root)
-    monkeypatch.setattr(self_repo_guard, "guard_active", lambda: guard_on)
+    if guard_on is not None:
+        monkeypatch.setattr(self_repo_guard, "guard_active", lambda: guard_on)
     mock_env = MagicMock()
     mock_env.execute.return_value = {"output": "ok", "returncode": 0}
     mock_env.cwd = config["cwd"]
@@ -119,8 +128,8 @@ class TestSelfRepoGuardWiring:
         assert result.get("status") != "blocked"
         env.execute.assert_called_once()
 
-    def test_guard_inactive_passes_through(self, repo, monkeypatch):
-        """POSIX (guard_active() False): mutations in the source repo run."""
+    def test_explicitly_disabled_guard_passes_through(self, repo, monkeypatch):
+        """A disabled guard hook is respected for isolated embedding tests."""
         config = _make_env_config(cwd=str(repo))
         result, env = _run(
             "git reset --hard origin/main", config, monkeypatch, repo,
@@ -129,8 +138,18 @@ class TestSelfRepoGuardWiring:
         assert result.get("status") != "blocked"
         env.execute.assert_called_once()
 
-    def test_guard_active_matches_platform(self):
-        """guard_active() is True exactly on Windows."""
-        import os
+    def test_guard_is_always_active_for_live_source_checkout(self):
+        """Live source mutations must use the serialized deployment controller."""
+        assert self_repo_guard.guard_active() is True
 
-        assert self_repo_guard.guard_active() == (os.name == "nt")
+    def test_default_guard_blocks_terminal_checkout(self, repo, monkeypatch):
+        result, env = _run(
+            "git reset --hard myfork/batumi/live",
+            _make_env_config(cwd=str(repo)),
+            monkeypatch,
+            repo,
+            guard_on=None,
+        )
+
+        assert result["status"] == "blocked"
+        env.execute.assert_not_called()
