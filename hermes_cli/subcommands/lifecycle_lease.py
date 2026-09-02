@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 from typing import Callable
 
 _PURPOSES = (
@@ -58,3 +59,31 @@ def build_lifecycle_lease_parser(subparsers, *, cmd_lifecycle_lease: Callable) -
         "--json", action="store_true", help="Emit machine-readable JSON"
     )
     reconcile_parser.set_defaults(func=cmd_lifecycle_lease)
+
+    run_parser = commands.add_parser(
+        "run",
+        help="Run an external LCM activation or soak controller under a lease",
+        description=(
+            "Acquire exact profile-wide lifecycle ownership, run one external "
+            "controller without a shell, and release ownership on exit."
+        ),
+    )
+    run_parser.add_argument(
+        "--purpose", required=True, choices=("lcm-activation", "soak")
+    )
+    run_parser.add_argument("--owner-token", required=True)
+    run_parser.add_argument("--source-head", required=True)
+    run_parser.add_argument("--source-tree", required=True)
+    run_parser.add_argument("--artifact-sha256", required=True)
+    run_parser.add_argument("--evidence-id", required=True)
+    run_parser.add_argument(
+        "--expires-at",
+        required=True,
+        help="Timezone-aware ISO-8601 authorization expiry",
+    )
+    run_parser.add_argument(
+        "external_command",
+        nargs=argparse.REMAINDER,
+        help="Command and arguments after -- (executed directly, never via a shell)",
+    )
+    run_parser.set_defaults(func=cmd_lifecycle_lease)

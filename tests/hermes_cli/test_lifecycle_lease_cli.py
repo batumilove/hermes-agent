@@ -7,6 +7,8 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from gateway.lifecycle_lease import acquire_lifecycle_lease, inspect_lifecycle_lease
 from hermes_cli import lifecycle_lease_cmd
 from hermes_cli.subcommands.lifecycle_lease import build_lifecycle_lease_parser
@@ -141,3 +143,138 @@ def test_root_cli_exposes_lifecycle_lease_inspect(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["status"] == "absent"
+
+
+class _Lease:
+    def __init__(self, events):
+        self.events = events
+
+    def release(self):
+        self.events.append("lease-release")
+
+
+def _run_args(*, purpose="lcm-activation"):
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+    return _parse(
+        "run",
+        "--purpose",
+        purpose,
+        "--owner-token",
+        f"{purpose}-controller",
+        "--source-head",
+        "a" * 40,
+        "--source-tree",
+        "b" * 40,
+        "--artifact-sha256",
+        "c" * 64,
+        "--evidence-id",
+        f"{purpose}-evidence",
+        "--expires-at",
+        expires_at,
+        "--",
+        sys.executable,
+        "-c",
+        "raise SystemExit(7)",
+    )
+
+
+@pytest.mark.parametrize("purpose", ["lcm-activation", "soak"])
+def test_run_holds_exact_external_controller_lease(purpose, tmp_path, monkeypatch):
+    events = []
+    captured = {}
+
+    def acquire(**kwargs):
+        captured.update(kwargs)
+        events.append("lease-acquire")
+        return _Lease(events)
+
+    def run(command, **kwargs):
+        events.append(("command", command, kwargs))
+        return subprocess.CompletedProcess(command, 7)
+
+    monkeypatch.setattr(lifecycle_lease_cmd, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(lifecycle_lease_cmd, "acquire_lifecycle_lease", acquire)
+    monkeypatch.setattr(lifecycle_lease_cmd.subprocess, "run", run)
+
+    exit_code = lifecycle_lease_cmd.run_lifecycle_lease_command(
+        _run_args(purpose=purpose)
+    )
+
+    assert exit_code == 7
+    assert events[0] == "lease-acquire"
+    assert events[1][0] == "command"
+    assert events[1][1][0] == sys.executable
+    assert events[1][2] == {"check": False}
+    assert events[2] == "lease-release"
+    assert captured["home"] == tmp_path
+    assert captured["purpose"] == purpose
+    assert captured["owner_token"] == f"{purpose}-controller"
+    assert captured["provenance"] == {
+        "source_head": "a" * 40,
+        "source_tree": "b" * 40,
+        "artifact_sha256": "c" * 64,
+        "evidence_id": f"{purpose}-evidence",
+    }
+
+
+def test_run_releases_lease_on_base_exception(tmp_path, monkeypatch):
+    events = []
+    monkeypatch.setattr(lifecycle_lease_cmd, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        lifecycle_lease_cmd,
+        "acquire_lifecycle_lease",
+        lambda **kwargs: _Lease(events),
+    )
+
+    def interrupted(command, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(lifecycle_lease_cmd.subprocess, "run", interrupted)
+
+    with pytest.raises(KeyboardInterrupt):
+        lifecycle_lease_cmd.run_lifecycle_lease_command(_run_args())
+
+    assert events == ["lease-release"]
+
+
+def test_root_cli_run_executes_inert_controller_and_cleans_lease(tmp_path):
+    home = tmp_path / "profile-home"
+    env = dict(os.environ)
+    env["HERMES_HOME"] = str(home)
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "hermes_cli.main",
+            "lifecycle-lease",
+            "run",
+            "--purpose",
+            "lcm-activation",
+            "--owner-token",
+            "lcm-activation-inert-test",
+            "--source-head",
+            "a" * 40,
+            "--source-tree",
+            "b" * 40,
+            "--artifact-sha256",
+            "c" * 64,
+            "--evidence-id",
+            "lcm-activation-inert-evidence",
+            "--expires-at",
+            expires_at,
+            "--",
+            sys.executable,
+            "-c",
+            "raise SystemExit(7)",
+        ],
+        cwd=str(__file__).split("/tests/", 1)[0],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 7, result.stderr
+    assert inspect_lifecycle_lease(home=home)["status"] == "absent"
