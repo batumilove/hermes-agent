@@ -99,3 +99,30 @@ async def test_reply_prefix_still_injected_when_text_in_history():
     assert result.endswith("What's the best time to go?")
 
 
+@pytest.mark.asyncio
+async def test_long_reply_prefix_marks_clipped_excerpt_within_500_character_cap():
+    runner = _make_runner()
+    source = _source()
+    quoted = "A" * 501
+    marker = "… [reply excerpt clipped; original message may be longer]"
+    event = MessageEvent(
+        text="Investigate",
+        source=source,
+        reply_to_message_id="42",
+        reply_to_text=quoted,
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    prefix, message = result.split("\n\n", 1)
+    excerpt = prefix.removeprefix('[Replying to: "').removesuffix('"]')
+    assert len(excerpt) == 500
+    assert excerpt.endswith(marker)
+    assert message == "Investigate"
+
+

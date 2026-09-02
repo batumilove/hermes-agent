@@ -19897,8 +19897,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # disambiguation: it tells the agent *which* prior message the user
             # is referencing. History can contain the same or similar text
             # multiple times, and without an explicit pointer the agent has to
-            # guess (or answer for both subjects). Token overhead is minimal.
-            reply_snippet = event.reply_to_text[:500]
+            # guess (or answer for both subjects). Keep the excerpt bounded,
+            # but make clipping explicit so a mid-report reply cannot be
+            # mistaken for a truncated original delivery.
+            reply_text = event.reply_to_text
+            reply_clip_marker = "… [reply excerpt clipped; original message may be longer]"
+            if len(reply_text) > 500:
+                reply_snippet = reply_text[: 500 - len(reply_clip_marker)] + reply_clip_marker
+            else:
+                reply_snippet = reply_text
             if getattr(event, "reply_to_is_own_message", False):
                 message_text = (
                     f'[Replying to your previous message: "{reply_snippet}"]\n\n'

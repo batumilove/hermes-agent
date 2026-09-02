@@ -874,6 +874,19 @@ patches:
       - scripts/run_tests.sh tests/agent/test_tool_guardrails.py tests/run_agent/test_tool_call_guardrail_runtime.py tests/tools/test_tool_output_limits.py tests/tools/test_interrupt.py
     retirement: Remove when upstream provides equivalent aggregate warning, parallel cap accounting, and bounded synthesis-only convergence contracts.
 
+  - id: gateway-reply-context-clipping-clarity
+    kind: core
+    rationale: >-
+      Preserve bounded reply-context injection while marking excerpts that were
+      clipped, so a mid-report preview cannot be mistaken for a truncated
+      original delivery.
+    paths:
+      - gateway/run.py
+      - tests/gateway/test_reply_to_injection.py
+    tests:
+      - scripts/run_tests.sh tests/gateway/test_reply_to_injection.py tests/gateway/test_telegram_reply_quote.py tests/gateway/test_queue_command.py
+    retirement: Remove when upstream marks clipped reply-context excerpts within an equivalent bounded context budget.
+
   - id: gateway-startup-readiness
     kind: core
     rationale: >-
