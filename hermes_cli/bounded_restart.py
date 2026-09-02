@@ -38,7 +38,7 @@ from typing import Any, Mapping, Protocol
 SCHEMA = "hermes-bounded-handoff-force-restart/v1"
 RESULT_SCHEMA = "hermes-bounded-handoff-force-restart-result/v1"
 HANDOFF_DEADLINE_SECONDS = 180
-CONTROLLER_VERSION = 6
+CONTROLLER_VERSION = 7
 _REQUIRED_AUTHORIZATION = frozenset({"drain", "graceful_restart", "force_restart"})
 _BOOTSTRAP_AUTHORIZATION = "bootstrap_force_only"
 _BOOTSTRAP_MODE = "legacy-force-only"
@@ -538,7 +538,12 @@ class BoundedRestartController:
             self._write(result)
             raise ControllerFailed("replacement restart count is inconsistent")
         result["restart_count"] = "PASS"
-        if not self.ops.health_check(self.manifest, current):
+        health_deadline = self.ops.monotonic() + self.manifest.replacement_wait_seconds
+        healthy = self.ops.health_check(self.manifest, current)
+        while not healthy and self.ops.monotonic() < health_deadline:
+            self.ops.sleep(1)
+            healthy = self.ops.health_check(self.manifest, current)
+        if not healthy:
             result.update(state="HEALTH_FAILED", activation_health="FAIL", overall="FAIL")
             self._write(result)
             raise ControllerFailed("replacement gateway failed health check")
