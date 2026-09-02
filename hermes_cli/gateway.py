@@ -16,6 +16,7 @@ import subprocess
 import sys
 import textwrap
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -70,6 +71,10 @@ from hermes_cli.setup import (
 from hermes_cli.colors import Colors, color
 
 logger = logging.getLogger(__name__)
+
+_GATEWAY_RESTART_LEASE_HELD: ContextVar[bool] = ContextVar(
+    "gateway_restart_lease_held", default=False
+)
 
 # =============================================================================
 # Process Management (for manual gateway runs)
@@ -7818,6 +7823,56 @@ def _block_until_terminated() -> None:
 
 def _gateway_command_inner(args):
     subcmd = getattr(args, "gateway_command", None)
+
+    # Fence every out-of-band generic restart backend under one common
+    # lifecycle owner.  A context-local recursion marker lets the existing
+    # platform branch execute unchanged while guaranteeing that every return,
+    # SystemExit, and BaseException passes through release.
+    if subcmd == "restart" and not _GATEWAY_RESTART_LEASE_HELD.get():
+        from tools.process_registry import _is_supervised_gateway_process
+
+        if _is_supervised_gateway_process():
+            print_error(
+                "Refusing to restart the gateway from inside the gateway process.\n"
+                "This command was blocked to prevent restart loops.\n"
+                "Use `hermes gateway restart` from a shell outside the running gateway."
+            )
+            sys.exit(1)
+
+        from hermes_cli.lifecycle_coordination import (
+            LifecycleCoordinationBlocked,
+            acquire_cli_lifecycle_transaction,
+        )
+
+        try:
+            lease = acquire_cli_lifecycle_transaction(
+                home=get_hermes_home(),
+                repo_root=Path(__file__).resolve().parents[1],
+                purpose="gateway-restart",
+                operation="hermes-gateway-restart",
+            )
+        except LifecycleCoordinationBlocked as exc:
+            print_error(
+                f"Gateway restart blocked by lifecycle coordination: {exc}\n"
+                "Inspect ownership with `hermes lifecycle-lease inspect`."
+            )
+            sys.exit(2)
+
+        token = _GATEWAY_RESTART_LEASE_HELD.set(True)
+        primary: BaseException | None = None
+        try:
+            return _gateway_command_inner(args)
+        except BaseException as exc:
+            primary = exc
+            raise
+        finally:
+            _GATEWAY_RESTART_LEASE_HELD.reset(token)
+            try:
+                lease.release()
+            except BaseException as release_exc:
+                if primary is not None:
+                    raise release_exc from primary
+                raise
 
     # Default to run if no subcommand
     if subcmd is None or subcmd == "run":
