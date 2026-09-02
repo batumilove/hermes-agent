@@ -38,7 +38,7 @@ from typing import Any, Mapping, Protocol
 SCHEMA = "hermes-bounded-handoff-force-restart/v1"
 RESULT_SCHEMA = "hermes-bounded-handoff-force-restart-result/v1"
 HANDOFF_DEADLINE_SECONDS = 180
-CONTROLLER_VERSION = 7
+CONTROLLER_VERSION = 8
 _REQUIRED_AUTHORIZATION = frozenset({"drain", "graceful_restart", "force_restart"})
 _BOOTSTRAP_AUTHORIZATION = "bootstrap_force_only"
 _BOOTSTRAP_MODE = "legacy-force-only"
@@ -701,10 +701,10 @@ class BoundedRestartController:
         )
         drain = self.ops.acquire_drain(self.manifest)
         try:
-            drain.clear_request()
-            return self._finalize_acceptance(result, replacement)
+            drain.clear_request_if_owned_or_absent()
         finally:
             drain.release()
+        return self._finalize_acceptance(result, replacement)
 
     def run(self, *, execute: bool) -> dict[str, Any]:
         if not execute:
@@ -782,6 +782,7 @@ class BoundedRestartController:
 
             drain = self.ops.acquire_drain(self.manifest)
             drain_written = False
+            drain_released = False
             try:
                 drain.write_request()
                 drain_written = True
@@ -890,6 +891,8 @@ class BoundedRestartController:
                 if drain_written:
                     drain.clear_request()
                     drain_written = False
+                drain.release()
+                drain_released = True
                 return self._finalize_acceptance(result, replacement)
             finally:
                 # Before the restart commit, cancellation is safe and restores
@@ -900,7 +903,8 @@ class BoundedRestartController:
                         drain.clear_request()
                     except Exception:
                         pass
-                drain.release()
+                if not drain_released:
+                    drain.release()
         except (ControllerBlocked, ControllerFailed):
             raise
         except Exception as exc:

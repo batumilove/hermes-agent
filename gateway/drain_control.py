@@ -541,6 +541,24 @@ class DrainOwnership:
             raise DrainOwnershipLostError("owned drain marker disappeared before cleanup") from exc
         return True
 
+    def clear_request_if_owned_or_absent(self) -> bool:
+        """Clear this owner's marker, or accept that replacement already removed it.
+
+        This is only for post-replacement reconciliation. A marker owned by
+        anyone else still fails closed and is never removed.
+        """
+        self._require_lock()
+        body = read_drain_request(home=self.home)
+        if body is None:
+            return False
+        if body.get("owner_token") != self.owner_token:
+            raise DrainOwnershipLostError("owned drain marker was replaced")
+        try:
+            drain_request_path(self.home).unlink()
+        except FileNotFoundError:
+            return False
+        return True
+
     def release(self) -> None:
         handle = self._lock_handle
         signal_handle = self._drain_signal_handle

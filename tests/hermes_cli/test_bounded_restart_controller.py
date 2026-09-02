@@ -51,6 +51,10 @@ class FakeDrain:
         self.ops.events.append("drain:clear")
         return True
 
+    def clear_request_if_owned_or_absent(self) -> bool:
+        self.ops.events.append("drain:clear-if-owned-or-absent")
+        return True
+
     def release(self):
         self.ops.events.append("drain:release")
 
@@ -186,7 +190,7 @@ def manifest_mapping(tmp_path: Path, controller_path: Path) -> dict:
     return {
         "schema": "hermes-bounded-handoff-force-restart/v1",
         "transaction_id": "txn-20260901-a",
-        "controller": {"version": 7, "sha256": digest},
+        "controller": {"version": 8, "sha256": digest},
         "service": {
             "unit": "hermes-gateway.service",
             "scope": "user",
@@ -929,6 +933,53 @@ def test_restart_budget_checkpoint_prevents_second_restart_after_crash(
     assert "restart:start" not in ops.events
 
 
+def test_restart_budget_recovery_accepts_replacement_removed_drain_marker(
+    tmp_path, controller_path
+):
+    manifest = load_manifest(tmp_path, controller_path)
+    root = Path(manifest.evidence_root)
+    root.mkdir(parents=True)
+    (root / "controller-result.json").write_text(
+        json.dumps(
+            {
+                "schema": "hermes-bounded-handoff-force-restart-result/v1",
+                "transaction_id": manifest.transaction_id,
+                "manifest_sha256": manifest.manifest_sha256,
+                "state": "RUNTIME_ACCEPTANCE_FAILED",
+                "restart_budget_consumed": 1,
+                "old_service": FakeOps().old.to_mapping(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class MissingMarkerDrain(FakeDrain):
+        def clear_request(self):
+            raise AssertionError("recovery must not require a surviving drain marker")
+
+        def clear_request_if_owned_or_absent(self) -> bool:
+            self.ops.events.append("drain:clear-if-owned-or-absent")
+            return False
+
+    class MissingMarkerOps(FakeOps):
+        def acquire_drain(self, manifest):
+            self.events.append("drain:acquire")
+            return MissingMarkerDrain(self, manifest.transaction_id)
+
+    ops = MissingMarkerOps()
+    ops.current_service = replacement_identity()
+    result = BoundedRestartController(manifest, ops).run(execute=True)
+
+    assert result["state"] == "VERIFIED"
+    assert result["recovered_after_restart_commit"] is True
+    assert result["runtime_acceptance"] == "PASS"
+    assert "drain:clear-if-owned-or-absent" in ops.events
+    assert ops.events.index("drain:release") < ops.events.index("acceptance")
+    assert "restart:graceful" not in ops.events
+    assert "restart:force-kill" not in ops.events
+    assert "restart:start" not in ops.events
+
+
 def test_forced_result_is_durable_and_separates_unclean_shutdown_from_health(
     tmp_path, controller_path
 ):
@@ -971,6 +1022,19 @@ def test_runtime_acceptance_must_prove_every_required_surface(
     assert saved["activation_health"] == "PASS"
     assert saved["runtime_acceptance"] == "FAIL"
     assert saved["overall"] == "FAIL"
+
+
+def test_runtime_acceptance_runs_after_drain_ownership_release(
+    tmp_path, controller_path
+):
+    manifest = load_manifest(tmp_path, controller_path)
+    ops = FakeOps()
+
+    result = BoundedRestartController(manifest, ops).run(execute=True)
+
+    assert result["runtime_acceptance"] == "PASS"
+    assert ops.events.index("drain:clear") < ops.events.index("drain:release")
+    assert ops.events.index("drain:release") < ops.events.index("acceptance")
 
 
 def test_runtime_acceptance_retries_transient_control_socket_unavailability(
