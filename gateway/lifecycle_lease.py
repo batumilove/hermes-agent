@@ -9,6 +9,7 @@ an explicit operator action; this module never guesses that it is safe.
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import os
 import re
@@ -68,7 +69,7 @@ def _parse_utc(value: str, field_name: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-def _read_metadata(path: Path) -> dict[str, Any]:
+def _read_metadata_record(path: Path) -> tuple[dict[str, Any], bytes]:
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -78,8 +79,9 @@ def _read_metadata(path: Path) -> dict[str, Any]:
             raise LifecycleLeaseBlocked(
                 "lifecycle lease metadata is not a regular file"
             )
-        with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
-            raw = json.load(handle)
+        with os.fdopen(descriptor, "rb") as handle:
+            encoded = handle.read()
+        raw = json.loads(encoded)
     except LifecycleLeaseBlocked:
         raise
     except (OSError, json.JSONDecodeError) as exc:
@@ -109,7 +111,12 @@ def _read_metadata(path: Path) -> dict[str, Any]:
         raise LifecycleLeaseBlocked("lifecycle lease metadata is malformed")
     _parse_utc(raw["acquired_at"], "acquired_at")
     _parse_utc(raw["expires_at"], "expires_at")
-    return raw
+    return raw, encoded
+
+
+def _read_metadata(path: Path) -> dict[str, Any]:
+    metadata, _encoded = _read_metadata_record(path)
+    return metadata
 
 
 def _valid_provenance(value: object) -> bool:
@@ -133,6 +140,156 @@ def _owner_summary(path: Path) -> str:
     except LifecycleLeaseBlocked:
         return "metadata malformed or unavailable"
     return f"owner={owner['owner_token']} purpose={owner['purpose']} pid={owner['pid']}"
+
+
+def _open_lock(path: Path, *, create: bool) -> TextIO:
+    flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0)
+    if create:
+        flags |= os.O_CREAT
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except OSError as exc:
+        raise LifecycleLeaseBlocked("lifecycle lease lock path is unsafe") from exc
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise LifecycleLeaseBlocked("lifecycle lease lock path is not a regular file")
+    return os.fdopen(descriptor, "a+", encoding="utf-8")
+
+
+def _lock_state(path: Path) -> str:
+    if not os.path.lexists(path):
+        return "absent"
+    handle = _open_lock(path, create=False)
+    try:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in {errno.EACCES, errno.EAGAIN}:
+                return "busy"
+            raise LifecycleLeaseBlocked("lifecycle lease lock could not be probed") from exc
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        return "available"
+    finally:
+        handle.close()
+
+
+def inspect_lifecycle_lease(*, home: Path) -> dict[str, Any]:
+    """Inspect lifecycle ownership without creating or changing profile files."""
+    if fcntl is None:  # pragma: no cover - POSIX lifecycle control only
+        raise LifecycleLeaseBlocked("lifecycle lease requires POSIX file locking")
+    canonical_home = Path(home).expanduser().resolve(strict=False)
+    if not canonical_home.exists():
+        return {
+            "status": "absent",
+            "lock_state": "absent",
+            "metadata": None,
+            "metadata_sha256": None,
+        }
+    lock_path = canonical_home / _LOCK_NAME
+    metadata_path = canonical_home / _METADATA_NAME
+    try:
+        lock_state = _lock_state(lock_path)
+    except LifecycleLeaseBlocked as exc:
+        return {
+            "status": "blocked",
+            "lock_state": "unsafe",
+            "metadata": None,
+            "metadata_sha256": None,
+            "reason": str(exc),
+        }
+    if not os.path.lexists(metadata_path):
+        return {
+            "status": "initializing" if lock_state == "busy" else "absent",
+            "lock_state": lock_state,
+            "metadata": None,
+            "metadata_sha256": None,
+        }
+    if metadata_path.is_symlink():
+        return {
+            "status": "blocked",
+            "lock_state": lock_state,
+            "metadata": None,
+            "metadata_sha256": None,
+            "reason": "lifecycle lease metadata path is unsafe",
+        }
+    try:
+        metadata, encoded = _read_metadata_record(metadata_path)
+    except LifecycleLeaseBlocked as exc:
+        return {
+            "status": "blocked",
+            "lock_state": lock_state,
+            "metadata": None,
+            "metadata_sha256": None,
+            "reason": str(exc),
+        }
+    return {
+        "status": "active" if lock_state == "busy" else "orphaned",
+        "lock_state": lock_state,
+        "metadata": metadata,
+        "metadata_sha256": hashlib.sha256(encoded).hexdigest(),
+    }
+
+
+def reconcile_lifecycle_lease(
+    *,
+    home: Path,
+    expected_metadata_sha256: str,
+    expected_owner_token: str,
+    expected_purpose: str,
+) -> dict[str, Any]:
+    """Remove one exact, valid orphan while holding the lifecycle lock."""
+    if not isinstance(expected_metadata_sha256, str) or not _LOWER_HEX_64.fullmatch(
+        expected_metadata_sha256
+    ):
+        raise ValueError("expected_metadata_sha256 must be a lowercase SHA256")
+    if not isinstance(expected_owner_token, str) or not _SAFE_TOKEN.fullmatch(
+        expected_owner_token
+    ):
+        raise ValueError("expected_owner_token must be a safe stable identifier")
+    if expected_purpose not in _ALLOWED_PURPOSES:
+        raise ValueError("expected_purpose is not an allowed lifecycle transaction type")
+    if fcntl is None:  # pragma: no cover - POSIX lifecycle control only
+        raise LifecycleLeaseBlocked("lifecycle lease requires POSIX file locking")
+    canonical_home = Path(home).expanduser().resolve(strict=False)
+    if not canonical_home.is_dir():
+        raise LifecycleLeaseBlocked("lifecycle lease home does not exist")
+    handle = _open_lock(canonical_home / _LOCK_NAME, create=True)
+    try:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in {errno.EACCES, errno.EAGAIN}:
+                raise LifecycleLeaseBlocked(
+                    "lifecycle lease is active and cannot be reconciled"
+                ) from exc
+            raise LifecycleLeaseBlocked(
+                "lifecycle lease lock could not be acquired for reconciliation"
+            ) from exc
+        metadata_path = canonical_home / _METADATA_NAME
+        if not os.path.lexists(metadata_path):
+            raise LifecycleLeaseBlocked("lifecycle lease metadata is absent")
+        metadata, encoded = _read_metadata_record(metadata_path)
+        observed_sha256 = hashlib.sha256(encoded).hexdigest()
+        if observed_sha256 != expected_metadata_sha256:
+            raise LifecycleLeaseBlocked("lifecycle lease metadata identity changed")
+        if (
+            metadata["owner_token"] != expected_owner_token
+            or metadata["purpose"] != expected_purpose
+        ):
+            raise LifecycleLeaseBlocked(
+                "lifecycle lease owner or purpose confirmation does not match"
+            )
+        metadata_path.unlink()
+        _fsync_directory(canonical_home)
+        return {
+            "status": "reconciled",
+            "owner_token": metadata["owner_token"],
+            "purpose": metadata["purpose"],
+            "metadata_sha256": observed_sha256,
+        }
+    finally:
+        _unlock_and_close(handle)
 
 
 def _unlock_and_close(handle: TextIO) -> None:
