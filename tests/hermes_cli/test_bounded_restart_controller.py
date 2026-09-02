@@ -186,7 +186,7 @@ def manifest_mapping(tmp_path: Path, controller_path: Path) -> dict:
     return {
         "schema": "hermes-bounded-handoff-force-restart/v1",
         "transaction_id": "txn-20260901-a",
-        "controller": {"version": 6, "sha256": digest},
+        "controller": {"version": 7, "sha256": digest},
         "service": {
             "unit": "hermes-gateway.service",
             "scope": "user",
@@ -606,6 +606,78 @@ def test_force_kill_nonzero_after_old_generation_gone_reconciles_auto_restart(
     assert ops.events.count("restart:force-kill") == 1
     assert "restart:start" not in ops.events
     assert ops.events.count("drain:clear") == 1
+
+
+def test_force_kill_nonzero_retries_transient_replacement_health_before_blocking(
+    tmp_path, controller_path
+):
+    manifest = load_manifest(tmp_path, controller_path)
+    busy = Occupancy(active_agents=1, cgroup_pids=(101, 111, 112))
+
+    class DelayedHealthOps(FakeOps):
+        def __init__(self):
+            super().__init__(
+                occupancy=[busy] * 4,
+                replacements=[replace(replacement_identity(), n_restarts=8)],
+                force_kill_error=ForceKillCommandFailed(
+                    "command failed (1): systemctl kill: Invalid argument"
+                ),
+            )
+            self.health_results = [False, True]
+
+        def health_check(self, manifest, service):
+            self.events.append("health")
+            assert service.pid == 202
+            return self.health_results.pop(0)
+
+    ops = DelayedHealthOps()
+    result = BoundedRestartController(manifest, ops).run(execute=True)
+
+    assert result["state"] == "VERIFIED"
+    assert result["force_kill_reconciled"] is True
+    assert result["activation_health"] == "PASS"
+    assert ops.events.count("health") == 2
+    assert ops.events.count("restart:force-kill") == 1
+    assert "restart:start" not in ops.events
+    assert ops.events.count("drain:clear") == 1
+
+
+def test_force_kill_nonzero_permanent_health_failure_stays_bounded_and_blocked(
+    tmp_path, controller_path
+):
+    manifest = load_manifest(tmp_path, controller_path)
+    busy = Occupancy(active_agents=1, cgroup_pids=(101, 111, 112))
+
+    class UnhealthyOps(FakeOps):
+        def __init__(self):
+            super().__init__(
+                occupancy=[busy] * 4,
+                replacements=[replace(replacement_identity(), n_restarts=8)],
+                force_kill_error=ForceKillCommandFailed(
+                    "command failed (1): systemctl kill: Invalid argument"
+                ),
+            )
+
+        def health_check(self, manifest, service):
+            self.events.append("health")
+            assert service.pid == 202
+            return False
+
+    ops = UnhealthyOps()
+    with pytest.raises(ControllerBlocked, match="verification did not pass"):
+        BoundedRestartController(manifest, ops).run(execute=True)
+
+    saved = json.loads(
+        (Path(manifest.evidence_root) / "controller-result.json").read_text()
+    )
+    assert ops.mono == 185
+    assert ops.events.count("health") == 6
+    assert ops.events.count("restart:force-kill") == 1
+    assert "restart:start" not in ops.events
+    assert "drain:clear" not in ops.events
+    assert saved["force_kill_reconciled"] is False
+    assert saved["activation_health"] == "FAIL"
+    assert saved["overall"] == "BLOCKED"
 
 
 def test_force_kill_precommand_identity_block_is_not_reconciled(tmp_path, controller_path):
