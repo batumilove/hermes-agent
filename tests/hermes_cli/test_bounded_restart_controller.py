@@ -26,6 +26,14 @@ NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 
 
 @dataclass
+class FakeLifecycleLease:
+    ops: "FakeOps"
+
+    def release(self):
+        self.ops.events.append("lifecycle:release")
+
+
+@dataclass
 class FakeDrain:
     ops: "FakeOps"
     token: str
@@ -111,6 +119,10 @@ class FakeOps:
         if "restart:force-kill" in self.events and self.replacements:
             self.current_service = self.replacements.pop(0)
         return self.current_service
+
+    def acquire_lifecycle(self, manifest):
+        self.events.append("lifecycle:acquire")
+        return FakeLifecycleLease(self)
 
     def acquire_drain(self, manifest):
         self.events.append("drain:acquire")
@@ -288,6 +300,145 @@ def test_dry_run_performs_preflight_without_drain_or_restart(tmp_path, controlle
     assert "source" in ops.events and "service" in ops.events
     assert not any(event.startswith("drain:") for event in ops.events)
     assert not any(event.startswith("restart:") for event in ops.events)
+    assert "lifecycle:acquire" not in ops.events
+    assert not (Path(manifest.evidence_root) / "controller-result.json").exists()
+
+
+def test_dry_run_never_recovers_or_rewrites_a_committed_transaction(
+    tmp_path, controller_path
+):
+    manifest = load_manifest(tmp_path, controller_path)
+    root = Path(manifest.evidence_root)
+    root.mkdir(parents=True)
+    result_path = root / "controller-result.json"
+    original = json.dumps(
+        {
+            "schema": "hermes-bounded-handoff-force-restart-result/v1",
+            "transaction_id": manifest.transaction_id,
+            "manifest_sha256": manifest.manifest_sha256,
+            "state": "RESTART_COMMITTED",
+            "restart_budget_consumed": 1,
+            "old_service": FakeOps().old.to_mapping(),
+        }
+    )
+    result_path.write_text(original, encoding="utf-8")
+    ops = FakeOps()
+
+    with pytest.raises(ControllerBlocked, match="requires execute recovery"):
+        BoundedRestartController(manifest, ops).run(execute=False)
+
+    assert result_path.read_text(encoding="utf-8") == original
+    assert ops.events == []
+
+
+def test_execute_holds_lifecycle_lease_before_drain_and_releases_it(
+    tmp_path, controller_path
+):
+    manifest = load_manifest(tmp_path, controller_path)
+    ops = FakeOps()
+
+    result = BoundedRestartController(manifest, ops).run(execute=True)
+
+    assert result["overall"] == "PASS"
+    assert ops.events.index("lifecycle:acquire") < ops.events.index("drain:acquire")
+    assert ops.events[-1] == "lifecycle:release"
+
+
+def test_execute_releases_lifecycle_lease_when_preflight_blocks(
+    tmp_path, controller_path
+):
+    manifest = load_manifest(tmp_path, controller_path)
+    ops = FakeOps()
+    ops.source = replace(ops.source, head="c" * 40)
+
+    with pytest.raises(ControllerBlocked, match="source identity drift"):
+        BoundedRestartController(manifest, ops).run(execute=True)
+
+    assert ops.events == ["lifecycle:acquire", "source", "lifecycle:release"]
+
+
+def test_execute_preserves_primary_failure_when_lifecycle_release_also_fails(
+    tmp_path, controller_path
+):
+    manifest = load_manifest(tmp_path, controller_path)
+    ops = FakeOps()
+    ops.source = replace(ops.source, head="c" * 40)
+
+    class BrokenRelease(FakeLifecycleLease):
+        def release(self):
+            raise RuntimeError("release-tampered")
+
+    ops.acquire_lifecycle = lambda manifest: BrokenRelease(ops)
+    with pytest.raises(
+        ControllerBlocked,
+        match="source identity drift.*release-tampered",
+    ) as caught:
+        BoundedRestartController(manifest, ops).run(execute=True)
+
+    assert isinstance(caught.value.__cause__, ControllerBlocked)
+
+
+def test_execute_releases_lifecycle_lease_on_unexpected_error(tmp_path, controller_path):
+    manifest = load_manifest(tmp_path, controller_path)
+    ops = FakeOps()
+
+    def fail_source(_manifest):
+        raise ValueError("unexpected-probe")
+
+    ops.source_identity = fail_source
+    with pytest.raises(ValueError, match="unexpected-probe"):
+        BoundedRestartController(manifest, ops).run(execute=True)
+
+    assert ops.events == ["lifecycle:acquire", "lifecycle:release"]
+
+
+def test_systemd_lifecycle_lease_binds_exact_candidate_provenance(
+    tmp_path, controller_path, monkeypatch
+):
+    import gateway.lifecycle_lease as lifecycle_lease
+
+    manifest = load_manifest(tmp_path, controller_path)
+    captured = {}
+    sentinel = object()
+
+    def fake_acquire(**kwargs):
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(lifecycle_lease, "acquire_lifecycle_lease", fake_acquire)
+    operations = SystemdOperations()
+    monkeypatch.setattr(operations, "wall_now", lambda: NOW)
+
+    assert operations.acquire_lifecycle(manifest) is sentinel
+    assert captured == {
+        "home": manifest.hermes_home,
+        "owner_token": manifest.transaction_id,
+        "purpose": "bounded-restart",
+        "provenance": {
+            "source_head": manifest.expected_source.head,
+            "source_tree": manifest.expected_source.tree,
+            "artifact_sha256": manifest.manifest_sha256,
+            "evidence_id": manifest.transaction_id,
+        },
+        "expires_at": manifest.expires_at,
+        "now": NOW,
+    }
+
+
+def test_systemd_lifecycle_lease_real_filesystem_seam(tmp_path, controller_path, monkeypatch):
+    manifest = load_manifest(tmp_path, controller_path)
+    operations = SystemdOperations()
+    monkeypatch.setattr(operations, "wall_now", lambda: NOW)
+
+    first = operations.acquire_lifecycle(manifest)
+    try:
+        with pytest.raises(ControllerBlocked, match="lifecycle lease is busy"):
+            operations.acquire_lifecycle(manifest)
+    finally:
+        first.release()
+
+    retry = operations.acquire_lifecycle(manifest)
+    retry.release()
 
 
 def test_stable_zero_before_deadline_uses_one_graceful_restart(tmp_path, controller_path):
@@ -737,6 +888,111 @@ def test_systemd_bootstrap_uses_pid_bound_legacy_status_but_never_declares_quiet
         force_only=True,
     )
     assert observed.quiet_for(service.pid) is False
+
+
+def test_systemd_bootstrap_accepts_controller_owned_draining_state(
+    tmp_path, controller_path, monkeypatch
+):
+    old_code_sha = "c" * 40
+
+    def mutate(raw):
+        raw["bootstrap"] = {
+            "mode": "legacy-force-only",
+            "old_code_sha": old_code_sha,
+        }
+        raw["authorization"]["scope"].append("bootstrap_force_only")
+
+    manifest = load_manifest(tmp_path, controller_path, mutate=mutate)
+    ops = SystemdOperations()
+    service = FakeOps().old
+    payloads = {
+        "identify": {"pid": service.pid, "code_sha": old_code_sha},
+        "status": {
+            "pid": service.pid,
+            "answering_pid": service.pid,
+            "code_sha": old_code_sha,
+            "gateway_state": "draining",
+            "active_agents": 2,
+        },
+    }
+    monkeypatch.setattr(ops, "_query_gateway", lambda _manifest, verb: payloads[verb])
+    monkeypatch.setattr(ops, "service_identity", lambda _manifest: service)
+    monkeypatch.setattr(ops, "_count_running_cron", lambda _home: 1)
+    monkeypatch.setattr(ops, "_cgroup_pids", lambda _cgroup: (service.pid, 303))
+    monkeypatch.setattr(ops, "_assert_drain_owned", lambda _manifest: None)
+
+    assert ops.sample_occupancy(manifest) == Occupancy(
+        active_agents=2,
+        cron_runs=1,
+        api_runs=0,
+        detached_workers=0,
+        cgroup_pids=(service.pid, 303),
+        force_only=True,
+    )
+
+
+def test_systemd_bootstrap_rejects_foreign_draining_state(
+    tmp_path, controller_path, monkeypatch
+):
+    old_code_sha = "c" * 40
+
+    def mutate(raw):
+        raw["bootstrap"] = {
+            "mode": "legacy-force-only",
+            "old_code_sha": old_code_sha,
+        }
+        raw["authorization"]["scope"].append("bootstrap_force_only")
+
+    manifest = load_manifest(tmp_path, controller_path, mutate=mutate)
+    ops = SystemdOperations()
+    service = FakeOps().old
+    payloads = {
+        "identify": {"pid": service.pid, "code_sha": old_code_sha},
+        "status": {
+            "pid": service.pid,
+            "answering_pid": service.pid,
+            "code_sha": old_code_sha,
+            "gateway_state": "draining",
+            "active_agents": 2,
+        },
+    }
+    monkeypatch.setattr(ops, "_query_gateway", lambda _manifest, verb: payloads[verb])
+    monkeypatch.setattr(ops, "service_identity", lambda _manifest: service)
+
+    with pytest.raises(ControllerBlocked, match="not owned"):
+        ops.sample_occupancy(manifest)
+
+
+def test_systemd_bootstrap_rejects_unknown_gateway_state(
+    tmp_path, controller_path, monkeypatch
+):
+    old_code_sha = "c" * 40
+
+    def mutate(raw):
+        raw["bootstrap"] = {
+            "mode": "legacy-force-only",
+            "old_code_sha": old_code_sha,
+        }
+        raw["authorization"]["scope"].append("bootstrap_force_only")
+
+    manifest = load_manifest(tmp_path, controller_path, mutate=mutate)
+    ops = SystemdOperations()
+    service = FakeOps().old
+    payloads = {
+        "identify": {"pid": service.pid, "code_sha": old_code_sha},
+        "status": {
+            "pid": service.pid,
+            "answering_pid": service.pid,
+            "code_sha": old_code_sha,
+            "gateway_state": "stopped",
+            "active_agents": 2,
+        },
+    }
+    monkeypatch.setattr(ops, "_query_gateway", lambda _manifest, verb: payloads[verb])
+    monkeypatch.setattr(ops, "service_identity", lambda _manifest: service)
+
+    with pytest.raises(ControllerBlocked, match="malformed"):
+        ops.sample_occupancy(manifest)
 
 
 def test_systemd_bootstrap_rejects_old_code_identity_drift(
