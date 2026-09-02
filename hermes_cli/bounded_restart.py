@@ -395,6 +395,7 @@ class Operations(Protocol):
     def sleep(self, seconds: float) -> None: ...
     def source_identity(self, manifest: Manifest) -> SourceIdentity: ...
     def service_identity(self, manifest: Manifest) -> ServiceIdentity: ...
+    def acquire_lifecycle(self, manifest: Manifest) -> Any: ...
     def acquire_drain(self, manifest: Manifest) -> Any: ...
     def sample_occupancy(self, manifest: Manifest) -> Occupancy: ...
     def graceful_restart(self, manifest: Manifest) -> None: ...
@@ -701,6 +702,51 @@ class BoundedRestartController:
             drain.release()
 
     def run(self, *, execute: bool) -> dict[str, Any]:
+        if not execute:
+            return self._run_preflight_read_only()
+        lifecycle = self.ops.acquire_lifecycle(self.manifest)
+        try:
+            result = self._run_under_lease()
+        except BaseException as primary:
+            try:
+                lifecycle.release()
+            except BaseException as release_error:
+                if isinstance(primary, (ControllerBlocked, ControllerFailed)):
+                    raise type(primary)(
+                        f"{primary}; lifecycle lease release also failed: {release_error}"
+                    ) from primary
+                raise release_error from primary
+            raise
+        else:
+            lifecycle.release()
+            return result
+
+    def _run_preflight_read_only(self) -> dict[str, Any]:
+        existing = self._load_existing()
+        if existing and int(existing.get("restart_budget_consumed", 0)) >= 1:
+            raise ControllerBlocked("committed transaction requires execute recovery")
+        if existing and existing.get("state") not in {
+            "PREFLIGHT_PASS",
+            "HANDOFF",
+            "PREPARED",
+        }:
+            raise ControllerBlocked("transaction evidence is not safely resumable")
+        result = dict(existing) if existing else self._base_result()
+        result.setdefault("samples", [])
+        self._assert_authorized()
+        source = self.ops.source_identity(self.manifest)
+        self._assert_source(source)
+        old = self.ops.service_identity(self.manifest)
+        self._assert_old_service(old)
+        result.update(
+            state="PREFLIGHT_PASS",
+            source_identity="PASS",
+            source=source.to_mapping(),
+            old_service=old.to_mapping(),
+        )
+        return result
+
+    def _run_under_lease(self) -> dict[str, Any]:
         existing = self._load_existing()
         if existing and int(existing.get("restart_budget_consumed", 0)) >= 1:
             return self._recover_committed(existing)
@@ -726,8 +772,6 @@ class BoundedRestartController:
                 old_service=old.to_mapping(),
             )
             self._write(result)
-            if not execute:
-                return result
 
             drain = self.ops.acquire_drain(self.manifest)
             drain_written = False
@@ -925,6 +969,29 @@ class SystemdOperations:
             clean=not bool(git("status", "--porcelain=v1")),
         )
 
+    def acquire_lifecycle(self, manifest: Manifest) -> Any:
+        from gateway.lifecycle_lease import (
+            LifecycleLeaseBlocked,
+            acquire_lifecycle_lease,
+        )
+
+        try:
+            return acquire_lifecycle_lease(
+                home=manifest.hermes_home,
+                owner_token=manifest.transaction_id,
+                purpose="bounded-restart",
+                provenance={
+                    "source_head": manifest.expected_source.head,
+                    "source_tree": manifest.expected_source.tree,
+                    "artifact_sha256": manifest.manifest_sha256,
+                    "evidence_id": manifest.transaction_id,
+                },
+                expires_at=manifest.expires_at,
+                now=self.wall_now(),
+            )
+        except LifecycleLeaseBlocked as exc:
+            raise ControllerBlocked(str(exc)) from exc
+
     def service_identity(self, manifest: Manifest) -> ServiceIdentity:
         properties = [
             "MainPID",
@@ -1013,6 +1080,21 @@ class SystemdOperations:
 
         return query_gateway_control(manifest.hermes_home, verb, timeout=2)
 
+    @staticmethod
+    def _assert_drain_owned(manifest: Manifest) -> None:
+        from gateway.drain_control import read_drain_request
+
+        marker = read_drain_request(home=manifest.hermes_home)
+        if (
+            not isinstance(marker, dict)
+            or marker.get("action") != "drain"
+            or marker.get("principal") != "bounded-handoff-force-restart"
+            or marker.get("owner_token") != manifest.transaction_id
+        ):
+            raise ControllerBlocked(
+                "legacy draining status lacks the owned drain marker"
+            )
+
     def sample_occupancy(self, manifest: Manifest) -> Occupancy:
         home = manifest.hermes_home
         service = self.service_identity(manifest)
@@ -1045,22 +1127,7 @@ class SystemdOperations:
             if reported_total < 0 or gateway_state not in {"running", "draining"}:
                 raise ControllerBlocked("legacy gateway status is malformed")
             if gateway_state == "draining":
-                marker_path = manifest.hermes_home / ".drain_request.json"
-                try:
-                    marker = json.loads(marker_path.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError) as exc:
-                    raise ControllerBlocked(
-                        "legacy draining status lacks the owned drain marker"
-                    ) from exc
-                if (
-                    not isinstance(marker, dict)
-                    or marker.get("action") != "drain"
-                    or marker.get("principal") != "bounded-handoff-force-restart"
-                    or marker.get("owner_token") != manifest.transaction_id
-                ):
-                    raise ControllerBlocked(
-                        "legacy draining status lacks the owned drain marker"
-                    )
+                self._assert_drain_owned(manifest)
             return Occupancy(
                 active_agents=reported_total,
                 cron_runs=self._count_running_cron(home),

@@ -3078,10 +3078,10 @@ def terminal_tool(
                     "status": "blocked"
                 }, ensure_ascii=False)
 
-        # Windows-only: NTFS locks loaded module files, so rewriting the local
-        # checkout backing this interpreter can corrupt the running process.
-        # POSIX keeps old inodes alive for open handles, so the guard is off
-        # there. Remote backends cannot reach that checkout.
+        # Always protect the local checkout backing this interpreter from
+        # ad-hoc mutation. Authorized self-updates use the installed lifecycle
+        # controller; ordinary development belongs in a separate worktree.
+        # Remote backends cannot reach this local checkout.
         if env_type == "local":
             from tools.self_repo_guard import (
                 detect_self_repo_git_mutation,
