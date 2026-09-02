@@ -458,6 +458,7 @@ from hermes_cli.subcommands.webhook import build_webhook_parser
 from hermes_cli.subcommands.hooks import build_hooks_parser
 from hermes_cli.subcommands.doctor import build_doctor_parser
 from hermes_cli.subcommands.verify import build_verify_parser
+from hermes_cli.subcommands.lifecycle_lease import build_lifecycle_lease_parser
 from hermes_cli.subcommands.security import build_security_parser
 from hermes_cli.subcommands.approvals import build_approvals_parser
 from hermes_cli.subcommands.dump import build_dump_parser
@@ -5658,6 +5659,13 @@ def cmd_verify(args):
     from hermes_cli.verify_cmd import run_verify_command
 
     sys.exit(run_verify_command(args))
+
+
+def cmd_lifecycle_lease(args):
+    """Inspect or reconcile the active profile's lifecycle lease."""
+    from hermes_cli.lifecycle_lease_cmd import run_lifecycle_lease_command
+
+    return run_lifecycle_lease_command(args)
 
 
 def cmd_security(args):
@@ -13084,6 +13092,13 @@ def main():
     # verify command  (parser built in hermes_cli/subcommands/verify.py)
     # =========================================================================
     build_verify_parser(subparsers, cmd_verify=cmd_verify)
+
+    # =========================================================================
+    # lifecycle-lease command — operator inspection and orphan reconciliation
+    # =========================================================================
+    build_lifecycle_lease_parser(
+        subparsers, cmd_lifecycle_lease=cmd_lifecycle_lease
+    )
 
     # =========================================================================
     # security command — on-demand supply-chain audit
