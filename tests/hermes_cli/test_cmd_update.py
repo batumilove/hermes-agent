@@ -71,6 +71,20 @@ def _patch_managed_uv(request):
         yield
 
 
+class _NoopLifecycleLease:
+    def release(self):
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _patch_lifecycle_coordination(monkeypatch):
+    """Keep legacy update tests focused on behavior below the lease boundary."""
+    monkeypatch.setattr(
+        "hermes_cli.lifecycle_coordination.acquire_cli_lifecycle_transaction",
+        lambda **_kwargs: _NoopLifecycleLease(),
+    )
+
+
 @pytest.fixture(autouse=True)
 def _patch_gateway_discovery():
     """Keep cmd_update's gateway auto-restart phase off this machine's gateways.
@@ -83,7 +97,10 @@ def _patch_gateway_discovery():
     Discovery returning nothing makes the phase a clean no-op for every test
     in this module (none of them assert on gateway restarts).
     """
-    with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
+    import hermes_cli.main as hm
+
+    with patch.object(hm, "_purge_stale_hermes_modules", return_value=None), \
+         patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
          patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
          patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]):
         yield

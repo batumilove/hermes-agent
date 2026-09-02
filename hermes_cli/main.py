@@ -458,6 +458,7 @@ from hermes_cli.subcommands.webhook import build_webhook_parser
 from hermes_cli.subcommands.hooks import build_hooks_parser
 from hermes_cli.subcommands.doctor import build_doctor_parser
 from hermes_cli.subcommands.verify import build_verify_parser
+from hermes_cli.subcommands.lifecycle_lease import build_lifecycle_lease_parser
 from hermes_cli.subcommands.security import build_security_parser
 from hermes_cli.subcommands.approvals import build_approvals_parser
 from hermes_cli.subcommands.dump import build_dump_parser
@@ -5660,6 +5661,13 @@ def cmd_verify(args):
     sys.exit(run_verify_command(args))
 
 
+def cmd_lifecycle_lease(args):
+    """Inspect or reconcile the active profile's lifecycle lease."""
+    from hermes_cli.lifecycle_lease_cmd import run_lifecycle_lease_command
+
+    return run_lifecycle_lease_command(args)
+
+
 def cmd_security(args):
     """Dispatch `hermes security <subcmd>`."""
     sub = getattr(args, "security_command", None)
@@ -10397,9 +10405,47 @@ def cmd_update(args):
     # None = not a SystemExit-shaped outcome; real exceptions keep the
     # normal raise path so their traceback still prints.
     _update_handoff_exit_code: int | None = None
+    _update_lifecycle = None
+    _update_primary: BaseException | None = None
     try:
+        from hermes_cli.lifecycle_coordination import (
+            LifecycleCoordinationBlocked,
+            acquire_cli_lifecycle_transaction,
+            lifecycle_coordination_available,
+        )
+
+        try:
+            # One deployment lease intentionally owns the complete update,
+            # including update_cmd's checkout-reconciliation phase
+            # (merge/reset/syntax rollback). Do not acquire a nested
+            # ``checkout-reconciliation`` lease there: the common lease is
+            # profile-exclusive and a second acquisition would self-deadlock.
+            if lifecycle_coordination_available():
+                _update_lifecycle = acquire_cli_lifecycle_transaction(
+                    home=get_hermes_home(),
+                    # Bind provenance to the checkout that supplied this running
+                    # CLI module. PROJECT_ROOT may be redirected later by update
+                    # mechanics and by isolated tests; it is not source identity.
+                    repo_root=Path(__file__).resolve().parents[1],
+                    purpose="deployment",
+                    operation="hermes-update",
+                )
+            else:
+                print(
+                    "Warning: lifecycle coordination is unavailable on this "
+                    "platform; continuing with the existing update lock only.",
+                    file=sys.stderr,
+                )
+        except LifecycleCoordinationBlocked as exc:
+            print(
+                f"Update blocked by lifecycle coordination: {exc}\n"
+                "Inspect ownership with `hermes lifecycle-lease inspect`.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         _self()._cmd_update_impl(args, gateway_mode=gateway_mode)
     except SystemExit as _update_exit:
+        _update_primary = _update_exit
         # Receipt boundary (#91283 review): the impl has many early
         # sys.exit paths (concurrent-instance preflight, venv-holder
         # refusal, head-pinned no-op, fetch failure) that never reach an
@@ -10418,6 +10464,7 @@ def cmd_update(args):
         )
         raise
     except BaseException as _update_exc:
+        _update_primary = _update_exc
         try:
             from hermes_cli.update_receipt import finalize_pending_update_receipt
 
@@ -10436,8 +10483,20 @@ def cmd_update(args):
             pass
         _update_handoff_exit_code = 0
     finally:
-        _update_lock.release()
-        _finalize_update_output(_update_io_state)
+        _update_release_error: BaseException | None = None
+        if _update_lifecycle is not None:
+            try:
+                _update_lifecycle.release()
+            except BaseException as _release_exc:
+                _update_release_error = _release_exc
+        try:
+            _update_lock.release()
+        finally:
+            _finalize_update_output(_update_io_state)
+        if _update_release_error is not None:
+            if _update_primary is not None:
+                raise _update_release_error from _update_primary
+            raise _update_release_error
         # Windows hand-off child (#93581): the re-exec'd venv child cannot
         # rely on graceful interpreter shutdown — a leftover non-daemon
         # thread from the update tail keeps the console busy long after
@@ -13084,6 +13143,13 @@ def main():
     # verify command  (parser built in hermes_cli/subcommands/verify.py)
     # =========================================================================
     build_verify_parser(subparsers, cmd_verify=cmd_verify)
+
+    # =========================================================================
+    # lifecycle-lease command — operator inspection and orphan reconciliation
+    # =========================================================================
+    build_lifecycle_lease_parser(
+        subparsers, cmd_lifecycle_lease=cmd_lifecycle_lease
+    )
 
     # =========================================================================
     # security command — on-demand supply-chain audit

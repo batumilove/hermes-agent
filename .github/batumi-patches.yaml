@@ -138,6 +138,35 @@ patches:
       - scripts/run_tests.sh tests/hermes_cli/test_update_eol_churn.py
     retirement: Remove when upstream forces an equivalent index refresh before EOL classification.
 
+  - id: lifecycle-controller-serialization
+    kind: core
+    rationale: >-
+      Serialize deployment, checkout reconciliation, gateway restart, LCM
+      activation, soak, and bounded-restart mutations with one durable,
+      provenance-bound profile lifecycle lease; fail closed on contention,
+      orphaned or tampered metadata, symlinks, and controller crashes while
+      preserving explicit operator reconciliation and non-POSIX behavior.
+    paths:
+      - gateway/lifecycle_lease.py
+      - hermes_cli/lifecycle_coordination.py
+      - hermes_cli/lifecycle_lease_cmd.py
+      - hermes_cli/main.py
+      - hermes_cli/subcommands/lifecycle_lease.py
+      - tests/gateway/test_lifecycle_lease.py
+      - tests/gateway/test_lifecycle_lease_operator.py
+      - tests/hermes_cli/test_gateway_restart_lifecycle_lease.py
+      - tests/hermes_cli/test_lifecycle_controller_crash.py
+      - tests/hermes_cli/test_lifecycle_coordination.py
+      - tests/hermes_cli/test_lifecycle_lease_cli.py
+      - tests/hermes_cli/test_cmd_update.py
+      - tests/hermes_cli/test_update_lifecycle_lease.py
+      - tests/tools/test_terminal_self_repo_guard.py
+      - tools/self_repo_guard.py
+    tests:
+      - scripts/run_tests.sh tests/gateway/test_lifecycle_lease.py tests/gateway/test_lifecycle_lease_operator.py tests/hermes_cli/test_bounded_restart_controller.py tests/hermes_cli/test_cmd_update.py tests/hermes_cli/test_gateway_restart_lifecycle_lease.py tests/hermes_cli/test_lifecycle_controller_crash.py tests/hermes_cli/test_lifecycle_coordination.py tests/hermes_cli/test_lifecycle_lease_cli.py tests/hermes_cli/test_update_lifecycle_lease.py tests/tools/test_terminal_self_repo_guard.py
+      - python -m py_compile gateway/lifecycle_lease.py hermes_cli/lifecycle_coordination.py hermes_cli/lifecycle_lease_cmd.py hermes_cli/subcommands/lifecycle_lease.py
+    retirement: Remove when upstream serializes every equivalent lifecycle mutation caller with a durable profile-wide lease, exact provenance binding, crash-orphan exclusion, tamper-resistant release, explicit reconciliation, and matching cross-controller tests.
+
   - id: upstream-sync-whitespace-cleanup
     kind: cleanup
     rationale: >-
