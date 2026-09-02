@@ -188,3 +188,25 @@ def test_gateway_restart_release_failure_chains_primary_failure(monkeypatch):
         gateway_cli._gateway_command_inner(_args())
 
     assert isinstance(exc_info.value.__cause__, KeyboardInterrupt)
+
+
+def test_gateway_restart_preserves_existing_behavior_when_posix_leases_are_unavailable(
+    monkeypatch, capsys
+):
+    events = []
+    _isolate_restart(monkeypatch, events)
+    monkeypatch.setattr("gateway.lifecycle_lease.fcntl", None)
+    monkeypatch.setattr(
+        "hermes_cli.lifecycle_coordination.acquire_cli_lifecycle_transaction",
+        lambda **kwargs: pytest.fail("non-POSIX restart must not acquire POSIX lease"),
+    )
+    monkeypatch.setattr(
+        gateway_cli,
+        "systemd_restart",
+        lambda system=False: events.append("systemd-restart"),
+    )
+
+    gateway_cli._gateway_command_inner(_args())
+
+    assert events == ["systemd-restart"]
+    assert "lifecycle coordination is unavailable" in capsys.readouterr().out.lower()

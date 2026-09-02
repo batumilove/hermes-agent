@@ -146,11 +146,14 @@ def test_root_cli_exposes_lifecycle_lease_inspect(tmp_path):
 
 
 class _Lease:
-    def __init__(self, events):
+    def __init__(self, events, release_error=None):
         self.events = events
+        self.release_error = release_error
 
     def release(self):
         self.events.append("lease-release")
+        if self.release_error is not None:
+            raise self.release_error
 
 
 def _run_args(*, purpose="lcm-activation"):
@@ -234,6 +237,28 @@ def test_run_releases_lease_on_base_exception(tmp_path, monkeypatch):
     with pytest.raises(KeyboardInterrupt):
         lifecycle_lease_cmd.run_lifecycle_lease_command(_run_args())
 
+    assert events == ["lease-release"]
+
+
+def test_run_release_failure_chains_controller_launch_failure(tmp_path, monkeypatch):
+    events = []
+    release_error = RuntimeError("release refused metadata drift")
+    monkeypatch.setattr(lifecycle_lease_cmd, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        lifecycle_lease_cmd,
+        "acquire_lifecycle_lease",
+        lambda **kwargs: _Lease(events, release_error),
+    )
+
+    def missing_controller(command, **kwargs):
+        raise FileNotFoundError("missing-controller")
+
+    monkeypatch.setattr(lifecycle_lease_cmd.subprocess, "run", missing_controller)
+
+    with pytest.raises(RuntimeError, match="release refused metadata drift") as exc_info:
+        lifecycle_lease_cmd.run_lifecycle_lease_command(_run_args())
+
+    assert isinstance(exc_info.value.__cause__, FileNotFoundError)
     assert events == ["lease-release"]
 
 

@@ -7842,15 +7842,23 @@ def _gateway_command_inner(args):
         from hermes_cli.lifecycle_coordination import (
             LifecycleCoordinationBlocked,
             acquire_cli_lifecycle_transaction,
+            lifecycle_coordination_available,
         )
 
         try:
-            lease = acquire_cli_lifecycle_transaction(
-                home=get_hermes_home(),
-                repo_root=Path(__file__).resolve().parents[1],
-                purpose="gateway-restart",
-                operation="hermes-gateway-restart",
-            )
+            lease = None
+            if lifecycle_coordination_available():
+                lease = acquire_cli_lifecycle_transaction(
+                    home=get_hermes_home(),
+                    repo_root=Path(__file__).resolve().parents[1],
+                    purpose="gateway-restart",
+                    operation="hermes-gateway-restart",
+                )
+            else:
+                print_warning(
+                    "Lifecycle coordination is unavailable on this platform; "
+                    "continuing with the existing restart path."
+                )
         except LifecycleCoordinationBlocked as exc:
             print_error(
                 f"Gateway restart blocked by lifecycle coordination: {exc}\n"
@@ -7868,7 +7876,8 @@ def _gateway_command_inner(args):
         finally:
             _GATEWAY_RESTART_LEASE_HELD.reset(token)
             try:
-                lease.release()
+                if lease is not None:
+                    lease.release()
             except BaseException as release_exc:
                 if primary is not None:
                     raise release_exc from primary

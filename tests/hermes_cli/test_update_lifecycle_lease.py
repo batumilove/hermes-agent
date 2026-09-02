@@ -167,3 +167,25 @@ def test_update_release_failure_is_not_hidden_by_primary_failure(monkeypatch):
         hermes_main.cmd_update(_args())
 
     assert isinstance(exc_info.value.__cause__, ValueError)
+
+
+def test_update_preserves_existing_behavior_when_posix_leases_are_unavailable(
+    monkeypatch, capsys
+):
+    events = []
+    _isolate_update_boundary(monkeypatch, events)
+    monkeypatch.setattr("gateway.lifecycle_lease.fcntl", None)
+    monkeypatch.setattr(
+        "hermes_cli.lifecycle_coordination.acquire_cli_lifecycle_transaction",
+        lambda **kwargs: pytest.fail("non-POSIX update must not acquire POSIX lease"),
+    )
+    monkeypatch.setattr(
+        hermes_main,
+        "_cmd_update_impl",
+        lambda args, gateway_mode: events.append("impl"),
+    )
+
+    hermes_main.cmd_update(_args())
+
+    assert "impl" in events
+    assert "lifecycle coordination is unavailable" in capsys.readouterr().err.lower()

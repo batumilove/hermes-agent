@@ -57,10 +57,19 @@ def _run_external_controller(args) -> int:
         },
         expires_at=expires_at,
     )
+    primary: BaseException | None = None
     try:
         result = subprocess.run(command, check=False)
+    except BaseException as exc:
+        primary = exc
+        raise
     finally:
-        lease.release()
+        try:
+            lease.release()
+        except BaseException as release_exc:
+            if primary is not None:
+                raise release_exc from primary
+            raise
     return result.returncode if result.returncode >= 0 else 128 - result.returncode
 
 

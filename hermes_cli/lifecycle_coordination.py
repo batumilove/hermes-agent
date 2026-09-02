@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import subprocess
 import uuid
@@ -21,6 +22,12 @@ _DEFAULT_LIFETIME = timedelta(hours=6)
 
 class LifecycleCoordinationBlocked(RuntimeError):
     """A CLI lifecycle transaction cannot establish exact common ownership."""
+
+
+def lifecycle_coordination_available() -> bool:
+    """Return whether the platform provides the POSIX lease primitive."""
+    lease_module = importlib.import_module("gateway.lifecycle_lease")
+    return lease_module.fcntl is not None
 
 
 def _git_identity(repo_root: Path) -> tuple[str, str]:
