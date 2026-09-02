@@ -30,6 +30,6 @@ components:
   - id: hermes-ops
     repository: batumilove/hermes-ops
     url: https://github.com/batumilove/hermes-ops.git
-    commit: da075bf5b386fcb3aec15be52c5bc2078ead3698
+    commit: 00047fd62468b7785f82dfaf688006f0433d6bfa
     kind: operations
     plugins: []
