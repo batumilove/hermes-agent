@@ -26,10 +26,12 @@ PRs #9850, #9934, #7536):
 """
 
 import asyncio
+import json
 import time
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import hermes_state
 import pytest
 
 from gateway.config import GatewayConfig, HomeChannel, Platform
@@ -303,6 +305,44 @@ class TestMarkResumePending:
         assert second.resume_pending is False
         assert second.resume_reason is None
         assert second.last_resume_marked_at is None
+
+    def test_batch_rejects_legacy_mirror_only_success(self, tmp_path, monkeypatch):
+        """A failed authoritative DB batch must not succeed via sessions.json."""
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        store = SessionStore(
+            sessions_dir=tmp_path / "sessions",
+            config=GatewayConfig(),
+        )
+        first = store.get_or_create_session(_make_source(chat_id="db-first"))
+        second = store.get_or_create_session(_make_source(chat_id="db-second"))
+        mirror_path = tmp_path / "sessions" / "sessions.json"
+        mirror_before = mirror_path.read_text(encoding="utf-8")
+
+        def fail_reconciliation(*_args, **_kwargs):
+            raise RuntimeError("state.db unavailable")
+
+        db = store._db
+        monkeypatch.setattr(
+            db,
+            "replace_gateway_routing_entries",
+            fail_reconciliation,
+        )
+
+        with pytest.raises(RuntimeError, match="resume-marker batch was not persisted"):
+            store.mark_resume_pending_batch(
+                [first.session_key, second.session_key],
+                "shutdown_timeout",
+            )
+
+        assert first.resume_pending is False
+        assert second.resume_pending is False
+        assert mirror_path.read_text(encoding="utf-8") == mirror_before
+        durable = getattr(db, "load_gateway_routing_entries")(
+            scope=store._routing_scope()
+        )
+        assert json.loads(durable[first.session_key])["resume_pending"] is False
+        assert json.loads(durable[second.session_key])["resume_pending"] is False
+        getattr(db, "close")()
 
 
 class TestClearResumePending:
