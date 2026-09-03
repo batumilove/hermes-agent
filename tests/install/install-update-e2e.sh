@@ -70,7 +70,8 @@ SANDBOX_DIR_NAME=".hermes-sandbox-e2e-$ROUTE"
 export HERMES_DEV_SANDBOX_DIR="$SANDBOX_DIR_NAME"
 
 SANDBOX_ROOT="$REPO_ROOT/$SANDBOX_DIR_NAME"
-INSTALL_DIR="/home/hermes/.hermes/hermes-agent"   # user-level layout (sandbox default)
+SANDBOX_HOME="/home/hermes"                       # user-level layout (sandbox default)
+INSTALL_DIR="$SANDBOX_HOME/.hermes/hermes-agent"
 FAKE_REMOTE="/work/repos/hermes-agent.git"
 # Only used to fetch an old install.sh for the flag probe below; the sandbox does
 # its own fetching. Same override dev-sandbox.sh honours, so a fork can retarget
@@ -98,10 +99,16 @@ collect_sandbox_logs() {
   # with "a: unbound variable".
   local tag="$1"
   local src="$SANDBOX_ROOT/root/logs"
+  local npm_src="$SANDBOX_ROOT/home/.npm/_logs"
   local dest="$LOG_DIR/sandbox-$tag"
-  [ -d "$src" ] || return 0
   mkdir -p "$dest"
-  cp -a "$src/." "$dest/" 2>/dev/null || true
+  if [ -d "$src" ]; then
+    cp -a "$src/." "$dest/" 2>/dev/null || true
+  fi
+  if [ -d "$npm_src" ]; then
+    mkdir -p "$dest/npm"
+    cp -a "$npm_src/." "$dest/npm/" 2>/dev/null || true
+  fi
   # Print it, not just archive it: a rejected TLS handshake here is the whole
   # explanation for a failure that otherwise reads as a bare `curl: (35)`, and
   # whoever is reading the job log should not have to download an artifact to

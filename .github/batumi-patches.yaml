@@ -89,6 +89,27 @@ patches:
       - python3 scripts/check_fork_delta.py
     retirement: Remove when the fork account has a larger-runner allocation and the upstream runner labels are restored.
 
+  - id: install-e2e-sandbox-node-ca
+    kind: operations
+    rationale: >-
+      Make Node clients trust the throwaway CA that signs HTTPS certificates in
+      the install E2E sandbox while retaining the host CA exclusively for the
+      proxy's outbound verification. Force one unambiguous Connection: close
+      request header so npm cannot reuse a tunnel the single-request proxy has
+      already closed.
+    paths:
+      - scripts/sandbox/stage2-run.sh
+      - scripts/sandbox/proxy.py
+      - tests/test_dev_sandbox_tls.py
+      - tests/install/install-update-e2e.sh
+    tests:
+      - scripts/run_tests.sh tests/test_dev_sandbox_tls.py
+      - tests/install/install-update-e2e.sh
+    retirement: >-
+      Remove when upstream provides equivalent sandbox Node CA trust,
+      connection-header normalization, managed Node header selection, npm-log
+      collection, and regression coverage for all listed paths.
+
   - id: fork-patch-governance
     kind: operations
     rationale: >-
