@@ -60,6 +60,12 @@ def test_proxy_forces_one_unambiguous_connection_close(monkeypatch, tmp_path):
     )
 
 
+def test_installer_sandbox_does_not_force_host_node_headers():
+    script = STAGE2_RUN.read_text(encoding="utf-8")
+
+    assert "npm_config_nodedir" not in script
+
+
 def test_install_e2e_artifacts_include_npm_debug_logs():
     script = INSTALL_E2E.read_text(encoding="utf-8")
 
