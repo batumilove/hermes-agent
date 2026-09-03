@@ -57,6 +57,8 @@ HOST_MAP = {
     "100.71.155.95:18081": "spark-polarbear",
     "100.110.104.77:8087": "mac-studio",
     "192.168.100.14:8088": "mac-horse",
+    "192.168.10.154:8081": "proxmox-geekom",
+    "192.168.10.104:8000": "mac-zebra",
     "api.openai.com": "openai",
     "openrouter.ai/api/v1": "openrouter",
 }
