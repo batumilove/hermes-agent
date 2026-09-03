@@ -105,7 +105,10 @@ patches:
     tests:
       - scripts/run_tests.sh tests/test_dev_sandbox_tls.py
       - tests/install/install-update-e2e.sh
-    retirement: Remove when upstream configures Node to trust the sandbox interception CA with equivalent regression coverage.
+    retirement: >-
+      Remove when upstream provides equivalent sandbox Node CA trust,
+      connection-header normalization, managed Node header selection, npm-log
+      collection, and regression coverage for all listed paths.
 
   - id: fork-patch-governance
     kind: operations
