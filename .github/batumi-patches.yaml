@@ -25,6 +25,9 @@ patches:
       - .github/workflows/js-tests.yml
       - .github/workflows/osv-scanner.yml
       - Dockerfile
+      - optional-skills/finance/dcf-model/SKILL.md
+      - optional-skills/finance/dcf-model/requirements.txt
+      - tests/test_supply_chain_hardening.py
       - tests/scripts/test_js_tests_workflow.py
       - tests/scripts/test_osv_scanner_workflow.py
       - tests/tools/test_dockerfile_vulnerability_floors.py
@@ -32,6 +35,7 @@ patches:
       - python3 -c "import pathlib, yaml; [yaml.safe_load(p.read_text()) for p in pathlib.Path('.github/workflows').glob('*.yml')]"
       - hadolint Dockerfile
       - npm run check --workspace apps/desktop
+      - uv run --locked --no-sync pytest -q tests/test_supply_chain_hardening.py
       - scripts/run_tests.sh tests/scripts/test_js_tests_workflow.py tests/scripts/test_osv_scanner_workflow.py tests/tools/test_dockerfile_vulnerability_floors.py
     retirement: Remove when upstream pins equivalent npm and Debian build inputs, restricts reusable workflow permissions, and scans every tracked dependency lockfile with matching lifecycle and release-age protections.
 
