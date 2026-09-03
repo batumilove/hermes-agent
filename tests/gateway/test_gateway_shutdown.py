@@ -354,7 +354,7 @@ async def test_gateway_stop_scopes_counts_when_reusing_broader_batch(caplog):
     async def timed_out_drain(*_args, **_kwargs):
         runner._running_agents.pop("session-c")
         asyncio.get_running_loop().call_later(0.01, release_marker.set)
-        return list(session_keys), True
+        return {key: running_agent for key in session_keys}, True
 
     async_store = MagicMock()
     async_store._store = runner.session_store
