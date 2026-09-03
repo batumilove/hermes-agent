@@ -129,6 +129,34 @@ class TestSidebarScope:
         assert _slice_ids(payload, "messaging") == {"default-telegram", "worker-telegram"}
         assert {row["profile"] for row in payload["messaging"]["sessions"]} == {"default", "worker"}
 
+    def test_all_scope_uses_lightweight_profile_targets(
+        self, client, profiles_on_disk, monkeypatch
+    ):
+        from hermes_cli import profiles
+
+        _seed_session(profiles_on_disk["default"], "default-chat", source="cli")
+        _seed_session(profiles_on_disk["worker"], "worker-chat", source="cli")
+
+        def reject_heavy_inventory():
+            raise AssertionError("session routes must not call list_profiles")
+
+        monkeypatch.setattr(profiles, "list_profiles", reject_heavy_inventory)
+
+        sidebar = client.get(
+            "/api/profiles/sessions/sidebar",
+            params={"recents_profile": "all", "recents_exclude": "cron"},
+        ).json()
+        sessions = client.get(
+            "/api/profiles/sessions",
+            params={"profile": "all", "limit": 20, "min_messages": 1},
+        ).json()
+
+        assert _slice_ids(sidebar, "recents") == {"default-chat", "worker-chat"}
+        assert {row["id"] for row in sessions["sessions"]} == {
+            "default-chat",
+            "worker-chat",
+        }
+
 
 class TestCrossProfileProjectTree:
 

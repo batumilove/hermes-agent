@@ -1,6 +1,9 @@
 """Pure tool-call guardrail primitive tests."""
 
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig,
@@ -147,7 +150,9 @@ from agent.tool_guardrails import LoopCapConfig  # noqa: E402
 def test_loop_cap_zero_disables_and_junk_falls_back():
     # 0 is a legitimate "unlimited" value; negatives / junk fall back to default.
     assert LoopCapConfig.from_mapping({"max_web_searches": 0}).max_web_searches == 0
+    assert LoopCapConfig.from_mapping({"warn_web_searches": 0}).warn_web_searches == 0
     assert LoopCapConfig.from_mapping({"max_web_searches": -5}).max_web_searches == 50
+    assert LoopCapConfig.from_mapping({"warn_web_searches": -5}).warn_web_searches == 40
     assert LoopCapConfig.from_mapping({"max_subagents": "nope"}).max_subagents == 50
 
 
@@ -167,6 +172,111 @@ def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():
     assert decision.action == "block"
     assert decision.code == "loop_web_search_cap"
     assert decision.should_halt is True
+
+
+def test_web_search_soft_budget_warns_once_before_hard_cap():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            warnings_enabled=True,
+            hard_stop_enabled=False,
+            loop_caps=LoopCapConfig(
+                max_web_searches=3,
+                warn_web_searches=2,
+            ),
+        )
+    )
+
+    assert controller.before_call("web_search", {"query": "q1"}).action == "allow"
+    warning = controller.before_call("web_search", {"query": "q2"})
+    assert warning.action == "warn"
+    assert warning.code == "loop_web_search_soft_warning"
+    assert warning.count == 2
+    assert "2 web searches" in warning.message
+    assert "synthesize" in warning.message
+    assert controller.before_call("web_search", {"query": "q3"}).action == "allow"
+
+    blocked = controller.before_call("web_search", {"query": "q4"})
+    assert blocked.action == "block"
+    assert blocked.code == "loop_web_search_cap"
+    assert "per-turn search budget" in blocked.message
+    assert "repeated" not in blocked.message
+
+
+def test_web_search_soft_budget_obeys_warnings_enabled():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            warnings_enabled=False,
+            loop_caps=LoopCapConfig(
+                max_web_searches=3,
+                warn_web_searches=1,
+            ),
+        )
+    )
+
+    for i in range(3):
+        assert controller.before_call("web_search", {"query": f"q{i}"}).action == "allow"
+    blocked = controller.before_call("web_search", {"query": "q3"})
+    assert blocked.action == "block"
+    assert blocked.code == "loop_web_search_cap"
+
+
+def test_web_search_soft_budget_warning_never_bypasses_exact_failure_block():
+    args = {"query": "same"}
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            warnings_enabled=True,
+            hard_stop_enabled=True,
+            exact_failure_block_after=1,
+            loop_caps=LoopCapConfig(
+                max_web_searches=3,
+                warn_web_searches=1,
+            ),
+        )
+    )
+    controller.after_call("web_search", args, '{"error":"boom"}', failed=True)
+
+    decision = controller.before_call("web_search", args)
+
+    assert decision.action == "block"
+    assert decision.code == "repeated_exact_failure_block"
+
+
+def test_parallel_before_call_serializes_web_search_cap_accounting():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=False,
+            loop_caps=LoopCapConfig(max_web_searches=1, warn_web_searches=0),
+        )
+    )
+    original = controller._check_loop_cap
+    start = threading.Barrier(2)
+    state_lock = threading.Lock()
+    active = 0
+    max_active = 0
+
+    def observed_check(*args):
+        nonlocal active, max_active
+        with state_lock:
+            active += 1
+            max_active = max(max_active, active)
+        try:
+            time.sleep(0.05)
+            return original(*args)
+        finally:
+            with state_lock:
+                active -= 1
+
+    controller._check_loop_cap = observed_check
+
+    def call(index):
+        start.wait()
+        return controller.before_call("web_search", {"query": f"q{index}"})
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        decisions = list(pool.map(call, range(2)))
+
+    assert max_active == 1
+    assert sorted(decision.action for decision in decisions) == ["allow", "block"]
 
 
 

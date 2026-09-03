@@ -276,6 +276,14 @@ def main(argv: list[str] | None = None) -> None:
     except Exception:
         logger.exception("ACP agent crashed")
         sys.exit(1)
+    finally:
+        # P0-C: deterministic teardown of the manager's lazily-opened
+        # writable SessionDB (drains its PASSIVE checkpoint) instead of
+        # leaving it to GC/process exit when the ACP server stops.
+        try:
+            agent.session_manager.close()
+        except Exception:
+            logger.debug("Failed to close ACP SessionManager on exit", exc_info=True)
 
 
 if __name__ == "__main__":

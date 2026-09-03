@@ -190,6 +190,12 @@ VALID_HOOKS: Set[str] = {
     "pre_api_request",
     "post_api_request",
     "api_request_error",
+    # Provider-routing observers. Fired after a successful fallback activation
+    # / primary restoration so plugins can emit metrics without parsing logs.
+    # Return values are ignored.
+    "on_fallback_activated",
+    "on_fallback_chain_exhausted",
+    "on_primary_restored",
     # API-error classification override. Fired once per failed API call at
     # the top of ``agent/error_classifier.classify_api_error()``, BEFORE the
     # built-in pipeline, so provider plugins can own their provider's error
@@ -1579,6 +1585,40 @@ class PluginContext:
         )
         return self._track(kind, key, lease.dispose)
 
+    @property
+    def runtime_role(self) -> str:
+        """Return the host surface role for this plugin context.
+
+        This is a stable capability bit for plugins that need to distinguish
+        request-producing surfaces from passive supervisors. We prefer an
+        explicit role when the host set one, and otherwise fall back to the
+        safest available inference.
+        """
+        explicit = (getattr(self._manager, "_runtime_role", None) or "").strip().lower()
+        if explicit:
+            return explicit
+        cli = getattr(self._manager, "_cli_ref", None)
+        if cli is not None:
+            return "cli"
+        for env_name in (
+            "HERMES_DASHBOARD_SESSION_TOKEN",
+            "HERMES_DASHBOARD_READY",
+            "HERMES_DASHBOARD_PUBLIC_URL",
+        ):
+            if os.getenv(env_name):
+                return "dashboard"
+        return "unknown"
+
+    @property
+    def can_claim_provider_telemetry_writer(self) -> bool:
+        """True when this context is allowed to own request telemetry writing.
+
+        Passive dashboard supervisors load plugins but never produce API requests,
+        so they must not claim the provider telemetry writer lock. Request-
+        producing gateway or CLI surfaces may claim it.
+        """
+        return self.runtime_role in {"cli", "gateway"}
+
     # -- host-owned LLM access ----------------------------------------------
 
     @property
@@ -1949,6 +1989,32 @@ class PluginContext:
         if not isinstance(allowlist, list):
             return []
         return [str(item) for item in allowlist]
+
+    def register_environment_backend(
+        self,
+        name: str,
+        factory: Callable,
+        *,
+        containerized: bool = False,
+    ) -> None:
+        """Register a terminal backend through the host-owned registry.
+
+        ``factory`` receives the same keyword arguments as
+        ``tools.terminal_tool._create_environment``. Built-in backend names
+        and names already claimed by another plugin are rejected.
+        """
+        from tools.environments.registry import register_environment_backend
+
+        register_environment_backend(
+            name,
+            factory,
+            containerized=containerized,
+        )
+        logger.debug(
+            "Plugin %s registered environment backend: %s",
+            self.manifest.name,
+            name,
+        )
 
     # -- override trust gate ------------------------------------------------
 
@@ -3426,7 +3492,7 @@ class PluginManager:
         self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins
         self._system_prompt_sections: Dict[str, PluginSystemPromptSection] = {}
         self._discovered: bool = False
-        self._cli_ref = None  # Set by CLI after plugin discovery
+        self._cli_ref_internal: Any = None  # Set by CLI after plugin discovery
         self._gateway_message_injector: tuple[object, Callable] | None = None
         # Plugin skill registry: qualified name → metadata dict.
         self._plugin_skills: Dict[str, Dict[str, Any]] = {}
@@ -3434,6 +3500,17 @@ class PluginManager:
         # Plugin-registered auxiliary tasks: key → {key, display_name,
         # description, defaults, plugin}. See PluginContext.register_auxiliary_task.
         self._aux_tasks: Dict[str, Dict[str, Any]] = {}
+        # Stable surface role for this process. Host surfaces set this before
+        # plugin discovery so plugins can distinguish request-producing contexts
+        # (cli, gateway) from passive supervisors (dashboard) without inspecting
+        # argv or environment.
+        self._runtime_role: str = ""
+        # Effective role observed the last time plugin discovery completed.
+        # Used to detect transitions from passive/unknown to request-producing
+        # roles after discovery, so role-gated plugins can be re-registered
+        # exactly once.
+        self._discovered_role: str = ""
+        self._role_transitioned_to_claiming: bool = False
         # Explicitly-selected, profile-scoped human approval transports.
         self._approval_transports: Dict[str, Any] = {}
         # Inter-plugin event bus. Subscriptions are owner-tagged ledger entries
@@ -3490,6 +3567,75 @@ class PluginManager:
         # full plugin loads.
         self._predeclared_modules: Dict[str, types.ModuleType] = {}
         self._predeclared_tools: Dict[str, List[str]] = {}
+
+    @property
+    def _cli_ref(self) -> Any:
+        """CLI reference used to infer ``cli`` role when no explicit role is set."""
+        return self._cli_ref_internal
+
+    @_cli_ref.setter
+    def _cli_ref(self, value: Any) -> None:
+        self._cli_ref_internal = value
+        self._maybe_mark_role_transition_to_claiming()
+
+    @staticmethod
+    def _is_claiming_role(role: str) -> bool:
+        """Return True when *role* may own the provider telemetry writer."""
+        return role in {"cli", "gateway"}
+
+    def _effective_role(self) -> str:
+        """Return the role plugins would observe from this manager right now.
+
+        Mirrors :attr:`PluginContext.runtime_role` so transitions are evaluated
+        against the same capability bit.
+        """
+        explicit = (self._runtime_role or "").strip().lower()
+        if explicit:
+            return explicit
+        if self._cli_ref_internal is not None:
+            return "cli"
+        for env_name in (
+            "HERMES_DASHBOARD_SESSION_TOKEN",
+            "HERMES_DASHBOARD_READY",
+            "HERMES_DASHBOARD_PUBLIC_URL",
+        ):
+            if os.getenv(env_name):
+                return "dashboard"
+        return "unknown"
+
+    def _maybe_mark_role_transition_to_claiming(self) -> None:
+        """Set the re-discovery flag when the effective role becomes claiming.
+
+        Called when ``_runtime_role`` or ``_cli_ref`` changes after discovery.
+        The flag is consumed by ``discover_and_load`` to re-run plugin discovery
+        exactly once with the new role, so plugins that gated on the passive
+        role get a chance to claim.
+        """
+        if not self._discovered:
+            return
+        old_role = self._discovered_role
+        new_role = self._effective_role()
+        if (
+            not self._is_claiming_role(old_role)
+            and self._is_claiming_role(new_role)
+            and old_role != new_role
+        ):
+            self._role_transitioned_to_claiming = True
+
+    def set_runtime_role(self, role: str) -> None:
+        """Declare the host surface role before plugin discovery.
+
+        Passive supervisors (e.g. the dashboard) should not set this to a
+        request-producing role. Plugins may inspect ``ctx.runtime_role`` or
+        ``ctx.can_claim_provider_telemetry_writer`` to gate behavior.
+
+        When this is called after plugin discovery and changes the effective
+        role from passive/unknown to a request-producing role, the next
+        ``discover_plugins()`` call will re-run plugin discovery exactly once
+        so role-aware plugins can re-register.
+        """
+        self._runtime_role = str(role or "").strip().lower()
+        self._maybe_mark_role_transition_to_claiming()
 
     # -----------------------------------------------------------------------
     # Registration ledger internals
@@ -3880,8 +4026,15 @@ class PluginManager:
         When ``force`` is true, clear cached discovery state first so config
         changes or newly-added bundled backends become visible in long-lived
         sessions without requiring a full agent restart.
+
+        When the effective runtime role transitions from passive/unknown to a
+        request-producing role after discovery, discovery is re-run exactly once
+        with the new role so role-aware plugins can claim ownership.
         """
         with self._discovery_lock, _plugin_home_scope(self.home_path):
+            if self._role_transitioned_to_claiming:
+                self._role_transitioned_to_claiming = False
+                force = True
             if self._discovered and not force:
                 return
             if force:
@@ -3891,6 +4044,7 @@ class PluginManager:
             if env_var_enabled("HERMES_SAFE_MODE"):
                 logger.info("HERMES_SAFE_MODE=1 — plugin discovery skipped")
                 self._discovered = True
+                self._discovered_role = self._effective_role()
                 return
             # Set the flag up front as a re-entrancy guard (a plugin's register()
             # can transitively trigger discovery again), but reset it if the sweep
@@ -3901,6 +4055,7 @@ class PluginManager:
             self._discovered = True
             try:
                 self._discover_and_load_inner()
+                self._discovered_role = self._effective_role()
                 # Persistent registrations deliberately survived the
                 # unload-all above (#91701). Now that plugins have had their
                 # chance to re-register, dispose the ones whose plugin did

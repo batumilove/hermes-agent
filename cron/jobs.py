@@ -2422,10 +2422,11 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 
 def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Schedule a job to run on the next scheduler tick. Accepts a job ID or name."""
-    job = resolve_job_ref(job_id)
-    if not job:
+    """Schedule a durably-attributed manual run on the next scheduler tick."""
+    resolved = resolve_job_ref(job_id)
+    if not resolved:
         return None
+    job = resolved
     if is_terminal_job(job):
         state = job.get("state")
         name = job.get("name", job_id)
@@ -2434,16 +2435,89 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
             f"Create a new occurrence with 'hermes cron resume {name} "
             "--run-now' or '--at <ISO-8601>'."
         )
-    return update_job(
-        job["id"],
-        {
-            "enabled": True,
-            "state": "scheduled",
-            "paused_at": None,
-            "paused_reason": None,
-            "next_run_at": _hermes_now().isoformat(),
-        },
-    )
+    canonical_id = resolved["id"]
+    from cron.executions import create_execution, finish_execution, get_execution
+
+    # Keep pending-marker inspection, ledger creation, and jobs.json publication
+    # inside one store lock. Without this boundary, concurrent API/CLI trigger
+    # requests can both observe no marker, create separate claimed executions,
+    # and overwrite one marker, leaving an owner-live execution orphaned forever.
+    with _jobs_lock():
+        jobs = load_jobs()
+        for i, job in enumerate(jobs):
+            if job.get("id") != canonical_id:
+                continue
+
+            pending = job.get("pending_trigger")
+            if isinstance(pending, dict) and isinstance(
+                pending.get("execution_id"), str
+            ):
+                existing = get_execution(pending["execution_id"])
+                if (
+                    existing is not None
+                    and existing["id"] == pending["execution_id"]
+                    and existing["job_id"] == canonical_id
+                    and existing["status"] == "claimed"
+                    and existing["trigger_origin"] == "manual"
+                ):
+                    # Repeated or concurrent requests before the next tick are
+                    # idempotent and reuse the exact durable execution identity.
+                    return _normalize_job_record(job)
+
+            triggered_at = _hermes_now().isoformat()
+            execution = create_execution(
+                canonical_id,
+                source="manual",
+                trigger_origin="manual",
+                triggered_at=triggered_at,
+            )
+            updated = _apply_skill_fields(
+                {
+                    **job,
+                    "enabled": True,
+                    "state": "scheduled",
+                    "paused_at": None,
+                    "paused_reason": None,
+                    "next_run_at": triggered_at,
+                    # Persist across process restart. The due scan consumes this
+                    # marker only after provenance already exists in executions.db.
+                    "pending_trigger": {
+                        "origin": "manual",
+                        "at": triggered_at,
+                        "execution_id": execution["id"],
+                    },
+                }
+            )
+            jobs[i] = updated
+            try:
+                _save_jobs_unlocked(jobs)
+            except Exception as exc:
+                finish_execution(
+                    execution["id"],
+                    success=False,
+                    error=f"Failed to schedule manual trigger: {exc}",
+                )
+                raise
+            return _normalize_job_record(updated)
+    return None
+
+
+def clear_pending_trigger(job_id: str, expected_execution_id: str) -> bool:
+    """Consume a manual-trigger marker after its ledger execution is durable."""
+    with _jobs_lock():
+        jobs = load_jobs()
+        for job in jobs:
+            if job.get("id") != job_id:
+                continue
+            marker = job.get("pending_trigger")
+            if not isinstance(marker, dict):
+                return False
+            if marker.get("execution_id") != expected_execution_id:
+                return False
+            job.pop("pending_trigger", None)
+            save_jobs(jobs)
+            return True
+    return False
 
 
 def _claim_is_live(claim: Any, now: datetime, ttl_seconds: float) -> bool:
@@ -3172,6 +3246,11 @@ def _claim_job_for_fire_locked(
                         return False  # someone holds a fresh claim
                 except Exception:
                     pass  # malformed claim → overwrite
+            scheduled_for = job.get("next_run_at")
+            _pre_enabled = job.get("enabled")
+            _pre_state = job.get("state")
+            _pre_paused_at = job.get("paused_at")
+            _pre_paused_reason = job.get("paused_reason")
             if force:
                 job["enabled"] = True
                 job["state"] = "scheduled"
@@ -3181,7 +3260,18 @@ def _claim_job_for_fire_locked(
             # stale lease, and the previous runner must not heartbeat the new
             # claim merely because hostname + PID are unchanged.
             owner = f"{_machine_id()}:{uuid.uuid4().hex}"
-            job["fire_claim"] = {"at": now.isoformat(), "by": owner}
+            claim = {
+                "at": now.isoformat(),
+                "by": owner,
+                "scheduled_for": scheduled_for,
+            }
+            if force:
+                claim["force"] = True
+                claim["_pre_enabled"] = _pre_enabled
+                claim["_pre_state"] = _pre_state
+                claim["_pre_paused_at"] = _pre_paused_at
+                claim["_pre_paused_reason"] = _pre_paused_reason
+            job["fire_claim"] = claim
             kind = job.get("schedule", {}).get("kind")
             if kind in {"cron", "interval"}:
                 nxt = compute_next_run(job["schedule"], now.isoformat())
@@ -3190,6 +3280,61 @@ def _claim_job_for_fire_locked(
             save_jobs(jobs)
             return copy.deepcopy(job) if return_job else True
         return False
+
+
+def release_fire_claim(job_id: str, *, expected_owner: str) -> bool:
+    """Release one exact fire owner and re-arm its exact scheduled slot.
+
+    This is the rollback half of claim-before-ledger external dispatch.  The
+    owner comparison fences a stale caller from clearing a claim acquired by a
+    newer attempt.  Both the claim removal, slot restoration, and (for forced
+    fires) pause-state restoration are persisted in the same jobs-store
+    critical section.
+
+    If the underlying ``save_jobs`` fails, the in-memory mutation has already
+    been applied but the durable state may not reflect it.  The caller must
+    treat ``False`` or a swallowed save error as "claim possibly still held"
+    and avoid classifying a retry as a duplicate.
+
+    Returns ``True`` only when the matching claim was found and the rollback
+    was durably persisted.  Returns ``False`` when the claim is absent, belongs
+    to a different owner, or lacks the recorded slot — or when the save fails.
+    """
+    with _jobs_lock():
+        jobs = load_jobs()
+        for job in jobs:
+            if job.get("id") != job_id:
+                continue
+            claim = job.get("fire_claim")
+            if not isinstance(claim, dict) or claim.get("by") != expected_owner:
+                return False
+            if "scheduled_for" not in claim:
+                return False
+            # Restore the exact scheduled slot.
+            job["next_run_at"] = claim.get("scheduled_for")
+            # If the claim was acquired with force=True, the acquisition
+            # mutated enabled/state/paused_at/paused_reason.  Restore them
+            # from the claim snapshot so a failed forced fire does not leave
+            # a previously-paused job permanently enabled/scheduled.
+            if claim.get("force"):
+                job["enabled"] = claim.get("_pre_enabled", job.get("enabled"))
+                job["state"] = claim.get("_pre_state", job.get("state"))
+                job["paused_at"] = claim.get("_pre_paused_at", job.get("paused_at"))
+                job["paused_reason"] = claim.get("_pre_paused_reason", job.get("paused_reason"))
+            # Strip the internal snapshot keys from the persisted claim if
+            # it somehow survives (defensive — the claim is set to None below).
+            job["fire_claim"] = None
+            try:
+                save_jobs(jobs)
+            except Exception:
+                logger.error(
+                    "release_fire_claim: save_jobs failed for job %s; "
+                    "durable claim may remain — treating as not-released",
+                    job_id,
+                )
+                return False
+            return True
+    return False
 
 
 # Completed one-shot job records are retained in jobs.json (final status +
@@ -3548,6 +3693,27 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             kind = schedule.get("kind")
 
             next_run_dt = _ensure_aware(raw_next_run_dt)
+            pending_trigger = job.get("pending_trigger")
+            if (
+                isinstance(pending_trigger, dict)
+                and pending_trigger.get("origin") == "manual"
+                and isinstance(pending_trigger.get("at"), str)
+                and isinstance(pending_trigger.get("execution_id"), str)
+            ):
+                job["_execution_trigger_origin"] = "manual"
+                job["_execution_triggered_at"] = pending_trigger["at"]
+                job["_execution_scheduled_for"] = None
+                job["_execution_id"] = pending_trigger["execution_id"]
+            elif pending_trigger is not None:
+                # A malformed/directly-edited marker must never be promoted to
+                # natural scheduled provenance.
+                job["_execution_trigger_origin"] = "unknown"
+                job["_execution_triggered_at"] = now.isoformat()
+                job["_execution_scheduled_for"] = None
+            else:
+                job["_execution_trigger_origin"] = "scheduled"
+                job["_execution_triggered_at"] = now.isoformat()
+                job["_execution_scheduled_for"] = next_run
             # Migration repair: a cron job persists next_run_at as an absolute
             # instant, but the cron expr describes local wall-clock intent. If the
             # configured/system timezone changed after persistence, the stored
@@ -3704,6 +3870,8 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                                 rj["next_run_at"] = new_next
                                 needs_save = True
                                 break
+                        if job.get("_execution_trigger_origin") == "scheduled":
+                            job["_execution_trigger_origin"] = "catchup"
                         record_catch_up_occurrence()
                         # Fall through to due.append(job) — execute once now
 

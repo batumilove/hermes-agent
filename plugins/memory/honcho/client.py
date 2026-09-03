@@ -13,6 +13,8 @@ Resolution order for host-specific settings:
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import os
 import logging
@@ -1067,6 +1069,7 @@ def _slot_for(key: tuple) -> SingletonSlot:
     machinery inert.
     """
     identity = key[:3] if key[0] == "ambient" else (key[0], key[1], key[5], key[6])
+    stale_clients: list["Honcho"] = []
     with _client_slots_lock:
         slot = _client_slots.get(key)
         if slot is None:
@@ -1077,10 +1080,16 @@ def _slot_for(key: tuple) -> SingletonSlot:
                 )
             ]
             for k in stale:
-                _client_slots.pop(k, None)
+                stale_slot = _client_slots.pop(k, None)
+                if stale_slot is not None:
+                    stale_client = stale_slot.peek()
+                    if stale_client is not None:
+                        stale_clients.append(stale_client)
             slot = SingletonSlot()
             _client_slots[key] = slot
-        return slot
+    for stale_client in stale_clients:
+        _close_honcho_client(stale_client)
+    return slot
 # Memo for the honcho.json-derived timeout, keyed PER CONFIG PATH on the
 # file's mtime_ns so the staleness check on every get_honcho_client() call
 # costs one stat() instead of a JSON parse. Path-keyed because multi-profile
@@ -1159,6 +1168,82 @@ def _resolve_timeout_from_sources(config: HonchoClientConfig | None) -> float:
     return timeout if timeout is not None else _DEFAULT_HTTP_TIMEOUT
 
 
+_pending_async_close_tasks: set[asyncio.Task] = set()
+
+
+def _observe_async_close(task: asyncio.Task) -> None:
+    """Retain scheduled closes until completion and retrieve any exception."""
+    _pending_async_close_tasks.discard(task)
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logger.warning("Honcho async client close failed", exc_info=True)
+
+
+def _run_async_close(coro) -> None:
+    """Best-effort async close without blocking an already-running event loop."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is None:
+        try:
+            asyncio.run(coro)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.warning("Honcho async client close failed", exc_info=True)
+        return
+
+    try:
+        task = loop.create_task(coro)
+        _pending_async_close_tasks.add(task)
+        task.add_done_callback(_observe_async_close)
+    except Exception:
+        logger.warning("Honcho async client close task scheduling failed", exc_info=True)
+        close_coro = getattr(coro, "close", None)
+        if callable(close_coro):
+            close_coro()
+
+
+def _close_honcho_client(client: "Honcho") -> None:
+    """Close the SDK's owned sync and already-created async HTTP clients."""
+    if client is None:
+        return
+
+    try:
+        http = getattr(client, "_http", None)
+        if http is not None and getattr(http, "_owns_client", True):
+            close_fn = getattr(http, "close", None)
+            if callable(close_fn) and not inspect.iscoroutinefunction(close_fn):
+                close_fn()
+    except Exception:
+        logger.warning("Honcho sync HTTP client close failed", exc_info=True)
+
+    # Read backing state directly: accessing _async_http_client would allocate
+    # a new async client just to close it.
+    try:
+        async_http = None
+        for state_name in ("__pydantic_private__", "__dict__"):
+            try:
+                state = object.__getattribute__(client, state_name)
+            except AttributeError:
+                continue
+            if isinstance(state, dict) and "_async_http" in state:
+                async_http = state["_async_http"]
+                break
+        if async_http is not None and getattr(async_http, "_owns_client", True):
+            close_fn = getattr(async_http, "close", None)
+            if inspect.iscoroutinefunction(close_fn):
+                _run_async_close(close_fn())
+            elif callable(close_fn):
+                close_fn()
+    except Exception:
+        logger.warning("Honcho async HTTP client close failed", exc_info=True)
+
+
 def _apply_fresh_oauth_token(config: HonchoClientConfig) -> None:
     """Refresh a near-expiry OAuth grant and point ``config.api_key`` at it.
 
@@ -1188,8 +1273,8 @@ def _refresh_cached_oauth(
     """Rotate the cached client's Bearer in place when its OAuth token is stale.
 
     If the SDK shape changed and the in-place rotation can't apply, the
-    client's own slot is reset so the next acquisition rebuilds with the
-    fresh token.
+    old client is closed and its own slot is reset so the next acquisition
+    rebuilds with the fresh token.
     """
     try:
         from plugins.memory.honcho import oauth
@@ -1202,8 +1287,11 @@ def _refresh_cached_oauth(
             path = resolve_config_path()
         token, refreshed = oauth.ensure_fresh_token(path, host)
         if refreshed and token and not oauth.apply_token_to_client(client, token):
+            _close_honcho_client(client)
             if slot is not None:
                 slot.reset()
+            else:
+                _honcho_client_slot.reset()
     except Exception:
         logger.warning("Honcho OAuth cached refresh failed", exc_info=True)
 
@@ -1354,14 +1442,69 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
         if resolved_timeout is not None:
             kwargs["timeout"] = resolved_timeout
 
-        return Honcho(**kwargs)
+        # Honcho is called intermittently and its peer may close a completed
+        # keep-alive connection. Do not retain idle transports between calls.
+        import httpx
+
+        owned_http_client = httpx.Client(
+            limits=httpx.Limits(
+                max_keepalive_connections=0,
+                max_connections=100,
+            ),
+            timeout=httpx.Timeout(resolved_timeout),
+        )
+        kwargs["http_client"] = owned_http_client
+
+        try:
+            client = Honcho(**kwargs)
+        except BaseException:
+            owned_http_client.close()
+            raise
+
+        # Injected clients are caller-owned according to the SDK. Hermes built
+        # this one, so transfer ownership to the wrapper used by reset cleanup.
+        http_wrapper = None
+        for state_name in ("__pydantic_private__", "__dict__"):
+            try:
+                state = object.__getattribute__(client, state_name)
+            except AttributeError:
+                continue
+            if isinstance(state, dict) and "_http" in state:
+                http_wrapper = state["_http"]
+                break
+        if (
+            http_wrapper is not None
+            and getattr(http_wrapper, "_client", None) is owned_http_client
+        ):
+            http_wrapper._owns_client = True
+        else:
+            owned_http_client.close()
+
+        return client
 
     return slot.get(_build)
 
 
 def reset_honcho_client() -> None:
-    """Reset all cached Honcho clients (tests, OAuth re-login)."""
+    """Close and reset all cached Honcho clients (tests, OAuth re-login)."""
+    global _cached_timeout, _honcho_json_timeout_memo
     with _client_slots_lock:
+        slots = list(_client_slots.values())
         _client_slots.clear()
-    _honcho_client_slot.reset()
-    _honcho_json_timeout_memo.clear()
+    cached_clients = [slot.peek() for slot in slots]
+    cached_clients.append(_honcho_client_slot.peek())
+    seen: set[int] = set()
+    try:
+        for cached in cached_clients:
+            if cached is None or id(cached) in seen:
+                continue
+            seen.add(id(cached))
+            _close_honcho_client(cached)
+    finally:
+        _honcho_client_slot.reset()
+        _cached_timeout = None
+        if isinstance(_honcho_json_timeout_memo, dict):
+            _honcho_json_timeout_memo.clear()
+        else:
+            # Compatibility with the fork's pre-map reset fixture.
+            _honcho_json_timeout_memo = (None, None)

@@ -55,6 +55,10 @@ DEFAULT_LOOP_WATCHDOG_TIMEOUT_S = 10.0
 # for genuine wedges. Deployments with legitimately slow loops can tune via
 # gateway.loop_watchdog_* in config.yaml.
 DEFAULT_LOOP_WATCHDOG_MAX_STRIKES = 3
+# Give the Python diagnostics thread a short chance to preserve structured
+# evidence, then let CPython's C-level faulthandler timer terminate the process
+# even if that thread blocks in snapshot or dump I/O.
+_HARD_EXIT_FALLBACK_SLACK_S = 1.0
 _HEARTBEAT_RELATIVE = ("state", "gateway.heartbeat")
 _WATCHDOG_DUMP_RELATIVE = ("logs", "gateway-shutdown-watchdog.log")
 
@@ -85,12 +89,23 @@ class _LoopFloorTimerHandle:
 class _LoopLivenessWatchdogHandle:
     """Small lifecycle handle for the daemon liveness thread."""
 
-    def __init__(self, stop_event: threading.Event, thread: threading.Thread):
+    def __init__(
+        self,
+        stop_event: threading.Event,
+        thread: threading.Thread,
+        on_stop: Optional[Callable[[], None]] = None,
+    ):
         self._stop_event = stop_event
         self._thread = thread
+        self._on_stop = on_stop
 
     def stop(self) -> None:
         self._stop_event.set()
+        if self._on_stop is not None:
+            try:
+                self._on_stop()
+            except Exception:
+                logger.debug("Loop watchdog hard-exit cleanup failed", exc_info=True)
 
     def join(self, timeout: Optional[float] = None) -> None:
         self._thread.join(timeout=timeout)
@@ -120,6 +135,7 @@ def start_loop_liveness_watchdog(
     probe_timeout: float = DEFAULT_LOOP_WATCHDOG_TIMEOUT_S,
     max_strikes: int = DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
     exit_code: int = GATEWAY_SERVICE_RESTART_EXIT_CODE,
+    hard_deadline_s: Optional[float] = None,
 ) -> Optional[_LoopLivenessWatchdogHandle]:
     """Start an out-of-loop watchdog that hard-exits after missed probes.
 
@@ -132,6 +148,45 @@ def start_loop_liveness_watchdog(
     timeout = probe_timeout
     strikes_limit = max_strikes
     stop_event = threading.Event()
+
+    def _cancel_hard_exit_fallback() -> None:
+        """Disarm the C-level hard-exit timer and release its sink fd."""
+        try:
+            faulthandler.cancel_dump_traceback_later()
+        except Exception:
+            logger.debug("Failed to cancel hard-exit fallback timer", exc_info=True)
+        nonlocal hard_exit_fd
+        if hard_exit_fd is not None:
+            try:
+                os.close(hard_exit_fd)
+            except OSError:
+                pass
+            hard_exit_fd = None
+
+    # Independent lifetime backstop: a loop frozen hard enough to miss every
+    # probe forever would otherwise strike out only if probe logic stays
+    # healthy. Arm a monotonic wall-clock deadline so the process still
+    # hard-exits (supervisor restarts it) even if the probe path itself wedges.
+    hard_deadline_abs: Optional[float] = None
+    hard_exit_fd: Optional[int] = None
+    if hard_deadline_s is not None and hard_deadline_s > 0.0:
+        hard_deadline_abs = time.monotonic() + float(hard_deadline_s)
+        try:
+            # Never write the C-level dump to stderr: a blocked fd 2 would
+            # wedge faulthandler before its final _exit(). Devnull keeps the
+            # sink non-blocking for the process lifetime.
+            hard_exit_fd = os.open(os.devnull, os.O_WRONLY)
+            faulthandler.dump_traceback_later(
+                float(hard_deadline_s), repeat=False, file=hard_exit_fd, exit=True
+            )
+        except Exception:
+            if hard_exit_fd is not None:
+                try:
+                    os.close(hard_exit_fd)
+                except OSError:
+                    pass
+                hard_exit_fd = None
+            hard_deadline_abs = None
 
     def _wait_for_probe(probe_event: threading.Event) -> Optional[bool]:
         deadline = time.monotonic() + timeout
@@ -211,8 +266,9 @@ def start_loop_liveness_watchdog(
         thread.start()
     except Exception:
         logger.debug("Failed to start gateway loop liveness watchdog", exc_info=True)
+        _cancel_hard_exit_fallback()
         return None
-    return _LoopLivenessWatchdogHandle(stop_event, thread)
+    return _LoopLivenessWatchdogHandle(stop_event, thread, _cancel_hard_exit_fallback)
 
 
 def _process_hermes_home() -> Path:
@@ -367,6 +423,48 @@ def arm_shutdown_watchdog(
     if delay <= 0:
         return done
 
+    hard_exit_fallback_armed = False
+    hard_exit_fallback_fd: Optional[int] = None
+    hard_exit_fallback_lock = threading.Lock()
+    try:
+        # The C fallback must not write to stderr: a full journald pipe or other
+        # blocked fd 2 would wedge faulthandler before its final _exit().  Keep
+        # a dedicated non-blocking sink open until the timer is cancelled.
+        hard_exit_fallback_fd = os.open(os.devnull, os.O_WRONLY)
+        faulthandler.dump_traceback_later(
+            delay + _HARD_EXIT_FALLBACK_SLACK_S,
+            repeat=False,
+            file=hard_exit_fallback_fd,
+            exit=True,
+        )
+        hard_exit_fallback_armed = True
+    except Exception:
+        if hard_exit_fallback_fd is not None:
+            try:
+                os.close(hard_exit_fallback_fd)
+            except OSError:
+                pass
+            hard_exit_fallback_fd = None
+        logger.debug("Failed to arm C-level shutdown hard-exit fallback", exc_info=True)
+
+    def _cancel_hard_exit_fallback() -> None:
+        nonlocal hard_exit_fallback_armed, hard_exit_fallback_fd
+        with hard_exit_fallback_lock:
+            if not hard_exit_fallback_armed:
+                return
+            hard_exit_fallback_armed = False
+            try:
+                faulthandler.cancel_dump_traceback_later()
+            except Exception:
+                pass
+            finally:
+                if hard_exit_fallback_fd is not None:
+                    try:
+                        os.close(hard_exit_fallback_fd)
+                    except OSError:
+                        pass
+                    hard_exit_fallback_fd = None
+
     def _watchdog() -> None:
         # Wait with interruptible chunks so a late disarm doesn't need the
         # full remaining sleep to observe done_event.
@@ -374,8 +472,10 @@ def arm_shutdown_watchdog(
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
             if done.wait(timeout=min(remaining, 1.0)):
+                _cancel_hard_exit_fallback()
                 return
         if done.is_set():
+            _cancel_hard_exit_fallback()
             return
 
         snapshot: Optional[Dict[str, Any]] = None
@@ -425,11 +525,13 @@ def arm_shutdown_watchdog(
             mark_exited(exit_code, reason="shutdown_watchdog")
         except Exception:
             pass
+        _cancel_hard_exit_fallback()
         os._exit(exit_code)
 
     try:
         threading.Thread(target=_watchdog, daemon=True, name=name).start()
     except Exception:
+        _cancel_hard_exit_fallback()
         logger.debug("Failed to arm shutdown watchdog", exc_info=True)
     return done
 

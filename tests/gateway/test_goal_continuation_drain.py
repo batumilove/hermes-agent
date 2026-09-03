@@ -189,7 +189,15 @@ async def test_runner_goal_hook_enqueues_into_the_key_the_adapter_drains(hermes_
             source=src,
             final_response="partial progress",
         )
-        await asyncio.sleep(0.05)
+        # Poll for the continuation to land rather than a fixed sleep: on a
+        # loaded CI runner the enqueue task can be scheduled later than a
+        # 50ms sleep, making this test flaky (observed 2026-08-25, slice 4).
+        deadline = asyncio.get_running_loop().time() + 5.0
+        while (
+            adapter_key not in adapter._pending_messages
+            and asyncio.get_running_loop().time() < deadline
+        ):
+            await asyncio.sleep(0.02)
 
     assert adapter_key in adapter._pending_messages, (
         "continuation enqueued under a different key than the adapter "

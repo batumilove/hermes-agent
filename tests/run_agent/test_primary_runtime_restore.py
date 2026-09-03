@@ -30,12 +30,18 @@ def _make_tool_defs(*names: str) -> list:
     ]
 
 
-def _make_agent(fallback_model=None, provider="custom", base_url="https://my-llm.example.com/v1"):
+def _make_agent(
+    fallback_model=None,
+    provider="custom",
+    base_url="https://my-llm.example.com/v1",
+    model="",
+):
     """Create a minimal AIAgent with optional fallback config."""
     with (
         patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
+        patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
         # Unit tests must not probe live endpoints. The compressor resolves
         # context length lazily via a real network call against base_url; for
         # reachable hosts (the nous portal case) the endpoint's answer for the
@@ -50,6 +56,7 @@ def _make_agent(fallback_model=None, provider="custom", base_url="https://my-llm
             api_key="test-key-12345678",
             base_url=base_url,
             provider=provider,
+            model=model,
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -503,6 +510,7 @@ class TestTryRecoverPrimaryTransport:
         agent = _make_agent(
             provider="nous",
             base_url="https://inference-api.nousresearch.com/v1",
+            model="anthropic/claude-opus-4.8",
         )
         agent.api_mode = "anthropic_messages"
         agent.model = "anthropic/claude-opus-4.8"

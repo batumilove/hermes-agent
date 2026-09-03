@@ -20,11 +20,13 @@ selected via the `cron.provider` config key (empty = built-in).
 from __future__ import annotations
 
 import inspect
+import logging
 import threading
 from abc import ABC, abstractmethod
+from contextlib import ExitStack
 from typing import Any
 
-# Cap for the exponential tick backoff applied while consecutive ticks fail
+logger = logging.getLogger(__name__)# Cap for the exponential tick backoff applied while consecutive ticks fail
 # with fd exhaustion (EMFILE/ENFILE, #87644).  Base is the tick interval
 # (60s by default); each consecutive EMFILE failure doubles the wait, capped
 # here so a still-alive-but-exhausted gateway never sleeps longer than this
@@ -62,7 +64,6 @@ def _note_tick_failure(exc: BaseException, consecutive_failures: int) -> int:
         _reclaim_fds_best_effort()
         return consecutive_failures + 1
     return 0
-
 
 class CronScheduler(ABC):
     """Axis-B trigger provider. Decides WHEN a due cron job fires.
@@ -167,10 +168,24 @@ class CronScheduler(ABC):
         the job itself failed. Returns False only if the claim was lost
         (another machine/retry won it) or the job no longer exists.
         """
-        claimed_job = self.claim_fire(job_id, force=force)
-        if claimed_job is None:
-            return False
-        return self.fire_claimed(claimed_job, adapters=adapters, loop=loop)
+        from gateway.drain_control import cron_admission
+
+        admission_stack = ExitStack()
+        try:
+            admitted = admission_stack.enter_context(cron_admission())
+            if not admitted:
+                return False
+            claimed_job = self.claim_fire(job_id, force=force)
+            if claimed_job is None:
+                return False
+            return self._fire_claimed_with_admission(
+                claimed_job,
+                admission_stack=admission_stack,
+                adapters=adapters,
+                loop=loop,
+            )
+        finally:
+            admission_stack.close()
 
     def claim_fire(self, job_id: str, *, force: bool = False) -> dict | None:
         """Durably claim one fire and create its audit attempt before dispatch.
@@ -179,29 +194,40 @@ class CronScheduler(ABC):
         external scheduler, then pass the exact owner-bearing snapshot to
         ``fire_claimed`` in tracked background work.
         """
-        from cron.executions import create_execution, finish_execution
-        from cron.jobs import claim_job_for_fire
+        from cron.executions import create_execution
+        from cron.jobs import claim_job_for_fire, release_fire_claim
 
-        execution = create_execution(job_id, source=self.name)
         claim_kwargs = {"return_job": True}
         if force:
             claim_kwargs["force"] = True
-        try:
-            claimed_job = claim_job_for_fire(job_id, **claim_kwargs)
-        except BaseException as exc:
-            finish_execution(
-                execution["id"],
-                success=False,
-                error=f"Fire claim failed before dispatch: {type(exc).__name__}: {exc}",
-            )
-            raise
+        claimed_job = claim_job_for_fire(job_id, **claim_kwargs)
         if not isinstance(claimed_job, dict):
-            finish_execution(
-                execution["id"],
-                success=False,
-                error="Fire claim was not acquired",
-            )
             return None
+        claim = claimed_job.get("fire_claim") or {}
+        owner = str(claim["by"])
+        try:
+            execution = create_execution(
+                job_id,
+                source=self.name,
+                trigger_origin="external",
+                scheduled_for=claim.get("scheduled_for"),
+            )
+        except BaseException:
+            # Attempt exact-owner rollback. If release_fire_claim returns
+            # False (save failed, owner changed, or claim absent), return
+            # None so the caller maps this to a retryable 503 rather than
+            # raising — the caller's exception path would also produce 503,
+            # but returning None avoids confusing the webhook's duplicate
+            # classification when the claim could not be durably released.
+            released = release_fire_claim(job_id, expected_owner=owner)
+            if not released:
+                logger.error(
+                    "claim_fire: could not durably release claim for %s "
+                    "after ledger failure; returning None for retry",
+                    job_id,
+                )
+                return None
+            raise
         claimed_job["execution_id"] = execution["id"]
         return claimed_job
 
@@ -220,6 +246,33 @@ class CronScheduler(ABC):
         — e.g. the dashboard lifespan drain signalling pending webhook
         fires before the event loop shuts down.
         """
+        from gateway.drain_control import cron_admission
+
+        admission_stack = ExitStack()
+        try:
+            admitted = admission_stack.enter_context(cron_admission())
+            if not admitted:
+                return False
+            return self._fire_claimed_with_admission(
+                claimed_job,
+                admission_stack=admission_stack,
+                adapters=adapters,
+                loop=loop,
+                cancel_event=cancel_event,
+            )
+        finally:
+            admission_stack.close()
+
+    @staticmethod
+    def _fire_claimed_with_admission(
+        claimed_job: dict,
+        *,
+        admission_stack: ExitStack,
+        adapters: Any = None,
+        loop: Any = None,
+        cancel_event: Any = None,
+    ) -> bool:
+        """Start an owner-bearing snapshot before releasing drain admission."""
         from cron.scheduler import run_one_job
 
         run_one_job(
@@ -227,6 +280,7 @@ class CronScheduler(ABC):
             adapters=adapters,
             loop=loop,
             cancel_event=cancel_event,
+            on_execution_started=admission_stack.close,
         )
         return True
 

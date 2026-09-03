@@ -12,17 +12,27 @@ Q-B, exercises a real `hermes gateway run`); these lock the unit contract.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import inspect
 import json
+import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
 import gateway.drain_control as dc
-from gateway.run import GatewayRunner
+from gateway.run import (
+    GatewayRunner,
+    _build_live_control_status,
+    _publish_authoritative_startup_status,
+)
+from gateway.status import read_runtime_status
 from gateway.config import Platform
 from gateway.platforms.base import MessageEvent, MessageType
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
+
+_ORIGINAL_USER_RUNTIME_DIR = dc._user_runtime_dir
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +58,510 @@ class TestMarkerContract:
         assert payload["principal"] == "nas"
         body = dc.read_drain_request()
         assert body is not None and body["principal"] == "nas"
+
+
+class TestOwnedDrainControl:
+    """Regression coverage for the competing-controller marker race."""
+
+    @pytest.fixture
+    def real_activation_lock_path(self):
+        """Opt into exercising activation_lock_path without replacing it."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_activation_lock(self, request, tmp_path, monkeypatch):
+        if "real_activation_lock_path" in request.fixturenames:
+            runtime = tmp_path / "runtime"
+            runtime.mkdir(exist_ok=True)
+            monkeypatch.setattr(dc, "_user_runtime_dir", lambda: runtime)
+            return
+        lock_path = tmp_path / "run-user" / "hermes-gateway-activation.lock"
+        drain_owner_path = tmp_path / "run-user" / "hermes-gateway-drain-owner.lock"
+        monkeypatch.setattr(dc, "activation_lock_path", lambda home=None: lock_path)
+        monkeypatch.setattr(
+            dc,
+            "drain_owner_lock_path",
+            lambda home=None: drain_owner_path,
+            raising=False,
+        )
+
+    def test_public_ownership_apis_cannot_override_canonical_lock_path(self):
+        for func in (
+            dc.acquire_drain_ownership,
+            dc.write_drain_request,
+            dc.clear_drain_request,
+            dc.activation_lock_held,
+            dc.drain_owner_lock_held,
+        ):
+            assert "runtime_dir" not in inspect.signature(func).parameters
+
+    def test_default_lock_path_is_profile_scoped_in_user_runtime(
+        self, home, monkeypatch, real_activation_lock_path
+    ):
+        runtime = home.parent / "runtime"
+        runtime.mkdir(exist_ok=True)
+        monkeypatch.setattr(dc, "_user_runtime_dir", lambda: runtime)
+        canonical_home = home.resolve()
+        profile_id = hashlib.sha256(
+            os.fsencode(str(canonical_home))
+        ).hexdigest()[:16]
+        assert dc.activation_lock_path() == (
+            runtime / f"hermes-gateway-activation-{profile_id}.lock"
+        )
+        assert dc.drain_owner_lock_path() == (
+            runtime / f"hermes-gateway-drain-owner-{profile_id}.lock"
+        )
+
+    def test_user_runtime_dir_is_exact_per_user_path(
+        self, monkeypatch, real_activation_lock_path
+    ):
+        monkeypatch.setattr(os, "getuid", lambda: 1234)
+        assert _ORIGINAL_USER_RUNTIME_DIR() == Path("/run/user/1234")
+
+    def test_user_runtime_dir_falls_back_when_getuid_is_absent(
+        self, home, monkeypatch, real_activation_lock_path
+    ):
+        monkeypatch.delattr(os, "getuid", raising=False)
+        assert _ORIGINAL_USER_RUNTIME_DIR() == home
+
+    def test_user_runtime_dir_falls_back_when_getuid_is_not_callable(
+        self, home, monkeypatch, real_activation_lock_path
+    ):
+        monkeypatch.setattr(os, "getuid", None)
+        assert _ORIGINAL_USER_RUNTIME_DIR() == home
+
+    def test_windows_lock_contention_becomes_busy(self, home, monkeypatch):
+        class FakeMsvcrt:
+            LK_NBLCK = 1
+            LK_UNLCK = 2
+
+            @staticmethod
+            def locking(fd, mode, size):
+                raise OSError(13, "permission denied")
+
+        monkeypatch.setattr(dc, "fcntl", None)
+        monkeypatch.setattr(dc, "msvcrt", FakeMsvcrt)
+
+        with pytest.raises(dc.DrainControlBusyError):
+            dc.acquire_drain_ownership(principal="windows", home=home)
+
+    def test_windows_unrelated_lock_error_remains_unavailable(self, home, monkeypatch):
+        class FakeMsvcrt:
+            LK_NBLCK = 1
+            LK_UNLCK = 2
+
+            @staticmethod
+            def locking(fd, mode, size):
+                raise OSError(5, "I/O error")
+
+        monkeypatch.setattr(dc, "fcntl", None)
+        monkeypatch.setattr(dc, "msvcrt", FakeMsvcrt)
+
+        with pytest.raises(dc.DrainControlUnavailableError):
+            dc.acquire_drain_ownership(principal="windows", home=home)
+
+    def test_activation_owner_retries_transient_probe_contention(self, home, monkeypatch):
+        real_lock = dc._lock_handle
+        attempts = 0
+
+        def transient_contention(handle):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise BlockingIOError("transient probe")
+            real_lock(handle)
+
+        monkeypatch.setattr(dc, "_lock_handle", transient_contention)
+
+        owner = dc.acquire_drain_ownership(principal="activation", home=home)
+        try:
+            assert attempts >= 2
+        finally:
+            owner.release()
+
+    def test_concurrent_activation_probes_do_not_report_an_owner(self, home):
+        probe = dc._acquire_activation_lock(home, shared=True)
+        try:
+            assert dc.activation_lock_held(home=home) is False
+        finally:
+            dc._release_activation_lock(probe)
+
+    def test_windows_activation_probes_use_serializing_guard(self, home, monkeypatch):
+        modes = []
+
+        class FakeMsvcrt:
+            LK_NBLCK = 1
+            LK_LOCK = 2
+            LK_UNLCK = 3
+
+            @staticmethod
+            def locking(fd, mode, size):
+                modes.append(mode)
+
+        monkeypatch.setattr(dc, "fcntl", None)
+        monkeypatch.setattr(dc, "msvcrt", FakeMsvcrt)
+
+        assert dc.activation_lock_held(home=home) is False
+        assert modes[0] == FakeMsvcrt.LK_LOCK
+        assert FakeMsvcrt.LK_NBLCK in modes[1:]
+        assert modes[-1] == FakeMsvcrt.LK_UNLCK
+
+    def test_equivalent_home_paths_share_one_lock(
+        self, tmp_path, real_activation_lock_path
+    ):
+        real_home = tmp_path / "real-home"
+        real_home.mkdir()
+        alias_home = tmp_path / "home-alias"
+        alias_home.symlink_to(real_home, target_is_directory=True)
+
+        assert dc.activation_lock_path(real_home) == dc.activation_lock_path(alias_home)
+
+    def test_distinct_profiles_under_same_uid_use_distinct_locks(
+        self, tmp_path, real_activation_lock_path
+    ):
+        home_a = tmp_path / "profile-a"
+        home_b = tmp_path / "profile-b"
+        home_a.mkdir()
+        home_b.mkdir()
+
+        assert dc.activation_lock_path(home_a) != dc.activation_lock_path(home_b)
+        assert dc.drain_owner_lock_path(home_a) != dc.drain_owner_lock_path(home_b)
+
+        owner = dc.acquire_drain_ownership(principal="a", home=home_a)
+        try:
+            owner.write_request()
+            assert dc.drain_requested(home=home_a) is True
+            assert dc.drain_requested(home=home_b) is False
+        finally:
+            owner.clear_request()
+            owner.release()
+
+    def test_missing_user_runtime_falls_back_to_canonical_home(
+        self, home, monkeypatch, real_activation_lock_path
+    ):
+        missing_runtime = home.parent / "missing-runtime"
+        monkeypatch.setattr(dc, "_user_runtime_dir", lambda: missing_runtime)
+
+        lock_path = dc.activation_lock_path(home)
+        assert lock_path.parent == home.resolve()
+        assert dc.drain_requested(home=home) is False
+
+        owner = dc.acquire_drain_ownership(principal="fallback", home=home)
+        try:
+            owner.write_request()
+            assert dc.drain_requested(home=home) is True
+        finally:
+            owner.clear_request()
+            owner.release()
+
+    def test_runtime_open_failure_falls_back_to_canonical_home(
+        self, home, monkeypatch, real_activation_lock_path
+    ):
+        runtime = home.parent / "runtime"
+        runtime.mkdir(exist_ok=True)
+        monkeypatch.setattr(dc, "_user_runtime_dir", lambda: runtime)
+        real_open = Path.open
+
+        def _open_with_runtime_failure(path, *args, **kwargs):
+            if path.parent == runtime:
+                raise PermissionError("runtime is read-only")
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", _open_with_runtime_failure)
+        assert dc.activation_lock_path(home).parent == runtime
+
+        owner = dc.acquire_drain_ownership(principal="fallback", home=home)
+        try:
+            owner.write_request()
+            assert dc.drain_requested(home=home) is True
+        finally:
+            owner.clear_request()
+            owner.release()
+
+    def test_runtime_recovery_cannot_split_fallback_owner(
+        self, home, monkeypatch, real_activation_lock_path
+    ):
+        runtime = home.parent / "runtime"
+        runtime.mkdir(exist_ok=True)
+        monkeypatch.setattr(dc, "_user_runtime_dir", lambda: runtime)
+        real_open = Path.open
+        runtime_available = False
+
+        def _open_with_runtime_transition(path, *args, **kwargs):
+            if path.parent == runtime and not runtime_available:
+                raise PermissionError("runtime is temporarily read-only")
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", _open_with_runtime_transition)
+        owner = dc.acquire_drain_ownership(principal="fallback", home=home)
+        try:
+            runtime_available = True
+            with pytest.raises(dc.DrainControlBusyError):
+                dc.acquire_drain_ownership(principal="runtime", home=home)
+        finally:
+            owner.release()
+
+    def test_fallback_anchor_unavailable_does_not_use_runtime_only(
+        self, home, monkeypatch, real_activation_lock_path
+    ):
+        runtime = home.parent / "runtime"
+        runtime.mkdir(exist_ok=True)
+        monkeypatch.setattr(dc, "_user_runtime_dir", lambda: runtime)
+        real_open = Path.open
+
+        def _deny_fallback_lock(path, *args, **kwargs):
+            if (
+                path.parent == home.resolve()
+                and path.name.startswith("hermes-gateway-activation-")
+            ):
+                raise PermissionError("fallback anchor unavailable")
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", _deny_fallback_lock)
+        with pytest.raises(dc.DrainControlUnavailableError):
+            dc.acquire_drain_ownership(principal="runtime-only", home=home)
+
+    def test_all_lock_locations_unavailable_does_not_invent_an_owner(
+        self, home, monkeypatch, real_activation_lock_path
+    ):
+        runtime = home.parent / "runtime"
+        runtime.mkdir(exist_ok=True)
+        monkeypatch.setattr(dc, "_user_runtime_dir", lambda: runtime)
+        real_open = Path.open
+
+        def _deny_activation_locks(path, *args, **kwargs):
+            if path.name.startswith("hermes-gateway-activation-"):
+                raise PermissionError("lock storage unavailable")
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", _deny_activation_locks)
+
+        assert dc.drain_requested(home=home) is False
+        with pytest.raises(dc.DrainControlUnavailableError):
+            dc.acquire_drain_ownership(principal="cannot-start", home=home)
+
+    def test_owned_transaction_excludes_competing_controller(self, home):
+        owner = dc.acquire_drain_ownership(
+            principal="activation-a",
+            home=home,
+            owner_token="transaction-a",
+        )
+        try:
+            payload = owner.write_request()
+            assert payload["owner_token"] == "transaction-a"
+
+            with pytest.raises(dc.DrainControlBusyError):
+                dc.acquire_drain_ownership(
+                    principal="activation-b",
+                    home=home,
+                    owner_token="transaction-b",
+                )
+            with pytest.raises(dc.DrainControlBusyError):
+                dc.write_drain_request(
+                    principal="dashboard",
+                    home=home,
+                )
+            with pytest.raises(dc.DrainControlBusyError):
+                dc.clear_drain_request(home=home)
+
+            assert owner.assert_request_owned()["owner_token"] == "transaction-a"
+        finally:
+            owner.clear_request()
+            owner.release()
+
+        assert dc.read_drain_request(home=home) is None
+
+    def test_operator_can_clear_orphan_after_owner_releases_lock(self, home):
+        owner = dc.acquire_drain_ownership(
+            principal="activation-a",
+            home=home,
+            owner_token="transaction-a",
+        )
+        owner.write_request()
+        owner.release()  # simulate controller exit without compare-and-delete
+
+        assert dc.clear_drain_request(home=home) is True
+        assert dc.read_drain_request(home=home) is None
+
+    def test_owner_adopts_preexisting_unowned_marker(self, home):
+        dc.write_drain_request(principal="dashboard", home=home)
+        existing = dc.read_drain_request(home=home)
+        assert existing is not None
+        assert existing.get("owner_token") is None
+
+        owner = dc.acquire_drain_ownership(
+            principal="activation-a",
+            home=home,
+            owner_token="transaction-a",
+        )
+        try:
+            payload = owner.write_request()
+            assert payload["owner_token"] == "transaction-a"
+            assert owner.assert_request_owned()["owner_token"] == "transaction-a"
+            owner.clear_request()
+        finally:
+            owner.release()
+
+        assert dc.read_drain_request(home=home) is None
+
+    def test_owner_replaces_definitely_stale_foreign_marker(self, home, monkeypatch):
+        monkeypatch.setattr(
+            dc, "current_instantiation_epoch", lambda: "test-current-epoch"
+        )
+        stale = dc._drain_payload(
+            principal="orphan",
+            suppress_notification=False,
+            owner_token="dead-owner",
+        )
+        stale["epoch"] = "definitely-not-this-instantiation"
+        dc.drain_request_path(home).write_text(json.dumps(stale), encoding="utf-8")
+
+        owner = dc.acquire_drain_ownership(
+            principal="activation",
+            home=home,
+            owner_token="transaction-a",
+        )
+        try:
+            payload = owner.write_request()
+            assert payload["owner_token"] == "transaction-a"
+            owner.clear_request()
+        finally:
+            owner.release()
+
+    def test_owner_cleanup_after_replacement_accepts_already_absent_marker(self, home):
+        owner = dc.acquire_drain_ownership(
+            principal="activation-a",
+            home=home,
+            owner_token="transaction-a",
+        )
+        try:
+            assert dc.read_drain_request(home=home) is None
+            assert owner.clear_request_if_owned_or_absent() is False
+            assert dc.read_drain_request(home=home) is None
+        finally:
+            owner.release()
+
+    def test_owner_cleanup_after_replacement_refuses_foreign_marker(self, home):
+        owner = dc.acquire_drain_ownership(
+            principal="activation-a",
+            home=home,
+            owner_token="transaction-a",
+        )
+        try:
+            foreign = dc._drain_payload(
+                principal="activation-b",
+                suppress_notification=False,
+                owner_token="transaction-b",
+            )
+            dc.drain_request_path(home).write_text(json.dumps(foreign), encoding="utf-8")
+
+            with pytest.raises(dc.DrainOwnershipLostError, match="replaced"):
+                owner.clear_request_if_owned_or_absent()
+            surviving = dc.read_drain_request(home=home)
+            assert surviving is not None
+            assert surviving["owner_token"] == "transaction-b"
+        finally:
+            owner.release()
+
+    def test_cron_admission_excludes_activation_until_registration_finishes(self, home):
+        with dc.cron_admission(home=home) as admitted:
+            assert admitted is True
+            with pytest.raises(dc.DrainControlBusyError):
+                dc.acquire_drain_ownership(principal="activation", home=home)
+
+        owner = dc.acquire_drain_ownership(principal="activation", home=home)
+        owner.release()
+
+    def test_cron_admission_lock_is_not_a_drain_signal(self, home):
+        with dc.cron_admission(home=home) as admitted:
+            assert admitted is True
+            assert dc.drain_requested(home=home) is False
+
+    def test_drain_owner_signals_before_marker_and_blocks_cron(self, home):
+        owner = dc.acquire_drain_ownership(principal="activation", home=home)
+        try:
+            assert dc.read_drain_request(home=home) is None
+            assert dc.drain_requested(home=home) is True
+            with dc.cron_admission(home=home) as admitted:
+                assert admitted is False
+        finally:
+            owner.release()
+
+        assert dc.drain_requested(home=home) is False
+
+    def test_drain_owner_signal_failure_releases_activation_lock(
+        self, home, monkeypatch
+    ):
+        def unavailable(*args, **kwargs):
+            raise dc.DrainControlUnavailableError("signal unavailable")
+
+        monkeypatch.setattr(dc, "_acquire_drain_owner_lock", unavailable)
+
+        with pytest.raises(dc.DrainControlUnavailableError, match="signal unavailable"):
+            dc.acquire_drain_ownership(principal="activation", home=home)
+
+        with dc.cron_admission(home=home) as admitted:
+            assert admitted is True
+
+    def test_cron_admission_rejects_existing_marker_without_mutating_it(self, home):
+        marker = dc.write_drain_request(principal="dashboard", home=home)
+
+        with dc.cron_admission(home=home) as admitted:
+            assert admitted is False
+
+        assert dc.read_drain_request(home=home) == marker
+
+    def test_refresh_fails_closed_when_marker_is_replaced(self, home):
+        owner = dc.acquire_drain_ownership(
+            principal="activation-a",
+            home=home,
+            owner_token="transaction-a",
+        )
+        try:
+            owner.write_request()
+            replacement = dc.read_drain_request(home=home)
+            assert replacement is not None
+            replacement["owner_token"] = "transaction-b"
+            dc.drain_request_path(home).write_text(json.dumps(replacement), encoding="utf-8")
+
+            with pytest.raises(dc.DrainOwnershipLostError):
+                owner.refresh_request()
+            with pytest.raises(dc.DrainOwnershipLostError):
+                owner.clear_request()
+            assert dc.read_drain_request(home=home)["owner_token"] == "transaction-b"
+        finally:
+            owner.release()
+
+    def test_refresh_fails_closed_when_marker_is_removed(self, home):
+        owner = dc.acquire_drain_ownership(
+            principal="activation-a",
+            home=home,
+            owner_token="transaction-a",
+        )
+        try:
+            owner.write_request()
+            dc.drain_request_path(home).unlink()
+
+            with pytest.raises(dc.DrainOwnershipLostError):
+                owner.assert_request_owned()
+            with pytest.raises(dc.DrainOwnershipLostError):
+                owner.refresh_request()
+        finally:
+            owner.release()
+
+    def test_lock_keeps_gateway_drained_if_owned_marker_disappears(self, home):
+        owner = dc.acquire_drain_ownership(
+            principal="activation-a",
+            home=home,
+            owner_token="transaction-a",
+        )
+        try:
+            owner.write_request()
+            dc.drain_request_path(home).unlink()
+            assert dc.drain_requested(home=home) is True
+        finally:
+            owner.release()
+
+        assert dc.drain_requested(home=home) is False
 
 
 class TestSuppressNotification:
@@ -120,6 +634,96 @@ class TestInstantiationEpoch:
             assert dc.current_instantiation_epoch() == ""
         finally:
             dc.current_instantiation_epoch.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# Authoritative startup ownership/readiness
+# ---------------------------------------------------------------------------
+
+
+class _StartupStatusRunner:
+    def __init__(self, *, shutdown_requested=False):
+        self._external_drain_active = False
+        self._shutdown_requested = shutdown_requested
+        self._cron_thread = MagicMock()
+        self._cron_thread.is_alive.return_value = True
+
+    def _startup_should_abort(self):
+        return self._shutdown_requested
+
+    def _running_agent_count(self):
+        return 2
+
+    def _active_cron_job_count(self):
+        return 1
+
+    def _active_api_run_count(self):
+        return 3
+
+    def _active_delegation_count(self):
+        return 4
+
+
+class TestAuthoritativeStartupStatus:
+    def test_control_status_reports_live_attributed_occupancy(self, home):
+        runner = _StartupStatusRunner()
+        payload = _build_live_control_status(runner)
+
+        assert payload["pid"] == os.getpid()
+        assert payload["answering_pid"] == os.getpid()
+        assert payload["active_agents"] == 10
+        assert payload["scheduler"] == {
+            "status": "running",
+            "writer_pid": os.getpid(),
+        }
+        assert payload["occupancy"] == {
+            "foreground_agents": 2,
+            "cron_runs": 1,
+            "api_runs": 3,
+            "detached_workers": 4,
+            "total": 10,
+        }
+
+    def test_pid_owner_acknowledges_inherited_drain_before_slow_startup(self, home):
+        dc.write_drain_request(principal="activation-controller")
+        runner = _StartupStatusRunner()
+
+        state = _publish_authoritative_startup_status(runner, default_state="starting")
+
+        payload = read_runtime_status()
+        assert state == "draining"
+        assert runner._external_drain_active is True
+        assert payload["pid"] == os.getpid()
+        assert payload["gateway_state"] == "draining"
+
+    def test_startup_without_drain_publishes_pid_bound_starting(self, home):
+        runner = _StartupStatusRunner()
+
+        state = _publish_authoritative_startup_status(runner, default_state="starting")
+
+        payload = read_runtime_status()
+        assert state == "starting"
+        assert runner._external_drain_active is False
+        assert payload["pid"] == os.getpid()
+        assert payload["gateway_state"] == "starting"
+
+    def test_slow_startup_cannot_overwrite_inherited_drain_with_running(self, home):
+        dc.write_drain_request(principal="activation-controller")
+        runner = _StartupStatusRunner()
+        _publish_authoritative_startup_status(runner, default_state="starting")
+
+        state = _publish_authoritative_startup_status(runner, default_state="running")
+
+        assert state == "draining"
+        assert read_runtime_status()["gateway_state"] == "draining"
+
+    def test_shutdown_precedence_cannot_be_resurrected_as_running(self, home):
+        runner = _StartupStatusRunner(shutdown_requested=True)
+
+        state = _publish_authoritative_startup_status(runner, default_state="running")
+
+        assert state == "stopping"
+        assert read_runtime_status()["gateway_state"] == "stopping"
 
 
 # ---------------------------------------------------------------------------

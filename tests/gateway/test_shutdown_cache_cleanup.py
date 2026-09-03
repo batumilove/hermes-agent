@@ -39,6 +39,8 @@ class _FakeGateway:
         self._exit_reason = None
         self._exit_code = None
         self._restart_drain_timeout = 0.01
+        # stop() reads the systemd-budget-clamped effective timeout
+        self._stopsec_headroom = 10.0
         self._running_agents = {}
         self._running_agents_ts = {}
         self._agent_cache = OrderedDict()
@@ -50,6 +52,14 @@ class _FakeGateway:
         self._pending_messages = {}
         self._pending_approvals = {}
         self._busy_ack_ts = {}
+
+    @property
+    def _effective_restart_drain_timeout(self) -> float:
+        """Mirror the GatewayRunner clamp: min(configured, stop_budget-headroom)."""
+        return min(
+            self._restart_drain_timeout,
+            max(60.0, self._restart_drain_timeout) + 30.0 - self._stopsec_headroom,
+        )
 
     def _running_agent_count(self):
         return len(self._running_agents)
@@ -65,6 +75,11 @@ class _FakeGateway:
         # This fake has no API server adapter, so it is always idle.
         return 0
 
+    def _active_delegation_count(self):
+        # Detached delegations also count as active work during shutdown;
+        # this fake never has one in flight.
+        return 0
+
     def _update_runtime_status(self, *_a, **_kw):
         pass
 
@@ -76,8 +91,10 @@ class _FakeGateway:
         # inline in tests so the bounded-cleanup path is exercised.
         return func(*args)
 
-    async def _cleanup_agent_resources_off_loop(self, agent, *, context=""):
-        # Mirror the real bounded helper, inline (no executor/timeout) so the
+    async def _cleanup_agent_resources_off_loop(
+        self, agent, *, context="", timeout=None
+    ):
+        # Mirror the real bounded helper inline (no executor/timeout) so the
         # fake exercises the same call shape stop() now uses.
         self._cleanup_agent_resources(agent)
 
@@ -87,7 +104,7 @@ class _FakeGateway:
     async def _cancel_secondary_profile_reconnect_tasks(self):
         pass
 
-    async def _drain_active_agents(self, timeout, cron_timeout=None):
+    async def _drain_active_agents(self, timeout, cron_timeout=None, **kwargs):
         return {}, False
 
     async def _finalize_shutdown_agents(self, agents):

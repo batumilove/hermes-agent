@@ -696,16 +696,14 @@ def _find_mutation(command: str, cwd: Path, root: Path, depth: int = 0) -> str |
 
 
 def guard_active() -> bool:
-    """Whether the self-repo git guard applies on this platform.
+    """The live source checkout is never a general-purpose deployment path.
 
-    Windows-only: NTFS locks loaded .py/.pyd files and an in-place overwrite
-    of the live checkout can corrupt the running process. On POSIX, open file
-    handles keep the old inode alive, so a checkout swap under a running
-    process is safe — already-imported modules keep executing the old code
-    and the mixed-module hazard is limited to later lazy imports, which is
-    not worth blocking every git workflow for.
+    Mutating it through an agent terminal races finite observations and can
+    mix lazily imported modules on every platform.  Authorized deployments
+    must use the installed lifecycle controller, which acquires the common
+    lease; ordinary work belongs in a separate worktree.
     """
-    return os.name == "nt"
+    return True
 
 
 def detect_self_repo_git_mutation(

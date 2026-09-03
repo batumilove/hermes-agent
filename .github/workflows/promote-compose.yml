@@ -1,0 +1,35 @@
+name: Promote or roll back Hermes deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        required: true
+        type: choice
+        options: [batumi-staging, batumi-production]
+      operation:
+        required: true
+        type: choice
+        options: [deploy, rollback]
+      image_digest:
+        description: Exact immutable target digest for deploy or rollback
+        required: true
+        type: string
+      source_sha:
+        description: Exact source commit represented by the digest
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    uses: batumilove/hermes-ops/.github/workflows/compose-deploy.yml@00047fd62468b7785f82dfaf688006f0433d6bfa
+    with:
+      environment: ${{ inputs.environment }}
+      operation: ${{ inputs.operation }}
+      image_digest: ${{ inputs.image_digest }}
+      source_sha: ${{ inputs.source_sha }}
+      ops_sha: 00047fd62468b7785f82dfaf688006f0433d6bfa
+    secrets: inherit

@@ -11,6 +11,7 @@ import re
 import sys
 import threading
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -52,6 +53,22 @@ from cron.jobs import (
     resume_job,
     update_job,
 )
+
+
+def _gateway_cron_fire_admission():
+    """Return the gateway admission fence, or an open fence for standalone CLI.
+
+    ``tools.cronjob_tools`` is also used without the gateway runtime installed
+    or imported. Only that exact absence falls back; dependency/import failures
+    inside an available gateway remain fail-closed and propagate.
+    """
+    try:
+        from gateway.run import gateway_cron_fire_admission
+    except ModuleNotFoundError as exc:
+        if exc.name != "gateway.run":
+            raise
+        return nullcontext(True)
+    return gateway_cron_fire_admission()
 
 
 def _notify_provider_jobs_changed_safe() -> None:
@@ -739,9 +756,34 @@ def _execute_job_now(
     """
     job_id = job["id"]
     claimed_job = None
+    pre_registered = False
     try:
+        from cron.scheduler import try_register_running_job
+
         # At-most-once claim: bail without running if a tick/other fire owns it.
-        claimed_job = claim_job_for_fire(job_id, return_job=True)
+        # The gateway fence linearizes claim commit against shutdown admission
+        # closure, so an already-running turn cannot add fresh drain-blocking
+        # work after SIGTERM/restart drain begins. Standalone CLI execution uses
+        # an explicitly open local fence when gateway.run is absent.
+        with _gateway_cron_fire_admission() as admitted:
+            if not admitted:
+                return {
+                    "claimed": False,
+                    "success": False,
+                    "error": "Gateway is draining; manual cron run was not admitted.",
+                }
+            claimed_job = claim_job_for_fire(job_id, return_job=True)
+            if isinstance(claimed_job, dict):
+                if not try_register_running_job(job_id):
+                    return {
+                        "claimed": True,
+                        "success": False,
+                        "error": (
+                            "Job is already running (a scheduler tick or another "
+                            "manual run is executing it); not started again."
+                        ),
+                    }
+                pre_registered = True
         if not isinstance(claimed_job, dict):
             # claim_job_for_fire returns False for paused/disabled/missing
             # jobs too — don't mislabel those as "already being fired"
@@ -757,32 +799,51 @@ def _execute_job_now(
             return {"claimed": False, "success": False, "error": reason}
     except Exception as e:
         logger.error("Failed to claim cron job %s for immediate run: %s", job_id, e)
+        if pre_registered:
+            try:
+                from cron.scheduler import release_running_job
+
+                release_running_job(job_id)
+            except Exception:
+                pass
         try:
             mark_job_run(job_id, False, str(e))
         except Exception:
             pass
         return {"claimed": True, "success": False, "error": str(e)}
 
-    return _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
+    return _run_claimed_job(
+        claimed_job,
+        extra_prompt=extra_prompt,
+        pre_registered=pre_registered,
+    )
 
 
 def _run_claimed_job(
-    job: Dict[str, Any], extra_prompt: Optional[str] = None
+    job: Dict[str, Any],
+    extra_prompt: Optional[str] = None,
+    *,
+    pre_registered: bool = False,
 ) -> Dict[str, Any]:
     """Fire an already-claimed job through the shared ``run_one_job`` body.
 
     Split out of ``_execute_job_now`` so the background dispatch path
     (``_try_dispatch_background_run``) can take the claim synchronously — so
     the tool response can report "paused"/"already firing" immediately — and
-    hand the actual run to a daemon worker.
+    hand the actual run to a daemon worker. ``pre_registered`` means the
+    admission caller already inserted the job into the scheduler's running set
+    before releasing the gateway admission fence; this function then owns and
+    releases that registration.
 
     Returns {"claimed": True, "success": bool, "error": str|None}.
     """
     job_id = job["id"]
-    _registered = False
+    _registered = pre_registered
     fire_owner = None
     try:
+        from cron.executions import create_execution
         from cron.scheduler import (
+            bind_running_job_execution,
             release_running_job,
             run_one_job,
             try_register_running_job,
@@ -795,22 +856,30 @@ def _run_claimed_job(
         # running set — the same guard _submit_with_guard uses — which also
         # makes this run visible to the gateway shutdown drain
         # (get_running_job_ids, #60432) and mark_running_jobs_interrupted.
-        if not try_register_running_job(job_id):
-            return {
-                "claimed": True,
-                "success": False,
-                "error": (
-                    "Job is already running (a scheduler tick or another "
-                    "manual run is executing it); not started again."
-                ),
-            }
-        _registered = True
+        if not _registered:
+            if not try_register_running_job(job_id):
+                return {
+                    "claimed": True,
+                    "success": False,
+                    "error": (
+                        "Job is already running (a scheduler tick or another "
+                        "manual run is executing it); not started again."
+                    ),
+                }
+            _registered = True
 
         claim = job.get("fire_claim")
         fire_owner = str(claim.get("by") or "") if isinstance(claim, dict) else None
 
         # run_one_job records last_run_at/last_status via mark_job_run (which
         # also clears the fire claim) and returns True iff it processed the job.
+        execution = create_execution(
+            job_id,
+            source="manual",
+            trigger_origin="manual",
+        )
+        bind_running_job_execution(job_id, execution["id"])
+
         # ``job`` here is the exact claimed snapshot (owner-bearing), so the
         # shared body fences every terminal write by that owner.
         #
@@ -886,16 +955,16 @@ def _run_claimed_job(
         gateway_loop = getattr(runner, "_gateway_loop", None) if runner is not None else None
 
         try:
-            try:
-                processed = run_one_job(
-                    job, adapters=adapters, loop=gateway_loop,
-                    extra_prompt=extra_prompt,
-                )
-            finally:
-                _heartbeat_stop.set()
-                if _heartbeat_thread is not None:
-                    _heartbeat_thread.join(timeout=_CRON_RUN_HEARTBEAT_INTERVAL + 1)
+            processed = run_one_job(
+                dict(job, execution_id=execution["id"]),
+                adapters=adapters,
+                loop=gateway_loop,
+                extra_prompt=extra_prompt,
+            )
         finally:
+            _heartbeat_stop.set()
+            if _heartbeat_thread is not None:
+                _heartbeat_thread.join(timeout=_CRON_RUN_HEARTBEAT_INTERVAL + 1)
             _registered = False
             release_running_job(job_id)
         refreshed = get_job(job_id) or {}
@@ -1011,33 +1080,30 @@ def _try_dispatch_background_run(
     job_id = job["id"]
     job_name = str(job.get("name") or job_id)
 
-    # Reap any execution row this job (or any job) left stranded 'claimed'/
-    # 'running' by a dead owner process -- e.g. a PRIOR one-shot `hermes
-    # cron run` invocation whose dispatched runner died with the exiting
-    # process before writing a terminal status (issue #86721). The
-    # long-lived scheduler ticker already does this once at its own
-    # startup (cron/scheduler.py's self.recover_interrupted()); a one-shot
-    # CLI invocation has no equivalent "startup" moment of its own, so it
-    # never got this self-heal -- leaving a permanently-stale claim that
-    # blocked every subsequent manual run on the same job. Safe and cheap:
-    # only provably-dead owners (PID gone, or PID reused by a different
-    # process per its start time) are reaped; a genuinely live owner's row
-    # is left untouched.
-    try:
-        from cron.executions import recover_interrupted_executions
+    # Reap stale ownership before the routing early return, preserving the
+    # standalone/direct-caller contract. This mutation is itself admission
+    # fenced; if drain closes after this block, the later claim fence rejects
+    # the run before any additional cron state is changed.
+    with _gateway_cron_fire_admission() as admitted:
+        if not admitted:
+            return {
+                "claimed": False,
+                "success": False,
+                "error": "Gateway is draining; manual cron run was not admitted.",
+            }
+        try:
+            from cron.executions import recover_interrupted_executions
 
-        _reclaimed = recover_interrupted_executions()
-        if _reclaimed:
-            logger.warning(
-                "Reclaimed %d stale cron execution(s) from dead owner(s) "
-                "before dispatching job '%s'",
-                _reclaimed,
-                job_name,
-            )
-    except Exception as _reap_exc:
-        # Best-effort self-heal; a failure here must not block dispatch —
-        # but stay diagnosable (mirrors the scheduler tick's reap handling).
-        logger.debug("Stale execution reclaim failed: %s", _reap_exc)
+            reclaimed = recover_interrupted_executions()
+            if reclaimed:
+                logger.warning(
+                    "Reclaimed %d stale cron execution(s) from dead owner(s) "
+                    "before dispatching job '%s'",
+                    reclaimed,
+                    job_name,
+                )
+        except Exception as reap_exc:
+            logger.debug("Stale execution reclaim failed: %s", reap_exc)
 
     # ---- routing capture (on THIS thread; contextvars don't cross the pool) ----
     # Resolved BEFORE the claim: with no routable session there is no durable
@@ -1061,11 +1127,13 @@ def _try_dispatch_background_run(
         return None
 
     # ---- synchronous claim (same semantics as _execute_job_now) ----
+    claimed_job = None
+    pre_registered = False
     try:
         # Best-effort early dedupe so a mid-run job reports in THIS tool
         # response instead of as a delayed error completion event. The
-        # authoritative (atomic) check is try_register_running_job inside
-        # _run_claimed_job on the worker.
+        # authoritative (atomic) check is try_register_running_job in the
+        # admission critical section below.
         try:
             from cron.scheduler import get_running_job_ids
 
@@ -1083,7 +1151,30 @@ def _try_dispatch_background_run(
 
         # Same snapshot claim as _execute_job_now: carry the owner-bearing
         # record into the run so terminal writes stay fenced by this owner.
-        claimed_job = claim_job_for_fire(job_id, return_job=True)
+        # Registration occurs before releasing the claim admission lock, making
+        # the accepted run visible to shutdown with no claim→tracking gap.
+        with _gateway_cron_fire_admission() as admitted:
+            if not admitted:
+                return {
+                    "claimed": False,
+                    "success": False,
+                    "error": "Gateway is draining; manual cron run was not admitted.",
+                }
+
+            claimed_job = claim_job_for_fire(job_id, return_job=True)
+            if isinstance(claimed_job, dict):
+                from cron.scheduler import try_register_running_job
+
+                if not try_register_running_job(job_id):
+                    return {
+                        "claimed": True,
+                        "success": False,
+                        "error": (
+                            "Job is already running (a scheduler tick or another "
+                            "manual run is executing it); not started again."
+                        ),
+                    }
+                pre_registered = True
         if not isinstance(claimed_job, dict):
             refreshed = get_job(job_id)
             if refreshed is None:
@@ -1095,6 +1186,13 @@ def _try_dispatch_background_run(
             return {"claimed": False, "success": False, "error": reason}
     except Exception as e:
         logger.error("Failed to claim cron job %s for background run: %s", job_id, e)
+        if pre_registered:
+            try:
+                from cron.scheduler import release_running_job
+
+                release_running_job(job_id)
+            except Exception:
+                pass
         try:
             mark_job_run(job_id, False, str(e))
         except Exception:
@@ -1121,7 +1219,11 @@ def _try_dispatch_background_run(
             "cronjob run: async delegation registry unavailable (%s); "
             "running job '%s' inline.", e, job_name,
         )
-        result = _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
+        result = _run_claimed_job(
+            claimed_job,
+            extra_prompt=extra_prompt,
+            pre_registered=pre_registered,
+        )
         result["dispatched"] = False
         return result
 
@@ -1136,7 +1238,11 @@ def _try_dispatch_background_run(
     deliver = job.get("deliver", "local")
 
     def _runner() -> Dict[str, Any]:
-        res = _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
+        res = _run_claimed_job(
+            claimed_job,
+            extra_prompt=extra_prompt,
+            pre_registered=pre_registered,
+        )
         duration = round(time.time() - started_at, 2)
         refreshed = get_job(job_id) or {}
         lines = [
@@ -1164,22 +1270,38 @@ def _try_dispatch_background_run(
             "duration_seconds": duration,
         }
 
-    dispatch = dispatch_async_delegation(
-        goal=f"Manual run of cron job '{job_name}' ({job_id})",
-        context=(
-            "Triggered via cronjob(action='run'). The job executed in its own "
-            "fresh cron session; this block reports its outcome."
-        ),
-        toolsets=None,
-        role="cron_run",
-        model=job.get("model"),
-        session_key=session_key,
-        parent_session_id=str(session_id) if session_id else None,
-        runner=_runner,
-        origin_ui_session_id=origin_ui_session_id,
-        origin_session_id=origin_session_id,
-        max_async_children=max_async,
-    )
+    try:
+        dispatch = dispatch_async_delegation(
+            goal=f"Manual run of cron job '{job_name}' ({job_id})",
+            context=(
+                "Triggered via cronjob(action='run'). The job executed in its own "
+                "fresh cron session; this block reports its outcome."
+            ),
+            toolsets=None,
+            role="cron_run",
+            model=job.get("model"),
+            session_key=session_key,
+            parent_session_id=str(session_id) if session_id else None,
+            runner=_runner,
+            origin_ui_session_id=origin_ui_session_id,
+            origin_session_id=origin_session_id,
+            max_async_children=max_async,
+        )
+    except Exception as exc:
+        # The running-set registration is already visible to shutdown. Preserve
+        # that ownership and execute inline rather than leaking the admitted run.
+        logger.warning(
+            "cronjob run: async delegation dispatch failed (%s); running job '%s' inline.",
+            exc,
+            job_name,
+        )
+        result = _run_claimed_job(
+            claimed_job,
+            extra_prompt=extra_prompt,
+            pre_registered=pre_registered,
+        )
+        result["dispatched"] = False
+        return result
 
     if dispatch.get("status") == "dispatched":
         return {
@@ -1194,7 +1316,11 @@ def _try_dispatch_background_run(
         "cronjob run: background pool unavailable (%s); running job '%s' inline.",
         dispatch.get("error", "rejected"), job_name,
     )
-    result = _run_claimed_job(job, extra_prompt=extra_prompt)
+    result = _run_claimed_job(
+        claimed_job,
+        extra_prompt=extra_prompt,
+        pre_registered=pre_registered,
+    )
     result["dispatched"] = False
     return result
 

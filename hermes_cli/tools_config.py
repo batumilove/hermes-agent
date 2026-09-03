@@ -2071,17 +2071,16 @@ def _run_post_setup(post_setup_key: str):
             _print_info("    Run manually: hermes auth spotify")
 
     elif post_setup_key == "langfuse":
-        # Install the langfuse SDK.
+        # Install the exact-pinned SDK through the lazy-dependency framework so
+        # plugin startup can deterministically rehydrate it after exact uv sync.
         try:
-            __import__("langfuse")
-            _print_success("    langfuse SDK already installed")
-        except ImportError:
-            _print_info("    Installing langfuse SDK...")
-            result = _pip_install(["langfuse", "--quiet"], timeout=120)
-            if result.returncode == 0:
-                _print_success("    langfuse SDK installed")
-            else:
-                _print_warning("    langfuse SDK install failed — run manually: uv pip install langfuse")
+            from tools.lazy_deps import ensure
+
+            ensure("observability.langfuse", prompt=False)
+            _print_success("    langfuse SDK installed")
+        except Exception as exc:
+            _print_warning(f"    langfuse SDK install failed: {exc}")
+            _print_info("    Retry with: hermes tools post-setup langfuse")
         # Opt the bundled observability/langfuse plugin into plugins.enabled.
         # The plugin ships in the repo but doesn't load until the user enables
         # it (standalone plugins are opt-in).
@@ -2305,12 +2304,9 @@ def enabled_mcp_server_names(config: dict) -> Set[str]:
         and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
     }
     try:
-        from hermes_cli.plugins import (
-            get_plugin_manager,
-            get_portable_mcp_server_names_nowait,
-        )
+        from hermes_cli.plugins import get_portable_mcp_server_names_nowait
 
-        portable = get_portable_mcp_server_names_nowait()
+        portable = set(get_portable_mcp_server_names_nowait())
         # Native config wins on a name collision (mirrors _load_mcp_config).
         names |= portable - set(mcp_servers)
     except Exception:

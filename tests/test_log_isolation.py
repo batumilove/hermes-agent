@@ -20,6 +20,8 @@ guards the property so a refactor cannot quietly undo it.
 
 import logging
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -63,6 +65,33 @@ def _all_file_destinations() -> list[str]:
 
 
 class TestLogIsolation:
+    def test_inherited_hermes_home_is_replaced_before_collection(self, tmp_path):
+        inherited_home = tmp_path / "operator-hermes-home"
+        inherited_home.mkdir()
+        env = dict(os.environ)
+        env["HERMES_HOME"] = str(inherited_home)
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-o",
+                "addopts=",
+                "-q",
+                "tests/hermes_home_isolation_probe.py",
+            ],
+            cwd=Path(__file__).resolve().parents[1],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert not (inherited_home / "cron" / "executions.db").exists()
+
     def test_hermes_home_is_sandboxed_before_imports(self):
         # Deliberately NOT os.environ: by test time the per-test `_isolate_env`
         # fixture has sandboxed HERMES_HOME, so reading it here would pass even

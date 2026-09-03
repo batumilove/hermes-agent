@@ -10,11 +10,26 @@ def _load_optional_dependencies():
     return project["optional-dependencies"]
 
 
-def _load_package_data():
+def _load_setuptools():
     pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
     with pyproject_path.open("rb") as handle:
         tool = tomllib.load(handle)["tool"]
-    return tool["setuptools"]["package-data"]
+    return tool["setuptools"]
+
+
+def _load_package_data():
+    return _load_setuptools()["package-data"]
+
+
+def test_plugin_registration_lifecycle_flat_module_is_packaged():
+    """The plugin hub must import after an editable or wheel installation.
+
+    ``hermes_cli.plugins`` imports the top-level ``registration_lifecycle``
+    module. Setuptools only includes explicitly declared flat modules, so an
+    omitted entry passes source-tree tests but fails from a neutral directory
+    after installation.
+    """
+    assert _load_setuptools()["py-modules"].count("registration_lifecycle") == 1
 
 
 def test_matrix_extra_not_in_all():
@@ -86,6 +101,23 @@ def test_lazy_installable_extras_excluded_from_all():
             f"Remove it from [all] in pyproject.toml — it lazy-installs "
             f"at first use. Found in [all]: {offending}"
         )
+
+
+def test_langfuse_plugin_dependency_is_pinned_and_lazy_installable():
+    """An enabled Langfuse plugin must survive exact uv reconciliation.
+
+    Langfuse is opt-in, so it must remain outside ``[all]``. It still needs
+    one exact pin shared by the explicit extra, the lazy-install allowlist,
+    and the lockfile; otherwise ``uv sync --locked`` removes the SDK and the
+    bundled plugin silently becomes inert on the next gateway restart.
+    """
+    from tools.lazy_deps import LAZY_DEPS
+
+    optional_dependencies = _load_optional_dependencies()
+    assert optional_dependencies["langfuse"] == ["langfuse==4.6.1"]
+    assert LAZY_DEPS["observability.langfuse"] == ("langfuse==4.6.1",)
+    assert "hermes-agent[langfuse]" not in optional_dependencies["all"]
+    assert _uv_lock_version("langfuse") == "4.6.1"
 
 
 def _exact_pins(specs):

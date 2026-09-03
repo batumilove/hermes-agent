@@ -2925,38 +2925,45 @@ class MCPServerTask:
         reconnect, drops the stale session reference so the caller's normal
         no-session path takes over, and returns False. Never raises.
         """
-        reason = self._suspect_reason
-        if not reason:
+        if not self._suspect_reason:
             return True
-        if self.session is None:
-            # Nothing to verify — the reconnect path owns recovery now.
-            self._suspect_reason = None
-            self._reconnect_event.set()
-            return False
-        try:
-            await asyncio.wait_for(self._keepalive_probe(), timeout=timeout)
-        except Exception as exc:
-            root = _unwrap_exception_group(exc)
-            logger.warning(
-                "MCP server '%s': suspect connection (%s) failed health "
-                "check (%s: %s) — requesting reconnect (state: suspect → "
-                "degraded)",
-                self.name, reason, type(root).__name__, root,
+        # The probe is itself an MCP request. Serialize it with ordinary RPCs
+        # so response-stream reads cannot race or be consumed out of order.
+        async with self._rpc_lock:
+            # A concurrent caller may have cleared suspicion while this caller
+            # waited for the active RPC to release the lock.
+            reason = self._suspect_reason
+            if not reason:
+                return True
+            if self.session is None:
+                # Nothing to verify — the reconnect path owns recovery now.
+                self._suspect_reason = None
+                self._reconnect_event.set()
+                return False
+            try:
+                await asyncio.wait_for(self._keepalive_probe(), timeout=timeout)
+            except Exception as exc:
+                root = _unwrap_exception_group(exc)
+                logger.warning(
+                    "MCP server '%s': suspect connection (%s) failed health "
+                    "check (%s: %s) — requesting reconnect (state: suspect → "
+                    "degraded)",
+                    self.name, reason, type(root).__name__, root,
+                )
+                self._suspect_reason = None
+                self.mark_suspect(f"health check failed after {reason}")
+                self.session = None
+                self._ready.clear()
+                self._reconnect_event.set()
+                return False
+            logger.info(
+                "MCP server '%s': suspect connection passed health check "
+                "(%s) — clearing suspicion",
+                self.name, reason,
             )
             self._suspect_reason = None
-            self.mark_suspect(f"health check failed after {reason}")
-            self.session = None
-            self._ready.clear()
-            self._reconnect_event.set()
-            return False
-        logger.info(
-            "MCP server '%s': suspect connection passed health check "
-            "(%s) — clearing suspicion",
-            self.name, reason,
-        )
-        self._suspect_reason = None
-        self._mark_session_proven()
-        return True
+            self._mark_session_proven()
+            return True
 
     def _fail_inflight_calls(self, reason: str) -> None:
         """Cancel every in-flight RPC attached to this connection.
@@ -2987,15 +2994,15 @@ class MCPServerTask:
         pids = getattr(self, "_stdio_child_pids", None)
         if not pids or self._is_http():
             return False
-        for pid in pids:
-            # windows-footgun: ok — psutil.pid_exists handles Windows; the
-            # os.kill probe below only runs when psutil is unavailable.
+        try:
             import psutil
-
-            if not psutil.pid_exists(pid):
-                continue  # this one is dead
-            return True  # alive (signal permission irrelevant for liveness)
-            return False  # at least one child alive
+        except Exception:
+            # Liveness is unknown without psutil; do not fail a live call.
+            return False
+        for pid in pids:
+            # windows-footgun: ok — psutil.pid_exists handles Windows.
+            if psutil.pid_exists(pid):
+                return False  # at least one child is alive
         return True
 
     async def _watch_stdio_children(self) -> None:
@@ -3987,6 +3994,9 @@ class MCPServerTask:
         backoff = 1.0
 
         while True:
+            # Teardown cancellation applies only to the transport cycle that
+            # set the marker; a fresh cycle must preserve caller cancellation.
+            self._reconnecting = False
             try:
                 if self._is_http():
                     lifecycle_reason = await self._run_http(config)
@@ -6011,7 +6021,8 @@ def _ensure_healthy_or_recycle(server: Any, server_name: str) -> None:
     error is probed once; a failed probe recycles it so the call below hits
     the normal reconnect path. A HEALTHY connection is never recycled here.
     """
-    if not getattr(server, "_suspect_reason", None):
+    suspect_reason = getattr(server, "_suspect_reason", None)
+    if not isinstance(suspect_reason, str) or not suspect_reason:
         return
     with _lock:
         loop = _mcp_loop
@@ -6073,6 +6084,8 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         if not server:
             _bump_server_error(server_name)
             return tool_error(f"MCP server '{server_name}' is not connected")
+
+        _ensure_healthy_or_recycle(server, server_name)
 
         if not server.session:
             # No live session. A reconnect may already be completing (the
@@ -6136,7 +6149,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     _watch_children = getattr(server, "_watch_stdio_children", None)
                     _watch_ok = (
                         _watch_children is not None
-                        and inspect.isawaitable(_watch_children())
+                        and inspect.iscoroutinefunction(_watch_children)
                         and asyncio.iscoroutine(_call_coro)
                     )
                     if not _watch_ok:
@@ -6364,12 +6377,17 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
 
     def _handler(args: dict, **kwargs) -> str:
         server = _get_connected_server_for_call(server_name)
-        if not server or not server.session:
+        if not server:
+            return tool_error(f"MCP server '{server_name}' is not connected")
+        _ensure_healthy_or_recycle(server, server_name)
+        if not server.session:
             return tool_error(f"MCP server '{server_name}' is not connected")
 
         async def _call():
             _mark_server_call_started(server)
-            async with server._rpc_lock:
+            async with server._rpc_lock, _track_inflight_rpc(
+                server, server_name, "resources/list"
+            ):
                 all_resources = await _paginate_full_list(
                     server.session.list_resources, "resources", server_name
                 )
@@ -6423,7 +6441,10 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
 
     def _handler(args: dict, **kwargs) -> str:
         server = _get_connected_server_for_call(server_name)
-        if not server or not server.session:
+        if not server:
+            return tool_error(f"MCP server '{server_name}' is not connected")
+        _ensure_healthy_or_recycle(server, server_name)
+        if not server.session:
             return tool_error(f"MCP server '{server_name}' is not connected")
 
         uri = args.get("uri")
@@ -6432,7 +6453,9 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
 
         async def _call():
             _mark_server_call_started(server)
-            async with server._rpc_lock:
+            async with server._rpc_lock, _track_inflight_rpc(
+                server, server_name, "resources/read"
+            ):
                 result = await server.session.read_resource(uri)
             # read_resource returns ReadResourceResult with .contents list
             parts: List[str] = []
@@ -6484,12 +6507,17 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
 
     def _handler(args: dict, **kwargs) -> str:
         server = _get_connected_server_for_call(server_name)
-        if not server or not server.session:
+        if not server:
+            return tool_error(f"MCP server '{server_name}' is not connected")
+        _ensure_healthy_or_recycle(server, server_name)
+        if not server.session:
             return tool_error(f"MCP server '{server_name}' is not connected")
 
         async def _call():
             _mark_server_call_started(server)
-            async with server._rpc_lock:
+            async with server._rpc_lock, _track_inflight_rpc(
+                server, server_name, "prompts/list"
+            ):
                 all_prompts = await _paginate_full_list(
                     server.session.list_prompts, "prompts", server_name
                 )
@@ -6545,7 +6573,10 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
 
     def _handler(args: dict, **kwargs) -> str:
         server = _get_connected_server_for_call(server_name)
-        if not server or not server.session:
+        if not server:
+            return tool_error(f"MCP server '{server_name}' is not connected")
+        _ensure_healthy_or_recycle(server, server_name)
+        if not server.session:
             return tool_error(f"MCP server '{server_name}' is not connected")
 
         name = args.get("name")
@@ -6555,7 +6586,9 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
 
         async def _call():
             _mark_server_call_started(server)
-            async with server._rpc_lock:
+            async with server._rpc_lock, _track_inflight_rpc(
+                server, server_name, "prompts/get"
+            ):
                 result = await server.session.get_prompt(name, arguments=arguments)
             # GetPromptResult has .messages list
             messages = []

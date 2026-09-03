@@ -864,6 +864,8 @@ def init_agent(
     agent._executing_tools = False
     agent._tool_guardrails = ToolCallGuardrailController()
     agent._tool_guardrail_halt_decision: ToolGuardrailDecision | None = None
+    agent._cap_synthesis_mode = False
+    agent._cap_synthesis_consumed = False
 
     # Interrupt mechanism for breaking out of tool loops
     agent._interrupt_requested = False
@@ -908,6 +910,9 @@ def init_agent(
     agent._delegate_depth = 0        # 0 = top-level agent, incremented for children
     agent._active_children = []      # Running child AIAgents (for interrupt propagation)
     agent._active_children_lock = threading.Lock()
+    # Context engines are owned per Python agent.  Cleanup may race between a
+    # cache-eviction worker and hard session teardown, so claim shutdown once.
+    agent._context_engine_shutdown_lock = threading.Lock()
 
     # Background memory/skill review state (agent/background_review.py).
     # ``_background_review_run`` is installed before the worker starts and
@@ -1318,9 +1323,7 @@ def init_agent(
                 client_kwargs["default_headers"] = _ra()._qwen_portal_headers()
             elif base_url_host_matches(effective_base, "chatgpt.com"):
                 from agent.auxiliary_client import _codex_cloudflare_headers
-                client_kwargs["default_headers"] = _codex_cloudflare_headers(
-                    api_key, base_url=effective_base,
-                )
+                client_kwargs["default_headers"] = _codex_cloudflare_headers(api_key)
             elif base_url_host_matches(effective_base, "x.ai"):
                 from tools.xai_http import hermes_xai_default_headers
 
@@ -1870,6 +1873,7 @@ def init_agent(
     # Memory provider plugin (external — one at a time, alongside built-in)
     # Reads memory.provider from config to select which plugin to activate.
     agent._memory_manager = None
+    agent._memory_manager_release_lock = threading.Lock()
     if not skip_memory:
         try:
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""

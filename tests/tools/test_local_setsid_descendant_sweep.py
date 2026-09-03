@@ -11,11 +11,14 @@ outside the (now-dead) group with SIGKILL afterwards.
 
 import os
 import signal
+import sys
 import textwrap
 import time
 from types import SimpleNamespace
 
 import pytest
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="requires POSIX process groups")
 
 from tools.environments.local import LocalEnvironment
 

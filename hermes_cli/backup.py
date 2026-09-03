@@ -867,6 +867,21 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
 # Import
 # ---------------------------------------------------------------------------
 
+_IMPORT_COPY_CHUNK_SIZE = 1024 * 1024
+
+
+def _restore_zip_file(zf: zipfile.ZipFile, member: str, target: Path) -> None:
+    """Stream one ZIP member to disk and restore safe POSIX permission bits."""
+    info = zf.getinfo(member)
+    with zf.open(info) as src, open(target, "wb") as dst:
+        shutil.copyfileobj(src, dst, length=_IMPORT_COPY_CHUNK_SIZE)
+
+    # Hermes-created archives retain Unix stat metadata. Restore only rwx bits:
+    # setuid/setgid/sticky and the archived file type are never trusted.
+    if os.name == "posix" and info.create_system == 3:
+        os.chmod(target, (info.external_attr >> 16) & 0o777)
+
+
 def _validate_backup_zip(zf: zipfile.ZipFile) -> tuple[bool, str]:
     """Check that a zip looks like a Hermes backup.
 
@@ -989,6 +1004,13 @@ def _extract_member_atomically(
     # cannot be stat'd), in which case the umask-derived create-mode applies —
     # the same shape as ``atomic_yaml_write``'s ``create_mode`` fallback.
     mode = _preserve_file_mode(target)
+    info = zf.getinfo(member)
+    archived_mode = (info.external_attr >> 16) if info.create_system == 3 else 0
+    # Hermes-authored archives record a real Unix file type.  Prefer their rwx
+    # bits over the destination's old mode, while ignoring the synthetic 0600
+    # metadata that ``ZipFile.writestr(name, ...)`` attaches without S_IFREG.
+    if stat.S_ISREG(archived_mode):
+        mode = stat.S_IMODE(archived_mode)
     owner = _preserve_file_owner(target)
     if mode is None:
         mode = new_file_mode

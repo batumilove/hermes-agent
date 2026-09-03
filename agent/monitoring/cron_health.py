@@ -23,7 +23,8 @@ from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
 _KNOWN_STATUSES = {"claimed", "running", "completed", "failed", "unknown"}
-_KNOWN_SOURCES = {"builtin", "direct", "external"}
+_KNOWN_SOURCES = {"builtin", "direct", "external", "manual"}
+_KNOWN_TRIGGER_ORIGINS = {"scheduled", "manual", "external", "catchup", "direct", "unknown"}
 _KNOWN_DELIVERY_OUTCOMES = {"delivered", "failed", "suppressed", "not_configured"}
 
 
@@ -94,11 +95,21 @@ def project_execution_event(
     source = str(record.get("source") or "unknown").lower()
     if source not in _KNOWN_SOURCES and source != "unknown":
         source = "external"
+    trigger_origin = str(record.get("trigger_origin") or "unknown").lower()
+    if trigger_origin not in _KNOWN_TRIGGER_ORIGINS:
+        trigger_origin = "unknown"
     outcome = str(delivery_outcome).lower() if delivery_outcome is not None else None
     return CronExecutionEvent(
         status=status if status in _KNOWN_STATUSES else "unknown",
         job_key=_job_key(record.get("job_id")),
         source=source if source in _KNOWN_SOURCES else "unknown",
+        trigger_origin=trigger_origin,
+        scheduled_for=(
+            str(record["scheduled_for"]) if record.get("scheduled_for") else None
+        ),
+        triggered_at=(
+            str(record["triggered_at"]) if record.get("triggered_at") else None
+        ),
         duration_ms=_duration_ms(record),
         delivery_outcome=(
             outcome if outcome in _KNOWN_DELIVERY_OUTCOMES else None

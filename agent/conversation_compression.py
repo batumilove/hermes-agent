@@ -79,6 +79,13 @@ from agent.session_activity import ActivityProvenance, normalize_activity_proven
 
 logger = logging.getLogger(__name__)
 
+# Private marker shared with ``run_agent.AIAgent`` persistence. Durable replay
+# rows adopted after lease acquisition are fresh dictionaries, so identity
+# comparison against the caller's stale ``conversation_history`` cannot prove
+# they already exist in SQLite. Stamp them before any abort/error exit can run
+# the normal append-only persistence path.
+_DB_PERSISTED_MARKER = "_db_persisted"
+
 # Terminal compression outcomes published by host/hygiene timeout or cooldown
 # writers. Detached heartbeat workers must not clobber these back to
 # agent.compression after cancel (otherwise timeout is unobservable). Observing
@@ -804,11 +811,16 @@ def resolve_context_compression_timeouts(
 
     ``idle_timeout_seconds <= 0`` disables the owned progress-aware wrapper.
     The ceiling is clamped to at least one idle window when the idle budget
-    is positive, matching gateway hygiene semantics.
+    is positive, matching gateway hygiene semantics. Runtime resolution also
+    raises a positive idle budget to the effective auxiliary compression
+    timeout: the host must not abandon a silent-but-still-valid summary call
+    before that call's own deadline. Passing an explicit config mapping keeps
+    this helper deterministic for validation and unit tests.
     """
     idle = DEFAULT_CONTEXT_TIMEOUT_SECONDS
     ceiling = DEFAULT_CONTEXT_TOTAL_CEILING_SECONDS
     cfg = compression_cfg
+    align_with_auxiliary_timeout = cfg is None
     if cfg is None:
         try:
             from hermes_cli.config import load_config
@@ -836,6 +848,21 @@ def resolve_context_compression_timeouts(
             except (TypeError, ValueError):
                 pass
     if idle > 0:
+        if align_with_auxiliary_timeout:
+            try:
+                from agent.auxiliary_client import _effective_aux_timeout
+
+                auxiliary_timeout = float(
+                    _effective_aux_timeout("compression", None)
+                )
+                if auxiliary_timeout > 0:
+                    idle = max(idle, auxiliary_timeout)
+            except Exception:
+                logger.debug(
+                    "Failed to align context compression timeout with "
+                    "auxiliary.compression timeout",
+                    exc_info=True,
+                )
         ceiling = max(ceiling, idle)
     return idle, ceiling
 
@@ -2937,6 +2964,13 @@ def compress_context(
                             len(messages),
                             len(durable_parent),
                         )
+                        # Every adopted row came from SQLite (including the
+                        # just-flushed tail). Mark the fresh dictionaries as
+                        # durable so later error persistence cannot append the
+                        # adopted transcript a second time.
+                        for durable_message in durable_parent:
+                            if isinstance(durable_message, dict):
+                                durable_message[_DB_PERSISTED_MARKER] = True
                         messages = durable_parent
                         _pre_msg_count = len(messages)
                         # Token estimate was for the stale snapshot; clear it so

@@ -9,5 +9,5 @@ import { isMacPlatform } from '@/lib/platform'
 export function isComposerChord(event: KeyboardEvent): boolean {
   const mod = isMacPlatform() ? event.metaKey : event.ctrlKey
 
-  return mod && !event.shiftKey && event.key.toLowerCase() === 'l'
+  return mod && !event.altKey && !event.shiftKey && !event.isComposing && event.key.toLowerCase() === 'l'
 }

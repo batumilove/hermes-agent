@@ -66,6 +66,94 @@ class TestStdioPidTracking:
         for pid in result:
             assert isinstance(pid, int)
 
+    def test_stdio_children_dead_is_false_while_any_child_is_alive(self):
+        from tools.mcp_tool import MCPServerTask
+
+        server = MCPServerTask("live-stdio")
+        server._config = {"command": "example-mcp"}
+        server._stdio_child_pids = {101, 102}
+
+        with patch("psutil.pid_exists", side_effect=lambda pid: pid == 102):
+            assert server._stdio_children_dead() is False
+
+    def test_stdio_children_dead_is_true_when_all_children_exited(self):
+        from tools.mcp_tool import MCPServerTask
+
+        server = MCPServerTask("dead-stdio")
+        server._config = {"command": "example-mcp"}
+        server._stdio_child_pids = {101, 102}
+
+        with patch("psutil.pid_exists", return_value=False):
+            assert server._stdio_children_dead() is True
+
+    def test_stdio_children_dead_fails_open_when_psutil_is_unavailable(self):
+        import sys
+        from tools.mcp_tool import MCPServerTask
+
+        server = MCPServerTask("unknown-stdio")
+        server._config = {"command": "example-mcp"}
+        server._stdio_child_pids = {101}
+
+        with patch.dict(sys.modules, {"psutil": None}):
+            assert server._stdio_children_dead() is False
+
+    def test_new_transport_cycle_clears_reconnect_teardown_marker(self):
+        from tools.mcp_tool import MCPServerTask
+
+        server = MCPServerTask("fresh-cycle")
+        server._reconnecting = True
+
+        observed_reconnecting = []
+
+        async def fake_run_stdio(active_server, _config):
+            assert active_server is server
+            observed_reconnecting.append(active_server._reconnecting)
+            active_server._shutdown_event.set()
+            return "shutdown"
+
+        async def run():
+            with patch.object(MCPServerTask, "_run_stdio", new=fake_run_stdio):
+                await server.run({"command": "example-mcp"})
+
+        asyncio.run(run())
+        assert observed_reconnecting == [False]
+
+    def test_suspect_health_probe_waits_for_active_rpc(self):
+        """A keepalive probe must not interleave with an MCP RPC stream."""
+        from tools.mcp_tool import MCPServerTask
+
+        async def run():
+            server = MCPServerTask("serialized-health-probe")
+            server.session = object()
+            server._suspect_reason = "prior timeout"
+            probe_started = asyncio.Event()
+            rpc_started = asyncio.Event()
+            release_rpc = asyncio.Event()
+
+            async def fake_probe(_server):
+                probe_started.set()
+
+            async def active_rpc():
+                async with server._rpc_lock:
+                    rpc_started.set()
+                    await release_rpc.wait()
+
+            rpc_task = asyncio.create_task(active_rpc())
+            await rpc_started.wait()
+            with patch.object(MCPServerTask, "_keepalive_probe", new=fake_probe):
+                health_task = asyncio.create_task(server.ensure_healthy())
+                # Give ensure_healthy and its wait_for-wrapped probe enough
+                # scheduler turns to start if it is not blocked on _rpc_lock.
+                for _ in range(3):
+                    await asyncio.sleep(0)
+                assert not probe_started.is_set()
+                release_rpc.set()
+                await rpc_task
+                assert await health_task is True
+                assert probe_started.is_set()
+
+        asyncio.run(run())
+
 
     def test_kill_orphaned_handles_dead_pids(self):
         """_kill_orphaned_mcp_children gracefully handles already-dead PIDs."""

@@ -1191,24 +1191,29 @@ class MemoryManager:
                     provider.name, e,
                 )
 
-    def shutdown_all(self) -> None:
-        """Shut down all providers (reverse order for clean teardown).
+    def shutdown_all(self) -> bool:
+        """Shut down all providers and report whether teardown completed.
 
         Drains the background sync/prefetch executor first (bounded by
         ``_SYNC_DRAIN_TIMEOUT_S``) so a turn's final sync has a chance to
-        land before providers are torn down. The worker threads are
-        daemon, so anything still wedged past the drain window dies with
-        the interpreter rather than blocking exit.
+        land before providers are torn down. Provider exceptions remain logged
+        and isolated, but the false return lets an owning cache-eviction path
+        retain the manager for retry instead of silently orphaning workers.
         """
         self._drain_sync_executor()
+        if self.shutdown_drain_state.get("status") == "timed_out":
+            return False
+        success = True
         for provider in reversed(self._providers):
             try:
                 provider.shutdown()
             except Exception as e:
+                success = False
                 logger.warning(
                     "Memory provider '%s' shutdown failed: %s",
                     provider.name, e,
                 )
+        return success
 
     @property
     def shutdown_drain_state(self) -> Dict[str, Any]:
@@ -1224,18 +1229,19 @@ class MemoryManager:
             self._sync_executor = None
             tracked = dict(self._background_futures)
             self._shutdown_drain_state = {
-                "status": "draining" if executor is not None else "drained",
+                "status": "draining" if tracked else "drained",
                 "abandoned_writes": 0,
                 "abandoned_prefetches": 0,
                 "active_tasks": sum(not future.done() for future in tracked),
             }
-        if executor is None:
+        if not tracked:
             return
 
         # shutdown(wait=False) closes submission without touching the FIFO.
         # Waiting on the tracked futures lets the real single-worker executor
         # run every queued write/boundary task in order up to the deadline.
-        executor.shutdown(wait=False, cancel_futures=False)
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=False)
         _, pending = wait(tuple(tracked), timeout=_SYNC_DRAIN_TIMEOUT_S)
         if not pending:
             with self._sync_executor_lock:

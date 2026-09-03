@@ -45,41 +45,59 @@ def db(tmp_path):
 class TestTryWalCheckpointPassive:
     """_try_wal_checkpoint() should use PASSIVE mode for periodic use."""
 
-    def test_checkpoint_uses_passive_mode(self, db):
-        """PASSIVE checkpoint does not require exclusive lock — safe for large DBs."""
-        # Capture the real connection's execute before mocking
-        real_conn = db._conn
-        execute_calls = []
+    def test_checkpoint_uses_passive_mode(self, db, monkeypatch):
+        """PASSIVE checkpoint does not require exclusive lock — safe for large DBs.
 
-        def tracking_execute(sql, *args, **kwargs):
-            execute_calls.append(sql)
-            return real_conn.execute(sql, *args, **kwargs)
+        _checkpoint_now opens its own short-lived connection on the
+        dedicated worker (writer-owned self._conn is never touched
+        cross-thread). The PASSIVE-vs-TRUNCATE choice lives inside
+        _checkpoint_now itself: assert directly on the SQL it runs against
+        a real temporary database.
+        """
+        sql_seen = []
+        real_connect = sqlite3.connect
 
-        # sqlite3.Connection.execute is read-only (C extension) — replace _conn
-        mock_conn = MagicMock()
-        mock_conn.execute.side_effect = tracking_execute
-        mock_conn.fetchone.return_value = None
-        db._conn = mock_conn
+        class RecordingConnection:
+            def __init__(self, inner):
+                self._inner = inner
 
-        db._try_wal_checkpoint()
+            def execute(self, sql, *a, **k):
+                sql_seen.append(sql)
+                return self._inner.execute(sql, *a, **k)
 
-        passive_calls = [c for c in execute_calls if "wal_checkpoint(PASSIVE)" in c]
-        truncate_calls = [c for c in execute_calls if "wal_checkpoint(TRUNCATE)" in c]
+            def close(self):
+                return self._inner.close()
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+        def spy_connect(*args, **kwargs):
+            return RecordingConnection(real_connect(*args, **kwargs))
+
+        import hermes_state
+        monkeypatch.setattr(hermes_state.sqlite3, "connect", spy_connect)
+
+        db._checkpoint_now()
+
+        passive_calls = [c for c in sql_seen if "wal_checkpoint(PASSIVE)" in c]
+        truncate_calls = [c for c in sql_seen if "wal_checkpoint(TRUNCATE)" in c]
         assert len(passive_calls) == 1, (
-            f"Expected 1 PASSIVE checkpoint call, got {len(passive_calls)}"
+            f"Expected 1 PASSIVE checkpoint call, got {len(passive_calls)}: {sql_seen}"
         )
         assert len(truncate_calls) == 0, (
             "Periodic checkpoint should NOT use TRUNCATE"
         )
 
-    def test_checkpoint_logs_warning_on_failure(self, db, caplog):
+    def test_checkpoint_logs_warning_on_failure(self, db, caplog, monkeypatch):
         """Failed PASSIVE checkpoint logs a warning instead of silent pass."""
-        mock_conn = MagicMock()
-        mock_conn.execute.side_effect = sqlite3.OperationalError("disk I/O error")
-        db._conn = mock_conn
+
+        def broken_connect(*args, **kwargs):
+            raise sqlite3.OperationalError("disk I/O error")
+
+        monkeypatch.setattr(sqlite3, "connect", broken_connect)
 
         with caplog.at_level(logging.WARNING):
-            db._try_wal_checkpoint()
+            db._checkpoint_now()  # must catch + log, never raise
 
         assert any("WAL checkpoint (PASSIVE) failed" in r.message for r in caplog.records), (
             f"Expected warning log about PASSIVE checkpoint failure, got: {caplog.text}"

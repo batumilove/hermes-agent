@@ -459,6 +459,226 @@ def test_background_review_registers_before_start_runs_and_cleans_up(monkeypatch
     assert agent._active_children == []
 
 
+def test_background_review_tracking_updates_are_atomic(monkeypatch):
+    """Pointer and child-list ownership must share one nested lock section."""
+    events = []
+    seen = {}
+
+    class TraceLock:
+        def __init__(self, name):
+            self.name = name
+
+        def __enter__(self):
+            events.append(f"{self.name}:enter")
+            return self
+
+        def __exit__(self, *_exc):
+            events.append(f"{self.name}:exit")
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            seen["registration"] = list(events)
+
+        def shutdown_memory_provider(self):
+            seen["after_unregistration"] = list(events)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent._background_review_lock = TraceLock("background")
+    agent._active_children_lock = TraceLock("children")
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    nested = [
+        "background:enter",
+        "children:enter",
+        "children:exit",
+        "background:exit",
+    ]
+    # The spawn-side run-token prepare (prepare_background_review_run) may
+    # take the background lock once before the thread target runs; the
+    # ownership contract under test is that registration and unregistration
+    # each hold both locks in the canonical nested order.
+    registration = seen["registration"]
+    while registration and registration[0] in ("background:enter", "background:exit") and (
+        registration[:2] == ["background:enter", "background:exit"]
+    ):
+        registration = registration[2:]
+    assert registration == nested
+    after = seen["after_unregistration"]
+    prefix = seen["registration"][: len(seen["registration"]) - len(registration)]
+    # after_unregistration is captured later; it may additionally include the
+    # spawn-prepare pair and any finish_background_review_run lock pair taken
+    # between the two snapshots. Strip any background-only prefix/suffix pairs
+    # and require the two nested ownership sections to remain intact.
+    def _strip_bg_pairs(seq):
+        while len(seq) >= 2 and seq[:2] == ["background:enter", "background:exit"]:
+            seq = seq[2:]
+        while len(seq) >= 2 and seq[-2:] == ["background:enter", "background:exit"]:
+            seq = seq[:-2]
+        return seq
+
+    assert _strip_bg_pairs(after) == nested + nested
+
+
+def test_cache_eviction_interrupts_review_without_tearing_down_worker_resources():
+    """Cache eviction atomically claims tracking and leaves cleanup to worker."""
+    events = []
+
+    class TraceLock:
+        def __init__(self, name):
+            self.name = name
+
+        def __enter__(self):
+            events.append((f"{self.name}:enter", None))
+            return self
+
+        def __exit__(self, *_exc):
+            events.append((f"{self.name}:exit", None))
+
+    class FakeReviewAgent:
+        def __init__(self):
+            self.context_compressor = object()
+
+        def interrupt(self, message=None):
+            events.append(("interrupt", message))
+
+        def release_clients(self):
+            events.append(("release_clients", None))
+            self.context_compressor = None
+
+        def close(self):
+            events.append(("close", None))
+            self.context_compressor = None
+
+    agent = _bare_agent()
+    agent.context_compressor = None
+    agent.client = None
+    agent._background_review_lock = TraceLock("background")
+    agent._active_children_lock = TraceLock("children")
+    import threading as _threading
+    agent._context_engine_shutdown_lock = _threading.Lock()
+    review = FakeReviewAgent()
+    agent._background_review_agent = review
+    agent._active_children = [review]
+
+    AIAgent.release_clients(agent)
+
+    assert events == [
+        ("background:enter", None),
+        ("children:enter", None),
+        ("children:exit", None),
+        ("background:exit", None),
+        ("interrupt", "parent agent released"),
+    ]
+    assert review.context_compressor is not None
+    assert agent._active_children == []
+    # The worker clears this pointer in its own finally block after it owns
+    # shutdown_memory_provider() and close().
+    assert agent._background_review_agent is review
+
+
+def test_parent_close_interrupts_review_without_tearing_down_worker_resources(
+    monkeypatch,
+):
+    """Hard parent teardown atomically claims tracking and leaves worker cleanup."""
+    events = []
+    cleanup_calls = []
+
+    monkeypatch.setattr(
+        "tools.process_registry.process_registry.kill_all",
+        lambda *, task_id: cleanup_calls.append(("kill_all", task_id)),
+    )
+    monkeypatch.setattr(
+        run_agent_module,
+        "cleanup_vm",
+        lambda task_id: cleanup_calls.append(("cleanup_vm", task_id)),
+    )
+    monkeypatch.setattr(
+        run_agent_module,
+        "cleanup_browser",
+        lambda task_id: cleanup_calls.append(("cleanup_browser", task_id)),
+    )
+    monkeypatch.setattr(
+        "tools.computer_use.release_computer_use_session",
+        lambda task_id: cleanup_calls.append(("release_computer_use_session", task_id)),
+    )
+
+    class TraceLock:
+        def __init__(self, name):
+            self.name = name
+
+        def __enter__(self):
+            events.append((f"{self.name}:enter", None))
+            return self
+
+        def __exit__(self, *_exc):
+            events.append((f"{self.name}:exit", None))
+
+    class FakeReviewAgent:
+        def __init__(self):
+            self.context_compressor = object()
+
+        def interrupt(self, message=None):
+            events.append(("interrupt", message))
+
+        def close(self):
+            events.append(("close", None))
+            self.context_compressor = None
+
+    agent = _bare_agent()
+    agent.context_compressor = None
+    agent.client = None
+    agent._background_review_lock = TraceLock("background")
+    agent._active_children_lock = TraceLock("children")
+    import threading as _threading
+    agent._context_engine_shutdown_lock = _threading.Lock()
+    review = FakeReviewAgent()
+    agent._background_review_agent = review
+    agent._active_children = [review]
+
+    AIAgent.close(agent)
+
+    assert events == [
+        ("background:enter", None),
+        ("children:enter", None),
+        ("children:exit", None),
+        ("background:exit", None),
+        ("interrupt", "parent agent closed"),
+    ]
+    assert cleanup_calls == [
+        ("kill_all", "test-session"),
+        ("cleanup_vm", "test-session"),
+        ("cleanup_browser", "test-session"),
+        ("release_computer_use_session", "test-session"),
+    ]
+    assert review.context_compressor is not None
+    assert agent._active_children == []
+    assert agent._background_review_agent is review
+
+
+def test_new_live_turn_cancels_still_running_background_review(monkeypatch):
+    """conversation_loop.run_conversation() must proactively interrupt a
+    background review still in flight from a prior turn, rather than let the
+    two race concurrently against the same session_id/credentials. This is
+    the other half of the fix: registration alone only enables interrupt()
+    propagation, it doesn't by itself stop the race — something has to
+    actually call interrupt() at the start of the next turn.
+    """
+    import agent.conversation_loop as conversation_loop_module
+
 def test_live_turn_waits_for_review_exit_before_relay_and_turn_context(monkeypatch):
     """The outer production wrapper waits before same-session instrumentation."""
     review_entered = threading.Event()

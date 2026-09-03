@@ -20,7 +20,7 @@ jobs:
     # This job builds the renderer and the electron bundle, then drives a real
     # Electron app under xvfb. vite, tsc and the Playwright workers all scale
     # with the core count.
-    runs-on: ubuntu-latest-32-core
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
       review_status: ${{ steps.review-status.outputs.review_status }}
@@ -45,9 +45,9 @@ jobs:
           node-version: 26
           cache: npm
 
-      - name: grab npm 12
+      - name: Install exact cooldown-protected npm 12
         run: |
-          npm i -g npm@12
+          npm install -g npm@12.0.1 --ignore-scripts --min-release-age=14
 
       # Full npm ci (not --ignore-scripts): electron's postinstall
       # downloads the binary we launch, and node-pty's native build is

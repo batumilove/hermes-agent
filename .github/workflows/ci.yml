@@ -17,7 +17,8 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, batumi/live]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -38,7 +39,7 @@ jobs:
   detect:
     name: Detect affected areas
     runs-on: ubuntu-latest
-    timeout-minutes: 1
+    timeout-minutes: 10
     outputs:
       python: ${{ steps.classify.outputs.python }}
       python_prod: ${{ steps.classify.outputs.python_prod }}
@@ -49,7 +50,6 @@ jobs:
       uv_lock: ${{ steps.classify.outputs.uv_lock }}
       npm_lock: ${{ steps.classify.outputs.npm_lock }}
       installer: ${{ steps.classify.outputs.installer }}
-      rust: ${{ steps.classify.outputs.rust }}
       docker_meta: ${{ steps.classify.outputs.docker_meta }}
       mcp_catalog: ${{ steps.classify.outputs.mcp_catalog }}
       ci_review: ${{ steps.classify.outputs.ci_review }}
@@ -61,9 +61,48 @@ jobs:
         id: classify
         uses: ./.github/actions/detect-changes
         with:
-          sparse-checkout: scripts/ci/classify_changes.py
-          sparse-checkout-cone-mode: false
           github-token: ${{ github.token }}
+
+  fork-delta:
+    name: Fork patch ownership
+    needs: detect
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require every upstream delta path to have an owner
+        run: |
+          python3 scripts/check_fork_delta.py --fetch-provenance-source
+          python3 scripts/check_fork_delta.py
+
+  fork-contracts:
+    name: Fork compatibility contracts
+    needs: detect
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          version: "0.9.28"
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+      - name: Install test dependencies
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
+      - name: Run preserved behavior contracts
+        run: python3 scripts/run_batumi_contracts.py
 
   # ─────────────────────────────────────────────────────────────────────
   # Lane-gated sub-workflows. Each runs in parallel after detect finishes.
@@ -74,6 +113,8 @@ jobs:
     needs: detect
     if: needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/tests.yml
+    with:
+      slice_count: 12
 
   # macOS + Windows lanes. The main `tests` lane above is Linux-only, and
   # the OS-marked tests it collects are skipped there by design (see the
@@ -105,14 +146,6 @@ jobs:
     # Windows-only, and only for PRs that touch install.ps1 or its tests.
     if: needs.detect.outputs.installer == 'true'
     uses: ./.github/workflows/installer-tests.yml
-
-  rust-tests:
-    name: Rust tests
-    needs: detect
-    # Only for PRs that touch a Rust crate. `.rs` is under apps/, so these
-    # changes used to run the TypeScript matrix and nothing that compiles them.
-    if: needs.detect.outputs.rust == 'true'
-    uses: ./.github/workflows/rust-tests.yml
 
   e2e-desktop:
     name: Desktop E2E
@@ -205,8 +238,8 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────
   # Gate: runs after everything. ``if: always()`` ensures it reports a
-  # status even when some deps were skipped. Only actual ``failure``
-  # results cause it to fail; ``skipped`` is treated as success.
+  # status even when some deps were skipped. Only ``success`` and intentional
+  # ``skipped`` results pass; cancelled and timed-out dependencies fail closed.
   #
   # Branch protection should require ONLY this check.
   #
@@ -217,12 +250,13 @@ jobs:
     name: All required checks pass
     needs:
       - detect
+      - fork-delta
+      - fork-contracts
       - tests
       - tests-os
       - lint
       - js-tests
       - installer-tests
-      - rust-tests
       - e2e-desktop
       - docs-site
       - history-check
@@ -256,13 +290,13 @@ jobs:
           print(f'needs-json={json.dumps(compact)}')
           with open('$GITHUB_OUTPUT', 'a') as f:
               f.write(f'needs-json={json.dumps(compact)}\n')
-          failed = [name for name, info in needs.items() if info['result'] == 'failure']
+          failed = [name for name, info in needs.items() if info['result'] not in ('success', 'skipped')]
           for name, info in sorted(needs.items()):
               result = info['result']
               icon = '✅' if result in ('success', 'skipped') else '❌'
               print(f'{icon} {name}: {result}')
           if failed:
-              print(f'::error::{len(failed)} job(s) failed: {\", \".join(failed)}')
+              print(f'::error::{len(failed)} job(s) did not pass: {\", \".join(failed)}')
               sys.exit(1)
           print('All checks passed (or were skipped)')
           "

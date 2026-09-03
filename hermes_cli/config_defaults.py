@@ -16,7 +16,8 @@ DEFAULT_CONFIG = {
     "database": {
         "journal_mode": "wal",
         # Optional WAL sizing pragmas, applied when set to integers.
-        # None = SQLite defaults (autocheckpoint 1000 pages, no size limit).
+        # None keeps Hermes-managed post-lock checkpointing (equivalent to
+        # wal_autocheckpoint=0) and leaves SQLite's journal size unlimited.
         "wal_autocheckpoint": None,
         "journal_size_limit": None,
     },
@@ -841,12 +842,15 @@ DEFAULT_CONFIG = {
                                       # trickle stream. Clamped to >= hygiene_timeout_seconds.
         "hygiene_failure_cooldown_seconds": 300,  # skip repeated failed hygiene attempts for this session
         "context_timeout_seconds": 120,  # inactivity budget for in-agent compress_context
-                                      # (conversation loop, /compress, preflight, etc.).
-                                      # Same progress-aware semantics as hygiene_timeout_seconds:
-                                      # streamed summary tokens extend the wait; only a silent
-                                      # worker is cut off. 0 = disable the owned wrapper
-                                      # (callers that already pass commit_fence, e.g. gateway
-                                      # hygiene, never use this path).
+                                       # (conversation loop, /compress, preflight, etc.).
+                                       # Same progress-aware semantics as hygiene_timeout_seconds:
+                                       # streamed summary tokens extend the wait; only a silent
+                                       # worker is cut off. At runtime a positive value is raised
+                                       # to at least the effective auxiliary.compression timeout,
+                                       # so the host cannot abandon a request before its own
+                                       # provider deadline. 0 = disable the owned wrapper
+                                       # (callers that already pass commit_fence, e.g. gateway
+                                       # hygiene, never use this path).
         "context_total_ceiling_seconds": 600,  # absolute cap on the *pre-commit*
                                       # in-agent compress_context wait (summary /
                                       # stream phase) even while tokens are still
@@ -2608,6 +2612,8 @@ DEFAULT_CONFIG = {
         # Wrap delivered cron responses with a header (task name) and footer
         # ("The agent cannot see this message").  Set to false for clean output.
         "wrap_response": True,
+        # Telegram-only: create a fresh private DM topic for each cron output.
+        "telegram_new_thread_per_output": False,
         # Make cron deliveries CONTINUABLE: a user can reply to a cron brief
         # and the agent has it in context (no "what is Task #2?" amnesia).
         # Default False preserves the historical isolation guarantee (cron

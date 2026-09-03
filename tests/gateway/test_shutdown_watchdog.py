@@ -9,8 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import queue
+import subprocess
+import sys
+import textwrap
 import threading
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -64,5 +70,172 @@ def test_arm_shutdown_watchdog_fires_with_dump_and_exit(tmp_path):
     assert "shutdown_watchdog_fired" in text
     assert "faulthandler dump" in text
     assert get_shutdown_watchdog_dump_path(tmp_path).name == "gateway-shutdown-watchdog.log"
+
+
+def _start_watchdog_child(
+    code: str,
+    *,
+    stderr=subprocess.PIPE,
+    arm_timeout: float = 10.0,
+) -> tuple[subprocess.Popen[str], str]:
+    """Start a child and exclude cold-import time from the watchdog deadline."""
+    repo_root = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(repo_root)
+    proc = subprocess.Popen(
+        [sys.executable, "-c", textwrap.dedent(code)],
+        cwd=repo_root,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=stderr,
+        text=True,
+    )
+    stdout_pipe = proc.stdout
+    assert stdout_pipe is not None
+    ready: queue.Queue[str] = queue.Queue(maxsize=1)
+    threading.Thread(target=lambda: ready.put(stdout_pipe.readline()), daemon=True).start()
+    try:
+        first_line = ready.get(timeout=arm_timeout)
+    except queue.Empty:
+        proc.kill()
+        proc.wait(timeout=1.0)
+        raise subprocess.TimeoutExpired(proc.args, arm_timeout) from None
+    if "WATCHDOG_ARMED" not in first_line:
+        stdout, child_stderr = proc.communicate(timeout=1.0)
+        raise AssertionError(
+            f"watchdog child exited before arming: stdout={first_line + stdout!r} "
+            f"stderr={child_stderr!r}"
+        )
+    return proc, first_line
+
+
+def _run_watchdog_child(
+    code: str, *, timeout: float = 2.0
+) -> tuple[subprocess.CompletedProcess[str], float]:
+    proc, first_line = _start_watchdog_child(code)
+    started = time.monotonic()
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        raise
+    elapsed = time.monotonic() - started
+    return (
+        subprocess.CompletedProcess(
+            proc.args,
+            proc.returncode,
+            stdout=first_line + stdout,
+            stderr=stderr,
+        ),
+        elapsed,
+    )
+
+
+def test_shutdown_watchdog_hard_exits_when_snapshot_blocks():
+    completed, elapsed = _run_watchdog_child(
+        """
+        import threading
+        from gateway.shutdown_watchdog import arm_shutdown_watchdog
+
+        def blocked_snapshot():
+            threading.Event().wait()
+
+        arm_shutdown_watchdog(0.2, snapshot_fn=blocked_snapshot, exit_code=42)
+        print("WATCHDOG_ARMED", flush=True)
+        threading.Event().wait()
+        """,
+    )
+    assert "WATCHDOG_ARMED" in completed.stdout, completed.stderr
+    assert completed.returncode != 0
+    assert elapsed < 3.0
+
+
+def test_shutdown_watchdog_hard_exits_when_dump_open_blocks(tmp_path):
+    fifo = tmp_path / "blocked-watchdog-dump"
+    os.mkfifo(fifo)
+    completed, elapsed = _run_watchdog_child(
+        f"""
+        import threading
+        from pathlib import Path
+        from gateway.shutdown_watchdog import arm_shutdown_watchdog
+
+        arm_shutdown_watchdog(
+            0.2,
+            snapshot_fn=lambda: {{}},
+            dump_path=Path({str(fifo)!r}),
+            exit_code=43,
+        )
+        print("WATCHDOG_ARMED", flush=True)
+        threading.Event().wait()
+        """,
+    )
+    assert "WATCHDOG_ARMED" in completed.stdout, completed.stderr
+    assert completed.returncode != 0
+    assert elapsed < 3.0
+
+
+@pytest.mark.skipif(not hasattr(os, "set_blocking"), reason="requires blocking pipe control")
+def test_shutdown_watchdog_hard_exit_does_not_block_on_full_stderr_pipe():
+    """The final backstop must not dump to a potentially blocked stderr FD."""
+    read_fd, write_fd = os.pipe()
+    os.set_blocking(write_fd, False)
+    while True:
+        try:
+            os.write(write_fd, b"x" * 65536)
+        except BlockingIOError:
+            break
+    os.set_blocking(write_fd, True)
+
+    code = textwrap.dedent(
+        """
+        import threading
+        from gateway.shutdown_watchdog import arm_shutdown_watchdog
+
+        def blocked_snapshot():
+            threading.Event().wait()
+
+        arm_shutdown_watchdog(0.2, snapshot_fn=blocked_snapshot, exit_code=45)
+        print("WATCHDOG_ARMED", flush=True)
+        threading.Event().wait()
+        """
+    )
+    proc, first_line = _start_watchdog_child(code, stderr=write_fd)
+    os.close(write_fd)
+    try:
+        try:
+            stdout, _ = proc.communicate(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, _ = proc.communicate()
+            pytest.fail(
+                "hard-exit fallback blocked while writing diagnostics to a full stderr pipe; "
+                f"stdout={stdout!r}"
+            )
+        stdout = first_line + stdout
+        assert "WATCHDOG_ARMED" in stdout
+        assert proc.returncode != 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=1.0)
+        os.close(read_fd)
+
+
+def test_shutdown_watchdog_hard_exit_is_disarmed_on_completion():
+    completed, _ = _run_watchdog_child(
+        """
+        import threading
+        import time
+        from gateway.shutdown_watchdog import arm_shutdown_watchdog
+
+        done = threading.Event()
+        arm_shutdown_watchdog(0.2, done_event=done, exit_code=44)
+        done.set()
+        print("WATCHDOG_ARMED", flush=True)
+        time.sleep(1.5)
+        """,
+    )
+    assert completed.returncode == 0, completed.stderr
 
 

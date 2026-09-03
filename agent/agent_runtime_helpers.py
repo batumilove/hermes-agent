@@ -1522,7 +1522,8 @@ def restore_primary_runtime(agent) -> bool:
         # _fallback_activated stays False.  The next turn skips this block
         # entirely, stranding the index and silently blocking all future
         # fallback attempts for the session.  Fixes #20465.
-        agent._fallback_index = 0
+        from agent.chat_completion_helpers import _reset_fallback_episode
+        _reset_fallback_episode(agent)
         return False
 
     if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
@@ -1773,8 +1774,8 @@ def restore_primary_runtime(agent) -> bool:
             agent.reasoning_config = dict(saved_reasoning)
 
         # ── Reset fallback chain for the new turn ──
-        agent._fallback_activated = False
-        agent._fallback_index = 0
+        from agent.chat_completion_helpers import _reset_fallback_episode
+        _reset_fallback_episode(agent)
         agent._rate_limit_backoff_count = 0  # reset exponential backoff counter
 
         # Reset the stale-call circuit breaker (#58962): the streak measured
@@ -1792,6 +1793,20 @@ def restore_primary_runtime(agent) -> bool:
             "Primary runtime restored for new turn: %s (%s)",
             agent.model, agent.provider,
         )
+        # Observer-only hook for metrics / telemetry plugins.  Fail-open.
+        try:
+            from hermes_cli.plugins import has_hook, invoke_hook
+
+            if has_hook("on_primary_restored"):
+                invoke_hook(
+                    "on_primary_restored",
+                    provider=agent.provider,
+                    model=agent.model,
+                    session_id=getattr(agent, "session_id", None) or "",
+                    platform=getattr(agent, "platform", None) or "",
+                )
+        except Exception:
+            pass
         return True
     except Exception as e:
         logger.warning("Failed to restore primary runtime: %s", e)
@@ -2664,6 +2679,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             client_kwargs["default_headers"] = existing
     except Exception:
         _ra().logger.debug("Copilot default-header guard skipped", exc_info=True)
+
     # OpenCode Free: the tier is served ANONYMOUSLY — any bearer the relay
     # doesn't recognize (including placeholders) is a 401. Route every
     # opencode-free client through the shared keyless header policy: an
@@ -2675,16 +2691,6 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         _existing = dict(client_kwargs.get("default_headers") or {})
         _existing.update(opencode_zen_free_headers())
         client_kwargs["default_headers"] = _existing
-
-    # All primary construction and recovery paths must identify Hermes to the
-    # official Codex endpoint, including snapshots with custom header overrides.
-    from agent.auxiliary_client import _apply_required_codex_headers
-
-    _apply_required_codex_headers(
-        client_kwargs,
-        access_token=client_kwargs.get("api_key", ""),
-        base_url=str(client_kwargs.get("base_url", "")),
-    )
     # Uses the module-level `OpenAI` name, resolved lazily on first
     # access via __getattr__ below. Tests patch via `run_agent.OpenAI`.
     client = _ra().OpenAI(**client_kwargs)
@@ -3104,8 +3110,8 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         })
 
     # ── Reset fallback state ──
-    agent._fallback_activated = False
-    agent._fallback_index = 0
+    from agent.chat_completion_helpers import _reset_fallback_episode
+    _reset_fallback_episode(agent)
 
     # When the user deliberately swaps primary providers (e.g. openrouter
     # → anthropic), drop any fallback entries that target the OLD primary

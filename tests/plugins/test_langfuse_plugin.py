@@ -81,6 +81,21 @@ class TestRuntimeGate:
         sys.modules.pop(mod_name, None)
         return importlib.import_module(mod_name)
 
+    def test_import_preflights_pinned_lazy_dependency(self, monkeypatch):
+        """An enabled plugin must restore its SDK after exact ``uv sync``."""
+        from tools import lazy_deps
+
+        calls = []
+        monkeypatch.setattr(
+            lazy_deps,
+            "ensure",
+            lambda feature, *, prompt=False: calls.append((feature, prompt)),
+        )
+
+        self._fresh_plugin()
+
+        assert calls == [("observability.langfuse", False)]
+
     def test_get_langfuse_returns_none_without_credentials(self, monkeypatch):
         for k in (
             "HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_SECRET_KEY",
@@ -93,6 +108,9 @@ class TestRuntimeGate:
 
     def test_missing_sdk_logs_one_warning(self, monkeypatch, caplog):
         langfuse_plugin = self._fresh_plugin()
+        # Ignore the separate import-time lazy-dependency preflight warning;
+        # this test covers the runtime gate's once-only warning contract.
+        caplog.clear()
         monkeypatch.setattr(langfuse_plugin, "Langfuse", None)
         langfuse_plugin._LANGFUSE_CLIENT = None
 
@@ -549,10 +567,15 @@ class TestPlaceholderKeyDetection:
         plugin = self._fresh_plugin(monkeypatch)
         with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
             assert plugin._get_langfuse() is None
-        warnings = [r for r in caplog.records if r.levelname == "WARNING"
-                    and r.name == self.LOGGER_NAME]
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelname == "WARNING"
+            and r.name == self.LOGGER_NAME
+            and "credentials look like placeholders" in r.getMessage()
+        ]
         assert len(warnings) == 1, (
-            f"Expected a single combined warning; got {len(warnings)}:\n"
+            f"Expected a single combined placeholder warning; got {len(warnings)}:\n"
             + "\n".join(r.getMessage() for r in warnings)
         )
         text = warnings[0].getMessage()
@@ -571,10 +594,15 @@ class TestPlaceholderKeyDetection:
         with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
             for _ in range(15):
                 assert plugin._get_langfuse() is None
-        warnings = [r for r in caplog.records if r.levelname == "WARNING"
-                    and r.name == self.LOGGER_NAME]
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelname == "WARNING"
+            and r.name == self.LOGGER_NAME
+            and "credentials look like placeholders" in r.getMessage()
+        ]
         assert len(warnings) == 1, (
-            f"Warning fired {len(warnings)} times across 15 calls; "
+            f"Placeholder warning fired {len(warnings)} times across 15 calls; "
             "expected 1 (cached via _INIT_FAILED)"
         )
 
@@ -709,7 +737,7 @@ class TestToolCallOutputBackfill:
 
         ended = {}
 
-        def fake_end_observation(obs, *, output=None, metadata=None, usage_details=None, cost_details=None):
+        def fake_end_observation(obs, *, output=None, metadata=None, usage_details=None, cost_details=None, completion_start_time=None):
             ended["observation"] = obs
             ended["output"] = output
             ended["metadata"] = metadata
@@ -877,7 +905,7 @@ class TestUsageFromSanitizedResponse:
         monkeypatch.setitem(mod._TRACE_STATE, mod._trace_key("task-1", "session-1"), state)
         captured = {}
 
-        def fake_end_observation(obs, *, output=None, metadata=None, usage_details=None, cost_details=None):
+        def fake_end_observation(obs, *, output=None, metadata=None, usage_details=None, cost_details=None, completion_start_time=None):
             captured["usage_details"] = usage_details
 
         monkeypatch.setattr(mod, "_end_observation", fake_end_observation)
@@ -1088,7 +1116,7 @@ class TestCostTotal:
         monkeypatch.setitem(mod._TRACE_STATE, mod._trace_key("task-1", "session-1"), state)
         captured = {}
 
-        def fake_end_observation(obs, *, output=None, metadata=None, usage_details=None, cost_details=None):
+        def fake_end_observation(obs, *, output=None, metadata=None, usage_details=None, cost_details=None, completion_start_time=None):
             captured["cost_details"] = cost_details
 
         monkeypatch.setattr(mod, "_end_observation", fake_end_observation)
@@ -2206,6 +2234,7 @@ class TestCanonicalCostExport:
             metadata=None,
             usage_details=None,
             cost_details=None,
+            completion_start_time=None,
         ):
             captured["usage_details"] = usage_details
             captured["cost_details"] = cost_details

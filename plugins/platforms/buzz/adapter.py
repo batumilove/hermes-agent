@@ -96,6 +96,14 @@ _SEEN_CAP = 500
 # N poll sweeps to pick up conversations opened mid-run.
 _DM_DISCOVERY_EVERY = 5
 
+# Buzz channel and DM identifiers are canonical UUIDs. Register this native
+# shape with Hermes' shared send-target resolver so explicit ``buzz:<uuid>``
+# targets do not depend on channel-directory discovery.
+_CHANNEL_ID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
 _DEFAULT_POLL_INTERVAL = 4.0
 _MIN_POLL_INTERVAL = 1.0
 _CLI_TIMEOUT = 30.0
@@ -223,6 +231,14 @@ def _normalize_user_ref(ref: str) -> Optional[str]:
     if re.fullmatch(r"[0-9a-f]{64}", ref):
         return ref
     return None
+
+
+def _parse_target_ref(ref: str) -> Optional[Tuple[str, Optional[str]]]:
+    """Parse an explicit Buzz channel UUID for host-driven sends."""
+    target = (ref or "").strip()
+    if not _CHANNEL_ID_RE.fullmatch(target):
+        return None
+    return target.lower(), None
 
 
 # ---------------------------------------------------------------------------
@@ -675,32 +691,93 @@ class BuzzAdapter(BasePlatformAdapter):
         """Send an image: local files upload via --file, URLs go as a link."""
         local = Path(image_url).expanduser() if not image_url.startswith(("http://", "https://")) else None
         if local is not None and local.is_file():
-            args = [
-                "messages", "send",
-                "--channel", str(chat_id),
-                "--file", str(local),
-                "--content", "-",
-            ]
-            if reply_to:
-                args += ["--reply-to", str(reply_to)]
-            code, out, err = await self._run_cli(args, input_text=caption or "")
-            if code != 0:
-                return SendResult(success=False, error=_cli_error_message(err, code), retryable=code == 2)
-            try:
-                data = json.loads(out or "{}")
-            except ValueError:
-                data = {}
-            event_id = data.get("event_id")
-            if event_id:
-                self._mark_seen(str(chat_id), str(event_id))
-            return SendResult(
-                success=bool(data.get("accepted", True)),
-                message_id=str(event_id) if event_id else None,
-                raw_response=data,
+            return await self._send_local_file(
+                chat_id,
+                local,
+                caption=caption,
+                reply_to=reply_to,
+                metadata=metadata,
             )
         # Markdown renders in Buzz, so a URL arrives as a clickable image link.
         text = f"{caption}\n{image_url}" if caption else image_url
         return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
+
+    async def _send_local_file(
+        self,
+        chat_id: str,
+        file_path: Path,
+        *,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        args = [
+            "messages", "send",
+            "--channel", str(chat_id),
+            "--file", str(file_path),
+            "--content", "-",
+        ]
+        reply_target = reply_to or (metadata or {}).get("thread_id")
+        if reply_target:
+            args += ["--reply-to", str(reply_target)]
+        code, out, err = await self._run_cli(args, input_text=caption or "")
+        if code != 0:
+            return SendResult(success=False, error=_cli_error_message(err, code), retryable=code == 2)
+        try:
+            data = json.loads(out or "{}")
+        except ValueError:
+            data = {}
+        event_id = data.get("event_id")
+        if event_id:
+            self._mark_seen(str(chat_id), str(event_id))
+        return SendResult(
+            success=bool(data.get("accepted", True)),
+            message_id=str(event_id) if event_id else None,
+            raw_response=data,
+        )
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Upload a local image emitted through Hermes' ``MEDIA:`` pipeline."""
+        local = Path(image_path).expanduser()
+        if not local.is_file():
+            return SendResult(success=False, error="Image attachment not found")
+        return await self._send_local_file(
+            chat_id,
+            local,
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Upload a local document emitted through Hermes' ``MEDIA:`` pipeline."""
+        local = Path(file_path).expanduser()
+        if not local.is_file():
+            return SendResult(success=False, error="File attachment not found")
+        return await self._send_local_file(
+            chat_id,
+            local,
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         chat_id = str(chat_id)
@@ -718,6 +795,19 @@ class BuzzAdapter(BasePlatformAdapter):
                 except ValueError:
                     pass
         return {"name": name or chat_id, "type": chat_type, "chat_id": chat_id}
+
+    async def list_channels(self) -> Optional[List[Dict[str, str]]]:
+        """Expose relay-discovered conversations to Hermes' channel directory."""
+        if not self._channel_names:
+            return None
+        return [
+            {
+                "id": channel_id,
+                "name": name,
+                "type": self._channel_state.get(channel_id, {}).get("chat_type", "group"),
+            }
+            for channel_id, name in self._channel_names.items()
+        ]
 
     # ── Inbound: WebSocket transport (NIP-42 authenticated) ──────────────
     #
@@ -954,9 +1044,9 @@ class BuzzAdapter(BasePlatformAdapter):
         returns ``[]`` even when DM conversations exist (#68871).  Those DMs
         DO surface in ``channels list`` as entries named "DM" with an empty
         description, so that listing is scanned as a fallback.  Fallback
-        finds are watched as ``group`` and latch to ``dm`` via p-tag
-        detection (_is_direct_message_event) rather than trusting the name
-        alone to unlock the mention-free DM path.
+        finds are watched as ``group`` and latch to ``dm`` via structural
+        p-tag detection or, in private allow-list mode, matching sender plus
+        DM-shaped metadata. The name alone never unlocks mention-free dispatch.
         """
         code, out, _err = await self._run_cli(["dms", "list"])
         if code == 0:
@@ -1066,23 +1156,21 @@ class BuzzAdapter(BasePlatformAdapter):
     # channel mention gate.  Classification therefore keys off the Nostr
     # tags of the messages themselves.  Observed on a live hosted relay:
     #
-    #   * every message another user sends IN A DM carries a structural
+    #   * most messages another user sends IN A DM carry a structural
     #     ["p", <our pubkey>] tag, even when the text never mentions us
-    #     (recipient addressing);
+    #     (recipient addressing), but some hosted relays omit this tag;
     #   * in a real channel, a ["p", <our pubkey>] tag appears only when the
     #     text visibly @mentions us (typed mention, with or without a reply
     #     ["e", ...] tag) — never on plain broadcasts.
     #
-    # So "p-tagged to self WITHOUT a visible mention in the content" is the
-    # DM discriminator: in a channel that combination does not occur, and a
-    # channel reply/mention that p-tags us is excluded because the mention
-    # is right there in the text.  As a second, independent guard, a
-    # conversation whose ``channels list`` metadata looks like a real
+    # "p-tagged to self WITHOUT a visible mention in the content" remains the
+    # primary DM discriminator. For p-tag-less events, private allow-list mode
+    # can instead use an explicitly allowed sender plus DM-shaped metadata.
+    # A conversation whose ``channels list`` metadata looks like a real
     # community channel (real name / non-empty description) is never
-    # reclassified at all, whereas relay-materialized DMs are always named
-    # "DM" with an empty description.  Nothing is lost while unlatched: a
-    # DM message that DOES mention us dispatches through the mention gate
-    # anyway, so the latch flips exactly on the first message that needs it.
+    # reclassified at all. Nothing is lost while unlatched: a DM message that
+    # DOES mention us dispatches through the mention gate anyway, so the latch
+    # flips exactly on the first message that needs it.
 
     def _may_reclassify_as_dm(self, channel_id: str) -> bool:
         """True when the conversation's metadata does not rule out a DM.
@@ -1100,10 +1188,14 @@ class BuzzAdapter(BasePlatformAdapter):
         return name == "DM" and not description
 
     def _is_direct_message_event(self, channel_id: str, event: dict) -> bool:
-        """True when ``event`` is shaped like a direct message to us: a chat
-        message from another user, p-tagged to our pubkey, whose content does
-        NOT visibly mention us — i.e. the p-tag is structural DM addressing,
-        not the artifact of a typed @mention (see block comment above)."""
+        """True when ``event`` is safely attributable to a DM conversation.
+
+        Prefer the structural p-tag used by most hosted relays. Some relays
+        materialize the conversation as ``name=DM`` but omit that p-tag from
+        kind-9 messages; for those, trust the DM metadata only for an explicitly
+        allow-listed sender. This preserves mention gating for community-wide
+        access and for channel-like metadata.
+        """
         if not self._self_pubkey or not self._may_reclassify_as_dm(channel_id):
             return False
         if int(event.get("kind") or 0) != _CHAT_KIND:
@@ -1111,20 +1203,26 @@ class BuzzAdapter(BasePlatformAdapter):
         pubkey = str(event.get("pubkey") or "").lower()
         if not pubkey or pubkey == self._self_pubkey:
             return False
+        content = event.get("content")
+        if not isinstance(content, str) or self._is_mentioned(content):
+            return False
+
+        # Private-mode fallback for hosted relays that omit structural p-tags
+        # from DM messages. Never broaden this to allow-all mode: a channel
+        # named "DM" must not bypass mention gating for arbitrary members.
+        if self._allowed_pubkeys and pubkey in self._allowed_pubkeys:
+            return True
+
         tags = event.get("tags")
         if not isinstance(tags, list):
             return False
-        p_tagged_to_self = any(
+        return any(
             isinstance(tag, (list, tuple))
             and len(tag) > 1
             and tag[0] == "p"
             and str(tag[1]).lower() == self._self_pubkey
             for tag in tags
         )
-        if not p_tagged_to_self:
-            return False
-        content = event.get("content")
-        return isinstance(content, str) and not self._is_mentioned(content)
 
     def _maybe_latch_dm(self, channel_id: str, state: dict, event: dict) -> None:
         """Latch a group conversation to chat_type="dm" once any direct
@@ -1134,7 +1232,7 @@ class BuzzAdapter(BasePlatformAdapter):
             return
         state["chat_type"] = "dm"
         self._channel_names.setdefault(channel_id, "DM")
-        logger.info("Buzz: conversation %s reclassified as DM (message p-tagged to self)", channel_id)
+        logger.info("Buzz: conversation %s reclassified as DM", channel_id)
 
     def _is_mentioned(self, content: str) -> bool:
         """True when the message addresses this agent (npub, hex, or name)."""
@@ -1506,10 +1604,13 @@ def register(ctx):
         apply_yaml_config_fn=_apply_yaml_config,
         # Cron home-channel delivery support (deliver=buzz).
         cron_deliver_env_var="BUZZ_HOME_CHANNEL",
-        # Out-of-process cron delivery.  Without this hook, deliver=buzz
+        # Out-of-process cron delivery.  Without this hook, ``deliver=buzz``
         # cron jobs fail with "No live adapter" when cron runs separately
         # from the gateway.
         standalone_sender_fn=_standalone_send,
+        # Buzz channel/DM identifiers are UUIDs. Declaring the native shape
+        # lets explicit ``buzz:<uuid>`` sends bypass directory-name lookup.
+        parse_target_ref_fn=_parse_target_ref,
         # Auth env vars for _is_user_authorized() integration
         allowed_users_env="BUZZ_ALLOWED_USERS",
         allow_all_env="BUZZ_ALLOW_ALL_USERS",

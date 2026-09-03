@@ -34,6 +34,24 @@ RUNTIME_SCHEMA_VERSION = "hermes.relay.runtime.v1"
 RUNTIME_INSTANCE_KEY = "hermes.relay.runtime_instance"
 RELAY_PLUGINS_EXECUTION_CONSUMER = "hermes.nemo_relay.plugins"
 _PROFILE_KEY_CACHE: dict[str, str] = {}
+_SYNC_BRIDGE_LOOP: contextvars.ContextVar[asyncio.AbstractEventLoop | None] = (
+    contextvars.ContextVar("hermes_relay_sync_bridge_loop", default=None)
+)
+
+
+def bind_sync_bridge_loop(loop: asyncio.AbstractEventLoop) -> contextvars.Token:
+    """Bind the managed Relay loop that an off-loop sync callback may re-enter."""
+    return _SYNC_BRIDGE_LOOP.set(loop)
+
+
+def reset_sync_bridge_loop(token: contextvars.Token) -> None:
+    """Restore the preceding managed Relay loop binding."""
+    _SYNC_BRIDGE_LOOP.reset(token)
+
+
+def sync_bridge_loop() -> asyncio.AbstractEventLoop | None:
+    """Return the managed Relay loop inherited by the current sync callback."""
+    return _SYNC_BRIDGE_LOOP.get()
 
 # Bound for native scope lifecycle operations (push/pop/flush) that gate
 # turn/session completion.  Healthy operations complete in microseconds;
@@ -102,6 +120,28 @@ def _run_bounded_on_exit_thread(fn: Callable[[], Any], timeout: float) -> Any:
         raise error[0]
     return result[0] if result else None
 
+
+
+def _run_context_bounded(
+    context: contextvars.Context,
+    callback: Callable[..., Any],
+    *args: Any,
+    timeout: float,
+    **kwargs: Any,
+) -> Any:
+    """Run one context-isolated native operation with the lifecycle bound."""
+    invoke = lambda: context.run(callback, *args, **kwargs)
+    try:
+        future = _scope_op_executor().submit(invoke)
+    except RuntimeError:
+        return _run_bounded_on_exit_thread(invoke, timeout)
+    try:
+        return future.result(timeout=timeout)
+    except FuturesTimeoutError as exc:
+        raise TimeoutError(
+            f"Relay scope operation exceeded {timeout}s; abandoning the native "
+            "call so the agent can continue — the span for this scope is lost"
+        ) from exc
 
 def pop_relay_scope(
     relay: Any,
@@ -897,6 +937,7 @@ class RelayRuntime:
         session: RelaySession,
         handle: Any,
         *,
+        context: contextvars.Context | None = None,
         output: dict[str, Any] | None = None,
         allow_closing: bool = False,
         failure_label: str = "scope close failed",
@@ -1018,15 +1059,22 @@ class RelayRuntime:
                 error_holder["retry"] = retry_exc
 
         try:
-            run_in_session = (
-                self._run_in_session_untracked
-                if operation_already_held
-                else self.run_in_session
-            )
-            run_in_session(
-                session,
-                close_with_drain,
-                allow_closing=allow_closing,
+            if context is not None:
+                _run_context_bounded(
+                    context,
+                    close_with_drain,
+                    timeout=_SCOPE_OP_TIMEOUT,
+                )
+            else:
+                run_in_session = (
+                    self._run_in_session_untracked
+                    if operation_already_held
+                    else self.run_in_session
+                )
+                run_in_session(
+                    session,
+                    close_with_drain,
+                    allow_closing=allow_closing,
                 # Bound the whole drain+close like the direct pops it
                 # replaced: a wedged native pipeline must cost at most one
                 # span, never block turn/session completion (see
@@ -1080,6 +1128,69 @@ class RelayRuntime:
         # Subscriber flushing is process-wide and may wait for publications
         # owned by other sessions. Final plugin teardown flushes once after all
         # tracked operations drain; doing it here can deadlock an asyncio loop.
+        with self._sessions_lock:
+            if self._sessions.get(session_id) is session:
+                self._sessions.pop(session_id, None)
+            self._subagent_parents.pop(session_id, None)
+            self._subagent_parent_handles.pop(session_id, None)
+        if failures:
+            logger.warning(
+                "Hermes Relay session %s closed with errors: %s",
+                session_id,
+                "; ".join(failures),
+            )
+
+    async def close_session_async(self, event: dict[str, Any]) -> None:
+        """Close one session scope without blocking the caller's event loop."""
+        session_id, session, failures = self._begin_close_session(event)
+        if session is None:
+            return
+        try:
+            try:
+                await self.relay.subscribers.flush_async()
+            except Exception as exc:
+                failures.append(f"subscriber flush failed: {exc}")
+        finally:
+            self._finish_close_session(session_id, session, failures)
+
+    def _begin_close_session(
+        self,
+        event: dict[str, Any],
+    ) -> tuple[str, RelaySession | None, list[str]]:
+        """Pop a session scope once, ready for a sync or async flush barrier."""
+        session_id = _session_id(event)
+        with self._sessions_lock:
+            session = self._sessions.get(session_id)
+        if session is None:
+            with self._sessions_lock:
+                self._subagent_parents.pop(session_id, None)
+                self._subagent_parent_handles.pop(session_id, None)
+            return session_id, None, []
+        failures: list[str] = []
+        with session.lock:
+            if session.closing:
+                return session_id, None, failures
+            session.closing = True
+            if session.handle is not None:
+                failure = self._close_scope_handle(
+                    session,
+                    session.handle,
+                    output={},
+                    allow_closing=True,
+                    failure_label="session scope close failed",
+                    operation_already_held=True,
+                )
+                if failure:
+                    failures.append(failure)
+        return session_id, session, failures
+
+    def _finish_close_session(
+        self,
+        session_id: str,
+        session: RelaySession,
+        failures: list[str],
+    ) -> None:
+        """Remove a closed session after its subscriber barrier completes."""
         with self._sessions_lock:
             if self._sessions.get(session_id) is session:
                 self._sessions.pop(session_id, None)
@@ -1270,7 +1381,12 @@ class RelayTurnContext:
     turn_id: str
     task_id: str
     handle: Any = None
+    context: contextvars.Context | None = field(default=None, repr=False)
     logical_llm_calls: dict[str, Any] = field(default_factory=dict, repr=False)
+    logical_llm_contexts: dict[str, contextvars.Context] = field(
+        default_factory=dict,
+        repr=False,
+    )
     logical_llm_lock: threading.RLock = field(
         default_factory=threading.RLock,
         repr=False,
@@ -1425,63 +1541,60 @@ class RelaySessionCoordinator:
         turn = RelayTurnContext(lease=lease, turn_id=turn_id, task_id=task_id)
         key = (lease.profile_key, lease.session_id)
         with self._active_turns_lock:
-            active = self._active_turns.get(key)
-            if active:
-                # A Relay session owns one physical scope stack. Concurrent
-                # Hermes turns would create sibling scopes on that stack, but
-                # their completion order is not guaranteed to be LIFO.
-                turn.relay_enabled = False
-                logger.warning(
-                    "Skipping Relay instrumentation for concurrent Hermes turn "
-                    "%s in session %s",
-                    turn_id,
-                    lease.session_id,
-                )
-            else:
-                self._active_turns[key] = {id(turn)}
-                turn._active_registered = True
+            had_active_turn = bool(self._active_turns.get(key))
+            self._active_turns.setdefault(key, set()).add(id(turn))
+            turn._active_registered = True
         if (
-            turn.relay_enabled
-            and isinstance(lease.host, RelayRuntime)
+            isinstance(lease.host, RelayRuntime)
             and lease.session is not None
         ):
-            # Session-span segmentation: consume a pending rotation (set by
-            # compaction) or the max_turns cap HERE — the only point where
-            # no turn scope is live on this session's stack, so the session
-            # scope can close/reopen without violating LIFO order.
-            try:
-                config = _segments_config()
-                session = lease.session
-                cap = config["max_turns"]
-                if (config["on_compaction"] and session.rotate_pending) or (
-                    cap > 0 and session.segment_turns >= cap
-                ):
-                    reason = (
-                        "compaction"
-                        if config["on_compaction"] and session.rotate_pending
-                        else "max_turns"
+            # Session-span segmentation may only rotate at a boundary with no
+            # older live turn. Concurrent turns keep their isolated contexts;
+            # a pending rotation remains queued for the next idle boundary.
+            if not had_active_turn:
+                try:
+                    config = _segments_config()
+                    session = lease.session
+                    cap = config["max_turns"]
+                    if (config["on_compaction"] and session.rotate_pending) or (
+                        cap > 0 and session.segment_turns >= cap
+                    ):
+                        reason = (
+                            "compaction"
+                            if config["on_compaction"] and session.rotate_pending
+                            else "max_turns"
+                        )
+                        lease.host.rotate_session_scope(session, reason=reason)
+                except Exception:
+                    logger.warning(
+                        "Hermes Relay segment rotation failed", exc_info=True
                     )
-                    lease.host.rotate_session_scope(session, reason=reason)
-            except Exception:
-                logger.warning(
-                    "Hermes Relay segment rotation failed", exc_info=True
-                )
             try:
-                turn.handle = lease.host.run_in_session(
-                    lease.session,
-                    lease.host.relay.scope.push,
-                    TURN_SCOPE,
-                    lease.host.relay.ScopeType.Function,
-                    handle=lease.session.handle,
-                    input={},
-                    metadata={
-                        RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION,
-                        RUNTIME_INSTANCE_KEY: lease.host.runtime_id,
-                        "hermes.execution_surface": lease.platform or "unknown",
-                    },
+                host = lease.host
+                turn_context = contextvars.Context()
+                turn.context = turn_context
+
+                def push_turn() -> Any:
+                    host.relay.get_scope_stack()
+                    return host.relay.scope.push(
+                        TURN_SCOPE,
+                        host.relay.ScopeType.Function,
+                        handle=lease.session.handle,
+                        input={},
+                        metadata={
+                            RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION,
+                            RUNTIME_INSTANCE_KEY: host.runtime_id,
+                            "hermes.execution_surface": lease.platform or "unknown",
+                        },
+                    )
+
+                turn.handle = _run_context_bounded(
+                    turn_context,
+                    push_turn,
                     timeout=_SCOPE_OP_TIMEOUT,
                 )
             except Exception:
+                turn.context = None
                 logger.warning("Hermes Relay turn initialization failed", exc_info=True)
         turn._previous_turn = _CURRENT_TURN.get()
         _CURRENT_TURN.set(turn)
@@ -1506,6 +1619,7 @@ class RelaySessionCoordinator:
                         failure = lease.host._close_scope_handle(
                             lease.session,
                             turn.handle,
+                            context=turn.context,
                             output={"outcome": outcome},
                             failure_label="turn scope close failed",
                         )
@@ -1685,11 +1799,15 @@ class RelaySessionCoordinator:
         with turn.logical_llm_lock:
             logical_calls = list(turn.logical_llm_calls.items())
             turn.logical_llm_calls.clear()
+            logical_contexts = dict(turn.logical_llm_contexts)
+            turn.logical_llm_contexts.clear()
         for index in range(len(logical_calls) - 1, -1, -1):
             request_id, logical_handle = logical_calls[index]
+            logical_context = logical_contexts.get(request_id)
             failure = lease.host._close_scope_handle(
                 lease.session,
                 logical_handle,
+                context=logical_context,
                 output={"outcome": outcome},
                 failure_label="logical LLM scope close failed",
             )
@@ -1707,6 +1825,12 @@ class RelaySessionCoordinator:
                         pending_request_id,
                         pending_handle,
                     )
+                    pending_context = logical_contexts.get(pending_request_id)
+                    if pending_context is not None:
+                        turn.logical_llm_contexts.setdefault(
+                            pending_request_id,
+                            pending_context,
+                        )
             logger.warning("Hermes Relay logical LLM finalization failed: %s", failure)
             break
 
@@ -1729,6 +1853,16 @@ class RelaySessionCoordinator:
     def release_conversation(lease: ConversationLease) -> None:
         """Release a caller lease without closing a resumable conversation."""
         lease.released = True
+
+    async def finalize_conversation_async(
+        self,
+        *,
+        profile_key: str,
+        session_id: str,
+    ) -> None:
+        host = self.registry.for_profile(profile_key, create=False)
+        if isinstance(host, RelayRuntime):
+            await host.close_session_async({"session_id": session_id})
 
     def finalize_conversation(
         self,

@@ -98,6 +98,20 @@ def _no_fts_rebuild_throttle(monkeypatch):
     monkeypatch.setattr(SessionDB, "_FTS_REBUILD_DUTY_FACTOR", 0.0)
 
 
+def _trace_sessiondb_reads(monkeypatch, db, statements):
+    """Trace the writer and whichever pooled connection each read checks out."""
+    checkout = db._checkout_read_conn
+
+    def traced_checkout():
+        conn = checkout()
+        if conn is not None:
+            conn.set_trace_callback(statements.append)
+        return conn
+
+    db._conn.set_trace_callback(statements.append)
+    monkeypatch.setattr(db, "_checkout_read_conn", traced_checkout)
+
+
 # =========================================================================
 # Connection lifecycle
 # =========================================================================
@@ -813,19 +827,14 @@ class TestFTS5Search:
         ]
         assert all("context" in row and row["context"] for row in default)
 
-    def test_search_projection_skips_context_enrichment_queries(self, db):
+    def test_search_projection_skips_context_enrichment_queries(self, db, monkeypatch):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="before")
         db.append_message("s1", role="assistant", content="projectionneedle")
         db.append_message("s1", role="user", content="after")
 
         statements = []
-        read_conn = db._get_read_conn() or db._conn
-        traced_connections = [db._conn]
-        if read_conn is not db._conn:
-            traced_connections.append(read_conn)
-        for conn in traced_connections:
-            conn.set_trace_callback(statements.append)
+        _trace_sessiondb_reads(monkeypatch, db, statements)
 
         def context_query_count():
             normalized = (" ".join(sql.upper().split()) for sql in statements)
@@ -850,8 +859,7 @@ class TestFTS5Search:
             assert default[0]["context"]
             assert context_query_count() == 2
         finally:
-            for conn in traced_connections:
-                conn.set_trace_callback(None)
+            db._conn.set_trace_callback(None)
 
     def test_sanitize_fts5_query_strips_dangerous_chars(self):
         """Unit test for _sanitize_fts5_query static method."""
@@ -2229,6 +2237,62 @@ class TestTitleLineage:
         """With no existing sessions, base title is returned as-is."""
         assert db.get_next_title_in_lineage("my project") == "my project"
 
+    def test_next_title_uses_only_numeric_suffixes_for_exact_base(self, db):
+        titles = [
+            "my project",
+            "my project #2",
+            "my project #10",
+            "my project #not-a-number",
+            "my project #12 extra",
+            "my project extra #99",
+        ]
+        for index, title in enumerate(titles):
+            session_id = f"lineage-{index}"
+            db.create_session(session_id, "cli")
+            db.set_session_title(session_id, title)
+
+        assert db.get_next_title_in_lineage("my project") == "my project #11"
+        assert db.get_next_title_in_lineage("my project #7") == "my project #11"
+
+    def test_next_title_treats_like_wildcards_as_literal_text(self, db):
+        db.create_session("wildcard-base", "cli")
+        db.set_session_title("wildcard-base", r"100%_done")
+        db.create_session("wildcard-numbered", "cli")
+        db.set_session_title("wildcard-numbered", r"100%_done #4")
+        db.create_session("wildcard-decoy", "cli")
+        db.set_session_title("wildcard-decoy", "100XXdone #99")
+
+        assert db.get_next_title_in_lineage(r"100%_done") == r"100%_done #5"
+
+    def test_next_title_query_uses_title_index(self, db, monkeypatch):
+        db.create_session("indexed-title", "cli")
+        db.set_session_title("indexed-title", "indexed project #2")
+        real_ctx = db._read_ctx
+        seen_plans = []
+
+        from contextlib import contextmanager
+
+        @contextmanager
+        def plan_checking_ctx():
+            with real_ctx() as conn:
+                class PlanCheckingConnection:
+                    def execute(self, sql, parameters=()):
+                        if sql.lstrip().upper().startswith("SELECT TITLE FROM SESSIONS"):
+                            plan = conn.execute(
+                                "EXPLAIN QUERY PLAN " + sql, parameters
+                            ).fetchall()
+                            seen_plans.append(" | ".join(str(row[3]) for row in plan))
+                        return conn.execute(sql, parameters)
+
+                yield PlanCheckingConnection()
+
+        monkeypatch.setattr(db, "_read_ctx", plan_checking_ctx)
+
+        assert db.get_next_title_in_lineage("indexed project") == "indexed project #3"
+        assert seen_plans
+        assert all("SCAN sessions" not in plan for plan in seen_plans)
+        assert all("idx_sessions_title_unique" in plan for plan in seen_plans)
+
 
 
 
@@ -2367,6 +2431,127 @@ class TestListSessionsRich:
         assert rows[0]["last_active"] == heartbeat
         activity = db.get_session_activity("gw-1")
         assert activity["last_activity_description"] == "compressing context"
+
+    def test_gateway_routing_origins_excludes_heavy_session_payloads(self, db):
+        db.create_session(
+            "gw-routing",
+            "telegram",
+            session_key="agent:main:telegram:dm:routing",
+            chat_id="routing",
+            chat_type="dm",
+            system_prompt="large prompt that channel discovery must not resolve",
+        )
+        db.record_gateway_session_peer(
+            "gw-routing",
+            source="telegram",
+            session_key="agent:main:telegram:dm:routing",
+            chat_id="routing",
+            chat_type="dm",
+            thread_id="topic-1",
+            display_name="Routing chat",
+            origin_json=json.dumps({"chat_id": "routing", "chat_name": "Routing chat"}),
+        )
+        db.append_message("gw-routing", "user", "message table must not be read")
+
+        def deny_heavy_tables(action, table, _column, _database, _trigger):
+            if action == sqlite3.SQLITE_READ and table in {"messages", "system_prompts"}:
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        db._conn.set_authorizer(deny_heavy_tables)
+        try:
+            rows = db.list_gateway_routing_origins(platform="telegram")
+        finally:
+            db._conn.set_authorizer(None)
+
+        assert rows == [{
+            "origin_json": json.dumps({"chat_id": "routing", "chat_name": "Routing chat"}),
+            "chat_id": "routing",
+            "thread_id": "topic-1",
+            "display_name": "Routing chat",
+            "chat_type": "dm",
+        }]
+
+    def test_gateway_routing_origins_uses_newest_row_per_key_and_platform(self, db):
+        lane_key = "agent:main:telegram:dm:lane"
+        for session_id, source, chat_id, started_at in (
+            ("old", "telegram", "old-chat", 100.0),
+            ("new", "telegram", "new-chat", 200.0),
+            ("buzz", "buzz", "buzz-chat", 300.0),
+        ):
+            key = lane_key if source == "telegram" else "agent:main:buzz:dm:lane"
+            db.create_session(
+                session_id,
+                source,
+                session_key=key,
+                chat_id=chat_id,
+                chat_type="dm",
+            )
+            db.record_gateway_session_peer(
+                session_id,
+                source=source,
+                session_key=key,
+                chat_id=chat_id,
+                chat_type="dm",
+                display_name=chat_id,
+            )
+            with db._lock:
+                db._conn.execute(
+                    "UPDATE sessions SET started_at = ? WHERE id = ?",
+                    (started_at, session_id),
+                )
+                db._conn.commit()
+
+        rows = db.list_gateway_routing_origins(platform="TELEGRAM", active_only=False)
+
+        assert [row["chat_id"] for row in rows] == ["new-chat"]
+
+    def test_gateway_routing_origins_active_filter_applies_after_newest_row(self, db):
+        lane_key = "agent:main:telegram:dm:ended-lane"
+        db.create_session("active-old", "telegram", session_key=lane_key, chat_id="old")
+        db.create_session("ended-new", "telegram", session_key=lane_key, chat_id="new")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET started_at = 100 WHERE id = 'active-old'"
+            )
+            db._conn.execute(
+                "UPDATE sessions SET started_at = 200, ended_at = 201 WHERE id = 'ended-new'"
+            )
+            db._conn.commit()
+
+        assert db.list_gateway_routing_origins(platform="telegram", active_only=True) == []
+        assert [
+            row["chat_id"]
+            for row in db.list_gateway_routing_origins(
+                platform="telegram", active_only=False
+            )
+        ] == ["new"]
+
+    def test_gateway_routing_origins_avoids_correlated_per_row_lookup(
+        self, db, monkeypatch
+    ):
+        db.create_session(
+            "routing-plan",
+            "telegram",
+            session_key="agent:main:telegram:dm:routing-plan",
+            chat_id="routing-plan",
+        )
+        statements = []
+        _trace_sessiondb_reads(monkeypatch, db, statements)
+        try:
+            db.list_gateway_routing_origins(platform="telegram", active_only=False)
+        finally:
+            db._conn.set_trace_callback(None)
+
+        query = next(
+            statement
+            for statement in statements
+            if "origin_json" in statement and "FROM sessions" in statement
+        )
+        plan = db._conn.execute("EXPLAIN QUERY PLAN " + query).fetchall()
+        detail = " ".join(row[-1] for row in plan).upper()
+        assert "CORRELATED" not in detail, detail
+        assert "IDX_SESSIONS_SESSION_KEY" in detail, detail
 
     def test_order_by_last_active_surfaces_recently_touched_older_session_first(self, db):
         t0 = 1709500000.0
@@ -4006,6 +4191,70 @@ class TestApplyWalProbe:
             "set-pragma must fire when probe returns 'delete'"
         )
 
+    def test_ambiguous_eio_never_downgrades_nonempty_database(self, tmp_path):
+        """Unknown mode after repeated EIO must fail closed without issuing DELETE."""
+        import sqlite3
+        from hermes_state import apply_wal_with_fallback
+
+        class _AmbiguousEioConn(sqlite3.Connection):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                normalized = sql.strip().lower()
+                if normalized == "pragma journal_mode" or normalized == "pragma journal_mode=wal":
+                    raise sqlite3.OperationalError("disk I/O error")
+                return super().execute(sql, params)
+
+        db_path = tmp_path / "existing.db"
+        seed = sqlite3.connect(db_path)
+        seed.execute("CREATE TABLE data (value TEXT)")
+        seed.execute("INSERT INTO data VALUES ('preserve me')")
+        seed.commit()
+        seed.close()
+        before = db_path.read_bytes()[:100]
+
+        conn = _AmbiguousEioConn(str(db_path))
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+                apply_wal_with_fallback(conn, db_label="existing.db")
+        finally:
+            conn.close()
+
+        assert not any(sql.strip().lower() == "pragma journal_mode=delete" for sql in conn.executed)
+        assert db_path.read_bytes()[:100] == before
+
+    def test_ambiguous_eio_allows_delete_fallback_for_empty_database(self, tmp_path):
+        """A proven empty file retains the compatibility fallback for WAL-incompatible FSes."""
+        import sqlite3
+        from hermes_state import apply_wal_with_fallback
+
+        class _AmbiguousEioConn(sqlite3.Connection):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                normalized = sql.strip().lower()
+                if normalized == "pragma journal_mode" or normalized == "pragma journal_mode=wal":
+                    raise sqlite3.OperationalError("disk I/O error")
+                return super().execute(sql, params)
+
+        db_path = tmp_path / "empty.db"
+        sqlite3.connect(db_path).close()
+        assert db_path.stat().st_size == 0
+
+        conn = _AmbiguousEioConn(str(db_path))
+        try:
+            assert apply_wal_with_fallback(conn, db_label="empty.db") == "delete"
+        finally:
+            conn.close()
+
+        assert any(sql.strip().lower() == "pragma journal_mode=delete" for sql in conn.executed)
+
 
 class TestSessionArchive:
     """Soft-archiving hides a session from default listings without deleting it."""
@@ -4883,6 +5132,36 @@ class TestApplyDatabasePragmas:
         finally:
             conn.close()
 
+    @pytest.mark.parametrize(
+        "cfg",
+        [
+            {},
+            {"database": {}},
+            {"database": {"wal_autocheckpoint": None}},
+        ],
+    )
+    def test_disables_wal_autocheckpoint_when_unset(
+        self, tmp_path, monkeypatch, cfg
+    ):
+        """SessionDB's explicit post-lock checkpoint path owns checkpointing.
+
+        Leaving SQLite's connection-local default of 1000 pages enabled can
+        run an automatic checkpoint inside ``Connection.commit()`` while the
+        SessionDB writer mutex is held, creating a writer convoy.
+        """
+        import sqlite3
+        from hermes_state import apply_database_pragmas
+
+        conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            assert conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == 1000
+            self._patch_cfg(monkeypatch, cfg)
+            apply_database_pragmas(conn, db_label="test.db")
+            assert conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == 0
+        finally:
+            conn.close()
+
     def test_honors_journal_size_limit_from_config(self, tmp_path, monkeypatch):
         import sqlite3
         from hermes_state import apply_database_pragmas
@@ -4897,6 +5176,59 @@ class TestApplyDatabasePragmas:
             assert (
                 conn.execute("PRAGMA journal_size_limit").fetchone()[0] == 10485760
             )
+        finally:
+            conn.close()
+
+    def test_honors_synchronous_from_config(self, tmp_path, monkeypatch):
+        """database.synchronous=NORMAL (1) must reach the connection on
+        non-Darwin platforms (the live-deploy latency fix depends on it)."""
+        import sqlite3
+        import hermes_state
+        from hermes_state import apply_database_pragmas
+
+        if hermes_state.sys.platform == "darwin":
+            pytest.skip("synchronous operator value is Darwin-exempt")
+
+        conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            self._patch_cfg(monkeypatch, {"database": {"synchronous": 1}})
+            apply_database_pragmas(conn, db_label="test.db")
+            assert conn.execute("PRAGMA synchronous").fetchone()[0] == 1
+        finally:
+            conn.close()
+
+    def test_synchronous_excluded_on_darwin(self, tmp_path, monkeypatch):
+        """On Darwin the operator synchronous value must be ignored —
+        _enforce_macos_synchronous_full owns that pragma (F_FULLFSYNC)."""
+        import sqlite3
+        import hermes_state
+        from hermes_state import apply_database_pragmas
+
+        conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            before = conn.execute("PRAGMA synchronous").fetchone()[0]
+            monkeypatch.setattr(hermes_state.sys, "platform", "darwin")
+            self._patch_cfg(monkeypatch, {"database": {"synchronous": 1}})
+            apply_database_pragmas(conn, db_label="test.db")
+            after = conn.execute("PRAGMA synchronous").fetchone()[0]
+            assert after == before  # untouched on Darwin
+        finally:
+            conn.close()
+
+    def test_synchronous_ignored_when_unset(self, tmp_path, monkeypatch):
+        """Absence of database.synchronous must leave the compile default
+        (FULL, 2) alone — no behavior change for existing installs."""
+        import sqlite3
+        from hermes_state import apply_database_pragmas
+
+        conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            self._patch_cfg(monkeypatch, {"database": {"cache_size": -2000}})
+            apply_database_pragmas(conn, db_label="test.db")
+            assert conn.execute("PRAGMA synchronous").fetchone()[0] == 2
         finally:
             conn.close()
 

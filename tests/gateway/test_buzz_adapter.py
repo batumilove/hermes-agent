@@ -6,6 +6,9 @@ import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+from gateway.config import Platform
+from gateway.platforms.base import MessageEvent, MessageType
+from gateway.session import SessionSource, build_session_key
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 # Load plugins/platforms/buzz/adapter.py under a unique module name
@@ -24,6 +27,7 @@ validate_config = _buzz_mod.validate_config
 register = _buzz_mod.register
 _env_enablement = _buzz_mod._env_enablement
 _standalone_send = _buzz_mod._standalone_send
+_parse_target_ref = getattr(_buzz_mod, "_parse_target_ref", None)
 
 # Real key pair (Chip's public identity — public information, not a secret)
 SELF_PUBKEY = "9fd5c7ba6d3ef224da78f541e0fcb9c50f72cc63edb19aae76ac6a0474dfa860"
@@ -101,6 +105,31 @@ class _ScriptedCli:
         return 0, "[]", ""
 
 
+async def _hold_typing(_chat_id, interval=2.0, metadata=None, stop_event=None):
+    if stop_event is not None:
+        await stop_event.wait()
+    else:
+        await asyncio.Event().wait()
+
+
+def _message_event():
+    return MessageEvent(
+        text="send the artifact",
+        message_type=MessageType.TEXT,
+        source=SessionSource(platform=Platform("buzz"), chat_id=CHANNEL, chat_type="dm"),
+        message_id="incoming-1",
+    )
+
+
+def _safe_media_file(tmp_path, monkeypatch, name, payload=b"payload"):
+    root = tmp_path / "media-cache"
+    path = root / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    monkeypatch.setattr("gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", (root,))
+    return path.resolve()
+
+
 # ── bech32 / identity helpers ─────────────────────────────────────────────
 
 
@@ -141,6 +170,23 @@ class TestBuzzAdapterInit:
         from gateway.config import PlatformConfig
         adapter = BuzzAdapter(PlatformConfig(enabled=True, extra={"relay_url": "https://cfg.relay"}))
         assert adapter.relay_url == "https://env.relay"
+
+    @pytest.mark.asyncio
+    async def test_list_channels_exposes_discovered_channels(self):
+        adapter = _make_adapter()
+        adapter._channel_names = {
+            CHANNEL: "general",
+            DM_CHANNEL: "DM",
+        }
+        adapter._channel_state = {
+            CHANNEL: {"chat_type": "group", "last_ts": 0, "seen": {}},
+            DM_CHANNEL: {"chat_type": "dm", "last_ts": 0, "seen": {}},
+        }
+
+        assert await adapter.list_channels() == [
+            {"id": CHANNEL, "name": "general", "type": "group"},
+            {"id": DM_CHANNEL, "name": "DM", "type": "dm"},
+        ]
 
 
 # ── CLI error contract ────────────────────────────────────────────────────
@@ -322,6 +368,55 @@ class TestDmClassification:
         assert [d["message_id"] for d in adapter._dispatched] == ["e1"]
         assert adapter._dispatched[0]["chat_type"] == "dm"
 
+    @pytest.mark.asyncio
+    async def test_allowlisted_sender_in_dm_metadata_dispatches_without_ptag(self, adapter):
+        """Private-mode DMs remain usable when a relay omits recipient p-tags."""
+        adapter._allowed_pubkeys = {OTHER_PUBKEY}
+        await self._poll_with(
+            adapter,
+            DM_CHANNEL,
+            _tagged_event("e1", DM_CHANNEL, content="hi"),
+        )
+        assert adapter._channel_state[DM_CHANNEL]["chat_type"] == "dm"
+        assert [d["message_id"] for d in adapter._dispatched] == ["e1"]
+        assert adapter._dispatched[0]["chat_type"] == "dm"
+
+    @pytest.mark.asyncio
+    async def test_unlisted_sender_without_ptag_stays_mention_gated(self, adapter):
+        """DM-shaped metadata alone must not bypass private access control."""
+        adapter._allowed_pubkeys = {"b" * 64}
+        await self._poll_with(
+            adapter,
+            DM_CHANNEL,
+            _tagged_event("e1", DM_CHANNEL, content="hi"),
+        )
+        assert adapter._channel_state[DM_CHANNEL]["chat_type"] == "group"
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_allow_all_mode_without_ptag_stays_mention_gated(self, adapter):
+        """P-tag-less metadata fallback is restricted to private allow-list mode."""
+        adapter._allowed_pubkeys = set()
+        await self._poll_with(
+            adapter,
+            DM_CHANNEL,
+            _tagged_event("e1", DM_CHANNEL, content="hi"),
+        )
+        assert adapter._channel_state[DM_CHANNEL]["chat_type"] == "group"
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_allowlisted_sender_in_real_channel_stays_mention_gated(self, adapter):
+        """An allow-listed sender cannot turn channel metadata into a DM."""
+        adapter._allowed_pubkeys = {OTHER_PUBKEY}
+        await self._poll_with(
+            adapter,
+            CHANNEL,
+            _tagged_event("e1", CHANNEL, content="hi"),
+        )
+        assert adapter._channel_state[CHANNEL]["chat_type"] == "group"
+        assert adapter._dispatched == []
+
 
     @pytest.mark.asyncio
     async def test_general_reply_ptagging_self_stays_channel(self, adapter):
@@ -421,6 +516,102 @@ class TestBuzzAdapterSend:
         args, _stdin = cli.calls[0]
         assert args[args.index("--file") + 1] == str(img)
 
+    @pytest.mark.asyncio
+    async def test_media_directive_image_uses_file_upload(self, tmp_path, monkeypatch):
+        image = _safe_media_file(tmp_path, monkeypatch, "preview.png", b"\x89PNG fake")
+        adapter = _make_adapter()
+        adapter._keep_typing = _hold_typing
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt-image", "message": ""})
+        adapter._run_cli = cli
+
+        async def handler(_event):
+            return f"Preview attached.\nMEDIA:{image}"
+
+        adapter.set_message_handler(handler)
+        event = _message_event()
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+        upload_calls = [args for args, _stdin in cli.calls if "--file" in args]
+        assert len(upload_calls) == 1
+        assert upload_calls[0][upload_calls[0].index("--file") + 1] == str(image)
+
+    @pytest.mark.asyncio
+    async def test_media_directive_document_uses_file_upload(self, tmp_path, monkeypatch):
+        document = _safe_media_file(tmp_path, monkeypatch, "report.pdf", b"%PDF-1.4 fake")
+        adapter = _make_adapter()
+        adapter._keep_typing = _hold_typing
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt-document", "message": ""})
+        adapter._run_cli = cli
+
+        async def handler(_event):
+            return f"Report attached.\nMEDIA:{document}"
+
+        adapter.set_message_handler(handler)
+        event = _message_event()
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+        upload_calls = [args for args, _stdin in cli.calls if "--file" in args]
+        assert len(upload_calls) == 1
+        assert upload_calls[0][upload_calls[0].index("--file") + 1] == str(document)
+
+    @pytest.mark.asyncio
+    async def test_send_document_targets_metadata_thread(self, tmp_path):
+        document = tmp_path / "report.pdf"
+        document.write_bytes(b"%PDF-1.4 fake")
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt-thread", "message": ""})
+        adapter._run_cli = cli
+
+        result = await adapter.send_document(
+            CHANNEL,
+            str(document),
+            metadata={"thread_id": "thread-event"},
+        )
+
+        args, _stdin = cli.calls[0]
+        assert args[args.index("--reply-to") + 1] == "thread-event"
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("file_name", "media_type"),
+        [
+            ("artifact.html", "text/html"),
+            ("artifact.zip", "application/zip"),
+        ],
+    )
+    async def test_send_document_surfaces_relay_file_type_rejection(
+        self,
+        tmp_path,
+        file_name,
+        media_type,
+    ):
+        document = tmp_path / file_name
+        document.write_bytes(b"unsupported")
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=1,
+            stderr=(
+                '{"error":"user_error","message":"unsupported file type: '
+                f'{media_type}"}}'
+            ),
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send_document(CHANNEL, str(document), caption="artifact")
+
+        args, _stdin = cli.calls[0]
+        assert args[args.index("--file") + 1] == str(document)
+        assert result.success is False
+        assert f"unsupported file type: {media_type}" in result.error
+
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -493,6 +684,12 @@ class TestEnvEnablement:
 
 class TestBuzzPluginRegistration:
 
+    def test_target_parser_accepts_channel_uuid_and_rejects_other_shapes(self):
+        assert callable(_parse_target_ref)
+        assert _parse_target_ref(f"  {CHANNEL.upper()}  ") == (CHANNEL, None)
+        assert _parse_target_ref("general") is None
+        assert _parse_target_ref("not-a-uuid") is None
+
     def test_register_platform_contract(self):
         from gateway.platform_registry import platform_registry
 
@@ -507,6 +704,7 @@ class TestBuzzPluginRegistration:
         assert kwargs["allow_all_env"] == "BUZZ_ALLOW_ALL_USERS"
         assert callable(kwargs["standalone_sender_fn"])
         assert callable(kwargs["env_enablement_fn"])
+        assert kwargs["parse_target_ref_fn"] is _parse_target_ref
         assert set(kwargs["required_env"]) == {"BUZZ_RELAY_URL", "BUZZ_PRIVATE_KEY"}
 
 

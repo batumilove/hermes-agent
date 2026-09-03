@@ -1103,24 +1103,38 @@ def _run_review_in_thread(
         """
         if agent_ref is None:
             return
-        if hasattr(agent, "_background_review_agent"):
-            _br_lock = getattr(agent, "_background_review_lock", None)
-            if _br_lock is not None:
-                with _br_lock:
-                    if agent._background_review_agent is agent_ref:
-                        agent._background_review_agent = None
-            elif agent._background_review_agent is agent_ref:
+        has_background_slot = hasattr(agent, "_background_review_agent")
+        has_children_slot = hasattr(agent, "_active_children")
+        _br_lock = getattr(agent, "_background_review_lock", None)
+        _ac_lock = getattr(agent, "_active_children_lock", None)
+
+        def _clear_tracking() -> None:
+            if (
+                has_background_slot
+                and agent._background_review_agent is agent_ref
+            ):
                 agent._background_review_agent = None
-        if hasattr(agent, "_active_children"):
-            try:
-                _ac_lock = getattr(agent, "_active_children_lock", None)
-                if _ac_lock is not None:
-                    with _ac_lock:
-                        agent._active_children.remove(agent_ref)
-                else:
+            if has_children_slot:
+                try:
                     agent._active_children.remove(agent_ref)
-            except (ValueError, AttributeError):
-                pass
+                except (ValueError, AttributeError):
+                    pass
+
+        # The pointer and child-list entry form one ownership record. Hold both
+        # locks in the canonical background -> children order so parent teardown
+        # cannot observe a half-registered or half-unregistered review fork.
+        if _br_lock is not None and _ac_lock is not None:
+            with _br_lock:
+                with _ac_lock:
+                    _clear_tracking()
+        elif _br_lock is not None:
+            with _br_lock:
+                _clear_tracking()
+        elif _ac_lock is not None:
+            with _ac_lock:
+                _clear_tracking()
+        else:
+            _clear_tracking()
 
     def _finish_request_phase(agent_ref) -> None:
         _unregister_review_agent(agent_ref)
@@ -1405,20 +1419,37 @@ def _run_review_in_thread(
             # separately fences startup and acknowledges request-phase exit.
             # The legacy pointer/list remain best-effort for direct test stubs;
             # a prepared run token is the live-turn cancellation authority.
-            if hasattr(agent, "_background_review_agent"):
-                _br_lock = getattr(agent, "_background_review_lock", None)
-                if _br_lock is not None:
-                    with _br_lock:
-                        agent._background_review_agent = review_agent
-                else:
+            # Without
+            # this, a review still streaming when the next turn starts races
+            # the live turn against the same session_id/credentials — producing
+            # doubled prompt-token accounting and a Ctrl+C-proof lockup.
+            # Best-effort: agents built without agent_init.py (test stubs)
+            # degrade to "no cross-cancellation" rather than aborting the review.
+            has_background_slot = hasattr(agent, "_background_review_agent")
+            has_children_slot = hasattr(agent, "_active_children")
+            _br_lock = getattr(agent, "_background_review_lock", None)
+            _ac_lock = getattr(agent, "_active_children_lock", None)
+
+            def _set_tracking() -> None:
+                if has_background_slot:
                     agent._background_review_agent = review_agent
-            if hasattr(agent, "_active_children"):
-                _ac_lock = getattr(agent, "_active_children_lock", None)
-                if _ac_lock is not None:
-                    with _ac_lock:
-                        agent._active_children.append(review_agent)
-                else:
+                if has_children_slot:
                     agent._active_children.append(review_agent)
+
+            # Publish the ownership record atomically using the same canonical
+            # lock order as parent teardown and unregistration.
+            if _br_lock is not None and _ac_lock is not None:
+                with _br_lock:
+                    with _ac_lock:
+                        _set_tracking()
+            elif _br_lock is not None:
+                with _br_lock:
+                    _set_tracking()
+            elif _ac_lock is not None:
+                with _ac_lock:
+                    _set_tracking()
+            else:
+                _set_tracking()
 
             from model_tools import get_tool_definitions
             from hermes_cli.plugins import (

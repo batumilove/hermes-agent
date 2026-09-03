@@ -14,7 +14,7 @@ import { useHudGameOverlay } from './game-overlay'
 import { useHudGlass } from './glass'
 import { useHudGoto, useReportHudSession } from './handoff'
 import { hudTranscriptHeight } from './layout'
-import { hudResizeDirections, useHudResizeHandle } from './resize-handle'
+import { hudClientPlacement, hudResizeDirections, useHudResizeHandle } from './resize-handle'
 import { useHudThreadFocus } from './thread-focus'
 
 /** How long the transcript lingers at its glanceable opacity — after a turn
@@ -377,7 +377,8 @@ export function HudShell() {
   // growth bug); the handle is the one sanctioned way to change size, driving
   // the same flip-resizable-for-the-call pattern the pet overlay uses.
   const { resizing: hudResizing, onPointerDown: onHudResizePointerDown } = useHudResizeHandle()
-  const resizeDirections = hudResizeDirections(window.hermesDesktop?.hud?.windowing?.clientPlacement !== false)
+  const hudBridge = window.hermesDesktop?.hud
+  const resizeDirections = hudResizeDirections(hudClientPlacement(hudBridge?.windowing, hudBridge?.nativeDrag))
 
   // Force the HOST layers transparent. index.html's pre-paint script writes an
   // opaque themed background onto <html> as an INLINE style (the anti-white-

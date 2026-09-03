@@ -35,6 +35,79 @@ def test_claim_succeeds_once_then_blocks(temp_home):
     assert get_job(jid)["next_run_at"] != before
 
 
+def test_claim_snapshot_preserves_owner_and_exact_scheduled_slot(temp_home):
+    """The owner-bearing claim keeps the slot that was atomically claimed."""
+    from cron.jobs import claim_job_for_fire, create_job
+
+    job = create_job(prompt="x", schedule="every 5m", name="snapshot")
+    scheduled_for = job["next_run_at"]
+
+    claimed = claim_job_for_fire(job["id"], return_job=True)
+
+    assert isinstance(claimed, dict)
+    claim = claimed["fire_claim"]
+    assert claim["scheduled_for"] == scheduled_for
+    assert claim["at"]
+    assert claim["by"]
+    assert ":" in claim["by"], "claim owner must include the per-acquisition UUID"
+    assert claimed["next_run_at"] != scheduled_for
+
+
+def test_release_fire_claim_restores_exact_slot_for_same_owner(temp_home):
+    """A failed post-claim step re-arms the exact slot for an immediate retry."""
+    from cron.jobs import (
+        claim_job_for_fire,
+        create_job,
+        get_job,
+        release_fire_claim,
+    )
+
+    job = create_job(prompt="x", schedule="every 5m", name="rollback")
+    scheduled_for = job["next_run_at"]
+    claimed = claim_job_for_fire(job["id"], return_job=True)
+    assert isinstance(claimed, dict)
+    owner = claimed["fire_claim"]["by"]
+    assert claimed["next_run_at"] != scheduled_for
+
+    assert release_fire_claim(job["id"], expected_owner=owner) is True
+    released = get_job(job["id"])
+    assert released["fire_claim"] is None
+    assert released["next_run_at"] == scheduled_for
+
+    retried = claim_job_for_fire(job["id"], return_job=True)
+    assert isinstance(retried, dict)
+    assert retried["fire_claim"]["scheduled_for"] == scheduled_for
+    assert retried["fire_claim"]["by"] != owner
+
+
+def test_release_fire_claim_preserves_changed_owner_and_slot(temp_home):
+    """A stale rollback must never erase a replacement owner's durable claim."""
+    import cron.jobs as jobs
+
+    job = jobs.create_job(prompt="x", schedule="every 5m", name="fenced-rollback")
+    claimed = jobs.claim_job_for_fire(job["id"], return_job=True)
+    assert isinstance(claimed, dict)
+    stale_owner = claimed["fire_claim"]["by"]
+
+    stored = jobs.load_jobs()
+    replacement_slot = "2030-01-02T03:04:05+00:00"
+    replacement_claim = {
+        "at": "2030-01-02T03:00:00+00:00",
+        "by": "newer-owner",
+        "scheduled_for": "2030-01-02T02:55:00+00:00",
+    }
+    for item in stored:
+        if item["id"] == job["id"]:
+            item["fire_claim"] = replacement_claim
+            item["next_run_at"] = replacement_slot
+    jobs.save_jobs(stored)
+
+    assert jobs.release_fire_claim(job["id"], expected_owner=stale_owner) is False
+    preserved = jobs.get_job(job["id"])
+    assert preserved["fire_claim"] == replacement_claim
+    assert preserved["next_run_at"] == replacement_slot
+
+
 def test_claim_oneshot_cannot_be_double_claimed(temp_home):
     """A one-shot can't be double-claimed (the fresh claim blocks the retry)."""
     from cron.jobs import create_job, claim_job_for_fire

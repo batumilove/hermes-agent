@@ -1,0 +1,21 @@
+{
+  "fetch_depth": 8,
+  "source_head": "5558ccbd7f33c7e77d3ccde5ef70931437ed5609",
+  "squash_commit": "3b57826ec3b864907fbf727778e0d8e661caca4c",
+  "upstream_base": "a08dfab30201abe562953ba3de1e182a355e2465",
+  "version": 1,
+  "history": [
+    {
+      "pr": 275,
+      "merged_sha": "6bf5230c4f2836541f4cfbb9a8abfa26b2db10f3",
+      "recorded_at": "2026-08-28T09:07:58+00:00",
+      "source_prs": [
+        267,
+        268,
+        269
+      ],
+      "method": "semantic graft onto live head 20df23f18f; squash-merged",
+      "notes": "fix-3 (pre-adapter heartbeat) superseded by live #273; stray-SIGTERM exit 75; review t_1940317b BLOCK (addressed) then t_83e044a6 PASS."
+    }
+  ]
+}

@@ -83,14 +83,16 @@ def test_close_shuts_down_memory_provider():
     from run_agent import AIAgent
 
     agent = object.__new__(AIAgent)
-    agent._memory_manager = MagicMock()
+    manager = MagicMock()
+    agent._memory_manager = manager
     agent.context_compressor = None
     agent.session_id = ""
     agent._session_messages = []
 
     agent.close()
 
-    agent._memory_manager.shutdown_all.assert_called_once()
+    manager.shutdown_all.assert_called_once()
+    assert agent._memory_manager is None
 
 
 def test_aiagent_forwards_user_id_alt_to_memory_provider():

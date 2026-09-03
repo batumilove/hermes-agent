@@ -294,6 +294,20 @@ describe('PreviewBrowserBar', () => {
     await waitFor(() => expect(writeClipboard).toHaveBeenCalledWith('https://example.com'))
   })
 
+  it('copies the in-flight address shown after navigation starts', async () => {
+    const writeClipboard = vi.fn().mockResolvedValue(undefined)
+
+    installBridge(writeClipboard)
+    const rendered = render(<PreviewBrowserBar {...baseProps} />)
+    const input = address(rendered)
+    fireEvent.focus(input)
+    fireEvent.change(input, { target: { value: 'example.org/docs' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    fireEvent.click(screen.getByRole('button', { name: 'Copy URL' }))
+
+    await waitFor(() => expect(writeClipboard).toHaveBeenCalledWith('https://example.org/docs'))
+  })
+
   it('copies the new address after the page navigates', async () => {
     const writeClipboard = vi.fn().mockResolvedValue(undefined)
 
