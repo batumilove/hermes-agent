@@ -262,6 +262,7 @@ class TestMarkResumePending:
         assert counting_lock.acquisitions == 1
         assert persist.call_count == 1
         assert persist.call_args.kwargs["reason"] == "mark_resume_pending_batch"
+        assert persist.call_args.kwargs["require_state_db"] is True
         assert first.resume_pending is True
         assert second.resume_pending is True
         assert first.last_resume_marked_at == second.last_resume_marked_at

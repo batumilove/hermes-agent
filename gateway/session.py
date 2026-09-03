@@ -3560,6 +3560,7 @@ class SessionStore:
                     data,
                     generation,
                     reason="mark_resume_pending_batch",
+                    require_state_db=True,
                 )
                 if not persisted:
                     raise RuntimeError("resume-marker batch was not persisted")
