@@ -101,6 +101,7 @@ patches:
       - scripts/sandbox/stage2-run.sh
       - scripts/sandbox/proxy.py
       - tests/test_dev_sandbox_tls.py
+      - tests/install/install-update-e2e.sh
     tests:
       - scripts/run_tests.sh tests/test_dev_sandbox_tls.py
       - tests/install/install-update-e2e.sh
