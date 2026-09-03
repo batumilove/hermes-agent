@@ -60,10 +60,18 @@ def test_proxy_forces_one_unambiguous_connection_close(monkeypatch, tmp_path):
     )
 
 
-def test_installer_sandbox_does_not_force_host_node_headers():
+def test_installer_sandbox_uses_only_matching_managed_node_headers():
     script = STAGE2_RUN.read_text(encoding="utf-8")
 
-    assert "npm_config_nodedir" not in script
+    assert "DEV_SANDBOX_NODE_DIR" not in script
+    assert (
+        'if [ -f "$DEV_SANDBOX_ROOT/home/.hermes/node/include/node/common.gypi" ]; then'
+        in script
+    )
+    assert (
+        'node_env+=(--setenv npm_config_nodedir "/home/hermes/.hermes/node")'
+        in script
+    )
 
 
 def test_install_e2e_artifacts_include_npm_debug_logs():
