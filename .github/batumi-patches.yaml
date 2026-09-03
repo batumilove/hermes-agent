@@ -94,10 +94,12 @@ patches:
     rationale: >-
       Make Node clients trust the throwaway CA that signs HTTPS certificates in
       the install E2E sandbox while retaining the host CA exclusively for the
-      proxy's outbound verification, so npm exercises the intercepted network
-      path instead of failing every TLS handshake.
+      proxy's outbound verification. Force one unambiguous Connection: close
+      request header so npm cannot reuse a tunnel the single-request proxy has
+      already closed.
     paths:
       - scripts/sandbox/stage2-run.sh
+      - scripts/sandbox/proxy.py
       - tests/test_dev_sandbox_tls.py
     tests:
       - scripts/run_tests.sh tests/test_dev_sandbox_tls.py
