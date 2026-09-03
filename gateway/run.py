@@ -15960,12 +15960,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 task.add_done_callback(_release)
                 return task
 
-            async def _persist_resume_pending(
-                session_key: str,
+            async def _persist_resume_pending_batch(
+                session_keys: list[str],
                 reason: str,
-            ) -> None:
-                await self.async_session_store.mark_resume_pending(
-                    session_key,
+            ) -> list[str]:
+                return await self.async_session_store.mark_resume_pending_batch(
+                    session_keys,
                     reason,
                 )
 
@@ -15973,50 +15973,74 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_keys,
                 reason: str,
             ) -> tuple[list[str], bool]:
-                """Persist resume intent within the shared shutdown deadline."""
+                """Persist all resume intents atomically within the shared deadline."""
+                candidates = list(dict.fromkeys(session_keys))
+                if not candidates:
+                    return [], True
                 budget = min(
                     5.0,
                     max(0.05, float(configured_drain_timeout)),
                     GatewayRunner._shutdown_remaining(_cleanup_deadline),
                 )
                 if budget <= 0:
-                    return [], False
-                deadline = asyncio.get_running_loop().time() + budget
-                attempted: list[str] = []
-                for session_key in session_keys:
-                    remaining = min(
-                        deadline - asyncio.get_running_loop().time(),
-                        GatewayRunner._shutdown_remaining(_cleanup_deadline),
+                    return candidates, False
+
+                existing_tasks = {
+                    _resume_marker_tasks_by_key.get(session_key)
+                    for session_key in candidates
+                }
+                existing_tasks.discard(None)
+                task = next(iter(existing_tasks)) if len(existing_tasks) == 1 else None
+                if task is None or task.done() or any(
+                    _resume_marker_tasks_by_key.get(session_key) is not task
+                    for session_key in candidates
+                ):
+                    task = _own_resume_marker_task(
+                        asyncio.create_task(
+                            _persist_resume_pending_batch(candidates, reason)
+                        )
                     )
-                    if remaining <= 0:
-                        return attempted, False
-                    attempted.append(session_key)
-                    task = _resume_marker_tasks_by_key.get(session_key)
-                    if task is None or task.done():
-                        task = _own_resume_marker_task(
-                            asyncio.create_task(
-                                _persist_resume_pending(session_key, reason)
-                            )
-                        )
+                    for session_key in candidates:
                         _resume_marker_tasks_by_key[session_key] = task
-                    done, _pending = await asyncio.wait({task}, timeout=remaining)
-                    if task not in done:
-                        logger.warning(
-                            "Shutdown resume-marker persistence exceeded %.2fs; "
-                            "forcing shutdown forward progress",
-                            budget,
-                        )
-                        return attempted, False
-                    try:
-                        await task
-                    except Exception as exc:
-                        logger.debug(
-                            "mark_resume_pending failed for %s: %s",
-                            session_key,
-                            exc,
-                        )
-                        continue
-                return attempted, True
+
+                done, _pending = await asyncio.wait({task}, timeout=budget)
+                if task not in done:
+                    logger.warning(
+                        "Shutdown resume-marker batch timed out after %.2fs: "
+                        "candidates=%d persisted=unknown missing=unknown; "
+                        "forcing shutdown forward progress",
+                        budget,
+                        len(candidates),
+                    )
+                    return candidates, False
+                try:
+                    persisted = list(dict.fromkeys((await task) or []))
+                except Exception as exc:
+                    logger.warning(
+                        "Shutdown resume-marker batch failed: candidates=%d "
+                        "persisted=0 missing=%d error=%s",
+                        len(candidates),
+                        len(candidates),
+                        exc,
+                    )
+                    return candidates, False
+
+                persisted_set = set(persisted)
+                missing = [key for key in candidates if key not in persisted_set]
+                log = logger.warning if missing else logger.info
+                log(
+                    "Shutdown resume-marker batch: candidates=%d persisted=%d "
+                    "missing=%d",
+                    len(candidates),
+                    len(persisted),
+                    len(missing),
+                )
+                if missing:
+                    logger.warning(
+                        "Shutdown resume-marker batch omitted session keys: %s",
+                        ", ".join(missing),
+                    )
+                return candidates, True
 
             # Pre-mark sessions as resume_pending BEFORE the drain wait.
             # If the process is killed by the service manager during the

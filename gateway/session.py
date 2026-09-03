@@ -3515,6 +3515,68 @@ class SessionStore:
         self._save_entry(session_key)
         return True
 
+    def mark_resume_pending_batch(
+        self,
+        session_keys: List[str],
+        reason: str = "restart_timeout",
+    ) -> List[str]:
+        """Atomically mark multiple sessions resumable in one durable write.
+
+        Shutdown may need to preserve many concurrent turns within one short
+        deadline.  Per-key point saves can commit only an arbitrary prefix
+        before that deadline expires, so this path publishes one complete
+        routing snapshot while holding the routing lock.  Explicitly suspended
+        sessions remain excluded.
+
+        Returns the ordered unique keys that existed and were marked.
+        """
+        unique_keys = list(dict.fromkeys(session_keys))
+        marked: List[str] = []
+        previous: Dict[str, tuple[bool, Optional[str], Optional[datetime]]] = {}
+        marked_at = _now()
+
+        with self._lock:
+            self._ensure_loaded_locked()
+            for session_key in unique_keys:
+                entry = self._entries.get(session_key)
+                if entry is None or entry.suspended:
+                    continue
+                previous[session_key] = (
+                    entry.resume_pending,
+                    entry.resume_reason,
+                    entry.last_resume_marked_at,
+                )
+                entry.resume_pending = True
+                entry.resume_reason = reason
+                entry.last_resume_marked_at = marked_at
+                marked.append(session_key)
+
+            if not marked:
+                return []
+
+            data, generation = self._snapshot_routing_locked()
+            try:
+                persisted = self._persist_routing_data(
+                    data,
+                    generation,
+                    reason="mark_resume_pending_batch",
+                )
+                if not persisted:
+                    raise RuntimeError("resume-marker batch was not persisted")
+            except BaseException:
+                for session_key, old_values in previous.items():
+                    entry = self._entries.get(session_key)
+                    if entry is None:
+                        continue
+                    (
+                        entry.resume_pending,
+                        entry.resume_reason,
+                        entry.last_resume_marked_at,
+                    ) = old_values
+                raise
+
+        return marked
+
     def clear_resume_pending(self, session_key: str) -> bool:
         """Clear the resume-pending flag after a successful resumed turn.
 

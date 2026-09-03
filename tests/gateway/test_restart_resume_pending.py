@@ -223,6 +223,60 @@ class TestMarkResumePending:
         store.mark_resume_pending(entry.session_key, reason="shutdown_timeout")
         assert store._entries[entry.session_key].resume_reason == "shutdown_timeout"
 
+    def test_batch_marks_all_eligible_entries_with_one_durable_write(self, tmp_path):
+        store = _make_store(tmp_path)
+        store._db = None
+        first = store.get_or_create_session(_make_source(chat_id="first"))
+        second = store.get_or_create_session(_make_source(chat_id="second"))
+        suspended = store.get_or_create_session(_make_source(chat_id="suspended"))
+        suspended.suspended = True
+
+        with patch.object(store, "_persist_routing_data", wraps=store._persist_routing_data) as persist:
+            marked = store.mark_resume_pending_batch(
+                [first.session_key, second.session_key, first.session_key, suspended.session_key, "missing"],
+                reason="shutdown_timeout",
+            )
+
+        assert marked == [first.session_key, second.session_key]
+        assert persist.call_count == 1
+        assert persist.call_args.kwargs["reason"] == "mark_resume_pending_batch"
+        assert first.resume_pending is True
+        assert second.resume_pending is True
+        assert first.last_resume_marked_at == second.last_resume_marked_at
+        assert suspended.resume_pending is False
+
+        reloaded = _make_store(tmp_path)
+        reloaded._db = None
+        reloaded_first = reloaded.get_or_create_session(_make_source(chat_id="first"))
+        reloaded_second = reloaded.get_or_create_session(_make_source(chat_id="second"))
+        assert reloaded_first.resume_pending is True
+        assert reloaded_second.resume_pending is True
+        assert reloaded_first.resume_reason == "shutdown_timeout"
+        assert reloaded_second.resume_reason == "shutdown_timeout"
+
+    def test_batch_rolls_back_every_entry_when_persistence_fails(self, tmp_path):
+        store = _make_store(tmp_path)
+        first = store.get_or_create_session(_make_source(chat_id="first"))
+        second = store.get_or_create_session(_make_source(chat_id="second"))
+
+        with patch.object(
+            store,
+            "_persist_routing_data",
+            side_effect=OSError("state store unavailable"),
+        ):
+            with pytest.raises(OSError, match="state store unavailable"):
+                store.mark_resume_pending_batch(
+                    [first.session_key, second.session_key],
+                    reason="restart_timeout",
+                )
+
+        assert first.resume_pending is False
+        assert first.resume_reason is None
+        assert first.last_resume_marked_at is None
+        assert second.resume_pending is False
+        assert second.resume_reason is None
+        assert second.last_resume_marked_at is None
+
 
 class TestClearResumePending:
 
@@ -590,8 +644,11 @@ async def test_drain_timeout_marks_resume_pending():
         session_key_two: MagicMock(),
     }
 
-    # Plug a mock session_store that records marks.
+    # Plug a mock session_store that records one atomic batch.
     session_store = MagicMock()
+    session_store.mark_resume_pending_batch = MagicMock(
+        return_value=[session_key_one, session_key_two]
+    )
     session_store.mark_resume_pending = MagicMock(return_value=True)
     runner.session_store = session_store
 
@@ -600,12 +657,12 @@ async def test_drain_timeout_marks_resume_pending():
     ):
         await runner.stop()
 
-    # Both active sessions were marked with the shutdown_timeout reason.
-    calls = session_store.mark_resume_pending.call_args_list
-    marked = {args[0][0] for args in calls}
-    assert marked == {session_key_one, session_key_two}
-    for args in calls:
-        assert args[0][1] == "shutdown_timeout"
+    # Both active sessions were submitted together; no per-key persistence.
+    calls = session_store.mark_resume_pending_batch.call_args_list
+    assert len(calls) == 2
+    for call in calls:
+        assert call.args == ([session_key_one, session_key_two], "shutdown_timeout")
+    session_store.mark_resume_pending.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
