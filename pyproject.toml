@@ -164,6 +164,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# DCF workbook generation for the bundled dcf-model skill. Requests is already
+# a pinned core dependency, so this extra adds only the spreadsheet engine.
+dcf = ["openpyxl==3.1.5"]
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
 anthropic = ["anthropic==0.87.0"]  # CVE-2026-34450, CVE-2026-34452
