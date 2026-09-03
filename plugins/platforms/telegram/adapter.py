@@ -2244,6 +2244,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 _TimedOut = None
             is_timeout = (_TimedOut and isinstance(exc, _TimedOut)) or "timed out" in err_str
             is_connect_timeout = self._looks_like_connect_timeout(exc)
+            # A pool timeout means the general request pool is wedged and the
+            # request was never sent — drain it so this and sibling paths
+            # recover instead of failing until sockets expire (#pool-exhaustion).
+            if self._looks_like_pool_timeout(exc):
+                await self._drain_general_connections_after_pool_timeout()
             # Extract server-requested retry_after for flood control so the
             # base retry layer honors Telegram's backoff instead of its own
             # short exponential schedule.
@@ -2344,6 +2349,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 _TimedOut = None
             is_timeout = (_TimedOut and isinstance(exc, _TimedOut)) or "timed out" in err_str
             is_connect_timeout = self._looks_like_connect_timeout(exc)
+            # Pool timeout: request never sent; reset the wedged general pool
+            # so sibling send/edit paths recover (#pool-exhaustion).
+            if self._looks_like_pool_timeout(exc):
+                await self._drain_general_connections_after_pool_timeout()
             safe_error = _redact_telegram_error_text(exc)
             logger.warning(
                 "[%s] rich editMessageText transient failure (no legacy resend): %s",
@@ -3716,6 +3725,10 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return thread_id
         except Exception as e:
+            # Pool timeout: the topic request was never sent; drain the wedged
+            # general pool so this and sibling paths recover (#pool-exhaustion).
+            if self._looks_like_pool_timeout(e):
+                await self._drain_general_connections_after_pool_timeout()
             error_text = str(e).lower()
             # If topic already exists, try to find it via getForumTopicIconStickers
             # or we just log and skip — Telegram doesn't provide a "list topics" API

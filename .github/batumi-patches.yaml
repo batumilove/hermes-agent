@@ -928,6 +928,20 @@ patches:
       - scripts/run_tests.sh tests/gateway/test_session_hygiene.py tests/gateway/test_telegram_send_path_degraded_retry.py tests/gateway/test_telegram_text_batching.py tests/test_session_db_recall_reader.py
     retirement: Remove individual paths when upstream passes their contention, cancellation, degraded-delivery, and aggregate-shutdown contracts.
 
+  - id: telegram-general-pool-timeout-recovery
+    kind: core
+    rationale: >-
+      Recover Telegram's shared general Bot API request pool when pool
+      exhaustion escapes rich send, rich edit, or DM-topic creation, while
+      keeping generic timeout and capability-fallback behavior unchanged and
+      leaving the polling pool under separate ownership.
+    paths:
+      - plugins/platforms/telegram/adapter.py
+      - tests/gateway/test_telegram_pool_drain_all_paths.py
+    tests:
+      - scripts/run_tests.sh tests/gateway/test_telegram_pool_drain_all_paths.py tests/gateway/test_telegram_send_path_degraded_retry.py tests/gateway/test_dm_topics.py
+    retirement: Remove when upstream drains or safely replaces the shared general request pool on every equivalent pool-timeout path.
+
   - id: gateway-drain-control-ownership
     kind: core
     rationale: >-
