@@ -70,7 +70,8 @@ SANDBOX_DIR_NAME=".hermes-sandbox-e2e-$ROUTE"
 export HERMES_DEV_SANDBOX_DIR="$SANDBOX_DIR_NAME"
 
 SANDBOX_ROOT="$REPO_ROOT/$SANDBOX_DIR_NAME"
-INSTALL_DIR="/home/hermes/.hermes/hermes-agent"   # user-level layout (sandbox default)
+SANDBOX_HOME="/home/hermes"                       # user-level layout (sandbox default)
+INSTALL_DIR="$SANDBOX_HOME/.hermes/hermes-agent"
 FAKE_REMOTE="/work/repos/hermes-agent.git"
 # Only used to fetch an old install.sh for the flag probe below; the sandbox does
 # its own fetching. Same override dev-sandbox.sh honours, so a fork can retarget
@@ -98,7 +99,7 @@ collect_sandbox_logs() {
   # with "a: unbound variable".
   local tag="$1"
   local src="$SANDBOX_ROOT/root/logs"
-  local npm_src="$SANDBOX_ROOT/root$SANDBOX_HOME/.npm/_logs"
+  local npm_src="$SANDBOX_ROOT/home/.npm/_logs"
   local dest="$LOG_DIR/sandbox-$tag"
   mkdir -p "$dest"
   if [ -d "$src" ]; then

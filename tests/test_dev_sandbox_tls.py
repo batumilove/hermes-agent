@@ -63,5 +63,5 @@ def test_proxy_forces_one_unambiguous_connection_close(monkeypatch, tmp_path):
 def test_install_e2e_artifacts_include_npm_debug_logs():
     script = INSTALL_E2E.read_text(encoding="utf-8")
 
-    assert 'npm_src="$SANDBOX_ROOT/root$SANDBOX_HOME/.npm/_logs"' in script
+    assert 'npm_src="$SANDBOX_ROOT/home/.npm/_logs"' in script
     assert 'cp -a "$npm_src/." "$dest/npm/"' in script
