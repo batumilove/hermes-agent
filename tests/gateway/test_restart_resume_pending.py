@@ -231,13 +231,35 @@ class TestMarkResumePending:
         suspended = store.get_or_create_session(_make_source(chat_id="suspended"))
         suspended.suspended = True
 
-        with patch.object(store, "_persist_routing_data", wraps=store._persist_routing_data) as persist:
+        class CountingLock:
+            def __init__(self, wrapped):
+                self.wrapped = wrapped
+                self.acquisitions = 0
+
+            def __enter__(self):
+                self.acquisitions += 1
+                return self.wrapped.__enter__()
+
+            def __exit__(self, *args):
+                return self.wrapped.__exit__(*args)
+
+        counting_lock = CountingLock(store._lock)
+
+        with (
+            patch.object(store, "_lock", counting_lock),
+            patch.object(
+                store,
+                "_persist_routing_data",
+                wraps=store._persist_routing_data,
+            ) as persist,
+        ):
             marked = store.mark_resume_pending_batch(
                 [first.session_key, second.session_key, first.session_key, suspended.session_key, "missing"],
                 reason="shutdown_timeout",
             )
 
         assert marked == [first.session_key, second.session_key]
+        assert counting_lock.acquisitions == 1
         assert persist.call_count == 1
         assert persist.call_args.kwargs["reason"] == "mark_resume_pending_batch"
         assert first.resume_pending is True
@@ -258,6 +280,10 @@ class TestMarkResumePending:
         store = _make_store(tmp_path)
         first = store.get_or_create_session(_make_source(chat_id="first"))
         second = store.get_or_create_session(_make_source(chat_id="second"))
+        previous_marked_at = datetime(2020, 1, 2, 3, 4, 5)
+        first.resume_pending = True
+        first.resume_reason = "previous_reason"
+        first.last_resume_marked_at = previous_marked_at
 
         with patch.object(
             store,
@@ -270,9 +296,9 @@ class TestMarkResumePending:
                     reason="restart_timeout",
                 )
 
-        assert first.resume_pending is False
-        assert first.resume_reason is None
-        assert first.last_resume_marked_at is None
+        assert first.resume_pending is True
+        assert first.resume_reason == "previous_reason"
+        assert first.last_resume_marked_at == previous_marked_at
         assert second.resume_pending is False
         assert second.resume_reason is None
         assert second.last_resume_marked_at is None

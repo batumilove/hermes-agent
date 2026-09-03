@@ -16014,7 +16014,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                     return candidates, False
                 try:
-                    persisted = list(dict.fromkeys((await task) or []))
+                    candidate_set = set(candidates)
+                    persisted = [
+                        key
+                        for key in dict.fromkeys((await task) or [])
+                        if key in candidate_set
+                    ]
                 except Exception as exc:
                     logger.warning(
                         "Shutdown resume-marker batch failed: candidates=%d "
