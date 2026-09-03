@@ -1,5 +1,7 @@
-from pathlib import Path
+import importlib.util
 import re
+import sys
+from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -25,4 +27,33 @@ def test_intercepted_https_clients_trust_sandbox_ca():
     assert (
         "python3 /work/proxy.py /work/http /work/certs /work/certs/real-ca.pem"
         in script
+    )
+
+
+def test_proxy_forces_one_unambiguous_connection_close(monkeypatch, tmp_path):
+    proxy_path = REPO_ROOT / "scripts" / "sandbox" / "proxy.py"
+    spec = importlib.util.spec_from_file_location("sandbox_proxy_test", proxy_path)
+    assert spec is not None and spec.loader is not None
+    proxy = importlib.util.module_from_spec(spec)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["proxy.py", str(tmp_path), str(tmp_path), str(tmp_path / "ca.pem")],
+    )
+    spec.loader.exec_module(proxy)
+
+    request = (
+        b"GET /package HTTP/1.1\r\n"
+        b"Host: registry.npmjs.org\r\n"
+        b"Connection: keep-alive\r\n"
+        b"Proxy-Connection: keep-alive\r\n\r\n"
+    )
+    rewritten = proxy.close_request(request)
+    header_lines = rewritten.partition(b"\r\n\r\n")[0].split(b"\r\n")
+
+    assert [
+        line for line in header_lines if line.lower().startswith(b"connection:")
+    ] == [b"Connection: close"]
+    assert not any(
+        line.lower().startswith(b"proxy-connection:") for line in header_lines
     )
