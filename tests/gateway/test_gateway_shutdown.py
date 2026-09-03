@@ -175,8 +175,8 @@ async def test_gateway_stop_bounds_atomic_resume_marker_batch():
     """A wedged batch write must not bypass the aggregate shutdown deadline."""
     runner, adapter = make_restart_runner()
     runner._restart_drain_timeout = 0.05
-    runner._finalize_shutdown_agents = AsyncMock()
-    adapter.disconnect = AsyncMock()
+    runner._finalize_shutdown_agents = AsyncMock()  # type: ignore[assignment]
+    adapter.disconnect = AsyncMock()  # type: ignore[assignment]
 
     running_agent = MagicMock()
     runner._running_agents = {"session": running_agent}
@@ -205,7 +205,7 @@ async def test_gateway_stop_bounds_atomic_resume_marker_batch():
         await asyncio.wait_for(stop_task, timeout=2.0)
 
     running_agent.interrupt.assert_called_once_with("Gateway restarting")
-    adapter.disconnect.assert_awaited_once()
+    adapter.disconnect.assert_awaited_once()  # type: ignore[attr-defined]
     assert runner._shutdown_event.is_set() is True
 
     marker_tasks = list(getattr(runner, "_shutdown_resume_marker_tasks", set()))
@@ -219,8 +219,8 @@ async def test_gateway_stop_persists_all_resume_markers_in_one_batch():
     """Many interrupted turns must not degrade into per-session point writes."""
     runner, adapter = make_restart_runner()
     runner._restart_drain_timeout = 0.05
-    runner._finalize_shutdown_agents = AsyncMock()
-    adapter.disconnect = AsyncMock()
+    runner._finalize_shutdown_agents = AsyncMock()  # type: ignore[assignment]
+    adapter.disconnect = AsyncMock()  # type: ignore[assignment]
 
     session_keys = [f"session-{index:02d}" for index in range(14)]
     running_agent = MagicMock()
@@ -246,7 +246,7 @@ async def test_gateway_stop_persists_all_resume_markers_in_one_batch():
         assert call.args == (session_keys, "restart_timeout")
     async_store.mark_resume_pending.assert_not_awaited()
     running_agent.interrupt.assert_called_with("Gateway restarting")
-    adapter.disconnect.assert_awaited_once()
+    adapter.disconnect.assert_awaited_once()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -254,8 +254,8 @@ async def test_gateway_stop_clears_late_atomic_marker_after_graceful_drain():
     """A timed-out batch that commits late must be cleared after clean drain."""
     runner, adapter = make_restart_runner()
     runner._restart_drain_timeout = 0.05
-    runner._finalize_shutdown_agents = AsyncMock()
-    adapter.disconnect = AsyncMock()
+    runner._finalize_shutdown_agents = AsyncMock()  # type: ignore[assignment]
+    adapter.disconnect = AsyncMock()  # type: ignore[assignment]
 
     running_agent = MagicMock()
     runner._running_agents = {"session": running_agent}
@@ -300,15 +300,15 @@ async def test_gateway_stop_clears_late_atomic_marker_after_graceful_drain():
 
     assert resume_pending == set()
     running_agent.interrupt.assert_not_called()
-    adapter.disconnect.assert_awaited_once()
+    adapter.disconnect.assert_awaited_once()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
 async def test_gateway_stop_logs_exact_resume_marker_batch_counts(caplog):
     runner, adapter = make_restart_runner()
     runner._restart_drain_timeout = 0.05
-    runner._finalize_shutdown_agents = AsyncMock()
-    adapter.disconnect = AsyncMock()
+    runner._finalize_shutdown_agents = AsyncMock()  # type: ignore[assignment]
+    adapter.disconnect = AsyncMock()  # type: ignore[assignment]
 
     session_keys = ["session-a", "session-b", "session-c"]
     running_agent = MagicMock()
@@ -337,8 +337,8 @@ async def test_gateway_stop_scopes_counts_when_reusing_broader_batch(caplog):
     """A post-timeout subset must not count keys from its reused pre-drain batch."""
     runner, adapter = make_restart_runner()
     runner._restart_drain_timeout = 0.05
-    runner._finalize_shutdown_agents = AsyncMock()
-    adapter.disconnect = AsyncMock()
+    runner._finalize_shutdown_agents = AsyncMock()  # type: ignore[assignment]
+    adapter.disconnect = AsyncMock()  # type: ignore[assignment]
 
     session_keys = ["session-a", "session-b", "session-c"]
     running_agent = MagicMock()
@@ -360,7 +360,9 @@ async def test_gateway_stop_scopes_counts_when_reusing_broader_batch(caplog):
     async_store._store = runner.session_store
     async_store.mark_resume_pending_batch = AsyncMock(side_effect=delayed_batch)
     runner._async_session_store = async_store
-    runner._drain_active_agents = AsyncMock(side_effect=timed_out_drain)
+    runner._drain_active_agents = AsyncMock(  # type: ignore[assignment]
+        side_effect=timed_out_drain
+    )
 
     with patch("gateway.status.remove_pid_file"), patch(
         "gateway.status.write_runtime_status"
