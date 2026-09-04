@@ -1188,16 +1188,26 @@ def test_spark_model_selection_uses_deriver_when_on_spark_goat():
     assert hm.select_spark_model(pipeline) == "custom-model"
 
 
-def test_auth_error_log_pattern_ignores_ports_and_timestamp_milliseconds():
+def test_auth_error_log_pattern_ignores_ports_timestamps_and_quoted_content():
     benign = "\n".join(
         [
             "2026-07-08 10:16:25,401 - src.deriver.queue_manager - DEBUG - Claimed 1 work units",
             '      INFO   172.18.0.1:40146 - "POST /v3/workspaces HTTP/1.1" 201',
+            # Rich box-drawn quote of message content flowing through the
+            # deriver pipeline — not a log-level auth error.
+            "│  Droid failed due to 401 Unauthorized errors. The review was successfully    │",
+            "2026-09-04 15:55:19,401 - src.llm.api - INFO - Tool-less truncation diagnostics: pre_tokens=1168",
         ]
     )
     assert hm.re.search(hm.AUTH_ERROR_LOG_PATTERN, benign) is None
 
-    real = "Error code: 401 - invalid_api_key"
+    real = "\n".join(
+        [
+            "2026-09-04 15:40:00,123 - src.llm.api - ERROR - Error code: 401 - invalid_api_key",
+            "openai.AuthenticationError: Error code: 401 - invalid_api_key",
+            "ERROR - Failed to save representation for observer user",
+        ]
+    )
     assert hm.re.search(hm.AUTH_ERROR_LOG_PATTERN, real)
 
 
