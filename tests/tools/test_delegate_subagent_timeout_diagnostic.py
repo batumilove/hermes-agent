@@ -503,6 +503,72 @@ class TestRunSingleChildTimeoutDump:
         assert child.close_while_running is False
         assert child.close_count == 1
 
+    def test_parent_release_clients_success_uses_child_lifecycle_gate(
+        self, hermes_home, monkeypatch
+    ):
+        """Successful cache eviction must not mutate a child under active use."""
+        from run_agent import AIAgent
+        from tools import delegate_tool
+
+        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 5.0)
+
+        class _RunningChild(_StubChild):
+            def __init__(self):
+                super().__init__(api_call_count=1, hang_seconds=0.0)
+                self.started = threading.Event()
+                self.release = threading.Event()
+                self.closed = threading.Event()
+                self.running = False
+                self.release_clients_while_running = False
+                self.release_clients_count = 0
+                self.close_count = 0
+
+            def run_conversation(self, user_message, task_id=None, stream_callback=None):
+                self.running = True
+                self.started.set()
+                self.release.wait(5.0)
+                self.running = False
+                return {"final_response": "done", "completed": True, "api_calls": 1}
+
+            def release_clients(self):
+                self.release_clients_count += 1
+                self.release_clients_while_running = self.running
+
+            def close(self):
+                self.close_count += 1
+                self.closed.set()
+
+        child = _RunningChild()
+        parent = AIAgent.__new__(AIAgent)
+        parent.session_id = "parent-release-success-race"
+        setattr(parent, "_active_children", [child])
+        setattr(parent, "_active_children_lock", threading.Lock())
+        setattr(parent, "_background_review_agent", None)
+        setattr(parent, "_background_review_lock", threading.Lock())
+        parent.client = None
+        parent._shutdown_owned_context_engine = lambda: None
+        parent._close_cached_request_openai_client = lambda **_kw: None
+        parent._close_cached_request_anthropic_client = lambda **_kw: None
+
+        results = []
+        runner = threading.Thread(
+            target=lambda: results.append(
+                delegate_tool._run_single_child(0, "test release success", child, parent)
+            ),
+            daemon=True,
+        )
+        runner.start()
+        assert child.started.wait(2.0)
+        parent.release_clients()
+        assert child.release_clients_count == 0
+        assert not child.closed.is_set()
+        child.release.set()
+        assert child.closed.wait(2.0)
+        runner.join(2.0)
+        assert results[0]["status"] == "completed"
+        assert child.release_clients_while_running is False
+        assert child.close_count == 1
+
     def test_parent_close_defers_child_close_through_schema_retry(
         self, hermes_home, monkeypatch
     ):
@@ -587,5 +653,73 @@ class TestRunSingleChildTimeoutDump:
         assert not runner.is_alive()
         assert results[0]["status"] == "completed"
         assert results[0]["schema_valid"] is True
+        assert child.close_while_retry_running is False
+        assert child.close_count == 1
+
+    def test_schema_retry_is_bounded_and_close_waits_for_retry_unwind(
+        self, hermes_home, monkeypatch
+    ):
+        """A stuck schema retry times out without closing under its worker."""
+        from tools import delegate_tool
+
+        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 0.05)
+
+        class _StuckRetryChild(_StubChild):
+            def __init__(self):
+                super().__init__(api_call_count=1, hang_seconds=0.0)
+                self._delegate_output_schema = {
+                    "type": "object",
+                    "properties": {"ok": {"type": "boolean"}},
+                    "required": ["ok"],
+                }
+                self.calls = 0
+                self.retry_started = threading.Event()
+                self.release_retry = threading.Event()
+                self.closed = threading.Event()
+                self.retry_running = False
+                self.close_while_retry_running = False
+                self.close_count = 0
+
+            def run_conversation(self, user_message, task_id=None, stream_callback=None):
+                self.calls += 1
+                if self.calls == 1:
+                    return {"final_response": "{}", "completed": True, "api_calls": 1}
+                self.retry_running = True
+                self.retry_started.set()
+                self.release_retry.wait(5.0)
+                self.retry_running = False
+                return {"final_response": '{"ok": true}', "completed": True, "api_calls": 1}
+
+            def interrupt(self):
+                return None
+
+            def close(self):
+                self.close_count += 1
+                self.close_while_retry_running = self.retry_running
+                self.closed.set()
+
+        child = _StuckRetryChild()
+        parent = MagicMock()
+        parent._touch_activity = MagicMock()
+        parent._current_task_id = None
+        results = []
+        runner = threading.Thread(
+            target=lambda: results.append(
+                delegate_tool._run_single_child(0, "test bounded retry", child, parent)
+            ),
+            daemon=True,
+        )
+        runner.start()
+        assert child.retry_started.wait(2.0)
+        time.sleep(0.15)
+        returned_while_retry_stuck = not runner.is_alive()
+        closed_while_retry_stuck = child.closed.is_set()
+        child.release_retry.set()
+        runner.join(2.0)
+        assert child.closed.wait(2.0)
+
+        assert returned_while_retry_stuck is True
+        assert closed_while_retry_stuck is False
+        assert results[0]["schema_valid"] is False
         assert child.close_while_retry_running is False
         assert child.close_count == 1

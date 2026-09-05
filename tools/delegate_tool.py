@@ -1658,6 +1658,40 @@ def _install_deferred_child_close_gate(child) -> None:
     setattr(child, "_delegate_close_gate_installed", True)
 
 
+def _retire_child_without_owner(child, parent_agent, *, interrupt_reason=None) -> None:
+    """Retire a built child when no worker owns its normal finally path."""
+    _install_deferred_child_close_gate(child)
+    if interrupt_reason:
+        try:
+            request_hard_interrupt(
+                child,
+                interrupt_reason,
+                tool_reason="subagent lifecycle retired before completion",
+            )
+        except Exception:
+            logger.debug("Failed to interrupt retired child", exc_info=True)
+
+    request_close = getattr(child, "_delegate_request_close", None)
+    if callable(request_close):
+        request_close()
+    else:
+        try:
+            child.close()
+        except Exception:
+            logger.debug("Failed to close retired child", exc_info=True)
+
+    if parent_agent is not None and hasattr(parent_agent, "_active_children"):
+        try:
+            lock = getattr(parent_agent, "_active_children_lock", None)
+            if lock:
+                with lock:
+                    parent_agent._active_children.remove(child)
+            else:
+                parent_agent._active_children.remove(child)
+        except (ValueError, AttributeError):
+            pass
+
+
 def _build_child_agent(
     task_index: int,
     goal: str,
@@ -3064,18 +3098,77 @@ def _run_single_child(
                 # the contract in its context).
                 _schema_retries = 1
                 _retry_result = None
+                _retry_executor = DaemonThreadPoolExecutor(
+                    max_workers=1,
+                    initializer=_set_subagent_approval_cb,
+                    initargs=(_get_subagent_approval_callback(),),
+                )
+
+                def _run_schema_retry():
+                    from agent.delegation_context import delegated_child_context
+
+                    with delegated_child_context(
+                        str(getattr(child, "session_id", "") or "")
+                    ):
+                        return child.run_conversation(
+                            user_message=build_retry_message(_schema_errors),
+                            task_id=child_task_id,
+                            stream_callback=_relay_child_text,
+                        )
+
                 try:
-                    _retry_result = child.run_conversation(
-                        user_message=build_retry_message(_schema_errors),
-                        task_id=child_task_id,
-                        stream_callback=_relay_child_text,
+                    _retry_context = contextvars.copy_context()
+                    _child_future = _retry_executor.submit(
+                        _retry_context.run,
+                        _run_schema_retry,
                     )
+                    _retry_result = _child_future.result(timeout=child_timeout)
+                except FuturesTimeoutError:
+                    try:
+                        request_hard_interrupt(
+                            child,
+                            "Schema retry exceeded the delegated child timeout.",
+                            tool_reason="subagent schema retry timed out",
+                        )
+                    except Exception:
+                        pass
+                    _late_pending_steer = (
+                        _close_subagent_steering(_subagent_id, child)
+                        if _subagent_id
+                        else None
+                    )
+                    duration = round(time.monotonic() - child_start, 2)
+                    _error_entry = {
+                        "task_index": task_index,
+                        "status": "timeout",
+                        "summary": _first_text or None,
+                        "error": (
+                            f"Subagent schema retry timed out after {child_timeout}s; "
+                            "the invalid first response was retained."
+                        ),
+                        "exit_reason": "timeout",
+                        "api_calls": int(result.get("api_calls", 0) or 0),
+                        "duration_seconds": duration,
+                        "timeout_seconds": child_timeout,
+                        "timed_out_after_seconds": duration,
+                        "timeout_phase": "schema_retry",
+                        "schema_valid": False,
+                        "schema_errors": list(_schema_errors),
+                        "schema_retry_count": 1,
+                        "_child_role": getattr(child, "_delegate_role", None),
+                    }
+                    if _late_pending_steer:
+                        _error_entry["missed_steer"] = _late_pending_steer
+                    _attach_worktree(_error_entry)
+                    return _error_entry
                 except Exception as _retry_exc:
                     logger.warning(
                         "Subagent %d schema-retry turn failed: %s",
                         task_index,
                         _retry_exc,
                     )
+                finally:
+                    _retry_executor.shutdown(wait=False)
                 if isinstance(_retry_result, dict):
                     _retry_text = _retry_result.get("final_response") or ""
                     if _retry_text.strip():
@@ -3983,9 +4076,11 @@ def delegate_task(
                 override_acp_args=creds.get("args"),
                 role=effective_role,
             )
-        except ValueError as exc:
+        except Exception as exc:
             # Explicit-pin preflight failures (e.g. pinned delegation.command
             # missing from PATH) refuse the spawn loudly (#80450).
+            for _, _, built_child in children:
+                _retire_child_without_owner(built_child, parent_agent)
             return tool_error(str(exc))
         # Attach the validated schema for the completion-side validation
         # hook in _run_single_child. Absent (None) on schema-less tasks.
@@ -4045,20 +4140,42 @@ def delegate_task(
             from tools.daemon_pool import DaemonThreadPoolExecutor
             with DaemonThreadPoolExecutor(max_workers=max_children) as executor:
                 futures = {}
-                for i, t, child in children:
-                    child_context = contextvars.copy_context()
-                    future = executor.submit(
-                        child_context.run,
-                        _run_single_child,
-                        task_index=i,
-                        goal=t["goal"],
-                        child=child,
-                        parent_agent=parent_agent,
-                        owner_session_id=_origin_ui_session_id or None,
-                        owner_transport=_origin_owner_transport,
-                        owner_session_record=_origin_owner_session_record,
-                    )
-                    futures[future] = i
+                try:
+                    for i, t, child in children:
+                        child_context = contextvars.copy_context()
+                        future = executor.submit(
+                            child_context.run,
+                            _run_single_child,
+                            task_index=i,
+                            goal=t["goal"],
+                            child=child,
+                            parent_agent=parent_agent,
+                            owner_session_id=_origin_ui_session_id or None,
+                            owner_transport=_origin_owner_transport,
+                            owner_session_record=_origin_owner_session_record,
+                        )
+                        futures[future] = i
+                except Exception as exc:
+                    for future in futures:
+                        future.cancel()
+                    for i, _, child in children:
+                        _retire_child_without_owner(
+                            child,
+                            parent_agent,
+                            interrupt_reason="Delegation batch submission failed.",
+                        )
+                        results.append(
+                            {
+                                "task_index": i,
+                                "status": "error",
+                                "summary": None,
+                                "error": str(exc),
+                                "api_calls": 0,
+                                "duration_seconds": 0,
+                                "_child_role": getattr(child, "_delegate_role", None),
+                            }
+                        )
+                    futures.clear()
 
                 # Poll futures with interrupt checking.  as_completed() blocks
                 # until ALL futures finish — if a child agent gets stuck,

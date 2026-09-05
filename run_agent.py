@@ -4748,6 +4748,18 @@ class AIAgent:
                     except Exception:
                         pass
                     continue
+                request_deferred_close = getattr(
+                    child, "_delegate_request_close", None
+                )
+                if callable(request_deferred_close):
+                    # Delegation children are per-turn artefacts. Their
+                    # close-once gate defers hard teardown until every active
+                    # lifecycle lease (including timeout/retry workers) exits.
+                    try:
+                        request_deferred_close()
+                    except Exception:
+                        pass
+                    continue
                 try:
                     child.release_clients()
                 except Exception:
