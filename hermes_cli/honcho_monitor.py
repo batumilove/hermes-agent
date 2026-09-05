@@ -65,8 +65,16 @@ HOST_MAP = {
 
 # Keep this narrow. A plain grep for "401" false-alerted on harmless log
 # substrings such as source ports (":40146") and timestamp milliseconds
-# ("10:16:25,401").
-AUTH_ERROR_LOG_PATTERN = r'HTTP/1\.1" 401|Error code: 401|invalid_api_key|Unauthorized|AuthenticationError'
+# ("10:16:25,401"). Anchored additionally to logger-ish line shapes because
+# quoted message *content* passing through the deriver (e.g. a Rich box
+# "│ Droid failed due to 401 Unauthorized errors...") must not count: real
+# errors are emitted by logging as "TIMESTAMP LEVEL - module - MESSAGE" or by
+# the openai client with "Error code:" / "APIStatusError"-style prefixes.
+AUTH_ERROR_LOG_PATTERN = (
+    r'(Error code: 401|invalid_api_key|api\.openai\.com.*401|'
+    r'^\d{4}-\d{2}-\d{2}[ ,]\d{2}:\d{2}:\d{2}(?:,\d{3})? - (?:ERROR|WARNING|INFO) - .*(?:Error code: 401|401 Unauthorized|Unauthorized|AuthenticationError)|'
+    r'Failed to save representation)'
+)
 
 # Prefer the LAN endpoint for spark-goat. The historical Tailscale address
 # (100.69.54.37) can refuse :8001 while Honcho and Hermes both reach the live
