@@ -464,17 +464,19 @@ patches:
   - id: delegation-timeout-sessiondb-close-ownership
     kind: core
     rationale: >-
-      Keep child-owned SessionDB resources alive while timed-out delegation workers
-      unwind, and coordinate delegation-finally, parent shutdown, and cache-eviction
-      fallback teardown through one deferred close-once gate.
+      Install child teardown ownership before parent registration, keep child-owned
+      SessionDB resources alive across the full delegation lifecycle (including
+      schema retry and timed-out worker unwind), and coordinate delegation-finally,
+      parent shutdown, and cache-eviction fallback through one close-once lease.
     paths:
       - run_agent.py
       - tools/delegate_tool.py
+      - tests/tools/test_delegate.py
       - tests/tools/test_delegate_subagent_timeout_diagnostic.py
     tests:
       - scripts/run_tests.sh tests/tools/test_delegate_subagent_timeout_diagnostic.py tests/tools/test_delegate.py tests/tui_gateway/test_session_db_ownership_teardown.py tests/tui_gateway/test_session_resume_db_ownership.py tests/run_agent/test_background_review.py
-      - python -m py_compile run_agent.py tools/delegate_tool.py tests/tools/test_delegate_subagent_timeout_diagnostic.py
-    retirement: Remove when upstream provides equivalent timeout-worker, parent-shutdown, cache-eviction, and close-exactly-once ownership contracts.
+      - python -m py_compile run_agent.py tools/delegate_tool.py tests/tools/test_delegate.py tests/tools/test_delegate_subagent_timeout_diagnostic.py
+    retirement: Remove when upstream provides equivalent pre-registration, full-child-lifecycle, parent-shutdown, cache-eviction, and close-exactly-once ownership contracts.
 
   - id: test-dns-isolation
     kind: compatibility

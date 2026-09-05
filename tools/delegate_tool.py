@@ -1603,6 +1603,61 @@ def _inherit_parent_base_url(parent_agent, fallback_base_url: Optional[str]) -> 
     return fallback_base_url or None
 
 
+def _install_deferred_child_close_gate(child) -> None:
+    """Install a close-once lifecycle lease before a child becomes visible."""
+    if getattr(child, "_delegate_close_gate_installed", False) is True:
+        return
+
+    close_lock = threading.Lock()
+    close_state = {"active": 0, "requested": False, "closed": False}
+
+    def _close_child_once() -> None:
+        try:
+            close_child = getattr(child, "close", None)
+            if callable(close_child):
+                close_child()
+        except Exception:
+            logger.debug("Failed to close child agent after delegation")
+
+    def _request_close() -> None:
+        close_now = False
+        with close_lock:
+            close_state["requested"] = True
+            if close_state["active"] == 0 and not close_state["closed"]:
+                close_state["closed"] = True
+                close_now = True
+        if close_now:
+            _close_child_once()
+
+    def _begin_use() -> bool:
+        with close_lock:
+            if close_state["requested"] or close_state["closed"]:
+                return False
+            close_state["active"] += 1
+            return True
+
+    def _end_use() -> None:
+        close_now = False
+        with close_lock:
+            if close_state["active"] <= 0:
+                return
+            close_state["active"] -= 1
+            if (
+                close_state["active"] == 0
+                and close_state["requested"]
+                and not close_state["closed"]
+            ):
+                close_state["closed"] = True
+                close_now = True
+        if close_now:
+            _close_child_once()
+
+    setattr(child, "_delegate_request_close", _request_close)
+    setattr(child, "_delegate_begin_use", _begin_use)
+    setattr(child, "_delegate_end_use", _end_use)
+    setattr(child, "_delegate_close_gate_installed", True)
+
+
 def _build_child_agent(
     task_index: int,
     goal: str,
@@ -2059,6 +2114,11 @@ def _build_child_agent(
     if child_pool is not None:
         child._credential_pool = child_pool
 
+    # Parent shutdown can claim a child as soon as it enters _active_children.
+    # Install the lifecycle gate first so batch construction never exposes an
+    # unguarded child that can later be submitted after being closed.
+    _install_deferred_child_close_gate(child)
+
     # Register child for interrupt propagation
     if hasattr(parent_agent, "_active_children"):
         lock = getattr(parent_agent, "_active_children_lock", None)
@@ -2468,6 +2528,14 @@ def _run_single_child(
     """
     child_start = time.monotonic()
 
+    # Production children receive this gate before parent registration. Keep
+    # direct/test callers safe too, then acquire one lease covering the entire
+    # orchestration (first turn, schema validation, and optional retry).
+    _install_deferred_child_close_gate(child)
+    _begin_child_use = getattr(child, "_delegate_begin_use", None)
+    _end_child_use = getattr(child, "_delegate_end_use", None)
+    _request_child_close = getattr(child, "_delegate_request_close", None)
+
     # Get the progress callback from the child agent
     child_progress_cb = getattr(child, "tool_progress_callback", None)
 
@@ -2653,52 +2721,10 @@ def _run_single_child(
     # Worktree-isolation state: populated inside the try once the child's
     # task id is known; the default no-op keeps every early error path safe.
     _worktree_info: Optional[Dict[str, str]] = None
-    # Set once run_conversation is submitted.  A timeout abandons this daemon
-    # worker rather than stopping it, so teardown must use the future as the
-    # resource-lifetime boundary instead of closing the child underneath it.
+    # Set once run_conversation is submitted. A timeout abandons this daemon
+    # worker rather than stopping it; the lifecycle lease is released from its
+    # done callback instead of underneath it.
     _child_future = None
-    _child_close_lock = threading.Lock()
-    _child_close_state = {
-        "future": None,
-        "requested": False,
-        "scheduled": False,
-        "closed": False,
-    }
-
-    def _close_child_once(_future=None):
-        with _child_close_lock:
-            if _child_close_state["closed"]:
-                return
-            _child_close_state["closed"] = True
-        try:
-            close_child = getattr(child, "close", None)
-            if callable(close_child):
-                close_child()
-        except Exception:
-            logger.debug("Failed to close child agent after delegation")
-
-    def _schedule_child_close(future) -> None:
-        if future is not None and not future.done():
-            future.add_done_callback(_close_child_once)
-        else:
-            _close_child_once()
-
-    def _request_child_close_after_worker(*, worker_never_started=False) -> None:
-        with _child_close_lock:
-            _child_close_state["requested"] = True
-            future = _child_close_state["future"]
-            if _child_close_state["scheduled"]:
-                return
-            if future is None and not worker_never_started:
-                return
-            _child_close_state["scheduled"] = True
-        _schedule_child_close(future)
-
-    # Parent hard teardown may race this delegation owner. Route both owners
-    # through one close-once gate so neither releases the child-owned SessionDB
-    # while the worker is still unwinding.
-    if child is not None:
-        setattr(child, "_delegate_request_close", _request_child_close_after_worker)
 
     def _attach_worktree(entry_dict: Dict[str, Any]) -> None:
         """Inspect + prune the child worktree, reporting into the entry."""
@@ -2741,7 +2767,19 @@ def _run_single_child(
                     ),
                 }
 
+    _child_use_acquired = False
     try:
+        _child_use_acquired = callable(_begin_child_use) and _begin_child_use()
+        if not _child_use_acquired:
+            return {
+                "task_index": task_index,
+                "status": "error",
+                "summary": None,
+                "error": "delegated child was closed before execution",
+                "exit_reason": "error",
+                "api_calls": 0,
+                "duration_seconds": round(time.monotonic() - child_start, 2),
+            }
         _heartbeat_thread.start()
         if child_progress_cb:
             try:
@@ -2873,16 +2911,6 @@ def _run_single_child(
             _child_context.run,
             _run_with_thread_capture,
         )
-        with _child_close_lock:
-            _child_close_state["future"] = _child_future
-            _close_was_requested = (
-                _child_close_state["requested"]
-                and not _child_close_state["scheduled"]
-            )
-            if _close_was_requested:
-                _child_close_state["scheduled"] = True
-        if _close_was_requested:
-            _schedule_child_close(_child_future)
         try:
             result = _child_future.result(timeout=child_timeout)
         except Exception as _timeout_exc:
@@ -3420,12 +3448,17 @@ def _run_single_child(
             except (ValueError, UnboundLocalError) as e:
                 logger.debug("Could not remove child from active_children: %s", e)
 
-        # Close tool resources (SessionDB, terminal sandboxes, browser
-        # daemons, background processes, httpx clients) only after the child
-        # worker has stopped using them. Future.result(timeout=...) does not
-        # stop its daemon worker; closing here immediately used to race a slow
-        # tool's final persistence flush with ``SessionDB is closed``.
-        _request_child_close_after_worker(worker_never_started=_child_future is None)
+        # Request teardown now, but retain the lifecycle lease through schema
+        # validation/retry and, after timeout, until the abandoned worker has
+        # actually unwound. The gate closes exactly once when the final lease
+        # is released.
+        if callable(_request_child_close):
+            _request_child_close()
+        if _child_use_acquired and callable(_end_child_use):
+            if _child_future is not None and not _child_future.done():
+                _child_future.add_done_callback(lambda _future: _end_child_use())
+            else:
+                _end_child_use()
 
         # The AIAgent turn boundary normally closes the child scope itself. This
         # fallback covers failures before that boundary starts, but must not pop

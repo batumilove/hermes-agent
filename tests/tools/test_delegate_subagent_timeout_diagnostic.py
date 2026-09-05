@@ -260,8 +260,11 @@ class TestRunSingleChildTimeoutDump:
                 self.running = False
                 self.close_while_running = False
                 self.close_count = 0
+                self.worker_thread = None
+                self.close_thread = None
 
             def run_conversation(self, user_message, task_id=None, stream_callback=None):
+                self.worker_thread = threading.current_thread()
                 self.running = True
                 self.started.set()
                 self.release.wait(5.0)
@@ -274,6 +277,7 @@ class TestRunSingleChildTimeoutDump:
                 return None
 
             def close(self):
+                self.close_thread = threading.current_thread()
                 self.close_count += 1
                 self.close_while_running = self.running
                 self.closed.set()
@@ -297,6 +301,61 @@ class TestRunSingleChildTimeoutDump:
         child.release.set()
         assert child.closed.wait(2.0)
         assert child.close_while_running is False
+        assert child.close_count == 1
+        assert child.close_thread is child.worker_thread
+
+    @pytest.mark.parametrize("submit_outcome", ["raise", "cancel"])
+    def test_submit_failure_or_cancellation_closes_child_once(
+        self, hermes_home, monkeypatch, submit_outcome
+    ):
+        """Pre-worker terminal paths release the lifecycle lease exactly once."""
+        from concurrent.futures import Future
+
+        from tools import daemon_pool, delegate_tool
+
+        class _NeverStartedChild(_StubChild):
+            def __init__(self):
+                super().__init__(api_call_count=0, hang_seconds=0.0)
+                self.run_count = 0
+                self.close_count = 0
+
+            def run_conversation(self, user_message, task_id=None, stream_callback=None):
+                self.run_count += 1
+                return {"final_response": "unexpected", "completed": True, "api_calls": 0}
+
+            def close(self):
+                self.close_count += 1
+
+        class _TerminalExecutor:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def submit(self, *args, **kwargs):
+                if submit_outcome == "raise":
+                    raise RuntimeError("submit failed")
+                future = Future()
+                assert future.cancel()
+                return future
+
+            def shutdown(self, wait=False):
+                assert wait is False
+
+        monkeypatch.setattr(daemon_pool, "DaemonThreadPoolExecutor", _TerminalExecutor)
+        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 5.0)
+        child = _NeverStartedChild()
+        parent = MagicMock()
+        parent._touch_activity = MagicMock()
+        parent._current_task_id = None
+
+        result = delegate_tool._run_single_child(
+            task_index=0,
+            goal="test pre-worker terminal path",
+            child=child,
+            parent_agent=parent,
+        )
+
+        assert result["status"] == "error"
+        assert child.run_count == 0
         assert child.close_count == 1
 
     def test_parent_close_defers_child_close_until_worker_unwinds(
@@ -442,4 +501,91 @@ class TestRunSingleChildTimeoutDump:
         assert not runner.is_alive()
         assert results[0]["status"] == "completed"
         assert child.close_while_running is False
+        assert child.close_count == 1
+
+    def test_parent_close_defers_child_close_through_schema_retry(
+        self, hermes_home, monkeypatch
+    ):
+        """The child lifetime includes its bounded structured-output retry."""
+        from run_agent import AIAgent
+        from tools import delegate_tool
+
+        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 5.0)
+
+        class _SchemaRetryChild(_StubChild):
+            def __init__(self):
+                super().__init__(api_call_count=1, hang_seconds=0.0)
+                self._delegate_output_schema = {
+                    "type": "object",
+                    "properties": {"ok": {"type": "boolean"}},
+                    "required": ["ok"],
+                }
+                self.calls = 0
+                self.retry_started = threading.Event()
+                self.release_retry = threading.Event()
+                self.closed = threading.Event()
+                self.retry_running = False
+                self.close_while_retry_running = False
+                self.close_count = 0
+
+            def run_conversation(self, user_message, task_id=None, stream_callback=None):
+                self.calls += 1
+                if self.calls == 1:
+                    return {"final_response": "{}", "completed": True, "api_calls": 1}
+                self.retry_running = True
+                self.retry_started.set()
+                self.release_retry.wait(5.0)
+                self.retry_running = False
+                return {
+                    "final_response": '{"ok": true}',
+                    "completed": True,
+                    "api_calls": 1,
+                }
+
+            def close(self):
+                self.close_count += 1
+                self.close_while_retry_running = self.retry_running
+                self.closed.set()
+
+        child = _SchemaRetryChild()
+        parent = AIAgent.__new__(AIAgent)
+        parent.session_id = "parent-close-schema-retry-race"
+        setattr(parent, "_active_children", [child])
+        setattr(parent, "_active_children_lock", threading.Lock())
+        setattr(parent, "_background_review_agent", None)
+        setattr(parent, "_background_review_lock", threading.Lock())
+        setattr(parent, "_context_engine_shutdown_lock", threading.Lock())
+        parent.client = None
+        setattr(parent, "_session_db", None)
+        parent._owns_session_db = False
+        parent.shutdown_memory_provider = lambda *_a, **_kw: True
+        parent._shutdown_owned_context_engine = lambda: None
+        parent._close_cached_request_openai_client = lambda **_kw: None
+        parent._close_cached_request_anthropic_client = lambda **_kw: None
+
+        results = []
+        runner = threading.Thread(
+            target=lambda: results.append(
+                delegate_tool._run_single_child(
+                    task_index=0,
+                    goal="test schema retry lifetime",
+                    child=child,
+                    parent_agent=parent,
+                )
+            ),
+            daemon=True,
+        )
+        runner.start()
+        assert child.retry_started.wait(2.0)
+        try:
+            parent.close()
+            assert not child.closed.is_set()
+        finally:
+            child.release_retry.set()
+        assert child.closed.wait(2.0)
+        runner.join(2.0)
+        assert not runner.is_alive()
+        assert results[0]["status"] == "completed"
+        assert results[0]["schema_valid"] is True
+        assert child.close_while_retry_running is False
         assert child.close_count == 1

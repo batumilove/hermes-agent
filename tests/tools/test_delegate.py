@@ -30,6 +30,7 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _run_single_child,
 )
 from hermes_state import SessionDB
 
@@ -336,6 +337,60 @@ class TestDelegateTask(unittest.TestCase):
             )
         finally:
             parent_db.close()
+
+    def test_child_close_gate_exists_before_parent_registration(self):
+        """Parent close during batch construction must prevent later execution."""
+        parent = _make_mock_parent(depth=0)
+        parent._session_db = None
+
+        class _CloseOnAppend(list):
+            hook_was_present = False
+
+            def append(self, child):
+                request_close = getattr(child, "_delegate_request_close", None)
+                self.hook_was_present = callable(request_close)
+                if self.hook_was_present:
+                    assert callable(request_close)
+                    request_close()
+                else:
+                    child.close()
+                super().append(child)
+
+        active_children = _CloseOnAppend()
+        parent._active_children = active_children
+        child = MagicMock()
+        child._credential_pool = None
+        child._subagent_id = None
+        child._delegate_depth = 1
+        child._parent_subagent_id = None
+        child.run_conversation.return_value = {
+            "final_response": "must not run",
+            "completed": True,
+            "api_calls": 1,
+        }
+
+        with patch("run_agent.AIAgent", return_value=child):
+            built = _build_child_agent(
+                task_index=0,
+                goal="test pre-registration close",
+                context=None,
+                toolsets=None,
+                model="test-model",
+                max_iterations=5,
+                parent_agent=parent,
+                task_count=2,
+            )
+
+        self.assertTrue(active_children.hook_was_present)
+        result = _run_single_child(
+            task_index=0,
+            goal="test pre-registration close",
+            child=built,
+            parent_agent=parent,
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertIn("closed before execution", result["error"])
+        child.run_conversation.assert_not_called()
 
     def test_child_without_parent_db_still_degrades_to_none(self):
         """Parent without a SessionDB -> child gets None (pre-fix behaviour).
