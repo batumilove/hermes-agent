@@ -106,6 +106,34 @@ def test_nous_adapter_concurrent_refresh_serialized(tmp_path, monkeypatch):
     assert all(r.startswith("key-") for r in results)
 
 
+def test_nous_adapter_401_passes_failed_bearer_as_stale_hint(monkeypatch):
+    adapter = NousPortalAdapter()
+    replacement = UpstreamCredential(
+        bearer="fresh",
+        base_url="https://inference-api.nousresearch.com/v1",
+    )
+    calls = []
+
+    def _fake_get_credential(**kwargs):
+        calls.append(kwargs)
+        return replacement
+
+    monkeypatch.setattr(adapter, "_get_credential", _fake_get_credential)
+    failed = UpstreamCredential(
+        bearer="jwt-that-just-401d",
+        base_url="https://inference-api.nousresearch.com/v1",
+    )
+
+    assert adapter.get_retry_credential(
+        failed_credential=failed,
+        status_code=401,
+    ) is replacement
+    assert calls == [{
+        "force_refresh": True,
+        "stale_access_token": "jwt-that-just-401d",
+    }]
+
+
 # ---------------------------------------------------------------------------
 # XAIGrokAdapter
 # ---------------------------------------------------------------------------
