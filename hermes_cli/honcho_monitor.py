@@ -63,17 +63,26 @@ HOST_MAP = {
     "openrouter.ai/api/v1": "openrouter",
 }
 
-# Keep this narrow. A plain grep for "401" false-alerted on harmless log
-# substrings such as source ports (":40146") and timestamp milliseconds
-# ("10:16:25,401"). Anchored additionally to logger-ish line shapes because
-# quoted message *content* passing through the deriver (e.g. a Rich box
-# "│ Droid failed due to 401 Unauthorized errors...") must not count: real
-# errors are emitted by logging as "TIMESTAMP LEVEL - module - MESSAGE" or by
-# the openai client with "Error code:" / "APIStatusError"-style prefixes.
-AUTH_ERROR_LOG_PATTERN = (
-    r'(Error code: 401|invalid_api_key|api\.openai\.com.*401|'
-    r'^\d{4}-\d{2}-\d{2}[ ,]\d{2}:\d{2}:\d{2}(?:,\d{3})? - (?:ERROR|WARNING|INFO) - .*(?:Error code: 401|401 Unauthorized|Unauthorized|AuthenticationError)|'
-    r'Failed to save representation)'
+# Parse the log in Python rather than sending a Python regex to ``grep -E``.
+# Only error-level records and unquoted OpenAI exception lines are eligible;
+# derived/boxed message content, access-log ports, and timestamp milliseconds
+# must not be mistaken for current authentication or representation failures.
+_DERIVER_ERROR_LOG_LINE = re.compile(
+    r"^(?:\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d{3})? - .+? - )?"
+    r"(?:ERROR|CRITICAL) - (?P<message>.*)$"
+)
+_AUTH_EXCEPTION_LINE = re.compile(
+    r"^(?:openai\.)?(?:AuthenticationError|APIStatusError):",
+    re.IGNORECASE,
+)
+_AUTH_ERROR_SIGNAL = re.compile(
+    r"(?:\bError code:\s*401\b|\b401 Unauthorized\b|\binvalid_api_key\b|"
+    r"\bUnauthorized\b|\bAuthenticationError\b|api\.openai\.com.*\b401\b)",
+    re.IGNORECASE,
+)
+_SAVE_REPRESENTATION_SIGNAL = re.compile(
+    r"\bFailed to save representation\b",
+    re.IGNORECASE,
 )
 
 # Prefer the LAN endpoint for spark-goat. The historical Tailscale address
@@ -886,6 +895,34 @@ def _parse_kv_lines(raw: str) -> dict[str, str]:
     return data
 
 
+def parse_deriver_error_counts(raw: str) -> dict[str, int]:
+    """Count real recent deriver failures without matching quoted content."""
+    counts = {"save_representation": 0, "four_oh_one": 0}
+    for line in raw.splitlines():
+        log_match = _DERIVER_ERROR_LOG_LINE.fullmatch(line)
+        if log_match:
+            message = log_match.group("message")
+            if _SAVE_REPRESENTATION_SIGNAL.search(message):
+                counts["save_representation"] += 1
+            if _AUTH_ERROR_SIGNAL.search(message):
+                counts["four_oh_one"] += 1
+            continue
+
+        if _AUTH_EXCEPTION_LINE.match(line) and _AUTH_ERROR_SIGNAL.search(line):
+            counts["four_oh_one"] += 1
+    return counts
+
+
+def collect_recent_deriver_errors(ssh_fn=None) -> dict[str, int]:
+    """Fetch the bounded deriver log window and parse it with production code."""
+    if ssh_fn is None:
+        ssh_fn = ssh
+    raw = ssh_fn("docker logs honcho-deriver-1 --since 15m 2>&1", timeout=30)
+    if raw.startswith("__SSH_ERROR__"):
+        return {"save_representation": 0, "four_oh_one": 0}
+    return parse_deriver_error_counts(raw)
+
+
 def _int_or_zero(value: str | None) -> int:
     try:
         return int(value) if value is not None else 0
@@ -1055,13 +1092,7 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
     pending = queue_counts["pending"]
     done = queue_counts["done"]
 
-    errors_raw = ssh(
-        "docker logs honcho-deriver-1 --since 15m > /tmp/honcho-deriver-monitor.log 2>&1; "
-        "printf 'save|%s\n' \"$(grep -c 'Failed to save representation' /tmp/honcho-deriver-monitor.log || true)\"; "
-        f"printf '401|%s\\n' \"$(grep -Ec {AUTH_ERROR_LOG_PATTERN!r} /tmp/honcho-deriver-monitor.log || true)\"",
-        timeout=30,
-    )
-    error_counts = _parse_kv_lines(errors_raw)
+    error_counts = collect_recent_deriver_errors()
 
     # Pick a model actually served by the spark-goat chat stage (port 8001).
     # If the loaded pipeline routes the deriver elsewhere, fall back to the
@@ -1140,7 +1171,7 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
         db=db,
         queue={"pending": pending, "done": done},
         queue_by_type=queue_by_type,
-        errors={"save_representation": _int_or_zero(error_counts.get("save", "0")), "four_oh_one": _int_or_zero(error_counts.get("401", "0"))},
+        errors={"save_representation": error_counts.get("save_representation", 0), "four_oh_one": error_counts.get("four_oh_one", 0)},
         spark_goat={
             "ok": spark_ok,
             "latency_s": spark_dt,
@@ -1175,7 +1206,7 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
         "pipeline": pipeline,
         "db": db,
         "queue": {"pending": pending, "done": done},
-        "errors": {"save_representation": _int_or_zero(error_counts.get("save", "0")), "four_oh_one": _int_or_zero(error_counts.get("401", "0"))},
+        "errors": {"save_representation": error_counts.get("save_representation", 0), "four_oh_one": error_counts.get("four_oh_one", 0)},
         "deriver": {
             "runs_15m": runs_15m,
             "last_duration_s": last_duration_s,
