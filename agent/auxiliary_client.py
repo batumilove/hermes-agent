@@ -2551,7 +2551,11 @@ def _nous_base_url() -> str:
     return os.getenv("NOUS_INFERENCE_BASE_URL", _NOUS_DEFAULT_BASE_URL)
 
 
-def _resolve_nous_pool_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[str, str]]:
+def _resolve_nous_pool_runtime_api(
+    *,
+    force_refresh: bool = False,
+    stale_access_token: Optional[str] = None,
+) -> Optional[tuple[str, str]]:
     """Resolve Nous auxiliary credentials from the selected pool entry."""
     try:
         from hermes_cli.auth import _agent_key_is_usable
@@ -2580,7 +2584,12 @@ def _resolve_nous_pool_runtime_api(*, force_refresh: bool = False) -> Optional[t
     }
     if force_refresh or not _agent_key_is_usable(state, _nous_min_key_ttl_seconds()):
         try:
-            refreshed = pool.try_refresh_current()
+            if force_refresh and stale_access_token:
+                refreshed = pool.try_refresh_matching(
+                    api_key_hint=stale_access_token,
+                )
+            else:
+                refreshed = pool.try_refresh_current()
         except Exception as exc:
             logger.debug("Auxiliary Nous pool refresh failed: %s", exc)
             refreshed = None
@@ -2602,15 +2611,24 @@ def _resolve_nous_pool_runtime_api(*, force_refresh: bool = False) -> Optional[t
     return api_key, base_url
 
 
-def _resolve_nous_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[str, str]]:
+def _resolve_nous_runtime_api(
+    *, force_refresh: bool = False, stale_access_token: Optional[str] = None
+) -> Optional[tuple[str, str]]:
     """Return fresh Nous runtime credentials when available.
 
     This mirrors the main agent's 401 recovery path and keeps auxiliary
     clients aligned with the singleton auth store + JWT refresh flow instead of
     relying only on whatever raw tokens happen to be sitting in auth.json
     or the credential pool.
+
+    ``stale_access_token`` is the bearer that just 401'd; with ``force_refresh``
+    it lets the auth store adopt a sibling process's rotation instead of
+    re-POSTing the shared grant.
     """
-    pooled = _resolve_nous_pool_runtime_api(force_refresh=force_refresh)
+    pooled = _resolve_nous_pool_runtime_api(
+        force_refresh=force_refresh,
+        stale_access_token=stale_access_token,
+    )
     if pooled is not None:
         return pooled
 
@@ -2620,6 +2638,7 @@ def _resolve_nous_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[
         creds = resolve_nous_runtime_credentials(
             timeout_seconds=env_float("HERMES_NOUS_TIMEOUT_SECONDS", 15),
             force_refresh=force_refresh,
+            stale_access_token=stale_access_token or None,
         )
     except Exception as exc:
         logger.debug("Auxiliary Nous runtime credential resolution failed: %s", exc)
@@ -4921,7 +4940,11 @@ async def _retry_same_provider_async(
     )
 
 
-def _refresh_provider_credentials(provider: str) -> bool:
+def _refresh_provider_credentials(
+    provider: str,
+    *,
+    stale_access_token: Optional[str] = None,
+) -> bool:
     """Refresh short-lived credentials for OAuth-backed auxiliary providers."""
     normalized = _normalize_aux_provider(provider)
     try:
@@ -4954,6 +4977,7 @@ def _refresh_provider_credentials(provider: str) -> bool:
             creds = resolve_nous_runtime_credentials(
                 timeout_seconds=env_float("HERMES_NOUS_TIMEOUT_SECONDS", 15),
                 force_refresh=True,
+                stale_access_token=stale_access_token,
             )
             if not str(creds.get("api_key", "") or "").strip():
                 return False
@@ -5010,6 +5034,16 @@ def _refresh_provider_credentials(provider: str) -> bool:
         logger.debug("Auxiliary provider credential refresh failed for %s: %s", normalized, exc)
         return False
     return False
+
+
+def _refresh_failed_auxiliary_credentials(provider: str, client: Any) -> bool:
+    """Refresh after 401 while preserving the exact failed Nous bearer."""
+    if _normalize_aux_provider(provider) == "nous":
+        return _refresh_provider_credentials(
+            provider,
+            stale_access_token=str(getattr(client, "api_key", "") or ""),
+        )
+    return _refresh_provider_credentials(provider)
 
 
 def _auth_refresh_provider_for_route(
@@ -5258,7 +5292,10 @@ def _call_fallback_candidate_sync(
         fb_provider = _auth_refresh_provider_for_route(
             destination.provider, destination.base_url
         )
-        if fb_provider not in {"auto", "", None} and _refresh_provider_credentials(fb_provider):
+        if (
+            fb_provider not in {"auto", "", None}
+            and _refresh_failed_auxiliary_credentials(fb_provider, fb_client)
+        ):
             retry_client, retry_model = _get_cached_client(
                 fb_provider,
                 destination.model,
@@ -5364,7 +5401,10 @@ async def _call_fallback_candidate_async(
         fb_provider = _auth_refresh_provider_for_route(
             destination.provider, destination.base_url
         )
-        if fb_provider not in {"auto", "", None} and _refresh_provider_credentials(fb_provider):
+        if (
+            fb_provider not in {"auto", "", None}
+            and _refresh_failed_auxiliary_credentials(fb_provider, fb_client)
+        ):
             retry_client, retry_model = _get_cached_client(
                 fb_provider,
                 destination.model,
@@ -7678,15 +7718,21 @@ def _refresh_nous_auxiliary_client(
     *,
     cache_provider: str,
     model: Optional[str],
+    cache_model: Optional[str],
+    task: Optional[str],
     async_mode: bool,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
+    stale_access_token: Optional[str] = None,
     api_mode: Optional[str] = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     is_vision: bool = False,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Refresh Nous runtime creds, rebuild the client, and replace the cache entry."""
-    runtime = _resolve_nous_runtime_api(force_refresh=True)
+    runtime = _resolve_nous_runtime_api(
+        force_refresh=True,
+        stale_access_token=stale_access_token or api_key,
+    )
     if runtime is None:
         return None, model
 
@@ -7713,7 +7759,8 @@ def _refresh_nous_auxiliary_client(
         api_mode=api_mode,
         main_runtime=main_runtime,
         is_vision=is_vision,
-        model=final_model,
+        task=task,
+        model=cache_model,
     )
     _store_cached_client(cache_key, client, final_model, bound_loop=current_loop)
     return client, final_model
@@ -9817,9 +9864,15 @@ def _call_llm_impl(
             refreshed_client, refreshed_model = _refresh_nous_auxiliary_client(
                 cache_provider=resolved_provider or "nous",
                 model=final_model,
+                cache_model=resolved_model,
+                task=task,
                 async_mode=False,
                 base_url=resolved_base_url,
                 api_key=resolved_api_key,
+                stale_access_token=(
+                    str(getattr(client, "api_key", "") or "")
+                    or resolved_api_key
+                ),
                 api_mode=resolved_api_mode,
                 main_runtime=main_runtime,
                 is_vision=(task == "vision"),
@@ -9853,9 +9906,15 @@ def _call_llm_impl(
             refreshed_client, refreshed_model = _refresh_nous_auxiliary_client(
                 cache_provider=resolved_provider or "nous",
                 model=final_model,
+                cache_model=resolved_model,
+                task=task,
                 async_mode=False,
                 base_url=resolved_base_url,
                 api_key=resolved_api_key,
+                stale_access_token=(
+                    str(getattr(client, "api_key", "") or "")
+                    or resolved_api_key
+                ),
                 api_mode=resolved_api_mode,
                 main_runtime=main_runtime,
                 is_vision=(task == "vision"),
@@ -10562,10 +10621,17 @@ async def _async_call_llm_impl(
             refreshed_client, refreshed_model = _refresh_nous_auxiliary_client(
                 cache_provider=resolved_provider or "nous",
                 model=final_model,
+                cache_model=resolved_model,
+                task=task,
                 async_mode=True,
                 base_url=resolved_base_url,
                 api_key=resolved_api_key,
+                stale_access_token=(
+                    str(getattr(client, "api_key", "") or "")
+                    or resolved_api_key
+                ),
                 api_mode=resolved_api_mode,
+                main_runtime=main_runtime,
                 is_vision=(task == "vision"),
             )
             if refreshed_client is not None:
@@ -10597,10 +10663,17 @@ async def _async_call_llm_impl(
             refreshed_client, refreshed_model = _refresh_nous_auxiliary_client(
                 cache_provider=resolved_provider or "nous",
                 model=final_model,
+                cache_model=resolved_model,
+                task=task,
                 async_mode=True,
                 base_url=resolved_base_url,
                 api_key=resolved_api_key,
+                stale_access_token=(
+                    str(getattr(client, "api_key", "") or "")
+                    or resolved_api_key
+                ),
                 api_mode=resolved_api_mode,
+                main_runtime=main_runtime,
                 is_vision=(task == "vision"),
             )
             if refreshed_client is not None:
