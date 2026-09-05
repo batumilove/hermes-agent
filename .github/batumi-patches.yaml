@@ -1189,3 +1189,26 @@ patches:
     tests:
       - scripts/run_tests.sh tests/test_plugin_stream_reasoning_deltas_hotpath.py
     retirement: Remove when upstream ships an equivalent readonly config read on this hot path.
+
+  - id: nous-oauth-refresh-stampede-backport
+    kind: compatibility
+    rationale: >-
+      Prevent concurrent Hermes processes from repeatedly rotating the same
+      single-use Nous OAuth refresh grant after sibling 401 responses. Preserve
+      the exact failed bearer through main, pool, proxy, and auxiliary recovery;
+      adopt a peer-rotated token under the shared lock; and replace the original
+      task/model-specific auxiliary cache entry.
+    paths:
+      - agent/auxiliary_client.py
+      - agent/credential_pool.py
+      - hermes_cli/auth.py
+      - hermes_cli/proxy/adapters/nous_portal.py
+      - run_agent.py
+      - tests/agent/test_auxiliary_client.py
+      - tests/agent/test_credential_pool_nous_refresh_stampede.py
+      - tests/hermes_cli/test_proxy.py
+      - website/docs/user-guide/features/credential-pools.md
+    tests:
+      - scripts/run_tests.sh tests/agent/test_auxiliary_client.py tests/agent/test_credential_pool_nous_refresh_stampede.py tests/hermes_cli/test_proxy.py tests/hermes_cli/test_auth_nous_provider.py tests/agent/test_credential_pool.py
+      - scripts/run_tests.sh tests/run_agent/test_run_agent.py::TestRunConversation::test_nous_401_refreshes_after_remint_and_retries tests/run_agent/test_run_agent.py::TestNousCredentialRefresh
+    retirement: Remove when upstream-equivalent failed-bearer propagation, peer-token adoption, lock-timeout handling, and exact auxiliary cache-key replacement are present in the recorded upstream baseline.
