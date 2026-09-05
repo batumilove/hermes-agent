@@ -4752,8 +4752,16 @@ class AIAgent:
                     child.release_clients()
                 except Exception:
                     # Fall back to full close on children; they're per-turn.
+                    # A timed-out delegation worker may still be unwinding, so
+                    # share its close-once gate instead of racing its SessionDB.
                     try:
-                        child.close()
+                        request_deferred_close = getattr(
+                            child, "_delegate_request_close", None
+                        )
+                        if callable(request_deferred_close):
+                            request_deferred_close()
+                        else:
+                            child.close()
                     except Exception:
                         pass
         except Exception:
