@@ -15,6 +15,7 @@ import threading
 import time
 import types
 import unittest
+from concurrent.futures import Future
 from unittest.mock import MagicMock, patch
 
 from tools.delegate_tool import (
@@ -391,6 +392,99 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("closed before execution", result["error"])
         child.run_conversation.assert_not_called()
+
+    def test_batch_build_failure_retires_already_registered_children(self):
+        """A later construction failure cannot strand earlier batch children."""
+        from tools.delegate_tool import _install_deferred_child_close_gate
+
+        parent = _make_mock_parent(depth=0)
+        child = MagicMock()
+        child._delegate_role = "leaf"
+        child._credential_pool = None
+        _install_deferred_child_close_gate(child)
+        calls = 0
+
+        def build(**_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise ValueError("second child build failed")
+            parent._active_children.append(child)
+            return child
+
+        with patch(
+            "tools.delegate_tool._build_child_preserving_parent_tools",
+            side_effect=build,
+        ):
+            result = json.loads(
+                delegate_task(
+                    tasks=[
+                        {"goal": "first valid batch task"},
+                        {"goal": "second valid batch task"},
+                    ],
+                    parent_agent=parent,
+                )
+            )
+
+        self.assertIn("second child build failed", result["error"])
+        child.close.assert_called_once()
+        self.assertNotIn(child, parent._active_children)
+
+    def test_batch_submit_failure_retires_every_built_child(self):
+        """Executor rejection cannot strand the prebuilt batch."""
+        from tools.delegate_tool import _install_deferred_child_close_gate
+
+        parent = _make_mock_parent(depth=0)
+        children = []
+
+        def build(**kwargs):
+            child = MagicMock()
+            child._delegate_role = kwargs.get("role", "leaf")
+            child._credential_pool = None
+            _install_deferred_child_close_gate(child)
+            parent._active_children.append(child)
+            children.append(child)
+            return child
+
+        class _RejectingExecutor:
+            def __init__(self, **_kwargs):
+                self.calls = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def submit(self, *_args, **_kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    return Future()
+                raise RuntimeError("batch submit failed")
+
+        with (
+            patch(
+                "tools.delegate_tool._build_child_preserving_parent_tools",
+                side_effect=build,
+            ),
+            patch("tools.daemon_pool.DaemonThreadPoolExecutor", _RejectingExecutor),
+        ):
+            result = json.loads(
+                delegate_task(
+                    tasks=[
+                        {"goal": "first submit batch task"},
+                        {"goal": "second submit batch task"},
+                    ],
+                    parent_agent=parent,
+                )
+            )
+
+        self.assertEqual(len(result["results"]), 2)
+        self.assertTrue(all(r["status"] == "error" for r in result["results"]))
+        self.assertTrue(all("batch submit failed" in r["error"] for r in result["results"]))
+        for child in children:
+            child.close.assert_called_once()
+            self.assertNotIn(child, parent._active_children)
 
     def test_child_without_parent_db_still_degrades_to_none(self):
         """Parent without a SessionDB -> child gets None (pre-fix behaviour).
