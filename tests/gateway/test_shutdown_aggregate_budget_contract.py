@@ -189,7 +189,7 @@ async def test_wedged_pre_drain_marker_cannot_prevent_interrupt(monkeypatch):
 
     monkeypatch.setattr(
         runner.async_session_store,
-        "mark_resume_pending",
+        "mark_resume_pending_batch",
         _wedged_marker,
         raising=False,
     )
@@ -225,16 +225,17 @@ async def test_late_pre_drain_marker_finishes_before_compensating_clear(monkeypa
     release_marker = asyncio.Event()
     operations = []
 
-    async def _late_marker(*_args, **_kwargs):
+    async def _late_marker(session_keys, *_args, **_kwargs):
         await release_marker.wait()
         operations.append("mark")
+        return list(session_keys)
 
     async def _clear_marker(*_args, **_kwargs):
         operations.append("clear")
 
     monkeypatch.setattr(
         runner.async_session_store,
-        "mark_resume_pending",
+        "mark_resume_pending_batch",
         _late_marker,
         raising=False,
     )

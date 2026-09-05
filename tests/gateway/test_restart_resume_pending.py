@@ -26,10 +26,12 @@ PRs #9850, #9934, #7536):
 """
 
 import asyncio
+import json
 import time
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import hermes_state
 import pytest
 
 from gateway.config import GatewayConfig, HomeChannel, Platform
@@ -222,6 +224,182 @@ class TestMarkResumePending:
 
         store.mark_resume_pending(entry.session_key, reason="shutdown_timeout")
         assert store._entries[entry.session_key].resume_reason == "shutdown_timeout"
+
+    def test_batch_marks_all_eligible_entries_with_one_durable_write(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        store = SessionStore(
+            sessions_dir=tmp_path / "sessions",
+            config=GatewayConfig(),
+        )
+        first = store.get_or_create_session(_make_source(chat_id="first"))
+        second = store.get_or_create_session(_make_source(chat_id="second"))
+        suspended = store.get_or_create_session(_make_source(chat_id="suspended"))
+        suspended.suspended = True
+
+        class CountingLock:
+            def __init__(self, wrapped):
+                self.wrapped = wrapped
+                self.acquisitions = 0
+
+            def __enter__(self):
+                self.acquisitions += 1
+                return self.wrapped.__enter__()
+
+            def __exit__(self, *args):
+                return self.wrapped.__exit__(*args)
+
+        counting_lock = CountingLock(store._lock)
+
+        with (
+            patch.object(store, "_lock", counting_lock),
+            patch.object(
+                store,
+                "_persist_routing_data",
+                wraps=store._persist_routing_data,
+            ) as persist,
+        ):
+            marked = store.mark_resume_pending_batch(
+                [first.session_key, second.session_key, first.session_key, suspended.session_key, "missing"],
+                reason="shutdown_timeout",
+            )
+
+        assert marked == [first.session_key, second.session_key]
+        assert counting_lock.acquisitions == 1
+        assert persist.call_count == 1
+        assert persist.call_args.kwargs["reason"] == "mark_resume_pending_batch"
+        assert persist.call_args.kwargs["require_state_db"] is True
+        assert first.resume_pending is True
+        assert second.resume_pending is True
+        assert first.last_resume_marked_at == second.last_resume_marked_at
+        assert suspended.resume_pending is False
+
+        reloaded = SessionStore(
+            sessions_dir=tmp_path / "sessions",
+            config=GatewayConfig(),
+        )
+        reloaded_first = reloaded.get_or_create_session(_make_source(chat_id="first"))
+        reloaded_second = reloaded.get_or_create_session(_make_source(chat_id="second"))
+        assert reloaded_first.resume_pending is True
+        assert reloaded_second.resume_pending is True
+        assert reloaded_first.resume_reason == "shutdown_timeout"
+        assert reloaded_second.resume_reason == "shutdown_timeout"
+        getattr(store._db, "close")()
+        getattr(reloaded._db, "close")()
+
+    def test_batch_rolls_back_every_entry_when_persistence_fails(self, tmp_path):
+        store = _make_store(tmp_path)
+        first = store.get_or_create_session(_make_source(chat_id="first"))
+        second = store.get_or_create_session(_make_source(chat_id="second"))
+        previous_marked_at = datetime(2020, 1, 2, 3, 4, 5)
+        first.resume_pending = True
+        first.resume_reason = "previous_reason"
+        first.last_resume_marked_at = previous_marked_at
+
+        with patch.object(
+            store,
+            "_persist_routing_data",
+            side_effect=OSError("state store unavailable"),
+        ):
+            with pytest.raises(OSError, match="state store unavailable"):
+                store.mark_resume_pending_batch(
+                    [first.session_key, second.session_key],
+                    reason="restart_timeout",
+                )
+
+        assert first.resume_pending is True
+        assert first.resume_reason == "previous_reason"
+        assert first.last_resume_marked_at == previous_marked_at
+        assert second.resume_pending is False
+        assert second.resume_reason is None
+        assert second.last_resume_marked_at is None
+
+    def test_batch_rejects_legacy_mirror_only_success(self, tmp_path, monkeypatch):
+        """A failed authoritative DB batch must not succeed via sessions.json."""
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        store = SessionStore(
+            sessions_dir=tmp_path / "sessions",
+            config=GatewayConfig(),
+        )
+        first = store.get_or_create_session(_make_source(chat_id="db-first"))
+        second = store.get_or_create_session(_make_source(chat_id="db-second"))
+        mirror_path = tmp_path / "sessions" / "sessions.json"
+        mirror_before = mirror_path.read_text(encoding="utf-8")
+
+        def fail_reconciliation(*_args, **_kwargs):
+            raise RuntimeError("state.db unavailable")
+
+        db = store._db
+        monkeypatch.setattr(
+            db,
+            "replace_gateway_routing_entries",
+            fail_reconciliation,
+        )
+
+        with pytest.raises(RuntimeError, match="resume-marker batch was not persisted"):
+            store.mark_resume_pending_batch(
+                [first.session_key, second.session_key],
+                "shutdown_timeout",
+            )
+
+        assert first.resume_pending is False
+        assert second.resume_pending is False
+        assert mirror_path.read_text(encoding="utf-8") == mirror_before
+        durable = getattr(db, "load_gateway_routing_entries")(
+            scope=store._routing_scope()
+        )
+        assert json.loads(durable[first.session_key])["resume_pending"] is False
+        assert json.loads(durable[second.session_key])["resume_pending"] is False
+        getattr(db, "close")()
+
+    def test_batch_rejects_missing_authoritative_db(self, tmp_path, monkeypatch):
+        """A required state.db batch must fail when no database handle exists."""
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        store = SessionStore(
+            sessions_dir=tmp_path / "sessions",
+            config=GatewayConfig(),
+        )
+        entry = store.get_or_create_session(_make_source(chat_id="missing-db"))
+        mirror_path = tmp_path / "sessions" / "sessions.json"
+        mirror_before = mirror_path.read_text(encoding="utf-8")
+        db = store._db
+        store._db = None
+
+        with pytest.raises(RuntimeError, match="resume-marker batch was not persisted"):
+            store.mark_resume_pending_batch([entry.session_key])
+
+        assert entry.resume_pending is False
+        assert mirror_path.read_text(encoding="utf-8") == mirror_before
+        getattr(db, "close")()
+
+    def test_batch_keeps_committed_markers_when_legacy_mirror_is_interrupted(
+        self, tmp_path, monkeypatch
+    ):
+        """A mirror BaseException cannot undo an authoritative state.db commit."""
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        store = SessionStore(
+            sessions_dir=tmp_path / "sessions",
+            config=GatewayConfig(),
+        )
+        entry = store.get_or_create_session(_make_source(chat_id="mirror-interrupt"))
+        db = store._db
+
+        class MirrorInterrupted(BaseException):
+            pass
+
+        def interrupt_mirror(_data):
+            raise MirrorInterrupted("legacy mirror interrupted")
+
+        monkeypatch.setattr(store, "_save_sessions_json", interrupt_mirror)
+
+        assert store.mark_resume_pending_batch([entry.session_key]) == [entry.session_key]
+        assert entry.resume_pending is True
+        durable = getattr(db, "load_gateway_routing_entries")(
+            scope=store._routing_scope()
+        )
+        assert json.loads(durable[entry.session_key])["resume_pending"] is True
+        getattr(db, "close")()
 
 
 class TestClearResumePending:
@@ -590,8 +768,11 @@ async def test_drain_timeout_marks_resume_pending():
         session_key_two: MagicMock(),
     }
 
-    # Plug a mock session_store that records marks.
+    # Plug a mock session_store that records one atomic batch.
     session_store = MagicMock()
+    session_store.mark_resume_pending_batch = MagicMock(
+        return_value=[session_key_one, session_key_two]
+    )
     session_store.mark_resume_pending = MagicMock(return_value=True)
     runner.session_store = session_store
 
@@ -600,12 +781,12 @@ async def test_drain_timeout_marks_resume_pending():
     ):
         await runner.stop()
 
-    # Both active sessions were marked with the shutdown_timeout reason.
-    calls = session_store.mark_resume_pending.call_args_list
-    marked = {args[0][0] for args in calls}
-    assert marked == {session_key_one, session_key_two}
-    for args in calls:
-        assert args[0][1] == "shutdown_timeout"
+    # Both active sessions were submitted together; no per-key persistence.
+    calls = session_store.mark_resume_pending_batch.call_args_list
+    assert len(calls) == 2
+    for call in calls:
+        assert call.args == ([session_key_one, session_key_two], "shutdown_timeout")
+    session_store.mark_resume_pending.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
