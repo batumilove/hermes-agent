@@ -225,9 +225,14 @@ class TestMarkResumePending:
         store.mark_resume_pending(entry.session_key, reason="shutdown_timeout")
         assert store._entries[entry.session_key].resume_reason == "shutdown_timeout"
 
-    def test_batch_marks_all_eligible_entries_with_one_durable_write(self, tmp_path):
-        store = _make_store(tmp_path)
-        store._db = None
+    def test_batch_marks_all_eligible_entries_with_one_durable_write(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        store = SessionStore(
+            sessions_dir=tmp_path / "sessions",
+            config=GatewayConfig(),
+        )
         first = store.get_or_create_session(_make_source(chat_id="first"))
         second = store.get_or_create_session(_make_source(chat_id="second"))
         suspended = store.get_or_create_session(_make_source(chat_id="suspended"))
@@ -270,14 +275,18 @@ class TestMarkResumePending:
         assert first.last_resume_marked_at == second.last_resume_marked_at
         assert suspended.resume_pending is False
 
-        reloaded = _make_store(tmp_path)
-        reloaded._db = None
+        reloaded = SessionStore(
+            sessions_dir=tmp_path / "sessions",
+            config=GatewayConfig(),
+        )
         reloaded_first = reloaded.get_or_create_session(_make_source(chat_id="first"))
         reloaded_second = reloaded.get_or_create_session(_make_source(chat_id="second"))
         assert reloaded_first.resume_pending is True
         assert reloaded_second.resume_pending is True
         assert reloaded_first.resume_reason == "shutdown_timeout"
         assert reloaded_second.resume_reason == "shutdown_timeout"
+        getattr(store._db, "close")()
+        getattr(reloaded._db, "close")()
 
     def test_batch_rolls_back_every_entry_when_persistence_fails(self, tmp_path):
         store = _make_store(tmp_path)
@@ -342,6 +351,54 @@ class TestMarkResumePending:
         )
         assert json.loads(durable[first.session_key])["resume_pending"] is False
         assert json.loads(durable[second.session_key])["resume_pending"] is False
+        getattr(db, "close")()
+
+    def test_batch_rejects_missing_authoritative_db(self, tmp_path, monkeypatch):
+        """A required state.db batch must fail when no database handle exists."""
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        store = SessionStore(
+            sessions_dir=tmp_path / "sessions",
+            config=GatewayConfig(),
+        )
+        entry = store.get_or_create_session(_make_source(chat_id="missing-db"))
+        mirror_path = tmp_path / "sessions" / "sessions.json"
+        mirror_before = mirror_path.read_text(encoding="utf-8")
+        db = store._db
+        store._db = None
+
+        with pytest.raises(RuntimeError, match="resume-marker batch was not persisted"):
+            store.mark_resume_pending_batch([entry.session_key])
+
+        assert entry.resume_pending is False
+        assert mirror_path.read_text(encoding="utf-8") == mirror_before
+        getattr(db, "close")()
+
+    def test_batch_keeps_committed_markers_when_legacy_mirror_is_interrupted(
+        self, tmp_path, monkeypatch
+    ):
+        """A mirror BaseException cannot undo an authoritative state.db commit."""
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        store = SessionStore(
+            sessions_dir=tmp_path / "sessions",
+            config=GatewayConfig(),
+        )
+        entry = store.get_or_create_session(_make_source(chat_id="mirror-interrupt"))
+        db = store._db
+
+        class MirrorInterrupted(BaseException):
+            pass
+
+        def interrupt_mirror(_data):
+            raise MirrorInterrupted("legacy mirror interrupted")
+
+        monkeypatch.setattr(store, "_save_sessions_json", interrupt_mirror)
+
+        assert store.mark_resume_pending_batch([entry.session_key]) == [entry.session_key]
+        assert entry.resume_pending is True
+        durable = getattr(db, "load_gateway_routing_entries")(
+            scope=store._routing_scope()
+        )
+        assert json.loads(durable[entry.session_key])["resume_pending"] is True
         getattr(db, "close")()
 
 

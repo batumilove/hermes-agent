@@ -1872,7 +1872,7 @@ class SessionStore:
                                 "gateway.session: state.db routing save failed: %s", exc
                             )
 
-                if require_state_db and _db and not db_saved:
+                if require_state_db and not db_saved:
                     return False
                 if point_key is not None and _db and not db_saved:
                     return False
@@ -1880,7 +1880,7 @@ class SessionStore:
                 if getattr(self, "_write_sessions_json", True) or not db_saved:
                     try:
                         self._save_sessions_json(data)
-                    except Exception as exc:
+                    except BaseException as exc:
                         if not db_saved:
                             raise
                         # state.db is authoritative. A failed best-effort legacy
