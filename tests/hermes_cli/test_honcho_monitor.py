@@ -1188,27 +1188,115 @@ def test_spark_model_selection_uses_deriver_when_on_spark_goat():
     assert hm.select_spark_model(pipeline) == "custom-model"
 
 
-def test_auth_error_log_pattern_ignores_ports_timestamps_and_quoted_content():
-    benign = "\n".join(
-        [
-            "2026-07-08 10:16:25,401 - src.deriver.queue_manager - DEBUG - Claimed 1 work units",
-            '      INFO   172.18.0.1:40146 - "POST /v3/workspaces HTTP/1.1" 201',
-            # Rich box-drawn quote of message content flowing through the
-            # deriver pipeline — not a log-level auth error.
-            "│  Droid failed due to 401 Unauthorized errors. The review was successfully    │",
-            "2026-09-04 15:55:19,401 - src.llm.api - INFO - Tool-less truncation diagnostics: pre_tokens=1168",
-        ]
-    )
-    assert hm.re.search(hm.AUTH_ERROR_LOG_PATTERN, benign) is None
-
-    real = "\n".join(
-        [
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (
             "2026-09-04 15:40:00,123 - src.llm.api - ERROR - Error code: 401 - invalid_api_key",
+            {"save_representation": 0, "four_oh_one": 1},
+        ),
+        (
+            "2026-09-04 15:40:01 - src.llm.api - ERROR - Unauthorized request rejected",
+            {"save_representation": 0, "four_oh_one": 1},
+        ),
+        (
+            "2026-09-04 15:40:02 - src.llm.api - CRITICAL - request failed: 401 Unauthorized",
+            {"save_representation": 0, "four_oh_one": 1},
+        ),
+        (
+            "2026-09-04 15:40:03 - src.llm.api - ERROR - POST https://api.openai.com/v1/responses returned 401",
+            {"save_representation": 0, "four_oh_one": 1},
+        ),
+        (
             "openai.AuthenticationError: Error code: 401 - invalid_api_key",
+            {"save_representation": 0, "four_oh_one": 1},
+        ),
+        (
+            "openai.APIStatusError: Error code: 401 - Unauthorized",
+            {"save_representation": 0, "four_oh_one": 1},
+        ),
+        (
+            "2026-09-04 15:40:04,456 - src.deriver - ERROR - Failed to save representation for observer user",
+            {"save_representation": 1, "four_oh_one": 0},
+        ),
+        (
             "ERROR - Failed to save representation for observer user",
-        ]
-    )
-    assert hm.re.search(hm.AUTH_ERROR_LOG_PATTERN, real)
+            {"save_representation": 1, "four_oh_one": 0},
+        ),
+    ],
+)
+def test_parse_deriver_error_counts_recognizes_each_real_error_line(line: str, expected: dict[str, int]):
+    assert hm.parse_deriver_error_counts(line) == expected
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "2026-07-08 10:16:25,401 - src.deriver.queue_manager - DEBUG - Claimed 1 work units",
+        '      INFO   172.18.0.1:40146 - "POST /v3/workspaces HTTP/1.1" 201',
+        "│  Droid failed due to 401 Unauthorized errors. The review was successfully    │",
+        "│  Error code: 401 quoted from an earlier incident                                │",
+        "│  invalid_api_key appeared in archived message content                           │",
+        "│  POST https://api.openai.com/v1/responses returned 401 in an old transcript     │",
+        "│  Unauthorized request rejected                                                  │",
+        "│  openai.AuthenticationError quoted from an earlier traceback                    │",
+        "│  openai.APIStatusError: Error code: 401 - invalid_api_key                        │",
+        "│  Failed to save representation for observer user                                │",
+        "openai.APIStatusError: Error code: 500 - server_error",
+        "2026-09-04 15:55:19,401 - src.llm.api - INFO - Error code: 401 quoted in tool output",
+        "2026-09-04 15:55:20,401 - src.llm.api - WARNING - Failed to save representation quoted in diagnostics",
+    ],
+)
+def test_parse_deriver_error_counts_ignores_each_benign_or_quoted_line(line: str):
+    assert hm.parse_deriver_error_counts(line) == {
+        "save_representation": 0,
+        "four_oh_one": 0,
+    }
+
+
+def test_collect_recent_deriver_errors_uses_python_parser_on_raw_log_lines():
+    commands: list[tuple[str, int]] = []
+
+    def fake_ssh(command: str, timeout: int = 20) -> str:
+        commands.append((command, timeout))
+        return "\n".join(
+            [
+                "2026-09-04 15:40:00,123 - src.llm.api - ERROR - Error code: 401 - invalid_api_key",
+                "│  Error code: 401 - invalid_api_key quoted in derived content  │",
+                "2026-09-04 15:40:02,456 - src.deriver - ERROR - Failed to save representation for observer user",
+            ]
+        )
+
+    assert hm.collect_recent_deriver_errors(ssh_fn=fake_ssh) == {
+        "save_representation": 1,
+        "four_oh_one": 1,
+    }
+    assert commands == [("docker logs honcho-deriver-1 --since 15m 2>&1", 30)]
+
+
+def test_collect_snapshot_propagates_recent_deriver_error_counts(monkeypatch, tmp_path):
+    def fake_ssh(command: str, timeout: int = 20) -> str:
+        if "compose ps" in command:
+            return "honcho-api-1 Up\nhoncho-deriver-1 Up\nhoncho-database-1 Up\nhoncho-redis-1 Up"
+        if "FROM documents" in command and "message_embeddings" in command:
+            return "0|0||0|0|"
+        if "active_queue_sessions" in command:
+            return "0|0||0|0|0|0|0|0"
+        if "Observation Count" in command:
+            return "count|0\nlast|"
+        return ""
+
+    expected = {"save_representation": 2, "four_oh_one": 3}
+    monkeypatch.setattr(hm, "STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(hm, "ssh", fake_ssh)
+    monkeypatch.setattr(hm, "collect_recent_deriver_errors", lambda: expected.copy())
+    monkeypatch.setattr(hm, "latest_local_message_timestamp", lambda: None)
+    monkeypatch.setattr(hm, "curl_post_json", lambda *args, **kwargs: (False, None, 0.0))
+
+    snapshot, current_state = hm.collect_snapshot()
+
+    assert snapshot.errors == expected
+    assert current_state["errors"] == expected
 
 
 def test_latest_local_message_timestamp_ignores_cron_sessions(tmp_path: Path):
