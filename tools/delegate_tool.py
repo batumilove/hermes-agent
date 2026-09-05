@@ -2653,6 +2653,10 @@ def _run_single_child(
     # Worktree-isolation state: populated inside the try once the child's
     # task id is known; the default no-op keeps every early error path safe.
     _worktree_info: Optional[Dict[str, str]] = None
+    # Set once run_conversation is submitted.  A timeout abandons this daemon
+    # worker rather than stopping it, so teardown must use the future as the
+    # resource-lifetime boundary instead of closing the child underneath it.
+    _child_future = None
 
     def _attach_worktree(entry_dict: Dict[str, Any]) -> None:
         """Inspect + prune the child worktree, reporting into the entry."""
@@ -3364,14 +3368,23 @@ def _run_single_child(
             except (ValueError, UnboundLocalError) as e:
                 logger.debug("Could not remove child from active_children: %s", e)
 
-        # Close tool resources (terminal sandboxes, browser daemons,
-        # background processes, httpx clients) so subagent subprocesses
-        # don't outlive the delegation.
-        try:
-            if hasattr(child, "close"):
-                child.close()
-        except Exception:
-            logger.debug("Failed to close child agent after delegation")
+        # Close tool resources (SessionDB, terminal sandboxes, browser
+        # daemons, background processes, httpx clients) only after the child
+        # worker has stopped using them. Future.result(timeout=...) does not
+        # stop its daemon worker; closing here immediately used to race a slow
+        # tool's final persistence flush with ``SessionDB is closed``.
+        def _close_child_after_worker(_future=None):
+            try:
+                close_child = getattr(child, "close", None)
+                if callable(close_child):
+                    close_child()
+            except Exception:
+                logger.debug("Failed to close child agent after delegation")
+
+        if _child_future is not None and not _child_future.done():
+            _child_future.add_done_callback(_close_child_after_worker)
+        else:
+            _close_child_after_worker()
 
         # The AIAgent turn boundary normally closes the child scope itself. This
         # fallback covers failures before that boundary starts, but must not pop
