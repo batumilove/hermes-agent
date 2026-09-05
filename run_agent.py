@@ -4876,7 +4876,13 @@ class AIAgent:
                         pass
                     continue
                 try:
-                    child.close()
+                    request_deferred_close = getattr(
+                        child, "_delegate_request_close", None
+                    )
+                    if callable(request_deferred_close):
+                        request_deferred_close()
+                    else:
+                        child.close()
                 except Exception:
                     pass
         except Exception:
