@@ -2657,6 +2657,48 @@ def _run_single_child(
     # worker rather than stopping it, so teardown must use the future as the
     # resource-lifetime boundary instead of closing the child underneath it.
     _child_future = None
+    _child_close_lock = threading.Lock()
+    _child_close_state = {
+        "future": None,
+        "requested": False,
+        "scheduled": False,
+        "closed": False,
+    }
+
+    def _close_child_once(_future=None):
+        with _child_close_lock:
+            if _child_close_state["closed"]:
+                return
+            _child_close_state["closed"] = True
+        try:
+            close_child = getattr(child, "close", None)
+            if callable(close_child):
+                close_child()
+        except Exception:
+            logger.debug("Failed to close child agent after delegation")
+
+    def _schedule_child_close(future) -> None:
+        if future is not None and not future.done():
+            future.add_done_callback(_close_child_once)
+        else:
+            _close_child_once()
+
+    def _request_child_close_after_worker(*, worker_never_started=False) -> None:
+        with _child_close_lock:
+            _child_close_state["requested"] = True
+            future = _child_close_state["future"]
+            if _child_close_state["scheduled"]:
+                return
+            if future is None and not worker_never_started:
+                return
+            _child_close_state["scheduled"] = True
+        _schedule_child_close(future)
+
+    # Parent hard teardown may race this delegation owner. Route both owners
+    # through one close-once gate so neither releases the child-owned SessionDB
+    # while the worker is still unwinding.
+    if child is not None:
+        setattr(child, "_delegate_request_close", _request_child_close_after_worker)
 
     def _attach_worktree(entry_dict: Dict[str, Any]) -> None:
         """Inspect + prune the child worktree, reporting into the entry."""
@@ -2831,6 +2873,16 @@ def _run_single_child(
             _child_context.run,
             _run_with_thread_capture,
         )
+        with _child_close_lock:
+            _child_close_state["future"] = _child_future
+            _close_was_requested = (
+                _child_close_state["requested"]
+                and not _child_close_state["scheduled"]
+            )
+            if _close_was_requested:
+                _child_close_state["scheduled"] = True
+        if _close_was_requested:
+            _schedule_child_close(_child_future)
         try:
             result = _child_future.result(timeout=child_timeout)
         except Exception as _timeout_exc:
@@ -3373,18 +3425,7 @@ def _run_single_child(
         # worker has stopped using them. Future.result(timeout=...) does not
         # stop its daemon worker; closing here immediately used to race a slow
         # tool's final persistence flush with ``SessionDB is closed``.
-        def _close_child_after_worker(_future=None):
-            try:
-                close_child = getattr(child, "close", None)
-                if callable(close_child):
-                    close_child()
-            except Exception:
-                logger.debug("Failed to close child agent after delegation")
-
-        if _child_future is not None and not _child_future.done():
-            _child_future.add_done_callback(_close_child_after_worker)
-        else:
-            _close_child_after_worker()
+        _request_child_close_after_worker(worker_never_started=_child_future is None)
 
         # The AIAgent turn boundary normally closes the child scope itself. This
         # fallback covers failures before that boundary starts, but must not pop

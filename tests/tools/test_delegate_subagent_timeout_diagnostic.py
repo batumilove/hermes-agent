@@ -298,3 +298,76 @@ class TestRunSingleChildTimeoutDump:
         assert child.closed.wait(2.0)
         assert child.close_while_running is False
         assert child.close_count == 1
+
+    def test_parent_close_defers_child_close_until_worker_unwinds(
+        self, hermes_home, monkeypatch
+    ):
+        """Parent hard-close must not release a running child's resources."""
+        from run_agent import AIAgent
+        from tools import delegate_tool
+
+        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 5.0)
+
+        class _SlowUnwindChild(_StubChild):
+            def __init__(self):
+                super().__init__(api_call_count=1, hang_seconds=0.0)
+                self.started = threading.Event()
+                self.release = threading.Event()
+                self.closed = threading.Event()
+                self.running = False
+                self.close_while_running = False
+                self.close_count = 0
+
+            def run_conversation(self, user_message, task_id=None, stream_callback=None):
+                self.running = True
+                self.started.set()
+                self.release.wait(5.0)
+                self.running = False
+                return {"final_response": "done", "completed": True, "api_calls": 1}
+
+            def close(self):
+                self.close_count += 1
+                self.close_while_running = self.running
+                self.closed.set()
+
+        child = _SlowUnwindChild()
+        parent = AIAgent.__new__(AIAgent)
+        parent.session_id = "parent-close-delegation-race"
+        setattr(parent, "_active_children", [child])
+        setattr(parent, "_active_children_lock", threading.Lock())
+        setattr(parent, "_background_review_agent", None)
+        setattr(parent, "_background_review_lock", threading.Lock())
+        setattr(parent, "_context_engine_shutdown_lock", threading.Lock())
+        parent.client = None
+        setattr(parent, "_session_db", None)
+        parent._owns_session_db = False
+        parent.shutdown_memory_provider = lambda *_a, **_kw: True
+        parent._shutdown_owned_context_engine = lambda: None
+        parent._close_cached_request_openai_client = lambda **_kw: None
+        parent._close_cached_request_anthropic_client = lambda **_kw: None
+
+        results = []
+        runner = threading.Thread(
+            target=lambda: results.append(
+                delegate_tool._run_single_child(
+                    task_index=0,
+                    goal="test parent-close race",
+                    child=child,
+                    parent_agent=parent,
+                )
+            ),
+            daemon=True,
+        )
+        runner.start()
+        assert child.started.wait(2.0)
+
+        parent.close()
+
+        assert not child.closed.is_set()
+        child.release.set()
+        assert child.closed.wait(2.0)
+        runner.join(2.0)
+        assert not runner.is_alive()
+        assert results[0]["status"] == "completed"
+        assert child.close_while_running is False
+        assert child.close_count == 1
