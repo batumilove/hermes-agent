@@ -903,8 +903,12 @@ class HonchoClientConfig:
 
         # per-session: the run's session_id IS the identity — resolve before the
         # cwd map / title so an auto-generated title can't remap a live
-        # conversation onto a second Honcho session mid-stream.
-        if self.session_strategy == "per-session" and session_id:
+        # conversation onto a second Honcho session mid-stream.  If startup has
+        # not assigned an ID yet, fail closed instead of falling through to the
+        # cwd basename and accidentally reusing a legacy per-directory session.
+        if self.session_strategy == "per-session":
+            if not session_id:
+                return None
             if self.session_peer_prefix and self.peer_name:
                 return f"{self.peer_name}-{session_id}"
             return session_id

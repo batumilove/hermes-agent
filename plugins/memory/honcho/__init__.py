@@ -387,6 +387,11 @@ class HonchoMemoryProvider(MemoryProvider):
             if not cfg.enabled or not (cfg.api_key or cfg.base_url):
                 logger.debug("Honcho not configured — plugin inactive")
                 return
+            if cfg.session_strategy == "per-session" and not session_id:
+                logger.warning(
+                    "Honcho per-session initialization skipped: no Hermes session ID"
+                )
+                return
 
             self._config = cfg
 

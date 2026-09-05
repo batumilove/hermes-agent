@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+from plugins.memory.honcho import HonchoMemoryProvider
 from plugins.memory.honcho.client import HonchoClientConfig
 from plugins.memory.honcho.session import (
     HonchoSession,
@@ -153,6 +154,40 @@ class TestResolveSessionNameTitle:
         cfg = HonchoClientConfig(session_strategy="per-session")
         result = cfg.resolve_session_name("/some/dir", session_id="20260309_175514_9797dd")
         assert result == "20260309_175514_9797dd"
+
+    def test_per_session_without_session_id_does_not_reuse_directory(self):
+        """A pre-session CLI path must not touch a legacy cwd-named session."""
+        cfg = HonchoClientConfig(session_strategy="per-session")
+        result = cfg.resolve_session_name("/home/ubuntu")
+        assert result is None
+
+    def test_per_session_init_without_id_does_not_touch_honcho(self, monkeypatch):
+        """Pre-session CLI startup must not create a generic or cwd session."""
+        provider = HonchoMemoryProvider()
+        cfg = HonchoClientConfig(
+            enabled=True,
+            api_key="test-key",
+            init_on_session_start=True,
+            session_strategy="per-session",
+        )
+        calls = []
+
+        monkeypatch.setattr(
+            HonchoClientConfig,
+            "from_global_config",
+            lambda: cfg,
+        )
+        monkeypatch.setattr(
+            HonchoMemoryProvider,
+            "_do_session_init",
+            lambda self, config, session_id, **kwargs: calls.append(session_id),
+        )
+
+        provider.initialize("", platform="cli")
+
+        assert calls == []
+        assert not provider._session_key
+        assert provider._manager is None
 
 
     def test_gateway_key_beats_per_session_id(self):
