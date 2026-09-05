@@ -238,3 +238,63 @@ class TestRunSingleChildTimeoutDump:
         assert result["timeout_seconds"] is None
         assert result["timed_out_after_seconds"] is None
         assert result["timeout_phase"] is None
+
+    def test_timeout_defers_child_close_until_worker_unwinds(self, hermes_home, monkeypatch):
+        """A timeout must not close SessionDB/resources under an active turn.
+
+        ``Future.result(timeout=...)`` abandons the daemon worker; it does not
+        stop it.  The worker may still be returning from an uninterruptible
+        tool and persisting that tool result, so closing the child in the
+        caller's timeout-finally races that persistence with a closed DB.
+        """
+        from tools import delegate_tool
+
+        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 0.05)
+
+        class _SlowUnwindChild(_StubChild):
+            def __init__(self):
+                super().__init__(api_call_count=1, hang_seconds=0.0)
+                self.started = threading.Event()
+                self.release = threading.Event()
+                self.closed = threading.Event()
+                self.running = False
+                self.close_while_running = False
+                self.close_count = 0
+
+            def run_conversation(self, user_message, task_id=None, stream_callback=None):
+                self.running = True
+                self.started.set()
+                self.release.wait(5.0)
+                self.running = False
+                return {"final_response": "late", "completed": True, "api_calls": 1}
+
+            def interrupt(self):
+                # Real tools can be uninterruptible: acknowledge cancellation
+                # without releasing the in-flight operation.
+                return None
+
+            def close(self):
+                self.close_count += 1
+                self.close_while_running = self.running
+                self.closed.set()
+
+        child = _SlowUnwindChild()
+        parent = MagicMock()
+        parent._touch_activity = MagicMock()
+        parent._current_task_id = None
+
+        result = delegate_tool._run_single_child(
+            task_index=0,
+            goal="test slow unwind",
+            child=child,
+            parent_agent=parent,
+        )
+
+        assert result["status"] == "timeout"
+        assert child.started.is_set()
+        assert not child.closed.is_set()
+
+        child.release.set()
+        assert child.closed.wait(2.0)
+        assert child.close_while_running is False
+        assert child.close_count == 1
