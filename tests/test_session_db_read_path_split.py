@@ -9,6 +9,7 @@ self._lock, and fall back to the legacy locked path when WAL or the read
 connection is missing.
 """
 
+import sqlite3
 import threading
 
 import pytest
@@ -49,6 +50,73 @@ def test_concurrent_read_checkouts_are_distinct_and_returned(db):
     assert not failures
     assert conns[1] is not conns[2]
     assert db._read_pool.qsize() == 2
+
+
+@pytest.mark.requires_wal
+def test_activity_label_cleanup_does_not_convoy_on_writer_connection(tmp_path):
+    """The cleanup eligibility read must use the isolated read path.
+
+    A long statement on the shared writer connection must not stall a no-op
+    activity-label cleanup.  Sharing that connection across gateway threads is
+    also unsafe in pysqlite's statement/cache layer under concurrent traffic.
+    """
+    db_path = tmp_path / "activity.db"
+    seed = sqlite3.connect(db_path)
+    try:
+        assert seed.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower() == "wal"
+    finally:
+        seed.close()
+
+    db = SessionDB(db_path=db_path)
+    db.create_session(session_id="s1", source="cli", model="m")
+    assert db._conn is not None
+    writer_started = threading.Event()
+    release_writer = threading.Event()
+    cleanup_done = threading.Event()
+    failures = []
+
+    def hold_writer_connection():
+        writer_started.set()
+        if not release_writer.wait(timeout=5.0):
+            raise TimeoutError("test did not release writer connection")
+        return 1
+
+    db._conn.create_function("hold_writer_connection", 0, hold_writer_connection)
+
+    def writer():
+        try:
+            db._conn.execute("SELECT hold_writer_connection()").fetchone()
+        except BaseException as exc:
+            failures.append(exc)
+
+    def cleanup():
+        try:
+            db.clear_session_activity_labels("s1")
+        except BaseException as exc:
+            failures.append(exc)
+        finally:
+            cleanup_done.set()
+
+    writer_thread = threading.Thread(target=writer)
+    cleanup_thread = threading.Thread(target=cleanup)
+    try:
+        writer_thread.start()
+        assert writer_started.wait(timeout=2.0), "writer statement did not start"
+        cleanup_thread.start()
+
+        completed_while_writer_busy = cleanup_done.wait(timeout=0.5)
+        release_writer.set()
+        writer_thread.join(timeout=5.0)
+        cleanup_thread.join(timeout=5.0)
+
+        assert not writer_thread.is_alive() and not cleanup_thread.is_alive()
+        assert not failures
+        assert completed_while_writer_busy, "cleanup used the shared writer connection"
+    finally:
+        release_writer.set()
+        writer_thread.join(timeout=5.0)
+        cleanup_thread.join(timeout=5.0)
+        db.close()
 
 
 @pytest.mark.requires_wal
