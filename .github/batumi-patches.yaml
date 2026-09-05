@@ -165,6 +165,20 @@ patches:
       - scripts/run_tests.sh tests/hermes_cli/test_backup.py
     retirement: Remove when upstream preserves safe archived modes and imports large members with bounded memory using equivalent regression coverage.
 
+  - id: docker-config-unversioned-migration
+    kind: operations
+    rationale: >-
+      Keep Docker boot-time migration aligned with the core migrator by allowing
+      legacy configs without an explicit schema marker through the migration
+      ladder while continuing to refuse explicitly versioned configs below the
+      supported floor.
+    paths:
+      - scripts/docker_config_migrate.py
+      - tests/tools/test_docker_config_migrate.py
+    tests:
+      - scripts/run_tests.sh tests/tools/test_docker_config_migrate.py
+    retirement: Remove when upstream's Docker migration wrapper distinguishes a missing schema marker from an explicit unsupported version with equivalent regression coverage.
+
   - id: safe-update-eol-normalization
     kind: core
     rationale: >-
