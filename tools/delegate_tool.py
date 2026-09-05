@@ -3154,7 +3154,7 @@ def _run_single_child(
                         "timeout_phase": "schema_retry",
                         "schema_valid": False,
                         "schema_errors": list(_schema_errors),
-                        "schema_retry_count": 1,
+                        "schema_retries": 1,
                         "_child_role": getattr(child, "_delegate_role", None),
                     }
                     if _late_pending_steer:
@@ -4134,12 +4134,14 @@ def delegate_task(
             completed_count = 0
             spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
 
-            # Daemon workers (tools.daemon_pool): the `with` block still joins
-            # normally, but if the parent is interrupted while a child is
-            # wedged, the abandoned worker must not block interpreter exit.
+            # Daemon workers must never be joined implicitly: on parent
+            # interruption or partial submission failure, a running child may
+            # still be unwinding after this owner has returned.
             from tools.daemon_pool import DaemonThreadPoolExecutor
-            with DaemonThreadPoolExecutor(max_workers=max_children) as executor:
+            executor = DaemonThreadPoolExecutor(max_workers=max_children)
+            try:
                 futures = {}
+                futures_by_index = {}
                 try:
                     for i, t, child in children:
                         child_context = contextvars.copy_context()
@@ -4155,17 +4157,91 @@ def delegate_task(
                             owner_session_record=_origin_owner_session_record,
                         )
                         futures[future] = i
+                        futures_by_index[i] = future
                 except Exception as exc:
-                    for future in futures:
-                        future.cancel()
                     for i, _, child in children:
-                        _retire_child_without_owner(
-                            child,
-                            parent_agent,
-                            interrupt_reason="Delegation batch submission failed.",
-                        )
-                        results.append(
-                            {
+                        future = futures_by_index.get(i)
+                        entry = None
+                        interrupt_reason = None
+                        if future is not None and future.done():
+                            try:
+                                entry = future.result()
+                            except Exception as future_exc:
+                                entry = {
+                                    "task_index": i,
+                                    "status": "error",
+                                    "summary": None,
+                                    "error": str(future_exc),
+                                    "api_calls": 0,
+                                    "duration_seconds": 0,
+                                    "_child_role": getattr(
+                                        child, "_delegate_role", None
+                                    ),
+                                }
+                        elif future is not None:
+                            cancelled_before_start = future.cancel()
+                            if not cancelled_before_start and future.done():
+                                try:
+                                    entry = future.result()
+                                except Exception as future_exc:
+                                    entry = {
+                                        "task_index": i,
+                                        "status": "error",
+                                        "summary": None,
+                                        "error": str(future_exc),
+                                        "api_calls": 0,
+                                        "duration_seconds": 0,
+                                        "_child_role": getattr(
+                                            child, "_delegate_role", None
+                                        ),
+                                    }
+                            elif cancelled_before_start:
+                                entry = {
+                                    "task_index": i,
+                                    "status": "error",
+                                    "summary": None,
+                                    "error": (
+                                        f"{exc}; child submission was cancelled "
+                                        "before execution"
+                                    ),
+                                    "api_calls": 0,
+                                    "duration_seconds": 0,
+                                    "_child_role": getattr(
+                                        child, "_delegate_role", None
+                                    ),
+                                }
+                            else:
+                                interrupt_reason = (
+                                    "Delegation batch submission failed after this "
+                                    "child started."
+                                )
+                                child_api_calls = 0
+                                try:
+                                    child_api_calls = int(
+                                        child.get_activity_summary().get(
+                                            "api_call_count", 0
+                                        )
+                                        or 0
+                                    )
+                                except Exception:
+                                    pass
+                                entry = {
+                                    "task_index": i,
+                                    "status": "interrupted",
+                                    "summary": None,
+                                    "error": (
+                                        f"{exc}; an earlier child had already "
+                                        "started and its final result is unavailable"
+                                    ),
+                                    "api_calls": child_api_calls,
+                                    "api_calls_incomplete": True,
+                                    "duration_seconds": 0,
+                                    "_child_role": getattr(
+                                        child, "_delegate_role", None
+                                    ),
+                                }
+                        if entry is None:
+                            entry = {
                                 "task_index": i,
                                 "status": "error",
                                 "summary": None,
@@ -4174,7 +4250,12 @@ def delegate_task(
                                 "duration_seconds": 0,
                                 "_child_role": getattr(child, "_delegate_role", None),
                             }
+                        _retire_child_without_owner(
+                            child,
+                            parent_agent,
+                            interrupt_reason=interrupt_reason,
                         )
+                        results.append(entry)
                     futures.clear()
 
                 # Poll futures with interrupt checking.  as_completed() blocks
@@ -4278,6 +4359,8 @@ def delegate_task(
                                 )
                             except Exception as e:
                                 logger.debug("Spinner update_text failed: %s", e)
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
 
             # Sort by task_index so results match input order
             results.sort(key=lambda r: r["task_index"])

@@ -721,5 +721,7 @@ class TestRunSingleChildTimeoutDump:
         assert returned_while_retry_stuck is True
         assert closed_while_retry_stuck is False
         assert results[0]["schema_valid"] is False
+        assert results[0]["schema_retries"] == 1
+        assert "schema_retry_count" not in results[0]
         assert child.close_while_retry_running is False
         assert child.close_count == 1

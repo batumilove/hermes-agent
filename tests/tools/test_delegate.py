@@ -441,26 +441,29 @@ class TestDelegateTask(unittest.TestCase):
             child = MagicMock()
             child._delegate_role = kwargs.get("role", "leaf")
             child._credential_pool = None
+            child.get_activity_summary.return_value = {"api_call_count": 2}
             _install_deferred_child_close_gate(child)
             parent._active_children.append(child)
             children.append(child)
             return child
 
         class _RejectingExecutor:
+            instances = []
+
             def __init__(self, **_kwargs):
                 self.calls = 0
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
+                self.first_future = Future()
+                assert self.first_future.set_running_or_notify_cancel()
+                self.instances.append(self)
 
             def submit(self, *_args, **_kwargs):
                 self.calls += 1
                 if self.calls == 1:
-                    return Future()
+                    return self.first_future
                 raise RuntimeError("batch submit failed")
+
+            def shutdown(self, *, wait, cancel_futures):
+                self.shutdown_args = (wait, cancel_futures)
 
         with (
             patch(
@@ -480,8 +483,85 @@ class TestDelegateTask(unittest.TestCase):
             )
 
         self.assertEqual(len(result["results"]), 2)
-        self.assertTrue(all(r["status"] == "error" for r in result["results"]))
+        self.assertEqual(result["results"][0]["status"], "interrupted")
+        self.assertEqual(result["results"][0]["api_calls"], 2)
+        self.assertTrue(result["results"][0]["api_calls_incomplete"])
+        self.assertEqual(result["results"][1]["status"], "error")
+        self.assertEqual(_RejectingExecutor.instances[0].shutdown_args, (False, True))
         self.assertTrue(all("batch submit failed" in r["error"] for r in result["results"]))
+        children[0].interrupt.assert_called_once()
+        children[1].interrupt.assert_not_called()
+        for child in children:
+            child.close.assert_called_once()
+            self.assertNotIn(child, parent._active_children)
+
+    def test_batch_submit_failure_preserves_completed_prior_result(self):
+        """A completed earlier future must not be replaced by fabricated zeros."""
+        from tools.delegate_tool import _install_deferred_child_close_gate
+
+        parent = _make_mock_parent(depth=0)
+        children = []
+
+        def build(**kwargs):
+            child = MagicMock()
+            child._delegate_role = kwargs.get("role", "leaf")
+            child._credential_pool = None
+            _install_deferred_child_close_gate(child)
+            parent._active_children.append(child)
+            children.append(child)
+            return child
+
+        completed = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "real prior result",
+            "api_calls": 3,
+            "duration_seconds": 1.25,
+            "_child_role": "leaf",
+        }
+
+        class _CompleteThenRejectExecutor:
+            def __init__(self, **_kwargs):
+                self.calls = 0
+
+            def submit(self, *_args, **_kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    future = Future()
+                    future.set_result(completed)
+                    return future
+                raise RuntimeError("later submit failed")
+
+            def shutdown(self, *, wait, cancel_futures):
+                self.shutdown_args = (wait, cancel_futures)
+
+        with (
+            patch(
+                "tools.delegate_tool._build_child_preserving_parent_tools",
+                side_effect=build,
+            ),
+            patch(
+                "tools.daemon_pool.DaemonThreadPoolExecutor",
+                _CompleteThenRejectExecutor,
+            ),
+        ):
+            result = json.loads(
+                delegate_task(
+                    tasks=[
+                        {"goal": "completed prior batch task"},
+                        {"goal": "later rejected batch task"},
+                    ],
+                    parent_agent=parent,
+                )
+            )
+
+        self.assertEqual(result["results"][0]["summary"], "real prior result")
+        self.assertEqual(result["results"][0]["api_calls"], 3)
+        self.assertEqual(result["results"][0]["status"], "completed")
+        self.assertEqual(result["results"][1]["status"], "error")
+        self.assertIn("later submit failed", result["results"][1]["error"])
+        for child in children:
+            child.interrupt.assert_not_called()
         for child in children:
             child.close.assert_called_once()
             self.assertNotIn(child, parent._active_children)
