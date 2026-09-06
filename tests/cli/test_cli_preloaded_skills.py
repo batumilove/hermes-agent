@@ -172,6 +172,25 @@ def test_required_preloaded_skill_fails_closed_on_partial_inventory(monkeypatch)
         _real_finalize(created["cli"])
 
 
+@pytest.mark.parametrize("with_thread", [False, True])
+def test_required_preloaded_skills_fail_closed_without_result(monkeypatch, with_thread):
+    """Required policy preload cannot silently pass without a completed result."""
+    monkeypatch.setenv(
+        "HERMES_REQUIRED_PRELOADED_SKILLS",
+        "kanban-worker,restart-window-bundling",
+    )
+    cli_obj = _DummyCLI()
+    if with_thread:
+        setattr(cli_obj, "_preload_skills_thread", MagicMock())
+
+    with pytest.raises(
+        ValueError,
+        match="Required preloaded skills unavailable: "
+        "kanban-worker, restart-window-bundling",
+    ):
+        _real_finalize(cli_obj)
+
+
 def test_show_banner_does_not_print_skills():
     """show_banner() no longer prints the activated skills line — it moved to run()."""
     cli_obj = _make_real_cli(compact=False)
