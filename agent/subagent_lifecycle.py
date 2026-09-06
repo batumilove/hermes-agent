@@ -220,6 +220,8 @@ class SubagentLifecycleService:
         from tools.delegate_tool import (
             _build_child_preserving_parent_tools,
             DEFAULT_MAX_ITERATIONS,
+            _install_deferred_child_close_gate,
+            _retire_child_without_owner,
         )
 
         child = _build_child_preserving_parent_tools(
@@ -235,8 +237,10 @@ class SubagentLifecycleService:
             parent_agent=parent,
             role=request.role,
         )
+        _install_deferred_child_close_gate(child)
         subagent_id = str(getattr(child, "_subagent_id", "") or "")
         if not subagent_id:
+            _retire_child_without_owner(child, parent)
             raise SubagentLifecycleError("Hermes failed to assign a child identity.")
         created = time.time()
         handle = SubagentHandle(
@@ -256,7 +260,52 @@ class SubagentLifecycleService:
             _REGISTRY.records[subagent_id] = record
             if request.correlation_id:
                 _REGISTRY.correlations[correlation_key] = subagent_id
-        record.future = _EXECUTOR.submit(self._run, record, request.goal, parent)
+
+        def _cancelled_before_start(future: Future) -> None:
+            if not future.cancelled():
+                return
+            completed_at = time.time()
+            result = SubagentResult(
+                record.handle,
+                SubagentState.CANCELLED,
+                True,
+                completed_at=completed_at,
+                error_classification="CANCELLED_BEFORE_START",
+                error_message="Subagent worker was cancelled before it started.",
+            )
+            payload = dataclasses.asdict(result)
+            payload.pop("result_hash", None)
+            result = dataclasses.replace(
+                result,
+                result_hash=hashlib.sha256(
+                    json.dumps(payload, sort_keys=True, default=str).encode()
+                ).hexdigest(),
+            )
+            with _REGISTRY.lock:
+                if record.result is not None:
+                    return
+                retired_child = record.agent
+                record.agent = None
+                record.result = result
+                record.state = SubagentState.CANCELLED
+                record.completed_at = completed_at
+                record.updated_at = completed_at
+            if retired_child is not None:
+                _retire_child_without_owner(retired_child, parent)
+
+        try:
+            future = _EXECUTOR.submit(self._run, record, request.goal, parent)
+        except Exception as exc:
+            with _REGISTRY.lock:
+                _REGISTRY.records.pop(subagent_id, None)
+                if request.correlation_id:
+                    _REGISTRY.correlations.pop(correlation_key, None)
+            _retire_child_without_owner(child, parent)
+            raise SubagentLifecycleError(
+                f"Failed to submit subagent worker: {exc}"
+            ) from exc
+        record.future = future
+        future.add_done_callback(_cancelled_before_start)
         return handle
 
     def status(self, handle: SubagentHandle) -> SubagentStatus:

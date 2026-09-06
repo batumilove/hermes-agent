@@ -1603,6 +1603,95 @@ def _inherit_parent_base_url(parent_agent, fallback_base_url: Optional[str]) -> 
     return fallback_base_url or None
 
 
+def _install_deferred_child_close_gate(child) -> None:
+    """Install a close-once lifecycle lease before a child becomes visible."""
+    if getattr(child, "_delegate_close_gate_installed", False) is True:
+        return
+
+    close_lock = threading.Lock()
+    close_state = {"active": 0, "requested": False, "closed": False}
+
+    def _close_child_once() -> None:
+        try:
+            close_child = getattr(child, "close", None)
+            if callable(close_child):
+                close_child()
+        except Exception:
+            logger.debug("Failed to close child agent after delegation")
+
+    def _request_close() -> None:
+        close_now = False
+        with close_lock:
+            close_state["requested"] = True
+            if close_state["active"] == 0 and not close_state["closed"]:
+                close_state["closed"] = True
+                close_now = True
+        if close_now:
+            _close_child_once()
+
+    def _begin_use() -> bool:
+        with close_lock:
+            if close_state["requested"] or close_state["closed"]:
+                return False
+            close_state["active"] += 1
+            return True
+
+    def _end_use() -> None:
+        close_now = False
+        with close_lock:
+            if close_state["active"] <= 0:
+                return
+            close_state["active"] -= 1
+            if (
+                close_state["active"] == 0
+                and close_state["requested"]
+                and not close_state["closed"]
+            ):
+                close_state["closed"] = True
+                close_now = True
+        if close_now:
+            _close_child_once()
+
+    setattr(child, "_delegate_request_close", _request_close)
+    setattr(child, "_delegate_begin_use", _begin_use)
+    setattr(child, "_delegate_end_use", _end_use)
+    setattr(child, "_delegate_close_gate_installed", True)
+
+
+def _retire_child_without_owner(child, parent_agent, *, interrupt_reason=None) -> None:
+    """Retire a built child when no worker owns its normal finally path."""
+    _install_deferred_child_close_gate(child)
+    if interrupt_reason:
+        try:
+            request_hard_interrupt(
+                child,
+                interrupt_reason,
+                tool_reason="subagent lifecycle retired before completion",
+            )
+        except Exception:
+            logger.debug("Failed to interrupt retired child", exc_info=True)
+
+    request_close = getattr(child, "_delegate_request_close", None)
+    if callable(request_close):
+        request_close()
+    else:
+        try:
+            child.close()
+        except Exception:
+            logger.debug("Failed to close retired child", exc_info=True)
+
+    if parent_agent is not None and hasattr(parent_agent, "_active_children"):
+        try:
+            lock = getattr(parent_agent, "_active_children_lock", None)
+            if lock:
+                with lock:
+                    parent_agent._active_children.remove(child)
+            else:
+                parent_agent._active_children.remove(child)
+        except (ValueError, AttributeError):
+            pass
+
+
 def _build_child_agent(
     task_index: int,
     goal: str,
@@ -2059,6 +2148,11 @@ def _build_child_agent(
     if child_pool is not None:
         child._credential_pool = child_pool
 
+    # Parent shutdown can claim a child as soon as it enters _active_children.
+    # Install the lifecycle gate first so batch construction never exposes an
+    # unguarded child that can later be submitted after being closed.
+    _install_deferred_child_close_gate(child)
+
     # Register child for interrupt propagation
     if hasattr(parent_agent, "_active_children"):
         lock = getattr(parent_agent, "_active_children_lock", None)
@@ -2468,6 +2562,14 @@ def _run_single_child(
     """
     child_start = time.monotonic()
 
+    # Production children receive this gate before parent registration. Keep
+    # direct/test callers safe too, then acquire one lease covering the entire
+    # orchestration (first turn, schema validation, and optional retry).
+    _install_deferred_child_close_gate(child)
+    _begin_child_use = getattr(child, "_delegate_begin_use", None)
+    _end_child_use = getattr(child, "_delegate_end_use", None)
+    _request_child_close = getattr(child, "_delegate_request_close", None)
+
     # Get the progress callback from the child agent
     child_progress_cb = getattr(child, "tool_progress_callback", None)
 
@@ -2653,6 +2755,10 @@ def _run_single_child(
     # Worktree-isolation state: populated inside the try once the child's
     # task id is known; the default no-op keeps every early error path safe.
     _worktree_info: Optional[Dict[str, str]] = None
+    # Set once run_conversation is submitted. A timeout abandons this daemon
+    # worker rather than stopping it; the lifecycle lease is released from its
+    # done callback instead of underneath it.
+    _child_future = None
 
     def _attach_worktree(entry_dict: Dict[str, Any]) -> None:
         """Inspect + prune the child worktree, reporting into the entry."""
@@ -2695,7 +2801,19 @@ def _run_single_child(
                     ),
                 }
 
+    _child_use_acquired = False
     try:
+        _child_use_acquired = callable(_begin_child_use) and _begin_child_use()
+        if not _child_use_acquired:
+            return {
+                "task_index": task_index,
+                "status": "error",
+                "summary": None,
+                "error": "delegated child was closed before execution",
+                "exit_reason": "error",
+                "api_calls": 0,
+                "duration_seconds": round(time.monotonic() - child_start, 2),
+            }
         _heartbeat_thread.start()
         if child_progress_cb:
             try:
@@ -2980,18 +3098,77 @@ def _run_single_child(
                 # the contract in its context).
                 _schema_retries = 1
                 _retry_result = None
+                _retry_executor = DaemonThreadPoolExecutor(
+                    max_workers=1,
+                    initializer=_set_subagent_approval_cb,
+                    initargs=(_get_subagent_approval_callback(),),
+                )
+
+                def _run_schema_retry():
+                    from agent.delegation_context import delegated_child_context
+
+                    with delegated_child_context(
+                        str(getattr(child, "session_id", "") or "")
+                    ):
+                        return child.run_conversation(
+                            user_message=build_retry_message(_schema_errors),
+                            task_id=child_task_id,
+                            stream_callback=_relay_child_text,
+                        )
+
                 try:
-                    _retry_result = child.run_conversation(
-                        user_message=build_retry_message(_schema_errors),
-                        task_id=child_task_id,
-                        stream_callback=_relay_child_text,
+                    _retry_context = contextvars.copy_context()
+                    _child_future = _retry_executor.submit(
+                        _retry_context.run,
+                        _run_schema_retry,
                     )
+                    _retry_result = _child_future.result(timeout=child_timeout)
+                except FuturesTimeoutError:
+                    try:
+                        request_hard_interrupt(
+                            child,
+                            "Schema retry exceeded the delegated child timeout.",
+                            tool_reason="subagent schema retry timed out",
+                        )
+                    except Exception:
+                        pass
+                    _late_pending_steer = (
+                        _close_subagent_steering(_subagent_id, child)
+                        if _subagent_id
+                        else None
+                    )
+                    duration = round(time.monotonic() - child_start, 2)
+                    _error_entry = {
+                        "task_index": task_index,
+                        "status": "timeout",
+                        "summary": _first_text or None,
+                        "error": (
+                            f"Subagent schema retry timed out after {child_timeout}s; "
+                            "the invalid first response was retained."
+                        ),
+                        "exit_reason": "timeout",
+                        "api_calls": int(result.get("api_calls", 0) or 0),
+                        "duration_seconds": duration,
+                        "timeout_seconds": child_timeout,
+                        "timed_out_after_seconds": duration,
+                        "timeout_phase": "schema_retry",
+                        "schema_valid": False,
+                        "schema_errors": list(_schema_errors),
+                        "schema_retries": 1,
+                        "_child_role": getattr(child, "_delegate_role", None),
+                    }
+                    if _late_pending_steer:
+                        _error_entry["missed_steer"] = _late_pending_steer
+                    _attach_worktree(_error_entry)
+                    return _error_entry
                 except Exception as _retry_exc:
                     logger.warning(
                         "Subagent %d schema-retry turn failed: %s",
                         task_index,
                         _retry_exc,
                     )
+                finally:
+                    _retry_executor.shutdown(wait=False)
                 if isinstance(_retry_result, dict):
                     _retry_text = _retry_result.get("final_response") or ""
                     if _retry_text.strip():
@@ -3364,14 +3541,17 @@ def _run_single_child(
             except (ValueError, UnboundLocalError) as e:
                 logger.debug("Could not remove child from active_children: %s", e)
 
-        # Close tool resources (terminal sandboxes, browser daemons,
-        # background processes, httpx clients) so subagent subprocesses
-        # don't outlive the delegation.
-        try:
-            if hasattr(child, "close"):
-                child.close()
-        except Exception:
-            logger.debug("Failed to close child agent after delegation")
+        # Request teardown now, but retain the lifecycle lease through schema
+        # validation/retry and, after timeout, until the abandoned worker has
+        # actually unwound. The gate closes exactly once when the final lease
+        # is released.
+        if callable(_request_child_close):
+            _request_child_close()
+        if _child_use_acquired and callable(_end_child_use):
+            if _child_future is not None and not _child_future.done():
+                _child_future.add_done_callback(lambda _future: _end_child_use())
+            else:
+                _end_child_use()
 
         # The AIAgent turn boundary normally closes the child scope itself. This
         # fallback covers failures before that boundary starts, but must not pop
@@ -3896,9 +4076,11 @@ def delegate_task(
                 override_acp_args=creds.get("args"),
                 role=effective_role,
             )
-        except ValueError as exc:
+        except Exception as exc:
             # Explicit-pin preflight failures (e.g. pinned delegation.command
             # missing from PATH) refuse the spawn loudly (#80450).
+            for _, _, built_child in children:
+                _retire_child_without_owner(built_child, parent_agent)
             return tool_error(str(exc))
         # Attach the validated schema for the completion-side validation
         # hook in _run_single_child. Absent (None) on schema-less tasks.
@@ -3952,26 +4134,129 @@ def delegate_task(
             completed_count = 0
             spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
 
-            # Daemon workers (tools.daemon_pool): the `with` block still joins
-            # normally, but if the parent is interrupted while a child is
-            # wedged, the abandoned worker must not block interpreter exit.
+            # Daemon workers must never be joined implicitly: on parent
+            # interruption or partial submission failure, a running child may
+            # still be unwinding after this owner has returned.
             from tools.daemon_pool import DaemonThreadPoolExecutor
-            with DaemonThreadPoolExecutor(max_workers=max_children) as executor:
+            executor = DaemonThreadPoolExecutor(max_workers=max_children)
+            try:
                 futures = {}
-                for i, t, child in children:
-                    child_context = contextvars.copy_context()
-                    future = executor.submit(
-                        child_context.run,
-                        _run_single_child,
-                        task_index=i,
-                        goal=t["goal"],
-                        child=child,
-                        parent_agent=parent_agent,
-                        owner_session_id=_origin_ui_session_id or None,
-                        owner_transport=_origin_owner_transport,
-                        owner_session_record=_origin_owner_session_record,
-                    )
-                    futures[future] = i
+                futures_by_index = {}
+                try:
+                    for i, t, child in children:
+                        child_context = contextvars.copy_context()
+                        future = executor.submit(
+                            child_context.run,
+                            _run_single_child,
+                            task_index=i,
+                            goal=t["goal"],
+                            child=child,
+                            parent_agent=parent_agent,
+                            owner_session_id=_origin_ui_session_id or None,
+                            owner_transport=_origin_owner_transport,
+                            owner_session_record=_origin_owner_session_record,
+                        )
+                        futures[future] = i
+                        futures_by_index[i] = future
+                except Exception as exc:
+                    for i, _, child in children:
+                        future = futures_by_index.get(i)
+                        entry = None
+                        interrupt_reason = None
+                        if future is not None and future.done():
+                            try:
+                                entry = future.result()
+                            except Exception as future_exc:
+                                entry = {
+                                    "task_index": i,
+                                    "status": "error",
+                                    "summary": None,
+                                    "error": str(future_exc),
+                                    "api_calls": 0,
+                                    "duration_seconds": 0,
+                                    "_child_role": getattr(
+                                        child, "_delegate_role", None
+                                    ),
+                                }
+                        elif future is not None:
+                            cancelled_before_start = future.cancel()
+                            if not cancelled_before_start and future.done():
+                                try:
+                                    entry = future.result()
+                                except Exception as future_exc:
+                                    entry = {
+                                        "task_index": i,
+                                        "status": "error",
+                                        "summary": None,
+                                        "error": str(future_exc),
+                                        "api_calls": 0,
+                                        "duration_seconds": 0,
+                                        "_child_role": getattr(
+                                            child, "_delegate_role", None
+                                        ),
+                                    }
+                            elif cancelled_before_start:
+                                entry = {
+                                    "task_index": i,
+                                    "status": "error",
+                                    "summary": None,
+                                    "error": (
+                                        f"{exc}; child submission was cancelled "
+                                        "before execution"
+                                    ),
+                                    "api_calls": 0,
+                                    "duration_seconds": 0,
+                                    "_child_role": getattr(
+                                        child, "_delegate_role", None
+                                    ),
+                                }
+                            else:
+                                interrupt_reason = (
+                                    "Delegation batch submission failed after this "
+                                    "child started."
+                                )
+                                child_api_calls = 0
+                                try:
+                                    child_api_calls = int(
+                                        child.get_activity_summary().get(
+                                            "api_call_count", 0
+                                        )
+                                        or 0
+                                    )
+                                except Exception:
+                                    pass
+                                entry = {
+                                    "task_index": i,
+                                    "status": "interrupted",
+                                    "summary": None,
+                                    "error": (
+                                        f"{exc}; an earlier child had already "
+                                        "started and its final result is unavailable"
+                                    ),
+                                    "api_calls": child_api_calls,
+                                    "api_calls_incomplete": True,
+                                    "duration_seconds": 0,
+                                    "_child_role": getattr(
+                                        child, "_delegate_role", None
+                                    ),
+                                }
+                        if entry is None:
+                            entry = {
+                                "task_index": i,
+                                "status": "error",
+                                "summary": None,
+                                "error": str(exc),
+                                "api_calls": 0,
+                                "duration_seconds": 0,
+                                "_child_role": getattr(child, "_delegate_role", None),
+                            }
+                        _retire_child_without_owner(
+                            child,
+                            parent_agent,
+                            interrupt_reason=interrupt_reason,
+                        )
+                        results.append(entry)
+                    futures.clear()
 
                 # Poll futures with interrupt checking.  as_completed() blocks
                 # until ALL futures finish — if a child agent gets stuck,
@@ -4074,6 +4359,8 @@ def delegate_task(
                                 )
                             except Exception as e:
                                 logger.debug("Spinner update_text failed: %s", e)
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
 
             # Sort by task_index so results match input order
             results.sort(key=lambda r: r["task_index"])

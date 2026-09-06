@@ -1,6 +1,7 @@
 """Contract tests for the public plugin subagent lifecycle API."""
 
 import time
+from concurrent.futures import Future
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -27,6 +28,7 @@ class FakeChild:
         self.interrupt_kind = None
         self.interrupt_message = None
         self.tool_reason = None
+        self.close_count = 0
 
     def interrupt(self, _reason):
         self.interrupted = True
@@ -37,6 +39,9 @@ class FakeChild:
         self.interrupt_kind = "hard"
         self.interrupt_message = reason
         self.tool_reason = tool_reason
+
+    def close(self):
+        self.close_count += 1
 
 
 @pytest.fixture
@@ -178,3 +183,44 @@ def test_agent_turn_binds_and_clears_lifecycle_parent(monkeypatch):
     assert agent.run_conversation("hello") == {"final_response": "ok"}
     assert observed == [agent]
     assert get_active_subagent_parent() is None
+
+
+@pytest.mark.parametrize("submit_outcome", ["raise", "cancel"])
+def test_launch_submit_terminal_path_retires_registered_child(
+    monkeypatch, submit_outcome
+):
+    """A worker that never starts cannot retain its child or registry state."""
+    import agent.subagent_lifecycle as lifecycle_module
+
+    parent = SimpleNamespace(
+        session_id=f"parent-submit-{submit_outcome}",
+        enabled_toolsets=["file"],
+        _active_children=[],
+    )
+    child = FakeChild(f"sa-submit-{submit_outcome}")
+
+    def build(**_kwargs):
+        parent._active_children.append(child)
+        return child
+
+    class _TerminalExecutor:
+        def submit(self, *_args, **_kwargs):
+            if submit_outcome == "raise":
+                raise RuntimeError("submit failed")
+            future = Future()
+            assert future.cancel()
+            return future
+
+    monkeypatch.setattr("tools.delegate_tool._build_child_agent", build)
+    monkeypatch.setattr(lifecycle_module, "_EXECUTOR", _TerminalExecutor())
+    service = SubagentLifecycleService(lambda: parent)
+
+    if submit_outcome == "raise":
+        with pytest.raises(SubagentLifecycleError, match="submit"):
+            service.launch(SubagentLaunchRequest(goal="submit failure"))
+    else:
+        handle = service.launch(SubagentLaunchRequest(goal="cancel before start"))
+        assert service.wait(handle, timeout_seconds=0.1).state is SubagentState.CANCELLED
+
+    assert child.close_count == 1
+    assert child not in parent._active_children

@@ -4748,14 +4748,30 @@ class AIAgent:
                     except Exception:
                         pass
                     continue
-                try:
-                    child.release_clients()
-                except Exception:
-                    # Fall back to full close on children; they're per-turn.
+                gate_installed = (
+                    getattr(child, "_delegate_close_gate_installed", False) is True
+                )
+                request_deferred_close = (
+                    getattr(child, "_delegate_request_close", None)
+                    if gate_installed
+                    else None
+                )
+                if gate_installed and callable(request_deferred_close):
+                    # Delegation children are per-turn artefacts. Their
+                    # close-once gate defers hard teardown until every active
+                    # lifecycle lease (including timeout/retry workers) exits.
                     try:
-                        child.close()
+                        request_deferred_close()
                     except Exception:
                         pass
+                    continue
+                # Children without the delegation close-once gate still own
+                # per-turn resources. Full-close them before dropping the
+                # parent's last active-child reference.
+                try:
+                    child.close()
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -4876,7 +4892,19 @@ class AIAgent:
                         pass
                     continue
                 try:
-                    child.close()
+                    gate_installed = (
+                        getattr(child, "_delegate_close_gate_installed", False)
+                        is True
+                    )
+                    request_deferred_close = (
+                        getattr(child, "_delegate_request_close", None)
+                        if gate_installed
+                        else None
+                    )
+                    if gate_installed and callable(request_deferred_close):
+                        request_deferred_close()
+                    else:
+                        child.close()
                 except Exception:
                     pass
         except Exception:
