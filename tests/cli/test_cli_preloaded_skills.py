@@ -170,6 +170,46 @@ def test_required_preloaded_skill_fails_closed_on_partial_inventory(monkeypatch)
         match="Required preloaded skill unavailable: restart-window-bundling",
     ):
         _real_finalize(created["cli"])
+    assert "HERMES_REQUIRED_PRELOADED_SKILLS" not in os.environ
+
+
+def test_required_preloaded_skill_marker_is_consumed_on_success(monkeypatch):
+    """The one-shot worker marker must not leak to nested Hermes commands."""
+    import cli as cli_mod
+
+    created = {}
+
+    def fake_cli(**kwargs):
+        created["cli"] = _DummyCLI(**kwargs)
+        return created["cli"]
+
+    monkeypatch.setenv(
+        "HERMES_REQUIRED_PRELOADED_SKILLS",
+        "kanban-worker,restart-window-bundling",
+    )
+    monkeypatch.setattr(cli_mod, "HermesCLI", fake_cli)
+    monkeypatch.setattr(
+        cli_mod,
+        "build_preloaded_skills_prompt",
+        lambda skills, task_id=None: (
+            "policy prompt",
+            ["kanban-worker", "restart-window-bundling"],
+            [],
+        ),
+    )
+
+    with pytest.raises(SystemExit):
+        cli_mod.main(
+            skills="kanban-worker,restart-window-bundling",
+            list_tools=True,
+        )
+    _real_finalize(created["cli"])
+
+    assert "HERMES_REQUIRED_PRELOADED_SKILLS" not in os.environ
+    assert created["cli"].preloaded_skills == [
+        "kanban-worker",
+        "restart-window-bundling",
+    ]
 
 
 @pytest.mark.parametrize("with_thread", [False, True])
