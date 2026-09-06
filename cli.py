@@ -8380,6 +8380,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if not result:
             return
         skills_prompt, loaded_skills, missing_skills = result
+        required_skills = [
+            value.strip()
+            for value in os.getenv("HERMES_REQUIRED_PRELOADED_SKILLS", "").split(",")
+            if value.strip()
+        ]
+        unavailable_required = [
+            value for value in required_skills if value not in loaded_skills
+        ]
+        if unavailable_required:
+            label = "skill" if len(unavailable_required) == 1 else "skills"
+            raise ValueError(
+                f"Required preloaded {label} unavailable: "
+                + ", ".join(unavailable_required)
+            )
         if missing_skills:
             missing_display = ", ".join(missing_skills)
             # If at least one skill loaded, degrade gracefully: skip the
