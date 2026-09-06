@@ -693,16 +693,12 @@ def test_pid_alive_detects_zombie(kanban_home):
 
 
 
-def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
-    """The dispatcher no longer auto-loads a bundled kanban skill.
+def test_default_spawn_force_loads_worker_policy_skills(kanban_home, monkeypatch):
+    """Every dispatcher worker must load lifecycle and restart policy skills.
 
-    The kanban lifecycle (formerly the kanban-worker/kanban-orchestrator
-    skills) is now injected into every worker's system prompt via
-    KANBAN_GUIDANCE, so _default_spawn must NOT append a `--skills` flag
-    when the task carries no per-task skills.
-
-    We intercept Popen to capture the argv without actually spawning a
-    hermes subprocess (which would hang trying to call an LLM).
+    ``KANBAN_GUIDANCE`` provides lifecycle text, but policy-bearing skills are
+    force-loaded so profile inventory drift cannot silently remove mandatory
+    restart classification and state-reporting behavior.
     """
     captured = {}
 
@@ -729,9 +725,8 @@ def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
         conn.close()
 
     cmd = captured["cmd"]
-    assert "--skills" not in cmd, (
-        f"spawn argv should not auto-load any skill: {cmd}"
-    )
+    loaded_skills = [cmd[index + 1] for index, value in enumerate(cmd) if value == "--skills"]
+    assert loaded_skills == ["kanban-worker", "restart-window-bundling"], cmd
     assert "--accept-hooks" in cmd, f"spawn argv missing --accept-hooks: {cmd}"
     assert cmd.index("--accept-hooks") < cmd.index("chat"), (
         f"--accept-hooks must come before 'chat' in argv: {cmd}"
@@ -741,6 +736,33 @@ def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
     env = captured["env"]
     assert env.get("HERMES_KANBAN_TASK") == tid
     assert env.get("HERMES_PROFILE") == "some-profile"
+    assert env.get("HERMES_REQUIRED_PRELOADED_SKILLS") == (
+        "kanban-worker,restart-window-bundling"
+    )
+
+    # Per-task additions survive, but a task cannot duplicate mandatory policy.
+    conn = kb.connect()
+    try:
+        tid_with_skills = kb.create_task(
+            conn,
+            title="skill de-duplication test",
+            assignee="some-profile",
+            skills=["restart-window-bundling", "domain-specific-review"],
+        )
+        task_with_skills = kb.get_task(conn, tid_with_skills)
+        assert task_with_skills is not None
+        workspace = kb.resolve_workspace(task_with_skills)
+        kb._default_spawn(task_with_skills, str(workspace))
+    finally:
+        conn.close()
+
+    cmd = captured["cmd"]
+    loaded_skills = [cmd[index + 1] for index, value in enumerate(cmd) if value == "--skills"]
+    assert loaded_skills == [
+        "kanban-worker",
+        "restart-window-bundling",
+        "domain-specific-review",
+    ], cmd
 
 
 # ---------------------------------------------------------------------------

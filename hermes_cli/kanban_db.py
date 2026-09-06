@@ -10682,6 +10682,15 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
 
 _retagged_workspace_roots: set[str] = set()
 
+# Policy-bearing skills that every dispatcher-owned worker must force-load.
+# KANBAN_GUIDANCE covers the generic task lifecycle, but these skills carry
+# executable workflow and restart-state contracts that must not depend on an
+# assignee profile's ambient inventory.
+KANBAN_MANDATORY_WORKER_SKILLS = (
+    "kanban-worker",
+    "restart-window-bundling",
+)
+
 
 def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
     """Reclaim pre-tag worker rows in state.db so they leave the session lists.
@@ -10763,6 +10772,13 @@ def _default_spawn(
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
+    # A missing task-specific skill may degrade to a warning, but mandatory
+    # worker policy must fail closed. The CLI checks this after preload and
+    # before constructing the agent, so profile inventory drift cannot launch
+    # an ungoverned worker.
+    env["HERMES_REQUIRED_PRELOADED_SKILLS"] = ",".join(
+        KANBAN_MANDATORY_WORKER_SKILLS
+    )
     # Tag the worker's session so it lands in state.db as `kanban`, not as an
     # untitled `cli` row. A worker is a dispatcher-owned run whose transcript is
     # read on the board and in `hermes kanban log` — it is not a conversation
@@ -10848,15 +10864,18 @@ def _default_spawn(
         # profile-local worker sessions still register configured hooks.
         "--accept-hooks",
     ]
-    # Per-task force-loaded skills. Each name goes in its own
+    # Mandatory worker policy plus per-task force-loaded skills. Each name goes in its own
     # `--skills X` pair rather than a single comma-joined arg: the CLI
     # accepts both forms (action='append' + comma-split), but
     # per-name pairs are easier to read in `ps` output and avoid any
-    # quoting ambiguity if a skill name ever contains unusual chars.
-    if task.skills:
-        for sk in task.skills:
-            if sk:
-                cmd.extend(["--skills", sk])
+    # quoting ambiguity if a skill name ever contains unusual chars. Preserve
+    # task ordering while de-duplicating names already required by policy.
+    force_loaded_skills = list(KANBAN_MANDATORY_WORKER_SKILLS)
+    for sk in task.skills or []:
+        if sk and sk not in force_loaded_skills:
+            force_loaded_skills.append(sk)
+    for sk in force_loaded_skills:
+        cmd.extend(["--skills", sk])
     if task.model_override:
         cmd.extend(["-m", task.model_override])
         # Pin the provider too when the override names one, so the worker
