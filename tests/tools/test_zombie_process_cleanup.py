@@ -179,6 +179,27 @@ class TestAgentCloseMethod:
 
             mock_cleanup_cua.assert_not_called()
 
+    def test_soft_client_release_closes_plain_children(self):
+        """Claimed children without a delegation gate still need full close."""
+        from unittest.mock import MagicMock, patch
+
+        with patch("run_agent.AIAgent.__init__", return_value=None):
+            from run_agent import AIAgent
+
+            agent = AIAgent.__new__(AIAgent)
+            agent.session_id = "test-soft-release-plain-child"
+            agent._active_children_lock = threading.Lock()
+            agent.client = None
+
+            child = MagicMock(spec=["close", "release_clients"])
+            agent._active_children = [child]
+
+            agent.release_clients()
+
+            child.close.assert_called_once_with()
+            child.release_clients.assert_not_called()
+            assert agent._active_children == []
+
     def test_close_propagates_to_children(self):
         """close() should call close() on all active child agents."""
         from unittest.mock import MagicMock, patch

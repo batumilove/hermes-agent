@@ -4765,30 +4765,13 @@ class AIAgent:
                     except Exception:
                         pass
                     continue
+                # Children without the delegation close-once gate still own
+                # per-turn resources. Full-close them before dropping the
+                # parent's last active-child reference.
                 try:
-                    child.release_clients()
+                    child.close()
                 except Exception:
-                    # Fall back to full close on children; they're per-turn.
-                    # A timed-out delegation worker may still be unwinding, so
-                    # share its close-once gate instead of racing its SessionDB.
-                    try:
-                        gate_installed = (
-                            getattr(
-                                child, "_delegate_close_gate_installed", False
-                            )
-                            is True
-                        )
-                        request_deferred_close = (
-                            getattr(child, "_delegate_request_close", None)
-                            if gate_installed
-                            else None
-                        )
-                        if gate_installed and callable(request_deferred_close):
-                            request_deferred_close()
-                        else:
-                            child.close()
-                    except Exception:
-                        pass
+                    pass
         except Exception:
             pass
 
