@@ -489,8 +489,9 @@ patches:
       - tests/agent/test_subagent_lifecycle.py
       - tests/tools/test_delegate.py
       - tests/tools/test_delegate_subagent_timeout_diagnostic.py
+      - tests/tools/test_zombie_process_cleanup.py
     tests:
-      - scripts/run_tests.sh tests/agent/test_subagent_lifecycle.py tests/tools/test_delegate_subagent_timeout_diagnostic.py tests/tools/test_delegate.py tests/tui_gateway/test_session_db_ownership_teardown.py tests/tui_gateway/test_session_resume_db_ownership.py tests/run_agent/test_background_review.py
+      - scripts/run_tests.sh tests/agent/test_subagent_lifecycle.py tests/tools/test_delegate_subagent_timeout_diagnostic.py tests/tools/test_delegate.py tests/tools/test_zombie_process_cleanup.py tests/tui_gateway/test_session_db_ownership_teardown.py tests/tui_gateway/test_session_resume_db_ownership.py tests/run_agent/test_background_review.py
       - python -m py_compile agent/subagent_lifecycle.py run_agent.py tools/delegate_tool.py tests/agent/test_subagent_lifecycle.py tests/tools/test_delegate.py tests/tools/test_delegate_subagent_timeout_diagnostic.py
     retirement: Remove when upstream provides equivalent pre-registration, full-child-lifecycle, public-launch, batch-failure, parent-shutdown, cache-eviction, and close-exactly-once ownership contracts.
 

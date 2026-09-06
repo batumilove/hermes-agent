@@ -4748,10 +4748,15 @@ class AIAgent:
                     except Exception:
                         pass
                     continue
-                request_deferred_close = getattr(
-                    child, "_delegate_request_close", None
+                gate_installed = (
+                    getattr(child, "_delegate_close_gate_installed", False) is True
                 )
-                if callable(request_deferred_close):
+                request_deferred_close = (
+                    getattr(child, "_delegate_request_close", None)
+                    if gate_installed
+                    else None
+                )
+                if gate_installed and callable(request_deferred_close):
                     # Delegation children are per-turn artefacts. Their
                     # close-once gate defers hard teardown until every active
                     # lifecycle lease (including timeout/retry workers) exits.
@@ -4767,10 +4772,18 @@ class AIAgent:
                     # A timed-out delegation worker may still be unwinding, so
                     # share its close-once gate instead of racing its SessionDB.
                     try:
-                        request_deferred_close = getattr(
-                            child, "_delegate_request_close", None
+                        gate_installed = (
+                            getattr(
+                                child, "_delegate_close_gate_installed", False
+                            )
+                            is True
                         )
-                        if callable(request_deferred_close):
+                        request_deferred_close = (
+                            getattr(child, "_delegate_request_close", None)
+                            if gate_installed
+                            else None
+                        )
+                        if gate_installed and callable(request_deferred_close):
                             request_deferred_close()
                         else:
                             child.close()
@@ -4896,10 +4909,16 @@ class AIAgent:
                         pass
                     continue
                 try:
-                    request_deferred_close = getattr(
-                        child, "_delegate_request_close", None
+                    gate_installed = (
+                        getattr(child, "_delegate_close_gate_installed", False)
+                        is True
                     )
-                    if callable(request_deferred_close):
+                    request_deferred_close = (
+                        getattr(child, "_delegate_request_close", None)
+                        if gate_installed
+                        else None
+                    )
+                    if gate_installed and callable(request_deferred_close):
                         request_deferred_close()
                     else:
                         child.close()
