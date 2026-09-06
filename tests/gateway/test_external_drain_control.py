@@ -909,6 +909,40 @@ class TestDrainWatcher:
         except asyncio.CancelledError:
             pass
 
+    @pytest.mark.asyncio
+    async def test_watcher_does_not_block_event_loop_on_slow_drain_probe(
+        self, home, monkeypatch
+    ):
+        import threading
+        import time
+
+        runner, _ = _drain_runner()
+        runner._drain_control_watcher = GatewayRunner._drain_control_watcher.__get__(
+            runner, GatewayRunner
+        )
+        entered = threading.Event()
+        release = threading.Event()
+
+        def slow_drain_probe():
+            entered.set()
+            release.wait(timeout=1.0)
+            return False
+
+        monkeypatch.setattr(dc, "drain_requested", slow_drain_probe)
+        timer = threading.Timer(0.25, release.set)
+        timer.start()
+        started = time.monotonic()
+        task = asyncio.create_task(runner._drain_control_watcher(interval=0.01))
+        try:
+            await asyncio.sleep(0.05)
+            assert entered.is_set()
+            assert time.monotonic() - started < 0.15
+        finally:
+            runner._running = False
+            release.set()
+            timer.cancel()
+            await asyncio.wait_for(task, timeout=1.0)
+
 
 # ---------------------------------------------------------------------------
 # New-turn accept gate
