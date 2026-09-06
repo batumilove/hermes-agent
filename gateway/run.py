@@ -9527,7 +9527,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         while self._running:
             try:
-                if drain_requested():
+                # ``drain_requested`` performs filesystem opens, lock probes,
+                # and marker reads. Keep those potentially slow syscalls off
+                # the event loop so storage latency cannot trip its liveness
+                # watchdog.
+                if await asyncio.to_thread(drain_requested):
                     self._enter_external_drain()
                     # API and cron work live outside messaging's
                     # _running_agents map. Refresh the aggregate while an
