@@ -182,6 +182,10 @@ async def test_full_dispatch_rejects_lease_timeout_without_running_goal_hook(
     from tests.gateway.test_42039_duplicate_user_message import _bootstrap, _event
 
     runner = _bootstrap(monkeypatch, tmp_path)
+    # Status persistence is orthogonal to the lease clock and now runs on a
+    # one-shot daemon thread. Isolate it so loaded CI hosts cannot consume
+    # this test's deliberately tight one-second end-to-end budget.
+    runner._persist_active_agents_async = AsyncMock()
     runner._turn_leases = SessionTurnLeaseRegistry()
     holder = await runner._turn_leases.acquire(
         "sess-dedup", owner_key="holder-key", generation=1, timeout=1

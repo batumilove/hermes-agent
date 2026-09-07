@@ -13063,10 +13063,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         scheduled at startup is never resumed a second time.
         """
         window = _auto_continue_freshness_window()
-        try:
+
+        def _snapshot_resume_candidates():
             with self.session_store._lock:  # noqa: SLF001 — snapshot under lock
                 self.session_store._ensure_loaded_locked()  # noqa: SLF001
-                candidates = [
+                return [
                     entry for entry in self.session_store._entries.values()  # noqa: SLF001
                     if entry.resume_pending
                     and not entry.suspended
@@ -13074,6 +13075,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     and entry.resume_reason in self._AUTO_RESUME_REASONS
                     and (platform is None or entry.origin.platform == platform)
                 ]
+
+        try:
+            candidates = await _run_in_detached_daemon_thread(
+                _snapshot_resume_candidates
+            )
         except Exception as exc:
             logger.warning("Failed to enumerate resume-pending sessions: %s", exc)
             return 0
@@ -16519,7 +16525,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             self.adapters.clear()
             for _session_key in list(self._running_agents):
-                await self._release_running_agent_state_async(_session_key)
+                release_async = getattr(
+                    self, "_release_running_agent_state_async", None
+                )
+                if callable(release_async):
+                    await cast(
+                        Callable[[str], Awaitable[bool]], release_async
+                    )(_session_key)
+                else:
+                    # Lightweight shutdown contract doubles are not
+                    # GatewayRunner instances and expose only the sync shim.
+                    self._release_running_agent_state(_session_key)
             # Flush pending messages to disk before clearing (#72680).
             # When FTS5 corruption prevents message persistence, the
             # in-memory pending text is the only surviving copy.  Clearing
@@ -16763,9 +16779,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "gateway_state=running so container_boot auto-starts on "
                     "the next boot (issue #42675)"
                 )
-                await self._update_runtime_status_async("running", self._exit_reason)
+                _terminal_state = "running"
             else:
-                await self._update_runtime_status_async("stopped", self._exit_reason)
+                _terminal_state = "stopped"
+            update_status_async = getattr(
+                self, "_update_runtime_status_async", None
+            )
+            if callable(update_status_async):
+                await cast(
+                    Callable[[str, Optional[str]], Awaitable[None]],
+                    update_status_async,
+                )(_terminal_state, self._exit_reason)
+            else:
+                # Lightweight shutdown contract doubles expose only the
+                # synchronous status shim; production runners always take
+                # the detached async path above.
+                self._update_runtime_status(_terminal_state, self._exit_reason)
             _shutdown_gateway_health_export(self)
             logger.info("Gateway stopped (total teardown %.2fs)", _phase_elapsed())
 
