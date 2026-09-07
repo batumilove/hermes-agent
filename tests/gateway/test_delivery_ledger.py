@@ -168,6 +168,39 @@ class TestGatewayRedeliverySweep:
         return adapter
 
     @pytest.mark.asyncio
+    async def test_cancelled_sweep_rolls_back_committed_claim(self, monkeypatch):
+        """Orderly boot-task cancellation spends no unsent retry attempt."""
+        import asyncio
+
+        _record(platform="slack")
+        _orphan("ob-1")
+        original_sweep = dl.sweep_recoverable
+        committed = threading.Event()
+        release_result = threading.Event()
+
+        def _commit_then_pause(*args, **kwargs):
+            rows = original_sweep(*args, **kwargs)
+            committed.set()
+            assert release_result.wait(timeout=5.0)
+            return rows
+
+        monkeypatch.setattr(dl, "sweep_recoverable", _commit_then_pause)
+        runner = self._runner(self._adapter())
+        task = asyncio.create_task(runner._claim_pending_obligations())
+        assert await asyncio.to_thread(committed.wait, 5.0)
+        task.cancel()
+        release_result.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        row = _row("ob-1")
+        assert row is not None
+        assert row["state"] == "pending"
+        assert row["attempts"] == 0
+        assert row["owner_pid"] == 999999999
+
+    @pytest.mark.asyncio
     async def test_pending_redelivers_plain_and_clears_resume(self):
         _record()  # pending
         _orphan("ob-1")

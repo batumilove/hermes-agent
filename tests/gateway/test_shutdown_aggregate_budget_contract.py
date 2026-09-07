@@ -441,6 +441,29 @@ async def test_wedged_cached_client_shutdown_cannot_starve_tail_release(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_final_running_agent_status_write_is_bounded(monkeypatch):
+    """A stalled serial status writer cannot hold runtime-lock/PID release."""
+    runner, _adapter = make_restart_runner()
+    _configure_fast_forced_shutdown(runner, monkeypatch, {})
+    session_key = "agent:main:telegram:dm:wedged-status"
+    runner._running_agents = {session_key: MagicMock()}
+    runner._running_agents_ts = {session_key: time.time()}
+    runner._drain_active_agents = AsyncMock(return_value=({}, False))
+    never = asyncio.Event()
+
+    async def _wedged_persist():
+        await never.wait()
+
+    runner._persist_active_agents_async = _wedged_persist
+    before = time.monotonic()
+    await asyncio.wait_for(_run_stop(runner), timeout=2.0)
+    elapsed = time.monotonic() - before
+
+    assert elapsed < 1.60
+    assert not runner._is_session_running(session_key)
+
+
+@pytest.mark.asyncio
 async def test_wedged_database_close_cannot_starve_tail_release(monkeypatch):
     runner, _adapter = make_restart_runner()
     _configure_fast_forced_shutdown(runner, monkeypatch, {})

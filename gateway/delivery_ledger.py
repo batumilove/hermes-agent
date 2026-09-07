@@ -340,8 +340,50 @@ def sweep_recoverable(
                     # attempting/failed = ambiguous or rejected, carry marker.
                     "needs_marker": state != "pending",
                     "attempts": attempts + 1,
+                    # Private rollback metadata.  If orderly shutdown cancels
+                    # the boot worker after this transaction commits but
+                    # before redelivery starts, the async caller restores the
+                    # exact pre-claim row instead of spending an attempt on a
+                    # send that never happened.
+                    "_prior_state": state,
+                    "_prior_owner_pid": owner_pid,
+                    "_prior_owner_started_at": owner_started_at,
                 })
     return claimed
+
+
+def release_recoverable_claims(rows: List[Dict[str, Any]]) -> int:
+    """Roll back this process's unconsumed startup recovery claims.
+
+    Compare-and-update guards prevent a stale cancellation path from
+    rewinding a row that another transition already advanced.
+    """
+    if not rows:
+        return 0
+    pid, started = _owner_stamp()
+    released = 0
+    with _hot_path_transaction() as conn:
+        for row in rows:
+            cursor = conn.execute(
+                """UPDATE delivery_obligations
+                   SET state=?, owner_pid=?, owner_started_at=?,
+                       attempts=attempts-1, updated_at=?
+                   WHERE obligation_id=? AND owner_pid=?
+                     AND owner_started_at IS ? AND attempts=?
+                     AND state IN ('pending', 'attempting', 'failed')""",
+                (
+                    row.get("_prior_state", "pending"),
+                    row.get("_prior_owner_pid"),
+                    row.get("_prior_owner_started_at"),
+                    time.time(),
+                    row["obligation_id"],
+                    pid,
+                    started,
+                    row["attempts"],
+                ),
+            )
+            released += cursor.rowcount
+    return released
 
 
 def _prune(

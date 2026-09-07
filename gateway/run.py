@@ -12923,11 +12923,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         recovered-reply marker so a possible duplicate is labeled, never
         silent. Returns the claimed rows for redelivery.
         """
+        claimed = []
+        _sweep_future = None
+        _release_claims = None
         try:
             from gateway.delivery_ledger import (
                 ledger_enabled,
+                release_recoverable_claims,
                 sweep_recoverable,
             )
+            _release_claims = release_recoverable_claims
 
             if not await asyncio.to_thread(ledger_enabled):
                 return []
@@ -12937,31 +12942,62 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _deliverable = {
                 getattr(p, "value", str(p)) for p in self.adapters
             }
-            claimed = await asyncio.to_thread(
-                sweep_recoverable, None, deliverable_platforms=_deliverable
+            # Shield the thread future so orderly task cancellation can first
+            # recover its committed result and roll the claims back.  A plain
+            # ``await asyncio.to_thread`` loses that result if cancellation
+            # lands after SQLite commit but before the await resumes.
+            _sweep_future = asyncio.ensure_future(
+                asyncio.to_thread(
+                    sweep_recoverable, None, deliverable_platforms=_deliverable
+                )
             )
+            claimed = await asyncio.shield(_sweep_future)
+
+            if not claimed:
+                return []
+
+            # Clear resume_pending for EVERY claimed row up front, before any
+            # send. Claiming already spent one of the row's redelivery attempts —
+            # the answer is in the ledger, so the resume path must never re-run
+            # these turns (#91969).
+            for row in claimed:
+                session_key = row.get("session_key") or ""
+                if not session_key:
+                    continue
+                try:
+                    await self.async_session_store.clear_resume_pending(session_key)
+                except Exception:
+                    logger.debug(
+                        "clear_resume_pending failed for %s", session_key,
+                        exc_info=True,
+                    )
+            return claimed
+        except asyncio.CancelledError:
+            # If cancellation raced the thread's commit, retrieve the exact
+            # rows it claimed and restore their pre-claim state/attempt count.
+            # No network send has started while this method is running.
+            if not claimed and _sweep_future is not None:
+                try:
+                    claimed = await asyncio.shield(_sweep_future)
+                except Exception:
+                    logger.debug(
+                        "delivery ledger sweep failed during cancellation",
+                        exc_info=True,
+                    )
+            if claimed and _release_claims is not None:
+                try:
+                    await asyncio.shield(
+                        asyncio.to_thread(_release_claims, claimed)
+                    )
+                except Exception:
+                    logger.error(
+                        "Failed to roll back cancelled delivery-ledger claims",
+                        exc_info=True,
+                    )
+            raise
         except Exception:
             logger.debug("delivery ledger sweep failed", exc_info=True)
             return []
-        if not claimed:
-            return []
-
-        # Clear resume_pending for EVERY claimed row up front, before any
-        # send. Claiming already spent one of the row's redelivery attempts —
-        # the answer is in the ledger, so the resume path must never re-run
-        # these turns (#91969).
-        for row in claimed:
-            session_key = row.get("session_key") or ""
-            if not session_key:
-                continue
-            try:
-                await self.async_session_store.clear_resume_pending(session_key)
-            except Exception:
-                logger.debug(
-                    "clear_resume_pending failed for %s", session_key,
-                    exc_info=True,
-                )
-        return claimed
 
     async def _redeliver_claimed_obligations(self, claimed: list) -> int:
         """Redeliver final responses for rows already claimed (and
@@ -13187,7 +13223,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _resume_state = self._session_state(entry.session_key)
             _resume_state.turn.agent = _AGENT_PENDING_SENTINEL
             _resume_state.turn.started_ts = time.time()
-            await self._persist_active_agents_async()
+            try:
+                await asyncio.wait_for(
+                    self._persist_active_agents_async(), timeout=2.0
+                )
+            except asyncio.CancelledError:
+                # No owner task exists yet.  Roll the provisional claim back
+                # synchronously so startup cancellation cannot strand it.
+                _resume_state.turn.clear()
+                raise
+            except Exception as exc:
+                # A status write is observability, not ownership.  If it
+                # cannot be published promptly, leave resume_pending intact
+                # and let a later inbound turn/boot retry safely.
+                _resume_state.turn.clear()
+                logger.warning(
+                    "Skipping auto-resume for %s: active-agent status publish failed: %s",
+                    entry.session_key,
+                    exc,
+                )
+                continue
 
             # Empty-text internal event — the _is_resume_pending branch in
             # _handle_message_with_agent prepends the proper reason-aware
@@ -16554,6 +16609,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _phase_elapsed(),
             )
 
+            _cancelled_background_tasks = []
             for _task in list(self._background_tasks):
                 if _task is self._stop_task:
                     continue
@@ -16564,21 +16620,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # _exit_code = 75 (#12875).  It self-terminates anyway.
                     continue
                 _task.cancel()
+                _cancelled_background_tasks.append(_task)
+            if _cancelled_background_tasks:
+                _remaining = GatewayRunner._shutdown_remaining(_teardown_deadline)
+                if _remaining > 0:
+                    _done, _pending = await asyncio.wait(
+                        _cancelled_background_tasks, timeout=_remaining
+                    )
+                    if _pending:
+                        _cleanup_budget_exhausted = True
+                else:
+                    _cleanup_budget_exhausted = True
             self._background_tasks.clear()
 
             self.adapters.clear()
+            _had_running_agents = bool(self._running_agents)
             for _session_key in list(self._running_agents):
-                release_async = getattr(
-                    self, "_release_running_agent_state_async", None
-                )
-                if callable(release_async):
-                    await cast(
-                        Callable[[str], Awaitable[bool]], release_async
-                    )(_session_key)
-                else:
-                    # Lightweight shutdown contract doubles are not
-                    # GatewayRunner instances and expose only the sync shim.
-                    self._release_running_agent_state(_session_key)
+                release_sync = getattr(self, "_release_running_agent_state")
+                try:
+                    release_sync(_session_key, _persist=False)
+                except TypeError:
+                    # Lightweight shutdown contract doubles expose the older
+                    # one-argument sync shim.
+                    release_sync(_session_key)
+            _remaining = GatewayRunner._shutdown_remaining(_teardown_deadline)
+            if _remaining > 0 and _had_running_agents:
+                try:
+                    await asyncio.wait_for(
+                        self._persist_active_agents_async(),
+                        timeout=min(0.25, _remaining),
+                    )
+                except (asyncio.TimeoutError, Exception):
+                    logger.debug(
+                        "Final active-agent status write exceeded shutdown budget",
+                        exc_info=True,
+                    )
             # Flush pending messages to disk before clearing (#72680).
             # When FTS5 corruption prevents message persistence, the
             # in-memory pending text is the only surviving copy.  Clearing

@@ -835,6 +835,45 @@ async def test_startup_auto_resume_skips_unauthorized_owner():
 
 
 @pytest.mark.asyncio
+async def test_cancelled_auto_resume_status_publish_releases_provisional_claim():
+    """Cancellation before owner-task creation cannot strand the sentinel."""
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="cancel-before-owner")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:cancel-before-owner",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_interrupted",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    adapter.handle_message = AsyncMock()
+    publish_started = asyncio.Event()
+    never = asyncio.Event()
+
+    async def _wedged_publish():
+        publish_started.set()
+        await never.wait()
+
+    runner._persist_active_agents_async = _wedged_publish
+    task = asyncio.create_task(runner._schedule_resume_pending_sessions())
+    await asyncio.wait_for(publish_started.wait(), timeout=1.0)
+    assert runner._is_session_running(pending_entry.session_key)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert not runner._is_session_running(pending_entry.session_key)
+    adapter.handle_message.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_reconnect_reschedule_is_platform_scoped():
     """The platform filter limits the pass to that platform's sessions, so
     reconnecting one platform never resumes another's pending session."""
