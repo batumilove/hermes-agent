@@ -95,7 +95,7 @@ class TestStartupPlatformIsolation:
         runner.hooks.emit = AsyncMock()
         runner._suspend_stuck_loop_sessions = MagicMock(return_value=0)
         runner._update_runtime_status = MagicMock()
-        runner._update_platform_runtime_status = MagicMock()
+        runner._update_platform_runtime_status = AsyncMock()
         runner._sync_voice_mode_state_to_adapter = MagicMock()
         runner._send_update_notification = AsyncMock(return_value=True)
         runner._send_restart_notification = AsyncMock()
@@ -366,7 +366,8 @@ class TestPauseResume:
     """Test the per-platform pause/resume helpers and slash command."""
 
 
-    def test_pause_is_idempotent(self):
+    @pytest.mark.asyncio
+    async def test_pause_is_idempotent(self):
         runner = _make_runner()
         runner._failed_platforms[Platform.TELEGRAM] = {
             "config": PlatformConfig(enabled=True, token="t"),
@@ -375,7 +376,9 @@ class TestPauseResume:
             "paused": True,
             "pause_reason": "first reason",
         }
-        runner._pause_failed_platform(Platform.TELEGRAM, reason="second reason")
+        await runner._pause_failed_platform(
+            Platform.TELEGRAM, reason="second reason"
+        )
         # Reason should not be overwritten on a second pause call.
         assert (
             runner._failed_platforms[Platform.TELEGRAM]["pause_reason"]
@@ -383,7 +386,8 @@ class TestPauseResume:
         )
 
 
-    def test_resume_clears_paused_and_resets_attempts(self):
+    @pytest.mark.asyncio
+    async def test_resume_clears_paused_and_resets_attempts(self):
         runner = _make_runner()
         runner._failed_platforms[Platform.TELEGRAM] = {
             "config": PlatformConfig(enabled=True, token="t"),
@@ -392,7 +396,7 @@ class TestPauseResume:
             "paused": True,
             "pause_reason": "auto-paused",
         }
-        assert runner._resume_paused_platform(Platform.TELEGRAM) is True
+        assert await runner._resume_paused_platform(Platform.TELEGRAM) is True
         info = runner._failed_platforms[Platform.TELEGRAM]
         assert info["paused"] is False
         assert info["attempts"] == 0
@@ -855,7 +859,7 @@ class TestVoiceInputCallbackWiring:
             platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="test")}
         )
         runner._update_runtime_status = MagicMock()
-        runner._update_platform_runtime_status = MagicMock()
+        runner._update_platform_runtime_status = AsyncMock()
         runner._sync_voice_mode_state_to_adapter = MagicMock()
         runner._send_update_notification = AsyncMock(return_value=True)
         runner._send_restart_notification = AsyncMock()

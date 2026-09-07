@@ -1608,7 +1608,9 @@ class GatewaySlashCommandsMixin:
                     )
                 if failed[platform].get("paused"):
                     return f"{platform.value} is already paused."
-                self._pause_failed_platform(platform, reason="paused via /platform pause")
+                await getattr(self, "_pause_failed_platform")(
+                    platform, reason="paused via /platform pause"
+                )
                 return (
                     f"✓ {platform.value} paused. "
                     f"Resume with `/platform resume {platform.value}` or "
@@ -1625,7 +1627,7 @@ class GatewaySlashCommandsMixin:
                     f"{platform.value} is already retrying — "
                     f"no resume needed."
                 )
-            self._resume_paused_platform(platform)
+            await getattr(self, "_resume_paused_platform")(platform)
             return f"✓ {platform.value} resumed — retrying on next watcher tick."
 
         return (

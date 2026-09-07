@@ -8773,7 +8773,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             platform_state = "retrying"
         else:
             platform_state = "fatal"
-        self._update_platform_runtime_status(
+        await self._update_platform_runtime_status(
             adapter.platform.value,
             platform_state=platform_state,
             error_code=adapter.fatal_error_code,
@@ -9218,7 +9218,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             has_live_background_work=self._scale_to_zero_has_live_background_work(),
         )
 
-    def _scale_to_zero_note_real_inbound(self) -> None:
+    async def _scale_to_zero_note_real_inbound(self) -> None:
         """Stamp real inbound and restore lifecycle after a dormant wake.
 
         The watcher marks runtime status `draining` as it quiesces the relay, but
@@ -9230,7 +9230,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._last_inbound_at = time.time()
         if getattr(self, "_scale_to_zero_cooldown_until", 0.0) > 0:
             try:
-                self._update_runtime_status("running")
+                await self._update_runtime_status_async("running")
             except Exception:  # noqa: BLE001 - status restoration is best-effort
                 logger.debug("scale-to-zero: status restore failed", exc_info=True)
             self._scale_to_zero_cooldown_until = 0.0
@@ -9293,7 +9293,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     self._scale_to_zero_idle_timeout_seconds(),
                 )
                 try:
-                    self._update_runtime_status("draining")
+                    await self._update_runtime_status_async("draining")
                 except Exception:  # noqa: BLE001 - status is best-effort
                     logger.debug("scale-to-zero: status mark failed", exc_info=True)
                 dormant_ok = True
@@ -9491,6 +9491,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
 
+    async def _update_runtime_status_async(
+        self,
+        gateway_state: Optional[str] = None,
+        exit_reason: Optional[str] = None,
+    ) -> None:
+        """Persist lifecycle status without blocking the gateway event loop."""
+        await _run_in_detached_daemon_thread(
+            self._update_runtime_status,
+            gateway_state,
+            exit_reason,
+        )
+
     def _persist_active_agents(self) -> None:
         """Persist the live in-flight agent count to ``gateway_state.json``.
 
@@ -9512,6 +9524,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             write_runtime_status(active_agents=self._active_work_count())
         except Exception:
             pass
+
+    async def _persist_active_agents_async(self) -> None:
+        """Persist the work census without blocking the gateway event loop."""
+        await _run_in_detached_daemon_thread(self._persist_active_agents)
 
     # ------------------------------------------------------------------
     # External drain control (NAS-driven quiesce-without-restart, Phase 2).
@@ -9609,7 +9625,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("Drain-control watcher tick error: %s", exc, exc_info=True)
             await asyncio.sleep(interval)
 
-    def _update_platform_runtime_status(
+    async def _update_platform_runtime_status(
         self,
         platform: str,
         *,
@@ -9626,7 +9642,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 extra["needs_attention"] = needs_attention
             if retrying_since is not _UNSET:
                 extra["retrying_since"] = retrying_since
-            write_runtime_status(
+            await _run_in_detached_daemon_thread(
+                write_runtime_status,
                 platform=platform,
                 platform_state=platform_state,
                 error_code=error_code,
@@ -9641,7 +9658,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # watcher when a retryable failure recurs past a threshold, and by the
     # /platform pause|resume slash command for manual control.
     # ------------------------------------------------------------------
-    def _pause_failed_platform(self, platform, *, reason: str = "") -> None:
+    async def _pause_failed_platform(self, platform, *, reason: str = "") -> None:
         """Mark a queued platform as paused — keep it in ``_failed_platforms``
         but stop the reconnect watcher from hammering it.
 
@@ -9663,7 +9680,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # by a stale code path, the watcher won't fire on it.
         info["next_retry"] = float("inf")
         try:
-            self._update_platform_runtime_status(
+            await self._update_platform_runtime_status(
                 platform.value,
                 platform_state="paused",
                 error_code=None,
@@ -9679,7 +9696,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             info["pause_reason"], platform.value,
         )
 
-    def _resume_paused_platform(self, platform) -> bool:
+    async def _resume_paused_platform(self, platform) -> bool:
         """Unpause a platform — reset its attempt counter and schedule an
         immediate retry.  Returns True if the platform was paused and is
         now queued; False if it wasn't paused (or wasn't in the queue).
@@ -9694,7 +9711,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         info["attempts"] = 0
         info["next_retry"] = time.monotonic()  # retry on next watcher tick
         try:
-            self._update_platform_runtime_status(
+            await self._update_platform_runtime_status(
                 platform.value,
                 platform_state="retrying",
                 error_code=None,
@@ -11068,7 +11085,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     exc,
                 )
 
-        def _maybe_update_status(force: bool = False) -> None:
+        async def _maybe_update_status(force: bool = False) -> None:
             nonlocal last_active_count, last_cron_count, last_api_count, last_status_at
             now = loop.time()
             active_count = self._running_agent_count()
@@ -11081,7 +11098,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 or api_count != last_api_count
                 or (now - last_status_at) >= 1.0
             ):
-                self._update_runtime_status("draining")
+                await self._update_runtime_status_async("draining")
                 last_active_count = active_count
                 last_cron_count = cron_count
                 last_api_count = api_count
@@ -11104,10 +11121,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             and last_api_count == 0
             and last_delegation_count == 0
         ):
-            _maybe_update_status(force=True)
+            await _maybe_update_status(force=True)
             return snapshot, False
 
-        _maybe_update_status(force=True)
+        await _maybe_update_status(force=True)
 
         # Reserve a small slice of the existing drain budget for one final
         # attributable snapshot. This is evidence work, not extra shutdown
@@ -11131,7 +11148,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Chat/API and cron work retain separate budgets, while attribution
         # shares the later deadline and never extends either drain lane.
         while _still_draining():
-            _maybe_update_status()
+            await _maybe_update_status()
             remaining = attribution_deadline - loop.time()
             now = loop.time()
             if now >= next_attribution_at and remaining > pre_timeout_margin:
@@ -11159,7 +11176,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             or bool(self._active_api_run_count())
             or bool(self._active_delegation_count())
         )
-        _maybe_update_status(force=True)
+        await _maybe_update_status(force=True)
         return snapshot, timed_out
 
     def _shutdown_interrupt_timeout_secs(self) -> float:
@@ -12545,7 +12562,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             timeout,
         )
         try:
-            self._update_runtime_status("draining")
+            await self._update_runtime_status_async("draining")
         except Exception:
             pass
 
@@ -12576,7 +12593,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     deadline - now,
                 )
                 try:
-                    self._update_runtime_status("draining")
+                    await self._update_runtime_status_async("draining")
                 except Exception:
                     pass
                 last_status_at = now
@@ -12678,7 +12695,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # otherwise the real run's normal cleanup owns the slot.
             _pre_state = self._peek_session_state(session_key)
             if (_pre_state.turn.agent if _pre_state else None) is _AGENT_PENDING_SENTINEL:
-                self._release_running_agent_state(session_key)
+                await self._release_running_agent_state_async(session_key)
 
     def _queue_startup_restore_event(self, event: MessageEvent) -> None:
         queue = getattr(self, "_startup_restore_queue", None)
@@ -13022,7 +13039,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await self._claim_pending_obligations()
         )
 
-    def _schedule_resume_pending_sessions(self, platform=None) -> int:
+    async def _schedule_resume_pending_sessions(self, platform=None) -> int:
         """Auto-continue fresh restart-interrupted sessions after startup.
 
         ``resume_pending`` already preserves the transcript AND the existing
@@ -13134,7 +13151,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _resume_state = self._session_state(entry.session_key)
             _resume_state.turn.agent = _AGENT_PENDING_SENTINEL
             _resume_state.turn.started_ts = time.time()
-            self._persist_active_agents()
+            await self._persist_active_agents_async()
 
             # Empty-text internal event — the _is_resume_pending branch in
             # _handle_message_with_agent prepends the proper reason-aware
@@ -13535,8 +13552,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from gateway.status import write_runtime_status
             await _run_in_detached_daemon_thread(
                 write_runtime_status,
-                gateway_state="starting",
-                exit_reason=None,
                 clear_profile_platforms=True,
             )
         except Exception:
@@ -13660,7 +13675,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             try:
                 from gateway.status import write_runtime_status
-                write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
+                await _run_in_detached_daemon_thread(
+                    write_runtime_status,
+                    gateway_state="startup_failed",
+                    exit_reason=reason,
+                )
             except Exception:
                 pass
             self._request_clean_exit(reason)
@@ -13890,7 +13909,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if await self._abort_startup_if_shutdown_requested(adp, p):
                 return (p, adp, p_cfg, "aborted", None)
             logger.info("Connecting to %s...", p.value)
-            self._update_platform_runtime_status(
+            await self._update_platform_runtime_status(
                 p.value, platform_state="connecting", error_code=None, error_message=None,
             )
             try:
@@ -13976,7 +13995,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # raised mid-connect may still have a live aiohttp.ClientSession or
                 # child subprocess.
                 await self._safe_adapter_disconnect(adapter, platform)
-                self._update_platform_runtime_status(
+                await self._update_platform_runtime_status(
                     platform.value, platform_state="retrying", error_code=None, error_message=str(exc),
                 )
                 startup_retryable_errors.append(f"{platform.value}: {exc}")
@@ -13998,7 +14017,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if hasattr(adapter, "_voice_input_callback"):
                     adapter._voice_input_callback = self._handle_voice_channel_input
                 connected_count += 1
-                self._update_platform_runtime_status(
+                await self._update_platform_runtime_status(
                     platform.value, platform_state="connected", error_code=None, error_message=None,
                 )
                 logger.info("\u2713 %s connected", platform.value)
@@ -14010,7 +14029,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Python logs "Unclosed client session" at process exit.
                 await self._safe_adapter_disconnect(adapter, platform)
                 if adapter.has_fatal_error:
-                    self._update_platform_runtime_status(
+                    await self._update_platform_runtime_status(
                         platform.value,
                         platform_state="retrying" if adapter.fatal_error_retryable else "fatal",
                         error_code=adapter.fatal_error_code,
@@ -14032,7 +14051,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "listener_claim": self._adapter_listener_claim(platform, adapter),
                         }
                 else:
-                    self._update_platform_runtime_status(
+                    await self._update_platform_runtime_status(
                         platform.value, platform_state="retrying", error_code=None, error_message="failed to connect",
                     )
                     startup_retryable_errors.append(f"{platform.value}: failed to connect")
@@ -14062,7 +14081,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.error("Gateway multiplexer config error: %s", reason)
             try:
                 from gateway.status import write_runtime_status
-                write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
+                await _run_in_detached_daemon_thread(
+                    write_runtime_status,
+                    gateway_state="startup_failed",
+                    exit_reason=reason,
+                )
             except Exception:
                 pass
             self._exit_code = GATEWAY_FATAL_CONFIG_EXIT_CODE
@@ -14101,7 +14124,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.error("Gateway hit a non-retryable startup conflict: %s", reason)
                 try:
                     from gateway.status import write_runtime_status
-                    write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
+                    await _run_in_detached_daemon_thread(
+                        write_runtime_status,
+                        gateway_state="startup_failed",
+                        exit_reason=reason,
+                    )
                 except Exception:
                     pass
                 self._exit_code = GATEWAY_FATAL_CONFIG_EXIT_CODE
@@ -14149,7 +14176,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                     try:
                         from gateway.status import write_runtime_status
-                        write_runtime_status(
+                        await _run_in_detached_daemon_thread(
+                            write_runtime_status,
                             gateway_state="degraded",
                             exit_reason=None,
                         )
@@ -14255,7 +14283,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # a session whose final response was generated but never
         # confirmed-delivered has its answer in the ledger — redelivering it
         # is strictly cheaper and more correct than re-running the whole turn.
-        self._schedule_resume_pending_sessions()
+        await self._schedule_resume_pending_sessions()
         await self._finish_startup_restore()
 
         # Surface state.db init failures to the user's messaging platforms
@@ -14745,7 +14773,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Cancel any in-flight running-agent state for the destination key
         # so the synthetic turn isn't queued behind a stale running flag.
-        self._release_running_agent_state(session_key)
+        await self._release_running_agent_state_async(session_key)
 
         synthetic_text = (
             f"[Session was just handed off from CLI (\"{cli_title}\") to this "
@@ -15463,7 +15491,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         queued_for / 3600.0,
                         info.get("attempts", 0),
                     )
-                    self._update_platform_runtime_status(
+                    await self._update_platform_runtime_status(
                         platform.value,
                         platform_state="retrying",
                         needs_attention=True,
@@ -15527,7 +15555,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             adapter._voice_input_callback = self._handle_voice_channel_input
                         self.delivery_router.adapters = self.adapters
                         del self._failed_platforms[platform]
-                        self._update_platform_runtime_status(
+                        await self._update_platform_runtime_status(
                             platform.value,
                             platform_state="connected",
                             error_code=None,
@@ -15551,7 +15579,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # auto-resume scoped to this platform so recovery
                         # doesn't silently wait for a manual user message.
                         try:
-                            self._schedule_resume_pending_sessions(platform=platform)
+                            await self._schedule_resume_pending_sessions(platform=platform)
                         except Exception:
                             logger.debug(
                                 "resume-pending reschedule after %s reconnect failed",
@@ -15560,7 +15588,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                     # Check if the failure is non-retryable
                     elif adapter.has_fatal_error and not adapter.fatal_error_retryable:
-                        self._update_platform_runtime_status(
+                        await self._update_platform_runtime_status(
                             platform.value,
                             platform_state="fatal",
                             error_code=adapter.fatal_error_code,
@@ -15581,7 +15609,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         await _dispose_unused_adapter(adapter)
                         del self._failed_platforms[platform]
                     else:
-                        self._update_platform_runtime_status(
+                        await self._update_platform_runtime_status(
                             platform.value,
                             platform_state="retrying",
                             error_code=adapter.fatal_error_code,
@@ -15619,7 +15647,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # resources don't accumulate while the watcher
                         # keeps retrying.
                         await _dispose_unused_adapter(adapter)
-                    self._update_platform_runtime_status(
+                    await self._update_platform_runtime_status(
                         platform.value,
                         platform_state="retrying",
                         error_code=None,
@@ -16308,7 +16336,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 while (
                     self._running_agents or self._active_api_run_count()
                 ) and asyncio.get_running_loop().time() < interrupt_deadline:
-                    self._update_runtime_status("draining")
+                    await self._update_runtime_status_async("draining")
                     await asyncio.sleep(0.1)
 
                 # The interrupt above fires exactly once, but work can
@@ -16491,7 +16519,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             self.adapters.clear()
             for _session_key in list(self._running_agents):
-                self._release_running_agent_state(_session_key)
+                await self._release_running_agent_state_async(_session_key)
             # Flush pending messages to disk before clearing (#72680).
             # When FTS5 corruption prevents message persistence, the
             # in-memory pending text is the only surviving copy.  Clearing
@@ -16735,9 +16763,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "gateway_state=running so container_boot auto-starts on "
                     "the next boot (issue #42675)"
                 )
-                self._update_runtime_status("running", self._exit_reason)
+                await self._update_runtime_status_async("running", self._exit_reason)
             else:
-                self._update_runtime_status("stopped", self._exit_reason)
+                await self._update_runtime_status_async("stopped", self._exit_reason)
             _shutdown_gateway_health_export(self)
             logger.info("Gateway stopped (total teardown %.2fs)", _phase_elapsed())
 
@@ -16836,7 +16864,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if name == active
                         else PairingStore(profile=name)
                     )
-            write_runtime_status(served_profiles=served)
+            await _run_in_detached_daemon_thread(
+                write_runtime_status, served_profiles=served
+            )
         except Exception:
             logger.debug("could not record served_profiles", exc_info=True)
 
@@ -16931,7 +16961,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "its own %s credential.",
                         owner, profile_name, platform.value, platform.value,
                     )
-                    self._update_platform_runtime_status(
+                    await self._update_platform_runtime_status(
                         f"{profile_name}:{platform.value}",
                         platform_state="fatal",
                         error_code="duplicate_credential",
@@ -16966,7 +16996,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         platform.value,
                         profile_name,
                     )
-                    self._update_platform_runtime_status(
+                    await self._update_platform_runtime_status(
                         f"{profile_name}:{platform.value}",
                         platform_state="fatal",
                         error_code="duplicate_listener",
@@ -18170,7 +18200,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # traffic — counting them would keep a genuinely idle gateway awake. This
         # clock is what the idle predicate (gateway/scale_to_zero.is_idle) reads.
         if not is_internal:
-            self._scale_to_zero_note_real_inbound()
+            await self._scale_to_zero_note_real_inbound()
 
         # Fire pre_gateway_dispatch plugin hook for user-originated messages.
         # Plugins receive the MessageEvent and may return a dict influencing flow:
@@ -18629,7 +18659,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _quick_key,
                     reason="stale_running_agent_eviction",
                 )
-                self._release_running_agent_state(_quick_key)
+                await self._release_running_agent_state_async(_quick_key)
 
         if self._is_session_running(_quick_key):
             # Resolve the command once; every command's mid-run behavior is
@@ -18712,7 +18742,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Agent is being set up but not ready yet.
                 if event.get_command() == "stop":
                     # Force-clean the sentinel so the session is unlocked.
-                    self._release_running_agent_state(_quick_key)
+                    await self._release_running_agent_state_async(_quick_key)
                     logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
                     return EphemeralReply("⚡ Force-stopped. The agent was still starting — session unlocked.")
                 # Queue the message so it will be picked up after the
@@ -19612,7 +19642,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _claim_state.turn.lease = _active_session_lease
         _claim_state.turn.agent = _AGENT_PENDING_SENTINEL
         _claim_state.turn.started_ts = time.time()
-        self._persist_active_agents()
+        await self._persist_active_agents_async()
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
@@ -19668,7 +19698,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # bumps the generation (N -> N+1) mid-flight: gen-N's guarded release
             # inside _run_agent returns False, and the old sentinel-only check here
             # missed the leftover real agent — locking the session out forever (#28686).
-            self._release_running_agent_state(_quick_key)
+            await self._release_running_agent_state_async(_quick_key)
             # Turn lease (#64934): release THIS turn's lease token — keyed by
             # (routing key, run generation) so this unwind can only ever free
             # the lease its own turn acquired, never a newer turn's.
@@ -28045,6 +28075,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_key: str,
         *,
         run_generation: Optional[int] = None,
+        _persist: bool = True,
     ) -> bool:
         """Pop ALL per-running-agent state entries for ``session_key``.
 
@@ -28100,8 +28131,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # new (lower) in-flight count so the dashboard readout stays current
         # between lifecycle transitions.  Preserves gateway_state (see
         # _persist_active_agents).
-        self._persist_active_agents()
+        if _persist:
+            self._persist_active_agents()
         return True
+
+    async def _release_running_agent_state_async(
+        self,
+        session_key: str,
+        *,
+        run_generation: Optional[int] = None,
+    ) -> bool:
+        """Async event-loop-safe counterpart to ``_release_running_agent_state``."""
+        released = self._release_running_agent_state(
+            session_key,
+            run_generation=run_generation,
+            _persist=False,
+        )
+        if released:
+            await self._persist_active_agents_async()
+        return released
 
     def _release_turn_lease(self, session_key: str, run_generation: int) -> bool:
         """Release the turn lease acquired by (``session_key``, ``run_generation``).
@@ -28381,7 +28429,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if _iac_state is not None:
             _iac_state.persistent.pending_command_text = None
         if release_running_state:
-            self._release_running_agent_state(session_key)
+            await self._release_running_agent_state_async(session_key)
             # Evict the cached agent: ``_interrupt_requested`` is only
             # cleared by the turn finalizer, so on a hung or still-draining
             # run the flag survives the lock release and kills the session's
@@ -30527,7 +30575,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return
             self._session_state(session_key).turn.agent = agent_holder[0]
             if self._draining:
-                self._update_runtime_status("draining")
+                await self._update_runtime_status_async("draining")
         
         tracking_task = asyncio.create_task(track_agent())
         
@@ -31481,11 +31529,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # were unwinding has already installed its own state; this
                 # guard prevents an old run from clobbering it on the way
                 # out.
-                self._release_running_agent_state(
+                await self._release_running_agent_state_async(
                     session_key, run_generation=run_generation
                 )
             if self._draining:
-                self._update_runtime_status("draining")
+                await self._update_runtime_status_async("draining")
             
             # Wait for cancelled tasks
             for task in [progress_task, log_task, interrupt_monitor, tracking_task, _notify_task]:
@@ -32889,11 +32937,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     try:
         from gateway.status import write_runtime_status
 
-        write_runtime_status(
+        await _run_in_detached_daemon_thread(
+            write_runtime_status,
             scheduler={
                 "status": "running" if cron_thread.is_alive() else "failed",
                 "provider": getattr(cron_provider, "name", type(cron_provider).__name__),
-            }
+            },
         )
     except Exception:
         logger.debug("Could not publish cron scheduler readiness", exc_info=True)

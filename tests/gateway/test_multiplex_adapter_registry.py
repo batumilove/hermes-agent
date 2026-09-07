@@ -340,7 +340,7 @@ class TestSecondaryProfileConfigHandling:
         monkeypatch.setattr(
             runner,
             "_update_platform_runtime_status",
-            lambda platform, **kwargs: writes.append((platform, kwargs)),
+            AsyncMock(side_effect=lambda platform, **kwargs: writes.append((platform, kwargs))),
         )
         claim = runner._adapter_credential_claim(Platform.DISCORD, adapter)
 
@@ -388,7 +388,7 @@ class TestSecondaryProfileConfigHandling:
         monkeypatch.setattr(
             runner,
             "_update_platform_runtime_status",
-            lambda key, **kwargs: writes.append((key, kwargs)),
+            AsyncMock(side_effect=lambda key, **kwargs: writes.append((key, kwargs))),
         )
         claim = runner._adapter_listener_claim(platform, adapter)
 

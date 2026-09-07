@@ -19,7 +19,7 @@ Two-part fix, both covered here:
 
 import asyncio
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -340,7 +340,7 @@ class TestWatcherAttentionEscalation:
         monkeypatch.setattr(
             runner,
             "_update_platform_runtime_status",
-            lambda platform, **kw: status_writes.append((platform, kw)),
+            AsyncMock(side_effect=lambda platform, **kw: status_writes.append((platform, kw))),
         )
 
         threshold = run_module._RECONNECT_ATTENTION_AFTER_SECONDS
@@ -384,7 +384,7 @@ class TestWatcherAttentionEscalation:
         monkeypatch.setattr(
             runner,
             "_update_platform_runtime_status",
-            lambda platform, **kw: status_writes.append((platform, kw)),
+            AsyncMock(side_effect=lambda platform, **kw: status_writes.append((platform, kw))),
         )
 
         threshold = run_module._RECONNECT_ATTENTION_AFTER_SECONDS
