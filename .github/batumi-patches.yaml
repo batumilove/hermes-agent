@@ -971,6 +971,7 @@ patches:
       - gateway/platforms/base.py
       - gateway/run.py
       - plugins/platforms/telegram/adapter.py
+      - tests/gateway/test_delivery_ledger.py
       - tests/gateway/test_delivery_ledger_producer.py
       - tests/gateway/test_api_server_active_work_drain.py
       - tests/gateway/test_gateway_shutdown.py
