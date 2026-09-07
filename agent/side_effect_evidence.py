@@ -117,8 +117,37 @@ def _has_affirmative_side_effect_claim(
                 re.match(rf"^(?:successfully\s+)?{re.escape(verb)}\b", clause)
                 for verb in affirmative_verbs
             )
-            present_state = any(
-                re.search(rf"\b(?:is|are)\s+(?:currently\s+)?{re.escape(verb)}\b", clause)
+            coordinated_scheduler_state = (
+                "scheduled" in affirmative_verbs
+                and sum(
+                    len(re.findall(rf"\b{re.escape(verb)}\b", clause))
+                    for verb in affirmative_verbs
+                )
+                == 1
+                and not _FIRST_PERSON_RE.search(sentence)
+                and re.search(
+                    r"\b(?:is|are|remains?)\s+(?:currently\s+)?[^.!?;,]{0,60}"
+                    r"\b(?:and|or)\s+(?:currently\s+)?scheduled\b"
+                    r"(?=\s*[`*_]*\s*(?:$|[|.,;!?]|"
+                    r"every\s+(?:(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+)?"
+                    r"(?:seconds?|minutes?|hours?|days?|weeks?|months?|years?)\b|"
+                    r"(?:at|on|for|to|as|by|via|under|until)\b))",
+                    sentence,
+                )
+                and re.match(
+                    r"^(?:currently\s+)?scheduled\b"
+                    r"(?=\s*[`*_]*\s*(?:$|[|.,;!?]|"
+                    r"every\s+(?:(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+)?"
+                    r"(?:seconds?|minutes?|hours?|days?|weeks?|months?|years?)\b|"
+                    r"(?:at|on|for|to|as|by|via|under|until)\b))",
+                    clause,
+                )
+            )
+            present_state = coordinated_scheduler_state or any(
+                re.search(
+                    rf"\b(?:is|are|remains?)\s+(?:currently\s+)?{re.escape(verb)}\b",
+                    clause,
+                )
                 for verb in affirmative_verbs
             )
             if present_state:
