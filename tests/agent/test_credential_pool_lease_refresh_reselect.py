@@ -113,3 +113,23 @@ def test_acquire_lease_still_none_when_refresh_does_not_help():
     assert pool.acquire_lease() is None
     assert state["refresh_calls"] == 1, "retry must not refresh repeatedly"
     assert pool._active_leases == {}
+
+
+def test_acquire_lease_rolls_back_partial_success_when_refresh_raises():
+    """A sibling refresh failure cannot leak an already-recorded lease."""
+    pool = _bare_pool([_entry("available"), _entry("pending")])
+    pending_refresh = [("pending", "single-use-token")]
+    pool._available_entries = lambda **_kwargs: ([pool._entries[0]], pending_refresh)
+
+    def _raise_refresh(pending):
+        del pending
+        raise RuntimeError("refresh failed")
+
+    pool._refresh_pending_entries = _raise_refresh
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="refresh failed"):
+        pool.acquire_lease()
+
+    assert pool._active_leases == {}

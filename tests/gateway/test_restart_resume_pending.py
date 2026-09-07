@@ -1347,3 +1347,39 @@ async def test_startup_boot_sends_still_run_when_they_finish_quickly(monkeypatch
     runner._redeliver_claimed_obligations.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_cancelled_boot_claim_continues_to_redelivery():
+    """Caller cancellation cannot abandon a ledger claim mid-sweep."""
+    runner, _adapter = make_restart_runner()
+    runner._background_tasks = set()
+    claim_started = asyncio.Event()
+    release_claim = asyncio.Event()
+    claimed = [{"obligation_id": "owed-response"}]
+
+    async def _slow_claim():
+        claim_started.set()
+        await release_claim.wait()
+        return claimed
+
+    runner._claim_pending_obligations = _slow_claim
+    runner._send_restart_notification = AsyncMock(return_value=None)
+    runner._redeliver_claimed_obligations = AsyncMock(return_value=1)
+
+    caller = asyncio.create_task(
+        runner._await_startup_boot_sends(
+            planned_restart_notification_pending=False,
+        )
+    )
+    await asyncio.wait_for(claim_started.wait(), timeout=1)
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+
+    release_claim.set()
+    pending = [task for task in runner._background_tasks if not task.done()]
+    if pending:
+        await asyncio.wait_for(asyncio.gather(*pending), timeout=1)
+
+    runner._redeliver_claimed_obligations.assert_awaited_once_with(claimed)
+
+

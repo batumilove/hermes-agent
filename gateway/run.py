@@ -11040,13 +11040,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         cron_timeout = timeout if cron_timeout is None else max(0.0, float(cron_timeout))
         deadline = loop.time() + timeout
         cron_deadline = loop.time() + cron_timeout
-        attribution_deadline = max(deadline, cron_deadline)
         if hard_interrupt_after is not None:
             # Upper bound on total wall-clock drain time so the gateway can
             # hard-interrupt agents itself before systemd escalates to SIGKILL.
             hard_deadline = drain_started_at + max(0.0, float(hard_interrupt_after))
             deadline = min(deadline, hard_deadline)
             cron_deadline = min(cron_deadline, hard_deadline)
+        attribution_deadline = max(deadline, cron_deadline)
 
         async def _record_phase(phase: str) -> None:
             try:
@@ -11087,11 +11087,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 or api_count != last_api_count
                 or (now - last_status_at) >= 1.0
             ):
-                await self._update_runtime_status_async("draining")
                 last_active_count = active_count
                 last_cron_count = cron_count
                 last_api_count = api_count
                 last_status_at = now
+                remaining = attribution_deadline - loop.time()
+                if remaining <= 0:
+                    return
+                try:
+                    await asyncio.wait_for(
+                        self._update_runtime_status_async("draining"),
+                        timeout=min(0.25, remaining),
+                    )
+                except asyncio.TimeoutError:
+                    logger.debug(
+                        "Drain status write exceeded its bounded budget; continuing"
+                    )
 
         # Persist the identities seen at drain admission before waiting. The
         # write shares the caller's deadline and can never extend it.
@@ -12833,18 +12844,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         uses: on timeout we return and let the sends finish in the
         background. Tasks are not cancelled.
 
-        The ledger claim + ``resume_pending`` clear happen INLINE here,
-        before the send task exists: they are pure DB work (no network,
-        bounded by claimed-row count), and deferring them into the send
-        task left a window where a hung restart notification ahead of the
+        The ledger claim + ``resume_pending`` clear happen before any send
+        and before this method releases the caller to schedule resumes. The
+        worker-owned task is shielded and retained so caller cancellation
+        cannot abandon a sweep that has already claimed rows. A prior design
+        left a window where a hung restart notification ahead of the
         redelivery step let the gate expire with zero rows claimed — the
         resume scheduler then replayed turns whose answers were already in
         the ledger, and the background task later redelivered them too
         (duplicate delivery + re-paid turn).
         """
-        claimed = await self._claim_pending_obligations()
+        claim_ready = asyncio.Event()
 
         async def _boot_sends() -> None:
+            claimed = await self._claim_pending_obligations()
+            # The resume scheduler may run only after claims are durable and
+            # their resume flags have been cleared.
+            claim_ready.set()
             await self._send_restart_notification()
             if planned_restart_notification_pending:
                 try:
@@ -12856,6 +12872,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await self._redeliver_claimed_obligations(claimed)
 
         boot_task = asyncio.create_task(_boot_sends())
+        tasks = getattr(self, "_background_tasks", None)
+        if tasks is None:
+            self._background_tasks = set()
+            tasks = self._background_tasks
+        tasks.add(boot_task)
+        boot_task.add_done_callback(tasks.discard)
+        boot_task.add_done_callback(self._log_background_boot_send_result)
+
+        # Shield the worker-owned claim/send workflow from caller
+        # cancellation. If startup is cancelled while SQLite is still
+        # sweeping, the task continues to clear resume flags and redeliver the
+        # claimed response instead of abandoning a half-completed claim.
+        await asyncio.shield(claim_ready.wait())
         timeout = _startup_restore_drain_timeout_secs()
         if timeout > 0:
             _done, pending = await asyncio.wait({boot_task}, timeout=timeout)
@@ -12867,15 +12896,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "in the background.",
                     timeout,
                 )
-                boot_task.add_done_callback(self._log_background_boot_send_result)
-                tasks = getattr(self, "_background_tasks", None)
-                if tasks is None:
-                    self._background_tasks = set()
-                    tasks = self._background_tasks
-                tasks.add(boot_task)
-                boot_task.add_done_callback(tasks.discard)
         else:
-            await boot_task
+            await asyncio.shield(boot_task)
 
     @staticmethod
     def _log_background_boot_send_result(task: "asyncio.Task") -> None:
@@ -13022,11 +13044,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         Kept as the stable public shape (tests and any external callers
         drive this name); the startup path calls the two halves separately
-        so the DB half can run inline before the abandonable send task.
+        so the DB half completes before the resume scheduler proceeds.
         """
-        return await self._redeliver_claimed_obligations(
-            await self._claim_pending_obligations()
+        async def _claim_and_redeliver() -> int:
+            return await self._redeliver_claimed_obligations(
+                await self._claim_pending_obligations()
+            )
+
+        task = asyncio.create_task(_claim_and_redeliver())
+        tasks = getattr(self, "_background_tasks", None)
+        if tasks is None:
+            self._background_tasks = set()
+            tasks = self._background_tasks
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+        task.add_done_callback(
+            lambda done: self._log_late_background_failure(
+                done, "background obligation redelivery failed: see traceback"
+            )
         )
+        return await asyncio.shield(task)
 
     async def _schedule_resume_pending_sessions(self, platform=None) -> int:
         """Auto-continue fresh restart-interrupted sessions after startup.
@@ -13549,9 +13586,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self, default_state="starting"
             )
             from gateway.status import write_runtime_status
-            await run_sync_in_detached_daemon_thread(
-                write_runtime_status,
-                clear_profile_platforms=True,
+            await asyncio.wait_for(
+                run_sync_in_detached_serial_daemon_thread(
+                    write_runtime_status,
+                    clear_profile_platforms=True,
+                ),
+                timeout=2.0,
             )
         except Exception:
             pass
@@ -13674,10 +13714,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             try:
                 from gateway.status import write_runtime_status
-                await run_sync_in_detached_daemon_thread(
-                    write_runtime_status,
-                    gateway_state="startup_failed",
-                    exit_reason=reason,
+                await asyncio.wait_for(
+                    run_sync_in_detached_serial_daemon_thread(
+                        write_runtime_status,
+                        gateway_state="startup_failed",
+                        exit_reason=reason,
+                    ),
+                    timeout=2.0,
                 )
             except Exception:
                 pass
@@ -14080,10 +14123,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.error("Gateway multiplexer config error: %s", reason)
             try:
                 from gateway.status import write_runtime_status
-                await run_sync_in_detached_daemon_thread(
-                    write_runtime_status,
-                    gateway_state="startup_failed",
-                    exit_reason=reason,
+                await asyncio.wait_for(
+                    run_sync_in_detached_serial_daemon_thread(
+                        write_runtime_status,
+                        gateway_state="startup_failed",
+                        exit_reason=reason,
+                    ),
+                    timeout=2.0,
                 )
             except Exception:
                 pass
@@ -14123,10 +14169,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.error("Gateway hit a non-retryable startup conflict: %s", reason)
                 try:
                     from gateway.status import write_runtime_status
-                    await run_sync_in_detached_daemon_thread(
-                        write_runtime_status,
-                        gateway_state="startup_failed",
-                        exit_reason=reason,
+                    await asyncio.wait_for(
+                        run_sync_in_detached_serial_daemon_thread(
+                            write_runtime_status,
+                            gateway_state="startup_failed",
+                            exit_reason=reason,
+                        ),
+                        timeout=2.0,
                     )
                 except Exception:
                     pass
@@ -16335,7 +16384,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 while (
                     self._running_agents or self._active_api_run_count()
                 ) and asyncio.get_running_loop().time() < interrupt_deadline:
-                    await self._update_runtime_status_async("draining")
+                    # Already marked draining. Status I/O must not consume the
+                    # bounded cooperative-interrupt settle window.
                     await asyncio.sleep(0.1)
 
                 # The interrupt above fires exactly once, but work can
@@ -19741,10 +19791,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _claim_state.turn.lease = _active_session_lease
         _claim_state.turn.agent = _AGENT_PENDING_SENTINEL
         _claim_state.turn.started_ts = time.time()
-        await self._persist_active_agents_async()
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
+            # The claim is already owned, so every await from this point is
+            # inside the releasing finally. Cancellation during best-effort
+            # status persistence cannot strand the session slot.
+            await self._persist_active_agents_async()
             try:
                 _agent_result = await self._handle_message_with_agent(
                     event, source, _quick_key, _run_generation

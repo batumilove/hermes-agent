@@ -3,6 +3,7 @@
 import asyncio
 import threading
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -71,6 +72,37 @@ def test_systemd_stop_timeout_caps_internal_shutdown_watchdog():
     runner._systemd_timeout_stop_s = 90.0
 
     assert runner._shutdown_watchdog_delay_secs() == 85.0
+
+
+@pytest.mark.asyncio
+async def test_drain_status_write_cannot_extend_hard_interrupt_deadline():
+    runner, _adapter = make_restart_runner()
+    runner._running_agents = {"pending": object()}
+    runner._running_agents_ts = {"pending": time.time()}
+    runner._record_drain_attribution = AsyncMock(
+        return_value=SimpleNamespace(status="persisted", error=None)
+    )
+    never_finishes = asyncio.Event()
+
+    async def _wedged_status(
+        gateway_state: str | None = None, exit_reason: str | None = None
+    ) -> None:
+        del gateway_state, exit_reason
+        await never_finishes.wait()
+
+    runner._update_runtime_status_async = _wedged_status
+    started = time.monotonic()
+    _snapshot, timed_out = await asyncio.wait_for(
+        runner._drain_active_agents(
+            timeout=5.0,
+            cron_timeout=5.0,
+            hard_interrupt_after=0.05,
+        ),
+        timeout=0.30,
+    )
+
+    assert timed_out is True
+    assert time.monotonic() - started < 0.20
 
 
 class _BlockingFlushAgent:

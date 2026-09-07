@@ -2332,7 +2332,14 @@ class CredentialPool:
         """
         chosen_id, pending_refresh = self._acquire_lease_under_lock(credential_id)
         if pending_refresh:
-            self._refresh_pending_entries(pending_refresh)
+            try:
+                self._refresh_pending_entries(pending_refresh)
+            except BaseException:
+                # Acquisition may already have incremented an available entry
+                # before returning refresh work for its siblings.
+                if chosen_id is not None:
+                    self.release_lease(chosen_id)
+                raise
             # Mirror select(): if nothing was leasable but we just refreshed
             # deferred single-use-token entries, retry now that they are back
             # in rotation. Without this, a pool whose only entries all needed

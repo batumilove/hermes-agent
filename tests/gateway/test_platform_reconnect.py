@@ -114,7 +114,11 @@ class TestStartupPlatformIsolation:
             ]
         )
 
+        real_create_task = asyncio.create_task
+
         def fake_create_task(coro):
+            if getattr(getattr(coro, "cr_code", None), "co_name", "") == "_boot_sends":
+                return real_create_task(coro)
             coro.close()
             return MagicMock()
 
@@ -876,7 +880,11 @@ class TestVoiceInputCallbackWiring:
         adapter = self._make_discord_voice_adapter()
         runner.config.sessions_dir = tmp_path
 
+        real_create_task = asyncio.create_task
+
         def fake_create_task(coro):
+            if getattr(getattr(coro, "cr_code", None), "co_name", "") == "_boot_sends":
+                return real_create_task(coro)
             coro.close()
             return MagicMock()
 
