@@ -9,7 +9,10 @@ from concurrent.futures import Future
 from unittest.mock import patch
 
 
-from agent.async_utils import safe_schedule_threadsafe
+from agent.async_utils import (
+    run_sync_in_detached_daemon_thread,
+    safe_schedule_threadsafe,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -95,5 +98,30 @@ class TestSafeScheduleThreadsafe:
             assert _no_unawaited_warnings(caught, coro_name='_sample')
         finally:
             loop.close()
+
+
+class TestRunSyncInDetachedDaemonThread:
+    def test_runs_off_loop_without_default_executor_ownership(self):
+        async def _exercise():
+            import threading
+
+            main_ident = threading.get_ident()
+
+            def _sync_probe():
+                thread = threading.current_thread()
+                return thread.ident, thread.daemon
+
+            with patch(
+                "agent.async_utils.asyncio.to_thread",
+                side_effect=AssertionError("default executor must not be used"),
+            ):
+                worker_ident, daemon = await run_sync_in_detached_daemon_thread(
+                    _sync_probe
+                )
+            return main_ident, worker_ident, daemon
+
+        main_ident, worker_ident, daemon = asyncio.run(_exercise())
+        assert worker_ident != main_ident
+        assert daemon is True
 
 

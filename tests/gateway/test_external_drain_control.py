@@ -17,7 +17,7 @@ import inspect
 import json
 import os
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -856,29 +856,36 @@ def _drain_runner():
     runner._exit_external_drain = GatewayRunner._exit_external_drain.__get__(
         runner, GatewayRunner
     )
+    runner._update_runtime_status_async = AsyncMock()
     return runner, adapter
 
 
 class TestDrainStateMachine:
 
 
-    def test_enter_idempotent(self):
+    @pytest.mark.asyncio
+    async def test_enter_idempotent(self):
         runner, _ = _drain_runner()
-        runner._enter_external_drain()
-        runner._update_runtime_status.reset_mock()
-        runner._enter_external_drain()  # second call — no-op
-        runner._update_runtime_status.assert_not_called()
+        await runner._enter_external_drain()
+        status_update = runner._update_runtime_status_async
+        assert isinstance(status_update, AsyncMock)
+        status_update.reset_mock()
+        await runner._enter_external_drain()  # second call — no-op
+        status_update.assert_not_awaited()
 
 
-    def test_exit_during_shutdown_does_not_revert_to_running(self):
+    @pytest.mark.asyncio
+    async def test_exit_during_shutdown_does_not_revert_to_running(self):
         runner, _ = _drain_runner()
-        runner._enter_external_drain()
-        runner._update_runtime_status.reset_mock()
+        await runner._enter_external_drain()
+        status_update = runner._update_runtime_status_async
+        assert isinstance(status_update, AsyncMock)
+        status_update.reset_mock()
         # A shutdown drain is now in progress — exit must NOT resurrect running.
         runner._draining = True
-        runner._exit_external_drain()
+        await runner._exit_external_drain()
         assert runner._external_drain_active is False
-        runner._update_runtime_status.assert_not_called()
+        status_update.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -954,6 +961,9 @@ class TestDrainWatcher:
         runner, _ = _drain_runner()
         runner._drain_control_watcher = GatewayRunner._drain_control_watcher.__get__(
             runner, GatewayRunner
+        )
+        runner._update_runtime_status_async = (
+            GatewayRunner._update_runtime_status_async.__get__(runner, GatewayRunner)
         )
         entered = threading.Event()
         release = threading.Event()

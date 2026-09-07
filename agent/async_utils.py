@@ -23,12 +23,64 @@ lifecycle belongs to the loop, not the scheduling thread.
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
 import logging
+import threading
 from concurrent.futures import Future
-from typing import Any, Coroutine, Optional
+from typing import Any, Callable, Coroutine, Optional, ParamSpec, TypeVar
 
 
 _DEFAULT_LOGGER = logging.getLogger(__name__)
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
+
+
+async def run_sync_in_detached_daemon_thread(
+    func: Callable[_P, _T], /, *args: _P.args, **kwargs: _P.kwargs
+) -> _T:
+    """Run blocking work off-loop without owning default-executor shutdown.
+
+    A stuck call submitted through ``asyncio.to_thread`` keeps the loop's
+    default executor alive during shutdown.  Process-lifecycle control I/O
+    must instead be abandonable: this one-shot daemon thread publishes its
+    result back to the loop, while late completion after cancellation is
+    discarded safely.
+    """
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[_T] = loop.create_future()
+    context = contextvars.copy_context()
+    bound = functools.partial(func, *args, **kwargs)
+
+    def _deliver_result(value: _T) -> None:
+        if not future.done():
+            future.set_result(value)
+
+    def _deliver_error(exc: BaseException) -> None:
+        if not future.done():
+            future.set_exception(exc)
+
+    def _worker() -> None:
+        try:
+            outcome = context.run(bound)
+        except BaseException as exc:
+            callback: Callable[[Any], None] = _deliver_error
+            value: Any = exc
+        else:
+            callback = _deliver_result
+            value = outcome
+        try:
+            loop.call_soon_threadsafe(callback, value)
+        except RuntimeError:
+            # The loop closed after cancellation; no waiter remains.
+            pass
+
+    threading.Thread(
+        target=_worker,
+        name="hermes-detached-sync",
+        daemon=True,
+    ).start()
+    return await future
 
 
 def safe_schedule_threadsafe(

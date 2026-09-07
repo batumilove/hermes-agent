@@ -21,6 +21,8 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Any
 
+from agent.async_utils import run_sync_in_detached_daemon_thread
+
 logger = logging.getLogger(__name__)
 
 
@@ -1231,7 +1233,9 @@ class AsyncSessionStore:
             return attr
 
         async def _offloaded(*args, **kwargs) -> Any:
-            return await asyncio.to_thread(attr, *args, **kwargs)
+            return await run_sync_in_detached_daemon_thread(
+                attr, *args, **kwargs
+            )
 
         return _offloaded
 

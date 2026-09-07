@@ -47,7 +47,11 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Dict, Optional, Any, List, Tuple, Union, cast
 
-from agent.async_utils import consume_detached_task_result, safe_schedule_threadsafe
+from agent.async_utils import (
+    consume_detached_task_result,
+    run_sync_in_detached_daemon_thread,
+    safe_schedule_threadsafe,
+)
 from agent.conversation_compression import (
     COMPACTION_STATUS,
     COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
@@ -6835,58 +6839,11 @@ def _publish_authoritative_startup_status(runner, *, default_state: str) -> str:
     return state
 
 
-async def _run_in_detached_daemon_thread(func, /, *args, **kwargs):
-    """Run blocking control-plane I/O without owning loop shutdown.
-
-    ``asyncio.to_thread`` uses the loop's default executor. A filesystem call
-    stuck there can keep ``shutdown_default_executor`` waiting after the
-    awaiting task is cancelled. Drain/status I/O must not own gateway liveness
-    or shutdown, so use a one-shot daemon thread and bridge its result back to
-    the loop. Late completion after cancellation is discarded.
-    """
-    import contextvars
-    import functools
-    import threading
-
-    loop = asyncio.get_running_loop()
-    future = loop.create_future()
-    context = contextvars.copy_context()
-    bound = functools.partial(func, *args, **kwargs)
-
-    def deliver_result(value):
-        if not future.done():
-            future.set_result(value)
-
-    def deliver_error(exc):
-        if not future.done():
-            future.set_exception(exc)
-
-    def worker():
-        try:
-            outcome = context.run(bound)
-        except BaseException as exc:
-            callback, value = deliver_error, exc
-        else:
-            callback, value = deliver_result, outcome
-        try:
-            loop.call_soon_threadsafe(callback, value)
-        except RuntimeError:
-            # The loop already closed after cancellation; there is no waiter.
-            pass
-
-    threading.Thread(
-        target=worker,
-        name="hermes-drain-control-io",
-        daemon=True,
-    ).start()
-    return await future
-
-
 async def _publish_authoritative_startup_status_async(
     runner, *, default_state: str
 ) -> str:
     """Publish startup state without blocking the gateway event loop."""
-    return await _run_in_detached_daemon_thread(
+    return await run_sync_in_detached_daemon_thread(
         _publish_authoritative_startup_status,
         runner,
         default_state=default_state,
@@ -9497,7 +9454,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         exit_reason: Optional[str] = None,
     ) -> None:
         """Persist lifecycle status without blocking the gateway event loop."""
-        await _run_in_detached_daemon_thread(
+        await run_sync_in_detached_daemon_thread(
             self._update_runtime_status,
             gateway_state,
             exit_reason,
@@ -9527,7 +9484,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     async def _persist_active_agents_async(self) -> None:
         """Persist the work census without blocking the gateway event loop."""
-        await _run_in_detached_daemon_thread(self._persist_active_agents)
+        await run_sync_in_detached_daemon_thread(self._persist_active_agents)
 
     # ------------------------------------------------------------------
     # External drain control (NAS-driven quiesce-without-restart, Phase 2).
@@ -9539,7 +9496,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # with its lifecycle action, then (on cancel/abort) the marker is removed
     # and the gateway re-accepts turns.
     # ------------------------------------------------------------------
-    def _enter_external_drain(self) -> None:
+    async def _enter_external_drain(self) -> None:
         """Begin external drain: stop accepting new turns, flip state.
 
         Idempotent — re-entering while already draining is a no-op beyond a
@@ -9557,9 +9514,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Flip the persisted lifecycle state so /api/status.gateway_busy /
         # gateway_drainable track the drain. Preserve active_agents (the
         # read-merge keeps the live count); only the state changes.
-        self._update_runtime_status("draining")
+        await self._update_runtime_status_async("draining")
 
-    def _exit_external_drain(self) -> None:
+    async def _exit_external_drain(self) -> None:
         """Cancel external drain: revert state, re-accept new turns.
 
         Idempotent. Only reverts to ``running`` when we are actually mid-drain
@@ -9581,7 +9538,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "External drain RELEASED (.drain_request.json removed) — "
             "re-accepting new turns; gateway_state -> running."
         )
-        self._update_runtime_status("running")
+        await self._update_runtime_status_async("running")
 
     async def _drain_control_watcher(self, interval: float = 1.0) -> None:
         """Background task: reconcile gateway accept-state with the drain marker.
@@ -9605,20 +9562,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # and marker reads. Keep those potentially slow syscalls off
                 # the event loop so storage latency cannot trip its liveness
                 # watchdog.
-                if await _run_in_detached_daemon_thread(drain_requested):
-                    await _run_in_detached_daemon_thread(
-                        self._enter_external_drain
-                    )
+                if await run_sync_in_detached_daemon_thread(drain_requested):
+                    await self._enter_external_drain()
                     # API and cron work live outside messaging's
                     # _running_agents map. Refresh the aggregate while an
                     # external caller polls this reversible drain state.
-                    await _run_in_detached_daemon_thread(
+                    await run_sync_in_detached_daemon_thread(
                         self._persist_active_agents
                     )
                 else:
-                    await _run_in_detached_daemon_thread(
-                        self._exit_external_drain
-                    )
+                    await self._exit_external_drain()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -9642,7 +9595,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 extra["needs_attention"] = needs_attention
             if retrying_since is not _UNSET:
                 extra["retrying_since"] = retrying_since
-            await _run_in_detached_daemon_thread(
+            await run_sync_in_detached_daemon_thread(
                 write_runtime_status,
                 platform=platform,
                 platform_state=platform_state,
@@ -13077,7 +13030,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 ]
 
         try:
-            candidates = await _run_in_detached_daemon_thread(
+            candidates = await run_sync_in_detached_daemon_thread(
                 _snapshot_resume_candidates
             )
         except Exception as exc:
@@ -13119,6 +13072,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 continue
 
             source = entry.origin
+            if source is None:
+                # The snapshot filters this already; retain a defensive check
+                # across the detached-thread boundary for type/runtime safety.
+                continue
             adapter = self._adapter_for_source(source)
             if adapter is None:
                 logger.debug(
@@ -13556,7 +13513,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self, default_state="starting"
             )
             from gateway.status import write_runtime_status
-            await _run_in_detached_daemon_thread(
+            await run_sync_in_detached_daemon_thread(
                 write_runtime_status,
                 clear_profile_platforms=True,
             )
@@ -13681,7 +13638,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             try:
                 from gateway.status import write_runtime_status
-                await _run_in_detached_daemon_thread(
+                await run_sync_in_detached_daemon_thread(
                     write_runtime_status,
                     gateway_state="startup_failed",
                     exit_reason=reason,
@@ -14087,7 +14044,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.error("Gateway multiplexer config error: %s", reason)
             try:
                 from gateway.status import write_runtime_status
-                await _run_in_detached_daemon_thread(
+                await run_sync_in_detached_daemon_thread(
                     write_runtime_status,
                     gateway_state="startup_failed",
                     exit_reason=reason,
@@ -14130,7 +14087,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.error("Gateway hit a non-retryable startup conflict: %s", reason)
                 try:
                     from gateway.status import write_runtime_status
-                    await _run_in_detached_daemon_thread(
+                    await run_sync_in_detached_daemon_thread(
                         write_runtime_status,
                         gateway_state="startup_failed",
                         exit_reason=reason,
@@ -14182,7 +14139,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                     try:
                         from gateway.status import write_runtime_status
-                        await _run_in_detached_daemon_thread(
+                        await run_sync_in_detached_daemon_thread(
                             write_runtime_status,
                             gateway_state="degraded",
                             exit_reason=None,
@@ -16893,7 +16850,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if name == active
                         else PairingStore(profile=name)
                     )
-            await _run_in_detached_daemon_thread(
+            await run_sync_in_detached_daemon_thread(
                 write_runtime_status, served_profiles=served
             )
         except Exception:
@@ -32966,7 +32923,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     try:
         from gateway.status import write_runtime_status
 
-        await _run_in_detached_daemon_thread(
+        await run_sync_in_detached_daemon_thread(
             write_runtime_status,
             scheduler={
                 "status": "running" if cron_thread.is_alive() else "failed",

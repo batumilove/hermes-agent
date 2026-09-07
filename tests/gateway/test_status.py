@@ -171,6 +171,53 @@ class TestGatewayPidState:
 
 
 class TestGatewayRuntimeStatus:
+    def test_concurrent_writes_serialize_read_merge_write(self, tmp_path, monkeypatch):
+        import threading
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        original_read = status._read_json_file
+        state_lock = threading.Lock()
+        start = threading.Barrier(3)
+        state = {"active": 0, "max_active": 0}
+        errors = []
+
+        def _slow_read(path):
+            with state_lock:
+                state["active"] += 1
+                state["max_active"] = max(state["max_active"], state["active"])
+            try:
+                time.sleep(0.05)
+                return original_read(path)
+            finally:
+                with state_lock:
+                    state["active"] -= 1
+
+        def _write(**kwargs):
+            start.wait()
+            try:
+                status.write_runtime_status(**kwargs)
+            except Exception as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        monkeypatch.setattr(status, "_read_json_file", _slow_read)
+        threads = [
+            threading.Thread(target=_write, kwargs={"gateway_state": "running"}),
+            threading.Thread(target=_write, kwargs={"active_agents": 2}),
+        ]
+        for thread in threads:
+            thread.start()
+        start.wait()
+        for thread in threads:
+            thread.join(timeout=2)
+
+        assert not errors
+        assert all(not thread.is_alive() for thread in threads)
+        assert state["max_active"] == 1
+        payload = status.read_runtime_status()
+        assert payload is not None
+        assert payload["gateway_state"] == "running"
+        assert payload["active_agents"] == 2
+
     def test_clear_profile_platforms_preserves_primary_entries(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "gateway_state.json").write_text(
