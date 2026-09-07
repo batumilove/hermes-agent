@@ -1297,3 +1297,19 @@ patches:
       - scripts/run_tests.sh tests/agent/test_auxiliary_client.py tests/agent/test_credential_pool_nous_refresh_stampede.py tests/hermes_cli/test_proxy.py tests/hermes_cli/test_auth_nous_provider.py tests/agent/test_credential_pool.py
       - scripts/run_tests.sh tests/run_agent/test_run_agent.py::TestRunConversation::test_nous_401_refreshes_after_remint_and_retries tests/run_agent/test_run_agent.py::TestNousCredentialRefresh
     retirement: Remove when upstream-equivalent failed-bearer propagation, peer-token adoption, lock-timeout handling, and exact auxiliary cache-key replacement are present in the recorded upstream baseline.
+
+  - id: live-state-db-access-guard
+    kind: core
+    rationale: >-
+      Prevent terminal commands from opening the active profile's live state.db
+      while the gateway owns it, and provide a bounded canonical read-only query
+      path for operator inspection without creating another model tool.
+    paths:
+      - hermes_cli/state_db_cmd.py
+      - tests/hermes_cli/test_state_db_cmd.py
+      - tests/tools/test_live_state_db_guard.py
+      - tests/tools/test_terminal_tool.py
+      - tools/live_state_db_guard.py
+    tests:
+      - scripts/run_tests.sh tests/tools/test_live_state_db_guard.py tests/tools/test_terminal_tool.py tests/hermes_cli/test_state_db_cmd.py
+    retirement: Remove when upstream provides equivalent non-approvable live-database ownership enforcement and a bounded canonical read-only inspection path.
