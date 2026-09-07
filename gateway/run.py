@@ -7596,7 +7596,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as exc:
                 logger.debug("SessionDB close error during handle sweep: %s", exc)
 
-        self._session_db_handle_cache.close_all(_close)
+        cache = getattr(self, "_session_db_handle_cache", None)
+        if cache is None:
+            # Compatibility for lightweight test runners built with
+            # object.__new__ rather than GatewayRunner.__init__ — mirrors
+            # _open_session_db_for_active_scope. Nothing to sweep if the
+            # per-path handle map never existed either.
+            handles = getattr(self, "_session_db_handles", None)
+            lock = getattr(self, "_session_db_handles_lock", None)
+            if handles is None or lock is None:
+                return
+            from gateway.session_db_recovery import RecoverableHandleCache
+
+            cache = RecoverableHandleCache(handles=handles, lock=lock)
+        cache.close_all(_close)
 
     def _wire_teams_pipeline_runtime(self) -> None:
         """Bind the Teams meeting pipeline runtime to Graph webhook ingress.

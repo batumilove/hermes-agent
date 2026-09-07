@@ -70,19 +70,34 @@ async def test_offloads_off_calling_thread():
 
 
 @pytest.mark.asyncio
-async def test_offload_goes_through_to_thread(monkeypatch):
-    """The offload must route through asyncio.to_thread (where the facade lives)."""
+async def test_offload_goes_through_detached_worker(monkeypatch):
+    """The offload must route through the detached daemon-worker offload.
+
+    The facade no longer uses ``asyncio.to_thread`` (lifecycle control I/O
+    must be abandonable), so spy the detached offload it now imports; the
+    ``asyncio.to_thread`` path is spied too in case the mechanism changes.
+    """
+    import agent.async_utils as async_utils
+
     db = _SpyDB()
     facade = AsyncSessionDB(db)
 
     seen = []
-    real = asyncio.to_thread
+    real_detached = async_utils.run_sync_in_detached_daemon_thread
+    real_to_thread = asyncio.to_thread
 
-    async def _spy(func, *args, **kwargs):
+    async def _spy_detached(func, *args, **kwargs):
         seen.append(getattr(func, "__name__", repr(func)))
-        return await real(func, *args, **kwargs)
+        return await real_detached(func, *args, **kwargs)
 
-    monkeypatch.setattr(hermes_state.asyncio, "to_thread", _spy)
+    async def _spy_to_thread(func, *args, **kwargs):
+        seen.append(getattr(func, "__name__", repr(func)))
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(
+        async_utils, "run_sync_in_detached_daemon_thread", _spy_detached
+    )
+    monkeypatch.setattr(asyncio, "to_thread", _spy_to_thread)
     await facade.returns_str()
     assert "returns_str" in seen
 

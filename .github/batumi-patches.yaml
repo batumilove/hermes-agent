@@ -1108,9 +1108,11 @@ patches:
       - tests/gateway/test_64674_multiplex_primary_token_scope.py
       - tests/gateway/test_adapter_connect_classification.py
       - tests/gateway/test_async_session_store.py
+      - tests/gateway/test_async_session_db.py
       - tests/gateway/test_clarify_thread_followup_not_swallowed.py
       - tests/gateway/test_external_drain_control.py
       - tests/gateway/test_gateway_command_dispatch_minimal.py
+      - tests/gateway/test_handoff_watcher_async_db.py
       - tests/gateway/test_multiplex_adapter_registry.py
       - tests/gateway/test_api_server.py
       - tests/gateway/test_platform_reconnect.py
