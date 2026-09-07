@@ -26,6 +26,7 @@ from gateway.run import (
     GatewayRunner,
     _build_live_control_status,
     _publish_authoritative_startup_status,
+    _publish_authoritative_startup_status_async,
 )
 from gateway.status import read_runtime_status
 from gateway.config import Platform
@@ -942,6 +943,71 @@ class TestDrainWatcher:
             release.set()
             timer.cancel()
             await asyncio.wait_for(task, timeout=1.0)
+
+    @pytest.mark.asyncio
+    async def test_watcher_cancellation_does_not_wait_for_stuck_status_write(
+        self, home, monkeypatch
+    ):
+        import threading
+        import time
+
+        runner, _ = _drain_runner()
+        runner._drain_control_watcher = GatewayRunner._drain_control_watcher.__get__(
+            runner, GatewayRunner
+        )
+        entered = threading.Event()
+        release = threading.Event()
+
+        monkeypatch.setattr(dc, "drain_requested", lambda: True)
+
+        def stuck_status_write(*args, **kwargs):
+            entered.set()
+            release.wait(timeout=1.0)
+
+        runner._update_runtime_status.side_effect = stuck_status_write
+        task = asyncio.create_task(runner._drain_control_watcher(interval=0.01))
+        try:
+            assert await asyncio.to_thread(entered.wait, 1.0)
+            started = time.monotonic()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=0.15)
+            assert time.monotonic() - started < 0.15
+        finally:
+            release.set()
+            runner._running = False
+
+
+@pytest.mark.asyncio
+async def test_startup_status_probe_is_cancellable_without_waiting_for_filesystem(
+    home, monkeypatch
+):
+    import threading
+    import time
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def stuck_probe():
+        entered.set()
+        release.wait(timeout=1.0)
+        return False
+
+    monkeypatch.setattr(dc, "drain_requested", stuck_probe)
+    task = asyncio.create_task(
+        _publish_authoritative_startup_status_async(
+            _StartupStatusRunner(), default_state="starting"
+        )
+    )
+    try:
+        assert await asyncio.to_thread(entered.wait, 1.0)
+        started = time.monotonic()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=0.15)
+        assert time.monotonic() - started < 0.15
+    finally:
+        release.set()
 
 
 # ---------------------------------------------------------------------------

@@ -6835,6 +6835,64 @@ def _publish_authoritative_startup_status(runner, *, default_state: str) -> str:
     return state
 
 
+async def _run_in_detached_daemon_thread(func, /, *args, **kwargs):
+    """Run blocking control-plane I/O without owning loop shutdown.
+
+    ``asyncio.to_thread`` uses the loop's default executor. A filesystem call
+    stuck there can keep ``shutdown_default_executor`` waiting after the
+    awaiting task is cancelled. Drain/status I/O must not own gateway liveness
+    or shutdown, so use a one-shot daemon thread and bridge its result back to
+    the loop. Late completion after cancellation is discarded.
+    """
+    import contextvars
+    import functools
+    import threading
+
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    context = contextvars.copy_context()
+    bound = functools.partial(func, *args, **kwargs)
+
+    def deliver_result(value):
+        if not future.done():
+            future.set_result(value)
+
+    def deliver_error(exc):
+        if not future.done():
+            future.set_exception(exc)
+
+    def worker():
+        try:
+            outcome = context.run(bound)
+        except BaseException as exc:
+            callback, value = deliver_error, exc
+        else:
+            callback, value = deliver_result, outcome
+        try:
+            loop.call_soon_threadsafe(callback, value)
+        except RuntimeError:
+            # The loop already closed after cancellation; there is no waiter.
+            pass
+
+    threading.Thread(
+        target=worker,
+        name="hermes-drain-control-io",
+        daemon=True,
+    ).start()
+    return await future
+
+
+async def _publish_authoritative_startup_status_async(
+    runner, *, default_state: str
+) -> str:
+    """Publish startup state without blocking the gateway event loop."""
+    return await _run_in_detached_daemon_thread(
+        _publish_authoritative_startup_status,
+        runner,
+        default_state=default_state,
+    )
+
+
 def _build_live_control_status(runner) -> Dict[str, Any]:
     """Return a control-socket status with a live, attributed work census."""
     from gateway.control_socket import build_status_payload
@@ -9531,14 +9589,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # and marker reads. Keep those potentially slow syscalls off
                 # the event loop so storage latency cannot trip its liveness
                 # watchdog.
-                if await asyncio.to_thread(drain_requested):
-                    self._enter_external_drain()
+                if await _run_in_detached_daemon_thread(drain_requested):
+                    await _run_in_detached_daemon_thread(
+                        self._enter_external_drain
+                    )
                     # API and cron work live outside messaging's
                     # _running_agents map. Refresh the aggregate while an
                     # external caller polls this reversible drain state.
-                    self._persist_active_agents()
+                    await _run_in_detached_daemon_thread(
+                        self._persist_active_agents
+                    )
                 else:
-                    self._exit_external_drain()
+                    await _run_in_detached_daemon_thread(
+                        self._exit_external_drain
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -13465,9 +13529,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
         try:
-            _publish_authoritative_startup_status(self, default_state="starting")
+            await _publish_authoritative_startup_status_async(
+                self, default_state="starting"
+            )
             from gateway.status import write_runtime_status
-            write_runtime_status(
+            await _run_in_detached_daemon_thread(
+                write_runtime_status,
                 gateway_state="starting",
                 exit_reason=None,
                 clear_profile_platforms=True,
@@ -14112,7 +14179,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._running = True
         self._install_plugin_message_injector()
-        _publish_authoritative_startup_status(self, default_state="running")
+        await _publish_authoritative_startup_status_async(
+            self, default_state="running"
+        )
 
         # Loop-liveness heartbeat backstop: normally already started at the
         # top of start() via _start_loop_heartbeat_supervised() (pre-adapter);
@@ -32647,7 +32716,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # slow MCP/plugin/platform initialization. If a current-epoch external
     # drain survived the planned process restart, acknowledge it here rather
     # than waiting for the late background drain watcher.
-    _publish_authoritative_startup_status(runner, default_state="starting")
+    await _publish_authoritative_startup_status_async(
+        runner, default_state="starting"
+    )
     # Control socket (#92091 step 1) — the gateway-owned identify/status
     # surface. Started immediately after the PID-file claim: winning that
     # O_EXCL race is the moment this process becomes the authoritative

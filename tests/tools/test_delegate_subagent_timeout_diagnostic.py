@@ -304,6 +304,99 @@ class TestRunSingleChildTimeoutDump:
         assert child.close_count == 1
         assert child.close_thread is child.worker_thread
 
+    def test_timeout_defers_all_worker_owned_cleanup_until_worker_unwinds(
+        self, hermes_home, monkeypatch, tmp_path
+    ):
+        """A live abandoned worker retains its lease, worktree, and registry."""
+        from tools import delegate_tool, subagent_worktree
+
+        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 0.05)
+        monkeypatch.setattr(delegate_tool, "_get_worktree_isolation", lambda: True)
+        monkeypatch.setattr(subagent_worktree, "local_backend_active", lambda: True)
+        worktree = tmp_path / "child-worktree"
+        worktree.mkdir()
+        worktree_info = {
+            "path": str(worktree),
+            "branch": "agent/slow-child",
+            "repo_root": str(tmp_path),
+            "base_commit": "a" * 40,
+        }
+        monkeypatch.setattr(
+            subagent_worktree,
+            "create_subagent_worktree",
+            lambda *_a, **_kw: worktree_info,
+        )
+        finalized = threading.Event()
+
+        def finalize(info):
+            assert info == worktree_info
+            finalized.set()
+            return {"path": str(worktree), "pruned": False}
+
+        monkeypatch.setattr(subagent_worktree, "finalize_subagent_worktree", finalize)
+
+        class _SlowChild(_StubChild):
+            def __init__(self):
+                super().__init__(api_call_count=1, hang_seconds=0.0)
+                self.started = threading.Event()
+                self.release = threading.Event()
+                self.closed = threading.Event()
+                self._credential_pool = MagicMock()
+                self._credential_pool.acquire_lease.return_value = "cred-a"
+                self._credential_pool.current.return_value = MagicMock(id="cred-a")
+                self._swap_credential = MagicMock()
+
+            def run_conversation(self, user_message, task_id=None, stream_callback=None):
+                self.started.set()
+                self.release.wait(5.0)
+                return {"final_response": "late", "completed": True, "api_calls": 1}
+
+            def interrupt(self):
+                return None
+
+            def close(self):
+                self.closed.set()
+
+        child = _SlowChild()
+        parent = MagicMock()
+        parent._touch_activity = MagicMock()
+        parent._current_task_id = None
+        parent._active_children = [child]
+        parent._active_children_lock = threading.Lock()
+
+        result = delegate_tool._run_single_child(
+            task_index=0,
+            goal="test complete deferred cleanup",
+            child=child,
+            parent_agent=parent,
+        )
+
+        assert result["status"] == "timeout"
+        assert result["worker_cleanup_deferred"] is True
+        assert result["worktree"] == {
+            "path": str(worktree),
+            "branch": "agent/slow-child",
+            "pruned": False,
+            "cleanup_deferred": True,
+            "note": "Worker is still unwinding; inspect/finalize is deferred.",
+        }
+        assert child.started.is_set()
+        assert not finalized.is_set()
+        child._credential_pool.release_lease.assert_not_called()
+        assert child in parent._active_children
+        assert child._subagent_id in delegate_tool._active_subagents
+
+        child.release.set()
+        assert child.closed.wait(2.0)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not finalized.is_set():
+            time.sleep(0.01)
+        assert finalized.is_set()
+        assert result["worktree"] == {"path": str(worktree), "pruned": False}
+        child._credential_pool.release_lease.assert_called_once_with("cred-a")
+        assert child not in parent._active_children
+        assert child._subagent_id not in delegate_tool._active_subagents
+
     @pytest.mark.parametrize("submit_outcome", ["raise", "cancel"])
     def test_submit_failure_or_cancellation_closes_child_once(
         self, hermes_home, monkeypatch, submit_outcome
