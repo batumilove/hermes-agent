@@ -12,6 +12,7 @@ from unittest.mock import patch
 from agent.async_utils import (
     run_sync_in_detached_daemon_thread,
     safe_schedule_threadsafe,
+    submit_sync_to_detached_serial_daemon,
 )
 
 
@@ -123,5 +124,30 @@ class TestRunSyncInDetachedDaemonThread:
         main_ident, worker_ident, daemon = asyncio.run(_exercise())
         assert worker_ident != main_ident
         assert daemon is True
+
+    def test_serial_daemon_preserves_submission_order(self):
+        import threading
+
+        first_started = threading.Event()
+        release_first = threading.Event()
+        finished = threading.Event()
+        observed = []
+
+        def _first():
+            first_started.set()
+            release_first.wait(timeout=2)
+            observed.append(("first", threading.current_thread().daemon))
+
+        def _second():
+            observed.append(("second", threading.current_thread().daemon))
+            finished.set()
+
+        submit_sync_to_detached_serial_daemon(_first)
+        assert first_started.wait(timeout=1)
+        submit_sync_to_detached_serial_daemon(_second)
+        assert not finished.wait(timeout=0.05)
+        release_first.set()
+        assert finished.wait(timeout=1)
+        assert observed == [("first", True), ("second", True)]
 
 

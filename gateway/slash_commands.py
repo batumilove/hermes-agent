@@ -846,6 +846,7 @@ class GatewaySlashCommandsMixin:
                     _profile_runtime_scope,
                     _resolve_gateway_model_context,
                 )
+                from agent.async_utils import run_sync_in_detached_daemon_thread
 
                 def _resolve_nonresident_context():
                     if getattr(getattr(self, "config", None), "multiplex_profiles", False):
@@ -854,7 +855,9 @@ class GatewaySlashCommandsMixin:
                             return _resolve_gateway_model_context(model_name or None)
                     return _resolve_gateway_model_context(model_name or None)
 
-                resolved = await asyncio.to_thread(_resolve_nonresident_context)
+                resolved = await run_sync_in_detached_daemon_thread(
+                    _resolve_nonresident_context
+                )
                 model_name = model_name or resolved.model
                 context_length = _int_value(resolved.context_length)
             except Exception:
@@ -863,9 +866,12 @@ class GatewaySlashCommandsMixin:
         if not context_length and model_name:
             try:
                 from agent.model_metadata import get_model_context_length
+                from agent.async_utils import run_sync_in_detached_daemon_thread
 
                 context_length = _int_value(
-                    await asyncio.to_thread(get_model_context_length, model_name)
+                    await run_sync_in_detached_daemon_thread(
+                        get_model_context_length, model_name
+                    )
                 )
             except Exception:
                 context_length = 0

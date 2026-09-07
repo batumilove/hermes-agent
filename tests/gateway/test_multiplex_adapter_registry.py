@@ -1,6 +1,7 @@
 """Phase 3: secondary-profile adapter registry + same-token conflict detection."""
 import logging
 import asyncio
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -127,6 +128,42 @@ class TestProfileRuntimeStatus:
         assert writes == [
             {"platform": "reviewer:discord", "platform_state": "fatal"}
         ]
+
+    @pytest.mark.asyncio
+    async def test_base_adapter_status_write_does_not_block_event_loop(self, monkeypatch):
+        from gateway.platforms.base import BasePlatformAdapter
+
+        class _ConcreteAdapter(BasePlatformAdapter):
+            async def connect(self, *, is_reconnect=False):
+                return True
+
+            async def disconnect(self):
+                return None
+
+            async def send(self, *_args, **_kwargs):  # type: ignore[override]
+                return None
+
+            async def get_chat_info(self, *_args, **_kwargs):  # type: ignore[override]
+                return None
+
+        adapter = _ConcreteAdapter.__new__(_ConcreteAdapter)
+        adapter.platform = Platform.DISCORD
+        started = threading.Event()
+        release = threading.Event()
+
+        def _blocked_write(**_kwargs):
+            started.set()
+            release.wait(timeout=2)
+
+        monkeypatch.setattr("gateway.status.write_runtime_status", _blocked_write)
+        adapter._write_runtime_status_safe("connected", platform_state="connected")
+        for _ in range(100):
+            if started.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert started.is_set()
+        assert not release.is_set()
+        release.set()
 
 
 class _SecondaryRecoveryAdapter:

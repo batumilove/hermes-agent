@@ -2583,15 +2583,6 @@ def _run_single_child(
 
     child_pool = getattr(child, "_credential_pool", None)
     leased_cred_id = None
-    if child_pool is not None:
-        leased_cred_id = child_pool.acquire_lease()
-        if leased_cred_id is not None:
-            try:
-                leased_entry = child_pool.current()
-                if leased_entry is not None and hasattr(child, "_swap_credential"):
-                    child._swap_credential(leased_entry)
-            except Exception as exc:
-                logger.debug("Failed to bind child to leased credential: %s", exc)
 
     # Heartbeat: periodically propagate child activity to the parent so the
     # gateway inactivity timeout doesn't fire while the subagent is working.
@@ -2887,6 +2878,19 @@ def _run_single_child(
                 "api_calls": 0,
                 "duration_seconds": round(time.monotonic() - child_start, 2),
             }
+        # Acquire credentials only after lifecycle ownership is established and
+        # inside the guarded try/finally. Any pool failure now still requests
+        # child close and releases all worker-owned state.
+        if child_pool is not None:
+            leased_cred_id = child_pool.acquire_lease()
+            if leased_cred_id is not None:
+                try:
+                    leased_entry = child_pool.current()
+                    swap_credential = getattr(child, "_swap_credential", None)
+                    if leased_entry is not None and callable(swap_credential):
+                        swap_credential(leased_entry)
+                except Exception as exc:
+                    logger.debug("Failed to bind child to leased credential: %s", exc)
         _heartbeat_thread.start()
         if child_progress_cb:
             try:

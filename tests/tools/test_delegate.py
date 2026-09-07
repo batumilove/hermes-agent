@@ -1316,6 +1316,25 @@ class TestChildCredentialLeasing(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         child._credential_pool.release_lease.assert_called_once_with("cred-a")
 
+    def test_lease_acquisition_failure_still_closes_child(self):
+        from tools.delegate_tool import _run_single_child
+
+        child = MagicMock()
+        child._credential_pool = MagicMock()
+        child._credential_pool.acquire_lease.side_effect = RuntimeError("lease failed")
+
+        result = _run_single_child(
+            task_index=2,
+            goal="Trigger lease failure",
+            child=child,
+            parent_agent=_make_mock_parent(),
+        )
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("lease failed", result["error"])
+        child.close.assert_called_once()
+        child.run_conversation.assert_not_called()
+
 
 class TestDelegateHeartbeat(unittest.TestCase):
     """Heartbeat propagates child activity to parent during delegation.

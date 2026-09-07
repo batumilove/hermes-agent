@@ -6843,11 +6843,32 @@ async def _publish_authoritative_startup_status_async(
     runner, *, default_state: str
 ) -> str:
     """Publish startup state without blocking the gateway event loop."""
-    return await run_sync_in_detached_daemon_thread(
-        _publish_authoritative_startup_status,
-        runner,
-        default_state=default_state,
+    from gateway.drain_control import drain_requested
+    from gateway.status import write_runtime_status
+
+    drain_active = await run_sync_in_detached_daemon_thread(drain_requested)
+    # Gateway accept-state is event-loop-owned; mutate it only after the
+    # detached filesystem probe has returned.
+    runner._external_drain_active = drain_active
+    startup_should_abort = getattr(runner, "_startup_should_abort", None)
+    shutdown_active = (
+        bool(startup_should_abort()) if callable(startup_should_abort) else False
     )
+    state = (
+        "stopping"
+        if shutdown_active
+        else ("draining" if drain_active else default_state)
+    )
+    active_work_count = getattr(runner, "_active_work_count", None)
+    active_agents = active_work_count() if callable(active_work_count) else 0
+    await run_sync_in_detached_daemon_thread(
+        write_runtime_status,
+        gateway_state=state,
+        exit_reason=None,
+        restart_requested=bool(getattr(runner, "_restart_requested", False)),
+        active_agents=active_agents,
+    )
+    return state
 
 
 def _build_live_control_status(runner) -> Dict[str, Any]:
@@ -13312,7 +13333,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         as clean and discard genuinely interrupted turns.
         """
         discarded = await self.async_session_store.discard_active_turn_markers()
-        marker_path.unlink()
+        await run_sync_in_detached_daemon_thread(marker_path.unlink)
         return discarded
 
     async def _recover_unclean_sessions(self) -> tuple[int, int]:
@@ -16592,13 +16613,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             if _sweep is not None:
                 try:
-                    _sweep()
+                    _remaining = GatewayRunner._shutdown_remaining(
+                        _teardown_deadline
+                    )
+                    if _remaining <= 0 or not await GatewayRunner._run_shutdown_sync_daemon(
+                        self,
+                        _sweep,
+                        timeout=_remaining,
+                        context="SessionStore handle sweep",
+                    ):
+                        _cleanup_budget_exhausted = True
                 except Exception as _e:
                     logger.debug("SessionDB handle sweep error: %s", _e)
             # Same sweep for the runner's own per-profile session_search
             # handles (slash commands resolve them under profile scopes).
             try:
-                GatewayRunner.close_all_session_db_handles(self)
+                _remaining = GatewayRunner._shutdown_remaining(
+                    _teardown_deadline
+                )
+                if _remaining <= 0 or not await GatewayRunner._run_shutdown_sync_daemon(
+                    self,
+                    GatewayRunner.close_all_session_db_handles,
+                    self,
+                    timeout=_remaining,
+                    context="runner SessionDB handle sweep",
+                ):
+                    _cleanup_budget_exhausted = True
             except Exception as _e:
                 logger.debug("Runner SessionDB handle sweep error: %s", _e)
             GatewayRunner._shutdown_executor(self)
@@ -16628,8 +16668,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as _e:
                 logger.debug("residual-child forensics skipped: %s", _e)
 
-            remove_pid_file()
-            release_gateway_runtime_lock()
+            def _release_runtime_identity() -> None:
+                remove_pid_file()
+                release_gateway_runtime_lock()
+
+            _remaining = GatewayRunner._shutdown_remaining(_shutdown_deadline)
+            if _remaining <= 0 or not await GatewayRunner._run_shutdown_sync_daemon(
+                self,
+                _release_runtime_identity,
+                timeout=_remaining,
+                context="runtime identity release",
+            ):
+                _cleanup_budget_exhausted = True
 
             # Write a clean-shutdown marker so the next startup knows this
             # wasn't a crash.  suspend_recently_active() only needs to run
@@ -16655,10 +16705,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "clean_exit",
                     deadline=_shutdown_deadline,
                 )
-                try:
-                    (_hermes_home / ".clean_shutdown").touch()
-                except Exception:
-                    pass
+                _clean_marker = _hermes_home / ".clean_shutdown"
+
+                def _write_clean_marker_before_deadline() -> bool:
+                    if time.monotonic() >= _shutdown_deadline:
+                        return False
+                    try:
+                        _clean_marker.touch()
+                        if time.monotonic() >= _shutdown_deadline:
+                            _clean_marker.unlink(missing_ok=True)
+                            return False
+                        return True
+                    except Exception:
+                        return False
+
+                _remaining = GatewayRunner._shutdown_remaining(_shutdown_deadline)
+                if _remaining > 0:
+                    await GatewayRunner._run_shutdown_sync_daemon(
+                        self,
+                        _write_clean_marker_before_deadline,
+                        timeout=_remaining,
+                        context="clean-shutdown marker",
+                    )
             else:
                 await _record_shutdown_phase(
                     "cleanup_incomplete",
@@ -16686,15 +16754,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if self._restart_requested and self._restart_command_source is None:
                 try:
-                    atomic_json_write(
-                        _planned_restart_notification_path(),
-                        {
-                            "requested_at": time.time(),
-                            "via_service": bool(self._restart_via_service),
-                            "detached": bool(self._restart_detached),
-                        },
-                        indent=None,
+                    _restart_marker = _planned_restart_notification_path()
+
+                    def _write_restart_marker_before_deadline() -> bool:
+                        if time.monotonic() >= _shutdown_deadline:
+                            return False
+                        atomic_json_write(
+                            _restart_marker,
+                            {
+                                "requested_at": time.time(),
+                                "via_service": bool(self._restart_via_service),
+                                "detached": bool(self._restart_detached),
+                            },
+                            indent=0,
+                        )
+                        if time.monotonic() >= _shutdown_deadline:
+                            _restart_marker.unlink(missing_ok=True)
+                            return False
+                        return True
+
+                    _remaining = GatewayRunner._shutdown_remaining(
+                        _shutdown_deadline
                     )
+                    if _remaining > 0:
+                        await GatewayRunner._run_shutdown_sync_daemon(
+                            self,
+                            _write_restart_marker_before_deadline,
+                            timeout=_remaining,
+                            context="planned-restart marker",
+                        )
                 except Exception as e:
                     logger.debug("Failed to write planned restart notification marker: %s", e)
 

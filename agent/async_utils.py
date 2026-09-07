@@ -26,6 +26,7 @@ import asyncio
 import contextvars
 import functools
 import logging
+import queue
 import threading
 from concurrent.futures import Future
 from typing import Any, Callable, Coroutine, Optional, ParamSpec, TypeVar
@@ -34,6 +35,51 @@ from typing import Any, Callable, Coroutine, Optional, ParamSpec, TypeVar
 _DEFAULT_LOGGER = logging.getLogger(__name__)
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
+_SERIAL_DAEMON_QUEUE: "queue.SimpleQueue[tuple[contextvars.Context, Callable[[], Any]]]" = queue.SimpleQueue()
+_SERIAL_DAEMON_LOCK = threading.Lock()
+_serial_daemon_thread: Optional[threading.Thread] = None
+
+
+def _serial_daemon_worker() -> None:
+    while True:
+        context, bound = _SERIAL_DAEMON_QUEUE.get()
+        try:
+            context.run(bound)
+        except BaseException:
+            _DEFAULT_LOGGER.exception("Detached serial daemon work failed")
+
+
+def submit_sync_to_detached_serial_daemon(
+    func: Callable[_P, Any], /, *args: _P.args, **kwargs: _P.kwargs
+) -> None:
+    """Queue sync work FIFO on one abandonable daemon worker."""
+    global _serial_daemon_thread
+    with _SERIAL_DAEMON_LOCK:
+        if _serial_daemon_thread is None or not _serial_daemon_thread.is_alive():
+            _serial_daemon_thread = threading.Thread(
+                target=_serial_daemon_worker,
+                name="hermes-detached-serial-sync",
+                daemon=True,
+            )
+            _serial_daemon_thread.start()
+    context = contextvars.copy_context()
+    bound = functools.partial(func, *args, **kwargs)
+    _SERIAL_DAEMON_QUEUE.put((context, bound))
+
+
+def start_sync_in_detached_daemon_thread(
+    func: Callable[_P, Any], /, *args: _P.args, **kwargs: _P.kwargs
+) -> threading.Thread:
+    """Start abandonable sync work and return its daemon thread."""
+    context = contextvars.copy_context()
+    bound = functools.partial(func, *args, **kwargs)
+    thread = threading.Thread(
+        target=lambda: context.run(bound),
+        name="hermes-detached-sync",
+        daemon=True,
+    )
+    thread.start()
+    return thread
 
 
 async def run_sync_in_detached_daemon_thread(

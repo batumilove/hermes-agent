@@ -3451,8 +3451,11 @@ class APIServerAdapter(BasePlatformAdapter):
             parse_active_agents,
             read_runtime_status,
         )
+        from agent.async_utils import run_sync_in_detached_daemon_thread
 
-        runtime = read_runtime_status() or {}
+        runtime = (
+            await run_sync_in_detached_daemon_thread(read_runtime_status)
+        ) or {}
         gw_state = runtime.get("gateway_state")
         gw_active = parse_active_agents(runtime.get("active_agents", 0))
         # This endpoint is served BY the gateway process, so it is by definition
