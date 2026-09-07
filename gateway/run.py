@@ -50,6 +50,7 @@ from typing import Awaitable, Callable, Dict, Optional, Any, List, Tuple, Union,
 from agent.async_utils import (
     consume_detached_task_result,
     run_sync_in_detached_daemon_thread,
+    run_sync_in_detached_serial_daemon_thread,
     safe_schedule_threadsafe,
 )
 from agent.conversation_compression import (
@@ -6846,9 +6847,17 @@ async def _publish_authoritative_startup_status_async(
     from gateway.drain_control import drain_requested
     from gateway.status import write_runtime_status
 
-    drain_active = await run_sync_in_detached_daemon_thread(drain_requested)
+    try:
+        drain_active = await asyncio.wait_for(
+            run_sync_in_detached_daemon_thread(drain_requested),
+            timeout=2.0,
+        )
+    except asyncio.TimeoutError:
+        # Fail closed for intake while allowing startup to make forward progress.
+        drain_active = True
+        logger.warning("Gateway startup drain probe timed out; preserving drain")
     # Gateway accept-state is event-loop-owned; mutate it only after the
-    # detached filesystem probe has returned.
+    # detached filesystem probe has returned or timed out.
     runner._external_drain_active = drain_active
     startup_should_abort = getattr(runner, "_startup_should_abort", None)
     shutdown_active = (
@@ -6861,13 +6870,19 @@ async def _publish_authoritative_startup_status_async(
     )
     active_work_count = getattr(runner, "_active_work_count", None)
     active_agents = active_work_count() if callable(active_work_count) else 0
-    await run_sync_in_detached_daemon_thread(
-        write_runtime_status,
-        gateway_state=state,
-        exit_reason=None,
-        restart_requested=bool(getattr(runner, "_restart_requested", False)),
-        active_agents=active_agents,
-    )
+    try:
+        await asyncio.wait_for(
+            run_sync_in_detached_serial_daemon_thread(
+                write_runtime_status,
+                gateway_state=state,
+                exit_reason=None,
+                restart_requested=bool(getattr(runner, "_restart_requested", False)),
+                active_agents=active_agents,
+            ),
+            timeout=2.0,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Gateway startup status write timed out; continuing startup")
     return state
 
 
@@ -9475,7 +9490,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         exit_reason: Optional[str] = None,
     ) -> None:
         """Persist lifecycle status without blocking the gateway event loop."""
-        await run_sync_in_detached_daemon_thread(
+        await run_sync_in_detached_serial_daemon_thread(
             self._update_runtime_status,
             gateway_state,
             exit_reason,
@@ -9505,7 +9520,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     async def _persist_active_agents_async(self) -> None:
         """Persist the work census without blocking the gateway event loop."""
-        await run_sync_in_detached_daemon_thread(self._persist_active_agents)
+        await run_sync_in_detached_serial_daemon_thread(self._persist_active_agents)
 
     # ------------------------------------------------------------------
     # External drain control (NAS-driven quiesce-without-restart, Phase 2).
@@ -16831,10 +16846,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self, "_update_runtime_status_async", None
             )
             if callable(update_status_async):
-                await cast(
-                    Callable[[str, Optional[str]], Awaitable[None]],
-                    update_status_async,
-                )(_terminal_state, self._exit_reason)
+                remaining = self._shutdown_remaining(_shutdown_deadline)
+                if remaining > 0:
+                    try:
+                        await asyncio.wait_for(
+                            cast(
+                                Callable[[str, Optional[str]], Awaitable[None]],
+                                update_status_async,
+                            )(_terminal_state, self._exit_reason),
+                            timeout=remaining,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "Gateway terminal status write exceeded shutdown deadline"
+                        )
             else:
                 # Lightweight shutdown contract doubles expose only the
                 # synchronous status shim; production runners always take

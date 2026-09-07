@@ -6,11 +6,13 @@ import asyncio
 import gc
 import warnings
 from concurrent.futures import Future
+from typing import Any, cast
 from unittest.mock import patch
 
 
 from agent.async_utils import (
     run_sync_in_detached_daemon_thread,
+    run_sync_in_detached_serial_daemon_thread,
     safe_schedule_threadsafe,
     submit_sync_to_detached_serial_daemon,
 )
@@ -149,5 +151,57 @@ class TestRunSyncInDetachedDaemonThread:
         release_first.set()
         assert finished.wait(timeout=1)
         assert observed == [("first", True), ("second", True)]
+
+    def test_awaitable_serial_daemon_preserves_submission_order(self):
+        async def _exercise():
+            import threading
+
+            first_started = threading.Event()
+            release_first = threading.Event()
+            observed = []
+
+            def _first():
+                first_started.set()
+                release_first.wait(timeout=2)
+                observed.append("first")
+                return 1
+
+            def _second():
+                observed.append("second")
+                return 2
+
+            first = asyncio.create_task(
+                run_sync_in_detached_serial_daemon_thread(_first)
+            )
+            while not first_started.is_set():
+                await asyncio.sleep(0)
+            second = asyncio.create_task(
+                run_sync_in_detached_serial_daemon_thread(_second)
+            )
+            await asyncio.sleep(0.05)
+            assert observed == []
+            release_first.set()
+            assert await asyncio.gather(first, second) == [1, 2]
+            assert observed == ["first", "second"]
+
+        asyncio.run(_exercise())
+
+    def test_async_session_db_avoids_default_executor_ownership(self):
+        async def _exercise():
+            import threading
+
+            class _DB:
+                def probe(self):
+                    return threading.current_thread().daemon
+
+            from hermes_state import AsyncSessionDB
+
+            with patch(
+                "asyncio.to_thread",
+                side_effect=AssertionError("default executor must not be used"),
+            ):
+                return await AsyncSessionDB(cast(Any, _DB())).probe()
+
+        assert asyncio.run(_exercise()) is True
 
 

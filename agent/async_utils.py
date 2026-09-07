@@ -35,24 +35,28 @@ from typing import Any, Callable, Coroutine, Optional, ParamSpec, TypeVar
 _DEFAULT_LOGGER = logging.getLogger(__name__)
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
-_SERIAL_DAEMON_QUEUE: "queue.SimpleQueue[tuple[contextvars.Context, Callable[[], Any]]]" = queue.SimpleQueue()
+_SerialDelivery = Callable[[bool, Any], None]
+_SERIAL_DAEMON_QUEUE: "queue.SimpleQueue[tuple[contextvars.Context, Callable[[], Any], Optional[_SerialDelivery]]]" = queue.SimpleQueue()
 _SERIAL_DAEMON_LOCK = threading.Lock()
 _serial_daemon_thread: Optional[threading.Thread] = None
 
 
 def _serial_daemon_worker() -> None:
     while True:
-        context, bound = _SERIAL_DAEMON_QUEUE.get()
+        context, bound, deliver = _SERIAL_DAEMON_QUEUE.get()
         try:
-            context.run(bound)
-        except BaseException:
-            _DEFAULT_LOGGER.exception("Detached serial daemon work failed")
+            outcome = context.run(bound)
+        except BaseException as exc:
+            if deliver is None:
+                _DEFAULT_LOGGER.exception("Detached serial daemon work failed")
+            else:
+                deliver(False, exc)
+        else:
+            if deliver is not None:
+                deliver(True, outcome)
 
 
-def submit_sync_to_detached_serial_daemon(
-    func: Callable[_P, Any], /, *args: _P.args, **kwargs: _P.kwargs
-) -> None:
-    """Queue sync work FIFO on one abandonable daemon worker."""
+def _ensure_serial_daemon_worker() -> None:
     global _serial_daemon_thread
     with _SERIAL_DAEMON_LOCK:
         if _serial_daemon_thread is None or not _serial_daemon_thread.is_alive():
@@ -62,9 +66,50 @@ def submit_sync_to_detached_serial_daemon(
                 daemon=True,
             )
             _serial_daemon_thread.start()
+
+
+def submit_sync_to_detached_serial_daemon(
+    func: Callable[_P, Any], /, *args: _P.args, **kwargs: _P.kwargs
+) -> None:
+    """Queue sync work FIFO on one abandonable daemon worker."""
+    _ensure_serial_daemon_worker()
     context = contextvars.copy_context()
     bound = functools.partial(func, *args, **kwargs)
-    _SERIAL_DAEMON_QUEUE.put((context, bound))
+    _SERIAL_DAEMON_QUEUE.put((context, bound, None))
+
+
+async def run_sync_in_detached_serial_daemon_thread(
+    func: Callable[_P, _T], /, *args: _P.args, **kwargs: _P.kwargs
+) -> _T:
+    """Run sync work FIFO on the abandonable serial daemon and await it.
+
+    Unlike one-thread-per-call offloading, FIFO submission preserves lifecycle
+    transition order. Cancellation only abandons the waiter; the daemon remains
+    process-exit-safe and completes queued work in order when possible.
+    """
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[_T] = loop.create_future()
+
+    def _deliver_result(value: _T) -> None:
+        if not future.done():
+            future.set_result(value)
+
+    def _deliver_error(exc: BaseException) -> None:
+        if not future.done():
+            future.set_exception(exc)
+
+    def _deliver(ok: bool, value: Any) -> None:
+        callback: Callable[[Any], None] = _deliver_result if ok else _deliver_error
+        try:
+            loop.call_soon_threadsafe(callback, value)
+        except RuntimeError:
+            pass
+
+    _ensure_serial_daemon_worker()
+    context = contextvars.copy_context()
+    bound = functools.partial(func, *args, **kwargs)
+    _SERIAL_DAEMON_QUEUE.put((context, bound, _deliver))
+    return await future
 
 
 def start_sync_in_detached_daemon_thread(

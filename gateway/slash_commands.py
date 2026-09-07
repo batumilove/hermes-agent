@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Optional, Union
 
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
+from agent.async_utils import run_sync_in_detached_daemon_thread
 from agent.i18n import t
 from agent.turn_context import extract_api_content_sidecar
 from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
@@ -692,7 +693,9 @@ class GatewaySlashCommandsMixin:
         user_config: dict[str, Any] = {}
         if not model_name or not provider_name or not context_total:
             try:
-                user_config = _load_gateway_config()
+                user_config = await run_sync_in_detached_daemon_thread(
+                    _load_gateway_config
+                )
             except Exception:
                 user_config = {}
         if not model_name:
