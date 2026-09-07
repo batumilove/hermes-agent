@@ -389,6 +389,20 @@ def _check_all_guards(command: str, env_type: str,
                                   has_host_access=has_host_access)
 
 
+def _check_live_state_db_guard(
+    *, command: str, env_type: str, cwd: str, has_host_access: bool = False
+):
+    """Lazy bridge to the unconditional live SQLite ownership guard."""
+    from tools.live_state_db_guard import check_live_state_db_command
+
+    return check_live_state_db_command(
+        command,
+        env_type=env_type,
+        cwd=cwd,
+        has_host_access=has_host_access,
+    )
+
+
 # Allowlist: characters that can legitimately appear in directory paths.
 # Covers Unicode letters/digits, path separators, Windows drive/UNC separators,
 # tilde, dot, hyphen, underscore, space, plus, at, equals, and comma.  Shell
@@ -3077,6 +3091,35 @@ def terminal_tool(
                     "error": workdir_error,
                     "status": "blocked"
                 }, ensure_ascii=False)
+
+        # The gateway owns HERMES_HOME/state.db while it is running.  This is
+        # an unconditional ownership boundary, not an approvable danger check:
+        # force/yolo must not launch a second sqlite3 or system-Python runtime
+        # against the hot WAL database.  The canonical Hermes-runtime helper is
+        # deliberately outside those executable classes.
+        state_guard_cwd = _resolve_command_cwd(
+            workdir=workdir,
+            default_cwd=cwd,
+            session_key=session_key,
+            env_type=env_type,
+        )
+        state_db_blocked, state_db_reason = _check_live_state_db_guard(
+            command=command,
+            env_type=env_type,
+            cwd=state_guard_cwd,
+            has_host_access=_docker_has_host_access(config),
+        )
+        if state_db_blocked:
+            logger.warning(
+                "Blocked ad-hoc access to live state.db (command: %s)",
+                _safe_command_preview(command),
+            )
+            return json.dumps({
+                "output": "",
+                "exit_code": 1,
+                "error": f"Blocked: {state_db_reason}.",
+                "status": "blocked",
+            }, ensure_ascii=False)
 
         # Always protect the local checkout backing this interpreter from
         # ad-hoc mutation. Authorized self-updates use the installed lifecycle
