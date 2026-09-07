@@ -29,6 +29,43 @@ def test_markdown_parity_heading_is_descriptive_not_a_fresh_claim():
 @pytest.mark.parametrize(
     "response",
     [
+        (
+            "| Scheduler state | **PASS** | Producer `4f24a9fee88b` remains enabled "
+            "and scheduled every 60 minutes; latest status `ok`, failure streak `0`. |"
+        ),
+        "Current scheduler state: the cron job is enabled and scheduled every hour.",
+    ],
+)
+def test_scheduler_status_row_is_descriptive_not_a_fresh_claim(response):
+    assert not _warns(response)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        "The scheduler remains enabled and scheduled the cron job.",
+        "The scheduler remains enabled and scheduled every cron job.",
+        "I made sure the scheduler remains enabled and scheduled every cron job.",
+        (
+            "The scheduler remains enabled and scheduled every 60 minutes, "
+            "and then scheduled the cron job."
+        ),
+        (
+            "The scheduler remains enabled and scheduled every 60 minutes, "
+            "then scheduled the cron job."
+        ),
+        "The release is ready and deployed to production.",
+        "The file is ready and uploaded to S3.",
+        "The GitHub issue is ready and created on GitHub.",
+    ],
+)
+def test_coordinated_side_effect_action_still_requires_evidence(response):
+    assert _warns(response)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
         "Earlier, the service was deployed to production.",
         "Current state: the service is deployed to production.",
         "Inspection shows the runtime was deployed before this turn.",
