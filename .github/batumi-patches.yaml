@@ -1085,6 +1085,30 @@ patches:
       - scripts/run_tests.sh tests/gateway/test_external_drain_control.py tests/gateway/test_startup_restart_race.py tests/gateway/test_routing_save_fast_path.py
     retirement: Remove when upstream publishes authoritative PID-bound startup status with equivalent drain-epoch, shutdown-precedence, and intake-suppression coverage.
 
+  - id: gateway-event-loop-status-io
+    kind: core
+    rationale: >-
+      Keep drain, startup, platform, and active-agent status persistence off the
+      gateway event loop, preserve inherited drain state during startup, and use
+      cancellation-safe daemon workers so a stalled filesystem cannot wedge loop
+      shutdown or platform lifecycle handling.
+    paths:
+      - gateway/run.py
+      - gateway/slash_commands.py
+      - tests/gateway/test_64674_multiplex_primary_token_scope.py
+      - tests/gateway/test_adapter_connect_classification.py
+      - tests/gateway/test_clarify_thread_followup_not_swallowed.py
+      - tests/gateway/test_external_drain_control.py
+      - tests/gateway/test_multiplex_adapter_registry.py
+      - tests/gateway/test_platform_reconnect.py
+      - tests/gateway/test_restart_resume_pending.py
+      - tests/gateway/test_scale_to_zero_watcher.py
+      - tests/gateway/test_startup_restart_race.py
+    tests:
+      - scripts/run_tests.sh tests/gateway/test_external_drain_control.py tests/gateway/test_restart_resume_pending.py tests/gateway/test_platform_reconnect.py tests/gateway/test_startup_restart_race.py tests/gateway/test_multiplex_adapter_registry.py tests/gateway/test_adapter_connect_classification.py tests/gateway/test_64674_multiplex_primary_token_scope.py tests/gateway/test_clarify_thread_followup_not_swallowed.py tests/gateway/test_scale_to_zero_watcher.py
+      - python -m py_compile gateway/run.py gateway/slash_commands.py
+    retirement: Remove when upstream moves equivalent status and active-agent persistence off the event loop with cancellation-safe shutdown and matching regression coverage.
+
   - id: gateway-shutdown-work-attribution
     kind: core
     rationale: >-
