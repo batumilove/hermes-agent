@@ -30,15 +30,15 @@ on:
     - cron: '0 9 * * 1'
   workflow_dispatch:
 
-permissions:
-  # Required to upload SARIF file to CodeQL. See: https://github.com/github/codeql-action/issues/2117
-  actions: read
-  contents: read
-  security-events: write
+permissions: {}
 
 jobs:
   scan:
     name: Scan lockfiles
+    permissions:
+      contents: read
+      # Required to upload SARIF to CodeQL.
+      security-events: write
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -50,8 +50,8 @@ jobs:
       - name: Scan lockfiles
         uses: google/osv-scanner-action/osv-scanner-action@8dc09193bb540e09b23da07ad7e30bd33bf87018 # v2.3.8
         with:
-          # Scan explicit lockfiles rather than recursing, so only dependency
-          # sources of truth are included and vendored/test trees are skipped.
+          # Scan the complete explicit set of tracked dependency lockfiles
+          # rather than relying on recursive discovery.
           scan-args: |-
             --output=results.json
             --format=json
@@ -90,15 +90,15 @@ jobs:
 
   emit-status:
     name: Emit review status
+    permissions:
+      actions: read
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: scan
-    if: always()
+    if: ${{ !cancelled() }}
     outputs:
       review_status: ${{ steps.emit.outputs.review_status }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
       - name: Download SARIF result
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -163,7 +163,7 @@ jobs:
           echo "review_status=${STATUS}" > review-status.json
 
       - name: Upload review status artifact
-        if: always() && steps.emit.outcome != 'skipped'
+        if: ${{ !cancelled() && steps.emit.outcome != 'skipped' }}
         continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
