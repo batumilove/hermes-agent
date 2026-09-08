@@ -86,8 +86,8 @@ def test_osv_reporter_blocks_on_vulnerabilities() -> None:
         line for line in _scan_arg_lines(reporter) if line.startswith("--fail-on-vuln")
     ]
     assert fail_args == ["--fail-on-vuln=true"]
-    assert reporter.get("continue-on-error") is not True
-    assert _workflow()["jobs"]["scan"].get("continue-on-error") is not True
+    assert "continue-on-error" not in reporter
+    assert "continue-on-error" not in _workflow()["jobs"]["scan"]
 
 
 def test_scan_is_bounded_normal_job_not_reusable_workflow() -> None:
@@ -131,6 +131,7 @@ def test_emit_status_does_not_checkout_repository_contents() -> None:
 
 def test_emit_status_and_its_artifact_do_not_run_after_cancellation() -> None:
     emit = _workflow()["jobs"]["emit-status"]
+    assert emit.get("needs") == "scan"
     assert emit.get("if") == "${{ !cancelled() }}"
     uploads = [
         step
