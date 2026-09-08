@@ -1912,6 +1912,26 @@ def _validate_job_mode_invariants(
         raise ValueError(NO_AGENT_WITHOUT_SCRIPT_ERROR)
 
 
+def _validate_schedule_repeat_invariant(
+    schedule: Dict[str, Any],
+    repeat: Optional[Union[int, Dict[str, Any]]],
+) -> None:
+    """Reject an impossible repeat budget on a one-shot schedule.
+
+    A ``once`` schedule has only one eligible occurrence. Storing a larger
+    repeat count is misleading: the scheduler completes the job after that
+    occurrence and never consumes the remaining budget.
+    """
+    if schedule.get("kind") != "once":
+        return
+    times = repeat.get("times") if isinstance(repeat, dict) else repeat
+    if times is not None and times > 1:
+        raise ValueError(
+            "one-shot schedules run exactly once; use an interval schedule "
+            "such as 'every 10m' for repeated jobs."
+        )
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -2013,6 +2033,7 @@ def create_job(
     # Auto-set repeat=1 for one-shot schedules if not specified
     if parsed_schedule["kind"] == "once" and repeat is None:
         repeat = 1
+    _validate_schedule_repeat_invariant(parsed_schedule, repeat)
 
     # Default delivery to origin if available, otherwise local
     if deliver is None:
@@ -2343,6 +2364,11 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                             f"{ONESHOT_GRACE_SECONDS}s in the past and cannot be scheduled."
                         )
                     updated["next_run_at"] = updated_next_run
+
+            if schedule_changed or "repeat" in updates:
+                _validate_schedule_repeat_invariant(
+                    updated["schedule"], updated.get("repeat")
+                )
 
             if inference_fields_changed:
                 provider_snapshot, model_snapshot = _compute_provider_model_snapshots(

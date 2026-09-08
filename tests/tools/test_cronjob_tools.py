@@ -246,6 +246,20 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
 
+    def test_create_rejects_one_shot_with_repeat_budget(self):
+        result = json.loads(
+            cronjob(
+                action="create",
+                prompt="Poll conversion status",
+                schedule="10m",
+                repeat=144,
+            )
+        )
+
+        assert result["success"] is False
+        assert "one-shot schedules run exactly once" in result["error"]
+        assert json.loads(cronjob(action="list"))["count"] == 0
+
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs
 
