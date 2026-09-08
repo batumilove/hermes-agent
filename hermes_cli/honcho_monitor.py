@@ -25,6 +25,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 # Use Teleport SSH by default. The Honcho host is enrolled and available via
 # the cron tbot config, which keeps unattended runs off the interactive LAN path.
@@ -106,14 +107,39 @@ class HonchoSnapshot:
     observer: dict[str, Any] = field(default_factory=dict)
 
 
+def sanitize_base_url(url: str | None) -> str:
+    """Remove URL credentials, query parameters, and fragments."""
+    if not url:
+        return ""
+    try:
+        parts = urlsplit(str(url))
+        host = parts.hostname
+        if not parts.scheme or not host:
+            return "[redacted-url]"
+        rendered_host = f"[{host}]" if ":" in host else host
+        if parts.port is not None:
+            rendered_host = f"{rendered_host}:{parts.port}"
+        return urlunsplit((parts.scheme, rendered_host, parts.path, "", ""))
+    except (TypeError, ValueError):
+        return "[redacted-url]"
+
+
 def short_host(url: str | None) -> str:
     if not url:
         return "?"
+    url = sanitize_base_url(url)
     for needle, short in HOST_MAP.items():
         if needle in url:
             return short
-    match = re.search(r"://([^/]+)", url)
-    return match.group(1) if match else url[:24]
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+        if not host:
+            return "?"
+        rendered_host = f"[{host}]" if ":" in host else host
+        return f"{rendered_host}:{parts.port}" if parts.port is not None else rendered_host
+    except (TypeError, ValueError):
+        return "?"
 
 
 def mask(value: str | None) -> str:
@@ -162,7 +188,14 @@ def parse_pipeline_env(raw: str) -> dict[str, dict[str, str]]:
 
     parsed: dict[str, dict[str, str]] = {}
     for stage, mapping in fields.items():
-        parsed[stage] = {out_key: env.get(in_key, "") for out_key, in_key in mapping.items()}
+        parsed[stage] = {
+            out_key: (
+                sanitize_base_url(env.get(in_key, ""))
+                if out_key == "base_url"
+                else env.get(in_key, "")
+            )
+            for out_key, in_key in mapping.items()
+        }
     return parsed
 
 
@@ -686,7 +719,7 @@ def format_report(snapshot: dict[str, Any] | HonchoSnapshot, previous_state: dic
     lines.append(
         "  Embedding env: "
         f"model={embed.get('model', '?')} "
-        f"base_url={embed.get('base_url', '?')} "
+        f"base_url={sanitize_base_url(embed.get('base_url')) or '?'} "
         f"dims_mode={embed.get('dimensions_mode', '?')} "
         f"vector_dims={vector_dims_display}"
     )

@@ -29,6 +29,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from hermes_constants import get_hermes_home, _get_platform_default_hermes_home
 from typing import Any, Callable, NamedTuple, Optional
+from agent.async_utils import (
+    current_serial_daemon_sequence,
+    latest_serial_daemon_sequence,
+)
 from utils import atomic_json_write
 
 if sys.platform == "win32":
@@ -51,6 +55,7 @@ _GATEWAY_RUNNING_PID_CACHE_TTL_SECONDS = 1.0
 _gateway_running_pid_cache_lock = threading.Lock()
 _gateway_running_pid_cache: dict[tuple[str, bool, bool], tuple[float, tuple[Any, ...], Optional[int]]] = {}
 _runtime_status_write_lock = threading.RLock()
+_latest_serial_status_sequence = 0
 
 logger = logging.getLogger(__name__)
 
@@ -1068,8 +1073,33 @@ def _serialize_runtime_status_write(func):
 
     @functools.wraps(func)
     def _locked(*args, **kwargs):
+        global _latest_serial_status_sequence
+        serial_sequence = current_serial_daemon_sequence()
         with _runtime_status_write_lock:
-            return func(*args, **kwargs)
+            if (
+                serial_sequence is not None
+                and serial_sequence <= _latest_serial_status_sequence
+            ):
+                logger.warning(
+                    "Skipping superseded runtime-status write (sequence %s <= %s)",
+                    serial_sequence,
+                    _latest_serial_status_sequence,
+                )
+                return None
+            result = func(*args, **kwargs)
+            # A direct write supersedes serial jobs that were already submitted
+            # but had not reached this lock. This prevents a timed-out job from
+            # completing late and overwriting a newer lifecycle transition.
+            applied_sequence = (
+                serial_sequence
+                if serial_sequence is not None
+                else latest_serial_daemon_sequence()
+            )
+            _latest_serial_status_sequence = max(
+                _latest_serial_status_sequence,
+                applied_sequence,
+            )
+            return result
 
     return _locked
 

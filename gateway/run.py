@@ -12146,6 +12146,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return suspended
 
+    async def _suspend_stuck_loop_sessions_async(self) -> int:
+        """Run startup stuck-loop persistence off the gateway event loop."""
+        return await run_sync_in_detached_daemon_thread(
+            self._suspend_stuck_loop_sessions
+        )
+
     async def _clear_restart_failure_count(self, session_key: str) -> None:
         """Clear the restart-failure counter for a session that completed OK.
 
@@ -12970,7 +12976,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             _release_claims = release_recoverable_claims
 
-            if not await asyncio.to_thread(ledger_enabled):
+            if not await run_sync_in_detached_daemon_thread(ledger_enabled):
                 return []
             # Only claim rows we can actually send this boot: self.adapters
             # holds a platform only after its connect() succeeded, and each
@@ -12980,10 +12986,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             }
             # Shield the thread future so orderly task cancellation can first
             # recover its committed result and roll the claims back.  A plain
-            # ``await asyncio.to_thread`` loses that result if cancellation
-            # lands after SQLite commit but before the await resumes.
+            # A plain cancellable await loses that result if cancellation lands
+            # after SQLite commit but before the await resumes.
             _sweep_future = asyncio.ensure_future(
-                asyncio.to_thread(
+                run_sync_in_detached_daemon_thread(
                     sweep_recoverable, None, deliverable_platforms=_deliverable
                 )
             )
@@ -13023,7 +13029,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if claimed and _release_claims is not None:
                 try:
                     await asyncio.shield(
-                        asyncio.to_thread(_release_claims, claimed)
+                        run_sync_in_detached_daemon_thread(_release_claims, claimed)
                     )
                 except Exception:
                     logger.error(
@@ -13140,7 +13146,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 result = None
             try:
                 if result is not None and getattr(result, "success", False):
-                    await asyncio.to_thread(mark_delivered, row["obligation_id"])
+                    await run_sync_in_detached_daemon_thread(
+                        mark_delivered, row["obligation_id"]
+                    )
                     # The post-response worker may be sleeping after it
                     # correctly observed this receipt as failed.  Delivery is
                     # the transition that releases finalize_turn, so wake it
@@ -13156,7 +13164,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         row["obligation_id"], row["attempts"],
                     )
                 else:
-                    await asyncio.to_thread(
+                    await run_sync_in_detached_daemon_thread(
                         mark_failed,
                         row["obligation_id"],
                         str(getattr(result, "error", "") or "send failed"),
@@ -14002,7 +14010,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # history keeps causing the agent to hang).  Auto-suspend it so the
         # user gets a clean slate on the next message.
         try:
-            stuck = self._suspend_stuck_loop_sessions()
+            stuck = await self._suspend_stuck_loop_sessions_async()
             if stuck:
                 logger.warning("Auto-suspended %d stuck-loop session(s)", stuck)
         except Exception as e:

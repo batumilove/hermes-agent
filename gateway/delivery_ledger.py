@@ -22,7 +22,9 @@ explicit about ambiguity (the contract review of the earlier
 delivery-outbox attempt, #61790, closed it for silently resending
 ambiguous sends):
 
-- ``pending``     — the send never started: redeliver plainly, no dup risk.
+- ``pending``     — usually the send never started, but the attempting
+  checkpoint itself may have failed before a real send. Redeliver WITH the
+  marker because recovery cannot prove which side of that boundary occurred.
 - ``attempting``  — crashed mid-await: the platform MAY already have the
   message. Redelivered WITH a visible recovered-reply marker so the
   contract is honest at-least-once, never a silent duplicate.
@@ -375,9 +377,12 @@ def sweep_recoverable(
                     "chat_id": chat_id,
                     "thread_id": thread_id,
                     "content": content,
-                    # pending = send never started, redeliver plainly;
-                    # attempting/failed = ambiguous or rejected, carry marker.
-                    "needs_marker": state != "pending",
+                    # A pending row normally means the send never started, but
+                    # mark_attempting() may have failed immediately before a
+                    # real send. Recovery cannot distinguish those crash
+                    # windows, so every recovered row is conservatively marked
+                    # as a possible duplicate.
+                    "needs_marker": True,
                     "attempts": attempts + 1,
                     # Private rollback metadata.  If orderly shutdown cancels
                     # the boot worker after this transaction commits but

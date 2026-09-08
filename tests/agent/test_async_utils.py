@@ -10,6 +10,8 @@ from typing import Any, cast
 from unittest.mock import patch
 
 
+import pytest
+
 from agent.async_utils import (
     run_sync_in_detached_daemon_thread,
     run_sync_in_detached_serial_daemon_thread,
@@ -183,6 +185,209 @@ class TestRunSyncInDetachedDaemonThread:
             release_first.set()
             assert await asyncio.gather(first, second) == [1, 2]
             assert observed == ["first", "second"]
+
+        asyncio.run(_exercise())
+
+    def test_stalled_serial_job_times_out_without_poisoning_following_work(self):
+        async def _exercise():
+            import threading
+
+            first_started = threading.Event()
+            release_first = threading.Event()
+            second_finished = threading.Event()
+
+            def _stalled():
+                first_started.set()
+                release_first.wait()
+
+            def _second():
+                second_finished.set()
+                return 2
+
+            try:
+                with patch("agent.async_utils._SERIAL_JOB_TIMEOUT_SECONDS", 0.05):
+                    first = asyncio.create_task(
+                        run_sync_in_detached_serial_daemon_thread(_stalled)
+                    )
+                    while not first_started.is_set():
+                        await asyncio.sleep(0)
+                    second = asyncio.create_task(
+                        run_sync_in_detached_serial_daemon_thread(_second)
+                    )
+
+                    with pytest.raises(TimeoutError, match="serial daemon work"):
+                        await asyncio.wait_for(first, timeout=1)
+                    assert await asyncio.wait_for(second, timeout=1) == 2
+                    assert second_finished.is_set()
+            finally:
+                release_first.set()
+
+        asyncio.run(_exercise())
+
+    def test_late_timed_out_status_write_cannot_overwrite_newer_work(self):
+        async def _exercise():
+            import threading
+            import gateway.status as status
+
+            first_started = threading.Event()
+            release_first = threading.Event()
+            first_finished = threading.Event()
+            observed = []
+
+            @status._serialize_runtime_status_write
+            def _write(value):
+                observed.append(value)
+
+            def _stalled_old_write():
+                first_started.set()
+                release_first.wait()
+                _write("old")
+                first_finished.set()
+
+            try:
+                with (
+                    patch("agent.async_utils._SERIAL_JOB_TIMEOUT_SECONDS", 0.05),
+                    patch.object(status, "_latest_serial_status_sequence", 0),
+                ):
+                    first = asyncio.create_task(
+                        run_sync_in_detached_serial_daemon_thread(_stalled_old_write)
+                    )
+                    while not first_started.is_set():
+                        await asyncio.sleep(0)
+                    second = asyncio.create_task(
+                        run_sync_in_detached_serial_daemon_thread(_write, "new")
+                    )
+                    with pytest.raises(TimeoutError):
+                        await asyncio.wait_for(first, timeout=1)
+                    await asyncio.wait_for(second, timeout=1)
+                    release_first.set()
+                    assert first_finished.wait(timeout=1)
+                    assert observed == ["new"]
+            finally:
+                release_first.set()
+
+        asyncio.run(_exercise())
+
+    def test_direct_status_write_supersedes_equal_submitted_sequence(self):
+        async def _exercise():
+            import threading
+            import gateway.status as status
+
+            old_started = threading.Event()
+            release_old = threading.Event()
+            old_finished = threading.Event()
+            observed = []
+
+            @status._serialize_runtime_status_write
+            def _write(value):
+                observed.append(value)
+
+            def _stalled_old_write():
+                old_started.set()
+                release_old.wait()
+                _write("old")
+                old_finished.set()
+
+            try:
+                with (
+                    patch("agent.async_utils._SERIAL_JOB_TIMEOUT_SECONDS", 0.05),
+                    patch.object(status, "_latest_serial_status_sequence", 0),
+                ):
+                    old = asyncio.create_task(
+                        run_sync_in_detached_serial_daemon_thread(_stalled_old_write)
+                    )
+                    while not old_started.is_set():
+                        await asyncio.sleep(0)
+                    with pytest.raises(TimeoutError):
+                        await asyncio.wait_for(old, timeout=1)
+                    _write("new-direct")
+                    release_old.set()
+                    assert old_finished.wait(timeout=1)
+                    assert observed == ["new-direct"]
+            finally:
+                release_old.set()
+
+        asyncio.run(_exercise())
+
+    def test_repeated_stalls_have_bounded_worker_capacity(self):
+        async def _exercise():
+            import threading
+            import agent.async_utils as async_utils
+
+            release = threading.Event()
+            started = [threading.Event(), threading.Event()]
+
+            def _stall(index):
+                started[index].set()
+                release.wait()
+
+            try:
+                with (
+                    patch.object(
+                        async_utils,
+                        "_serial_job_slots",
+                        threading.BoundedSemaphore(value=2),
+                    ),
+                    patch.object(async_utils, "_SERIAL_JOB_TIMEOUT_SECONDS", 0.05),
+                ):
+                    for index in range(2):
+                        task = asyncio.create_task(
+                            run_sync_in_detached_serial_daemon_thread(_stall, index)
+                        )
+                        while not started[index].is_set():
+                            await asyncio.sleep(0)
+                        with pytest.raises(TimeoutError):
+                            await asyncio.wait_for(task, timeout=1)
+
+                    with pytest.raises(TimeoutError, match="capacity"):
+                        await asyncio.wait_for(
+                            run_sync_in_detached_serial_daemon_thread(lambda: 3),
+                            timeout=1,
+                        )
+            finally:
+                release.set()
+
+        asyncio.run(_exercise())
+
+    def test_capacity_exhaustion_does_not_admit_unbounded_queue_work(self):
+        async def _exercise():
+            import threading
+            import agent.async_utils as async_utils
+
+            release = threading.Event()
+            started = threading.Event()
+
+            def _stall():
+                started.set()
+                release.wait()
+
+            tasks = []
+            try:
+                with (
+                    patch.object(
+                        async_utils,
+                        "_serial_job_slots",
+                        threading.BoundedSemaphore(value=1),
+                    ),
+                    patch.object(async_utils, "_SERIAL_JOB_TIMEOUT_SECONDS", 0.5),
+                ):
+                    first = asyncio.create_task(
+                        run_sync_in_detached_serial_daemon_thread(_stall)
+                    )
+                    tasks.append(first)
+                    while not started.is_set():
+                        await asyncio.sleep(0)
+                    tasks.extend(
+                        asyncio.create_task(
+                            run_sync_in_detached_serial_daemon_thread(lambda: index)
+                        )
+                        for index in range(4)
+                    )
+                    await asyncio.sleep(0.05)
+                    assert async_utils._SERIAL_DAEMON_QUEUE.qsize() == 0
+            finally:
+                release.set()
+                await asyncio.gather(*tasks, return_exceptions=True)
 
         asyncio.run(_exercise())
 

@@ -2343,11 +2343,14 @@ class CredentialPool:
             # Revalidate the already-recorded lease after refresh.  Deferred
             # refresh runs outside the pool lock and may quarantine/remove an
             # entry while merging refreshed state.  Never return a lease for
-            # an entry that no longer exists; release it and use the same
-            # one-shot re-selection path below.
+            # an entry that no longer exists or became unavailable; release it
+            # and use the same one-shot re-selection path below.
             with self._lock:
+                available_now, _ = self._available_entries(
+                    clear_expired=False, refresh=False
+                )
                 if chosen_id is not None and not any(
-                    entry.id == chosen_id for entry in self._entries
+                    entry.id == chosen_id for entry in available_now
                 ):
                     self.release_lease(chosen_id)
                     if self._current_id == chosen_id:
@@ -2368,12 +2371,16 @@ class CredentialPool:
     ) -> Tuple[Optional[str], List[tuple]]:
         """Run lease acquisition under the lock, returning id + pending refreshes."""
         with self._lock:
+            available, pending_refresh = self._available_entries(
+                clear_expired=True, refresh=True
+            )
             if credential_id:
+                if not any(entry.id == credential_id for entry in available):
+                    return None, pending_refresh
                 self._active_leases[credential_id] = self._active_leases.get(credential_id, 0) + 1
                 self._current_id = credential_id
-                return credential_id, []
+                return credential_id, pending_refresh
 
-            available, pending_refresh = self._available_entries(clear_expired=True, refresh=True)
             if not available:
                 return None, pending_refresh
 

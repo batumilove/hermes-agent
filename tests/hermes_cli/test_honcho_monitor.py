@@ -17,6 +17,36 @@ def test_short_host_maps_both_dgx_spark_nodes():
     assert hm.short_host("http://100.71.155.95:18081/v1") == "spark-polarbear"
 
 
+def test_base_url_credentials_and_signed_query_are_redacted():
+    secret_url = "https://alice:password@example.test:8443/v1?token=secret#private"
+
+    assert hm.sanitize_base_url(secret_url) == "https://example.test:8443/v1"
+    assert hm.short_host(secret_url) == "example.test:8443"
+
+    parsed = hm.parse_pipeline_env(
+        "EMBEDDING_MODEL_CONFIG__OVERRIDES__BASE_URL=" + secret_url
+    )
+    assert parsed["embedding"]["base_url"] == "https://example.test:8443/v1"
+
+    snapshot = {
+        "services": {},
+        "pipeline": {
+            "embedding": {"model": "m", "base_url": secret_url},
+        },
+        "db": {},
+        "queue": {},
+        "errors": {},
+        "spark_goat": {},
+        "deriver": {},
+    }
+    report = hm.format_report(snapshot)
+    assert "alice" not in report
+    assert "password" not in report
+    assert "secret" not in report
+    assert "private" not in report
+    assert "base_url=https://example.test:8443/v1" in report
+
+
 def test_honcho_target_defaults_to_lan_ssh_to_avoid_tailscale_approval_gate():
     assert hm.HONCHO_TARGET == "ubuntu@honcho.teleport.batumi.works"
 
