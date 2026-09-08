@@ -483,15 +483,17 @@ patches:
       schema retry and timed-out worker unwind), and coordinate delegation-finally,
       parent shutdown, and cache-eviction fallback through one close-once lease.
     paths:
+      - agent/credential_pool.py
       - agent/subagent_lifecycle.py
       - run_agent.py
       - tools/delegate_tool.py
+      - tests/agent/test_credential_pool_lease_refresh_reselect.py
       - tests/agent/test_subagent_lifecycle.py
       - tests/tools/test_delegate.py
       - tests/tools/test_delegate_subagent_timeout_diagnostic.py
       - tests/tools/test_zombie_process_cleanup.py
     tests:
-      - scripts/run_tests.sh tests/agent/test_subagent_lifecycle.py tests/tools/test_delegate_subagent_timeout_diagnostic.py tests/tools/test_delegate.py tests/tools/test_zombie_process_cleanup.py tests/tui_gateway/test_session_db_ownership_teardown.py tests/tui_gateway/test_session_resume_db_ownership.py tests/run_agent/test_background_review.py
+      - scripts/run_tests.sh tests/agent/test_credential_pool_lease_refresh_reselect.py tests/agent/test_subagent_lifecycle.py tests/tools/test_delegate_subagent_timeout_diagnostic.py tests/tools/test_delegate.py tests/tools/test_zombie_process_cleanup.py tests/tui_gateway/test_session_db_ownership_teardown.py tests/tui_gateway/test_session_resume_db_ownership.py tests/run_agent/test_background_review.py
       - python -m py_compile agent/subagent_lifecycle.py run_agent.py tools/delegate_tool.py tests/agent/test_subagent_lifecycle.py tests/tools/test_delegate.py tests/tools/test_delegate_subagent_timeout_diagnostic.py tests/tools/test_zombie_process_cleanup.py
     retirement: Remove when upstream provides equivalent pre-registration, full-child-lifecycle, public-launch, batch-failure, parent-shutdown, cache-eviction, and close-exactly-once ownership contracts.
 
@@ -969,6 +971,7 @@ patches:
       - gateway/platforms/base.py
       - gateway/run.py
       - plugins/platforms/telegram/adapter.py
+      - tests/gateway/test_delivery_ledger.py
       - tests/gateway/test_delivery_ledger_producer.py
       - tests/gateway/test_api_server_active_work_drain.py
       - tests/gateway/test_gateway_shutdown.py
@@ -1084,6 +1087,50 @@ patches:
     tests:
       - scripts/run_tests.sh tests/gateway/test_external_drain_control.py tests/gateway/test_startup_restart_race.py tests/gateway/test_routing_save_fast_path.py
     retirement: Remove when upstream publishes authoritative PID-bound startup status with equivalent drain-epoch, shutdown-precedence, and intake-suppression coverage.
+
+  - id: gateway-event-loop-status-io
+    kind: core
+    rationale: >-
+      Keep drain, startup, platform, and active-agent status persistence off the
+      gateway event loop, preserve inherited drain state during startup, and use
+      cancellation-safe daemon workers so a stalled filesystem cannot wedge loop
+      shutdown or platform lifecycle handling.
+    paths:
+      - agent/async_utils.py
+      - gateway/platforms/api_server.py
+      - gateway/platforms/base.py
+      - gateway/run.py
+      - gateway/session_db_recovery.py
+      - gateway/session.py
+      - gateway/slash_commands.py
+      - gateway/status.py
+      - hermes_state.py
+      - tests/agent/test_async_utils.py
+      - tests/gateway/test_64674_multiplex_primary_token_scope.py
+      - tests/gateway/test_adapter_connect_classification.py
+      - tests/gateway/test_async_session_store.py
+      - tests/gateway/test_async_session_db.py
+      - tests/gateway/test_clarify_thread_followup_not_swallowed.py
+      - tests/gateway/test_external_drain_control.py
+      - tests/gateway/test_gateway_command_dispatch_minimal.py
+      - tests/gateway/test_handoff_watcher_async_db.py
+      - tests/gateway/test_multiplex_adapter_registry.py
+      - tests/gateway/test_api_server.py
+      - tests/gateway/test_platform_reconnect.py
+      - tests/gateway/test_restart_resume_pending.py
+      - tests/gateway/test_scale_to_zero_watcher.py
+      - tests/gateway/test_session_db_recovery.py
+      - tests/gateway/test_shutdown_aggregate_budget_contract.py
+      - tests/gateway/test_shutdown_cache_cleanup.py
+      - tests/gateway/test_startup_restart_race.py
+      - tests/gateway/test_status.py
+      - tests/gateway/test_title_command.py
+      - tests/gateway/test_turn_lease.py
+      - tests/hermes_cli/test_pre_command_hook.py
+    tests:
+      - scripts/run_tests.sh tests/agent/test_async_utils.py tests/gateway/test_external_drain_control.py tests/gateway/test_restart_resume_pending.py tests/gateway/test_platform_reconnect.py tests/gateway/test_startup_restart_race.py tests/gateway/test_multiplex_adapter_registry.py tests/gateway/test_api_server.py tests/gateway/test_adapter_connect_classification.py tests/gateway/test_64674_multiplex_primary_token_scope.py tests/gateway/test_clarify_thread_followup_not_swallowed.py tests/gateway/test_scale_to_zero_watcher.py tests/gateway/test_async_session_store.py tests/gateway/test_session_db_recovery.py tests/gateway/test_gateway_command_dispatch_minimal.py tests/gateway/test_shutdown_aggregate_budget_contract.py tests/gateway/test_shutdown_cache_cleanup.py tests/gateway/test_status.py tests/gateway/test_title_command.py tests/gateway/test_turn_lease.py tests/hermes_cli/test_pre_command_hook.py
+      - python -m py_compile agent/async_utils.py gateway/platforms/api_server.py gateway/platforms/base.py gateway/run.py gateway/session.py gateway/session_db_recovery.py gateway/slash_commands.py gateway/status.py hermes_state.py
+    retirement: Remove when upstream moves equivalent status and active-agent persistence off the event loop with cancellation-safe shutdown and matching regression coverage.
 
   - id: gateway-shutdown-work-attribution
     kind: core

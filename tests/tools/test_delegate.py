@@ -1267,6 +1267,35 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
 
 
 class TestChildCredentialLeasing(unittest.TestCase):
+    def test_run_single_child_binds_exact_leased_credential_not_global_cursor(self):
+        from tools.delegate_tool import _run_single_child
+
+        leased_entry = MagicMock(id="cred-b")
+        wrong_current = MagicMock(id="cred-a")
+        child = MagicMock()
+        child._credential_pool = MagicMock()
+        child._credential_pool.acquire_lease.return_value = "cred-b"
+        child._credential_pool.current.return_value = wrong_current
+        child._credential_pool.entries.return_value = [wrong_current, leased_entry]
+        child.run_conversation.return_value = {
+            "final_response": "done",
+            "completed": True,
+            "interrupted": False,
+            "api_calls": 1,
+            "messages": [],
+        }
+
+        result = _run_single_child(
+            task_index=0,
+            goal="Bind exact lease",
+            child=child,
+            parent_agent=_make_mock_parent(),
+        )
+
+        self.assertEqual(result["status"], "completed")
+        child._swap_credential.assert_called_once_with(leased_entry)
+        child._credential_pool.release_lease.assert_called_once_with("cred-b")
+
     def test_run_single_child_acquires_and_releases_lease(self):
         from tools.delegate_tool import _run_single_child
 
@@ -1276,7 +1305,7 @@ class TestChildCredentialLeasing(unittest.TestCase):
         child = MagicMock()
         child._credential_pool = MagicMock()
         child._credential_pool.acquire_lease.return_value = "cred-b"
-        child._credential_pool.current.return_value = leased_entry
+        child._credential_pool.entries.return_value = [leased_entry]
         child.run_conversation.return_value = {
             "final_response": "done",
             "completed": True,
@@ -1297,13 +1326,33 @@ class TestChildCredentialLeasing(unittest.TestCase):
         child._swap_credential.assert_called_once_with(leased_entry)
         child._credential_pool.release_lease.assert_called_once_with("cred-b")
 
+    def test_run_single_child_fails_closed_if_leased_entry_disappears(self):
+        from tools.delegate_tool import _run_single_child
+
+        child = MagicMock()
+        child._credential_pool = MagicMock()
+        child._credential_pool.acquire_lease.return_value = "cred-gone"
+        child._credential_pool.entries.return_value = []
+
+        result = _run_single_child(
+            task_index=0,
+            goal="Do not use an unleased credential",
+            child=child,
+            parent_agent=_make_mock_parent(),
+        )
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("cred-gone", result["error"])
+        child.run_conversation.assert_not_called()
+        child._credential_pool.release_lease.assert_called_once_with("cred-gone")
+
     def test_run_single_child_releases_lease_after_failure(self):
         from tools.delegate_tool import _run_single_child
 
         child = MagicMock()
         child._credential_pool = MagicMock()
         child._credential_pool.acquire_lease.return_value = "cred-a"
-        child._credential_pool.current.return_value = MagicMock(id="cred-a")
+        child._credential_pool.entries.return_value = [MagicMock(id="cred-a")]
         child.run_conversation.side_effect = RuntimeError("boom")
 
         result = _run_single_child(
@@ -1315,6 +1364,25 @@ class TestChildCredentialLeasing(unittest.TestCase):
 
         self.assertEqual(result["status"], "error")
         child._credential_pool.release_lease.assert_called_once_with("cred-a")
+
+    def test_lease_acquisition_failure_still_closes_child(self):
+        from tools.delegate_tool import _run_single_child
+
+        child = MagicMock()
+        child._credential_pool = MagicMock()
+        child._credential_pool.acquire_lease.side_effect = RuntimeError("lease failed")
+
+        result = _run_single_child(
+            task_index=2,
+            goal="Trigger lease failure",
+            child=child,
+            parent_agent=_make_mock_parent(),
+        )
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("lease failed", result["error"])
+        child.close.assert_called_once()
+        child.run_conversation.assert_not_called()
 
 
 class TestDelegateHeartbeat(unittest.TestCase):

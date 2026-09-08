@@ -182,6 +182,10 @@ async def test_full_dispatch_rejects_lease_timeout_without_running_goal_hook(
     from tests.gateway.test_42039_duplicate_user_message import _bootstrap, _event
 
     runner = _bootstrap(monkeypatch, tmp_path)
+    # Status persistence is orthogonal to the lease clock and now runs on a
+    # one-shot daemon thread. Isolate it so loaded CI hosts cannot consume
+    # this test's deliberately tight one-second end-to-end budget.
+    runner._persist_active_agents_async = AsyncMock()
     runner._turn_leases = SessionTurnLeaseRegistry()
     holder = await runner._turn_leases.acquire(
         "sess-dedup", owner_key="holder-key", generation=1, timeout=1
@@ -210,6 +214,39 @@ async def test_full_dispatch_rejects_lease_timeout_without_running_goal_hook(
     runner.session_store.load_transcript.assert_not_called()
     runner._clear_session_env.assert_called_once_with(session_env_tokens)
     runner._post_turn_goal_continuation.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_status_persist_releases_pending_session_claim(
+    monkeypatch, tmp_path
+):
+    """Cancellation during the first status write cannot strand the claim."""
+    from tests.gateway.test_42039_duplicate_user_message import _bootstrap, _event
+
+    runner = _bootstrap(monkeypatch, tmp_path)
+    persist_started = asyncio.Event()
+    never_finishes = asyncio.Event()
+
+    persist_calls = 0
+
+    async def _blocked_persist():
+        nonlocal persist_calls
+        persist_calls += 1
+        if persist_calls == 1:
+            persist_started.set()
+            await never_finishes.wait()
+
+    runner._persist_active_agents_async = _blocked_persist
+    task = asyncio.create_task(runner._handle_message(_event()))
+    await asyncio.wait_for(persist_started.wait(), timeout=1)
+    assert runner._running_agents, "the pending slot must be claimed before persistence"
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert runner._running_agents == {}
+    assert runner._running_agents_ts == {}
 
 
 # ---------------------------------------------------------------------------

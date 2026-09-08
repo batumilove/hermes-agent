@@ -15802,7 +15802,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
 
 class AsyncSessionDB:
-    """Async door onto SessionDB: offloads each call via asyncio.to_thread so a blocking SQLite call never freezes the event loop. Generic forwarder — the audit confirms no method returns a live cursor/generator."""
+    """Async door onto SessionDB using abandonable detached daemon workers."""
 
     def __init__(self, db: "SessionDB") -> None:
         self._db = db
@@ -15813,6 +15813,8 @@ class AsyncSessionDB:
             return attr
 
         async def _offloaded(*args, **kwargs):
-            return await asyncio.to_thread(attr, *args, **kwargs)
+            from agent.async_utils import run_sync_in_detached_daemon_thread
+
+            return await run_sync_in_detached_daemon_thread(attr, *args, **kwargs)
 
         return _offloaded

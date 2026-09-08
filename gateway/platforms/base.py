@@ -23,6 +23,7 @@ import weakref
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
+from agent.async_utils import submit_sync_to_detached_serial_daemon
 from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
@@ -3470,36 +3471,52 @@ class BasePlatformAdapter(ABC):
         surfaces the first failure per (platform, context) at warning level and
         downgrades subsequent failures to debug.
         """
-        try:
-            from gateway.status import write_runtime_status
-            # Multiplexed secondary adapters share the process-level runtime
-            # status file with the primary adapter.  Their runner stamps a
-            # namespaced key (``<profile>:<platform>``) so one profile's fatal
-            # state cannot overwrite another profile's healthy entry.
-            platform_key = (
-                getattr(self, "_runtime_status_platform_key", None)
-                or self.platform.value
-            )
-            write_runtime_status(platform=platform_key, **kwargs)
-        except Exception as exc:
-            # Use getattr so object.__new__(...) test harnesses that skip __init__
-            # don't blow up on attribute access.
-            logged = getattr(self, "_status_write_logged", None)
-            if logged is None:
-                logged = set()
-                try:
-                    self._status_write_logged = logged
-                except Exception:
-                    pass
-            key = (self.platform.value, context)
-            if key not in logged:
-                logger.warning(
-                    "Failed to write runtime status (%s) for %s: %s (further failures at debug level)",
-                    context, self.platform.value, exc,
+        def _write() -> None:
+            try:
+                from gateway.status import write_runtime_status
+                # Multiplexed secondary adapters share the process-level runtime
+                # status file with the primary adapter.  Their runner stamps a
+                # namespaced key (``<profile>:<platform>``) so one profile's fatal
+                # state cannot overwrite another profile's healthy entry.
+                platform_key = (
+                    getattr(self, "_runtime_status_platform_key", None)
+                    or self.platform.value
                 )
-                logged.add(key)
-            else:
-                logger.debug("Failed to write runtime status (%s) for %s: %s", context, self.platform.value, exc)
+                write_runtime_status(platform=platform_key, **kwargs)
+            except Exception as exc:
+                # Use getattr so object.__new__(...) test harnesses that skip
+                # __init__ don't blow up on attribute access.
+                logged = getattr(self, "_status_write_logged", None)
+                if logged is None:
+                    logged = set()
+                    try:
+                        setattr(self, "_status_write_logged", logged)
+                    except Exception:
+                        pass
+                key = (self.platform.value, context)
+                if key not in logged:
+                    logger.warning(
+                        "Failed to write runtime status (%s) for %s: %s "
+                        "(further failures at debug level)",
+                        context, self.platform.value, exc,
+                    )
+                    logged.add(key)
+                else:
+                    logger.debug(
+                        "Failed to write runtime status (%s) for %s: %s",
+                        context, self.platform.value, exc,
+                    )
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # Preserve deterministic behavior for synchronous callers/tests.
+            _write()
+        else:
+            # Adapter callbacks are synchronous even when invoked by async
+            # connect/disconnect paths. Preserve transition order without
+            # performing status filesystem I/O on the event loop.
+            submit_sync_to_detached_serial_daemon(_write)
 
     async def _notify_fatal_error(self) -> None:
         handler = self._fatal_error_handler

@@ -168,6 +168,39 @@ class TestGatewayRedeliverySweep:
         return adapter
 
     @pytest.mark.asyncio
+    async def test_cancelled_sweep_rolls_back_committed_claim(self, monkeypatch):
+        """Orderly boot-task cancellation spends no unsent retry attempt."""
+        import asyncio
+
+        _record(platform="slack")
+        _orphan("ob-1")
+        original_sweep = dl.sweep_recoverable
+        committed = threading.Event()
+        release_result = threading.Event()
+
+        def _commit_then_pause(*args, **kwargs):
+            rows = original_sweep(*args, **kwargs)
+            committed.set()
+            assert release_result.wait(timeout=5.0)
+            return rows
+
+        monkeypatch.setattr(dl, "sweep_recoverable", _commit_then_pause)
+        runner = self._runner(self._adapter())
+        task = asyncio.create_task(runner._claim_pending_obligations())
+        assert await asyncio.to_thread(committed.wait, 5.0)
+        task.cancel()
+        release_result.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        row = _row("ob-1")
+        assert row is not None
+        assert row["state"] == "pending"
+        assert row["attempts"] == 0
+        assert row["owner_pid"] == 999999999
+
+    @pytest.mark.asyncio
     async def test_pending_redelivers_plain_and_clears_resume(self):
         _record()  # pending
         _orphan("ob-1")
@@ -184,6 +217,109 @@ class TestGatewayRedeliverySweep:
         runner._async_session_store.clear_resume_pending.assert_awaited_once_with(
             "agent:main:slack:channel:C1"
         )
+
+    @pytest.mark.asyncio
+    async def test_recovered_pending_row_is_marked_attempting_before_send(
+        self, monkeypatch
+    ):
+        """A crash during send must leave an ambiguity marker for next boot."""
+        order = []
+        adapter = MagicMock()
+
+        async def send(**_kwargs):
+            order.append("send")
+            return MagicMock(success=True, error="")
+
+        adapter.send = send
+        runner = self._runner(adapter)
+        row = {
+            "obligation_id": "ob-1",
+            "platform": "slack",
+            "chat_id": "C1",
+            "thread_id": None,
+            "content": "answer",
+            "needs_marker": False,
+            "attempts": 1,
+        }
+
+        def mark_attempting(oid, attempts):
+            order.append(f"attempting:{oid}:{attempts}")
+            return True
+
+        monkeypatch.setattr(dl, "mark_attempting", mark_attempting)
+
+        assert await runner._redeliver_claimed_obligations([row]) == 1
+        assert order == ["attempting:ob-1:1", "send"]
+
+    @pytest.mark.asyncio
+    async def test_missing_adapter_releases_claim_without_spending_attempt(self):
+        _record(platform="slack")
+        _orphan("ob-1")
+        runner = self._runner(self._adapter())
+        claimed = await runner._claim_pending_obligations()
+        claimed_row = _row("ob-1")
+        assert claimed_row is not None
+        assert claimed_row["attempts"] == 1
+
+        runner.adapters.clear()
+        assert await runner._redeliver_claimed_obligations(claimed) == 0
+
+        row = _row("ob-1")
+        assert row is not None
+        assert row["state"] == "pending"
+        assert row["attempts"] == 0
+        assert row["owner_pid"] == 999999999
+
+    @pytest.mark.asyncio
+    async def test_missing_attempting_transition_suppresses_network_send(self):
+        _record(platform="slack")
+        _orphan("ob-1")
+        adapter = self._adapter()
+        runner = self._runner(adapter)
+        claimed = await runner._claim_pending_obligations()
+        with dl._transaction() as conn:
+            conn.execute(
+                "DELETE FROM delivery_obligations WHERE obligation_id=?", ("ob-1",)
+            )
+
+        assert await runner._redeliver_claimed_obligations(claimed) == 0
+        adapter.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_replaced_claimed_row_suppresses_network_send(self):
+        _record(platform="slack")
+        _orphan("ob-1")
+        adapter = self._adapter()
+        runner = self._runner(adapter)
+        claimed = await runner._claim_pending_obligations()
+        _record(platform="slack")  # INSERT OR REPLACE, same id/new pending row
+
+        assert await runner._redeliver_claimed_obligations(claimed) == 0
+        adapter.send.assert_not_awaited()
+        row = _row("ob-1")
+        assert row is not None
+        assert row["state"] == "pending"
+        assert row["attempts"] == 0
+
+    @pytest.mark.asyncio
+    async def test_attempting_write_error_releases_unsent_claim(self, monkeypatch):
+        _record(platform="slack")
+        _orphan("ob-1")
+        adapter = self._adapter()
+        runner = self._runner(adapter)
+        claimed = await runner._claim_pending_obligations()
+
+        def _raise_write_error(*_args):
+            raise OSError("state store unavailable")
+
+        monkeypatch.setattr(dl, "mark_attempting", _raise_write_error)
+        assert await runner._redeliver_claimed_obligations(claimed) == 0
+        adapter.send.assert_not_awaited()
+        row = _row("ob-1")
+        assert row is not None
+        assert row["state"] == "pending"
+        assert row["attempts"] == 0
+        assert row["owner_pid"] == 999999999
 
     @pytest.mark.asyncio
     async def test_attempting_redelivers_with_marker(self):

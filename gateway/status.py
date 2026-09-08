@@ -12,6 +12,7 @@ concurrently under distinct configurations).
 """
 
 import copy
+import functools
 import hashlib
 import json
 import logging
@@ -49,6 +50,7 @@ _WINDOWS_LOCK_OFFSET = 1024 * 1024
 _GATEWAY_RUNNING_PID_CACHE_TTL_SECONDS = 1.0
 _gateway_running_pid_cache_lock = threading.Lock()
 _gateway_running_pid_cache: dict[tuple[str, bool, bool], tuple[float, tuple[Any, ...], Optional[int]]] = {}
+_runtime_status_write_lock = threading.RLock()
 
 logger = logging.getLogger(__name__)
 
@@ -1061,6 +1063,18 @@ def write_pid_file() -> None:
         raise
 
 
+def _serialize_runtime_status_write(func):
+    """Serialize process-local status read/merge/write transactions."""
+
+    @functools.wraps(func)
+    def _locked(*args, **kwargs):
+        with _runtime_status_write_lock:
+            return func(*args, **kwargs)
+
+    return _locked
+
+
+@_serialize_runtime_status_write
 def write_runtime_status(
     *,
     gateway_state: Any = _UNSET,

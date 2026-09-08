@@ -93,7 +93,7 @@ def make_startup_runner(tmp_path):
     runner.delivery_router.adapters = {}
 
     runner._update_runtime_status = MagicMock()
-    runner._update_platform_runtime_status = MagicMock()
+    runner._update_platform_runtime_status = AsyncMock()
     runner._sync_voice_mode_state_to_adapter = MagicMock()
     runner._suspend_stuck_loop_sessions = MagicMock(return_value=0)
     runner._notify_active_sessions_of_shutdown = AsyncMock()

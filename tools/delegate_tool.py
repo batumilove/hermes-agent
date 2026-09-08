@@ -2583,15 +2583,6 @@ def _run_single_child(
 
     child_pool = getattr(child, "_credential_pool", None)
     leased_cred_id = None
-    if child_pool is not None:
-        leased_cred_id = child_pool.acquire_lease()
-        if leased_cred_id is not None:
-            try:
-                leased_entry = child_pool.current()
-                if leased_entry is not None and hasattr(child, "_swap_credential"):
-                    child._swap_credential(leased_entry)
-            except Exception as exc:
-                logger.debug("Failed to bind child to leased credential: %s", exc)
 
     # Heartbeat: periodically propagate child activity to the parent so the
     # gateway inactivity timeout doesn't fire while the subagent is working.
@@ -2801,7 +2792,80 @@ def _run_single_child(
                     ),
                 }
 
+    def _mark_worktree_cleanup_deferred(entry_dict: Dict[str, Any]) -> None:
+        """Expose retained worktree identity without inspecting a live worker."""
+        if _worktree_info is None:
+            return
+        entry_dict["worktree"] = {
+            "path": _worktree_info.get("path", ""),
+            "branch": _worktree_info.get("branch", ""),
+            "pruned": False,
+            "cleanup_deferred": True,
+            "note": "Worker is still unwinding; inspect/finalize is deferred.",
+        }
+
     _child_use_acquired = False
+    _defer_worker_cleanup = False
+    _deferred_worktree_entry: Optional[Dict[str, Any]] = None
+    _cleanup_lock = threading.Lock()
+    _cleanup_complete = False
+
+    def _finalize_worker_owned_state() -> None:
+        """Release state that remains owned while the child worker is alive."""
+        nonlocal _cleanup_complete
+        with _cleanup_lock:
+            if _cleanup_complete:
+                return
+            _cleanup_complete = True
+
+        _heartbeat_stop.set()
+        if (
+            _heartbeat_thread.ident is not None
+            and _heartbeat_thread is not threading.current_thread()
+        ):
+            _heartbeat_thread.join(timeout=5)
+
+        if _subagent_id:
+            _unregister_subagent(_subagent_id, agent=child)
+
+        if child_pool is not None and leased_cred_id is not None:
+            try:
+                child_pool.release_lease(leased_cred_id)
+            except Exception as exc:
+                logger.debug("Failed to release credential lease: %s", exc)
+
+        active_children = getattr(parent_agent, "_active_children", None)
+        if active_children is not None:
+            try:
+                lock = getattr(parent_agent, "_active_children_lock", None)
+                if lock:
+                    with lock:
+                        active_children.remove(child)
+                else:
+                    active_children.remove(child)
+            except (ValueError, UnboundLocalError) as exc:
+                logger.debug("Could not remove child from active_children: %s", exc)
+
+        if _deferred_worktree_entry is not None:
+            _attach_worktree(_deferred_worktree_entry)
+
+        if _child_use_acquired and callable(_end_child_use):
+            _end_child_use()
+
+        try:
+            from agent import relay_runtime
+
+            runtime = relay_runtime.get_runtime(create=False)
+            child_session_id = str(getattr(child, "session_id", "") or "")
+            child_turn_is_active = relay_runtime.SESSION_COORDINATOR.has_active_turn(
+                profile_key=relay_runtime.current_profile_key(),
+                session_id=child_session_id,
+            )
+            if runtime is not None and child_session_id and not child_turn_is_active:
+                runtime.unregister_subagent({"child_session_id": child_session_id})
+        except Exception:
+            logger.debug("Failed to close child Relay session after delegation")
+
     try:
         _child_use_acquired = callable(_begin_child_use) and _begin_child_use()
         if not _child_use_acquired:
@@ -2814,6 +2878,39 @@ def _run_single_child(
                 "api_calls": 0,
                 "duration_seconds": round(time.monotonic() - child_start, 2),
             }
+        # Acquire credentials only after lifecycle ownership is established and
+        # inside the guarded try/finally. Any pool failure now still requests
+        # child close and releases all worker-owned state.
+        if child_pool is not None:
+            leased_cred_id = child_pool.acquire_lease()
+            if isinstance(leased_cred_id, str):
+                try:
+                    # Bind the exact identity whose lease was incremented.
+                    # ``current()`` is a pool-global cursor and another child
+                    # may move it between acquire_lease() and this lookup.
+                    leased_entry = next(
+                        (
+                            entry
+                            for entry in child_pool.entries()
+                            if entry.id == leased_cred_id
+                        ),
+                        None,
+                    )
+                    swap_credential = getattr(child, "_swap_credential", None)
+                    if leased_entry is None:
+                        raise RuntimeError(
+                            "leased credential disappeared before child binding: "
+                            f"{leased_cred_id}"
+                        )
+                    if not callable(swap_credential):
+                        raise RuntimeError(
+                            "delegated child cannot bind its leased credential"
+                        )
+                    swap_credential(leased_entry)
+                except Exception:
+                    # Binding a different credential while holding this lease
+                    # would break both provider isolation and lease accounting.
+                    raise
         _heartbeat_thread.start()
         if child_progress_cb:
             try:
@@ -3061,7 +3158,13 @@ def _run_single_child(
                     " [steer did not land before the subagent stopped: "
                     f"{_late_pending_steer}]"
                 )
-            _attach_worktree(_error_entry)
+            if is_timeout and _child_future is not None and not _child_future.done():
+                _defer_worker_cleanup = True
+                _deferred_worktree_entry = _error_entry
+                _error_entry["worker_cleanup_deferred"] = True
+                _mark_worktree_cleanup_deferred(_error_entry)
+            else:
+                _attach_worktree(_error_entry)
             return _error_entry
         finally:
             # Shut down executor without waiting — if the child thread
@@ -3159,7 +3262,13 @@ def _run_single_child(
                     }
                     if _late_pending_steer:
                         _error_entry["missed_steer"] = _late_pending_steer
-                    _attach_worktree(_error_entry)
+                    if _child_future is not None and not _child_future.done():
+                        _defer_worker_cleanup = True
+                        _deferred_worktree_entry = _error_entry
+                        _error_entry["worker_cleanup_deferred"] = True
+                        _mark_worktree_cleanup_deferred(_error_entry)
+                    else:
+                        _attach_worktree(_error_entry)
                     return _error_entry
                 except Exception as _retry_exc:
                     logger.warning(
@@ -3499,26 +3608,6 @@ def _run_single_child(
         return _error_entry
 
     finally:
-        # Stop the heartbeat thread so it doesn't keep touching parent activity
-        # after the child has finished (or failed).  Guard the join: .start()
-        # now lives inside the try block, so if it raised (OS thread
-        # exhaustion) the thread was never started and Thread.join() would
-        # raise RuntimeError.  ident is None until start() succeeds.
-        _heartbeat_stop.set()
-        if _heartbeat_thread.ident is not None:
-            _heartbeat_thread.join(timeout=5)
-
-        # Drop the TUI-facing registry entry.  Safe to call even if the
-        # child was never registered (e.g. ID missing on test doubles).
-        if _subagent_id:
-            _unregister_subagent(_subagent_id, agent=child)
-
-        if child_pool is not None and leased_cred_id is not None:
-            try:
-                child_pool.release_lease(leased_cred_id)
-            except Exception as exc:
-                logger.debug("Failed to release credential lease: %s", exc)
-
         # Restore the parent's tool names so the process-global is correct
         # for any subsequent execute_code calls or other consumers.
         import model_tools
@@ -3527,48 +3616,18 @@ def _run_single_child(
         if isinstance(saved_tool_names, list):
             model_tools._last_resolved_tool_names = list(saved_tool_names)
 
-        # Remove child from active tracking
-
-        # Unregister child from interrupt propagation
-        if hasattr(parent_agent, "_active_children"):
-            try:
-                lock = getattr(parent_agent, "_active_children_lock", None)
-                if lock:
-                    with lock:
-                        parent_agent._active_children.remove(child)
-                else:
-                    parent_agent._active_children.remove(child)
-            except (ValueError, UnboundLocalError) as e:
-                logger.debug("Could not remove child from active_children: %s", e)
-
         # Request teardown now, but retain the lifecycle lease through schema
         # validation/retry and, after timeout, until the abandoned worker has
         # actually unwound. The gate closes exactly once when the final lease
         # is released.
         if callable(_request_child_close):
             _request_child_close()
-        if _child_use_acquired and callable(_end_child_use):
-            if _child_future is not None and not _child_future.done():
-                _child_future.add_done_callback(lambda _future: _end_child_use())
-            else:
-                _end_child_use()
-
-        # The AIAgent turn boundary normally closes the child scope itself. This
-        # fallback covers failures before that boundary starts, but must not pop
-        # a scope while a timed-out child worker is still unwinding.
-        try:
-            from agent import relay_runtime
-
-            runtime = relay_runtime.get_runtime(create=False)
-            child_session_id = str(getattr(child, "session_id", "") or "")
-            child_turn_is_active = relay_runtime.SESSION_COORDINATOR.has_active_turn(
-                profile_key=relay_runtime.current_profile_key(),
-                session_id=child_session_id,
+        if _defer_worker_cleanup and _child_future is not None:
+            _child_future.add_done_callback(
+                lambda _future: _finalize_worker_owned_state()
             )
-            if runtime is not None and child_session_id and not child_turn_is_active:
-                runtime.unregister_subagent({"child_session_id": child_session_id})
-        except Exception:
-            logger.debug("Failed to close child Relay session after delegation")
+        else:
+            _finalize_worker_owned_state()
 
 
 _PARENT_FINALIZATION_LOCK_GUARD = threading.Lock()

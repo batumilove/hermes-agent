@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -149,7 +149,7 @@ class TestPrimaryStartupSkipsEmptyTokenUnderMultiplex:
 
         runner._create_adapter = _fake_create  # type: ignore[method-assign]
         runner._abort_startup_if_shutdown_requested = MagicMock(return_value=False)  # type: ignore
-        runner._update_platform_runtime_status = MagicMock()  # type: ignore
+        runner._update_platform_runtime_status = AsyncMock()  # type: ignore
         runner._start_secondary_profile_adapters = MagicMock(return_value=0)  # type: ignore
         # Make the secondary call awaitable
         async def _sec():

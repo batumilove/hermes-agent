@@ -204,6 +204,9 @@ class TestResetCommandWithTitle:
         runner._session_db.set_session_title.side_effect = ValueError(
             "Title 'Dup' is already in use by session abc-123"
         )
+        runner._async_session_db_for_active_scope = AsyncMock(
+            return_value=runner._session_db
+        )
         runner._agent_cache = {}
         runner._agent_cache_lock = None
         runner._is_user_authorized = lambda _source: True
@@ -213,6 +216,7 @@ class TestResetCommandWithTitle:
         result = await runner._handle_reset_command(event)
 
         runner._session_db.set_session_title.assert_called_once()
+        runner._async_session_db_for_active_scope.assert_awaited_once()
         reply = str(result)
         assert "already in use" in reply
         assert "session started untitled" in reply
