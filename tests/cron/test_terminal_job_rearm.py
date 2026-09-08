@@ -48,7 +48,7 @@ def test_exhausted_recurring_job_trigger_is_refused(tmp_cron_dir):
 
 def test_wedged_claimed_oneshot_remains_triggerable(tmp_cron_dir):
     now = datetime.now(timezone.utc)
-    job = create_job("wedged", "30m", repeat=2)
+    job = create_job("wedged", "30m")
     record = get_job(job["id"])
     record.update({
         "run_claim": {"at": now.isoformat(), "by": "dead-worker"},
@@ -106,14 +106,15 @@ def test_update_cannot_reactivate_terminal_record(tmp_cron_dir):
 def test_rearm_completed_oneshot_restores_schedule_and_preserves_history(tmp_cron_dir):
     from cron.jobs import rearm_oneshot
 
-    job = create_job("done", "30m", repeat=3)
+    job = create_job("done", "30m")
     mark_job_run(job["id"], success=True)
     finished = get_job(job["id"])
     run_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
 
     rearmed = rearm_oneshot(job["id"], run_at)
+    assert rearmed is not None
     assert rearmed["schedule"]["kind"] == "once"
-    assert rearmed["repeat"]["times"] == 3
+    assert rearmed["repeat"]["times"] == 1
     assert rearmed["repeat"]["completed"] == 0
     assert rearmed["state"] == "scheduled"
     assert rearmed["enabled"] is True

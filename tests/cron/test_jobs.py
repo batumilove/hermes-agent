@@ -244,6 +244,12 @@ class TestJobCRUD:
         job = create_job(prompt="One-shot", schedule="1h")
         assert job["repeat"]["times"] == 1
 
+    def test_rejects_repeat_count_greater_than_one_for_once_schedule(self, tmp_cron_dir):
+        with pytest.raises(ValueError, match="one-shot schedules run exactly once"):
+            create_job(prompt="Poll repeatedly", schedule="10m", repeat=144)
+
+        assert load_jobs() == []
+
     def test_rejects_stale_past_one_shot_at_creation(self, tmp_cron_dir, monkeypatch):
         now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=timezone.utc)
         monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
@@ -278,6 +284,26 @@ class TestUpdateJob:
         # Verify persisted to disk
         fetched = get_job(job["id"])
         assert fetched["name"] == "New Name"
+
+    def test_rejects_update_that_combines_once_schedule_with_repeats(self, tmp_cron_dir):
+        job = create_job(prompt="Poll repeatedly", schedule="every 10m", repeat=144)
+        before = get_job(job["id"])
+
+        with pytest.raises(ValueError, match="one-shot schedules run exactly once"):
+            update_job(job["id"], {"schedule": parse_schedule("10m")})
+
+        assert get_job(job["id"]) == before
+
+    def test_rejects_repeat_increase_on_existing_once_schedule(self, tmp_cron_dir):
+        job = create_job(prompt="Run later", schedule="10m")
+        before = get_job(job["id"])
+        assert before is not None
+        repeat_state = {**before["repeat"], "times": 2}
+
+        with pytest.raises(ValueError, match="one-shot schedules run exactly once"):
+            update_job(job["id"], {"repeat": repeat_state})
+
+        assert get_job(job["id"]) == before
 
 
 class TestPauseResumeJob:
