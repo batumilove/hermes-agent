@@ -249,8 +249,36 @@ def record_obligation(
     _prune(timeout=_HOT_PATH_SQLITE_TIMEOUT_SECONDS)
 
 
-def mark_attempting(obligation_id: str) -> None:
-    _update_state(obligation_id, "attempting")
+def mark_attempting(
+    obligation_id: str, expected_attempts: Optional[int] = None
+) -> bool:
+    """Persist the pre-send ambiguity boundary.
+
+    Recovery callers pass ``expected_attempts`` to prove the exact row claimed
+    by this process still exists.  A zero-row update is a hard signal not to
+    perform the network send.
+    """
+    if expected_attempts is None:
+        return _update_state(obligation_id, "attempting")
+    pid, started = _owner_stamp()
+    with _hot_path_transaction() as conn:
+        cursor = conn.execute(
+            """UPDATE delivery_obligations
+               SET state=?, updated_at=?, last_error=?
+               WHERE obligation_id=? AND owner_pid=?
+                 AND owner_started_at IS ? AND attempts=?
+                 AND state IN ('pending', 'attempting', 'failed')""",
+            (
+                "attempting",
+                time.time(),
+                None,
+                obligation_id,
+                pid,
+                started,
+                expected_attempts,
+            ),
+        )
+    return cursor.rowcount == 1
 
 
 def mark_delivered(obligation_id: str) -> None:
@@ -261,14 +289,15 @@ def mark_failed(obligation_id: str, error: str = "") -> None:
     _update_state(obligation_id, "failed", error=error)
 
 
-def _update_state(obligation_id: str, state: str, error: str = "") -> None:
+def _update_state(obligation_id: str, state: str, error: str = "") -> bool:
     with _hot_path_transaction() as conn:
-        conn.execute(
+        cursor = conn.execute(
             """UPDATE delivery_obligations
                SET state=?, updated_at=?, last_error=?
                WHERE obligation_id=?""",
             (state, time.time(), error[:500] if error else None, obligation_id),
         )
+    return cursor.rowcount == 1
 
 
 def sweep_recoverable(

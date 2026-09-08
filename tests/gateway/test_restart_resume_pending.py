@@ -1452,6 +1452,32 @@ async def test_direct_boot_task_cancellation_releases_claim_waiter():
 
 
 @pytest.mark.asyncio
+async def test_prestart_boot_task_cancellation_releases_claim_waiter(monkeypatch):
+    """Cancellation before _boot_sends starts must also open the claim gate."""
+    import gateway.run as run_module
+
+    runner, _adapter = make_restart_runner()
+    runner._background_tasks = set()
+    real_create_task = asyncio.create_task
+
+    def _cancel_before_first_step(coro):
+        task = real_create_task(coro)
+        task.cancel()
+        return task
+
+    monkeypatch.setattr(run_module.asyncio, "create_task", _cancel_before_first_step)
+    startup_task = real_create_task(
+        runner._await_startup_boot_sends(
+            planned_restart_notification_pending=False,
+        )
+    )
+    await asyncio.wait_for(
+        startup_task,
+        timeout=1,
+    )
+
+
+@pytest.mark.asyncio
 async def test_direct_boot_task_cancellation_rolls_back_unsent_claims(monkeypatch):
     """Claims are attempt-neutral when shutdown cancels before any send."""
     from gateway import delivery_ledger

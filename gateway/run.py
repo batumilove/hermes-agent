@@ -12914,6 +12914,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             tasks = self._background_tasks
         tasks.add(boot_task)
         boot_task.add_done_callback(tasks.discard)
+        # A task cancelled before its coroutine's first instruction never runs
+        # _boot_sends()'s finally block.  The done callback closes that narrow
+        # pre-start cancellation window so startup cannot wait forever.
+        boot_task.add_done_callback(lambda _done: claim_ready.set())
         boot_task.add_done_callback(self._log_background_boot_send_result)
 
         # Shield the worker-owned claim/send workflow from caller
@@ -13051,6 +13055,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 mark_attempting,
                 mark_delivered,
                 mark_failed,
+                release_recoverable_claims,
             )
         except Exception:
             logger.debug("delivery ledger import failed", exc_info=True)
@@ -13070,8 +13075,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 continue
             adapter = self.adapters.get(platform)
             if adapter is None:
-                # Platform not connected this boot — leave the row claimed;
-                # attempts cap + stale cutoff bound the retries on later boots.
+                # The adapter was connected when the sweep built its
+                # deliverable set but disappeared before send. Restore this
+                # unconsumed claim so it neither spends an attempt nor remains
+                # owned by a still-live process.
+                try:
+                    await run_sync_in_detached_daemon_thread(
+                        release_recoverable_claims, [row]
+                    )
+                    claimed.remove(row)
+                except Exception:
+                    logger.error(
+                        "obligation %s: failed to release claim after adapter disappeared",
+                        row["obligation_id"],
+                        exc_info=True,
+                    )
                 continue
             content = row["content"]
             if row.get("needs_marker"):
@@ -13081,10 +13099,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
 
             try:
-                await run_sync_in_detached_daemon_thread(
-                    mark_attempting, row["obligation_id"]
+                transitioned = await run_sync_in_detached_daemon_thread(
+                    mark_attempting, row["obligation_id"], row["attempts"]
                 )
+            except Exception:
+                logger.warning(
+                    "obligation %s: failed to persist attempting state; suppressing send",
+                    row["obligation_id"],
+                    exc_info=True,
+                )
+                try:
+                    await run_sync_in_detached_daemon_thread(
+                        release_recoverable_claims, [row]
+                    )
+                    claimed.remove(row)
+                except Exception:
+                    logger.error(
+                        "obligation %s: failed to release claim after attempting write error",
+                        row["obligation_id"],
+                        exc_info=True,
+                    )
+                continue
+            if not transitioned:
+                # The exact claimed row no longer exists. Never send unless
+                # the durable crash-ambiguity transition is proven.
                 claimed.remove(row)
+                logger.warning(
+                    "obligation %s: claimed row changed before attempting; suppressing send",
+                    row["obligation_id"],
+                )
+                continue
+            claimed.remove(row)
+            try:
                 result = await adapter.send(
                     chat_id=row["chat_id"],
                     content=content,

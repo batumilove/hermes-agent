@@ -1326,6 +1326,26 @@ class TestChildCredentialLeasing(unittest.TestCase):
         child._swap_credential.assert_called_once_with(leased_entry)
         child._credential_pool.release_lease.assert_called_once_with("cred-b")
 
+    def test_run_single_child_fails_closed_if_leased_entry_disappears(self):
+        from tools.delegate_tool import _run_single_child
+
+        child = MagicMock()
+        child._credential_pool = MagicMock()
+        child._credential_pool.acquire_lease.return_value = "cred-gone"
+        child._credential_pool.entries.return_value = []
+
+        result = _run_single_child(
+            task_index=0,
+            goal="Do not use an unleased credential",
+            child=child,
+            parent_agent=_make_mock_parent(),
+        )
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("cred-gone", result["error"])
+        child.run_conversation.assert_not_called()
+        child._credential_pool.release_lease.assert_called_once_with("cred-gone")
+
     def test_run_single_child_releases_lease_after_failure(self):
         from tools.delegate_tool import _run_single_child
 

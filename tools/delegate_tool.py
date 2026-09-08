@@ -2883,7 +2883,7 @@ def _run_single_child(
         # child close and releases all worker-owned state.
         if child_pool is not None:
             leased_cred_id = child_pool.acquire_lease()
-            if leased_cred_id is not None:
+            if isinstance(leased_cred_id, str):
                 try:
                     # Bind the exact identity whose lease was incremented.
                     # ``current()`` is a pool-global cursor and another child
@@ -2897,10 +2897,20 @@ def _run_single_child(
                         None,
                     )
                     swap_credential = getattr(child, "_swap_credential", None)
-                    if leased_entry is not None and callable(swap_credential):
-                        swap_credential(leased_entry)
-                except Exception as exc:
-                    logger.debug("Failed to bind child to leased credential: %s", exc)
+                    if leased_entry is None:
+                        raise RuntimeError(
+                            "leased credential disappeared before child binding: "
+                            f"{leased_cred_id}"
+                        )
+                    if not callable(swap_credential):
+                        raise RuntimeError(
+                            "delegated child cannot bind its leased credential"
+                        )
+                    swap_credential(leased_entry)
+                except Exception:
+                    # Binding a different credential while holding this lease
+                    # would break both provider isolation and lease accounting.
+                    raise
         _heartbeat_thread.start()
         if child_progress_cb:
             try:
