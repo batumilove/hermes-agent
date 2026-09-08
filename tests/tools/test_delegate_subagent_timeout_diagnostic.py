@@ -343,7 +343,7 @@ class TestRunSingleChildTimeoutDump:
                 self.closed = threading.Event()
                 self._credential_pool = MagicMock()
                 self._credential_pool.acquire_lease.return_value = "cred-a"
-                self._credential_pool.current.return_value = MagicMock(id="cred-a")
+                self._credential_pool.entries.return_value = [MagicMock(id="cred-a")]
                 self._swap_credential = MagicMock()
 
             def run_conversation(self, user_message, task_id=None, stream_callback=None):
