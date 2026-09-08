@@ -133,3 +133,27 @@ def test_acquire_lease_rolls_back_partial_success_when_refresh_raises():
         pool.acquire_lease()
 
     assert pool._active_leases == {}
+
+
+def test_acquire_lease_reselects_when_refresh_removes_chosen_entry():
+    """A sibling refresh cannot leave a lease bound to a vanished entry."""
+    available = _entry("available")
+    refreshed_entry = _entry("pending")
+    pool = _bare_pool([available, refreshed_entry])
+    state = {"refreshed": False}
+
+    def fake_available(**_kwargs):
+        if not state["refreshed"]:
+            return [available], [(refreshed_entry, "single-use-token")]
+        return list(pool._entries), []
+
+    def fake_refresh(pending):
+        del pending
+        state["refreshed"] = True
+        pool._entries = [refreshed_entry]
+
+    pool._available_entries = fake_available
+    pool._refresh_pending_entries = fake_refresh
+
+    assert pool.acquire_lease() == "pending"
+    assert pool._active_leases == {"pending": 1}
