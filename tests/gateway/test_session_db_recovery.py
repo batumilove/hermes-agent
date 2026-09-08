@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from gateway.session_db_recovery import RecoverableHandleCache
 
@@ -16,6 +19,35 @@ class _Clock:
 
     def __call__(self) -> float:
         return self.now
+
+
+@pytest.mark.asyncio
+async def test_async_runner_session_db_resolution_does_not_block_event_loop() -> None:
+    """A cache miss/open must run off the gateway event-loop thread."""
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    opened = threading.Event()
+    loop_progressed = threading.Event()
+    handle = object()
+
+    def slow_open(*, raise_on_error=False):
+        assert raise_on_error is False
+        opened.set()
+        assert loop_progressed.wait(timeout=5)
+        return handle
+
+    setattr(runner, "_open_session_db_for_active_scope", slow_open)
+
+    async def witness() -> None:
+        while not opened.is_set():
+            await asyncio.sleep(0)
+        loop_progressed.set()
+
+    resolved, _ = await asyncio.gather(
+        runner._async_session_db_for_active_scope(), witness()
+    )
+    assert resolved is handle
 
 
 def test_failed_open_obeys_backoff_then_recovers() -> None:

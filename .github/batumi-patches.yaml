@@ -1118,6 +1118,7 @@ patches:
       - tests/gateway/test_platform_reconnect.py
       - tests/gateway/test_restart_resume_pending.py
       - tests/gateway/test_scale_to_zero_watcher.py
+      - tests/gateway/test_session_db_recovery.py
       - tests/gateway/test_shutdown_aggregate_budget_contract.py
       - tests/gateway/test_shutdown_cache_cleanup.py
       - tests/gateway/test_startup_restart_race.py
@@ -1125,7 +1126,7 @@ patches:
       - tests/gateway/test_turn_lease.py
       - tests/hermes_cli/test_pre_command_hook.py
     tests:
-      - scripts/run_tests.sh tests/agent/test_async_utils.py tests/gateway/test_external_drain_control.py tests/gateway/test_restart_resume_pending.py tests/gateway/test_platform_reconnect.py tests/gateway/test_startup_restart_race.py tests/gateway/test_multiplex_adapter_registry.py tests/gateway/test_api_server.py tests/gateway/test_adapter_connect_classification.py tests/gateway/test_64674_multiplex_primary_token_scope.py tests/gateway/test_clarify_thread_followup_not_swallowed.py tests/gateway/test_scale_to_zero_watcher.py tests/gateway/test_async_session_store.py tests/gateway/test_gateway_command_dispatch_minimal.py tests/gateway/test_shutdown_aggregate_budget_contract.py tests/gateway/test_shutdown_cache_cleanup.py tests/gateway/test_status.py tests/gateway/test_turn_lease.py tests/hermes_cli/test_pre_command_hook.py
+      - scripts/run_tests.sh tests/agent/test_async_utils.py tests/gateway/test_external_drain_control.py tests/gateway/test_restart_resume_pending.py tests/gateway/test_platform_reconnect.py tests/gateway/test_startup_restart_race.py tests/gateway/test_multiplex_adapter_registry.py tests/gateway/test_api_server.py tests/gateway/test_adapter_connect_classification.py tests/gateway/test_64674_multiplex_primary_token_scope.py tests/gateway/test_clarify_thread_followup_not_swallowed.py tests/gateway/test_scale_to_zero_watcher.py tests/gateway/test_async_session_store.py tests/gateway/test_session_db_recovery.py tests/gateway/test_gateway_command_dispatch_minimal.py tests/gateway/test_shutdown_aggregate_budget_contract.py tests/gateway/test_shutdown_cache_cleanup.py tests/gateway/test_status.py tests/gateway/test_turn_lease.py tests/hermes_cli/test_pre_command_hook.py
       - python -m py_compile agent/async_utils.py gateway/platforms/api_server.py gateway/platforms/base.py gateway/run.py gateway/session.py gateway/slash_commands.py gateway/status.py hermes_state.py
     retirement: Remove when upstream moves equivalent status and active-agent persistence off the event loop with cancellation-safe shutdown and matching regression coverage.
 

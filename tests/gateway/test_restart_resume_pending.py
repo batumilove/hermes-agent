@@ -1422,3 +1422,69 @@ async def test_cancelled_boot_claim_continues_to_redelivery():
     runner._redeliver_claimed_obligations.assert_awaited_once_with(claimed)
 
 
+@pytest.mark.asyncio
+async def test_direct_boot_task_cancellation_releases_claim_waiter():
+    """Shutdown cancellation during claim cannot strand claim_ready.wait()."""
+    runner, _adapter = make_restart_runner()
+    runner._background_tasks = set()
+    claim_started = asyncio.Event()
+
+    async def _never_claims() -> list:
+        claim_started.set()
+        await asyncio.Event().wait()
+        return []
+
+    runner._claim_pending_obligations = _never_claims
+    runner._send_restart_notification = AsyncMock(return_value=None)
+    runner._redeliver_claimed_obligations = AsyncMock(return_value=0)
+
+    waiter = asyncio.create_task(
+        runner._await_startup_boot_sends(
+            planned_restart_notification_pending=False,
+        )
+    )
+    await asyncio.wait_for(claim_started.wait(), timeout=1)
+    boot_task = next(iter(runner._background_tasks))
+    boot_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await boot_task
+    await asyncio.wait_for(waiter, timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_direct_boot_task_cancellation_rolls_back_unsent_claims(monkeypatch):
+    """Claims are attempt-neutral when shutdown cancels before any send."""
+    from gateway import delivery_ledger
+
+    runner, _adapter = make_restart_runner()
+    runner._background_tasks = set()
+    claimed = [{"obligation_id": "owed-response", "attempts": 1}]
+    send_started = asyncio.Event()
+
+    runner._claim_pending_obligations = AsyncMock(return_value=claimed)
+
+    async def _blocked_restart_send():
+        send_started.set()
+        await asyncio.Event().wait()
+
+    runner._send_restart_notification = _blocked_restart_send
+    runner._redeliver_claimed_obligations = AsyncMock(return_value=0)
+    released = MagicMock(return_value=1)
+    monkeypatch.setattr(delivery_ledger, "release_recoverable_claims", released)
+
+    waiter = asyncio.create_task(
+        runner._await_startup_boot_sends(
+            planned_restart_notification_pending=False,
+        )
+    )
+    await asyncio.wait_for(send_started.wait(), timeout=1)
+    boot_task = next(iter(runner._background_tasks))
+    boot_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await boot_task
+    await asyncio.wait_for(waiter, timeout=1)
+
+    released.assert_called_once_with(claimed)
+    runner._redeliver_claimed_obligations.assert_not_awaited()
+
+

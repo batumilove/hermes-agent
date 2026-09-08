@@ -72,6 +72,11 @@ def _make_fake_runner(session_db, *, fail_process=False):
 
     fake = types.SimpleNamespace()
     fake._session_db = AsyncSessionDB(session_db)
+
+    async def _async_session_db_for_active_scope():
+        return fake._session_db
+
+    fake._async_session_db_for_active_scope = _async_session_db_for_active_scope
     # _running yields True for the first loop check, then False so the loop
     # exits after a single tick.
     states = iter([True, False])

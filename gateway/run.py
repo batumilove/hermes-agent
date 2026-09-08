@@ -7576,6 +7576,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return self._session_db_pinned
         return self._open_session_db_for_active_scope()
 
+    async def _async_session_db_for_active_scope(self) -> Any:
+        """Resolve task-local SessionDB without blocking the event loop."""
+        pinned = getattr(self, "_session_db_pinned", _SESSION_DB_UNPINNED)
+        if pinned is not _SESSION_DB_UNPINNED:
+            return pinned
+        return await run_sync_in_detached_daemon_thread(
+            self._open_session_db_for_active_scope
+        )
+
     @_session_db.setter
     def _session_db(self, value) -> None:
         self._session_db_pinned = value
@@ -12870,19 +12879,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         claim_ready = asyncio.Event()
 
         async def _boot_sends() -> None:
-            claimed = await self._claim_pending_obligations()
-            # The resume scheduler may run only after claims are durable and
-            # their resume flags have been cleared.
-            claim_ready.set()
-            await self._send_restart_notification()
-            if planned_restart_notification_pending:
-                try:
-                    await self._send_home_channel_startup_notifications(
-                        skip_targets=None,
+            claimed: List[Dict[str, Any]] = []
+            try:
+                claimed = await self._claim_pending_obligations()
+                # The resume scheduler may run only after claims are durable and
+                # their resume flags have been cleared.
+                claim_ready.set()
+                await self._send_restart_notification()
+                if planned_restart_notification_pending:
+                    try:
+                        await self._send_home_channel_startup_notifications(
+                            skip_targets=None,
+                        )
+                    finally:
+                        _clear_planned_restart_notification()
+                await self._redeliver_claimed_obligations(claimed)
+            except asyncio.CancelledError:
+                if claimed:
+                    from gateway.delivery_ledger import release_recoverable_claims
+
+                    await run_sync_in_detached_daemon_thread(
+                        release_recoverable_claims, claimed
                     )
-                finally:
-                    _clear_planned_restart_notification()
-            await self._redeliver_claimed_obligations(claimed)
+                raise
+            finally:
+                # Shutdown may cancel this worker while its claim awaits.
+                # Never strand the startup scheduler on claim_ready.wait().
+                claim_ready.set()
 
         boot_task = asyncio.create_task(_boot_sends())
         tasks = getattr(self, "_background_tasks", None)
@@ -13025,6 +13048,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             from gateway.delivery_ledger import (
                 RECOVERED_MARKER,
+                mark_attempting,
                 mark_delivered,
                 mark_failed,
             )
@@ -13033,7 +13057,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return 0
 
         redelivered = 0
-        for row in claimed:
+        # ``claimed`` is also the caller's rollback set.  A row leaves it only
+        # once the durable state says a network send is about to begin.
+        for row in list(claimed):
             try:
                 platform = Platform(row["platform"])
             except Exception:
@@ -13055,6 +13081,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
 
             try:
+                await run_sync_in_detached_daemon_thread(
+                    mark_attempting, row["obligation_id"]
+                )
+                claimed.remove(row)
                 result = await adapter.send(
                     chat_id=row["chat_id"],
                     content=content,
@@ -14712,26 +14742,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         await asyncio.sleep(5)
         while self._running:
             try:
-                if self._session_db is None:
+                session_db = await self._async_session_db_for_active_scope()
+                if session_db is None:
                     await asyncio.sleep(interval)
                     continue
-                pending = await self._session_db.list_pending_handoffs()
+                pending = await session_db.list_pending_handoffs()
                 for row in pending:
                     session_id = row.get("id")
                     if not session_id:
                         continue
-                    if not await self._session_db.claim_handoff(session_id):
+                    if not await session_db.claim_handoff(session_id):
                         # Another tick or another gateway already claimed it.
                         continue
                     try:
                         await self._process_handoff(row)
-                        await self._session_db.complete_handoff(session_id)
+                        await session_db.complete_handoff(session_id)
                     except Exception as exc:
                         logger.warning(
                             "Handoff for session %s failed: %s",
                             session_id, exc, exc_info=True,
                         )
-                        await self._session_db.fail_handoff(session_id, str(exc))
+                        await session_db.fail_handoff(session_id, str(exc))
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -17895,7 +17926,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         route.  Unknown ownership remains fail-closed; the result is still
         available in the delegation records.
         """
-        session_db = cast(Any, self._session_db)
+        session_db = cast(Any, await self._async_session_db_for_active_scope())
         if session_db is None:
             logger.warning(
                 "Async-delegation completion has no session database; "
@@ -20781,11 +20812,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             session_entry = resolved_entry
         self._cache_session_source(session_key, source)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
+            topic_session_db = await self._async_session_db_for_active_scope()
             try:
-                binding = (await self._session_db.get_telegram_topic_binding(
+                binding = (await topic_session_db.get_telegram_topic_binding(
                     chat_id=str(source.chat_id),
                     thread_id=str(source.thread_id),
-                )) if self._session_db else None
+                )) if topic_session_db else None
             except Exception:
                 logger.debug("Failed to read Telegram topic binding", exc_info=True)
                 binding = None
@@ -20797,9 +20829,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # reloading the oversized parent transcript (#20470/#29712/
                 # #33414). Returns the input unchanged when the session isn't
                 # a compression parent, so this is cheap and safe.
-                if bound_session_id and self._session_db is not None:
+                if bound_session_id and topic_session_db is not None:
                     try:
-                        canonical_session_id = await self._session_db.get_compression_tip(
+                        canonical_session_id = await topic_session_db.get_compression_tip(
                             bound_session_id,
                         )
                     except Exception:
@@ -21367,8 +21399,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             ]
 
                             if len(_hyg_msgs) >= 4:
+                                _hyg_async_session_db = (
+                                    await self._async_session_db_for_active_scope()
+                                )
                                 try:
-                                    _hyg_session_row = await self._session_db.get_session(
+                                    _hyg_session_row = await _hyg_async_session_db.get_session(
                                         session_entry.session_id
                                     )
                                 except Exception as exc:
@@ -21382,7 +21417,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                         exc,
                                         exc_info=True,
                                     )
-                                _hyg_session_db = getattr(self._session_db, "_db", self._session_db)
+                                _hyg_session_db = getattr(
+                                    _hyg_async_session_db,
+                                    "_db",
+                                    _hyg_async_session_db,
+                                )
                                 _hyg_agent = AIAgent(
                                     **_hyg_runtime,
                                     model=_hyg_model,
@@ -22523,7 +22562,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # the flag (default = self._session_db is not None) keeps the
             # persistence contract explicit and lets any future non-persisting
             # runtime opt into a gateway-side write by returning False.
-            agent_persisted = agent_result.get("agent_persisted", self._session_db is not None)
+            turn_session_db = await self._async_session_db_for_active_scope()
+            agent_persisted = agent_result.get(
+                "agent_persisted", turn_session_db is not None
+            )
 
             # Find only the NEW messages from this turn (skip history we loaded).
             # Use the filtered history length (history_offset) that was actually
@@ -25126,7 +25168,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     async def _disable_telegram_topic_mode_for_chat(self, source: SessionSource) -> str:
         """Cleanly disable topic mode for a chat via /topic off."""
-        if not self._session_db:
+        session_db = await self._async_session_db_for_active_scope()
+        if not session_db:
             from hermes_state import format_session_db_unavailable
             return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
         chat_id = str(source.chat_id or "")
@@ -25134,7 +25177,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "Could not determine chat ID."
         # No-op if never enabled.
         try:
-            currently_enabled = await self._session_db.is_telegram_topic_mode_enabled(
+            currently_enabled = await session_db.is_telegram_topic_mode_enabled(
                 chat_id=chat_id,
                 user_id=str(source.user_id or ""),
             )
@@ -25143,7 +25186,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not currently_enabled:
             return "Multi-session topic mode is not currently enabled for this chat."
         try:
-            await self._session_db.disable_telegram_topic_mode(chat_id=chat_id)
+            await session_db.disable_telegram_topic_mode(chat_id=chat_id)
         except Exception as exc:
             logger.exception("Failed to disable Telegram topic mode")
             return f"Failed to disable topic mode: {exc}"
@@ -25170,12 +25213,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "new topic for it.",
             "",
         ]
+        session_db = await self._async_session_db_for_active_scope()
         try:
-            sessions = await self._session_db.list_unlinked_telegram_sessions_for_user(
+            sessions = await session_db.list_unlinked_telegram_sessions_for_user(
                 chat_id=str(source.chat_id),
                 user_id=str(source.user_id),
                 limit=10,
-            )
+            ) if session_db else []
         except Exception:
             logger.debug("Failed to list unlinked Telegram sessions", exc_info=True)
             sessions = []
@@ -25210,11 +25254,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     async def _restore_telegram_topic_session(self, event: MessageEvent, raw_session_id: str) -> str:
         """Restore an existing Telegram-owned Hermes session into this topic."""
         source = event.source
-        session_id = await self._session_db.resolve_session_id(raw_session_id.strip())
+        session_db = await self._async_session_db_for_active_scope()
+        if session_db is None:
+            from hermes_state import format_session_db_unavailable
+
+            return format_session_db_unavailable(
+                prefix=t("gateway.shared.session_db_unavailable_prefix")
+            )
+        session_id = await session_db.resolve_session_id(raw_session_id.strip())
         if not session_id:
             return f"Session not found: {raw_session_id.strip()}"
 
-        session = await self._session_db.get_session(session_id)
+        session = await session_db.get_session(session_id)
         if not session:
             return f"Session not found: {raw_session_id.strip()}"
         if str(session.get("source") or "") != "telegram":
@@ -25222,8 +25273,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if str(session.get("user_id") or "") != str(source.user_id):
             return "That session does not belong to this Telegram user."
 
-        linked = await self._session_db.is_telegram_session_linked_to_topic(session_id=session_id)
-        current_binding = await self._session_db.get_telegram_topic_binding(
+        linked = await session_db.is_telegram_session_linked_to_topic(session_id=session_id)
+        current_binding = await session_db.get_telegram_topic_binding(
             chat_id=str(source.chat_id),
             thread_id=str(source.thread_id),
         )
@@ -25233,7 +25284,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         session_key = self._session_key_for_source(source)
         try:
-            await self._session_db.bind_telegram_topic(
+            await session_db.bind_telegram_topic(
                 chat_id=str(source.chat_id),
                 thread_id=str(source.thread_id),
                 user_id=str(source.user_id),
@@ -25246,10 +25297,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return "That session is already linked to another Telegram topic."
             raise
 
-        title = await self._session_db.get_session_title(session_id) or session_id
+        title = await session_db.get_session_title(session_id) or session_id
         last_assistant = None
         try:
-            for message in reversed(await self._session_db.get_messages(session_id)):
+            for message in reversed(await session_db.get_messages(session_id)):
                 if message.get("role") != "assistant":
                     continue
                 projected = project_compaction_message_for_display(message)
@@ -28716,14 +28767,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         guard spuriously.  Fail-safe: the legacy 3-tuple shape (no
         ``session_id``) is still re-baselined as before.
         """
-        if self._session_db is None or not session_id:
+        if not session_id:
+            return
+        session_db = await self._async_session_db_for_active_scope()
+        if session_db is None:
             return
         _cache_lock = getattr(self, "_agent_cache_lock", None)
         _cache = getattr(self, "_agent_cache", None)
         if not _cache_lock or _cache is None:
             return
         try:
-            _sess_row = await self._session_db.get_session(session_id)
+            _sess_row = await session_db.get_session(session_id)
             _live = _sess_row.get("message_count", 0) if _sess_row else None
         except Exception:
             return

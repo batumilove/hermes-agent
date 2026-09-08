@@ -219,6 +219,36 @@ class TestGatewayRedeliverySweep:
         )
 
     @pytest.mark.asyncio
+    async def test_recovered_pending_row_is_marked_attempting_before_send(
+        self, monkeypatch
+    ):
+        """A crash during send must leave an ambiguity marker for next boot."""
+        order = []
+        adapter = MagicMock()
+
+        async def send(**_kwargs):
+            order.append("send")
+            return MagicMock(success=True, error="")
+
+        adapter.send = send
+        runner = self._runner(adapter)
+        row = {
+            "obligation_id": "ob-1",
+            "platform": "slack",
+            "chat_id": "C1",
+            "thread_id": None,
+            "content": "answer",
+            "needs_marker": False,
+            "attempts": 1,
+        }
+        monkeypatch.setattr(
+            dl, "mark_attempting", lambda oid: order.append(f"attempting:{oid}")
+        )
+
+        assert await runner._redeliver_claimed_obligations([row]) == 1
+        assert order == ["attempting:ob-1", "send"]
+
+    @pytest.mark.asyncio
     async def test_attempting_redelivers_with_marker(self):
         _record()
         dl.mark_attempting("ob-1")

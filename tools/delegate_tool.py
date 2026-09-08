@@ -2885,7 +2885,17 @@ def _run_single_child(
             leased_cred_id = child_pool.acquire_lease()
             if leased_cred_id is not None:
                 try:
-                    leased_entry = child_pool.current()
+                    # Bind the exact identity whose lease was incremented.
+                    # ``current()`` is a pool-global cursor and another child
+                    # may move it between acquire_lease() and this lookup.
+                    leased_entry = next(
+                        (
+                            entry
+                            for entry in child_pool.entries()
+                            if entry.id == leased_cred_id
+                        ),
+                        None,
+                    )
                     swap_credential = getattr(child, "_swap_credential", None)
                     if leased_entry is not None and callable(swap_credential):
                         swap_credential(leased_entry)

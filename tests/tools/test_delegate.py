@@ -1267,6 +1267,35 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
 
 
 class TestChildCredentialLeasing(unittest.TestCase):
+    def test_run_single_child_binds_exact_leased_credential_not_global_cursor(self):
+        from tools.delegate_tool import _run_single_child
+
+        leased_entry = MagicMock(id="cred-b")
+        wrong_current = MagicMock(id="cred-a")
+        child = MagicMock()
+        child._credential_pool = MagicMock()
+        child._credential_pool.acquire_lease.return_value = "cred-b"
+        child._credential_pool.current.return_value = wrong_current
+        child._credential_pool.entries.return_value = [wrong_current, leased_entry]
+        child.run_conversation.return_value = {
+            "final_response": "done",
+            "completed": True,
+            "interrupted": False,
+            "api_calls": 1,
+            "messages": [],
+        }
+
+        result = _run_single_child(
+            task_index=0,
+            goal="Bind exact lease",
+            child=child,
+            parent_agent=_make_mock_parent(),
+        )
+
+        self.assertEqual(result["status"], "completed")
+        child._swap_credential.assert_called_once_with(leased_entry)
+        child._credential_pool.release_lease.assert_called_once_with("cred-b")
+
     def test_run_single_child_acquires_and_releases_lease(self):
         from tools.delegate_tool import _run_single_child
 
@@ -1276,7 +1305,7 @@ class TestChildCredentialLeasing(unittest.TestCase):
         child = MagicMock()
         child._credential_pool = MagicMock()
         child._credential_pool.acquire_lease.return_value = "cred-b"
-        child._credential_pool.current.return_value = leased_entry
+        child._credential_pool.entries.return_value = [leased_entry]
         child.run_conversation.return_value = {
             "final_response": "done",
             "completed": True,
@@ -1303,7 +1332,7 @@ class TestChildCredentialLeasing(unittest.TestCase):
         child = MagicMock()
         child._credential_pool = MagicMock()
         child._credential_pool.acquire_lease.return_value = "cred-a"
-        child._credential_pool.current.return_value = MagicMock(id="cred-a")
+        child._credential_pool.entries.return_value = [MagicMock(id="cred-a")]
         child.run_conversation.side_effect = RuntimeError("boom")
 
         result = _run_single_child(
