@@ -2340,14 +2340,27 @@ class CredentialPool:
                 if chosen_id is not None:
                     self.release_lease(chosen_id)
                 raise
-            # Mirror select(): if nothing was leasable but we just refreshed
-            # deferred single-use-token entries, retry now that they are back
-            # in rotation. Without this, a pool whose only entries all needed
-            # a refresh returns None even though the refresh succeeded — the
-            # caller sees "no credentials available" and fails a request that
-            # should have gone through.
-            if chosen_id is None:
-                chosen_id, _ = self._acquire_lease_under_lock(credential_id)
+            # Revalidate the already-recorded lease after refresh.  Deferred
+            # refresh runs outside the pool lock and may quarantine/remove an
+            # entry while merging refreshed state.  Never return a lease for
+            # an entry that no longer exists; release it and use the same
+            # one-shot re-selection path below.
+            with self._lock:
+                if chosen_id is not None and not any(
+                    entry.id == chosen_id for entry in self._entries
+                ):
+                    self.release_lease(chosen_id)
+                    if self._current_id == chosen_id:
+                        self._current_id = None
+                    chosen_id = None
+
+                # Mirror select(): if nothing was leasable, or refresh removed
+                # the initially leased entry, retry now that refreshed entries
+                # are back in rotation.  The retry deliberately ignores any
+                # new pending work so acquisition remains bounded to one
+                # deferred-refresh pass.
+                if chosen_id is None:
+                    chosen_id, _ = self._acquire_lease_under_lock(credential_id)
         return chosen_id
 
     def _acquire_lease_under_lock(
