@@ -12783,6 +12783,11 @@ def main():
     parser, subparsers, chat_parser = build_top_level_parser()
     chat_parser.set_defaults(func=cmd_chat)
 
+    # Canonical read-only inspection path for the hot SQLite session store.
+    from hermes_cli.state_db_cmd import register_cli as register_state_db_cli
+
+    register_state_db_cli(subparsers)
+
     # =========================================================================
     # model command  (parser built in hermes_cli/subcommands/model.py)
     # =========================================================================

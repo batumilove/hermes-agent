@@ -106,3 +106,75 @@ def test_validate_workdir_still_blocks_metachars_in_unicode_paths():
 def test_count_real_sudo_invocations_ignores_mentions(monkeypatch):
     assert terminal_tool._count_real_sudo_invocations("grep sudo README.md") == 0
     assert terminal_tool._count_real_sudo_invocations("sudo a; sudo b") == 2
+
+
+def test_live_state_db_guard_cannot_be_bypassed_with_force(monkeypatch):
+    monkeypatch.setattr(
+        terminal_tool,
+        "_check_live_state_db_guard",
+        lambda **_kwargs: (True, "test live state.db block"),
+        raising=False,
+    )
+
+    result = terminal_tool.json.loads(
+        terminal_tool.terminal_tool("printf should-not-run", force=True)
+    )
+
+    assert result["status"] == "blocked"
+    assert result["exit_code"] == 1
+    assert result["output"] == ""
+    assert result["error"] == "Blocked: test live state.db block."
+
+
+def test_live_state_db_guard_bridge_forwards_host_access(monkeypatch):
+    from tools import live_state_db_guard
+
+    seen = {}
+
+    def _check(command, **kwargs):
+        seen["command"] = command
+        seen.update(kwargs)
+        return False, None
+
+    monkeypatch.setattr(live_state_db_guard, "check_live_state_db_command", _check)
+
+    assert terminal_tool._check_live_state_db_guard(
+        command="sqlite3 /host/state.db",
+        env_type="docker",
+        cwd="/work",
+        has_host_access=True,
+        target_aliases=("/db/state.db",),
+    ) == (False, None)
+    assert seen == {
+        "command": "sqlite3 /host/state.db",
+        "env_type": "docker",
+        "cwd": "/work",
+        "has_host_access": True,
+        "target_aliases": ("/db/state.db",),
+    }
+
+
+def test_docker_live_state_db_aliases_translate_configured_bind_mount(tmp_path):
+    profile_home = tmp_path / "profile"
+    target = profile_home / "state.db"
+    config = {
+        "env_type": "docker",
+        "docker_volumes": [f"{profile_home}:/db:ro"],
+    }
+
+    assert terminal_tool._docker_live_state_db_aliases(
+        config, target=target, task_id="default"
+    ) == ("/db/state.db",)
+
+
+def test_docker_live_state_db_aliases_translate_automatic_workspace_mount(tmp_path):
+    target = tmp_path / ".hermes" / "state.db"
+    config = {
+        "env_type": "docker",
+        "host_cwd": str(tmp_path),
+        "docker_mount_cwd_to_workspace": True,
+    }
+
+    assert terminal_tool._docker_live_state_db_aliases(
+        config, target=target, task_id="default"
+    ) == ("/workspace/.hermes/state.db",)
