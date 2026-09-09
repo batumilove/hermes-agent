@@ -9,6 +9,11 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "osv-scanner.yml"
 SHA_PIN_RE = re.compile(r"^[^@]+@[0-9a-f]{40}$")
+STAGED_LOCKFILES = {
+    "nix/node-gyp-11-4-0-package-lock.json": (
+        ".osv-lockfiles/node-gyp-11-4-0/package-lock.json"
+    ),
+}
 
 
 def _workflow() -> dict:
@@ -31,6 +36,12 @@ def _uses_step(prefix: str) -> dict:
         and step["uses"].startswith(prefix)
     ]
     assert len(matches) == 1, f"expected exactly one {prefix} step"
+    return matches[0]
+
+
+def _named_step(name: str) -> dict:
+    matches = [step for step in _scan_steps() if step.get("name") == name]
+    assert len(matches) == 1, f"expected exactly one {name!r} step"
     return matches[0]
 
 
@@ -57,14 +68,58 @@ def test_osv_scan_covers_every_repository_lockfile() -> None:
     tracked = subprocess.check_output(
         ["git", "ls-files", "-z"], cwd=ROOT
     ).decode("utf-8").split("\0")
-    expected = {
+    tracked_lockfiles = {
         path
         for path in tracked
         if path.endswith("package-lock.json")
         or PurePosixPath(path).name == "uv.lock"
     }
+    expected = (tracked_lockfiles - STAGED_LOCKFILES.keys()) | set(
+        STAGED_LOCKFILES.values()
+    )
 
     assert configured == expected
+
+
+def test_nonstandard_lockfile_names_are_staged_under_supported_basenames() -> None:
+    stage_script = _named_step("Stage nonstandard lockfiles")["run"]
+
+    for source, staged in STAGED_LOCKFILES.items():
+        assert source in stage_script
+        assert staged in stage_script
+        assert PurePosixPath(staged).name == "package-lock.json"
+
+
+def _run_results_validation(tmp_path: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", _named_step("Validate scan results")["run"]],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_missing_osv_results_fail_validation(tmp_path: Path) -> None:
+    result = _run_results_validation(tmp_path)
+
+    assert result.returncode != 0
+
+
+def test_malformed_osv_results_fail_validation(tmp_path: Path) -> None:
+    (tmp_path / "results.json").write_text("not json", encoding="utf-8")
+
+    result = _run_results_validation(tmp_path)
+
+    assert result.returncode != 0
+
+
+def test_well_formed_osv_results_pass_validation(tmp_path: Path) -> None:
+    (tmp_path / "results.json").write_text('{"results": []}', encoding="utf-8")
+
+    result = _run_results_validation(tmp_path)
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_every_external_action_reference_is_pinned_to_exact_sha() -> None:
