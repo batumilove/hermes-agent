@@ -160,6 +160,8 @@ class TestChatCompletionsBasic:
             {"role": "user", "content": "continue", "_empty_recovery_synthetic": True},
             {"role": "assistant", "content": "done", "_thinking_prefill": True,
              "_empty_terminal_sentinel": True},
+            {"role": "tool", "name": "terminal", "content": "ok",
+             "_side_effect_evidence_succeeded": True},
         ]
         result = transport.convert_messages(msgs)
         for m in result:
@@ -169,6 +171,7 @@ class TestChatCompletionsBasic:
         assert result[2]["content"] == "continue"
         # Original list untouched (deepcopy-on-demand)
         assert msgs[1]["_empty_recovery_synthetic"] is True
+        assert msgs[4]["_side_effect_evidence_succeeded"] is True
 
 
     def test_convert_messages_copy_on_write_for_dirty_history(self, transport):

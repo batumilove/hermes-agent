@@ -33,6 +33,7 @@ from agent.display import (
     _detect_tool_failure,
 )
 from agent.message_sanitization import coalesce_tool_call_id
+from agent.side_effect_evidence import tool_result_succeeded
 from agent.tool_dispatch_helpers import (
     _NEVER_PARALLEL_TOOLS,
     _is_destructive_command,
@@ -1740,6 +1741,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # loop. Prefer that real result over a fabricated timeout message — the
         # tool genuinely succeeded, just slightly late.
         effect_disposition = None
+        side_effect_evidence_succeeded = False
         if i in timed_out_indices and r is None:
             suffix = f"{timeout_s:.1f}s" if timeout_s is not None else "the configured timeout"
             function_result = f"Error executing tool '{name}': timed out after {suffix}"
@@ -1819,6 +1821,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             if blocked:
                 effect_disposition = "none"
 
+            side_effect_evidence_succeeded = (
+                not blocked
+                and not is_error
+                and effect_disposition != "unknown"
+                and tool_result_succeeded(name, function_result)
+            )
             if not blocked:
                 function_result = agent._append_guardrail_observation(
                     function_name,
@@ -1890,6 +1898,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             tool_call_id,
             effect_disposition=effect_disposition,
         )
+        tool_message["_side_effect_evidence_succeeded"] = side_effect_evidence_succeeded
         messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
         if not _flush_session_db_after_tool_progress(
@@ -2722,6 +2731,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Log tool errors to the persistent error log so [error] tags
         # in the UI always have a corresponding detailed entry on disk.
         _is_error_result, _ = _detect_tool_failure(function_name, function_result)
+        side_effect_evidence_succeeded = (
+            not _execution_blocked
+            and not _execution_timed_out
+            and not _is_error_result
+            and tool_result_succeeded(function_name, function_result)
+        )
         # The agent-runtime tools above (todo, session_search, memory,
         # context-engine, memory-manager, clarify, delegate_task) are
         # dispatched inline — they never reach handle_function_call, so the
@@ -2815,6 +2830,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_call_id,
             effect_disposition="unknown" if _execution_timed_out else None,
         )
+        tool_message["_side_effect_evidence_succeeded"] = side_effect_evidence_succeeded
         messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
         if not _flush_session_db_after_tool_progress(

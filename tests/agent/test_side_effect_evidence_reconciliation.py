@@ -2,7 +2,10 @@ import json
 
 import pytest
 
-from agent.side_effect_evidence import build_side_effect_evidence_footer
+from agent.side_effect_evidence import (
+    build_side_effect_evidence_footer,
+    tool_result_succeeded,
+)
 
 
 WARNING = "Side-effect evidence regulator"
@@ -45,6 +48,78 @@ def test_successful_terminal_envelope_is_current_turn_evidence():
         _tool("terminal", {"output": "ok", "exit_code": 0, "error": None}),
     ]
     assert not _warns("Deployed successfully.", messages)
+
+
+def test_trusted_predecoration_success_is_current_turn_evidence():
+    messages = [
+        {"role": "user", "content": "deploy"},
+        {
+            "role": "tool",
+            "name": "terminal",
+            "content": (
+                json.dumps({"output": "ok", "exit_code": 0, "error": None})
+                + "\n\n[Subdirectory context discovered: .hermes/AGENTS.md]\n"
+                + "repository instructions"
+            ),
+            "_side_effect_evidence_succeeded": True,
+        },
+    ]
+    assert not _warns("Deployed successfully.", messages)
+
+
+def test_trusted_predecoration_failure_cannot_be_overridden_by_content():
+    messages = [
+        {"role": "user", "content": "deploy"},
+        {
+            "role": "tool",
+            "name": "terminal",
+            "content": json.dumps({"output": "ok", "exit_code": 0, "error": None}),
+            "_side_effect_evidence_succeeded": False,
+        },
+    ]
+    assert _warns("Deployed successfully.", messages)
+
+
+def test_decorated_result_without_trusted_predecoration_evidence_fails_closed():
+    messages = [
+        {"role": "user", "content": "deploy"},
+        {
+            "role": "tool",
+            "name": "terminal",
+            "content": (
+                json.dumps({"output": "ok", "exit_code": 0, "error": None})
+                + "\n\n[Subdirectory context discovered: .hermes/AGENTS.md]\n"
+                + "repository instructions"
+            ),
+        },
+    ]
+    assert _warns("Deployed successfully.", messages)
+
+
+def test_non_boolean_predecoration_marker_is_not_trusted():
+    messages = [
+        {"role": "user", "content": "deploy"},
+        {
+            "role": "tool",
+            "name": "terminal",
+            "content": "not a structured result",
+            "_side_effect_evidence_succeeded": "true",
+        },
+    ]
+    assert _warns("Deployed successfully.", messages)
+
+
+def test_predecoration_verdict_fails_closed_for_cyclic_result():
+    cyclic = {}
+    cyclic["self"] = cyclic
+    assert not tool_result_succeeded("process", cyclic)
+
+
+@pytest.mark.parametrize("flag", ["success", "ok"])
+@pytest.mark.parametrize("value", ["false", "true", 0, 1, None, [], {}])
+def test_non_boolean_success_flags_fail_closed_even_with_positive_handle(flag, value):
+    result = {flag: value, "status": "success", "job_id": "j-1"}
+    assert not tool_result_succeeded("cronjob", result)
 
 
 def test_successful_execute_code_result_is_current_turn_evidence():
