@@ -843,16 +843,24 @@ patches:
     kind: core
     rationale: >-
       Require current-turn execution evidence before preserving fresh external
-      side-effect claims in final responses while leaving descriptive parity
-      headings unchanged.
+      side-effect claims in final responses, compute trusted verdicts before
+      framework decoration, and preserve their tool identity across restart and
+      resume while leaving descriptive parity headings unchanged.
     paths:
       - agent/side_effect_evidence.py
+      - agent/tool_executor.py
       - agent/turn_finalizer.py
+      - gateway/session.py
+      - hermes_state.py
+      - hermes_state_common.py
+      - run_agent.py
       - tests/agent/test_side_effect_evidence_reconciliation.py
       - tests/agent/test_turn_finalizer_final_response_persistence.py
+      - tests/agent/transports/test_chat_completions.py
+      - tests/run_agent/test_tool_call_incremental_persistence.py
     tests:
-      - scripts/run_tests.sh tests/agent/test_side_effect_evidence_reconciliation.py tests/agent/test_turn_finalizer_final_response_persistence.py
-    retirement: Remove when upstream provides equivalent fail-closed current-turn side-effect evidence validation.
+      - scripts/run_tests.sh tests/agent/test_side_effect_evidence_reconciliation.py tests/agent/transports/test_chat_completions.py tests/run_agent/test_tool_executor_contextvar_propagation.py tests/run_agent/test_sequential_tool_timeout.py tests/run_agent/test_tool_call_incremental_persistence.py tests/run_agent/test_tool_call_guardrail_runtime.py tests/run_agent/test_tool_batch_segmentation.py tests/test_hermes_state.py
+    retirement: Remove when upstream provides equivalent fail-closed current-turn side-effect evidence validation, trusted pre-decoration verdict persistence, and resume-safe tool identity.
 
   - id: provider-fallback-lifecycle
     kind: core
