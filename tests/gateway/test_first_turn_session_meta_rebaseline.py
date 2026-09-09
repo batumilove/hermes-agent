@@ -113,9 +113,21 @@ def _bootstrap(monkeypatch, tmp_path, db):
                 session_id=session_id,
                 role=message.get("role", "unknown"),
                 content=message.get("content"),
+                timestamp=message.get("timestamp"),
             )
 
     runner.session_store.append_to_transcript = MagicMock(side_effect=_append)
+    runner.session_store.rebind_session_id = MagicMock(return_value=True)
+    runner.session_store.clear_turn_active = MagicMock(return_value=True)
+    runner.session_store.clear_resume_pending = MagicMock(return_value=True)
+    runner.session_store.mark_turn_active = MagicMock(return_value="first-turn-token")
+    runner.session_store.load_durable_routing_entry.return_value = {
+        "last_prompt_tokens": 0,
+        "resume_pending": False,
+    }
+    runner.session_store.lookup_by_session_key.return_value = (
+        runner.session_store.get_or_create_session.return_value
+    )
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(
@@ -172,6 +184,9 @@ async def test_first_turn_session_meta_is_captured_by_rebaseline(
     db.create_session(SESSION_ID, source="telegram")
 
     runner = _bootstrap(monkeypatch, tmp_path, db)
+    # The production handoff captures its owning DB while the turn is still
+    # active. Install this harness's real DB before creating that handoff.
+    runner.session_store._db = db
 
     # Cache snapshot taken at agent-BUILD time = count before this turn's
     # writes (a fresh session → 0). This is what the #45966 guard stores.
@@ -196,7 +211,32 @@ async def test_first_turn_session_meta_is_captured_by_rebaseline(
         }
     )
 
-    await runner._handle_message_with_agent(_event(), _source(), SESSION_KEY, 1)
+    event = _event()
+    event._gateway_active_turn_session_key = SESSION_KEY
+    event._gateway_active_turn_token = "first-turn-token"
+    handoff = await runner._handle_message_with_agent(event, _source(), SESSION_KEY, 1)
+
+    # Drive the exact durable path that Base uses after its send settles. The
+    # production worker is runner-owned, so replace the constructor-created
+    # store worker after this lightweight harness installs its SessionDB.
+    runner._post_response_controller.shutdown(1.0)
+    runner.session_store._db = db
+    from gateway.post_response import PostResponseWorker
+
+    runner._post_response_controller = PostResponseWorker(runner)
+    runner._post_response_worker = runner._post_response_controller.start()
+    import json
+    json.dumps(handoff.actions_for_text("Hi there!"), sort_keys=True)
+    assert runner._prepare_final_response_handoff(
+        handoff, text_content="Hi there!", event=_event()
+    )
+    assert db.mark_final_delivery_attempting(handoff.obligation_id)
+    assert db.settle_final_delivery(handoff.obligation_id, delivered=True)
+    runner._post_response_controller.wake()
+    deadline = __import__("time").monotonic() + 2.0
+    while db.has_post_response_barrier(SESSION_KEY, SESSION_ID) and __import__("time").monotonic() < deadline:
+        __import__("time").sleep(0.01)
+    assert not db.has_post_response_barrier(SESSION_KEY, SESSION_ID)
 
     # The first-turn session_meta row was written → live count advanced.
     live = _live_count(db, SESSION_ID)
@@ -216,5 +256,4 @@ async def test_first_turn_session_meta_is_captured_by_rebaseline(
     )
     # And the cached agent instance must be untouched (never rebuilt).
     assert cached[0] is agent_obj
-
-
+    assert runner.shutdown_post_response_worker(timeout=1.0)

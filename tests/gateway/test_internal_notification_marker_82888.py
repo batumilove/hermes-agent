@@ -27,6 +27,7 @@ import pytest
 import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import MessageEvent
+from gateway.post_response import FinalResponseHandoff
 from gateway.session import SessionEntry, SessionSource
 
 SESSION_KEY = "agent:main:telegram:group:-1001:12345"
@@ -158,7 +159,7 @@ async def test_real_user_event_gets_no_marker(monkeypatch, tmp_path):
     assert kwargs["persist_user_display_kind"] is None
 
 
-# ── 3: gateway-side fallback rows carry the marker for internal events ─────
+# ── 3: agent-owned fallback rows never enqueue gateway no-op mirrors ────────
 
 
 @pytest.mark.asyncio
@@ -183,10 +184,7 @@ async def test_failed_early_fallback_row_is_marked_for_internal_event(
     )
 
     entries = _user_entries(runner.session_store.append_to_transcript.call_args_list)
-    assert entries, "expected a fallback user-row write"
-    for entry in entries:
-        assert entry["role"] == "user"  # alternation invariant: role unchanged
-        assert entry["display_kind"] == "internal_notification"
+    assert entries == []
 
 
 @pytest.mark.asyncio
@@ -210,9 +208,7 @@ async def test_failed_early_fallback_row_is_unmarked_for_real_user(
     )
 
     entries = _user_entries(runner.session_store.append_to_transcript.call_args_list)
-    assert entries
-    for entry in entries:
-        assert "display_kind" not in entry
+    assert entries == []
 
 
 @pytest.mark.asyncio
@@ -230,16 +226,42 @@ async def test_no_new_messages_fallback_row_is_marked_for_internal_event(
         }
     )
 
-    await runner._handle_message_with_agent(
-        _event(internal=True, text="[SYSTEM: Background process matched]"),
+    event = _event(internal=True, text="[SYSTEM: Background process matched]")
+    event._gateway_active_turn_token = "turn-82888-internal"
+    result = await runner._handle_message_with_agent(
+        event,
         _source(), SESSION_KEY, 1,
     )
 
+    assert result == "done"
+    assert not isinstance(result, FinalResponseHandoff)
+    assert not hasattr(event, "_gateway_post_response_handoff")
     entries = _user_entries(runner.session_store.append_to_transcript.call_args_list)
-    assert entries
-    for entry in entries:
-        assert entry["role"] == "user"
-        assert entry["display_kind"] == "internal_notification"
+    assert entries == []
+
+
+@pytest.mark.asyncio
+async def test_user_final_reply_uses_durable_handoff(monkeypatch, tmp_path):
+    """Ordinary user replies remain deferred while internal events do not."""
+    runner = _bootstrap(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "done",
+            "messages": [{"role": "user", "content": "x"}],
+            "tools": [],
+            "history_offset": 1,
+            "last_prompt_tokens": 0,
+        }
+    )
+    event = _event(internal=False)
+    event._gateway_active_turn_token = "turn-82888-user"
+
+    result = await runner._handle_message_with_agent(
+        event, _source(), SESSION_KEY, 1,
+    )
+
+    assert isinstance(result, FinalResponseHandoff)
+    assert event._gateway_post_response_handoff is result
 
 
 # ── 4: DB round-trip replay + provider-payload hygiene ─────────────────────

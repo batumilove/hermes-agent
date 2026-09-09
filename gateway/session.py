@@ -3960,6 +3960,34 @@ class SessionStore:
             self._ensure_loaded_locked()
             entry = self._entries.get(session_key)
             return getattr(entry, "session_id", None) if entry else None
+
+    def peek_active_turn_token(self, session_key: str) -> Optional[str]:
+        """Return the current active-turn token without mutating ownership."""
+        if not session_key:
+            return None
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            return getattr(entry, "active_turn_token", None) if entry else None
+
+    def load_durable_routing_entry(self, session_key: str) -> Optional[Dict[str, Any]]:
+        """Read one routing entry from state.db for post-action verification.
+
+        The in-memory index is deliberately insufficient after a durable action:
+        a failed/spooled write can leave it looking updated while a restart loses
+        the mutation.  This narrow read is only used by the ordered worker.
+        """
+        if not session_key or not self._db:
+            return None
+        loader = getattr(self._db, "load_gateway_routing_entries", None)
+        if not callable(loader):
+            return None
+        try:
+            encoded = loader(scope=self._routing_scope()).get(session_key)
+            value = json.loads(encoded) if encoded else None
+            return value if isinstance(value, dict) else None
+        except Exception:
+            return None
     
     def _get_transcript_drain_lock(self):
         """Return the lock that serializes pending-queue drain boundaries."""

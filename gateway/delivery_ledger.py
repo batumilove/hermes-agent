@@ -100,6 +100,9 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     from hermes_state import apply_wal_with_fallback
 
     apply_wal_with_fallback(conn, db_label="state.db (delivery_ledger)")
+    # Post-response actions reference this table; ledger connections
+    # must enforce the same relationship as SessionDB connections do.
+    conn.execute("PRAGMA foreign_keys=ON")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS delivery_obligations (
             obligation_id TEXT PRIMARY KEY,
@@ -237,11 +240,18 @@ def record_obligation(
     pid, started = _owner_stamp()
     with _hot_path_transaction() as conn:
         conn.execute(
-            """INSERT OR REPLACE INTO delivery_obligations
+            """INSERT INTO delivery_obligations
                (obligation_id, session_key, platform, chat_id, thread_id,
                 content, state, attempts, created_at, updated_at,
                 owner_pid, owner_started_at)
-               VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)
+               ON CONFLICT(obligation_id) DO UPDATE SET
+                   session_key=excluded.session_key, platform=excluded.platform,
+                   chat_id=excluded.chat_id, thread_id=excluded.thread_id,
+                   content=excluded.content, state='pending', attempts=0,
+                   created_at=excluded.created_at, updated_at=excluded.updated_at,
+                   owner_pid=excluded.owner_pid,
+                   owner_started_at=excluded.owner_started_at, last_error=NULL""",
             (obligation_id, session_key, platform, str(chat_id),
              str(thread_id) if thread_id else None, content, now, now,
              pid, started),
@@ -424,9 +434,26 @@ def _prune(
     cutoff = now - _RETENTION_SECONDS
     try:
         with _transaction(timeout=timeout) as conn:
+            # Older ledger-only databases predate the ordered action table.
+            # Keep their historical pruning behavior, but never let a modern
+            # connection cascade-delete an unfinished response barrier.
+            has_post_response_actions = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='gateway_post_response_actions'"
+            ).fetchone() is not None
+            barrier_guard = (
+                """ AND NOT EXISTS (
+                       SELECT 1 FROM gateway_post_response_actions AS action
+                       WHERE action.obligation_id = delivery_obligations.obligation_id
+                         AND action.state != 'done'
+                   )"""
+                if has_post_response_actions
+                else ""
+            )
             conn.execute(
                 """DELETE FROM delivery_obligations
-                   WHERE state IN ('delivered', 'abandoned') AND updated_at < ?""",
+                   WHERE state IN ('delivered', 'abandoned') AND updated_at < ?"""
+                + barrier_guard,
                 (cutoff,),
             )
             total = conn.execute(
@@ -437,6 +464,9 @@ def _prune(
                 conn.execute(
                     """DELETE FROM delivery_obligations WHERE obligation_id IN (
                          SELECT obligation_id FROM delivery_obligations
+                         WHERE 1=1"""
+                    + barrier_guard
+                    + """
                          ORDER BY CASE state
                                     WHEN 'delivered' THEN 0
                                     WHEN 'abandoned' THEN 1

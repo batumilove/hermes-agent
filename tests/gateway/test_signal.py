@@ -1024,6 +1024,17 @@ def _patch_scheduler_sleep(monkeypatch, capture: list):
     )
 
 
+def _patch_signal_retry_sleep(monkeypatch):
+    """Skip the adapter's retry backoff without changing zero-second yields."""
+    real_sleep = asyncio.sleep
+
+    async def fake_sleep(seconds):
+        if seconds <= 0:
+            await real_sleep(0)
+
+    monkeypatch.setattr("gateway.platforms.signal.asyncio.sleep", fake_sleep)
+
+
 class TestSignalSendMultipleImages:
     @pytest.mark.asyncio
     async def test_empty_list_is_noop(self, monkeypatch):
@@ -1070,6 +1081,78 @@ class TestSignalSendMultipleImages:
         assert len(params["attachments"]) == 5
         # raise_on_rate_limit must be opted into so the retry loop sees 429s
         assert captured[0]["kwargs"].get("raise_on_rate_limit") is True
+
+    @pytest.mark.asyncio
+    async def test_all_attachment_chunks_must_succeed(self, monkeypatch, tmp_path):
+        """A rejected later chunk cannot be hidden by an earlier success."""
+        from gateway.platforms.signal_rate_limit import SIGNAL_MAX_ATTACHMENTS_PER_MSG
+
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, captured = _stub_rpc_responses([
+            {"timestamp": 1},
+            None,
+            None,
+        ])
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+        _patch_signal_retry_sleep(monkeypatch)
+
+        result = await adapter.send_multiple_images(
+            chat_id="+155****4567",
+            images=_make_image_files(tmp_path, SIGNAL_MAX_ATTACHMENTS_PER_MSG + 1),
+        )
+
+        assert result.success is False
+        assert result.error == "image delivery rejected"
+        assert [len(call["params"]["attachments"]) for call in captured] == [
+            SIGNAL_MAX_ATTACHMENTS_PER_MSG,
+            1,
+            1,
+        ]
+
+    @pytest.mark.asyncio
+    async def test_skipped_image_makes_batch_fail_after_valid_image_sends(
+        self, monkeypatch, tmp_path
+    ):
+        """A missing requested image remains a failed delivery, not a partial success."""
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, captured = _stub_rpc_responses([{"timestamp": 1}])
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+        valid_image = _make_image_files(tmp_path, 1)[0]
+        missing_path = tmp_path / "not-for-delivery.png"
+
+        result = await adapter.send_multiple_images(
+            chat_id="+155****4567",
+            images=[valid_image, (f"file://{missing_path}", "")],
+        )
+
+        assert result.success is False
+        assert result.error == "image validation failed"
+        assert str(missing_path) not in result.error
+        assert len(captured) == 1
+        assert captured[0]["params"]["attachments"] == [valid_image[0][7:]]
+
+    @pytest.mark.asyncio
+    async def test_all_attachment_chunks_succeed(self, monkeypatch, tmp_path):
+        """More than Signal's cap succeeds only when each chunk is accepted."""
+        from gateway.platforms.signal_rate_limit import SIGNAL_MAX_ATTACHMENTS_PER_MSG
+
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, captured = _stub_rpc_responses([{"timestamp": 1}, {"timestamp": 2}])
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        result = await adapter.send_multiple_images(
+            chat_id="+155****4567",
+            images=_make_image_files(tmp_path, SIGNAL_MAX_ATTACHMENTS_PER_MSG + 1),
+        )
+
+        assert result.success is True
+        assert [len(call["params"]["attachments"]) for call in captured] == [
+            SIGNAL_MAX_ATTACHMENTS_PER_MSG,
+            1,
+        ]
 
 
     @pytest.mark.asyncio
