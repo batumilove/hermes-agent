@@ -80,15 +80,25 @@ patches:
       - apps/desktop/package.json
       - nix/node-gyp-11-4-0-package-lock.json
       - nix/node-gyp-11-4-0.nix
+      - package-lock.json
+      - package.json
+      - pyproject.toml
       - scripts/whatsapp-bridge/package-lock.json
       - scripts/whatsapp-bridge/package.json
       - tests-js/package.json
+      - tests/test_npm_security_policy.py
       - tests/tools/test_lazy_deps.py
+      - tools/lazy_deps.py
       - ui-tui/package.json
+      - uv.lock
       - web/package.json
+      - website/.npmrc
+      - website/package-lock.json
+      - website/package.json
     tests:
       - scripts/run_tests.sh tests/test_npm_security_policy.py tests/tools/test_lazy_deps.py
       - npm ci --ignore-scripts && npm audit --audit-level=high
+      - npm --prefix website ci --ignore-scripts && npm --prefix website audit --audit-level=high
       - npm --prefix scripts/whatsapp-bridge ci --ignore-scripts && npm --prefix scripts/whatsapp-bridge audit --audit-level=high
       - nix build .#node-gyp
     retirement: >-
