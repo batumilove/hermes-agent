@@ -693,6 +693,18 @@ def test_predecoration_verdict_survives_flush_restart_and_resume(tmp_path, verdi
     session_id = f"evidence-{verdict}"
     db = _attach_real_session_db(agent, db_path, session_id)
     messages = [
+        {"role": "user", "content": "run it"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "persisted-evidence",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": "{}"},
+                }
+            ],
+        },
         {
             "role": "tool",
             "name": "terminal",
@@ -712,8 +724,8 @@ def test_predecoration_verdict_survives_flush_restart_and_resume(tmp_path, verdi
     finally:
         restarted_db.close()
 
-    assert model_history[0]["_side_effect_evidence_succeeded"] is verdict
-    assert display_history[0]["_side_effect_evidence_succeeded"] is verdict
+    assert model_history[-1]["_side_effect_evidence_succeeded"] is verdict
+    assert display_history[-1]["_side_effect_evidence_succeeded"] is verdict
 
 
 def test_segmented_batch_stops_before_later_segment_after_persist_failure():
