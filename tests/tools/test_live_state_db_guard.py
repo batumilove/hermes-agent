@@ -184,6 +184,36 @@ def test_blocks_shell_script_that_launches_sqlite_cli(tmp_path):
     assert blocked is True
 
 
+def test_blocks_shell_script_that_launches_python_sqlite(tmp_path):
+    script = tmp_path / "inspect_db.sh"
+    script.write_text(
+        "#!/bin/sh\n"
+        "python3 -c \"import sqlite3; from hermes_constants import get_hermes_home; "
+        "sqlite3.connect(get_hermes_home() / 'state.db')\"\n",
+        encoding="utf-8",
+    )
+
+    blocked, _ = _check("bash inspect_db.sh", tmp_path)
+
+    assert blocked is True
+
+
+def test_blocks_shell_script_that_launches_python_file(tmp_path):
+    shell_script = tmp_path / "inspect_db.sh"
+    python_script = tmp_path / "inspect_db.py"
+    shell_script.write_text("#!/bin/sh\npython3 inspect_db.py\n", encoding="utf-8")
+    python_script.write_text(
+        "import sqlite3\n"
+        "from hermes_constants import get_hermes_home\n"
+        "sqlite3.connect(get_hermes_home() / 'state.db')\n",
+        encoding="utf-8",
+    )
+
+    blocked, _ = _check("bash inspect_db.sh", tmp_path)
+
+    assert blocked is True
+
+
 def test_allows_unrelated_sqlite_database(tmp_path):
     blocked, reason = _check("sqlite3 ./fixture.db 'select 1'", tmp_path)
 
@@ -221,6 +251,21 @@ def test_blocks_host_mounted_docker_backend(tmp_path):
         env_type="docker",
         has_host_access=True,
         cwd=tmp_path,
+        hermes_home=home,
+        gateway_is_live=lambda _home: True,
+    )
+
+    assert blocked is True
+
+
+def test_blocks_container_alias_for_mounted_live_state_db(tmp_path):
+    home = tmp_path / ".hermes"
+    blocked, _ = check_live_state_db_command(
+        "sqlite3 /db/state.db 'select 1'",
+        env_type="docker",
+        has_host_access=True,
+        target_aliases=("/db/state.db",),
+        cwd="/workspace",
         hermes_home=home,
         gateway_is_live=lambda _home: True,
     )

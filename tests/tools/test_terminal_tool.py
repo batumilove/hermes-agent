@@ -143,10 +143,38 @@ def test_live_state_db_guard_bridge_forwards_host_access(monkeypatch):
         env_type="docker",
         cwd="/work",
         has_host_access=True,
+        target_aliases=("/db/state.db",),
     ) == (False, None)
     assert seen == {
         "command": "sqlite3 /host/state.db",
         "env_type": "docker",
         "cwd": "/work",
         "has_host_access": True,
+        "target_aliases": ("/db/state.db",),
     }
+
+
+def test_docker_live_state_db_aliases_translate_configured_bind_mount(tmp_path):
+    profile_home = tmp_path / "profile"
+    target = profile_home / "state.db"
+    config = {
+        "env_type": "docker",
+        "docker_volumes": [f"{profile_home}:/db:ro"],
+    }
+
+    assert terminal_tool._docker_live_state_db_aliases(
+        config, target=target, task_id="default"
+    ) == ("/db/state.db",)
+
+
+def test_docker_live_state_db_aliases_translate_automatic_workspace_mount(tmp_path):
+    target = tmp_path / ".hermes" / "state.db"
+    config = {
+        "env_type": "docker",
+        "host_cwd": str(tmp_path),
+        "docker_mount_cwd_to_workspace": True,
+    }
+
+    assert terminal_tool._docker_live_state_db_aliases(
+        config, target=target, task_id="default"
+    ) == ("/workspace/.hermes/state.db",)

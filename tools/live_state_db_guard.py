@@ -140,8 +140,10 @@ def _local_module_path(module: str, cwd: Path) -> Path | None:
     return None
 
 
-def _referenced_sources(command: str, cwd: Path) -> list[tuple[str, str]]:
-    """Read bounded local Python/shell sources, including -c and -m carriers."""
+def _referenced_sources(
+    command: str, cwd: Path, *, _depth: int = 0
+) -> list[tuple[str, str]]:
+    """Read bounded local Python/shell sources, including nested carriers."""
     try:
         from tools.approval import (
             _command_detection_variants,
@@ -223,6 +225,15 @@ def _referenced_sources(command: str, cwd: Path) -> list[tuple[str, str]]:
             ):
                 add("python", source)
 
+    if _depth < 2:
+        for kind, source in tuple(sources):
+            if kind != "shell":
+                continue
+            for nested_kind, nested_source in _referenced_sources(
+                source, cwd, _depth=_depth + 1
+            ):
+                add(nested_kind, nested_source)
+
     return sources
 
 
@@ -264,6 +275,7 @@ def check_live_state_db_command(
     *,
     env_type: str,
     has_host_access: bool = False,
+    target_aliases: tuple[str | os.PathLike[str], ...] = (),
     cwd: str | os.PathLike[str] | None = None,
     hermes_home: str | os.PathLike[str] | None = None,
     gateway_is_live: Callable[[Path], bool] = gateway_is_live,
@@ -279,6 +291,10 @@ def check_live_state_db_command(
     else:
         profile_home = Path(hermes_home).expanduser()
     target = (profile_home / "state.db").resolve(strict=False)
+    targets = (
+        target,
+        *(Path(alias).expanduser().resolve(strict=False) for alias in target_aliases),
+    )
     command_cwd = Path(cwd or os.getcwd()).expanduser().resolve(strict=False)
 
     executables = _command_executables(command)
@@ -286,7 +302,9 @@ def check_live_state_db_command(
     uses_python = any(_PYTHON_NAME_RE.fullmatch(name) for name in executables)
     sources = _referenced_sources(command, command_cwd)
 
-    references_target = _references_target(command, target, command_cwd)
+    references_target = any(
+        _references_target(command, candidate, command_cwd) for candidate in targets
+    )
     risky_access = (uses_sqlite or uses_python) and references_target
     if not risky_access:
         for kind, source in sources:
@@ -299,9 +317,11 @@ def check_live_state_db_command(
             source_uses_python = (
                 kind == "python" and _python_source_opens_sqlite(source)
             )
-            if (source_uses_sqlite or source_uses_python) and _source_references_target(
-                source, target, command_cwd
-            ):
+            source_references_target = any(
+                _source_references_target(source, candidate, command_cwd)
+                for candidate in targets
+            )
+            if (source_uses_sqlite or source_uses_python) and source_references_target:
                 risky_access = True
                 break
     if not risky_access:

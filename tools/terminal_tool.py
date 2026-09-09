@@ -381,6 +381,45 @@ def _docker_has_host_access(config: Dict[str, Any]) -> bool:
     return any(_docker_volume_uses_host_path(vol) for vol in config.get("docker_volumes", []))
 
 
+def _docker_live_state_db_aliases(
+    config: Dict[str, Any], *, target: Path, task_id: Optional[str]
+) -> tuple[str, ...]:
+    """Return container paths that resolve to the host's live state database."""
+    if config.get("env_type") != "docker":
+        return ()
+
+    mounts: list[tuple[str, str]] = []
+    workspace_explicitly_mounted = False
+    for volume_spec in config.get("docker_volumes", []):
+        if not isinstance(volume_spec, str):
+            continue
+        match = re.fullmatch(r"(.+):(/[^:]*)(?::[^:]*)?", volume_spec.strip())
+        if match is None or not _docker_volume_uses_host_path(match.group(1)):
+            continue
+        source, destination = match.group(1), match.group(2)
+        mounts.append((source, destination))
+        if destination == "/workspace":
+            workspace_explicitly_mounted = True
+
+    host_cwd = _resolve_task_host_cwd(config, task_id)
+    if host_cwd and not workspace_explicitly_mounted:
+        mounts.append((host_cwd, "/workspace"))
+
+    resolved_target = target.expanduser().resolve(strict=False)
+    aliases: list[str] = []
+    for source, destination in mounts:
+        source_path = Path(source).expanduser().resolve(strict=False)
+        try:
+            relative = resolved_target.relative_to(source_path)
+        except ValueError:
+            continue
+        alias = Path(destination) if relative == Path(".") else Path(destination) / relative
+        rendered = str(alias)
+        if rendered not in aliases:
+            aliases.append(rendered)
+    return tuple(aliases)
+
+
 def _check_all_guards(command: str, env_type: str,
                       has_host_access: bool = False) -> dict:
     """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback."""
@@ -390,7 +429,12 @@ def _check_all_guards(command: str, env_type: str,
 
 
 def _check_live_state_db_guard(
-    *, command: str, env_type: str, cwd: str, has_host_access: bool = False
+    *,
+    command: str,
+    env_type: str,
+    cwd: str,
+    has_host_access: bool = False,
+    target_aliases: tuple[str, ...] = (),
 ):
     """Lazy bridge to the unconditional live SQLite ownership guard."""
     from tools.live_state_db_guard import check_live_state_db_command
@@ -400,6 +444,7 @@ def _check_live_state_db_guard(
         env_type=env_type,
         cwd=cwd,
         has_host_access=has_host_access,
+        target_aliases=target_aliases,
     )
 
 
@@ -3103,11 +3148,21 @@ def terminal_tool(
             session_key=session_key,
             env_type=env_type,
         )
+        state_db_target_aliases: tuple[str, ...] = ()
+        if env_type == "docker":
+            from hermes_constants import get_hermes_home
+
+            state_db_target_aliases = _docker_live_state_db_aliases(
+                config,
+                target=(Path(get_hermes_home()).expanduser() / "state.db"),
+                task_id=session_key,
+            )
         state_db_blocked, state_db_reason = _check_live_state_db_guard(
             command=command,
             env_type=env_type,
             cwd=state_guard_cwd,
             has_host_access=_docker_has_host_access(config),
+            target_aliases=state_db_target_aliases,
         )
         if state_db_blocked:
             logger.warning(
