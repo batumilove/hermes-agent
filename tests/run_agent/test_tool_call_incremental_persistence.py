@@ -32,6 +32,7 @@ import pytest
 
 from agent.tool_dispatch_helpers import make_tool_result_message
 from agent.agent_runtime_helpers import sanitize_api_messages
+from agent.side_effect_evidence import evaluate_side_effect_evidence
 from agent.tool_executor import execute_tool_calls_segmented
 from hermes_state import SessionDB
 from run_agent import AIAgent
@@ -685,9 +686,12 @@ def test_sequential_timeout_stamps_negative_predecoration_verdict():
     assert messages[0]["_side_effect_evidence_succeeded"] is False
 
 
+@pytest.mark.parametrize("tool_name", ["terminal", "execute_code"])
 @pytest.mark.parametrize("verdict", [True, False])
-def test_predecoration_verdict_survives_flush_restart_and_resume(tmp_path, verdict):
-    """Durable replay must preserve both sides of the trusted verdict."""
+def test_predecoration_verdict_survives_flush_restart_and_resume(
+    tmp_path, verdict, tool_name
+):
+    """Durable replay must preserve and consume trusted native-tool evidence."""
     agent = _make_agent()
     db_path = tmp_path / "state.db"
     session_id = f"evidence-{verdict}"
@@ -707,7 +711,8 @@ def test_predecoration_verdict_survives_flush_restart_and_resume(tmp_path, verdi
         },
         {
             "role": "tool",
-            "name": "terminal",
+            "name": tool_name,
+            "tool_name": tool_name,
             "content": "decorated output",
             "tool_call_id": "persisted-evidence",
             "_side_effect_evidence_succeeded": verdict,
@@ -726,6 +731,12 @@ def test_predecoration_verdict_survives_flush_restart_and_resume(tmp_path, verdi
 
     assert model_history[-1]["_side_effect_evidence_succeeded"] is verdict
     assert display_history[-1]["_side_effect_evidence_succeeded"] is verdict
+    assert model_history[-1]["tool_name"] == tool_name
+    decision = evaluate_side_effect_evidence(
+        model_history, "I deployed the service."
+    )
+    assert decision.requires_evidence is (not verdict)
+    assert decision.missing_evidence_for == ([] if verdict else ["deploy"])
 
 
 def test_segmented_batch_stops_before_later_segment_after_persist_failure():

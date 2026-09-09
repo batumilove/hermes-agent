@@ -246,7 +246,10 @@ def tool_result_succeeded(tool_name: str, content: Any) -> bool:
 def _evidence_from_messages(messages: list[dict[str, Any]]) -> set[str]:
     evidence: set[str] = set()
     for message in _current_turn_tool_messages(messages):
-        tool = str(message.get("name") or "")
+        # Live tool messages carry ``name`` while SQLite resume rows carry
+        # the durable ``tool_name`` projection.  Treat both as the same
+        # identity without mutating replayed history.
+        tool = str(message.get("name") or message.get("tool_name") or "")
         # This private marker is computed from the structured result before
         # persistence stubs, guardrail observations, or subdirectory hints can
         # decorate its content. Provider transports strip underscore metadata.
