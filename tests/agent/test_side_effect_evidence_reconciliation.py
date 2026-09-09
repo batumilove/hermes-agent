@@ -47,6 +47,52 @@ def test_successful_terminal_envelope_is_current_turn_evidence():
     assert not _warns("Deployed successfully.", messages)
 
 
+def test_trusted_predecoration_success_is_current_turn_evidence():
+    messages = [
+        {"role": "user", "content": "deploy"},
+        {
+            "role": "tool",
+            "name": "terminal",
+            "content": (
+                json.dumps({"output": "ok", "exit_code": 0, "error": None})
+                + "\n\n[Subdirectory context discovered: .hermes/AGENTS.md]\n"
+                + "repository instructions"
+            ),
+            "_side_effect_evidence_succeeded": True,
+        },
+    ]
+    assert not _warns("Deployed successfully.", messages)
+
+
+def test_trusted_predecoration_failure_cannot_be_overridden_by_content():
+    messages = [
+        {"role": "user", "content": "deploy"},
+        {
+            "role": "tool",
+            "name": "terminal",
+            "content": json.dumps({"output": "ok", "exit_code": 0, "error": None}),
+            "_side_effect_evidence_succeeded": False,
+        },
+    ]
+    assert _warns("Deployed successfully.", messages)
+
+
+def test_decorated_result_without_trusted_predecoration_evidence_fails_closed():
+    messages = [
+        {"role": "user", "content": "deploy"},
+        {
+            "role": "tool",
+            "name": "terminal",
+            "content": (
+                json.dumps({"output": "ok", "exit_code": 0, "error": None})
+                + "\n\n[Subdirectory context discovered: .hermes/AGENTS.md]\n"
+                + "repository instructions"
+            ),
+        },
+    ]
+    assert _warns("Deployed successfully.", messages)
+
+
 def test_successful_execute_code_result_is_current_turn_evidence():
     messages = [
         {"role": "user", "content": "deploy"},
