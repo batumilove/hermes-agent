@@ -75,6 +75,17 @@ class TestSpecSafety:
 
 
 class TestAllowlist:
+    def test_computer_use_specs_match_pyproject_extra(self):
+        import tomllib
+        from pathlib import Path
+
+        pyproject = tomllib.loads(
+            (Path(__file__).parents[2] / "pyproject.toml").read_text()
+        )
+        assert set(ld.LAZY_DEPS["tool.computer_use"]) == set(
+            pyproject["project"]["optional-dependencies"]["computer-use"]
+        )
+
     def test_unknown_feature_raises(self, monkeypatch):
         monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
         with pytest.raises(ld.FeatureUnavailable, match="not in LAZY_DEPS"):
