@@ -533,6 +533,49 @@ def test_failed_tool_result_persist_blocks_completion_projection(executor_mode):
     assert getattr(agent, "_incremental_persistence_failed", False) is True
 
 
+@pytest.mark.parametrize("executor_mode", ["sequential", "concurrent"])
+def test_executor_preserves_predecoration_success_marker(executor_mode):
+    """Both executors bind evidence to the result before decoration."""
+    agent = _make_agent()
+    tool_call = _mock_tool_call(name="web_search", call_id="evidence-call")
+    assistant_message = SimpleNamespace(content="", tool_calls=[tool_call])
+    messages: list = []
+    agent._flush_messages_to_session_db = MagicMock(return_value=True)
+    getattr(agent, "_subdirectory_hints").check_tool_call = MagicMock(
+        return_value="\n\n[Subdirectory context discovered: repo/AGENTS.md]"
+    )
+    dispatch_patch = (
+        patch("run_agent.handle_function_call", return_value='{"success": true}')
+        if executor_mode == "sequential"
+        else patch.object(agent, "_invoke_tool", return_value='{"success": true}')
+    )
+
+    with (
+        dispatch_patch,
+        patch(
+            "agent.tool_executor.maybe_persist_tool_result",
+            return_value="[Tool result persisted outside the model context]",
+        ),
+    ):
+        if executor_mode == "sequential":
+            agent._execute_tool_calls_sequential(
+                assistant_message,
+                messages,
+                "task-1",
+            )
+        else:
+            agent._execute_tool_calls_concurrent(
+                assistant_message,
+                messages,
+                "task-1",
+            )
+
+    assert len(messages) == 1
+    assert messages[0]["_side_effect_evidence_succeeded"] is True
+    assert "Subdirectory context discovered" in messages[0]["content"]
+    assert '"success": true' not in messages[0]["content"]
+
+
 def test_segmented_batch_stops_before_later_segment_after_persist_failure():
     agent = _make_agent()
     first = _mock_tool_call(call_id="first")
