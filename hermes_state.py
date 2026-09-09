@@ -11690,6 +11690,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         platform_message_id: str = None,
         observed: bool = False,
         effect_disposition: Optional[str] = None,
+        _side_effect_evidence_succeeded: Optional[bool] = None,
         timestamp: Any = None,
         api_content: Optional[str] = None,
         display_kind: Optional[str] = None,
@@ -11763,10 +11764,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
             cursor = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
+                   tool_calls, tool_name, effect_disposition, _side_effect_evidence_succeeded,
+                   timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, active, api_content, display_kind, display_metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -11775,6 +11777,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     tool_calls_json,
                     _scrub_surrogates(tool_name),
                     effect_disposition,
+                    (
+                        1 if _side_effect_evidence_succeeded is True
+                        else 0 if _side_effect_evidence_succeeded is False
+                        else None
+                    ),
                     message_timestamp,
                     token_count,
                     finish_reason,
@@ -12194,10 +12201,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
             cur = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
+                   tool_calls, tool_name, effect_disposition, _side_effect_evidence_succeeded,
+                   timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, active, api_content, display_kind, display_metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -12206,6 +12214,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     tool_calls_json,
                     _scrub_surrogates(msg.get("tool_name")),
                     msg.get("effect_disposition"),
+                    (
+                        1 if msg.get("_side_effect_evidence_succeeded") is True
+                        else 0 if msg.get("_side_effect_evidence_succeeded") is False
+                        else None
+                    ),
                     message_timestamp,
                     msg.get("token_count"),
                     msg.get("finish_reason"),
@@ -12969,6 +12982,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # SELECT can feed both the model-fed and display views.
     _CONVERSATION_ROW_COLUMNS = (
         "id, role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
+        "_side_effect_evidence_succeeded, "
         "finish_reason, reasoning, reasoning_content, reasoning_details, "
         "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp, "
         "api_content, display_kind, display_metadata"
@@ -13043,6 +13057,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 msg["tool_name"] = row["tool_name"]
             if row["effect_disposition"]:
                 msg["effect_disposition"] = row["effect_disposition"]
+            if row["_side_effect_evidence_succeeded"] is not None:
+                msg["_side_effect_evidence_succeeded"] = bool(
+                    row["_side_effect_evidence_succeeded"]
+                )
             if row["tool_calls"]:
                 try:
                     msg["tool_calls"] = json.loads(row["tool_calls"])

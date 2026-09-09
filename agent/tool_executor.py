@@ -1823,6 +1823,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
             side_effect_evidence_succeeded = (
                 not blocked
+                and not is_error
                 and effect_disposition != "unknown"
                 and tool_result_succeeded(name, function_result)
             )
@@ -2733,6 +2734,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         side_effect_evidence_succeeded = (
             not _execution_blocked
             and not _execution_timed_out
+            and not _is_error_result
             and tool_result_succeeded(function_name, function_result)
         )
         # The agent-runtime tools above (todo, session_search, memory,

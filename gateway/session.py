@@ -4197,6 +4197,9 @@ class SessionStore:
             tool_name=message.get("tool_name"),
             tool_calls=message.get("tool_calls"),
             tool_call_id=message.get("tool_call_id"),
+            _side_effect_evidence_succeeded=message.get(
+                "_side_effect_evidence_succeeded"
+            ),
             reasoning=message.get("reasoning") if message.get("role") == "assistant" else None,
             reasoning_content=message.get("reasoning_content") if message.get("role") == "assistant" else None,
             reasoning_details=message.get("reasoning_details") if message.get("role") == "assistant" else None,

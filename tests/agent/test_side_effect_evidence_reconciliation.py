@@ -115,6 +115,13 @@ def test_predecoration_verdict_fails_closed_for_cyclic_result():
     assert not tool_result_succeeded("process", cyclic)
 
 
+@pytest.mark.parametrize("flag", ["success", "ok"])
+@pytest.mark.parametrize("value", ["false", "true", 0, 1, None, [], {}])
+def test_non_boolean_success_flags_fail_closed_even_with_positive_handle(flag, value):
+    result = {flag: value, "status": "success", "job_id": "j-1"}
+    assert not tool_result_succeeded("cronjob", result)
+
+
 def test_successful_execute_code_result_is_current_turn_evidence():
     messages = [
         {"role": "user", "content": "deploy"},

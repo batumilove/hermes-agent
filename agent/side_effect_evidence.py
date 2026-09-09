@@ -169,6 +169,12 @@ def _tool_result_succeeded(tool_name: str, content: Any) -> bool:
         return False
     if result.get("error") not in (None, "", False):
         return False
+    # Presence of an explicit success flag is authoritative only when its
+    # type is actually boolean.  Values such as ``"false"`` are truthy in
+    # Python and must not be rescued by an unrelated positive status/handle.
+    for flag in ("success", "ok"):
+        if flag in result and not isinstance(result[flag], bool):
+            return False
     if result.get("success") is False or result.get("ok") is False:
         return False
     status = str(result.get("status") or "").lower()

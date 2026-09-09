@@ -576,6 +576,146 @@ def test_executor_preserves_predecoration_success_marker(executor_mode):
     assert '"success": true' not in messages[0]["content"]
 
 
+@pytest.mark.parametrize("executor_mode", ["sequential", "concurrent"])
+def test_executor_reported_error_cannot_freeze_positive_content_as_success(executor_mode):
+    """Executor error classification overrides a success-shaped payload."""
+    agent = _make_agent()
+    tool_call = _mock_tool_call(name="web_search", call_id="error-evidence-call")
+    assistant_message = SimpleNamespace(content="", tool_calls=[tool_call])
+    messages: list = []
+    agent._flush_messages_to_session_db = MagicMock(return_value=True)
+    dispatch_patch = (
+        patch("run_agent.handle_function_call", return_value='{"success": true}')
+        if executor_mode == "sequential"
+        else patch.object(agent, "_invoke_tool", return_value='{"success": true}')
+    )
+
+    with (
+        dispatch_patch,
+        patch("agent.tool_executor._detect_tool_failure", return_value=(True, "synthetic")),
+        patch(
+            "agent.tool_executor.maybe_persist_tool_result",
+            side_effect=lambda **kwargs: kwargs["content"],
+        ),
+    ):
+        if executor_mode == "sequential":
+            agent._execute_tool_calls_sequential(
+                assistant_message, messages, "task-1"
+            )
+        else:
+            agent._execute_tool_calls_concurrent(
+                assistant_message, messages, "task-1"
+            )
+
+    assert len(messages) == 1
+    assert messages[0]["_side_effect_evidence_succeeded"] is False
+
+
+@pytest.mark.parametrize("executor_mode", ["sequential", "concurrent"])
+def test_blocked_execution_stamps_negative_predecoration_verdict(executor_mode):
+    agent = _make_agent()
+    tool_call = _mock_tool_call(name="web_search", call_id="blocked-evidence-call")
+    assistant_message = SimpleNamespace(content="", tool_calls=[tool_call])
+    messages: list = []
+    agent._flush_messages_to_session_db = MagicMock(return_value=True)
+    blocked = SimpleNamespace(
+        result='{"success": true}',
+        args={},
+        middleware_trace=[],
+        blocked=True,
+        dispatched=False,
+        guardrail_warning=None,
+    )
+
+    with (
+        patch(
+            "agent.tool_executor._run_agent_tool_execution_middleware",
+            return_value=blocked,
+        ),
+        patch(
+            "agent.tool_executor.maybe_persist_tool_result",
+            side_effect=lambda **kwargs: kwargs["content"],
+        ),
+    ):
+        if executor_mode == "sequential":
+            agent._execute_tool_calls_sequential(
+                assistant_message, messages, "task-1"
+            )
+        else:
+            agent._execute_tool_calls_concurrent(
+                assistant_message, messages, "task-1"
+            )
+
+    assert len(messages) == 1
+    assert messages[0]["_side_effect_evidence_succeeded"] is False
+
+
+def test_sequential_timeout_stamps_negative_predecoration_verdict():
+    from agent.tool_executor import _ToolTimeoutResult
+
+    agent = _make_agent()
+    tool_call = _mock_tool_call(name="web_search", call_id="timeout-evidence-call")
+    assistant_message = SimpleNamespace(content="", tool_calls=[tool_call])
+    messages: list = []
+    agent._flush_messages_to_session_db = MagicMock(return_value=True)
+    timed_out = SimpleNamespace(
+        result=_ToolTimeoutResult('{"success": true}'),
+        args={},
+        middleware_trace=[],
+        blocked=False,
+        dispatched=True,
+        guardrail_warning=None,
+    )
+
+    with (
+        patch(
+            "agent.tool_executor._run_agent_tool_execution_middleware",
+            return_value=timed_out,
+        ),
+        patch(
+            "agent.tool_executor.maybe_persist_tool_result",
+            side_effect=lambda **kwargs: kwargs["content"],
+        ),
+    ):
+        agent._execute_tool_calls_sequential(
+            assistant_message, messages, "task-1"
+        )
+
+    assert len(messages) == 1
+    assert messages[0]["_side_effect_evidence_succeeded"] is False
+
+
+@pytest.mark.parametrize("verdict", [True, False])
+def test_predecoration_verdict_survives_flush_restart_and_resume(tmp_path, verdict):
+    """Durable replay must preserve both sides of the trusted verdict."""
+    agent = _make_agent()
+    db_path = tmp_path / "state.db"
+    session_id = f"evidence-{verdict}"
+    db = _attach_real_session_db(agent, db_path, session_id)
+    messages = [
+        {
+            "role": "tool",
+            "name": "terminal",
+            "content": "decorated output",
+            "tool_call_id": "persisted-evidence",
+            "_side_effect_evidence_succeeded": verdict,
+        }
+    ]
+    try:
+        assert agent._flush_messages_to_session_db(messages) is not False
+    finally:
+        db.close()
+
+    restarted_db = SessionDB(db_path=db_path)
+    try:
+        model_history, display_history = restarted_db.get_resume_conversations(session_id)
+    finally:
+        restarted_db.close()
+
+    assert model_history[0]["_side_effect_evidence_succeeded"] is verdict
+    assert display_history[0]["_side_effect_evidence_succeeded"] is verdict
+
+
 def test_segmented_batch_stops_before_later_segment_after_persist_failure():
     agent = _make_agent()
     first = _mock_tool_call(call_id="first")

@@ -436,6 +436,7 @@ CREATE TABLE IF NOT EXISTS messages (
     tool_calls TEXT,
     tool_name TEXT,
     effect_disposition TEXT,
+    _side_effect_evidence_succeeded INTEGER,
     timestamp REAL NOT NULL,
     token_count INTEGER,
     finish_reason TEXT,
