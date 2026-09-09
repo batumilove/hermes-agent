@@ -2,7 +2,10 @@ import json
 
 import pytest
 
-from agent.side_effect_evidence import build_side_effect_evidence_footer
+from agent.side_effect_evidence import (
+    build_side_effect_evidence_footer,
+    tool_result_succeeded,
+)
 
 
 WARNING = "Side-effect evidence regulator"
@@ -91,6 +94,25 @@ def test_decorated_result_without_trusted_predecoration_evidence_fails_closed():
         },
     ]
     assert _warns("Deployed successfully.", messages)
+
+
+def test_non_boolean_predecoration_marker_is_not_trusted():
+    messages = [
+        {"role": "user", "content": "deploy"},
+        {
+            "role": "tool",
+            "name": "terminal",
+            "content": "not a structured result",
+            "_side_effect_evidence_succeeded": "true",
+        },
+    ]
+    assert _warns("Deployed successfully.", messages)
+
+
+def test_predecoration_verdict_fails_closed_for_cyclic_result():
+    cyclic = {}
+    cyclic["self"] = cyclic
+    assert not tool_result_succeeded("process", cyclic)
 
 
 def test_successful_execute_code_result_is_current_turn_evidence():

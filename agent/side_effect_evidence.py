@@ -228,11 +228,30 @@ def _tool_result_succeeded(tool_name: str, content: Any) -> bool:
     return succeeded and not any(marker in compact for marker in _ERROR_MARKERS)
 
 
+def tool_result_succeeded(tool_name: str, content: Any) -> bool:
+    """Return a compact, fail-closed verdict before output decoration."""
+
+    try:
+        return _tool_result_succeeded(tool_name, content)
+    except Exception:
+        return False
+
+
 def _evidence_from_messages(messages: list[dict[str, Any]]) -> set[str]:
     evidence: set[str] = set()
     for message in _current_turn_tool_messages(messages):
         tool = str(message.get("name") or "")
-        if not _tool_result_succeeded(tool, message.get("content")):
+        # This private marker is computed from the structured result before
+        # persistence stubs, guardrail observations, or subdirectory hints can
+        # decorate its content. Provider transports strip underscore metadata.
+        trusted_success = message.get("_side_effect_evidence_succeeded")
+        if trusted_success is True:
+            succeeded = True
+        elif trusted_success is False:
+            succeeded = False
+        else:
+            succeeded = tool_result_succeeded(tool, message.get("content"))
+        if not succeeded:
             continue
         if tool == "send_message":
             evidence.add("send_message")
