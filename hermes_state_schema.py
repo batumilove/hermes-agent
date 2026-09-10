@@ -935,6 +935,128 @@ class SessionSchemaMixin:
         finally:
             cursor.execute("PRAGMA foreign_keys=ON")
 
+    def _heal_gateway_post_response_action_state(self, cursor: sqlite3.Cursor) -> None:
+        """Widen the post-response action-state CHECK constraint for ``blocked``.
+
+        This shape repair is unconditional: an interrupted rollout may have
+        an old table despite an already-current schema_version value.
+        """
+        row = cursor.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' "
+            "AND name='gateway_post_response_actions'"
+        ).fetchone()
+        if row is None:
+            return
+        table_sql = (row["sql"] if isinstance(row, sqlite3.Row) else row[0]) or ""
+        if "'blocked'" in table_sql:
+            return
+        if cursor.execute(
+            """SELECT 1 FROM gateway_post_response_actions AS a
+               LEFT JOIN delivery_obligations AS d ON d.obligation_id=a.obligation_id
+               WHERE d.obligation_id IS NULL LIMIT 1"""
+        ).fetchone() is not None:
+            raise sqlite3.IntegrityError(
+                "cannot migrate post-response actions with orphan obligations"
+            )
+        conn = cursor.connection
+        # PRAGMA foreign_keys is a no-op inside a transaction. Refuse to
+        # perform a table rebuild in that case rather than pretend its FK-off
+        # window exists, because a failed mid-rebuild must roll back to the
+        # original table rather than leave a renamed-table artifact.
+        if conn.in_transaction:
+            raise sqlite3.OperationalError(
+                "cannot migrate post-response actions inside an active transaction"
+            )
+        foreign_keys_were_enabled = bool(
+            cursor.execute("PRAGMA foreign_keys").fetchone()[0]
+        )
+        cursor.execute("PRAGMA foreign_keys=OFF")
+        if cursor.execute("PRAGMA foreign_keys").fetchone()[0] != 0:
+            raise sqlite3.OperationalError(
+                "could not disable foreign-key enforcement for post-response migration"
+            )
+        try:
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                "ALTER TABLE gateway_post_response_actions "
+                "RENAME TO gateway_post_response_actions_legacy"
+            )
+            cursor.execute(
+                """CREATE TABLE gateway_post_response_actions (
+                    obligation_id TEXT NOT NULL REFERENCES delivery_obligations(obligation_id) ON DELETE CASCADE,
+                    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+                    action_key TEXT NOT NULL UNIQUE,
+                    action_kind TEXT NOT NULL CHECK (length(action_kind) > 0),
+                    session_key_hash TEXT NOT NULL, session_lineage_hash TEXT NOT NULL,
+                    session_identifier_payload TEXT NOT NULL,
+                    session_lineage_payload TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK (state IN ('pending', 'running', 'done', 'failed', 'blocked')),
+                    owner_pid INTEGER, owner_started_at INTEGER,
+                    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+                    created_at REAL NOT NULL, updated_at REAL NOT NULL,
+                    next_retry_at REAL, last_error TEXT,
+                    PRIMARY KEY (obligation_id, ordinal)
+                )"""
+            )
+            cursor.execute(
+                """INSERT INTO gateway_post_response_actions (
+                       obligation_id, ordinal, action_key, action_kind,
+                       session_key_hash, session_lineage_hash,
+                       session_identifier_payload, session_lineage_payload,
+                       payload_json, state, owner_pid, owner_started_at,
+                       attempts, created_at, updated_at, next_retry_at, last_error
+                   )
+                   SELECT obligation_id, ordinal, action_key, action_kind,
+                          session_key_hash, session_lineage_hash,
+                          session_identifier_payload,
+                          session_lineage_payload, payload_json, state,
+                          owner_pid, owner_started_at, attempts, created_at,
+                          updated_at, next_retry_at, last_error
+                   FROM gateway_post_response_actions_legacy"""
+            )
+            cursor.execute("DROP TABLE gateway_post_response_actions_legacy")
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_gateway_post_response_actions_ready "
+                "ON gateway_post_response_actions(state, next_retry_at, obligation_id, ordinal)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_gateway_post_response_actions_barrier "
+                "ON gateway_post_response_actions(session_lineage_hash, state)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_gateway_post_response_actions_session_barrier "
+                "ON gateway_post_response_actions(session_key_hash, state)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_gateway_post_response_actions_owner "
+                "ON gateway_post_response_actions(state, owner_pid, owner_started_at)"
+            )
+            # Check the rebuilt child before making the table replacement
+            # durable.  An unscoped check here would turn unrelated historical
+            # corruption into an irreversible migration failure.
+            if cursor.execute(
+                "PRAGMA foreign_key_check(gateway_post_response_actions)"
+            ).fetchone() is not None:
+                raise sqlite3.IntegrityError(
+                    "post-response action migration left foreign-key violations"
+                )
+            cursor.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                cursor.execute("ROLLBACK")
+            raise
+        finally:
+            if conn.in_transaction:
+                cursor.execute("ROLLBACK")
+            cursor.execute(
+                "PRAGMA foreign_keys=" + ("ON" if foreign_keys_were_enabled else "OFF")
+            )
+        if foreign_keys_were_enabled and cursor.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+            raise sqlite3.OperationalError(
+                "could not restore foreign-key enforcement after post-response migration"
+            )
+
     def _init_schema(self):
         """Create tables and FTS if they don't exist, reconcile columns.
 
@@ -969,6 +1091,8 @@ class SessionSchemaMixin:
         # landed — the version-gated rebuild is unreachable there, #73823).
         # Same PK-rebuild constraint as gateway_routing above.
         self._heal_session_model_usage_pk(cursor)
+
+        self._heal_gateway_post_response_action_state(cursor)
 
         # Indexes that reference reconciler-added columns must be created
         # AFTER _reconcile_columns runs — declaring them in SCHEMA_SQL

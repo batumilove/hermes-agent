@@ -2,9 +2,9 @@
 
 When the agent has its own SessionDB reference (``_session_db is not None``),
 ``_flush_messages_to_session_db()`` persists messages to SQLite during the
-agent run.  The gateway's ``append_to_transcript()`` must then use
-``skip_db=True`` on all fallback paths to prevent writing a second copy
-to the same SQLite file.
+agent run. The gateway must not enqueue or call its ``skip_db=True``
+``append_to_transcript()`` no-op on fallback paths, preventing both duplicate
+writes and durable serialization of agent-owned payloads.
 
 This test covers the two fallback paths that previously lacked
 ``skip_db=agent_persisted``:
@@ -103,27 +103,18 @@ def _source():
     )
 
 
-def _assert_user_call_has_skip_db(calls, expected_skip_db: bool):
-    """Find append_to_transcript calls with role='user' and check skip_db."""
+def _assert_no_user_transcript_call(calls):
+    """Agent-owned user rows must not reach the gateway no-op append path."""
     user_calls = []
     for call in calls:
         args = call.args
         if len(args) >= 2 and isinstance(args[1], dict):
             if args[1].get("role") == "user":
                 user_calls.append(call)
-    assert len(user_calls) >= 1, (
-        f"Expected at least one user-role append_to_transcript call, "
-        f"got calls: {[c.args for c in calls if len(c.args)>=2]}"
-    )
-    for call in user_calls:
-        actual = call.kwargs.get("skip_db", False)
-        assert actual == expected_skip_db, (
-            f"Expected skip_db={expected_skip_db} for user-role call, "
-            f"got skip_db={actual}. kwargs={call.kwargs}"
-        )
+    assert user_calls == []
 
 
-# ── Test 1: agent_failed_early path uses skip_db=True ─────────────────
+# ── Test 1: agent_failed_early path omits the no-op append ────────────
 
 
 @pytest.mark.asyncio
@@ -147,16 +138,13 @@ async def test_agent_failed_early_skip_db_when_agent_has_session_db(
     await runner._handle_message_with_agent(
         _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
     )
-
-    _assert_user_call_has_skip_db(
-        runner.session_store.append_to_transcript.call_args_list, True
-    )
+    _assert_no_user_transcript_call(runner.session_store.append_to_transcript.call_args_list)
 
 
 # ── Test 2: agent_failed_early with no _session_db → skip_db not True ─
 
 
-# ── Test 3: not-new-messages path uses skip_db=True ───────────────────
+# ── Test 3: not-new-messages path omits skip_db no-op actions ─────────
 
 
 @pytest.mark.asyncio
@@ -176,18 +164,21 @@ async def test_not_new_messages_skip_db_when_agent_has_session_db(
         }
     )
 
-    await runner._handle_message_with_agent(
+    result = await runner._handle_message_with_agent(
         _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
     )
-
-    _assert_user_call_has_skip_db(
-        runner.session_store.append_to_transcript.call_args_list, True
-    )
+    # ``skip_db=True`` is an immediate SessionStore no-op.  Agent-owned rows
+    # must never be serialized into the durable finalization plan.
+    actions = result.actions_for_text("Hello!")
+    user_actions = [
+        action for action in actions
+        if action["action_kind"] == "append_to_transcript"
+        and action["payload"]["message"].get("role") == "user"
+    ]
+    assert user_actions == []
 
 
 # ── Post-stream MEDIA delivery keeps prior-turn deduplication ──────────
 
 
 # ── Test 4: normal path (new_messages found) uses skip_db=True ────────
-
-

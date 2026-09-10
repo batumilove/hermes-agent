@@ -4454,7 +4454,7 @@ class BasePlatformAdapter(ABC):
         images: List[Tuple[str, str]],
         metadata: Optional[Dict[str, Any]] = None,
         human_delay: float = 0.0,
-    ) -> None:
+    ) -> SendResult:
         """Send a batch of images.
 
         Accepts ``http(s)://``, ``file://`` URIs in the first tuple
@@ -4469,6 +4469,11 @@ class BasePlatformAdapter(ABC):
         """
         from urllib.parse import unquote as _unquote
 
+        attempted = False
+        delivered = False
+        all_delivered = True
+        last_error = ""
+        message_id = None
         for image_url, alt_text in images:
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
@@ -4500,10 +4505,25 @@ class BasePlatformAdapter(ABC):
                         caption=alt_text if alt_text else None,
                         metadata=metadata,
                     )
+                attempted = True
+                if img_result.success:
+                    delivered = True
+                    message_id = message_id or img_result.message_id
                 if not img_result.success:
+                    all_delivered = False
+                    last_error = str(img_result.error or "image delivery failed")
                     logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
             except Exception as img_err:
+                attempted = True
+                all_delivered = False
+                last_error = type(img_err).__name__
                 logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
+        if delivered and all_delivered:
+            return SendResult(success=True, message_id=message_id)
+        return SendResult(
+            success=False,
+            error=last_error or ("no images to send" if not attempted else "image delivery failed"),
+        )
 
     async def send_image(
         self,
@@ -6343,6 +6363,7 @@ class BasePlatformAdapter(ABC):
         # Track delivery outcomes for the processing-complete hook
         delivery_attempted = False
         delivery_succeeded = False
+        final_component_outcomes: List[bool] = []
 
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
@@ -6351,6 +6372,16 @@ class BasePlatformAdapter(ABC):
             delivery_attempted = True
             if getattr(result, "success", False):
                 delivery_succeeded = True
+
+        def _record_final_component(result) -> None:
+            """Record one required final component without aggregate success."""
+            final_component_outcomes.append(bool(getattr(result, "success", False)))
+            _record_delivery(result)
+
+        def _record_final_component_failure() -> None:
+            nonlocal delivery_attempted
+            final_component_outcomes.append(False)
+            delivery_attempted = True
 
         # Reuse the interrupt event set by handle_message() (which marks
         # the session active before spawning this task to prevent races).
@@ -6391,6 +6422,17 @@ class BasePlatformAdapter(ABC):
 
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
+            # A normal final response can carry a runner-owned durable
+            # post-response handoff while still behaving exactly like a string
+            # through media extraction below.
+            try:
+                from gateway.post_response import FinalResponseHandoff
+
+                _final_handoff = (
+                    response if isinstance(response, FinalResponseHandoff) else None
+                )
+            except Exception:
+                _final_handoff = None
             is_ephemeral_response = isinstance(response, EphemeralReply)
 
             # Slash-command handlers may return an EphemeralReply sentinel to
@@ -6421,7 +6463,17 @@ class BasePlatformAdapter(ABC):
                     session_key,
                 )
                 response = None
+                if _final_handoff is not None:
+                    await asyncio.to_thread(
+                        _final_handoff.runner._cancel_uncommitted_final_response_handoff,
+                        _final_handoff,
+                    )
             if not response:
+                if _final_handoff is not None:
+                    await asyncio.to_thread(
+                        _final_handoff.runner._cancel_uncommitted_final_response_handoff,
+                        _final_handoff,
+                    )
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             if response:
                 # Capture [[as_document]] before extract_media strips it, so the
@@ -6563,6 +6615,71 @@ class BasePlatformAdapter(ABC):
                 # Play TTS audio before text (voice-first experience)
                 _tts_caption_delivered = False
                 _tts_cleanup_paths = {_tts_requested_path, *_tts_paths} - {None}
+                # A FinalResponseHandoff owns the entire final-delivery
+                # aggregate, not only its text branch.  In particular a
+                # Telegram TTS caption, an image, or a document can be the
+                # first (and only) user-visible component.  Establish the
+                # durable pending -> attempting fence before any of them can
+                # cross the platform boundary.
+                _handoff_receipt_ready = True
+                _handoff_obligation_id = None
+                _handoff_output_suppressed = False
+                if _final_handoff is not None:
+                    _handoff_has_final_component = bool(
+                        text_content or images or local_files or media_files or _tts_paths
+                    )
+                    if _handoff_has_final_component:
+                        # An attachment path/URL is not honest or safe recovery
+                        # content.  The receipt remains user-redeliverable
+                        # without persisting host paths or MEDIA directives.
+                        _handoff_recovery_content = (
+                            text_content
+                            or (
+                                "⚠️ The gateway was interrupted while delivering an "
+                                "attachment response. Please ask me to resend it."
+                            )
+                        )
+                        try:
+                            _handoff_receipt_ready = await asyncio.to_thread(
+                                _final_handoff.runner._prepare_final_response_handoff,
+                                _final_handoff,
+                                text_content=_handoff_recovery_content,
+                                event=event,
+                            )
+                            if _handoff_receipt_ready:
+                                _handoff_obligation_id = _final_handoff.obligation_id
+                                _handoff_receipt_ready = bool(
+                                    await asyncio.to_thread(
+                                        _final_handoff.runner._mark_final_response_handoff_attempting,
+                                        _final_handoff,
+                                    )
+                                )
+                        except Exception:
+                            logger.debug("final delivery precommit raised", exc_info=True)
+                            _handoff_receipt_ready = False
+                        if not _handoff_receipt_ready:
+                            logger.warning(
+                                "final delivery precommit/attempt transition failed; "
+                                "suppressing final output"
+                            )
+                            # Do not merely suppress text: TTS and every
+                            # attachment path below are user-visible sends too.
+                            # Keep a receipt-transaction failure's active token
+                            # intact as restart-recovery evidence.
+                            _handoff_output_suppressed = True
+                            _tts_paths = []
+                            images = []
+                            local_files = []
+                            media_files = []
+                    else:
+                        # Extraction reduced this handoff to no final output;
+                        # explicitly cancel its active marker rather than
+                        # leaving an uncommitted handoff ambiguous.
+                        await asyncio.to_thread(
+                            _final_handoff.runner._cancel_uncommitted_final_response_handoff,
+                            _final_handoff,
+                        )
+
                 for _tts_index, _tts_path in enumerate(_tts_paths):
                     try:
                         # Caption eligibility and payload stay on the ORIGINAL
@@ -6586,7 +6703,7 @@ class BasePlatformAdapter(ABC):
                             caption=telegram_tts_caption,
                             metadata=_final_thread_metadata,
                         )
-                        _record_delivery(tts_result)
+                        _record_final_component(tts_result)
                         _tts_caption_delivered = bool(
                             _tts_caption_delivered
                             or (
@@ -6594,6 +6711,9 @@ class BasePlatformAdapter(ABC):
                                 and getattr(tts_result, "success", False)
                             )
                         )
+                    except Exception as tts_err:
+                        _record_final_component_failure()
+                        logger.warning("[%s] Error sending TTS: %s", self.name, tts_err)
                     finally:
                         try:
                             os.remove(_tts_path)
@@ -6610,7 +6730,11 @@ class BasePlatformAdapter(ABC):
                 # adapter while its in-flight handler was still producing a
                 # final response; that response is a new message, so resolve
                 # the current transport before sending it.
-                if text_content and not _tts_caption_delivered:
+                if (
+                    text_content
+                    and not _tts_caption_delivered
+                    and _handoff_receipt_ready
+                ):
                     delivery_adapter = self._final_delivery_adapter(event.source)
                     logger.info(
                         "[%s] Sending response (%d chars) to %s",
@@ -6627,8 +6751,10 @@ class BasePlatformAdapter(ABC):
                     # trouble must never block or delay the actual send.
                     # Slash-command and ephemeral replies are cheap to
                     # regenerate and are not recorded.
-                    _obligation_id = None
-                    if not is_ephemeral_response and not str(
+                    _obligation_id = _handoff_obligation_id
+                    _receipt_prepared = True
+                    _handoff_receipt = _final_handoff is not None
+                    if _final_handoff is None and not is_ephemeral_response and not str(
                         event.text or ""
                     ).lstrip().startswith(("/", self.typed_command_prefix or "!")):
                         try:
@@ -6668,14 +6794,20 @@ class BasePlatformAdapter(ABC):
                         except Exception:
                             logger.debug("delivery ledger record failed", exc_info=True)
                             _obligation_id = None
-                    result = await delivery_adapter._send_with_retry(
-                        chat_id=event.source.chat_id,
-                        content=text_content,
-                        reply_to=_reply_anchor,
-                        metadata=_final_thread_metadata,
-                    )
-                    _record_delivery(result)
-                    if _obligation_id is not None:
+                    result = None
+                    if _receipt_prepared:
+                        result = await delivery_adapter._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content=text_content,
+                            reply_to=_reply_anchor,
+                            metadata=_final_thread_metadata,
+                        )
+                        _record_final_component(result)
+                    if (
+                        _receipt_prepared
+                        and _obligation_id is not None
+                        and not _handoff_receipt
+                    ):
                         try:
                             from gateway.delivery_ledger import (
                                 mark_delivered,
@@ -6694,7 +6826,6 @@ class BasePlatformAdapter(ABC):
                             logger.debug(
                                 "delivery ledger update failed", exc_info=True
                             )
-
                     # Schedule auto-deletion on the adapter that owns the new
                     # message ID, which may be the reconnect replacement.
                     if (
@@ -6716,13 +6847,21 @@ class BasePlatformAdapter(ABC):
                 if images:
                     logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
                     try:
-                        await self.send_multiple_images(
+                        image_result = await self.send_multiple_images(
                             chat_id=event.source.chat_id,
                             images=images,
                             metadata=_final_thread_metadata,
                             human_delay=human_delay,
                         )
+                        # Older built-in/plugin overrides completed their
+                        # image send and returned None.  At this call site a
+                        # normal return is evidence that delivery was
+                        # attempted; exceptions still follow the failure path.
+                        if image_result is None:
+                            image_result = SendResult(success=True)
+                        _record_final_component(image_result)
                     except Exception as batch_err:
+                        _record_final_component_failure()
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
 
 
@@ -6758,13 +6897,17 @@ class BasePlatformAdapter(ABC):
                 if _image_paths:
                     try:
                         _batch = [(f"file://{_quote(p)}", "") for p in _image_paths]
-                        await self.send_multiple_images(
+                        image_result = await self.send_multiple_images(
                             chat_id=event.source.chat_id,
                             images=_batch,
                             metadata=_final_thread_metadata,
                             human_delay=human_delay,
                         )
+                        if image_result is None:
+                            image_result = SendResult(success=True)
+                        _record_final_component(image_result)
                     except Exception as batch_err:
+                        _record_final_component_failure()
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
 
                 if _non_image_media:
@@ -6803,6 +6946,8 @@ class BasePlatformAdapter(ABC):
                                 metadata=_final_thread_metadata,
                             )
 
+                        _record_final_component(media_result)
+
                         if not media_result.success:
                             logger.warning("[%s] Failed to send media (%s): %s", self.name, ext, media_result.error)
                             await self._notify_media_delivery_failure(
@@ -6812,6 +6957,7 @@ class BasePlatformAdapter(ABC):
                                 metadata=_final_thread_metadata,
                             )
                     except Exception as media_err:
+                        _record_final_component_failure()
                         logger.warning("[%s] Error sending media: %s", self.name, media_err)
 
                 # Send auto-detected local non-image files as native attachments
@@ -6832,6 +6978,7 @@ class BasePlatformAdapter(ABC):
                                 file_path=file_path,
                                 metadata=_final_thread_metadata,
                             )
+                        _record_final_component(file_result)
                         if not file_result.success:
                             logger.warning(
                                 "[%s] Failed to send local file (%s): %s",
@@ -6845,7 +6992,27 @@ class BasePlatformAdapter(ABC):
                                 metadata=_final_thread_metadata,
                             )
                     except Exception as file_err:
+                        _record_final_component_failure()
                         logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
+
+                # A handoff settles exactly once, after every intended final
+                # component has had its chance to deliver.  One successful
+                # text, caption, TTS, image batch, or attachment cannot hide
+                # a different component's failure.
+                if _final_handoff is not None and _handoff_receipt_ready and _handoff_obligation_id:
+                    try:
+                        await asyncio.to_thread(
+                            _final_handoff.runner._settle_final_response_handoff,
+                            _final_handoff,
+                            delivered=bool(final_component_outcomes) and all(final_component_outcomes),
+                            error="final component delivery failed",
+                        )
+                    except Exception:
+                        logger.debug("final delivery settlement failed", exc_info=True)
+                    try:
+                        _final_handoff.runner._post_response_controller.wake()
+                    except Exception:
+                        pass
 
                 # A3 (#29346): if a non-empty response produced nothing
                 # deliverable, fail loudly rather than dropping it in silence.
@@ -6853,7 +7020,11 @@ class BasePlatformAdapter(ABC):
                     delivery_attempted or _tts_caption_delivered
                     or images or local_files or media_files
                 )
-                if not _anything_delivered and _response_pre_extract.strip():
+                if (
+                    not _handoff_output_suppressed
+                    and not _anything_delivered
+                    and _response_pre_extract.strip()
+                ):
                     logger.error(
                         "[%s] response_delivery_dropped: non-empty response "
                         "(%d chars) produced no delivered message or attachment "

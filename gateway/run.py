@@ -7509,6 +7509,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # dormant before the drained backlog has a chance to update the clock.
         self._scale_to_zero_cooldown_until: float = 0.0
 
+        # Exactly one runner-owned daemon worker drains durable finalization
+        # actions.  It must be constructed only after every runner field its
+        # replay paths can touch (adapter routing, caches, locks, DB handles,
+        # and hooks) exists.  Starting here still gives crash-left actions an
+        # immediate startup replay, without exposing a partially-built runner.
+        from gateway.post_response import PostResponseWorker
+
+        self._post_response_controller = PostResponseWorker(self)
+        self._post_response_worker = self._post_response_controller.start()
+
 
     def _open_session_db_for_active_scope(self, raise_on_error: bool = False) -> Any:
         """Return the AsyncSessionDB for the profile scope active on this task.
@@ -12143,21 +12153,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Offloaded to a thread because the caller (_handle_message_with_agent)
         runs on the event loop and atomic_json_write calls os.fsync.
         """
-        import json
-
-        path = _hermes_home / self._STUCK_LOOP_FILE
-        if not path.exists():
-            return
-        try:
-            counts = json.loads(path.read_text(encoding="utf-8"))
-            if session_key in counts:
-                del counts[session_key]
-                if counts:
-                    await asyncio.to_thread(atomic_json_write, path, counts, indent=None)
-                else:
-                    path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        await asyncio.to_thread(self._clear_restart_failure_count_sync, session_key)
 
     async def _launch_detached_restart_command(self) -> None:
         import shutil
@@ -13145,6 +13141,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 if result is not None and getattr(result, "success", False):
                     await asyncio.to_thread(mark_delivered, row["obligation_id"])
+                    # The post-response worker may be sleeping after it
+                    # correctly observed this receipt as failed.  Delivery is
+                    # the transition that releases finalize_turn, so wake it
+                    # rather than waiting for its recovery poll.
+                    controller = getattr(self, "_post_response_controller", None)
+                    if controller is not None:
+                        controller.wake()
                     redelivered += 1
                     logger.info(
                         "Redelivered recovered final response to %s:%s "
@@ -16807,6 +16810,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as _e:
                 logger.debug("shutdown_cached_clients error: %s", _e)
 
+            # Stop the DB-backed finalization worker before closing shared
+            # handles.  Its own join is bounded and a blocked action is left
+            # durably reclaimable rather than cancelled or killed.
+            try:
+                _remaining = GatewayRunner._shutdown_remaining(_teardown_deadline)
+                if _remaining > 0:
+                    if not self.shutdown_post_response_worker(
+                        timeout=min(0.5, _remaining)
+                    ):
+                        _cleanup_budget_exhausted = True
+                else:
+                    _cleanup_budget_exhausted = True
+            except Exception:
+                logger.warning("post-response worker shutdown failed")
+
             # Close SQLite session DBs so the WAL write lock is released.
             # Without this, --replace and similar restart flows leave the
             # old gateway's connection holding the WAL lock until Python
@@ -19960,6 +19978,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
+            # A committed final-delivery receipt owns this session until its
+            # ordered post-response barrier is drained.  This admission check
+            # must run only after the active-session claim: capacity rejection
+            # must not create or load a session.  It remains before history or
+            # model execution, and this enclosing finally releases the
+            # temporary claim when a barrier owns the session.
+            try:
+                _barrier_entry = await self.async_session_store.get_or_create_session(source)
+                _barrier_db = getattr(self.session_store, "_db", None)
+                from hermes_state import SessionDB
+
+                if (
+                    isinstance(_barrier_entry, SessionEntry)
+                    and isinstance(_barrier_db, SessionDB)
+                    and _barrier_db.has_post_response_barrier(
+                        _barrier_entry.session_key, _barrier_entry.session_id
+                    )
+                ):
+                    # Capacity has already been claimed for this inbound
+                    # message.  Returning None here would silently lose it;
+                    # stop before hooks/model work and send a safe retry cue.
+                    return (
+                        "⏳ This session is finishing its previous response. "
+                        "Please resend shortly."
+                    )
+            except Exception:
+                # Fail closed if durable barrier state cannot be read. This is
+                # a correctness gate, not a best-effort status check.
+                return "⏳ Session finalization is unavailable. Please resend shortly."
+
             # The claim is already owned, so every await from this point is
             # inside the releasing finally. Cancellation during best-effort
             # status persistence cannot strand the session slot.
@@ -20008,7 +20056,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Normal completion/exception/interrupt owns and clears this exact
             # durable marker.  SIGKILL/OOM skips finally, leaving the marker for
             # the next unclean startup's recovery pass.
-            await self._clear_durable_active_turn(event)
+            if not getattr(event, "_gateway_post_response_handoff", None):
+                await self._clear_durable_active_turn(event)
             # Unconditional release covers every exit path. _release_running_agent_state
             # is idempotent (pop-on-absent is harmless) and, called without a
             # run_generation guard, always clears the slot regardless of which
@@ -20611,6 +20660,263 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     delattr(event, attr)
                 except AttributeError:
                     pass
+
+    def shutdown_post_response_worker(self, timeout: float = 1.0) -> bool:
+        """Bounded stop for this runner's sole durable post-response worker.
+
+        A timed-out action is intentionally not cancelled: its row remains
+        ``running`` under this process and becomes reclaimable after death.
+        Unclaimed rows remain pending for the next runner.
+        """
+        controller = getattr(self, "_post_response_controller", None)
+        if controller is None:
+            return True
+        stopped = controller.shutdown(timeout)
+        if not stopped:
+            logger.warning("post-response worker shutdown timed out")
+        return stopped
+
+    def _prepare_final_response_handoff(
+        self,
+        handoff: Any,
+        *,
+        text_content: str,
+        event: Any,
+    ) -> bool:
+        """Atomically commit the exact final-delivery receipt and action plan.
+
+        Called by ``BasePlatformAdapter`` after media extraction establishes the
+        exact text that will be sent, and before it crosses the network
+        ambiguity boundary.  Failure is fail-closed: the durable active token
+        stays in place for restart recovery and no platform send is attempted.
+        """
+        if not text_content:
+            return False
+        home_token = None
+        try:
+            handoff.receipt_attempted = True
+            from gateway.delivery_ledger import compute_obligation_id
+            from hermes_constants import (
+                reset_hermes_home_override,
+                set_hermes_home_override,
+            )
+
+            # The adapter completes delivery in a deferred thread.  Reinstall
+            # the home captured when the handoff was built so this commit
+            # cannot fall through to root merely because the turn scope has
+            # already unwound.  A mismatch is fail-closed: a receipt must
+            # never be committed to a DB other than its captured parent.
+            captured_db_path = getattr(handoff, "post_response_db_path", None)
+            if captured_db_path is not None:
+                captured_db_path = Path(captured_db_path).absolute()
+                home_token = set_hermes_home_override(str(captured_db_path.parent))
+            db = self.session_store._db
+            if captured_db_path is not None:
+                actual_db_path = getattr(db, "db_path", None)
+                if actual_db_path is None or Path(actual_db_path).absolute() != captured_db_path:
+                    raise RuntimeError("final response receipt DB scope mismatch")
+
+            message_ref = str(getattr(event, "message_id", "") or "")
+            if not message_ref:
+                # Attachment-only recovery content is intentionally constant
+                # and safe.  Preserve distinct handoff identities without
+                # retaining the original MEDIA path/URL by deriving a stable
+                # hash from the complete original handoff plan.
+                message_ref = compute_obligation_id(
+                    handoff.session_key,
+                    "post-response-handoff",
+                    str(getattr(handoff, "delivery_identity", "")),
+                )
+            obligation_id = compute_obligation_id(
+                handoff.session_key, message_ref, text_content
+            )
+            source = event.source
+            db.create_final_delivery_and_barrier(
+                obligation_id=obligation_id,
+                session_key=handoff.session_key,
+                session_lineage=handoff.session_lineage,
+                platform=str(getattr(source.platform, "value", source.platform)),
+                chat_id=str(source.chat_id),
+                thread_id=getattr(source, "thread_id", None),
+                content=text_content,
+                actions=handoff.actions_for_text(text_content),
+            )
+            handoff.obligation_id = obligation_id
+            controller = getattr(self, "_post_response_controller", None)
+            if controller is not None:
+                if captured_db_path is not None:
+                    register = getattr(controller, "register_db_path", None)
+                    if callable(register) and register(captured_db_path) is False:
+                        raise RuntimeError("final response receipt DB is outside worker scope")
+                controller.wake()
+            return True
+        except Exception as exc:
+            # Payloads contain chat/session identifiers and response text; do
+            # not put any of them in a warning.
+            logger.warning("final delivery receipt commit failed (%s)", type(exc).__name__)
+            return False
+        finally:
+            if home_token is not None:
+                reset_hermes_home_override(home_token)
+
+    def _mark_final_response_handoff_attempting(self, handoff: Any) -> bool:
+        """CAS delivery state in the exact DB captured by the handoff."""
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        captured_db_path = getattr(handoff, "post_response_db_path", None)
+        token = None
+        try:
+            if captured_db_path is not None:
+                captured_db_path = Path(captured_db_path).absolute()
+                token = set_hermes_home_override(str(captured_db_path.parent))
+            db = self.session_store._db
+            if captured_db_path is not None:
+                actual_db_path = getattr(db, "db_path", None)
+                if actual_db_path is None or Path(actual_db_path).absolute() != captured_db_path:
+                    return False
+            return bool(db.mark_final_delivery_attempting(handoff.obligation_id))
+        finally:
+            if token is not None:
+                reset_hermes_home_override(token)
+
+    def _settle_final_response_handoff(
+        self,
+        handoff: Any,
+        *,
+        delivered: bool,
+        error: Optional[str] = None,
+    ) -> bool:
+        """Settle delivery in the same exact DB that owns the receipt."""
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        captured_db_path = getattr(handoff, "post_response_db_path", None)
+        token = None
+        try:
+            if captured_db_path is not None:
+                captured_db_path = Path(captured_db_path).absolute()
+                token = set_hermes_home_override(str(captured_db_path.parent))
+            db = self.session_store._db
+            if captured_db_path is not None:
+                actual_db_path = getattr(db, "db_path", None)
+                if actual_db_path is None or Path(actual_db_path).absolute() != captured_db_path:
+                    return False
+            return bool(
+                db.settle_final_delivery(
+                    handoff.obligation_id, delivered=delivered, error=error
+                )
+            )
+        finally:
+            if token is not None:
+                reset_hermes_home_override(token)
+
+    def _cancel_uncommitted_final_response_handoff(self, handoff: Any) -> bool:
+        """Release a handoff that Base suppressed before receipt creation.
+
+        A receipt transaction failure is intentionally *not* cancellable: its
+        active token is recovery evidence.  Only pre-extraction suppression
+        and empty/media-only paths arrive here with no attempted receipt.
+        """
+        if getattr(handoff, "obligation_id", None) is not None:
+            return False
+        if bool(getattr(handoff, "receipt_attempted", False)):
+            return False
+        token = getattr(handoff, "active_turn_token", None)
+        if not token:
+            return False
+        return bool(
+            self.session_store.clear_turn_active(
+                str(handoff.session_key), str(token)
+            )
+        )
+
+    def _rebaseline_agent_cache_message_count_sync(
+        self, session_key: str, session_id: Optional[str]
+    ) -> None:
+        """Synchronous worker-side counterpart of the cache re-baseline.
+
+        The durable finalizer runs outside the gateway event loop.  It must
+        update the same 3-/4-tuple cache entry under the same lock only after
+        all gateway-owned transcript actions have completed.
+        """
+        if not session_key or not session_id:
+            return
+        db_candidates = (
+            getattr(self.session_store, "_db", None),
+            getattr(getattr(self, "_session_db", None), "_db", None),
+            getattr(self, "_session_db", None),
+        )
+        live = None
+        for db in db_candidates:
+            getter = getattr(db, "get_session", None)
+            if getter is None:
+                continue
+            try:
+                row = getter(session_id)
+                live = row.get("message_count", 0) if row else None
+            except Exception:
+                continue
+            break
+        if live is None:
+            return
+        cache_lock = getattr(self, "_agent_cache_lock", None)
+        cache = getattr(self, "_agent_cache", None)
+        if cache_lock is None or cache is None:
+            return
+        with cache_lock:
+            cached = cache.get(session_key)
+            if not (
+                isinstance(cached, tuple)
+                and len(cached) > 2
+                and cached[0] is not _AGENT_PENDING_SENTINEL
+            ):
+                return
+            snapshot_sid = cached[3] if len(cached) > 3 else None
+            if snapshot_sid is not None and snapshot_sid != session_id:
+                return
+            if snapshot_sid is None:
+                cache[session_key] = (cached[0], cached[1], live)
+            else:
+                cache[session_key] = (cached[0], cached[1], live, snapshot_sid)
+
+    def _clear_restart_failure_count_sync(self, session_key: str) -> None:
+        """Worker-safe durable completion cleanup (no event-loop dependency)."""
+        import json
+
+        # This runs on the durable worker after it installs the receipt's
+        # profile home.  Resolve now rather than using the module's process
+        # root snapshot so same-key profiles cannot clear each other's file.
+        path = get_hermes_home() / self._STUCK_LOOP_FILE
+        if not path.exists():
+            return
+        try:
+            counts = json.loads(path.read_text(encoding="utf-8"))
+            if session_key not in counts:
+                return
+            del counts[session_key]
+            if counts:
+                atomic_json_write(path, counts, indent=None)
+            else:
+                path.unlink(missing_ok=True)
+        except Exception:
+            return
+
+    def _finalize_post_response_turn(self, payload: Dict[str, Any]) -> None:
+        """Terminal durable action: release exact token, then re-baseline."""
+        session_key = str(payload["session_key"])
+        token = payload.get("active_turn_token") or payload.get("token")
+        if token:
+            cleared = self.session_store.clear_turn_active(session_key, str(token))
+            if not cleared and self.session_store.peek_active_turn_token(session_key) == str(token):
+                raise RuntimeError("post-response active-turn finalization was not persisted")
+        self._rebaseline_agent_cache_message_count_sync(
+            session_key, payload.get("session_id")
+        )
 
     def _install_plugin_message_injector(self) -> None:
         """Publish this live gateway's plugin message scheduler."""
@@ -22243,7 +22549,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             except Exception:
                 _intentional_silence = False
-
             # Convert the agent's internal "(empty)" sentinel into a
             # user-friendly message.  "(empty)" means the model failed to
             # produce visible content after exhausting all retries (nudge,
@@ -22272,6 +22577,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # compression session_id swap, both of which happen later.  See
             # the call site after the `update_session(...)` write.
 
+            # Normalize empty responses: surface errors, partial failures, and
+            # the case where agent did work but returned no text. Fix for #18765.
+            if not _intentional_silence:
+                response = _normalize_empty_agent_response(
+                    agent_result, response, history_len=len(history),
+                )
+                response = _sanitize_gateway_final_response(source.platform, response)
+
+            # Only an already-normalized, visible, unsent final response
+            # enters the durable handoff.  In particular, an empty failed
+            # result can normalize to a user-facing recovery string.
+            _defer_final_persistence = bool(
+                response
+                and session_key
+                and getattr(event, "_gateway_active_turn_token", None)
+                and not getattr(event, "internal", False)
+                and not _intentional_silence
+                and not agent_result.get("already_sent")
+            )
+
             # Successful turn — clear any stuck-loop counter for this session.
             # This ensures the counter only accumulates across CONSECUTIVE
             # restarts where the session was active (never completed).
@@ -22280,7 +22605,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # shutdown) — the turn ran to completion, so recovery
             # succeeded and subsequent messages should no longer receive
             # the restart-interruption system note.
-            if session_key and _should_clear_resume_pending_after_turn(agent_result):
+            if (
+                session_key
+                and _should_clear_resume_pending_after_turn(agent_result)
+                and not _defer_final_persistence
+            ):
                 await self._clear_restart_failure_count(session_key)
                 try:
                     await self.async_session_store.clear_resume_pending(session_key)
@@ -22290,19 +22619,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         session_key, _e,
                     )
 
-            # Normalize empty responses: surface errors, partial failures, and
-            # the case where agent did work but returned no text. Fix for #18765.
-            if not _intentional_silence:
-                response = _normalize_empty_agent_response(
-                    agent_result, response, history_len=len(history),
-                )
-                response = _sanitize_gateway_final_response(source.platform, response)
-
             # Ordering contract: the agent thread already updated the contextvar
             # in conversation_compression.py; atomically rebind SessionEntry.
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.
-            if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
+            if (
+                not _defer_final_persistence
+                and agent_result.get("session_id")
+                and agent_result["session_id"] != session_entry.session_id
+            ):
                 if session_entry.session_id == _run_start_session_id:
                     _agent_new_sid = agent_result["session_id"]
                     if await self.async_session_store.rebind_session_id(
@@ -22579,6 +22904,46 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
             ts = time.time()  # Unix epoch float — consistent with DB storage
+            # Once a normal unsent final response is ready, every
+            # gateway-owned transcript mutation belongs to the durable plan.
+            # Agent-owned rows still call the mirror with skip_db=True, but
+            # are never duplicated in SQLite.
+            _deferred_gateway_actions: List[Dict[str, Any]] = []
+
+            async def _append_gateway_transcript(
+                session_id: str, message: Dict[str, Any], *, skip_db: bool = False
+            ) -> None:
+                if _defer_final_persistence:
+                    # SessionStore intentionally makes skip_db=True an
+                    # immediate no-op. Do not serialize agent-owned rows.
+                    if skip_db:
+                        return
+                    _deferred_gateway_actions.append(
+                        {
+                            "action_kind": "append_to_transcript",
+                            "payload": {
+                                "session_id": session_id,
+                                "message": dict(message),
+                                "skip_db": bool(skip_db),
+                            },
+                        }
+                    )
+                    return
+                if skip_db:
+                    # Intentional silence remains an assistant transcript
+                    # turn under the base persistence contract.  The real
+                    # SessionStore no-ops because the agent already owns the
+                    # durable row; retaining this call preserves that exact
+                    # contract (including alternate stores) without creating
+                    # a delivery obligation.
+                    if _intentional_silence:
+                        await self.async_session_store.append_to_transcript(
+                            session_id, message, skip_db=True
+                        )
+                    return
+                await self.async_session_store.append_to_transcript(
+                    session_id, message, skip_db=skip_db
+                )
             
             # If this is a fresh session (no history), write the full tool
             # definitions as the first entry so the transcript is self-describing
@@ -22587,7 +22952,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass  # Skip all transcript writes — don't grow a broken session
             elif not history:
                 tool_defs = agent_result.get("tools", [])
-                await self.async_session_store.append_to_transcript(
+                await _append_gateway_transcript(
                     session_entry.session_id,
                     {
                         "role": "session_meta",
@@ -22660,7 +23025,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         event.message_id, session_entry.session_id,
                     )
                 else:
-                    await self.async_session_store.append_to_transcript(
+                    await _append_gateway_transcript(
                         session_entry.session_id,
                         _user_entry,
                         skip_db=agent_persisted,
@@ -22688,13 +23053,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _user_entry["display_kind"] = persist_user_display_kind
                     if event.message_id:
                         _user_entry["message_id"] = str(event.message_id)
-                    await self.async_session_store.append_to_transcript(
+                    await _append_gateway_transcript(
                         session_entry.session_id,
                         _user_entry,
                         skip_db=agent_persisted,
                     )
                     if response:
-                        await self.async_session_store.append_to_transcript(
+                        await _append_gateway_transcript(
                             session_entry.session_id,
                             {"role": "assistant", "content": response, "timestamp": ts},
                             skip_db=agent_persisted,
@@ -22719,7 +23084,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         ):
                             entry["message_id"] = str(event.message_id)
                             _user_msg_id_attached = True
-                        await self.async_session_store.append_to_transcript(
+                        await _append_gateway_transcript(
                             session_entry.session_id, entry,
                             skip_db=agent_persisted,
                         )
@@ -22727,11 +23092,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Token counts and model are now persisted by the agent directly.
             # Keep only last_prompt_tokens here for context-window tracking and
             # compression decisions.
-            await self.async_session_store.update_session(
-                session_entry.session_key,
-                last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
-                touch_activity=not bool(getattr(event, "internal", False)),
-            )
+            if not _defer_final_persistence:
+                await self.async_session_store.update_session(
+                    session_entry.session_key,
+                    last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
+                    touch_activity=not bool(getattr(event, "internal", False)),
+                )
 
             # Re-baseline the cached agent's message_count snapshot now that
             # ALL of this turn's transcript writes are done — the agent's
@@ -22751,9 +23117,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # above), matching this function's documented contract.  Refreshing
             # here makes the guard fire only on a DIFFERENT process's writes.
             # Fail-safe inside the helper.
-            await self._refresh_agent_cache_message_count(
-                session_key, session_entry.session_id
-            )
+            if not _defer_final_persistence:
+                await self._refresh_agent_cache_message_count(
+                    session_key, session_entry.session_id
+                )
 
             # Intentional silence is a delivery decision, not a transcript
             # mutation.  The agent's [SILENT]/NO_REPLY assistant turn above is
@@ -22824,6 +23191,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     pass
                 return None
 
+            if _defer_final_persistence:
+                from gateway.post_response import FinalResponseHandoff
+
+                handoff = FinalResponseHandoff(
+                    response,
+                    runner=self,
+                    session_key=session_key,
+                    session_lineage=session_entry.session_id,
+                    expected_session_id=session_entry.session_id,
+                    new_session_id=agent_result.get("session_id"),
+                    active_turn_token=getattr(event, "_gateway_active_turn_token", None),
+                    last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
+                    touch_activity=not bool(getattr(event, "internal", False)),
+                    # The complete gateway transcript plan (including the
+                    # no-message fallback) is carried above.  Agent-owned
+                    # rows retain skip_db=True mirror actions and are never
+                    # duplicated by a synthetic final-text append.
+                    append_final_text=False,
+                    clear_resume_pending=_should_clear_resume_pending_after_turn(agent_result),
+                    gateway_actions=_deferred_gateway_actions,
+                    source_data=source.to_dict(),
+                )
+                event._gateway_post_response_handoff = handoff
+                return handoff
             return response
             
         except Exception as e:

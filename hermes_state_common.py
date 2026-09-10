@@ -326,7 +326,7 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
     )
 
 
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 
 # FTS storage-layout version, tracked INDEPENDENTLY of SCHEMA_VERSION in the
@@ -508,6 +508,49 @@ CREATE TABLE IF NOT EXISTS session_turn_leases (
     expires_at REAL NOT NULL
 );
 
+-- Kept in state.db with the gateway ledger so a final response receipt and
+-- its ordered post-response work become visible together. The raw session
+-- identifier is an operational payload, never an index or diagnostic key.
+CREATE TABLE IF NOT EXISTS delivery_obligations (
+    obligation_id TEXT PRIMARY KEY,
+    session_key TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    thread_id TEXT,
+    content TEXT NOT NULL,
+    state TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    owner_pid INTEGER,
+    owner_started_at INTEGER,
+    last_error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS gateway_post_response_actions (
+    obligation_id TEXT NOT NULL REFERENCES delivery_obligations(obligation_id)
+        ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+    action_key TEXT NOT NULL UNIQUE,
+    action_kind TEXT NOT NULL CHECK (length(action_kind) > 0),
+    session_key_hash TEXT NOT NULL,
+    session_lineage_hash TEXT NOT NULL,
+    session_identifier_payload TEXT NOT NULL,
+    -- Private operational value used solely to redact failures. The default
+    -- lets declarative reconciliation add it to pre-phase-1 action rows.
+    session_lineage_payload TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('pending', 'running', 'done', 'failed', 'blocked')),
+    owner_pid INTEGER,
+    owner_started_at INTEGER,
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    next_retry_at REAL,
+    last_error TEXT,
+    PRIMARY KEY (obligation_id, ordinal)
+);
+
 CREATE TABLE IF NOT EXISTS async_delegations (
     delegation_id TEXT PRIMARY KEY,
     origin_session TEXT NOT NULL,
@@ -545,6 +588,14 @@ CREATE INDEX IF NOT EXISTS idx_messages_assistant_calls_by_session
     WHERE role = 'assistant' AND tool_calls IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
 CREATE INDEX IF NOT EXISTS idx_session_turn_leases_expires ON session_turn_leases(expires_at);
+CREATE INDEX IF NOT EXISTS idx_gateway_post_response_actions_ready
+    ON gateway_post_response_actions(state, next_retry_at, obligation_id, ordinal);
+CREATE INDEX IF NOT EXISTS idx_gateway_post_response_actions_barrier
+    ON gateway_post_response_actions(session_lineage_hash, state);
+CREATE INDEX IF NOT EXISTS idx_gateway_post_response_actions_session_barrier
+    ON gateway_post_response_actions(session_key_hash, state);
+CREATE INDEX IF NOT EXISTS idx_gateway_post_response_actions_owner
+    ON gateway_post_response_actions(state, owner_pid, owner_started_at);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usage(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
 CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery

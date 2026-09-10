@@ -1321,3 +1321,36 @@ patches:
     tests:
       - scripts/run_tests.sh tests/tools/test_live_state_db_guard.py tests/tools/test_terminal_tool.py tests/hermes_cli/test_state_db_cmd.py
     retirement: Remove when upstream provides equivalent non-approvable live-database ownership enforcement and a bounded canonical read-only inspection path.
+
+  - id: durable-post-response-barrier
+    kind: core
+    rationale: >-
+      Persist a final delivery obligation and its ordered session-scoped
+      post-response barrier actions in one SessionDB transaction, then drain
+      them with one runner-owned bounded worker and an adapter pre-send handoff
+      that preserves delivery/turn ownership across a crash.
+    paths:
+      - .github/batumi-patches.yaml
+      - hermes_state.py
+      - hermes_state_common.py
+      - hermes_state_schema.py
+      - gateway/delivery_ledger.py
+      - gateway/platforms/base.py
+      - gateway/platforms/signal.py
+      - gateway/post_response.py
+      - gateway/run.py
+      - gateway/session.py
+      - tests/gateway/test_42039_duplicate_user_message.py
+      - tests/gateway/test_first_turn_session_meta_rebaseline.py
+      - tests/gateway/test_internal_notification_marker_82888.py
+      - tests/gateway/test_multiplex_session_db_profile_scope.py
+      - tests/gateway/test_post_response_actions.py
+      - tests/gateway/test_post_response_delivery.py
+      - tests/gateway/test_signal.py
+      - tests/state/test_session_git_metadata_generation.py
+    tests:
+      - scripts/run_tests.sh tests/gateway/test_post_response_actions.py tests/gateway/test_post_response_delivery.py
+      - scripts/run_tests.sh tests/gateway/test_42039_duplicate_user_message.py tests/gateway/test_first_turn_session_meta_rebaseline.py tests/gateway/test_internal_notification_marker_82888.py tests/gateway/test_multiplex_session_db_profile_scope.py
+      - scripts/run_tests.sh tests/gateway/test_delivery_ledger.py tests/gateway/test_delivery_ledger_fd_leak.py tests/gateway/test_delivery_ledger_producer.py tests/gateway/test_gateway_shutdown.py tests/gateway/test_routing_save_fast_path.py tests/state/test_session_db_write_admission.py tests/state/test_session_git_metadata_generation.py
+      - scripts/run_tests.sh tests/gateway/test_signal.py tests/gateway/test_send_multiple_images.py tests/gateway/test_media_extraction.py tests/gateway/test_media_tag_cleanup.py tests/gateway/test_multiplex_session_db_profile_scope.py
+    retirement: Remove when upstream contains the equivalent SessionDB-owned durable post-response schema, transaction boundary, bounded worker handoff, and behavioral regression coverage.
