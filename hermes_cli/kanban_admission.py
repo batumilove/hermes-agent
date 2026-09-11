@@ -84,7 +84,7 @@ class AdmissionPolicy:
     valid: bool = True
 
     @classmethod
-    def invalid(cls) -> "AdmissionPolicy":
+    def invalid(cls) -> AdmissionPolicy:
         return cls(
             schema_version=_SUPPORTED_SCHEMA,
             generation=0,
@@ -95,7 +95,7 @@ class AdmissionPolicy:
         )
 
     @classmethod
-    def from_mapping(cls, raw: object) -> "AdmissionPolicy":
+    def from_mapping(cls, raw: object) -> AdmissionPolicy:
         if not isinstance(raw, Mapping) or set(raw) != _POLICY_KEYS:
             return cls.invalid()
 
