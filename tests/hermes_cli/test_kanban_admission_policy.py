@@ -4,7 +4,6 @@ import copy
 import importlib
 from typing import Any
 
-
 BOARD = "11111111-1111-4111-8111-111111111111"
 TASK = "t_0123456789abcdef"
 RUN_GENERATION = 7
