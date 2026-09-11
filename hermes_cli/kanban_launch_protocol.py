@@ -846,6 +846,243 @@ def record_spawned(
     )
 
 
+@dataclass(frozen=True)
+class ReleaseOutcome:
+    """Evidence of one retired pre-spawn launch claim."""
+
+    board: BoardIdentity
+    task_id: str
+    run_generation: int
+    dispatcher_owner_generation: int
+    policy_generation: int
+    route_generation: int
+    claim_token: str
+    previous_state: str
+
+
+@dataclass(frozen=True)
+class RunOutcome:
+    """Evidence of one terminal handoff for a spawned run."""
+
+    board: BoardIdentity
+    task_id: str
+    run_generation: int
+    dispatcher_owner_generation: int
+    policy_generation: int
+    route_generation: int
+    claim_token: str
+    previous_state: str
+    exit_status: int
+    detail: str
+
+
+def _read_active_policy_generation(conn: sqlite3.Connection) -> int:
+    policy_row = conn.execute(
+        "SELECT schema_version, active_generation "
+        "FROM kanban_policy_pointer WHERE singleton = 1"
+    ).fetchone()
+    if (
+        policy_row is None
+        or len(policy_row) != 2
+        or type(policy_row[0]) is not int
+        or policy_row[0] != 1
+        or not _positive_int(policy_row[1])
+    ):
+        raise LaunchProtocolError("protected policy pointer is invalid")
+    return cast(int, policy_row[1])
+
+
+def _validate_owner_lease(
+    owner_lease: object, owner_generation: int
+) -> DispatcherOwnerLease:
+    if not isinstance(owner_lease, DispatcherOwnerLease):
+        raise LaunchProtocolError("owner lease is invalid")
+    if owner_lease.owner_generation != owner_generation or not owner_lease.validate():
+        raise LaunchProtocolError("owner lease is not held for this generation")
+    return owner_lease
+
+
+def release_claim(
+    conn: sqlite3.Connection,
+    *,
+    board: BoardIdentity,
+    task_id: str,
+    run_generation: int,
+    dispatcher_owner_generation: int,
+    policy_generation: int,
+    route_generation: int,
+    claim_token: str,
+    owner_lease: DispatcherOwnerLease,
+) -> ReleaseOutcome:
+    """Atomically retire an unresolved pre-spawn claim (claim rollback).
+
+    Requires a currently-held owner lease and a matching active policy
+    generation; only ``claimed_not_spawned`` and ``spawn_intent`` rows may be
+    released. Spawned rows require ``record_run_outcome`` instead.
+    """
+
+    identity = _validate_launch_identity(
+        board,
+        task_id,
+        run_generation,
+        dispatcher_owner_generation,
+        policy_generation,
+        route_generation,
+        claim_token,
+    )
+    board, task_id, run_generation, owner_gen, policy_gen, route_gen, token = identity
+    lease = _validate_owner_lease(owner_lease, owner_gen)
+
+    try:
+        with lease._serialized(), _immediate_transaction(conn):
+            if not lease.validate():
+                raise LaunchProtocolError("owner lease was lost before release")
+            active = _read_active_policy_generation(conn)
+            if active != policy_gen:
+                raise LaunchProtocolError("active policy generation does not match claim")
+            row = conn.execute(
+                f"SELECT {_COLUMNS} FROM kanban_launch_protocol "
+                "WHERE board_uuid = ? AND board_device = ? AND board_inode = ? "
+                "AND task_id = ? AND run_generation = ?",
+                _identity_values(board, task_id, run_generation),
+            ).fetchone()
+            if row is None:
+                raise LaunchProtocolError("claim identity or transition state did not match")
+            record = _row_to_record(row)
+            if record.dispatcher_owner_generation != owner_gen:
+                raise LaunchProtocolError("claim identity or transition state did not match")
+            if record.state == "spawned":
+                raise LaunchProtocolError("spawned rows require a terminal run outcome")
+            cursor = conn.execute(
+                "DELETE FROM kanban_launch_protocol "
+                "WHERE board_uuid = ? AND board_device = ? AND board_inode = ? "
+                "AND task_id = ? AND run_generation = ? AND claim_token = ? "
+                "AND dispatcher_owner_generation = ? AND policy_generation = ? "
+                "AND route_generation = ? AND state = ?",
+                (
+                    *_identity_values(board, task_id, run_generation),
+                    token,
+                    owner_gen,
+                    policy_gen,
+                    route_gen,
+                    record.state,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise LaunchProtocolError("claim identity or transition state did not match")
+            if not lease.validate():
+                raise LaunchProtocolError("owner lease was lost at claim release")
+    except LaunchProtocolError:
+        raise
+    except sqlite3.Error as exc:
+        raise LaunchProtocolError("claim release persistence failed") from exc
+
+    return ReleaseOutcome(
+        board=board,
+        task_id=task_id,
+        run_generation=run_generation,
+        dispatcher_owner_generation=owner_gen,
+        policy_generation=policy_gen,
+        route_generation=route_gen,
+        claim_token=token,
+        previous_state=record.state,
+    )
+
+
+def _validate_exit_evidence(exit_status: object, detail: object) -> tuple[int, str]:
+    if type(exit_status) is not int:
+        raise LaunchProtocolError("exit status must be an exact integer")
+    if not -2**31 <= exit_status < 2**31:
+        raise LaunchProtocolError("exit status is out of bounds")
+    if type(detail) is not str or len(detail) > 256 or detail != detail.strip():
+        raise LaunchProtocolError("outcome detail must be bounded trimmed text")
+    return exit_status, detail
+
+
+def record_run_outcome(
+    conn: sqlite3.Connection,
+    *,
+    board: BoardIdentity,
+    task_id: str,
+    run_generation: int,
+    dispatcher_owner_generation: int,
+    policy_generation: int,
+    route_generation: int,
+    claim_token: str,
+    owner_lease: DispatcherOwnerLease,
+    exit_status: int,
+    detail: str = "",
+) -> RunOutcome:
+    """Atomically retire a spawned row with bounded terminal evidence."""
+
+    identity = _validate_launch_identity(
+        board,
+        task_id,
+        run_generation,
+        dispatcher_owner_generation,
+        policy_generation,
+        route_generation,
+        claim_token,
+    )
+    board, task_id, run_generation, owner_gen, policy_gen, route_gen, token = identity
+    exact_exit, exact_detail = _validate_exit_evidence(exit_status, detail)
+    lease = _validate_owner_lease(owner_lease, owner_gen)
+
+    try:
+        with lease._serialized(), _immediate_transaction(conn):
+            if not lease.validate():
+                raise LaunchProtocolError("owner lease was lost before run outcome")
+            active = _read_active_policy_generation(conn)
+            if active != policy_gen:
+                raise LaunchProtocolError("active policy generation does not match claim")
+            row = conn.execute(
+                f"SELECT {_COLUMNS} FROM kanban_launch_protocol "
+                "WHERE board_uuid = ? AND board_device = ? AND board_inode = ? "
+                "AND task_id = ? AND run_generation = ?",
+                _identity_values(board, task_id, run_generation),
+            ).fetchone()
+            if row is None:
+                raise LaunchProtocolError("claim identity or transition state did not match")
+            record = _row_to_record(row)
+            if record.state != "spawned":
+                raise LaunchProtocolError("run outcome requires a spawned row")
+            cursor = conn.execute(
+                "DELETE FROM kanban_launch_protocol "
+                "WHERE board_uuid = ? AND board_device = ? AND board_inode = ? "
+                "AND task_id = ? AND run_generation = ? AND claim_token = ? "
+                "AND dispatcher_owner_generation = ? AND policy_generation = ? "
+                "AND route_generation = ? AND state = 'spawned'",
+                (
+                    *_identity_values(board, task_id, run_generation),
+                    token,
+                    owner_gen,
+                    policy_gen,
+                    route_gen,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise LaunchProtocolError("claim identity or transition state did not match")
+            if not lease.validate():
+                raise LaunchProtocolError("owner lease was lost at run outcome")
+    except LaunchProtocolError:
+        raise
+    except sqlite3.Error as exc:
+        raise LaunchProtocolError("run outcome persistence failed") from exc
+
+    return RunOutcome(
+        board=board,
+        task_id=task_id,
+        run_generation=run_generation,
+        dispatcher_owner_generation=owner_gen,
+        policy_generation=policy_gen,
+        route_generation=route_gen,
+        claim_token=token,
+        previous_state=record.state,
+        exit_status=exact_exit,
+        detail=exact_detail,
+    )
+
+
 def get_launch_record(
     conn: sqlite3.Connection,
     board: BoardIdentity,
