@@ -119,6 +119,15 @@ def _has_affirmative_side_effect_claim(
             )
             present_state = any(
                 re.search(rf"\b(?:is|are)\s+(?:currently\s+)?{re.escape(verb)}\b", clause)
+                or (
+                    not _FIRST_PERSON_RE.search(sentence)
+                    and re.search(
+                        rf"\b(?:is|are)\s+(?:currently\s+)?[^.!?;,]{{0,60}}"
+                        rf"\b(?:and|or)\s+(?:currently\s+)?{re.escape(verb)}\b"
+                        rf"(?=\s*(?:[.!?;,]|$|every\b|for\b|at\b|on\b))",
+                        sentence,
+                    )
+                )
                 for verb in affirmative_verbs
             )
             if present_state:
