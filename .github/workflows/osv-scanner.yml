@@ -47,6 +47,13 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Stage nonstandard lockfiles
+        run: |
+          set -euo pipefail
+          install -D -m 0644 \
+            nix/node-gyp-11-4-0-package-lock.json \
+            .osv-lockfiles/node-gyp-11-4-0/package-lock.json
+
       - name: Scan lockfiles
         uses: google/osv-scanner-action/osv-scanner-action@8dc09193bb540e09b23da07ad7e30bd33bf87018 # v2.3.8
         with:
@@ -60,9 +67,29 @@ jobs:
             --lockfile=website/package-lock.json
             --lockfile=plugins/platforms/photon/sidecar/package-lock.json
             --lockfile=scripts/whatsapp-bridge/package-lock.json
-            --lockfile=nix/node-gyp-11-4-0-package-lock.json
+            --lockfile=.osv-lockfiles/node-gyp-11-4-0/package-lock.json
         # The reporter below owns the blocking vulnerability verdict.
         continue-on-error: true
+
+      - name: Validate scan results
+        if: ${{ !cancelled() }}
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("results.json")
+          if not path.is_file() or path.stat().st_size == 0:
+              raise SystemExit("OSV scan did not produce results.json")
+
+          try:
+              payload = json.loads(path.read_text(encoding="utf-8"))
+          except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+              raise SystemExit(f"OSV scan produced unreadable results.json: {exc}") from exc
+
+          if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
+              raise SystemExit("OSV scan produced results.json with an unexpected schema")
+          PY
 
       - name: Report vulnerabilities
         uses: google/osv-scanner-action/osv-reporter-action@8dc09193bb540e09b23da07ad7e30bd33bf87018 # v2.3.8
@@ -104,7 +131,8 @@ jobs:
         with:
           name: OSV Scanner SARIF file
           path: /tmp/osv-results
-        continue-on-error: true
+        # Fail closed: a missing artifact download must not be able to
+        # masquerade as a clean scan downstream.
 
       - name: Emit review_status
         id: emit
@@ -112,6 +140,10 @@ jobs:
           set -euo pipefail
           STATUS="[]"
 
+          if [ ! -s /tmp/osv-results/osv-results.sarif ]; then
+            echo "::error::OSV SARIF artifact missing or empty — failing closed rather than emitting a clean status"
+            exit 1
+          fi
           if [ -f /tmp/osv-results/osv-results.sarif ]; then
             # Count vulnerabilities from the SARIF file
             VULN_COUNT=$(python3 -c "
@@ -131,8 +163,8 @@ jobs:
               print(count)
               if vulns:
                   print('\n'.join(vulns[:20]), file=sys.stderr)
-          except Exception:
-              print(0)
+          except Exception as exc:
+              raise SystemExit('OSV SARIF unreadable: {}'.format(exc))
           ")
 
             VULN_DETAIL=""

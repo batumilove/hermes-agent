@@ -291,12 +291,17 @@ jobs:
           with open('$GITHUB_OUTPUT', 'a') as f:
               f.write(f'needs-json={json.dumps(compact)}\n')
           failed = [name for name, info in needs.items() if info['result'] not in ('success', 'skipped')]
+          # Fail closed: the OSV scanner is unconditionally required — a
+          # skipped scan must never satisfy the aggregate gate.
+          if needs.get('osv-scanner', {}).get('result') == 'skipped':
+              print('::error::Required job osv-scanner was skipped, not passed')
+              sys.exit(1)
           for name, info in sorted(needs.items()):
               result = info['result']
               icon = '✅' if result in ('success', 'skipped') else '❌'
               print(f'{icon} {name}: {result}')
           if failed:
-              print(f'::error::{len(failed)} job(s) did not pass: {\", \".join(failed)}')
+              print('::error::{} job(s) did not pass: {}'.format(len(failed), ', '.join(failed)))
               sys.exit(1)
           print('All checks passed (or were skipped)')
           "
