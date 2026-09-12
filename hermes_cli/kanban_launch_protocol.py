@@ -142,6 +142,7 @@ class DispatcherOwnerLease:
         "_active",
         "_guard",
         "_handle",
+        "_in_serialized_op",
         "_run_fd",
         "home",
         "lock_path",
@@ -165,6 +166,7 @@ class DispatcherOwnerLease:
         self._acquisition_pid = os.getpid()
         self._guard = threading.RLock()
         self._active = True
+        self._in_serialized_op = 0
 
     def _expected_metadata(self) -> dict[str, object]:
         return {
@@ -212,15 +214,30 @@ class DispatcherOwnerLease:
 
     @contextlib.contextmanager
     def _serialized(self) -> Iterator[None]:
-        """Prevent another thread from releasing this lease mid-transition."""
+        """Prevent lease release mid-transition, including reentrant release.
+
+        Cross-thread release blocks on the guard; same-thread reentrant
+        release (RLock would admit it) is rejected by _in_serialized_op so
+        a serialized kernel operation — through its COMMIT — cannot have its
+        lease pulled out from under it on its own thread.
+        """
 
         with self._guard:
-            yield
+            self._in_serialized_op += 1
+            try:
+                yield
+            finally:
+                self._in_serialized_op -= 1
 
     def release(self) -> None:
         """Release ownership exactly once; later validation fails closed."""
 
         with self._guard:
+            if self._in_serialized_op > 0:
+                raise DispatcherOwnerError(
+                    "lease release is deferred: a serialized kernel "
+                    "operation is active on this lease"
+                )
             if not self._active:
                 return
             self._active = False
@@ -483,6 +500,11 @@ def _require_connection_boundary(conn: sqlite3.Connection) -> None:
         raise LaunchProtocolError("invalid SQLite connection")
     if conn.in_transaction:
         raise LaunchProtocolError("active transaction is not allowed")
+
+
+@contextlib.contextmanager
+def _nullcontext():
+    yield
 
 
 @contextlib.contextmanager
@@ -789,8 +811,17 @@ def record_spawned(
     claim_token: str,
     pid: int | None = None,
     remote_execution_id: str | None = None,
+    owner_lease: DispatcherOwnerLease | None = None,
 ) -> LaunchRecord:
-    """CAS a durable intent to one concrete local or remote execution."""
+    """CAS a durable intent to one concrete local or remote execution.
+
+    When ``owner_lease`` is supplied, the lease is validated and the active
+    policy pointer is re-read inside the same ``BEGIN IMMEDIATE`` transaction
+    as the CAS: a spawn cannot be recorded under a lost owner lease or a
+    revoked policy generation even if the caller checked both just before
+    the call. Omitting the lease retains the legacy behavior (used only by
+    tests of the pre-spawn transition itself).
+    """
 
     identity = _validate_launch_identity(
         board,
@@ -811,8 +842,22 @@ def record_spawned(
     if valid_pid == valid_remote:
         raise LaunchProtocolError("exactly one valid execution identity is required")
 
+    lease = None
+    if owner_lease is not None:
+        lease = _validate_owner_lease(owner_lease, owner_gen)
+
     try:
-        with _immediate_transaction(conn):
+        with lease._serialized() if lease is not None else _nullcontext(), _immediate_transaction(conn):
+            if lease is not None:
+                if not lease.validate():
+                    raise LaunchProtocolError(
+                        "owner lease was lost before spawn record"
+                    )
+                active = _read_active_policy_generation(conn)
+                if active != policy_gen:
+                    raise LaunchProtocolError(
+                        "active policy generation does not match claim"
+                    )
             _cas_record(
                 conn,
                 board=board,
@@ -827,6 +872,10 @@ def record_spawned(
                 pid=pid if valid_pid else None,
                 remote_execution_id=remote_execution_id if valid_remote else None,
             )
+            # Revalidate while rollback is still possible: a lease lost
+            # between the pre-CAS check and the CAS must not commit spawned.
+            if lease is not None and not lease.validate():
+                raise LaunchProtocolError("owner lease was lost at spawn record")
     except LaunchProtocolError:
         raise
     except sqlite3.Error as exc:

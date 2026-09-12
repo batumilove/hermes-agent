@@ -6,6 +6,7 @@ module under test is intentionally inactive and has no dispatcher imports.
 
 from __future__ import annotations
 
+import importlib
 import os
 import sqlite3
 from pathlib import Path
@@ -182,6 +183,261 @@ def test_duplicate_claim_and_active_transaction_fail_without_partial_write(
         assert len(freeze_ack_blockers(conn)) == 1
     finally:
         conn.close()
+
+
+def _intent(conn: sqlite3.Connection, board, lease) -> None:
+    claim_not_spawned(
+        conn,
+        board=board,
+        task_id=TASK_ID,
+        run_generation=1,
+        dispatcher_owner_generation=OWNER_GENERATION,
+        policy_generation=POLICY_GENERATION,
+        route_generation=ROUTE_GENERATION,
+        claim_token=CLAIM_TOKEN,
+    )
+    record_spawn_intent(
+        conn,
+        board=board,
+        task_id=TASK_ID,
+        run_generation=1,
+        dispatcher_owner_generation=OWNER_GENERATION,
+        policy_generation=POLICY_GENERATION,
+        route_generation=ROUTE_GENERATION,
+        claim_token=CLAIM_TOKEN,
+        owner_lease=lease,
+    )
+
+
+def test_spawned_rejects_lost_owner_lease(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    database = tmp_path / "board.db"
+    database.touch()
+    board = canonical_board_identity(database, BOARD_UUID)
+    conn = _connection(tmp_path / "launch.db")
+    lease = acquire_dispatcher_owner(home, OWNER_GENERATION)
+    try:
+        _intent(conn, board, lease)
+        lease.release()
+        with pytest.raises(LaunchProtocolError, match="owner lease"):
+            record_spawned(
+                conn,
+                board=board,
+                task_id=TASK_ID,
+                run_generation=1,
+                dispatcher_owner_generation=OWNER_GENERATION,
+                policy_generation=POLICY_GENERATION,
+                route_generation=ROUTE_GENERATION,
+                claim_token=CLAIM_TOKEN,
+                pid=4242,
+                owner_lease=lease,
+            )
+        record = get_launch_record(conn, board, TASK_ID, 1)
+        assert record is not None
+        assert record.state == "spawn_intent"  # CAS never ran
+    finally:
+        conn.close()
+
+
+def test_spawned_rejects_policy_flip_inside_transaction(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    database = tmp_path / "board.db"
+    database.touch()
+    board = canonical_board_identity(database, BOARD_UUID)
+    conn = _connection(tmp_path / "launch.db")
+    lease = acquire_dispatcher_owner(home, OWNER_GENERATION)
+    try:
+        _intent(conn, board, lease)
+        conn.execute(
+            "UPDATE kanban_policy_pointer SET active_generation = ? "
+            "WHERE singleton = 1",
+            (POLICY_GENERATION + 1,),
+        )
+        with pytest.raises(LaunchProtocolError, match="policy generation"):
+            record_spawned(
+                conn,
+                board=board,
+                task_id=TASK_ID,
+                run_generation=1,
+                dispatcher_owner_generation=OWNER_GENERATION,
+                policy_generation=POLICY_GENERATION,
+                route_generation=ROUTE_GENERATION,
+                claim_token=CLAIM_TOKEN,
+                pid=4242,
+                owner_lease=lease,
+            )
+        record = get_launch_record(conn, board, TASK_ID, 1)
+        assert record is not None
+        assert record.state == "spawn_intent"
+    finally:
+        lease.release()
+        conn.close()
+
+
+def test_spawned_with_lease_succeeds_when_generations_match(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    database = tmp_path / "board.db"
+    database.touch()
+    board = canonical_board_identity(database, BOARD_UUID)
+    conn = _connection(tmp_path / "launch.db")
+    lease = acquire_dispatcher_owner(home, OWNER_GENERATION)
+    try:
+        _intent(conn, board, lease)
+        record = record_spawned(
+            conn,
+            board=board,
+            task_id=TASK_ID,
+            run_generation=1,
+            dispatcher_owner_generation=OWNER_GENERATION,
+            policy_generation=POLICY_GENERATION,
+            route_generation=ROUTE_GENERATION,
+            claim_token=CLAIM_TOKEN,
+            pid=4242,
+            owner_lease=lease,
+        )
+        assert record.state == "spawned"
+        assert record.pid == 4242
+    finally:
+        lease.release()
+        conn.close()
+
+
+
+
+def test_spawned_reentrant_release_during_cas_is_deferred(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    database = tmp_path / "board.db"
+    database.touch()
+    board = canonical_board_identity(database, BOARD_UUID)
+    conn = _connection(tmp_path / "launch.db")
+    lease = acquire_dispatcher_owner(home, OWNER_GENERATION)
+    try:
+        _intent(conn, board, lease)
+        module = importlib.import_module("hermes_cli.kanban_launch_protocol")
+        real_cas = module._cas_record
+
+        def cas_then_release(cconn, **kw):
+            result = real_cas(cconn, **kw)
+            try:
+                lease.release()  # same-thread release attempt after CAS
+            except DispatcherOwnerError:
+                pass  # deferred: serialized op active — hardened behavior
+            return result
+
+        module._cas_record = cas_then_release
+        try:
+            record = record_spawned(
+                conn,
+                board=board,
+                task_id=TASK_ID,
+                run_generation=1,
+                dispatcher_owner_generation=OWNER_GENERATION,
+                policy_generation=POLICY_GENERATION,
+                route_generation=ROUTE_GENERATION,
+                claim_token=CLAIM_TOKEN,
+                pid=4242,
+                owner_lease=lease,
+            )
+        finally:
+            module._cas_record = real_cas
+        # The release was deferred, not honored: the op commits atomically
+        # with the lease intact, and the caller can release afterwards.
+        assert record.state == "spawned"
+        assert lease.validate()
+        lease.release()
+        row = get_launch_record(conn, board, TASK_ID, 1)
+        assert row is not None and row.state == "spawned"
+    finally:
+        try:
+            lease.release()
+        except Exception:
+            pass
+        conn.close()
+
+
+
+
+def test_spawned_lease_released_during_commit_stays_spawned(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    database = tmp_path / "board.db"
+    database.touch()
+    board = canonical_board_identity(database, BOARD_UUID)
+    conn = _connection(tmp_path / "launch.db")
+    lease = acquire_dispatcher_owner(home, OWNER_GENERATION)
+    try:
+        _intent(conn, board, lease)
+
+        hook_calls: list[str] = []
+
+        def commit_hook(statement: str) -> None:
+            if statement.upper().startswith("COMMIT"):
+                hook_calls.append(statement)
+                try:
+                    lease.release()  # same-thread reentrant release at COMMIT
+                except DispatcherOwnerError:
+                    pass  # deferred: serialized op active — the hardened path
+
+        conn.set_trace_callback(commit_hook)
+        try:
+            record = record_spawned(
+                conn,
+                board=board,
+                task_id=TASK_ID,
+                run_generation=1,
+                dispatcher_owner_generation=OWNER_GENERATION,
+                policy_generation=POLICY_GENERATION,
+                route_generation=ROUTE_GENERATION,
+                claim_token=CLAIM_TOKEN,
+                pid=4242,
+                owner_lease=lease,
+            )
+        finally:
+            conn.set_trace_callback(None)
+        assert record.state == "spawned"
+        assert hook_calls, "COMMIT trace hook never fired"
+        # Hardened behavior: the release was deferred, so the lease is STILL
+        # VALID after the commit — a spawned row never exists with a dead lease.
+        assert lease.validate()
+        lease.release()
+        assert not lease.validate()
+        row = get_launch_record(conn, board, TASK_ID, 1)
+        assert row is not None and row.state == "spawned"
+    finally:
+        conn.close()
+
+
+def test_release_deferred_during_serialized_op() -> None:
+    home_like = None
+    # Unit-level: a serialized op in flight defers same-thread release.
+    from hermes_cli.kanban_launch_protocol import DispatcherOwnerError
+
+    lease = acquire_dispatcher_owner(_home_for_unit(), OWNER_GENERATION)
+    try:
+        with lease._serialized():
+            with pytest.raises(DispatcherOwnerError):
+                lease.release()
+        assert lease.validate()
+        lease.release()
+        assert not lease.validate()
+    finally:
+        if lease.validate():
+            lease.release()
+        del home_like
+
+
+def _home_for_unit() -> Path:
+    import tempfile
+
+    d = Path(tempfile.mkdtemp())
+    (d / "run").mkdir()
+    (d / "run").chmod(0o700)
+    d.chmod(0o755)
+    return d
 
 
 def test_policy_flip_before_spawn_intent_rolls_back(tmp_path: Path) -> None:
