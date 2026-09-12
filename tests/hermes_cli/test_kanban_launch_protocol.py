@@ -723,3 +723,61 @@ def test_missing_policy_pointer_fails_closed_without_transition(tmp_path: Path) 
     finally:
         lease.release()
         conn.close()
+
+
+def test_task_id_accepts_live_board_short_format():
+    """RED: live board mints t_ + token_hex(4) (8 hex chars); the kernel
+    launch protocol must accept the live format, not only 16-hex."""
+    from hermes_cli.kanban_launch_protocol import _valid_task_id
+    assert _valid_task_id("t_04d0aa77")
+    assert _valid_task_id("t_" + "a" * 16)
+    assert not _valid_task_id("t_short")      # non-hex
+    assert not _valid_task_id("t_04d0aa7")    # 7 hex
+    assert not _valid_task_id("t_04d0aa777")  # 9 hex
+    assert not _valid_task_id("x_04d0aa77")
+
+
+def test_claim_not_spawned_persists_live_board_short_task_id(tmp_path: Path) -> None:
+    """End-to-end: an 8-hex live-format task ID must survive the full
+    claim_not_spawned path — regex validation AND the SQLite schema CHECK
+    (length(task_id) IN (10, 18)) — not just the in-memory validator."""
+    home = tmp_path / "home"
+    home.mkdir()
+    database = tmp_path / "board.db"
+    database.touch()
+    live_task_id = "t_04d0aa77"
+    conn = _connection(tmp_path / "launch.db")
+    try:
+        board = canonical_board_identity(database, BOARD_UUID)
+        record = claim_not_spawned(
+            conn,
+            board=board,
+            task_id=live_task_id,
+            run_generation=1,
+            dispatcher_owner_generation=OWNER_GENERATION,
+            policy_generation=POLICY_GENERATION,
+            route_generation=ROUTE_GENERATION,
+            claim_token=CLAIM_TOKEN,
+        )
+        assert record.task_id == live_task_id
+        assert record.state == "claimed_not_spawned"
+        stored = get_launch_record(conn, board, live_task_id, 1)
+        assert stored is not None and stored.state == "claimed_not_spawned"
+        # Same board/task/generation again must fail-closed as a genuine
+        # duplicate (not as a schema rejection).
+        try:
+            claim_not_spawned(
+                conn,
+                board=board,
+                task_id=live_task_id,
+                run_generation=1,
+                dispatcher_owner_generation=OWNER_GENERATION,
+                policy_generation=POLICY_GENERATION,
+                route_generation=ROUTE_GENERATION,
+                claim_token=CLAIM_TOKEN + "ff",
+            )
+            raise AssertionError("expected duplicate claim to be rejected")
+        except LaunchProtocolError as exc:
+            assert "duplicate or conflicting" in str(exc)
+    finally:
+        conn.close()
