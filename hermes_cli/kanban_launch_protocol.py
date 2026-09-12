@@ -20,7 +20,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Self, TextIO, cast
 
-_TASK_ID_RE = re.compile(r"^t_[0-9a-f]{16}$")
+# Live boards mint task IDs as ``t_`` + ``secrets.token_hex(4)`` (8 hex
+# chars); historical/test fixtures use ``token_hex(8)`` (16 chars).  Both
+# are canonical live formats, so both lengths are accepted.  Any other
+# length, non-hex characters, or a wrong prefix is rejected.
+_TASK_ID_RE = re.compile(r"^t_[0-9a-f]{8}(?:[0-9a-f]{8})?$")
 _CLAIM_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 _LAUNCH_STATES = ("claimed_not_spawned", "spawn_intent", "spawned")
 
@@ -414,7 +418,7 @@ CREATE TABLE IF NOT EXISTS kanban_launch_protocol (
     board_device INTEGER NOT NULL CHECK(board_device > 0),
     board_inode INTEGER NOT NULL CHECK(board_inode > 0),
     task_id TEXT NOT NULL CHECK(
-        length(task_id) = 18
+        length(task_id) IN (10, 18)
         AND substr(task_id, 1, 2) = 't_'
         AND substr(task_id, 3) NOT GLOB '*[^0-9a-f]*'
     ),
@@ -655,7 +659,24 @@ def claim_not_spawned(
                 ),
             )
     except sqlite3.IntegrityError as exc:
-        raise LaunchProtocolError("duplicate or conflicting launch claim") from exc
+        # Distinguish a genuinely conflicting/duplicate claim (unique index on
+        # claim_token or the (board_uuid, task_id, run_generation) key) from any
+        # other integrity violation: mislabeling a CHECK rejection as a duplicate
+        # would mislead operators. SQLite's message text is unstable across
+        # versions, so inspect post-hoc: a real duplicate leaves the existing
+        # claim row in place; a CHECK failure leaves no trace of the insert.
+        try:
+            cur = conn.execute(
+                "SELECT 1 FROM kanban_launch_protocol WHERE task_id = ?",
+                (task_id,),
+            )
+            if cur.fetchone() is not None:
+                raise LaunchProtocolError(
+                    "duplicate or conflicting launch claim"
+                ) from exc
+        except sqlite3.Error:
+            pass
+        raise LaunchProtocolError("launch claim rejected by schema") from exc
     except sqlite3.Error as exc:
         raise LaunchProtocolError("launch claim persistence failed") from exc
     return LaunchRecord(
