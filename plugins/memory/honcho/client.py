@@ -22,7 +22,7 @@ import hashlib
 import ipaddress
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 from agent.secret_scope import get_secret
 from hermes_constants import get_hermes_home
@@ -49,10 +49,24 @@ def _sanitize_url(url: str | None) -> str | None:
     if all(0x20 <= ord(c) < 0x7F for c in url):
         return url
     logger.warning(
-        "Honcho base_url contains non-printable characters and will be ignored: %r",
-        url,
+        "Honcho base_url contains non-printable characters and will be ignored"
     )
     return None
+
+
+def _redact_url_for_log(url: str) -> str:
+    """Render a base URL without userinfo, query parameters, or fragments."""
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return "[redacted-url]"
+        host = parsed.hostname
+        if ":" in host:
+            host = f"[{host}]"
+        port = f":{parsed.port}" if parsed.port is not None else ""
+        return urlunparse((parsed.scheme, f"{host}{port}", parsed.path, "", "", ""))
+    except (TypeError, ValueError):
+        return "[redacted-url]"
 
 
 HOST = "hermes"
@@ -1393,7 +1407,11 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
             resolved_timeout = _DEFAULT_HTTP_TIMEOUT
 
         if resolved_base_url:
-            logger.info("Initializing Honcho client (base_url: %s, workspace: %s)", resolved_base_url, config.workspace_id)
+            logger.info(
+                "Initializing Honcho client (base_url: %s, workspace: %s)",
+                _redact_url_for_log(resolved_base_url),
+                config.workspace_id,
+            )
         else:
             # No base_url resolved, so the SDK falls back to its own
             # ENVIRONMENTS map (honcho.client: local -> http://localhost:8000,

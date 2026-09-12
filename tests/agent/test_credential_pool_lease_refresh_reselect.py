@@ -15,8 +15,13 @@ NOT in ``available`` until the refresh has run.
 """
 
 import threading
+from dataclasses import replace
 
-from agent.credential_pool import CredentialPool, PooledCredential
+from agent.credential_pool import (
+    STATUS_DEAD,
+    CredentialPool,
+    PooledCredential,
+)
 
 
 def _entry(entry_id: str) -> PooledCredential:
@@ -157,3 +162,50 @@ def test_acquire_lease_reselects_when_refresh_removes_chosen_entry():
 
     assert pool.acquire_lease() == "pending"
     assert pool._active_leases == {"pending": 1}
+
+
+def test_acquire_lease_rejects_unknown_explicit_credential_id():
+    pool = _bare_pool([_entry("known")])
+
+    assert pool.acquire_lease("missing") is None
+    assert pool._active_leases == {}
+    assert pool._current_id is None
+
+
+def test_acquire_lease_rejects_dead_explicit_credential_id():
+    dead = replace(_entry("dead"), last_status=STATUS_DEAD)
+    pool = _bare_pool([dead, _entry("healthy")])
+
+    assert pool.acquire_lease("dead") is None
+    assert pool._active_leases == {}
+    assert pool._current_id is None
+
+
+def test_acquire_lease_revalidates_availability_after_sibling_refresh():
+    chosen = _entry("chosen")
+    sibling = _entry("sibling")
+    pool = _bare_pool([chosen, sibling])
+    refreshed = {"done": False}
+
+    def fake_available(**_kwargs):
+        available = [
+            entry for entry in pool._entries if entry.last_status != STATUS_DEAD
+        ]
+        pending = [] if refreshed["done"] else [(sibling, "single-use-token")]
+        return available, pending
+
+    def fake_refresh(pending):
+        assert pending
+        refreshed["done"] = True
+        pool._entries = [
+            replace(entry, last_status=STATUS_DEAD)
+            if entry.id == "chosen" else entry
+            for entry in pool._entries
+        ]
+
+    pool._available_entries = fake_available
+    pool._refresh_pending_entries = fake_refresh
+
+    assert pool.acquire_lease("chosen") is None
+    assert pool._active_leases == {}
+    assert pool._current_id is None
