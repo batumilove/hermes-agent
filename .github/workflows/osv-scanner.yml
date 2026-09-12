@@ -131,7 +131,8 @@ jobs:
         with:
           name: OSV Scanner SARIF file
           path: /tmp/osv-results
-        continue-on-error: true
+        # Fail closed: a missing artifact download must not be able to
+        # masquerade as a clean scan downstream.
 
       - name: Emit review_status
         id: emit
@@ -139,6 +140,10 @@ jobs:
           set -euo pipefail
           STATUS="[]"
 
+          if [ ! -s /tmp/osv-results/osv-results.sarif ]; then
+            echo "::error::OSV SARIF artifact missing or empty — failing closed rather than emitting a clean status"
+            exit 1
+          fi
           if [ -f /tmp/osv-results/osv-results.sarif ]; then
             # Count vulnerabilities from the SARIF file
             VULN_COUNT=$(python3 -c "
@@ -158,8 +163,8 @@ jobs:
               print(count)
               if vulns:
                   print('\n'.join(vulns[:20]), file=sys.stderr)
-          except Exception:
-              print(0)
+          except Exception as exc:
+              raise SystemExit('OSV SARIF unreadable: {}'.format(exc))
           ")
 
             VULN_DETAIL=""

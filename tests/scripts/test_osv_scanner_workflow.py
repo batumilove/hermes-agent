@@ -1,8 +1,12 @@
+import json
+import os
 import re
+import shlex
 import subprocess
 from pathlib import Path, PurePosixPath
 from typing import TypeGuard
 
+import pytest
 import yaml
 
 
@@ -220,3 +224,198 @@ def test_sarif_publication_runs_after_reporter_failure() -> None:
     for index, step in sarif_steps:
         assert index > reporter_index
         assert step.get("if") == "${{ !cancelled() }}"
+
+
+def _shell_quote(script: str) -> str:
+    return shlex.quote(script)
+
+
+def test_emit_status_fails_closed_on_missing_sarif(tmp_path: Path) -> None:
+    emit = _workflow()["jobs"]["emit-status"]
+    download = next(
+        step
+        for step in emit["steps"]
+        if isinstance(step, dict)
+        and isinstance(step.get("uses"), str)
+        and step["uses"].startswith("actions/download-artifact@")
+    )
+    assert "continue-on-error" not in download, (
+        "SARIF artifact download must not be allowed to fail silently"
+    )
+    run_script = next(
+        step
+        for step in emit["steps"]
+        if isinstance(step, dict) and step.get("name") == "Emit review_status"
+    )["run"]
+
+    # Simulate the post-download state: artifact missing/empty. The emit
+    # script must exit nonzero rather than emit a clean "[]" status.
+    # The script hardcodes /tmp/osv-results/osv-results.sarif; sandbox the
+    # whole check by making /tmp/osv-results point at our empty temp dir.
+    sarif_dir = tmp_path / "osv-results"
+    sarif_dir.mkdir()
+    real_tmp = Path("/tmp/osv-results")
+    if real_tmp.exists():  # pragma: no cover - defensive on shared runners
+        pytest.skip("unrelated /tmp/osv-results present; test not hermetic")
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"mkdir -p /tmp && ln -s {sarif_dir} /tmp/osv-results && "
+            f"GITHUB_OUTPUT={tmp_path / 'github_output'} bash -c {_shell_quote(run_script)}; rc=$?; "
+            "rm -f /tmp/osv-results; exit $rc",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0, (
+        "emit script must fail when the SARIF artifact is missing"
+    )
+
+
+def test_emit_status_succeeds_on_clean_sarif(tmp_path: Path) -> None:
+    emit = _workflow()["jobs"]["emit-status"]
+    run_script = next(
+        step
+        for step in emit["steps"]
+        if isinstance(step, dict) and step.get("name") == "Emit review_status"
+    )["run"]
+
+    sarif_dir = tmp_path / "osv-results"
+    sarif_dir.mkdir()
+    (sarif_dir / "osv-results.sarif").write_text(
+        json.dumps({"runs": [{"results": []}]}), encoding="utf-8"
+    )
+    real_tmp = Path("/tmp/osv-results")
+    if real_tmp.exists():  # pragma: no cover - defensive on shared runners
+        pytest.skip("unrelated /tmp/osv-results present; test not hermetic")
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"mkdir -p /tmp && ln -s {sarif_dir} /tmp/osv-results && "
+            f"GITHUB_OUTPUT={tmp_path / 'github_output'} bash -c {_shell_quote(run_script)}; rc=$?; "
+            "rm -f /tmp/osv-results; exit $rc",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "review_status=[]" in (tmp_path / "github_output").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_emit_status_fails_on_corrupt_sarif(tmp_path: Path) -> None:
+    emit = _workflow()["jobs"]["emit-status"]
+    run_script = next(
+        step
+        for step in emit["steps"]
+        if isinstance(step, dict) and step.get("name") == "Emit review_status"
+    )["run"]
+
+    sarif_dir = tmp_path / "osv-results"
+    sarif_dir.mkdir()
+    (sarif_dir / "osv-results.sarif").write_text("not json", encoding="utf-8")
+    real_tmp = Path("/tmp/osv-results")
+    if real_tmp.exists():  # pragma: no cover - defensive on shared runners
+        pytest.skip("unrelated /tmp/osv-results present; test not hermetic")
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"mkdir -p /tmp && ln -s {sarif_dir} /tmp/osv-results && "
+            f"GITHUB_OUTPUT={tmp_path / 'github_output'} bash -c {_shell_quote(run_script)}; rc=$?; "
+            "rm -f /tmp/osv-results; exit $rc",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0, (
+        "emit script must fail when the SARIF is corrupt, not count 0 findings"
+    )
+
+
+def _ci_evaluate_run() -> str:
+    ci = yaml.safe_load(
+        (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    )
+    return next(
+        step
+        for job in ci["jobs"].values()
+        if "evaluate" in str(job.get("steps", ""))
+        for step in job["steps"]
+        if step.get("name") == "Evaluate job results"
+    )["run"]
+
+
+def _run_aggregate_gate(needs: dict) -> subprocess.CompletedProcess[str]:
+    """Run the ci.yml evaluate step through the real shell.
+
+    Executing via bash (not by extracting the python body) means shell
+    quoting bugs in the embedded script surface as failures here.
+    """
+    ci = yaml.safe_load(
+        (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    )
+    evaluate = next(
+        step
+        for job in ci["jobs"].values()
+        if "evaluate" in str(job.get("steps", ""))
+        for step in job["steps"]
+        if step.get("name") == "Evaluate job results"
+    )
+    return subprocess.run(
+        ["bash", "-c", evaluate["run"]],
+        input=json.dumps(needs),
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            **os.environ,
+            "NEEDS": json.dumps(needs),
+            "GITHUB_OUTPUT": "/dev/null",
+        },
+    )
+
+
+def test_aggregate_gate_rejects_skipped_osv_scanner() -> None:
+    script = _ci_evaluate_run()
+    # The gate must explicitly reject a skipped osv-scanner result.
+    assert "osv-scanner" in script
+    assert "skipped" in script
+
+    result = _run_aggregate_gate(
+        {
+            "tests": {"result": "success"},
+            "osv-scanner": {"result": "skipped"},
+        }
+    )
+    assert result.returncode != 0, (
+        "aggregate gate must fail when osv-scanner is skipped"
+    )
+
+
+def test_aggregate_gate_passes_when_osv_scanner_succeeds() -> None:
+    result = _run_aggregate_gate(
+        {
+            "tests": {"result": "success"},
+            "osv-scanner": {"result": "success"},
+            "tests-os": {"result": "skipped"},
+        }
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_aggregate_gate_rejects_failed_job_through_shell() -> None:
+    result = _run_aggregate_gate(
+        {
+            "tests": {"result": "success"},
+            "osv-scanner": {"result": "failure"},
+        }
+    )
+    assert result.returncode != 0
+    assert "did not pass" in result.stdout
