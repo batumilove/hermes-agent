@@ -376,6 +376,7 @@ class WiredDispatcher:
             record_spawned(
                 conn,
                 pid=pid,
+                owner_lease=self.lease,
                 **common,
             )
             # Final guard: the pointer may have changed between the last
