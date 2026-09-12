@@ -1,0 +1,143 @@
+"""Regression test for #40695 (salvage of keystone PR #40782).
+
+The Discord gateway heartbeat was stalling because the handoff watcher
+(``GatewayRunner._handoff_watcher``) polled the synchronous, blocking
+SQLite-backed ``SessionDB`` directly on the asyncio event loop every 2s
+('Shard ID None heartbeat blocked for more than N seconds').
+
+The fix routes every blocking ``SessionDB`` call in the watcher through the
+``AsyncSessionDB`` facade, which offloads each call via ``asyncio.to_thread`` so
+the SQLite I/O runs on a worker thread and never blocks the event loop / Discord
+heartbeat.
+
+These tests assert that behaviour contract. They are mutation-survivable:
+reverting any ``await self._session_db.<call>(...)`` back to a direct synchronous
+call on the loop makes the relevant assertion fail.
+"""
+
+import asyncio
+import types
+
+import pytest
+
+import gateway.run as run
+
+
+class _RecordingSessionDB:
+    """SessionDB stand-in that records the thread each method runs on.
+
+    If the watcher calls these methods directly on the event loop (the bug),
+    they run on the loop thread. If they are wrapped in ``asyncio.to_thread``
+    (the fix), they run on a *different* worker thread.
+    """
+
+    def __init__(self, loop_thread_ident):
+        self._loop_thread_ident = loop_thread_ident
+        self.threads = {}
+        self.calls = []
+
+    def _record(self, name):
+        import threading
+
+        self.threads.setdefault(name, []).append(threading.get_ident())
+        self.calls.append(name)
+
+    def ran_off_loop(self, name):
+        """True iff every call to ``name`` ran on a non-loop thread."""
+        idents = self.threads.get(name, [])
+        return bool(idents) and all(i != self._loop_thread_ident for i in idents)
+
+    def list_pending_handoffs(self):
+        self._record("list_pending_handoffs")
+        return [{"id": "sess-1"}]
+
+    def claim_handoff(self, session_id):
+        self._record("claim_handoff")
+        return True
+
+    def complete_handoff(self, session_id):
+        self._record("complete_handoff")
+
+    def fail_handoff(self, session_id, error):
+        self._record("fail_handoff")
+
+
+def _make_fake_runner(session_db, *, fail_process=False):
+    """Build a minimal object that exposes exactly what the loop body touches.
+
+    The watcher now talks to the SessionDB through the AsyncSessionDB facade,
+    so wrap the recording stand-in the same way the gateway does.
+    """
+    from hermes_state import AsyncSessionDB
+
+    fake = types.SimpleNamespace()
+    fake._session_db = AsyncSessionDB(session_db)
+
+    async def _async_session_db_for_active_scope():
+        return fake._session_db
+
+    fake._async_session_db_for_active_scope = _async_session_db_for_active_scope
+    # _running yields True for the first loop check, then False so the loop
+    # exits after a single tick.
+    states = iter([True, False])
+
+    class _Running:
+        def __bool__(_self):
+            try:
+                return next(states)
+            except StopIteration:
+                return False
+
+    fake._running = _Running()
+
+    async def _process_handoff(row):
+        if fail_process:
+            raise RuntimeError("boom")
+
+    fake._process_handoff = _process_handoff
+    return fake
+
+
+async def _run_one_tick(fake, monkeypatch):
+    """Run the watcher for a single tick with sleeps neutralised."""
+
+    async def _no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(run.asyncio, "sleep", _no_sleep)
+    # Bind the real (patched) method onto our minimal stand-in.
+    coro = run.GatewayRunner._handoff_watcher(fake, interval=0.0)
+    await asyncio.wait_for(coro, timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_watcher_wraps_calls_via_detached_offload(monkeypatch):
+    """Explicitly assert the offload goes through the detached worker path.
+
+    The AsyncSessionDB facade no longer uses ``asyncio.to_thread`` (lifecycle
+    control I/O must be abandonable via detached daemon workers), so spy the
+    detached offload it imports and record which SessionDB callables were
+    handed to it. Mutation-survivable: dropping any await removes its
+    callable from the set.
+    """
+    import agent.async_utils as async_utils
+
+    db = _RecordingSessionDB(loop_thread_ident=-1)
+    fake = _make_fake_runner(db, fail_process=False)
+
+    wrapped = []
+    real_detached = async_utils.run_sync_in_detached_daemon_thread
+
+    async def _spy_detached(func, *args, **kwargs):
+        wrapped.append(getattr(func, "__name__", repr(func)))
+        return await real_detached(func, *args, **kwargs)
+
+    monkeypatch.setattr(
+        async_utils, "run_sync_in_detached_daemon_thread", _spy_detached
+    )
+
+    await _run_one_tick(fake, monkeypatch)
+
+    assert "list_pending_handoffs" in wrapped
+    assert "claim_handoff" in wrapped
+    assert "complete_handoff" in wrapped

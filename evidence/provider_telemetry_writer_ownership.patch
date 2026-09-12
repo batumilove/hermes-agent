@@ -1,0 +1,10 @@
+--- a/.hermes/plugins/provider_telemetry/__init__.py
++++ b/.hermes/plugins/provider_telemetry/__init__.py
+@@ -87,6 +87,9 @@
+ def register(ctx: Any) -> None:
++    if not getattr(ctx, "can_claim_provider_telemetry_writer", True):
++        _warn("provider telemetry writer ownership skipped on passive surface")
++        return
+     if not _claim_writer_ownership():
+         _warn("provider telemetry writer ownership unavailable; hooks not registered")
+         return

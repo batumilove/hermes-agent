@@ -1,0 +1,820 @@
+"""Regression tests for subagent timeout diagnostic dump (issue #14726).
+
+When delegate_task's child subagent times out without having made any API
+call, a structured diagnostic file is written under
+``~/.hermes/logs/subagent-timeout-<sid>-<ts>.log``. This gives users a
+concrete artifact to inspect (worker thread stack, system prompt size,
+tool schema bytes, credential pool state, etc.) instead of the previous
+opaque "subagent timed out" error.
+
+These tests pin:
+- the diagnostic writer's output format and content
+- the timeout branch in _run_single_child only dumps when api_calls == 0
+- the error message surfaces the diagnostic path
+- api_calls > 0 timeouts do NOT write a dump (the old "stuck on slow API
+  call" explanation still applies)
+"""
+from __future__ import annotations
+
+import threading
+import time
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
+
+
+@pytest.fixture
+def hermes_home(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    return home
+
+
+class _StubChild:
+    """Minimal stand-in for an AIAgent subagent."""
+    def __init__(
+        self,
+        *,
+        api_call_count: int = 0,
+        hang_seconds: float = 5.0,
+        subagent_id: str = "sa-0-stubabc",
+        tool_schema=None,
+    ):
+        self._subagent_id = subagent_id
+        self._delegate_depth = 1
+        self._delegate_role = "leaf"
+        self.model = "test/model"
+        self.provider = "testprov"
+        self.api_mode = "chat_completions"
+        self.base_url = "https://example.test/v1"
+        self.max_iterations = 30
+        self.quiet_mode = True
+        self.skip_memory = True
+        self.skip_context_files = True
+        self.platform = "cli"
+        self.ephemeral_system_prompt = "sys prompt"
+        self.enabled_toolsets = ["web", "terminal"]
+        self.valid_tool_names = {"web_search", "terminal"}
+        self.tools = tool_schema if tool_schema is not None else [
+            {"name": "web_search", "description": "search"},
+            {"name": "terminal", "description": "shell"},
+        ]
+        self._api_call_count = api_call_count
+        self._hang = threading.Event()
+        self._hang_seconds = hang_seconds
+
+    def get_activity_summary(self):
+        return {
+            "api_call_count": self._api_call_count,
+            "max_iterations": self.max_iterations,
+            "current_tool": None,
+            "seconds_since_activity": 60,
+        }
+
+    def run_conversation(self, user_message, task_id=None, stream_callback=None):
+        self._hang.wait(self._hang_seconds)
+        return {"final_response": "", "completed": False, "api_calls": self._api_call_count}
+
+    def interrupt(self):
+        self._hang.set()
+
+
+# ── _dump_subagent_timeout_diagnostic ──────────────────────────────────
+
+class TestDumpSubagentTimeoutDiagnostic:
+
+    def test_writes_log_with_expected_sections(self, hermes_home):
+        from tools.delegate_tool import _dump_subagent_timeout_diagnostic
+        child = _StubChild(subagent_id="sa-7-abc123")
+
+        worker = threading.Thread(
+            target=lambda: child.run_conversation("test"),
+            daemon=True,
+        )
+        worker.start()
+        time.sleep(0.1)
+        try:
+            path = _dump_subagent_timeout_diagnostic(
+                child=child,
+                task_index=7,
+                timeout_seconds=300.0,
+                duration_seconds=300.01,
+                worker_thread=worker,
+                goal="Research something long",
+            )
+        finally:
+            child.interrupt()
+            worker.join(timeout=2.0)
+
+        assert path is not None
+        p = Path(path)
+        assert p.is_file()
+        # File lives under HERMES_HOME/logs/
+        assert p.parent == hermes_home / "logs"
+        assert p.name.startswith("subagent-timeout-sa-7-abc123-")
+        assert p.suffix == ".log"
+
+        content = p.read_text()
+        # Header references the issue for future grep-ability
+        assert "issue #14726" in content
+        # Timeout facts
+        assert "task_index:        7" in content
+        assert "subagent_id:       sa-7-abc123" in content
+        assert "configured_timeout: 300.0s" in content
+        assert "actual_duration:   300.01s" in content
+        # Goal
+        assert "Research something long" in content
+        # Child config
+        assert "model: 'test/model'" in content
+        assert "provider: 'testprov'" in content
+        assert "base_url: 'https://example.test/v1'" in content
+        assert "max_iterations: 30" in content
+        # Toolsets
+        assert "enabled_toolsets:  ['web', 'terminal']" in content
+        assert "loaded tool count: 2" in content
+        # Prompt / schema sizes
+        assert "system_prompt_bytes:" in content
+        assert "tool_schema_count: 2" in content
+        assert "tool_schema_bytes:" in content
+        # Activity summary
+        assert "api_call_count: 0" in content
+        # Worker stack
+        assert "Worker thread stack at timeout" in content
+        # The thread is parked inside _hang.wait → cond.wait → waiter.acquire
+        assert "acquire" in content or "wait" in content
+
+
+    def test_returns_none_on_unwritable_logs_dir(self, tmp_path, monkeypatch):
+        # Point HERMES_HOME at an unwritable path so logs/ can't be created
+        # (simulates permission-denied). Helper must not raise.
+        from tools.delegate_tool import _dump_subagent_timeout_diagnostic
+        bogus = tmp_path / "does-not-exist" / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(bogus))
+        child = _StubChild()
+
+        # Make the logs dir itself unwritable by creating it as a FILE
+        # so mkdir(exist_ok=True) → NotADirectoryError and we fall through.
+        bogus.parent.mkdir(parents=True, exist_ok=True)
+        bogus.mkdir()
+        (bogus / "logs").write_text("not a dir")
+        result = _dump_subagent_timeout_diagnostic(
+            child=child,
+            task_index=0,
+            timeout_seconds=300.0,
+            duration_seconds=300.0,
+            worker_thread=None,
+            goal="x",
+        )
+        child.interrupt()
+        # Either None (mkdir failed) or a real path; must never raise.
+        # We assert no exception propagates — the return value is advisory.
+        assert result is None or Path(result).exists()
+
+
+# ── _run_single_child timeout branch wiring ───────────────────────────
+
+class TestRunSingleChildTimeoutDump:
+    """The timeout branch in _run_single_child must emit the diagnostic
+    dump when api_calls == 0, and must NOT emit it when api_calls > 0."""
+
+    def _invoke_with_short_timeout(self, child, monkeypatch):
+        """Run _run_single_child with a tiny timeout to force the timeout branch."""
+        from tools import delegate_tool
+        # Force a 0.3s timeout so the test is fast
+        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 0.3)
+
+        parent = MagicMock()
+        parent._touch_activity = MagicMock()
+        parent._current_task_id = None
+        return delegate_tool._run_single_child(
+            task_index=0,
+            goal="test goal",
+            child=child,
+            parent_agent=parent,
+        )
+
+    def test_zero_api_calls_writes_dump_and_surfaces_path(self, hermes_home, monkeypatch):
+        child = _StubChild(api_call_count=0, hang_seconds=10.0)
+        result = self._invoke_with_short_timeout(child, monkeypatch)
+
+        assert result["status"] == "timeout"
+        assert result["api_calls"] == 0
+        assert result["diagnostic_path"] is not None
+        dump_path = Path(result["diagnostic_path"])
+        assert dump_path.is_file()
+        assert dump_path.parent == hermes_home / "logs"
+
+        # Error message surfaces the path and the "no API call" phrasing
+        assert "without making any API call" in result["error"]
+        assert "Diagnostic:" in result["error"]
+        assert str(dump_path) in result["error"]
+
+
+    # ── explicit timeout metadata (#51690, salvaged from PR #60378) ────
+
+
+    def test_non_timeout_error_has_null_timeout_metadata(self, hermes_home, monkeypatch):
+        """The metadata fields are timeout-specific — a child that raises
+        must report them as None so consumers can key on presence."""
+        from tools import delegate_tool
+        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 30.0)
+
+        child = _StubChild(api_call_count=1, hang_seconds=0.0)
+
+        def _boom(*a, **kw):
+            raise RuntimeError("child crashed")
+
+        child.run_conversation = _boom
+        parent = MagicMock()
+        parent._touch_activity = MagicMock()
+        parent._current_task_id = None
+        result = delegate_tool._run_single_child(
+            task_index=0, goal="test goal", child=child, parent_agent=parent,
+        )
+
+        assert result["status"] == "error"
+        assert result["timeout_seconds"] is None
+        assert result["timed_out_after_seconds"] is None
+        assert result["timeout_phase"] is None
+
+    def test_timeout_defers_child_close_until_worker_unwinds(self, hermes_home, monkeypatch):
+        """A timeout must not close SessionDB/resources under an active turn.
+
+        ``Future.result(timeout=...)`` abandons the daemon worker; it does not
+        stop it.  The worker may still be returning from an uninterruptible
+        tool and persisting that tool result, so closing the child in the
+        caller's timeout-finally races that persistence with a closed DB.
+        """
+        from tools import delegate_tool
+
+        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 0.05)
+
+        class _SlowUnwindChild(_StubChild):
+            def __init__(self):
+                super().__init__(api_call_count=1, hang_seconds=0.0)
+                self.started = threading.Event()
+                self.release = threading.Event()
+                self.closed = threading.Event()
+                self.running = False
+                self.close_while_running = False
+                self.close_count = 0
+                self.worker_thread = None
+                self.close_thread = None
+
+            def run_conversation(self, user_message, task_id=None, stream_callback=None):
+                self.worker_thread = threading.current_thread()
+                self.running = True
+                self.started.set()
+                self.release.wait(5.0)
+                self.running = False
+                return {"final_response": "late", "completed": True, "api_calls": 1}
+
+            def interrupt(self):
+                # Real tools can be uninterruptible: acknowledge cancellation
+                # without releasing the in-flight operation.
+                return None
+
+            def close(self):
+                self.close_thread = threading.current_thread()
+                self.close_count += 1
+                self.close_while_running = self.running
+                self.closed.set()
+
+        child = _SlowUnwindChild()
+        parent = MagicMock()
+        parent._touch_activity = MagicMock()
+        parent._current_task_id = None
+
+        result = delegate_tool._run_single_child(
+            task_index=0,
+            goal="test slow unwind",
+            child=child,
+            parent_agent=parent,
+        )
+
+        assert result["status"] == "timeout"
+        assert child.started.is_set()
+        assert not child.closed.is_set()
+
+        child.release.set()
+        assert child.closed.wait(2.0)
+        assert child.close_while_running is False
+        assert child.close_count == 1
+        assert child.close_thread is child.worker_thread
+
+    def test_timeout_defers_all_worker_owned_cleanup_until_worker_unwinds(
+        self, hermes_home, monkeypatch, tmp_path
+    ):
+        """A live abandoned worker retains its lease, worktree, and registry."""
+        from tools import delegate_tool, subagent_worktree
+
+        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 0.05)
+        monkeypatch.setattr(delegate_tool, "_get_worktree_isolation", lambda: True)
+        monkeypatch.setattr(subagent_worktree, "local_backend_active", lambda: True)
+        worktree = tmp_path / "child-worktree"
+        worktree.mkdir()
+        worktree_info = {
+            "path": str(worktree),
+            "branch": "agent/slow-child",
+            "repo_root": str(tmp_path),
+            "base_commit": "a" * 40,
+        }
+        monkeypatch.setattr(
+            subagent_worktree,
+            "create_subagent_worktree",
+            lambda *_a, **_kw: worktree_info,
+        )
+        finalized = threading.Event()
+
+        def finalize(info):
+            assert info == worktree_info
+            finalized.set()
+            return {"path": str(worktree), "pruned": False}
+
+        monkeypatch.setattr(subagent_worktree, "finalize_subagent_worktree", finalize)
+
+        class _SlowChild(_StubChild):
+            def __init__(self):
+                super().__init__(api_call_count=1, hang_seconds=0.0)
+                self.started = threading.Event()
+                self.release = threading.Event()
+                self.closed = threading.Event()
+                self._credential_pool = MagicMock()
+                self._credential_pool.acquire_lease.return_value = "cred-a"
+                self._credential_pool.entries.return_value = [MagicMock(id="cred-a")]
+                self._swap_credential = MagicMock()
+
+            def run_conversation(self, user_message, task_id=None, stream_callback=None):
+                self.started.set()
+                self.release.wait(5.0)
+                return {"final_response": "late", "completed": True, "api_calls": 1}
+
+            def interrupt(self):
+                return None
+
+            def close(self):
+                self.closed.set()
+
+        child = _SlowChild()
+        parent = MagicMock()
+        parent._touch_activity = MagicMock()
+        parent._current_task_id = None
+        parent._active_children = [child]
+        parent._active_children_lock = threading.Lock()
+
+        result = delegate_tool._run_single_child(
+            task_index=0,
+            goal="test complete deferred cleanup",
+            child=child,
+            parent_agent=parent,
+        )
+
+        assert result["status"] == "timeout"
+        assert result["worker_cleanup_deferred"] is True
+        assert result["worktree"] == {
+            "path": str(worktree),
+            "branch": "agent/slow-child",
+            "pruned": False,
+            "cleanup_deferred": True,
+            "note": "Worker is still unwinding; inspect/finalize is deferred.",
+        }
+        assert child.started.is_set()
+        assert not finalized.is_set()
+        child._credential_pool.release_lease.assert_not_called()
+        assert child in parent._active_children
+        assert child._subagent_id in delegate_tool._active_subagents
+
+        child.release.set()
+        assert child.closed.wait(2.0)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not finalized.is_set():
+            time.sleep(0.01)
+        assert finalized.is_set()
+        assert result["worktree"] == {"path": str(worktree), "pruned": False}
+        child._credential_pool.release_lease.assert_called_once_with("cred-a")
+        assert child not in parent._active_children
+        assert child._subagent_id not in delegate_tool._active_subagents
+
+    @pytest.mark.parametrize("submit_outcome", ["raise", "cancel"])
+    def test_submit_failure_or_cancellation_closes_child_once(
+        self, hermes_home, monkeypatch, submit_outcome
+    ):
+        """Pre-worker terminal paths release the lifecycle lease exactly once."""
+        from concurrent.futures import Future
+
+        from tools import daemon_pool, delegate_tool
+
+        class _NeverStartedChild(_StubChild):
+            def __init__(self):
+                super().__init__(api_call_count=0, hang_seconds=0.0)
+                self.run_count = 0
+                self.close_count = 0
+
+            def run_conversation(self, user_message, task_id=None, stream_callback=None):
+                self.run_count += 1
+                return {"final_response": "unexpected", "completed": True, "api_calls": 0}
+
+            def close(self):
+                self.close_count += 1
+
+        class _TerminalExecutor:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def submit(self, *args, **kwargs):
+                if submit_outcome == "raise":
+                    raise RuntimeError("submit failed")
+                future = Future()
+                assert future.cancel()
+                return future
+
+            def shutdown(self, wait=False):
+                assert wait is False
+
+        monkeypatch.setattr(daemon_pool, "DaemonThreadPoolExecutor", _TerminalExecutor)
+        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 5.0)
+        child = _NeverStartedChild()
+        parent = MagicMock()
+        parent._touch_activity = MagicMock()
+        parent._current_task_id = None
+
+        result = delegate_tool._run_single_child(
+            task_index=0,
+            goal="test pre-worker terminal path",
+            child=child,
+            parent_agent=parent,
+        )
+
+        assert result["status"] == "error"
+        assert child.run_count == 0
+        assert child.close_count == 1
+
+    def test_parent_close_defers_child_close_until_worker_unwinds(
+        self, hermes_home, monkeypatch
+    ):
+        """Parent hard-close must not release a running child's resources."""
+        from run_agent import AIAgent
+        from tools import delegate_tool
+
+        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 5.0)
+
+        class _SlowUnwindChild(_StubChild):
+            def __init__(self):
+                super().__init__(api_call_count=1, hang_seconds=0.0)
+                self.started = threading.Event()
+                self.release = threading.Event()
+                self.closed = threading.Event()
+                self.running = False
+                self.close_while_running = False
+                self.close_count = 0
+
+            def run_conversation(self, user_message, task_id=None, stream_callback=None):
+                self.running = True
+                self.started.set()
+                self.release.wait(5.0)
+                self.running = False
+                return {"final_response": "done", "completed": True, "api_calls": 1}
+
+            def close(self):
+                self.close_count += 1
+                self.close_while_running = self.running
+                self.closed.set()
+
+        child = _SlowUnwindChild()
+        parent = AIAgent.__new__(AIAgent)
+        parent.session_id = "parent-close-delegation-race"
+        setattr(parent, "_active_children", [child])
+        setattr(parent, "_active_children_lock", threading.Lock())
+        setattr(parent, "_background_review_agent", None)
+        setattr(parent, "_background_review_lock", threading.Lock())
+        setattr(parent, "_context_engine_shutdown_lock", threading.Lock())
+        parent.client = None
+        setattr(parent, "_session_db", None)
+        parent._owns_session_db = False
+        parent.shutdown_memory_provider = lambda *_a, **_kw: True
+        parent._shutdown_owned_context_engine = lambda: None
+        parent._close_cached_request_openai_client = lambda **_kw: None
+        parent._close_cached_request_anthropic_client = lambda **_kw: None
+
+        results = []
+        runner = threading.Thread(
+            target=lambda: results.append(
+                delegate_tool._run_single_child(
+                    task_index=0,
+                    goal="test parent-close race",
+                    child=child,
+                    parent_agent=parent,
+                )
+            ),
+            daemon=True,
+        )
+        runner.start()
+        assert child.started.wait(2.0)
+
+        parent.close()
+
+        assert not child.closed.is_set()
+        child.release.set()
+        assert child.closed.wait(2.0)
+        runner.join(2.0)
+        assert not runner.is_alive()
+        assert results[0]["status"] == "completed"
+        assert child.close_while_running is False
+        assert child.close_count == 1
+
+    def test_parent_release_clients_fallback_defers_close_until_worker_unwinds(
+        self, hermes_home, monkeypatch
+    ):
+        """Cache-eviction fallback must share the deferred close-once gate."""
+        from run_agent import AIAgent
+        from tools import delegate_tool
+
+        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 5.0)
+
+        class _SlowUnwindChild(_StubChild):
+            def __init__(self):
+                super().__init__(api_call_count=1, hang_seconds=0.0)
+                self.started = threading.Event()
+                self.release = threading.Event()
+                self.closed = threading.Event()
+                self.running = False
+                self.close_while_running = False
+                self.close_count = 0
+
+            def run_conversation(self, user_message, task_id=None, stream_callback=None):
+                self.running = True
+                self.started.set()
+                self.release.wait(5.0)
+                self.running = False
+                return {"final_response": "done", "completed": True, "api_calls": 1}
+
+            def release_clients(self):
+                raise RuntimeError("force cache-eviction full-close fallback")
+
+            def close(self):
+                self.close_count += 1
+                self.close_while_running = self.running
+                self.closed.set()
+
+        child = _SlowUnwindChild()
+        parent = AIAgent.__new__(AIAgent)
+        parent.session_id = "parent-release-delegation-race"
+        setattr(parent, "_active_children", [child])
+        setattr(parent, "_active_children_lock", threading.Lock())
+        setattr(parent, "_background_review_agent", None)
+        setattr(parent, "_background_review_lock", threading.Lock())
+        parent.client = None
+        parent._shutdown_owned_context_engine = lambda: None
+        parent._close_cached_request_openai_client = lambda **_kw: None
+        parent._close_cached_request_anthropic_client = lambda **_kw: None
+
+        results = []
+        runner = threading.Thread(
+            target=lambda: results.append(
+                delegate_tool._run_single_child(
+                    task_index=0,
+                    goal="test parent-release race",
+                    child=child,
+                    parent_agent=parent,
+                )
+            ),
+            daemon=True,
+        )
+        runner.start()
+        assert child.started.wait(2.0)
+
+        parent.release_clients()
+
+        assert not child.closed.is_set()
+        child.release.set()
+        assert child.closed.wait(2.0)
+        runner.join(2.0)
+        assert not runner.is_alive()
+        assert results[0]["status"] == "completed"
+        assert child.close_while_running is False
+        assert child.close_count == 1
+
+    def test_parent_release_clients_success_uses_child_lifecycle_gate(
+        self, hermes_home, monkeypatch
+    ):
+        """Successful cache eviction must not mutate a child under active use."""
+        from run_agent import AIAgent
+        from tools import delegate_tool
+
+        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 5.0)
+
+        class _RunningChild(_StubChild):
+            def __init__(self):
+                super().__init__(api_call_count=1, hang_seconds=0.0)
+                self.started = threading.Event()
+                self.release = threading.Event()
+                self.closed = threading.Event()
+                self.running = False
+                self.release_clients_while_running = False
+                self.release_clients_count = 0
+                self.close_count = 0
+
+            def run_conversation(self, user_message, task_id=None, stream_callback=None):
+                self.running = True
+                self.started.set()
+                self.release.wait(5.0)
+                self.running = False
+                return {"final_response": "done", "completed": True, "api_calls": 1}
+
+            def release_clients(self):
+                self.release_clients_count += 1
+                self.release_clients_while_running = self.running
+
+            def close(self):
+                self.close_count += 1
+                self.closed.set()
+
+        child = _RunningChild()
+        parent = AIAgent.__new__(AIAgent)
+        parent.session_id = "parent-release-success-race"
+        setattr(parent, "_active_children", [child])
+        setattr(parent, "_active_children_lock", threading.Lock())
+        setattr(parent, "_background_review_agent", None)
+        setattr(parent, "_background_review_lock", threading.Lock())
+        parent.client = None
+        parent._shutdown_owned_context_engine = lambda: None
+        parent._close_cached_request_openai_client = lambda **_kw: None
+        parent._close_cached_request_anthropic_client = lambda **_kw: None
+
+        results = []
+        runner = threading.Thread(
+            target=lambda: results.append(
+                delegate_tool._run_single_child(0, "test release success", child, parent)
+            ),
+            daemon=True,
+        )
+        runner.start()
+        assert child.started.wait(2.0)
+        parent.release_clients()
+        assert child.release_clients_count == 0
+        assert not child.closed.is_set()
+        child.release.set()
+        assert child.closed.wait(2.0)
+        runner.join(2.0)
+        assert results[0]["status"] == "completed"
+        assert child.release_clients_while_running is False
+        assert child.close_count == 1
+
+    def test_parent_close_defers_child_close_through_schema_retry(
+        self, hermes_home, monkeypatch
+    ):
+        """The child lifetime includes its bounded structured-output retry."""
+        from run_agent import AIAgent
+        from tools import delegate_tool
+
+        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 5.0)
+
+        class _SchemaRetryChild(_StubChild):
+            def __init__(self):
+                super().__init__(api_call_count=1, hang_seconds=0.0)
+                self._delegate_output_schema = {
+                    "type": "object",
+                    "properties": {"ok": {"type": "boolean"}},
+                    "required": ["ok"],
+                }
+                self.calls = 0
+                self.retry_started = threading.Event()
+                self.release_retry = threading.Event()
+                self.closed = threading.Event()
+                self.retry_running = False
+                self.close_while_retry_running = False
+                self.close_count = 0
+
+            def run_conversation(self, user_message, task_id=None, stream_callback=None):
+                self.calls += 1
+                if self.calls == 1:
+                    return {"final_response": "{}", "completed": True, "api_calls": 1}
+                self.retry_running = True
+                self.retry_started.set()
+                self.release_retry.wait(5.0)
+                self.retry_running = False
+                return {
+                    "final_response": '{"ok": true}',
+                    "completed": True,
+                    "api_calls": 1,
+                }
+
+            def close(self):
+                self.close_count += 1
+                self.close_while_retry_running = self.retry_running
+                self.closed.set()
+
+        child = _SchemaRetryChild()
+        parent = AIAgent.__new__(AIAgent)
+        parent.session_id = "parent-close-schema-retry-race"
+        setattr(parent, "_active_children", [child])
+        setattr(parent, "_active_children_lock", threading.Lock())
+        setattr(parent, "_background_review_agent", None)
+        setattr(parent, "_background_review_lock", threading.Lock())
+        setattr(parent, "_context_engine_shutdown_lock", threading.Lock())
+        parent.client = None
+        setattr(parent, "_session_db", None)
+        parent._owns_session_db = False
+        parent.shutdown_memory_provider = lambda *_a, **_kw: True
+        parent._shutdown_owned_context_engine = lambda: None
+        parent._close_cached_request_openai_client = lambda **_kw: None
+        parent._close_cached_request_anthropic_client = lambda **_kw: None
+
+        results = []
+        runner = threading.Thread(
+            target=lambda: results.append(
+                delegate_tool._run_single_child(
+                    task_index=0,
+                    goal="test schema retry lifetime",
+                    child=child,
+                    parent_agent=parent,
+                )
+            ),
+            daemon=True,
+        )
+        runner.start()
+        assert child.retry_started.wait(2.0)
+        try:
+            parent.close()
+            assert not child.closed.is_set()
+        finally:
+            child.release_retry.set()
+        assert child.closed.wait(2.0)
+        runner.join(2.0)
+        assert not runner.is_alive()
+        assert results[0]["status"] == "completed"
+        assert results[0]["schema_valid"] is True
+        assert child.close_while_retry_running is False
+        assert child.close_count == 1
+
+    def test_schema_retry_is_bounded_and_close_waits_for_retry_unwind(
+        self, hermes_home, monkeypatch
+    ):
+        """A stuck schema retry times out without closing under its worker."""
+        from tools import delegate_tool
+
+        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 0.05)
+
+        class _StuckRetryChild(_StubChild):
+            def __init__(self):
+                super().__init__(api_call_count=1, hang_seconds=0.0)
+                self._delegate_output_schema = {
+                    "type": "object",
+                    "properties": {"ok": {"type": "boolean"}},
+                    "required": ["ok"],
+                }
+                self.calls = 0
+                self.retry_started = threading.Event()
+                self.release_retry = threading.Event()
+                self.closed = threading.Event()
+                self.retry_running = False
+                self.close_while_retry_running = False
+                self.close_count = 0
+
+            def run_conversation(self, user_message, task_id=None, stream_callback=None):
+                self.calls += 1
+                if self.calls == 1:
+                    return {"final_response": "{}", "completed": True, "api_calls": 1}
+                self.retry_running = True
+                self.retry_started.set()
+                self.release_retry.wait(5.0)
+                self.retry_running = False
+                return {"final_response": '{"ok": true}', "completed": True, "api_calls": 1}
+
+            def interrupt(self):
+                return None
+
+            def close(self):
+                self.close_count += 1
+                self.close_while_retry_running = self.retry_running
+                self.closed.set()
+
+        child = _StuckRetryChild()
+        parent = MagicMock()
+        parent._touch_activity = MagicMock()
+        parent._current_task_id = None
+        results = []
+        runner = threading.Thread(
+            target=lambda: results.append(
+                delegate_tool._run_single_child(0, "test bounded retry", child, parent)
+            ),
+            daemon=True,
+        )
+        runner.start()
+        assert child.retry_started.wait(2.0)
+        time.sleep(0.15)
+        returned_while_retry_stuck = not runner.is_alive()
+        closed_while_retry_stuck = child.closed.is_set()
+        child.release_retry.set()
+        runner.join(2.0)
+        assert child.closed.wait(2.0)
+
+        assert returned_while_retry_stuck is True
+        assert closed_while_retry_stuck is False
+        assert results[0]["schema_valid"] is False
+        assert results[0]["schema_retries"] == 1
+        assert "schema_retry_count" not in results[0]
+        assert child.close_while_retry_running is False
+        assert child.close_count == 1
