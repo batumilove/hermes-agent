@@ -230,6 +230,14 @@ def _shell_quote(script: str) -> str:
     return shlex.quote(script)
 
 
+# These tests execute the real emit-status workflow script through bash.
+# The conftest live-system guard's `hermes update` heuristic false-positives
+# here: "update" appears in the embedded workflow prose ("Update the
+# affected dependencies") and "hermes" in the CI pytest temp-root path
+# (hermes-pytest-tmproot-*). The tests are hermetic (tmp_path cwd +
+# /tmp/osv-results symlink with cleanup, no repo/system mutation), which is
+# the sanctioned escape hatch for this marker.
+@pytest.mark.live_system_guard_bypass
 def test_emit_status_fails_closed_on_missing_sarif(tmp_path: Path) -> None:
     emit = _workflow()["jobs"]["emit-status"]
     download = next(
@@ -268,12 +276,14 @@ def test_emit_status_fails_closed_on_missing_sarif(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
         check=False,
+        cwd=tmp_path,  # script writes review-status.json relatively
     )
     assert result.returncode != 0, (
         "emit script must fail when the SARIF artifact is missing"
     )
 
 
+@pytest.mark.live_system_guard_bypass
 def test_emit_status_succeeds_on_clean_sarif(tmp_path: Path) -> None:
     emit = _workflow()["jobs"]["emit-status"]
     run_script = next(
@@ -301,6 +311,7 @@ def test_emit_status_succeeds_on_clean_sarif(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
         check=False,
+        cwd=tmp_path,  # script writes review-status.json relatively
     )
     assert result.returncode == 0, result.stderr
     assert "review_status=[]" in (tmp_path / "github_output").read_text(
@@ -308,6 +319,7 @@ def test_emit_status_succeeds_on_clean_sarif(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.live_system_guard_bypass
 def test_emit_status_fails_on_corrupt_sarif(tmp_path: Path) -> None:
     emit = _workflow()["jobs"]["emit-status"]
     run_script = next(
@@ -333,6 +345,7 @@ def test_emit_status_fails_on_corrupt_sarif(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
         check=False,
+        cwd=tmp_path,  # script writes review-status.json relatively
     )
     assert result.returncode != 0, (
         "emit script must fail when the SARIF is corrupt, not count 0 findings"
