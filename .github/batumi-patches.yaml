@@ -1380,6 +1380,8 @@ patches:
       - plugins/platforms/teams/adapter.py
       - plugins/platforms/telegram/adapter.py
       - tests/gateway/test_approval_request_id_routing.py
+      - tests/gateway/test_discord_component_auth.py
+      - tests/gateway/test_telegram_approval_buttons.py
       - tests/tools/test_pr_merge_authorization_gate.py
       - tools/approval.py
       - tools/terminal_tool.py
