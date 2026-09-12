@@ -162,6 +162,7 @@ patches:
       - .github/workflows/ci.yml
       - .github/workflows/ci.yaml
       - .github/workflows/contributor-check.yml
+      - .github/workflows/label-rerun.yml
       - .github/workflows/deploy-compose.yml
       - .github/workflows/promote-compose.yml
       - .github/workflows/stack-ci-shadow.yml
