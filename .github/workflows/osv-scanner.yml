@@ -67,7 +67,6 @@ jobs:
           docker run --rm \
             -v "$PWD:/src" -w /src \
             ghcr.io/google/osv-scanner-action:v2.5.1@sha256:dcd947131d8d11b8d0964de6590661fb921a4ecbd7b90a7cb21083acfc3fd8cc \
-            osv-scanner \
             --output=results.json \
             --format=json \
             --lockfile=uv.lock \
