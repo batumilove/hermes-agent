@@ -7,8 +7,26 @@ from pathlib import Path
 
 import pytest
 
-from plugins.memory.honcho.client import HonchoClientConfig
+from plugins.memory.honcho.client import HonchoClientConfig, _redact_url_for_log
 from plugins.memory.honcho import HonchoMemoryProvider
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (
+            "https://user:pass@example.com:8443/api?token=secret#key",
+            "https://example.com:8443/api",
+        ),
+        (
+            "http://user:pass@[2001:db8::1]:8000/v1?q=secret",
+            "http://[2001:db8::1]:8000/v1",
+        ),
+        ("not a valid URL?token=secret", "[redacted-url]"),
+    ],
+)
+def test_honcho_base_url_log_redaction(url, expected):
+    assert _redact_url_for_log(url) == expected
 
 
 class TestHonchoClientConfigAutoEnable:
@@ -151,6 +169,23 @@ class TestHonchoBaseUrlSanitize:
         monkeypatch.delenv('HONCHO_API_KEY', raising=False)
         cfg = HonchoClientConfig.from_env()
         assert cfg.base_url is None
+
+    def test_nonprintable_rejection_log_does_not_disclose_url_secrets(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        import logging
+
+        monkeypatch.delenv("HONCHO_BASE_URL", raising=False)
+        secret = "should-never-be-logged"
+        bad = f"https://user:{secret}@honcho.example.com/v1?token={secret}#x\x1b"
+        config_path = tmp_path / "config.json"
+        config_path.write_text(
+            json.dumps({"apiKey": "k", "baseUrl": bad}), encoding="utf-8"
+        )
+        with caplog.at_level(logging.WARNING, logger="plugins.memory.honcho.client"):
+            cfg = HonchoClientConfig.from_global_config(config_path=config_path)
+        assert cfg.base_url is None
+        assert secret not in caplog.text
 
 
 class TestProfileKeyIsolationWarning:

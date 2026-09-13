@@ -5,7 +5,9 @@ gets stuck, gateway restarts, same session gets stuck again), the session
 is auto-suspended on startup so the user gets a clean slate.
 """
 
+import asyncio
 import json
+import threading
 from unittest.mock import MagicMock
 
 import pytest
@@ -62,5 +64,33 @@ class TestStuckLoopDetection:
         suspended = runner._suspend_stuck_loop_sessions()
         assert suspended == 0
         assert mock_entry.suspended is False
+
+    @pytest.mark.asyncio
+    async def test_async_suspend_does_not_block_startup_loop(self, runner_with_home):
+        runner, _home = runner_with_home
+        entered = threading.Event()
+        release = threading.Event()
+        loop_advanced = False
+
+        def blocking_suspend():
+            entered.set()
+            release.wait(timeout=2.0)
+            return 0
+
+        async def witness():
+            nonlocal loop_advanced
+            while not entered.is_set():
+                await asyncio.sleep(0)
+            await asyncio.sleep(0.01)
+            loop_advanced = True
+            release.set()
+
+        runner._suspend_stuck_loop_sessions = blocking_suspend
+        await asyncio.gather(
+            runner._suspend_stuck_loop_sessions_async(),
+            witness(),
+        )
+
+        assert loop_advanced is True
 
 

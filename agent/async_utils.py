@@ -36,24 +36,117 @@ _DEFAULT_LOGGER = logging.getLogger(__name__)
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
 _SerialDelivery = Callable[[bool, Any], None]
-_SERIAL_DAEMON_QUEUE: "queue.SimpleQueue[tuple[contextvars.Context, Callable[[], Any], Optional[_SerialDelivery]]]" = queue.SimpleQueue()
+_SERIAL_DAEMON_QUEUE: "queue.SimpleQueue[tuple[int, contextvars.Context, Callable[[], Any], Optional[_SerialDelivery], Any]]" = queue.SimpleQueue()
 _SERIAL_DAEMON_LOCK = threading.Lock()
+_SERIAL_SEQUENCE_LOCK = threading.Lock()
+_SERIAL_JOB_TIMEOUT_SECONDS = 5.0
+_SERIAL_JOB_CAPACITY = 8
 _serial_daemon_thread: Optional[threading.Thread] = None
+_serial_daemon_sequence = 0
+_serial_job_slots = threading.BoundedSemaphore(value=_SERIAL_JOB_CAPACITY)
+_current_serial_daemon_sequence: contextvars.ContextVar[Optional[int]] = (
+    contextvars.ContextVar("hermes_serial_daemon_sequence", default=None)
+)
+
+
+def _next_serial_daemon_sequence() -> int:
+    global _serial_daemon_sequence
+    with _SERIAL_SEQUENCE_LOCK:
+        _serial_daemon_sequence += 1
+        return _serial_daemon_sequence
+
+
+def latest_serial_daemon_sequence() -> int:
+    """Return the latest sequence allocated to serial daemon work."""
+    with _SERIAL_SEQUENCE_LOCK:
+        return _serial_daemon_sequence
+
+
+def current_serial_daemon_sequence() -> Optional[int]:
+    """Return this serial job's submission sequence, if any."""
+    return _current_serial_daemon_sequence.get()
 
 
 def _serial_daemon_worker() -> None:
     while True:
-        context, bound, deliver = _SERIAL_DAEMON_QUEUE.get()
+        sequence, context, bound, deliver, slots = _SERIAL_DAEMON_QUEUE.get()
+        completed = threading.Event()
+        abandoned = threading.Event()
+        result_lock = threading.Lock()
+        result: list[tuple[bool, Any]] = []
+        late_failure_logged = False
+        def _run_job() -> None:
+            nonlocal late_failure_logged
+
+            def _invoke() -> Any:
+                token = _current_serial_daemon_sequence.set(sequence)
+                try:
+                    return bound()
+                finally:
+                    _current_serial_daemon_sequence.reset(token)
+
+            try:
+                outcome = context.run(_invoke)
+            except BaseException as exc:
+                with result_lock:
+                    result.append((False, exc))
+                    if abandoned.is_set():
+                        late_failure_logged = True
+                        _DEFAULT_LOGGER.error(
+                            "Timed-out serial daemon work failed after abandonment",
+                            exc_info=(type(exc), exc, exc.__traceback__),
+                        )
+            else:
+                with result_lock:
+                    result.append((True, outcome))
+            finally:
+                slots.release()
+                completed.set()
+
+        thread = threading.Thread(
+            target=_run_job,
+            name="hermes-detached-serial-sync-job",
+            daemon=True,
+        )
         try:
-            outcome = context.run(bound)
+            thread.start()
         except BaseException as exc:
+            slots.release()
             if deliver is None:
-                _DEFAULT_LOGGER.exception("Detached serial daemon work failed")
+                _DEFAULT_LOGGER.error(
+                    "Detached serial daemon worker failed to start",
+                    exc_info=(type(exc), exc, exc.__traceback__),
+                )
             else:
                 deliver(False, exc)
-        else:
+            continue
+        if completed.wait(timeout=_SERIAL_JOB_TIMEOUT_SECONDS):
+            ok, value = result[0]
             if deliver is not None:
-                deliver(True, outcome)
+                deliver(ok, value)
+            elif not ok:
+                _DEFAULT_LOGGER.error(
+                    "Detached serial daemon work failed",
+                    exc_info=(type(value), value, value.__traceback__),
+                )
+        else:
+            abandoned.set()
+            with result_lock:
+                if result and not result[0][0] and not late_failure_logged:
+                    value = result[0][1]
+                    late_failure_logged = True
+                    _DEFAULT_LOGGER.error(
+                        "Timed-out serial daemon work failed after abandonment",
+                        exc_info=(type(value), value, value.__traceback__),
+                    )
+            error = TimeoutError(
+                "serial daemon work exceeded "
+                f"{_SERIAL_JOB_TIMEOUT_SECONDS:.3f}s deadline"
+            )
+            if deliver is None:
+                _DEFAULT_LOGGER.error("Detached serial daemon work timed out")
+            else:
+                deliver(False, error)
 
 
 def _ensure_serial_daemon_worker() -> None:
@@ -68,14 +161,42 @@ def _ensure_serial_daemon_worker() -> None:
             _serial_daemon_thread.start()
 
 
+def _reserve_serial_daemon_capacity(
+    deliver: Optional[_SerialDelivery],
+) -> Optional[Any]:
+    """Reserve bounded queue/worker capacity before admitting serial work."""
+    slots = _serial_job_slots
+    if slots.acquire(blocking=False):
+        return slots
+    error = TimeoutError("serial daemon worker capacity exhausted")
+    if deliver is None:
+        _DEFAULT_LOGGER.error("Detached serial daemon worker capacity exhausted")
+    else:
+        deliver(False, error)
+    return None
+
+
 def submit_sync_to_detached_serial_daemon(
     func: Callable[_P, Any], /, *args: _P.args, **kwargs: _P.kwargs
 ) -> None:
-    """Queue sync work FIFO on one abandonable daemon worker."""
-    _ensure_serial_daemon_worker()
-    context = contextvars.copy_context()
-    bound = functools.partial(func, *args, **kwargs)
-    _SERIAL_DAEMON_QUEUE.put((context, bound, None))
+    """Queue bounded sync work FIFO on an abandonable daemon lane.
+
+    Healthy work is ordered by submission. Timed-out calls may remain alive,
+    but their total is capacity-bounded and runtime-status writes carry a
+    sequence guard so late completion cannot overwrite a newer transition.
+    """
+    slots = _reserve_serial_daemon_capacity(None)
+    if slots is None:
+        return
+    try:
+        _ensure_serial_daemon_worker()
+        sequence = _next_serial_daemon_sequence()
+        context = contextvars.copy_context()
+        bound = functools.partial(func, *args, **kwargs)
+        _SERIAL_DAEMON_QUEUE.put((sequence, context, bound, None, slots))
+    except BaseException:
+        slots.release()
+        raise
 
 
 async def run_sync_in_detached_serial_daemon_thread(
@@ -83,9 +204,11 @@ async def run_sync_in_detached_serial_daemon_thread(
 ) -> _T:
     """Run sync work FIFO on the abandonable serial daemon and await it.
 
-    Unlike one-thread-per-call offloading, FIFO submission preserves lifecycle
-    transition order. Cancellation only abandons the waiter; the daemon remains
-    process-exit-safe and completes queued work in order when possible.
+    FIFO submission preserves lifecycle transition order while work finishes
+    within the lane deadline. A permanently stalled call is abandoned after
+    that deadline so later lifecycle/status work can still progress. Orphaned
+    workers are capacity-bounded; late failures are logged, results are ignored,
+    and cancellation only abandons the waiter.
     """
     loop = asyncio.get_running_loop()
     future: asyncio.Future[_T] = loop.create_future()
@@ -105,10 +228,17 @@ async def run_sync_in_detached_serial_daemon_thread(
         except RuntimeError:
             pass
 
-    _ensure_serial_daemon_worker()
-    context = contextvars.copy_context()
-    bound = functools.partial(func, *args, **kwargs)
-    _SERIAL_DAEMON_QUEUE.put((context, bound, _deliver))
+    slots = _reserve_serial_daemon_capacity(_deliver)
+    if slots is not None:
+        try:
+            _ensure_serial_daemon_worker()
+            sequence = _next_serial_daemon_sequence()
+            context = contextvars.copy_context()
+            bound = functools.partial(func, *args, **kwargs)
+            _SERIAL_DAEMON_QUEUE.put((sequence, context, bound, _deliver, slots))
+        except BaseException:
+            slots.release()
+            raise
     return await future
 
 

@@ -124,7 +124,7 @@ class TestProducerHook:
         assert rows[0][1] == "failed"
 
     @pytest.mark.asyncio
-    async def test_attempting_failure_still_reconciles_after_send(self, monkeypatch):
+    async def test_attempting_failure_recovery_is_visibly_ambiguous(self, monkeypatch):
         adapter = _Adapter()
 
         def fail_attempting(obligation_id):
@@ -137,6 +137,29 @@ class TestProducerHook:
         assert adapter.sent == ["final answer"]
         assert len(rows) == 1
         assert rows[0][1] == "delivered"
+
+    @pytest.mark.asyncio
+    async def test_attempting_and_terminal_failure_never_redelivers_silently(
+        self, monkeypatch
+    ):
+        adapter = _Adapter()
+
+        def fail_checkpoint(*_args, **_kwargs):
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(dl, "mark_attempting", fail_checkpoint)
+        monkeypatch.setattr(dl, "mark_delivered", fail_checkpoint)
+        await _run(adapter, _event())
+
+        with dl._connect() as conn:
+            conn.execute(
+                "UPDATE delivery_obligations SET owner_pid=999999999, owner_started_at=1"
+            )
+        claimed = dl.sweep_recoverable()
+
+        assert adapter.sent == ["final answer"]
+        assert len(claimed) == 1
+        assert claimed[0]["needs_marker"] is True
 
     @pytest.mark.asyncio
     async def test_locked_ledger_fails_open_before_writer_releases(self):
@@ -226,6 +249,22 @@ class TestProducerHook:
 
         assert blocked_event_loop == []
         assert adapter.sent == ["final answer"]
+
+    @pytest.mark.asyncio
+    async def test_ledger_path_does_not_use_asyncio_default_executor(
+        self, monkeypatch
+    ):
+        adapter = _Adapter()
+
+        async def reject_to_thread(*_args, **_kwargs):
+            raise AssertionError("delivery ledger used asyncio.to_thread")
+
+        monkeypatch.setattr(asyncio, "to_thread", reject_to_thread)
+
+        await _run(adapter, _event())
+
+        assert adapter.sent == ["final answer"]
+        assert _rows()[0][1] == "delivered"
 
     @pytest.mark.asyncio
     async def test_crash_between_attempting_and_ack_is_recoverable(self):

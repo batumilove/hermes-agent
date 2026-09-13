@@ -75,6 +75,35 @@ class TestSpecSafety:
 
 
 class TestAllowlist:
+    def test_computer_use_specs_match_pyproject_extra(self):
+        import tomllib
+        from pathlib import Path
+
+        root = Path(__file__).parents[2]
+        pyproject = tomllib.loads((root / "pyproject.toml").read_text())
+        assert set(ld.LAZY_DEPS["tool.computer_use"]) == set(
+            pyproject["project"]["optional-dependencies"]["computer-use"]
+        )
+
+    def test_httpx2_security_pin_matches_all_metadata(self):
+        import tomllib
+        from pathlib import Path
+
+        root = Path(__file__).parents[2]
+        pyproject = tomllib.loads((root / "pyproject.toml").read_text())
+        extras = pyproject["project"]["optional-dependencies"]
+        required = "httpx2==2.12.0"
+        for extra in ("dev", "mcp", "computer-use"):
+            assert required in extras[extra]
+        assert required in ld.LAZY_DEPS["tool.computer_use"]
+
+        lock = tomllib.loads((root / "uv.lock").read_text())
+        assert {
+            package["version"]
+            for package in lock["package"]
+            if package["name"] == "httpx2"
+        } == {"2.12.0"}
+
     def test_unknown_feature_raises(self, monkeypatch):
         monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
         with pytest.raises(ld.FeatureUnavailable, match="not in LAZY_DEPS"):

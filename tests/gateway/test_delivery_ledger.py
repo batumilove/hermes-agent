@@ -111,12 +111,12 @@ class TestSweep:
         _record()  # owner = this (live) process
         assert dl.sweep_recoverable() == []
 
-    def test_dead_owner_pending_claimed_without_marker(self):
+    def test_dead_owner_pending_claimed_with_conservative_marker(self):
         _record()
         _orphan("ob-1")
         claimed = dl.sweep_recoverable()
         assert len(claimed) == 1
-        assert claimed[0]["needs_marker"] is False
+        assert claimed[0]["needs_marker"] is True
         assert claimed[0]["attempts"] == 1
         # Claim re-stamps ownership: a second sweep in the same (live)
         # process must not double-claim.
@@ -201,7 +201,30 @@ class TestGatewayRedeliverySweep:
         assert row["owner_pid"] == 999999999
 
     @pytest.mark.asyncio
-    async def test_pending_redelivers_plain_and_clears_resume(self):
+    async def test_ledger_recovery_does_not_use_asyncio_default_executor(
+        self, monkeypatch
+    ):
+        """Recovery SQLite transitions must not consume the shared executor."""
+        import asyncio
+
+        _record(platform="slack")
+        _orphan("ob-1")
+        runner = self._runner(self._adapter())
+
+        async def _reject_default_executor(*_args, **_kwargs):
+            raise AssertionError("ledger recovery used asyncio.to_thread")
+
+        monkeypatch.setattr(asyncio, "to_thread", _reject_default_executor)
+
+        claimed = await runner._claim_pending_obligations()
+        assert len(claimed) == 1
+        assert await runner._redeliver_claimed_obligations(claimed) == 1
+        row = _row("ob-1")
+        assert row is not None
+        assert row["state"] == "delivered"
+
+    @pytest.mark.asyncio
+    async def test_pending_redelivers_with_conservative_marker_and_clears_resume(self):
         _record()  # pending
         _orphan("ob-1")
         adapter = self._adapter()
@@ -211,7 +234,8 @@ class TestGatewayRedeliverySweep:
 
         assert n == 1
         sent = adapter.send.call_args.kwargs
-        assert sent["content"] == "the final answer"  # no marker
+        assert sent["content"].startswith(dl.RECOVERED_MARKER)
+        assert sent["content"].endswith("the final answer")
         assert sent["metadata"] == {"thread_id": "171.001"}
         assert _row("ob-1")["state"] == "delivered"
         runner._async_session_store.clear_resume_pending.assert_awaited_once_with(

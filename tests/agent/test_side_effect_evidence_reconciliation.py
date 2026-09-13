@@ -42,6 +42,37 @@ def test_non_fresh_deployment_descriptions_do_not_require_evidence(response):
     assert not _warns(response)
 
 
+@pytest.mark.parametrize(
+    "response",
+    [
+        (
+            "Activation-record reconciliation: the canonical scheduler record "
+            "is enabled and scheduled; no separate activation record is in scope."
+        ),
+        "Production cron: olah-health-monitor is enabled and scheduled every 30 minutes.",
+    ],
+)
+def test_coordinated_present_state_cron_description_does_not_require_evidence(response):
+    assert not _warns(response)
+
+
+def test_coordinated_sentence_with_fresh_first_person_cron_action_requires_evidence():
+    response = "I confirmed the scheduler is enabled and scheduled the cron job."
+
+    assert _warns(response)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        "The operator is authenticated and scheduled the cron job.",
+        "The operator is ready and deployed the service.",
+    ],
+)
+def test_coordinated_non_first_person_actions_require_evidence(response):
+    assert _warns(response)
+
+
 def test_successful_terminal_envelope_is_current_turn_evidence():
     messages = [
         {"role": "user", "content": "deploy"},
