@@ -1290,7 +1290,7 @@ def test_dispatch_once_clears_claim_and_pid_on_spawn_failure(kanban_home, monkey
     the spawn path is guaranteed to run (not vacuously skipped)."""
     monkeypatch.setattr(kb, "_memory_pressure_level", lambda: "ok")
     calls = []
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         tid = kb.create_task(conn, title="failing spawn", assignee="default")
 
         def boom(task, workspace, board=None):
@@ -1325,11 +1325,11 @@ def test_dispatch_once_quiesced_tick_leaves_no_claim_residue(kanban_home, monkey
     def fake_spawn(task, workspace, board=None):
         spawns.append(task.id)
         # observe the in-flight row exactly as the dispatcher holds it
-        with kb.connect() as peek:
+        with kb.connect_closing() as peek:
             running_rows[task.id] = _row(peek, task.id)
         return 4242
 
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         tid = kb.create_task(conn, title="quiesced", assignee="default")
         res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
         assert spawns == [tid], "spawn path must actually run"
