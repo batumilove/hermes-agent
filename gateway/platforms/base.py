@@ -23,7 +23,10 @@ import weakref
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
-from agent.async_utils import submit_sync_to_detached_serial_daemon
+from agent.async_utils import (
+    run_sync_in_detached_daemon_thread,
+    submit_sync_to_detached_serial_daemon,
+)
 from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
@@ -6464,13 +6467,13 @@ class BasePlatformAdapter(ABC):
                 )
                 response = None
                 if _final_handoff is not None:
-                    await asyncio.to_thread(
+                    await run_sync_in_detached_daemon_thread(
                         _final_handoff.runner._cancel_uncommitted_final_response_handoff,
                         _final_handoff,
                     )
             if not response:
                 if _final_handoff is not None:
-                    await asyncio.to_thread(
+                    await run_sync_in_detached_daemon_thread(
                         _final_handoff.runner._cancel_uncommitted_final_response_handoff,
                         _final_handoff,
                     )
@@ -6640,7 +6643,7 @@ class BasePlatformAdapter(ABC):
                             )
                         )
                         try:
-                            _handoff_receipt_ready = await asyncio.to_thread(
+                            _handoff_receipt_ready = await run_sync_in_detached_daemon_thread(
                                 _final_handoff.runner._prepare_final_response_handoff,
                                 _final_handoff,
                                 text_content=_handoff_recovery_content,
@@ -6649,7 +6652,7 @@ class BasePlatformAdapter(ABC):
                             if _handoff_receipt_ready:
                                 _handoff_obligation_id = _final_handoff.obligation_id
                                 _handoff_receipt_ready = bool(
-                                    await asyncio.to_thread(
+                                    await run_sync_in_detached_daemon_thread(
                                         _final_handoff.runner._mark_final_response_handoff_attempting,
                                         _final_handoff,
                                     )
@@ -6675,7 +6678,7 @@ class BasePlatformAdapter(ABC):
                         # Extraction reduced this handoff to no final output;
                         # explicitly cancel its active marker rather than
                         # leaving an uncommitted handoff ambiguous.
-                        await asyncio.to_thread(
+                        await run_sync_in_detached_daemon_thread(
                             _final_handoff.runner._cancel_uncommitted_final_response_handoff,
                             _final_handoff,
                         )
@@ -6765,13 +6768,13 @@ class BasePlatformAdapter(ABC):
                                 record_obligation,
                             )
 
-                            if await asyncio.to_thread(ledger_enabled):
+                            if await run_sync_in_detached_daemon_thread(ledger_enabled):
                                 candidate_obligation_id = compute_obligation_id(
                                     session_key,
                                     str(getattr(event, "message_id", "") or ""),
                                     text_content,
                                 )
-                                await asyncio.to_thread(
+                                await run_sync_in_detached_daemon_thread(
                                     record_obligation,
                                     obligation_id=candidate_obligation_id,
                                     session_key=session_key,
@@ -6785,7 +6788,9 @@ class BasePlatformAdapter(ABC):
                                 )
                                 _obligation_id = candidate_obligation_id
                                 try:
-                                    await asyncio.to_thread(mark_attempting, _obligation_id)
+                                    await run_sync_in_detached_daemon_thread(
+                                        mark_attempting, _obligation_id
+                                    )
                                 except Exception:
                                     logger.debug(
                                         "delivery ledger attempting update failed",
@@ -6815,9 +6820,11 @@ class BasePlatformAdapter(ABC):
                             )
 
                             if getattr(result, "success", False):
-                                await asyncio.to_thread(mark_delivered, _obligation_id)
+                                await run_sync_in_detached_daemon_thread(
+                                    mark_delivered, _obligation_id
+                                )
                             else:
-                                await asyncio.to_thread(
+                                await run_sync_in_detached_daemon_thread(
                                     mark_failed,
                                     _obligation_id,
                                     str(getattr(result, "error", "") or ""),
@@ -7001,7 +7008,7 @@ class BasePlatformAdapter(ABC):
                 # a different component's failure.
                 if _final_handoff is not None and _handoff_receipt_ready and _handoff_obligation_id:
                     try:
-                        await asyncio.to_thread(
+                        await run_sync_in_detached_daemon_thread(
                             _final_handoff.runner._settle_final_response_handoff,
                             _final_handoff,
                             delivered=bool(final_component_outcomes) and all(final_component_outcomes),

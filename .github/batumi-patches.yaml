@@ -24,6 +24,7 @@ patches:
       - .github/workflows/js-autofix.yml
       - .github/workflows/js-tests.yml
       - .github/workflows/osv-scanner.yml
+      - .github/workflows/docker-lint.yml
       - Dockerfile
       - tests/scripts/test_js_tests_workflow.py
       - tests/scripts/test_osv_scanner_workflow.py
@@ -177,6 +178,7 @@ patches:
       - contributors/emails/agent@Agents-Mac-mini.local
       - contributors/emails/agent@agents-Mac-mini.local
       - contributors/emails/aleman@batumi.works
+      - contributors/emails/audit@batumi.works
       - contributors/emails/hermes@local
       - contributors/emails/repo-builder@batumi.works
       - contributors/emails/repo-ops-glm-5-1@hermes.local
@@ -948,15 +950,17 @@ patches:
   - id: honcho-connection-lifecycle
     kind: core
     rationale: >-
-      Close replaced and reset Honcho clients deterministically, and disable
-      idle keepalive so peer-closed HTTP connections are not retained between
-      intermittent memory operations.
+      Close replaced and reset Honcho clients deterministically, disable idle
+      keepalive so peer-closed HTTP connections are not retained between
+      intermittent memory operations, and redact secrets from base URLs logged
+      during client initialization.
     paths:
       - plugins/memory/honcho/client.py
       - tests/honcho_plugin/test_connection_lifecycle.py
+      - tests/test_honcho_client_config.py
     tests:
-      - scripts/run_tests.sh tests/honcho_plugin/test_connection_lifecycle.py tests/honcho_plugin/test_client.py
-    retirement: Remove when upstream owns injected Honcho clients and passes the same reset, replacement, and no-idle-pool contracts.
+      - scripts/run_tests.sh tests/honcho_plugin/test_connection_lifecycle.py tests/honcho_plugin/test_client.py tests/test_honcho_client_config.py
+    retirement: Remove when upstream owns injected Honcho clients and passes the same reset, replacement, no-idle-pool, and URL-redaction contracts.
 
   - id: honcho-operational-monitoring
     kind: operations
@@ -1023,6 +1027,7 @@ patches:
       - gateway/run.py
       - plugins/platforms/telegram/adapter.py
       - tests/gateway/test_delivery_ledger.py
+      - tests/gateway/test_delivery_ledger_fd_leak.py
       - tests/gateway/test_delivery_ledger_producer.py
       - tests/gateway/test_api_server_active_work_drain.py
       - tests/gateway/test_gateway_shutdown.py
@@ -1033,7 +1038,7 @@ patches:
       - tests/gateway/test_telegram_text_batching.py
       - tests/test_session_db_recall_reader.py
     tests:
-      - scripts/run_tests.sh tests/gateway/test_delivery_ledger_producer.py tests/gateway/test_gateway_shutdown.py tests/gateway/test_restart_drain.py tests/gateway/test_shutdown_aggregate_budget_contract.py
+      - scripts/run_tests.sh tests/gateway/test_delivery_ledger.py tests/gateway/test_delivery_ledger_fd_leak.py tests/gateway/test_delivery_ledger_producer.py tests/gateway/test_gateway_shutdown.py tests/gateway/test_restart_drain.py tests/gateway/test_shutdown_aggregate_budget_contract.py
       - scripts/run_tests.sh tests/gateway/test_session_hygiene.py tests/gateway/test_telegram_send_path_degraded_retry.py tests/gateway/test_telegram_text_batching.py tests/test_session_db_recall_reader.py
     retirement: Remove individual paths when upstream passes their contention, cancellation, degraded-delivery, and aggregate-shutdown contracts.
 
@@ -1175,11 +1180,12 @@ patches:
       - tests/gateway/test_shutdown_cache_cleanup.py
       - tests/gateway/test_startup_restart_race.py
       - tests/gateway/test_status.py
+      - tests/gateway/test_stuck_loop.py
       - tests/gateway/test_title_command.py
       - tests/gateway/test_turn_lease.py
       - tests/hermes_cli/test_pre_command_hook.py
     tests:
-      - scripts/run_tests.sh tests/agent/test_async_utils.py tests/gateway/test_external_drain_control.py tests/gateway/test_restart_resume_pending.py tests/gateway/test_platform_reconnect.py tests/gateway/test_startup_restart_race.py tests/gateway/test_multiplex_adapter_registry.py tests/gateway/test_api_server.py tests/gateway/test_adapter_connect_classification.py tests/gateway/test_64674_multiplex_primary_token_scope.py tests/gateway/test_clarify_thread_followup_not_swallowed.py tests/gateway/test_scale_to_zero_watcher.py tests/gateway/test_async_session_store.py tests/gateway/test_session_db_recovery.py tests/gateway/test_gateway_command_dispatch_minimal.py tests/gateway/test_shutdown_aggregate_budget_contract.py tests/gateway/test_shutdown_cache_cleanup.py tests/gateway/test_status.py tests/gateway/test_title_command.py tests/gateway/test_turn_lease.py tests/hermes_cli/test_pre_command_hook.py
+      - scripts/run_tests.sh tests/agent/test_async_utils.py tests/gateway/test_external_drain_control.py tests/gateway/test_restart_resume_pending.py tests/gateway/test_platform_reconnect.py tests/gateway/test_startup_restart_race.py tests/gateway/test_multiplex_adapter_registry.py tests/gateway/test_api_server.py tests/gateway/test_adapter_connect_classification.py tests/gateway/test_64674_multiplex_primary_token_scope.py tests/gateway/test_clarify_thread_followup_not_swallowed.py tests/gateway/test_scale_to_zero_watcher.py tests/gateway/test_async_session_store.py tests/gateway/test_session_db_recovery.py tests/gateway/test_gateway_command_dispatch_minimal.py tests/gateway/test_shutdown_aggregate_budget_contract.py tests/gateway/test_shutdown_cache_cleanup.py tests/gateway/test_status.py tests/gateway/test_stuck_loop.py tests/gateway/test_title_command.py tests/gateway/test_turn_lease.py tests/hermes_cli/test_pre_command_hook.py
       - python -m py_compile agent/async_utils.py gateway/platforms/api_server.py gateway/platforms/base.py gateway/run.py gateway/session.py gateway/session_db_recovery.py gateway/slash_commands.py gateway/status.py hermes_state.py
     retirement: Remove when upstream moves equivalent status and active-agent persistence off the event loop with cancellation-safe shutdown and matching regression coverage.
 
@@ -1393,3 +1399,72 @@ patches:
       - scripts/run_tests.sh tests/gateway/test_delivery_ledger.py tests/gateway/test_delivery_ledger_fd_leak.py tests/gateway/test_delivery_ledger_producer.py tests/gateway/test_gateway_shutdown.py tests/gateway/test_routing_save_fast_path.py tests/state/test_session_db_write_admission.py tests/state/test_session_git_metadata_generation.py
       - scripts/run_tests.sh tests/gateway/test_signal.py tests/gateway/test_send_multiple_images.py tests/gateway/test_media_extraction.py tests/gateway/test_media_tag_cleanup.py tests/gateway/test_multiplex_session_db_profile_scope.py
     retirement: Remove when upstream contains the equivalent SessionDB-owned durable post-response schema, transaction boundary, bounded worker handoff, and behavioral regression coverage.
+
+  - id: pr-merge-authorization-gate-20260910
+    kind: core
+    rationale: >-
+      Require exact, once-only authorization for protected pull-request merge
+      commands: bind authorization to repository, pull request, exact head SHA,
+      merge method, session, turn, tool call, and approval request identity;
+      propagate exact approval request IDs through the gateway and every
+      platform adapter; harden protected-operation detection across GitHub
+      CLI/API forms, shell quoting and continuations, script interpreters,
+      curl path normalization and globbing, Windows executable variants, and
+      force/YOLO/retry paths; and reject protected merges executed in
+      background or PTTY mode to prevent duplicate-spawn approval bypass.
+    paths:
+      - gateway/platforms/api_server.py
+      - gateway/platforms/qqbot/adapter.py
+      - gateway/platforms/whatsapp_cloud.py
+      - gateway/relay/adapter.py
+      - gateway/run.py
+      - plugins/platforms/discord/adapter.py
+      - plugins/platforms/feishu/adapter.py
+      - plugins/platforms/matrix/adapter.py
+      - plugins/platforms/slack/adapter.py
+      - plugins/platforms/teams/adapter.py
+      - plugins/platforms/telegram/adapter.py
+      - tests/gateway/test_approval_request_id_routing.py
+      - tests/gateway/test_discord_component_auth.py
+      - tests/gateway/test_telegram_approval_buttons.py
+      - tests/tools/test_pr_merge_authorization_gate.py
+      - tools/approval.py
+      - tools/terminal_tool.py
+    tests:
+      - scripts/run_tests.sh tests/tools/test_pr_merge_authorization_gate.py tests/gateway/test_approval_request_id_routing.py
+      - scripts/run_tests.sh tests/gateway/test_telegram_approval_buttons.py tests/gateway/test_discord_component_auth.py
+    retirement: Remove when upstream ships an equivalent exact-identity PR merge authorization gate with per-request approval correlation across all platform adapters.
+
+  - id: kanban-worker-pid-race-guard
+    kind: core
+    rationale: >-
+      Guard _set_worker_pid against the fast-worker completion race in the
+      Kanban admission kernel: CAS the PID write on (task id, status=running,
+      current_run_id) so a worker that completes before the dispatcher
+      persists its PID causes a zero-write lost race (no compensating NULL
+      that could erase a replacement dispatcher's PID), fire the
+      on_kanban_worker_spawned hook only when the CAS persisted and with the
+      persisted run id, and clear worker_pid atomically on every
+      running-to-non-running transition. Atomic round-4 review: PASS WITH
+      NON-BLOCKING NOTES (run 20260914T075625Z-d19ad821e8dd).
+    paths:
+      - hermes_cli/kanban_db.py
+    tests:
+      - scripts/run_tests.sh tests/hermes_cli/test_kanban_db.py tests/hermes_cli/test_kanban_worker_lifecycle_hooks.py tests/hermes_cli/test_kanban_cli_dispatch_passthrough.py
+    retirement: Fold into the upstream Kanban admission kernel when the dispatch PID race handling lands upstream.
+
+  - id: kanban-dispatch-test-hardening
+    kind: operations
+    rationale: >-
+      Test-only hardening for the Kanban admission kernel: restore sys.modules
+      state in the dispatch-passthrough fixture so later tests in the same
+      pytest session do not import duplicate hermes_cli module instances, and
+      assert dispatch_once leaves no claim residue (claim_lock and worker_pid
+      NULL on every non-running task) after spawn failure and after real
+      complete_task, pinned against memory-pressure vacuity.
+    paths:
+      - tests/hermes_cli/test_kanban_cli_dispatch_passthrough.py
+      - tests/hermes_cli/test_kanban_db.py
+    tests:
+      - scripts/run_tests.sh tests/hermes_cli/test_kanban_db.py tests/hermes_cli/test_kanban_cli_dispatch_passthrough.py
+    retirement: Fold into the upstream Kanban test suite when the admission kernel lands upstream.
