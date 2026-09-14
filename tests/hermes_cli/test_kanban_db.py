@@ -1269,6 +1269,67 @@ def test_dispatch_max_in_progress_blocks_review_when_at_limit(
     assert review_task is not None
     assert review_task.status == "review"
 
+
+# dispatch_once — quiesced-claim invariants (round-6 hardening)
+# ---------------------------------------------------------------------------
+
+
+def _row(conn, task_id: str) -> dict:
+    r = conn.execute(
+        "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    return dict(r)
+
+
+def test_dispatch_once_clears_claim_and_pid_on_spawn_failure(kanban_home):
+    """Round-6 note: a tick whose spawn raises must leave the task re-queueable —
+    claim_lock and worker_pid NULL, status back to ready (or blocked once the
+    failure limit is exhausted — still claim-residue-free). A stale non-NULL
+    claim_lock here wedges every later reclaim (guarded CAS compares against
+    it), so this is an invariant, not a snapshot."""
+    tid = kb.create_task(kb.connect(), title="failing spawn", assignee="default")
+
+    def boom(task, workspace, board=None):
+        raise RuntimeError("simulated spawn failure")
+
+    with kb.connect() as conn:
+        # default failure_limit: first failure requeues rather than blocks
+        res = kb.dispatch_once(conn, spawn_fn=boom)
+        row = _row(conn, tid)
+        later = kb.get_task(conn, tid)
+
+    assert not res.spawned
+    # invariant: no claim residue after a failed tick
+    assert row["claim_lock"] is None, row
+    assert row["worker_pid"] is None, row
+    assert later is not None and later.status in ("ready", "triage", "blocked")
+
+
+def test_dispatch_once_quiesced_tick_leaves_no_claim_residue(kanban_home):
+    """Round-6 note: after dispatch_once completes and any spawned worker
+    finishes, every task row must be claim-residue-free: claim_lock IS NULL
+    and worker_pid IS NULL wherever status is not 'running'."""
+    spawns = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append(task.id)
+        return 4242
+
+    conn = kb.connect()
+    tid = kb.create_task(conn, title="quiesced", assignee="default")
+    res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+    if spawns:
+        # simulate worker completion on the real API path
+        kb.complete_task(conn, tid, result="ok")
+    for r in conn.execute(
+        "SELECT id, status, claim_lock, worker_pid FROM tasks"
+    ).fetchall():
+        if r["status"] != "running":
+            assert r["claim_lock"] is None, dict(r)
+            assert r["worker_pid"] is None, dict(r)
+    assert res is not None
+
+
 # Review column dispatch
 # ---------------------------------------------------------------------------
 
