@@ -9343,7 +9343,13 @@ def _record_spawn_failure(
     )
 
 
-def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
+def _set_worker_pid(
+    conn: sqlite3.Connection,
+    task_id: str,
+    pid: int,
+    *,
+    expected_run_id: str | None = None,
+) -> bool:
     """Record the spawned child's pid + emit a ``spawned`` event.
 
     The event's payload carries the pid so a human reading ``hermes kanban
@@ -9354,7 +9360,12 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
     spawn_fn returning and this call (complete_task sets status != 'running'
     and clears worker_pid). An unconditional UPDATE here would then leave a
     stale pid on a finished task, so the write is guarded on the task still
-    being 'running'; the event is only emitted when the pid actually landed.
+    being 'running' AND (when the caller knows it) on the claimed run still
+    being the task's current run — the run guard closes the ABA window where
+    the task was reclaimed into a new attempt before the old dispatcher
+    persisted its pid. Returns True when the pid was durably recorded; False
+    when the guard rejected the write (no task/run/event side effects). The
+    'spawned' event is only emitted when the pid actually landed.
     """
     with write_txn(conn):
         cur = conn.execute(
@@ -9362,14 +9373,22 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
             (int(pid), task_id),
         )
         if cur.rowcount == 0:
-            return
+            return False
         run_id = _current_run_id(conn, task_id)
+        if expected_run_id is not None and run_id != expected_run_id:
+            # Lost an ABA race: the task is running a *different* attempt.
+            # Roll back the task-row write and record nothing.
+            conn.execute(
+                "UPDATE tasks SET worker_pid = NULL WHERE id = ?", (task_id,)
+            )
+            return False
         if run_id is not None:
             conn.execute(
                 "UPDATE task_runs SET worker_pid = ? WHERE id = ?",
                 (int(pid), run_id),
             )
         _append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
+        return True
 
 
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
@@ -10271,15 +10290,28 @@ def _dispatch_once_locked(
                     pid = _spawn(claimed, str(workspace))
             except (TypeError, ValueError):
                 pid = _spawn(claimed, str(workspace))
+            pid_persisted = True
             if pid:
-                _set_worker_pid(conn, claimed.id, int(pid))
+                pid_persisted = _set_worker_pid(
+                    conn,
+                    claimed.id,
+                    int(pid),
+                    expected_run_id=(
+                        str(claimed.current_run_id)
+                        if getattr(claimed, "current_run_id", None) is not None
+                        else None
+                    ),
+                )
             # Worker-lifecycle observer (RFC #58548): fires AFTER spawn_fn
             # returned and the PID (when reported) is durably persisted,
-            # per the RFC timing contract. Best-effort — can never break
-            # the dispatch loop.
-            _fire_worker_spawned_hook(
-                conn, claimed, str(workspace), pid, board=board,
-            )
+            # per the RFC timing contract. When the race guard rejected the
+            # pid write the hook is skipped — reporting a pid the board
+            # deliberately refused would violate that contract.
+            # Best-effort — can never break the dispatch loop.
+            if pid_persisted:
+                _fire_worker_spawned_hook(
+                    conn, claimed, str(workspace), pid, board=board,
+                )
             # NOTE: we intentionally do NOT reset consecutive_failures
             # here. A successful spawn proves the worker can start but
             # doesn't prove the run will succeed. Under unified
@@ -10403,13 +10435,25 @@ def _dispatch_once_locked(
                     pid = _spawn(claimed, str(workspace))
             except (TypeError, ValueError):
                 pid = _spawn(claimed, str(workspace))
+            pid_persisted = True
             if pid:
-                _set_worker_pid(conn, claimed.id, int(pid))
+                pid_persisted = _set_worker_pid(
+                    conn,
+                    claimed.id,
+                    int(pid),
+                    expected_run_id=(
+                        str(claimed.current_run_id)
+                        if getattr(claimed, "current_run_id", None) is not None
+                        else None
+                    ),
+                )
             # Worker-lifecycle observer (RFC #58548): same contract as the
-            # ready-lane fire above — after spawn + PID persistence.
-            _fire_worker_spawned_hook(
-                conn, claimed, str(workspace), pid, board=board,
-            )
+            # ready-lane fire above — after spawn + PID persistence. Skipped
+            # when the race guard rejected the pid write.
+            if pid_persisted:
+                _fire_worker_spawned_hook(
+                    conn, claimed, str(workspace), pid, board=board,
+                )
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
             if _per_profile_cap is not None and claimed.assignee:

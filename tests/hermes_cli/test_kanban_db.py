@@ -1721,3 +1721,63 @@ def test_fast_worker_completion_before_pid_persist_leaves_no_stale_pid(kanban_ho
         # THE INVARIANT: no stale pid residue on a completed task
         assert row["worker_pid"] is None, row
         assert row["claim_lock"] is None, row
+        # the ended run keeps no pid either
+        run = conn.execute(
+            "SELECT worker_pid FROM task_runs WHERE task_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        if run is not None:
+            assert run["worker_pid"] is None, dict(run)
+        # and no ordinary "spawned" event was emitted after completion
+        ev = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert ev is None or ev["kind"] != "spawned", dict(ev)
+
+
+def test_set_worker_pid_loses_aba_race_to_replacement_run(kanban_home, monkeypatch):
+    """ABA guard: if the claimed run ended and the task was reclaimed into a
+    NEW run before the old dispatcher persisted its pid, the pid must not
+    land on the replacement attempt (nor emit a spawned event for it)."""
+    monkeypatch.setattr(kb, "_memory_pressure_level", lambda: "ok")
+    monkeypatch.setattr(kb, "_cleanup_worker_tmux", lambda *a, **k: None)
+    holder = {}
+
+    def racing_worker(task, workspace, board=None):
+        holder["old_run"] = task.current_run_id
+        # end our run and start a replacement run (as a reclaiming
+        # dispatcher would), all from a second connection BEFORE the
+        # pid persist
+        import time as _time
+        with kb.connect_closing() as other:
+            kb.complete_task(other, task.id, result="old done")
+            with kb.write_txn(other):
+                now = int(_time.time())
+                cur = other.execute(
+                    "INSERT INTO task_runs (task_id, status, started_at) "
+                    "VALUES (?, 'running', ?)",
+                    (task.id, now),
+                )
+                new_run = cur.lastrowid
+                other.execute(
+                    "UPDATE tasks SET status='running', current_run_id=? "
+                    "WHERE id = ?",
+                    (new_run, task.id),
+                )
+        return 5555
+
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(conn, title="aba", assignee="default")
+        res = kb.dispatch_once(conn, spawn_fn=racing_worker)
+        assert res.spawned
+        row = _row(conn, tid)
+        # replacement run exists; the stale pid must NOT be on the task row
+        assert row["worker_pid"] is None, row
+        # and the latest event must not be a spawned for the replacement run
+        ev = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert ev is None or ev["kind"] != "spawned", dict(ev)
