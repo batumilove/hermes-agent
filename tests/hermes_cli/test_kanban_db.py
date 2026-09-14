@@ -1701,6 +1701,12 @@ def test_fast_worker_completion_before_pid_persist_leaves_no_stale_pid(kanban_ho
     monkeypatch.setattr(kb, "_memory_pressure_level", lambda: "ok")
     monkeypatch.setattr(kb, "_cleanup_worker_tmux", lambda *a, **k: None)
     spawned = []
+    spawned_hooks: list[dict] = []
+    from hermes_cli.plugins import get_plugin_manager
+    _mgr = get_plugin_manager()
+    _mgr._hooks.setdefault("on_kanban_worker_spawned", []).append(
+        lambda **kw: spawned_hooks.append(kw)
+    )
 
     def fast_worker(task, workspace, board=None):
         # complete the task from a second connection BEFORE the dispatcher
@@ -1729,12 +1735,16 @@ def test_fast_worker_completion_before_pid_persist_leaves_no_stale_pid(kanban_ho
         ).fetchone()
         if run is not None:
             assert run["worker_pid"] is None, dict(run)
-        # and no ordinary "spawned" event was emitted after completion
-        ev = conn.execute(
-            "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+        # and NO "spawned" event exists for this task at all (the pid
+        # never durably landed, so it must never be announced)
+        n_spawned = conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE task_id = ? AND kind = 'spawned'",
             (tid,),
-        ).fetchone()
-        assert ev is None or ev["kind"] != "spawned", dict(ev)
+        ).fetchone()[0]
+        assert n_spawned == 0
+        # and the RFC #58548 lifecycle hook must NOT have fired for a pid
+        # the board refused
+        assert spawned_hooks == [], spawned_hooks
 
 
 def test_set_worker_pid_loses_aba_race_to_replacement_run(kanban_home, monkeypatch):
@@ -1744,6 +1754,12 @@ def test_set_worker_pid_loses_aba_race_to_replacement_run(kanban_home, monkeypat
     monkeypatch.setattr(kb, "_memory_pressure_level", lambda: "ok")
     monkeypatch.setattr(kb, "_cleanup_worker_tmux", lambda *a, **k: None)
     holder = {}
+    aba_hooks: list[dict] = []
+    from hermes_cli.plugins import get_plugin_manager
+    _mgr = get_plugin_manager()
+    _mgr._hooks.setdefault("on_kanban_worker_spawned", []).append(
+        lambda **kw: aba_hooks.append(kw)
+    )
 
     def racing_worker(task, workspace, board=None):
         holder["old_run"] = task.current_run_id
@@ -1761,10 +1777,17 @@ def test_set_worker_pid_loses_aba_race_to_replacement_run(kanban_home, monkeypat
                     (task.id, now),
                 )
                 new_run = cur.lastrowid
+                # the replacement dispatcher has ALREADY persisted its own
+                # pid — this sentinel must survive the old dispatcher's
+                # losing _set_worker_pid
                 other.execute(
-                    "UPDATE tasks SET status='running', current_run_id=? "
-                    "WHERE id = ?",
+                    "UPDATE tasks SET status='running', current_run_id=?, "
+                    "worker_pid=7777 WHERE id = ?",
                     (new_run, task.id),
+                )
+                other.execute(
+                    "UPDATE task_runs SET worker_pid=7777 WHERE id = ?",
+                    (new_run,),
                 )
         return 5555
 
@@ -1773,11 +1796,21 @@ def test_set_worker_pid_loses_aba_race_to_replacement_run(kanban_home, monkeypat
         res = kb.dispatch_once(conn, spawn_fn=racing_worker)
         assert res.spawned
         row = _row(conn, tid)
-        # replacement run exists; the stale pid must NOT be on the task row
-        assert row["worker_pid"] is None, row
-        # and the latest event must not be a spawned for the replacement run
-        ev = conn.execute(
-            "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+        # the replacement dispatcher's pid must SURVIVE untouched —
+        # neither overwritten with 5555 nor erased to NULL
+        assert row["worker_pid"] == 7777, row
+        repl_run = conn.execute(
+            "SELECT worker_pid FROM task_runs WHERE task_id = ? "
+            "ORDER BY id DESC LIMIT 1",
             (tid,),
         ).fetchone()
-        assert ev is None or ev["kind"] != "spawned", dict(ev)
+        assert repl_run is not None and repl_run["worker_pid"] == 7777, dict(repl_run)
+        # no spawned event for the replacement run from the OLD dispatcher
+        n_spawned = conn.execute(
+            "SELECT COUNT(*) FROM task_events "
+            "WHERE task_id = ? AND kind = 'spawned' AND payload LIKE '%5555%'",
+            (tid,),
+        ).fetchone()[0]
+        assert n_spawned == 0
+        # and the lifecycle hook must not have fired for the stale pid
+        assert aba_hooks == [], aba_hooks
