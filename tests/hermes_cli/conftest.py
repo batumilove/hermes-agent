@@ -2,25 +2,7 @@
 
 from __future__ import annotations
 
-import os
-
 import pytest
-
-
-@pytest.fixture(autouse=True)
-def _secure_test_directory_umask():
-    """Make security-sensitive test homes private regardless of shell umask.
-
-    Kanban's production owner lease correctly rejects group- or world-writable
-    profile homes.  Tests create synthetic homes with bare ``Path.mkdir()``;
-    pinning the process umask keeps those fixtures representative and prevents
-    the invoking shell's umask from changing their security contract.
-    """
-    previous = os.umask(0o077)
-    try:
-        yield
-    finally:
-        os.umask(previous)
 
 
 @pytest.fixture
