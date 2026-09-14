@@ -1691,3 +1691,33 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+def test_fast_worker_completion_before_pid_persist_leaves_no_stale_pid(kanban_home, monkeypatch):
+    """Round-3 deferred production fix: a worker that completes through another
+    connection between spawn_fn returning and _set_worker_pid persisting must
+    not end up with a stale worker_pid on a done task. The unconditional
+    UPDATE in _set_worker_pid is the bug; the fix guards it on status."""
+    monkeypatch.setattr(kb, "_memory_pressure_level", lambda: "ok")
+    monkeypatch.setattr(kb, "_cleanup_worker_tmux", lambda *a, **k: None)
+    spawned = []
+
+    def fast_worker(task, workspace, board=None):
+        # complete the task from a second connection BEFORE the dispatcher
+        # persists the pid — the exact race window.
+        spawned.append(task.id)
+        with kb.connect_closing() as other:
+            kb.complete_task(other, task.id, result="done fast")
+        return 4242
+
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(conn, title="fast worker", assignee="default")
+        res = kb.dispatch_once(conn, spawn_fn=fast_worker)
+
+        assert spawned == [tid], "spawn path must actually run"
+        assert res.spawned
+        row = _row(conn, tid)
+        assert row["status"] == "done", row
+        # THE INVARIANT: no stale pid residue on a completed task
+        assert row["worker_pid"] is None, row
+        assert row["claim_lock"] is None, row

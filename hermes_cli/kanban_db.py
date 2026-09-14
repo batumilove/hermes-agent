@@ -9347,14 +9347,22 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
     """Record the spawned child's pid + emit a ``spawned`` event.
 
     The event's payload carries the pid so a human reading ``hermes kanban
-    tail`` can correlate log lines with OS-level traces without opening
-    the drawer.
+    tail`` can correlate log lines with OS-level traces without opening the
+    drawer.
+
+    Race guard: a fast worker can complete through another connection between
+    spawn_fn returning and this call (complete_task sets status != 'running'
+    and clears worker_pid). An unconditional UPDATE here would then leave a
+    stale pid on a finished task, so the write is guarded on the task still
+    being 'running'; the event is only emitted when the pid actually landed.
     """
     with write_txn(conn):
-        conn.execute(
-            "UPDATE tasks SET worker_pid = ? WHERE id = ?",
+        cur = conn.execute(
+            "UPDATE tasks SET worker_pid = ? WHERE id = ? AND status = 'running'",
             (int(pid), task_id),
         )
+        if cur.rowcount == 0:
+            return
         run_id = _current_run_id(conn, task_id)
         if run_id is not None:
             conn.execute(
