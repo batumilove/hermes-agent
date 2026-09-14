@@ -18,9 +18,10 @@ os.umask(0)
 home = create_secure_home(Path({str(tmp_path / 'home')!r}))
 raise SystemExit(0 if home.stat().st_mode & 0o777 == 0o700 else 1)
 """
+    repository_root = Path(__file__).resolve().parents[2]
     completed = subprocess.run(
         [sys.executable, "-c", script],
         check=False,
-        env={"PYTHONPATH": str(Path(__file__).parent)},
+        cwd=repository_root,
     )
     assert completed.returncode == 0
