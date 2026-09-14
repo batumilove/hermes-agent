@@ -120,7 +120,7 @@ def dispatcher_owner_lock_path(home: str | os.PathLike[str]) -> Path:
 def _secure_owned_directory(metadata: os.stat_result) -> bool:
     return (
         stat.S_ISDIR(metadata.st_mode)
-        and metadata.st_uid == os.geteuid()
+        and metadata.st_uid == os.geteuid()  # windows-footgun: ok
         and stat.S_IMODE(metadata.st_mode) & 0o022 == 0
     )
 
@@ -132,7 +132,7 @@ def _secure_owned_run_directory(metadata: os.stat_result) -> bool:
 def _secure_owned_lock_file(metadata: os.stat_result) -> bool:
     return (
         stat.S_ISREG(metadata.st_mode)
-        and metadata.st_uid == os.geteuid()
+        and metadata.st_uid == os.geteuid()  # windows-footgun: ok
         and metadata.st_nlink == 1
         and stat.S_IMODE(metadata.st_mode) & 0o077 == 0
     )
