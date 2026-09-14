@@ -355,14 +355,9 @@ def _reset_cached_sudo_passwords() -> None:
 # =============================================================================
 
 # Dangerous command detection + approval now consolidated in tools/approval.py
-from tools.approval import check_all_command_guards as _check_all_guards_impl
-
-
-def _is_protected_pr_merge_command(command: str) -> bool:
-    """Resolve the protected predicate lazily for isolated import harnesses."""
-    from tools.approval import is_protected_pr_merge_command
-
-    return is_protected_pr_merge_command(command)
+from tools.approval import (
+    check_all_command_guards as _check_all_guards_impl,
+)
 
 
 def _docker_volume_uses_host_path(volume_spec: str) -> bool:
@@ -426,13 +421,11 @@ def _docker_live_state_db_aliases(
 
 
 def _check_all_guards(command: str, env_type: str,
-                      has_host_access: bool = False,
-                      cwd: str | None = None) -> dict:
+                      has_host_access: bool = False) -> dict:
     """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback."""
     return _check_all_guards_impl(command, env_type,
                                   approval_callback=_get_approval_callback(),
-                                  has_host_access=has_host_access,
-                                  cwd=cwd)
+                                  has_host_access=has_host_access)
 
 
 def _check_live_state_db_guard(
@@ -3223,22 +3216,10 @@ def terminal_tool(
         # an approved command can't be SIGINT-killed by a bit that landed during
         # the approval-wait (see clear_current_thread_interrupt).
         _approved_run = bool(force)
-        protected_pr_merge = _is_protected_pr_merge_command(command)
-        if protected_pr_merge and background:
-            return json.dumps({
-                "output": "",
-                "exit_code": -1,
-                "error": (
-                    "Protected PR merge commands must run in the foreground "
-                    "to preserve once-only execution semantics."
-                ),
-                "status": "blocked",
-            }, ensure_ascii=False)
-        if not force or protected_pr_merge:
+        if not force:
             approval = _check_all_guards(
                 command, env_type,
                 has_host_access=_docker_has_host_access(config),
-                cwd=state_guard_cwd,
             )
             if not approval["approved"]:
                 # Check if this is an approval_required (gateway ask mode)
@@ -3551,9 +3532,7 @@ def terminal_tool(
                 }, ensure_ascii=False)
         else:
             # Run foreground command with retry logic
-            # A protected merge is a once-only side effect. Backend exceptions
-            # are ambiguous after dispatch, so it must never be replayed.
-            max_retries = 0 if protected_pr_merge else 3
+            max_retries = 3
             retry_count = 0
             result = None
             command_cwd = None
