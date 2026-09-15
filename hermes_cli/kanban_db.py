@@ -10349,7 +10349,9 @@ def _dispatch_once_locked(
                     pid = _spawn(claimed, str(workspace))
             except (TypeError, ValueError):
                 pid = _spawn(claimed, str(workspace))
-            persisted_run_id: Optional[int] = None
+            persisted_run_id: Optional[int] = (
+                claimed.current_run_id if pid is None else None
+            )
             if pid:
                 persisted_run_id = _set_worker_pid(
                     conn,
@@ -10496,7 +10498,9 @@ def _dispatch_once_locked(
                     pid = _spawn(claimed, str(workspace))
             except (TypeError, ValueError):
                 pid = _spawn(claimed, str(workspace))
-            persisted_run_id: Optional[int] = None
+            persisted_run_id: Optional[int] = (
+                claimed.current_run_id if pid is None else None
+            )
             if pid:
                 persisted_run_id = _set_worker_pid(
                     conn,

@@ -1882,3 +1882,44 @@ def test_set_worker_pid_success_persists_rows_event_and_hook(kanban_home, monkey
             assert hook_payload["run_id"] == run_id
             assert hook_payload["worker_pid"] == 4242
             assert hook_payload["board"] == "default"
+
+
+def test_no_pid_spawn_hook_keeps_claimed_run_id_across_replacement(kanban_home, monkeypatch):
+    """A pid-less spawn hook belongs to the run claimed before spawn_fn."""
+    monkeypatch.setattr(kb, "_memory_pressure_level", lambda: "ok")
+    observed: list[dict] = []
+    from hermes_cli.plugins import get_plugin_manager
+    manager = get_plugin_manager()
+    manager._hooks.setdefault("on_kanban_worker_spawned", []).append(
+        lambda **kwargs: observed.append(kwargs)
+    )
+    run_ids: dict[str, int] = {}
+
+    def pidless_replacement(task, workspace, board=None):
+        assert task.current_run_id is not None
+        run_ids["claimed"] = task.current_run_id
+        import time as _time
+        with kb.connect_closing() as other:
+            kb.complete_task(other, task.id, result="old done")
+            with kb.write_txn(other):
+                cursor = other.execute(
+                    "INSERT INTO task_runs (task_id, status, started_at) "
+                    "VALUES (?, 'running', ?)",
+                    (task.id, int(_time.time())),
+                )
+                assert cursor.lastrowid is not None
+                run_ids["replacement"] = cursor.lastrowid
+                other.execute(
+                    "UPDATE tasks SET status='running', current_run_id=? WHERE id=?",
+                    (cursor.lastrowid, task.id),
+                )
+        return None
+
+    with kb.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="pidless attribution", assignee="default")
+        result = kb.dispatch_once(conn, spawn_fn=pidless_replacement)
+
+    assert result.spawned
+    assert len(observed) == 1
+    assert run_ids["claimed"] != run_ids["replacement"]
+    assert observed[0]["run_id"] == run_ids["claimed"], observed[0]
