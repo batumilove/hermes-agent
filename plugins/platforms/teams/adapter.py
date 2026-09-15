@@ -1070,7 +1070,6 @@ class TeamsAdapter(BasePlatformAdapter):
         data = action.data or {}
         hermes_action = data.get("hermes_action", "")
         session_key = data.get("session_key", "")
-        request_id = data.get("request_id")
 
         if not hermes_action or not session_key:
             return InvokeResponse(
@@ -1131,11 +1130,7 @@ class TeamsAdapter(BasePlatformAdapter):
                 ),
             )
 
-        if request_id is None:
-            legacy_resolver = resolve_gateway_approval
-            legacy_resolver(session_key, choice)
-        else:
-            resolve_gateway_approval(session_key, choice, request_id=request_id)
+        resolve_gateway_approval(session_key, choice)
 
         label_map = {
             "once": "✅ Allowed (once)",
@@ -1170,7 +1165,6 @@ class TeamsAdapter(BasePlatformAdapter):
         allow_permanent: bool = True,
         allow_session: bool = True,
         smart_denied: bool = False,
-        request_id: Optional[str] = None,
     ) -> SendResult:
         """Send an Adaptive Card approval prompt with Allow/Deny buttons."""
         if not self._app:
@@ -1180,7 +1174,6 @@ class TeamsAdapter(BasePlatformAdapter):
         # Truncated for button data payload — just enough to reconstruct the card body.
         btn_data_base = {
             "session_key": session_key,
-            "request_id": request_id,
             "cmd": command[:200] + "..." if len(command) > 200 else command,
             "desc": description,
         }

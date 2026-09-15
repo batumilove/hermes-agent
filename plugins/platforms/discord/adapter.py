@@ -7461,7 +7461,6 @@ class DiscordAdapter(BasePlatformAdapter):
         allow_permanent: bool = True,
         allow_session: bool = True,
         smart_denied: bool = False,
-        request_id: Optional[str] = None,
     ) -> SendResult:
         """
         Send a button-based exec approval prompt for a dangerous command.
@@ -7531,7 +7530,6 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             view = ExecApprovalView(
                 session_key=session_key,
-                request_id=request_id,
                 allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
                 require_admin=require_admin,
@@ -8799,7 +8797,6 @@ def _define_discord_view_classes() -> None:
         def __init__(
             self,
             session_key: str,
-            request_id: Optional[str],
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
             require_admin: bool = False,
@@ -8810,7 +8807,6 @@ def _define_discord_view_classes() -> None:
         ):
             super().__init__(timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
-            self.request_id = request_id
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
             # Opt-in admin gate for exec approval (default off → user-scope,
@@ -8884,13 +8880,7 @@ def _define_discord_view_classes() -> None:
             # must not claim "Approved" — the command was already denied.
             try:
                 from tools.approval import resolve_gateway_approval
-                if self.request_id is None:
-                    legacy_resolver = resolve_gateway_approval
-                    count = legacy_resolver(self.session_key, choice)
-                else:
-                    count = resolve_gateway_approval(
-                        self.session_key, choice, request_id=self.request_id
-                    )
+                count = resolve_gateway_approval(self.session_key, choice)
                 logger.info(
                     "Discord button resolved %d approval(s) for session %s (choice=%s, user=%s)",
                     count, self.session_key, choice, interaction.user.display_name,
