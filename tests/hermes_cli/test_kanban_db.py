@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import subprocess
@@ -1704,9 +1705,14 @@ def test_fast_worker_completion_before_pid_persist_leaves_no_stale_pid(kanban_ho
     spawned_hooks: list[dict] = []
     from hermes_cli.plugins import get_plugin_manager
     _mgr = get_plugin_manager()
-    _mgr._hooks.setdefault("on_kanban_worker_spawned", []).append(
-        lambda **kw: spawned_hooks.append(kw)
+    monkeypatch.setattr(
+        _mgr,
+        "_hooks",
+        {name: list(callbacks) for name, callbacks in _mgr._hooks.items()},
     )
+    hook = lambda **kw: spawned_hooks.append(kw)
+    hooks = _mgr._hooks.setdefault("on_kanban_worker_spawned", [])
+    hooks.append(hook)
 
     def fast_worker(task, workspace, board=None):
         # complete the task from a second connection BEFORE the dispatcher
@@ -1757,6 +1763,11 @@ def test_set_worker_pid_loses_aba_race_to_replacement_run(kanban_home, monkeypat
     aba_hooks: list[dict] = []
     from hermes_cli.plugins import get_plugin_manager
     _mgr = get_plugin_manager()
+    monkeypatch.setattr(
+        _mgr,
+        "_hooks",
+        {name: list(callbacks) for name, callbacks in _mgr._hooks.items()},
+    )
     _mgr._hooks.setdefault("on_kanban_worker_spawned", []).append(
         lambda **kw: aba_hooks.append(kw)
     )
@@ -1814,3 +1825,60 @@ def test_set_worker_pid_loses_aba_race_to_replacement_run(kanban_home, monkeypat
         assert n_spawned == 0
         # and the lifecycle hook must not have fired for the stale pid
         assert aba_hooks == [], aba_hooks
+
+
+def test_set_worker_pid_success_persists_rows_event_and_hook(kanban_home, monkeypatch):
+    """A matching running run persists one pid and announces it exactly once."""
+    monkeypatch.setattr(kb, "_memory_pressure_level", lambda: "ok")
+    monkeypatch.setattr(kb, "_cleanup_worker_tmux", lambda *a, **k: None)
+
+    from hermes_cli.plugins import get_plugin_manager
+
+    spawned_hooks: list[dict] = []
+    mgr = get_plugin_manager()
+    monkeypatch.setattr(
+        mgr,
+        "_hooks",
+        {name: list(callbacks) for name, callbacks in mgr._hooks.items()},
+    )
+    hooks = mgr._hooks.setdefault("on_kanban_worker_spawned", [])
+    hook = lambda **kw: spawned_hooks.append(kw)
+    hooks.append(hook)
+
+    with kb.connect_closing() as conn:
+            tid = kb.create_task(conn, title="pid success", assignee="default")
+            res = kb.dispatch_once(conn, spawn_fn=lambda *args, **kwargs: 4242)
+
+            assert res.spawned
+            row = conn.execute(
+                "SELECT status, worker_pid, current_run_id FROM tasks WHERE id = ?",
+                (tid,),
+            ).fetchone()
+            assert row is not None
+            assert row["status"] == "running", dict(row)
+            assert row["worker_pid"] == 4242, dict(row)
+            run_id = row["current_run_id"]
+            assert run_id is not None
+
+            run = conn.execute(
+                "SELECT worker_pid FROM task_runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            assert run is not None and run["worker_pid"] == 4242, dict(run)
+
+            events = conn.execute(
+                "SELECT run_id, payload FROM task_events "
+                "WHERE task_id = ? AND kind = 'spawned'",
+                (tid,),
+            ).fetchall()
+            assert len(events) == 1
+            assert events[0]["run_id"] == run_id
+            payload = json.loads(events[0]["payload"])
+            assert payload["pid"] == 4242
+
+            assert len(spawned_hooks) == 1
+            hook_payload = spawned_hooks[0]
+            assert hook_payload["task_id"] == tid
+            assert hook_payload["run_id"] == run_id
+            assert hook_payload["worker_pid"] == 4242
+            assert hook_payload["board"] == "default"
