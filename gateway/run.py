@@ -9551,8 +9551,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             pass
 
     async def _persist_active_agents_async(self) -> None:
-        """Persist the work census without blocking the gateway event loop."""
-        await run_sync_in_detached_serial_daemon_thread(self._persist_active_agents)
+        """Persist the work census without disrupting message handling.
+
+        Runtime status is diagnostic and explicitly best-effort.  The shared
+        serial persistence lane is bounded, so a burst of simultaneous turn
+        boundaries can temporarily exhaust its capacity.  Do not let that
+        backpressure replace an otherwise valid platform response with an
+        error; a later boundary will publish the current authoritative count.
+        """
+        try:
+            await run_sync_in_detached_serial_daemon_thread(
+                self._persist_active_agents
+            )
+        except TimeoutError as exc:
+            logger.warning(
+                "Active-agent status persistence skipped under backpressure: %s",
+                exc,
+            )
 
     # ------------------------------------------------------------------
     # External drain control (NAS-driven quiesce-without-restart, Phase 2).
