@@ -15,6 +15,8 @@ from typing import Any, Optional
 
 import pytest
 
+from tests.hermes_cli.kanban_test_helpers import create_secure_home
+
 from hermes_cli import kanban_dispatch_wiring as wiring
 from hermes_cli.kanban_dispatch_wiring import (
     LaunchWiringConfig,
@@ -113,7 +115,7 @@ def _assert_no_live_claim(conn: sqlite3.Connection, board: Any, task_id: str) ->
 
 def test_wrapper_passes_through_and_records_full_lifecycle(tmp_path: Path) -> None:
     board_db = _board_db(tmp_path, TASK_A)
-    (tmp_path / "home").mkdir()
+    create_secure_home(tmp_path / "home")
     launch = _launch_conn(tmp_path)
     inner = _RecordingSpawn()
     wrapped = wrap_spawn_with_launch_protocol(inner, launch, _config(tmp_path, board_db))
@@ -136,7 +138,7 @@ def test_wrapper_passes_through_and_records_full_lifecycle(tmp_path: Path) -> No
 
 def test_wrapper_releases_claim_when_inner_spawn_raises(tmp_path: Path) -> None:
     board_db = _board_db(tmp_path, TASK_A)
-    (tmp_path / "home").mkdir()
+    create_secure_home(tmp_path / "home")
     launch = _launch_conn(tmp_path)
     wrapped = wrap_spawn_with_launch_protocol(_boom, launch, _config(tmp_path, board_db))
     try:
@@ -157,7 +159,7 @@ def test_wrapper_no_pid_fails_closed_and_releases_claim(tmp_path: Path) -> None:
     that reports no PID cannot be represented, so the wrapper must fail the
     launch closed and leave no ledger row."""
     board_db = _board_db(tmp_path, TASK_B)
-    (tmp_path / "home").mkdir()
+    create_secure_home(tmp_path / "home")
     launch = _launch_conn(tmp_path)
     inner = _RecordingSpawn(pid=0)
     wrapped = wrap_spawn_with_launch_protocol(inner, launch, _config(tmp_path, board_db))
@@ -173,7 +175,7 @@ def test_wrapper_no_pid_fails_closed_and_releases_claim(tmp_path: Path) -> None:
 def test_second_launch_of_same_task_advances_generation(tmp_path: Path) -> None:
     """Live semantics: a reclaimed task is re-launched at generation+1."""
     board_db = _board_db(tmp_path, TASK_A)
-    (tmp_path / "home").mkdir()
+    create_secure_home(tmp_path / "home")
     launch = _launch_conn(tmp_path)
     inner = _RecordingSpawn()
     gen_box = {"n": 0}
@@ -239,7 +241,7 @@ def test_spawn_intent_failure_releases_claim(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     board_db = _board_db(tmp_path, TASK_A)
-    (tmp_path / "home").mkdir()
+    create_secure_home(tmp_path / "home")
     launch = _launch_conn(tmp_path)
     cfg = _config(tmp_path, board_db)
 
@@ -263,7 +265,7 @@ def test_record_spawned_failure_terminates_worker_and_releases_claim(
     (Atomic round-1 finding 3): record_spawned failure triggers
     best-effort termination and claim release."""
     board_db = _board_db(tmp_path, TASK_A)
-    (tmp_path / "home").mkdir()
+    create_secure_home(tmp_path / "home")
     launch = _launch_conn(tmp_path)
     cfg = _config(tmp_path, board_db)
     killed: list[int] = []
@@ -285,7 +287,7 @@ def test_record_spawned_failure_terminates_worker_and_releases_claim(
 
 def test_non_integer_pid_fails_closed(tmp_path: Path) -> None:
     board_db = _board_db(tmp_path, TASK_A)
-    (tmp_path / "home").mkdir()
+    create_secure_home(tmp_path / "home")
     launch = _launch_conn(tmp_path)
 
     def _weird_pid(task: Any, workspace: str, board: Any = None) -> Any:
@@ -315,7 +317,7 @@ def test_apply_launch_wiring_passthrough_when_unconfigured() -> None:
 
 def test_apply_launch_wiring_decorates_when_configured(tmp_path: Path) -> None:
     board_db = _board_db(tmp_path, TASK_A)
-    (tmp_path / "home").mkdir()
+    create_secure_home(tmp_path / "home")
     launch = _launch_conn(tmp_path)
     try:
         configure_launch_wiring(launch, _config(tmp_path, board_db))
@@ -339,7 +341,7 @@ def test_string_pid_fails_closed(tmp_path: Path) -> None:
     """Atomic round-2 finding 3: "123", 1.5, and True must NOT be recorded
     as spawned workers; only a positive real int is a valid identity."""
     board_db = _board_db(tmp_path, TASK_A)
-    (tmp_path / "home").mkdir()
+    create_secure_home(tmp_path / "home")
     launch = _launch_conn(tmp_path)
 
     def _str_pid(task: Any, workspace: str, board: Any = None) -> Any:
@@ -361,7 +363,7 @@ def test_cleanup_survives_release_claim_failure(
     cleanup (lease lost / policy moved), the ORIGINAL kernel error must
     propagate, not be masked by a cleanup failure."""
     board_db = _board_db(tmp_path, TASK_A)
-    (tmp_path / "home").mkdir()
+    create_secure_home(tmp_path / "home")
     launch = _launch_conn(tmp_path)
 
     def _failing_release(*args: Any, **kwargs: Any) -> None:
@@ -480,7 +482,7 @@ def test_dispatch_once_routes_spawn_through_wiring(
 def test_apply_launch_wiring_is_idempotent(tmp_path: Path) -> None:
     """Atomic round-3 finding 3: double wiring must not nest owner leases."""
     board_db = _board_db(tmp_path, TASK_A)
-    (tmp_path / "home").mkdir()
+    create_secure_home(tmp_path / "home")
     launch = _launch_conn(tmp_path)
     try:
         wiring.configure_launch_wiring(launch, _config(tmp_path, board_db))
@@ -508,7 +510,7 @@ def test_oversized_pid_rejected_fail_closed(tmp_path: Path) -> None:
     """Atomic round-3 finding 2: >int32 pid must fail closed (SQLite
     binding / os.kill OverflowError class), not record a bogus launch."""
     board_db = _board_db(tmp_path, TASK_A)
-    (tmp_path / "home").mkdir()
+    create_secure_home(tmp_path / "home")
     launch = _launch_conn(tmp_path)
     try:
         inner = _RecordingSpawn(pid=0x7FFFFFFF + 1)
@@ -596,7 +598,7 @@ def test_construction_failure_error_text_preserved(
         raise RuntimeError("board identity exploded")
 
     board_db = _board_db(tmp_path, TASK_A)
-    (tmp_path / "home").mkdir()
+    create_secure_home(tmp_path / "home")
     launch = _launch_conn(tmp_path)
     monkeypatch.setattr(
         "hermes_cli.kanban_dispatch_wiring.canonical_board_identity", boom
@@ -626,7 +628,7 @@ def test_pid_identity_matrix_fails_closed(tmp_path: Path) -> None:
     floats, strings, zero, negatives, >int32 — is rejected fail-closed
     with the claim released."""
     board_db = _board_db(tmp_path, TASK_A)
-    (tmp_path / "home").mkdir()
+    create_secure_home(tmp_path / "home")
     launch = _launch_conn(tmp_path)
     bad_pids: list[Any] = [
         None,
@@ -663,7 +665,7 @@ def test_lease_release_failure_after_record_spawned_does_not_flip_success(
     dispatcher-level failure."""
 
     board_db = _board_db(tmp_path, TASK_A)
-    (tmp_path / "home").mkdir()
+    create_secure_home(tmp_path / "home")
     launch = _launch_conn(tmp_path)
     cfg = _config(tmp_path, board_db)
     real_lease = wiring.acquire_dispatcher_owner(

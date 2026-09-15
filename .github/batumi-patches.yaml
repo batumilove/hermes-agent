@@ -1464,11 +1464,13 @@ patches:
       - hermes_cli/kanban_route_contract.py
       - hermes_cli/kanban_wired_dispatcher.py
       - tests/hermes_cli/kanban_harness_invariants.py
+      - tests/hermes_cli/kanban_test_helpers.py
       - tests/hermes_cli/test_kanban_admission_policy.py
       - tests/hermes_cli/test_kanban_dispatch_wiring.py
       - tests/hermes_cli/test_kanban_launch_protocol.py
       - tests/hermes_cli/test_kanban_profiles.py
       - tests/hermes_cli/test_kanban_route_contract.py
+      - tests/hermes_cli/test_kanban_secure_home_fixture.py
       - tests/hermes_cli/test_kanban_wired_dispatcher.py
       - tests/hermes_cli/test_kanban_stage3_harness.py
       - tests/hermes_cli/test_kanban_terminal_handoff.py
