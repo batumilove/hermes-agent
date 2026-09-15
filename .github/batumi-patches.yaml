@@ -107,6 +107,19 @@ patches:
       dependency floors, Electron pin parity, and production-only node-gyp Nix
       dependency closure with matching regression coverage.
 
+  - id: dcf-locked-optional-extra
+    kind: operations
+    rationale: Replace the dormant hashless DCF requirements file with a uv-locked optional extra and document the supported installation path.
+    paths:
+      - optional-skills/finance/dcf-model/SKILL.md
+      - optional-skills/finance/dcf-model/requirements.txt
+      - pyproject.toml
+      - tests/test_dcf_dependency_contract.py
+      - uv.lock
+    tests:
+      - uv lock --check
+      - uv run --locked --no-sync pytest -q tests/test_dcf_dependency_contract.py
+    retirement: Remove when upstream provides an equivalently locked dependency contract for the bundled DCF skill.
   - id: fork-free-runner-labels
     kind: operations
     rationale: >-
