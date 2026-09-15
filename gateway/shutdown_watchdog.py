@@ -510,7 +510,7 @@ def arm_shutdown_watchdog(
         try:
             from gateway.status import remove_pid_file, release_gateway_runtime_lock
             remove_pid_file()
-            release_gateway_runtime_lock()
+            release_gateway_runtime_lock(timeout=0.0)
         except Exception:
             pass
         try:

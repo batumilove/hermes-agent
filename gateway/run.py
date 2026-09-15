@@ -9551,8 +9551,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             pass
 
     async def _persist_active_agents_async(self) -> None:
-        """Persist the work census without blocking the gateway event loop."""
-        await run_sync_in_detached_serial_daemon_thread(self._persist_active_agents)
+        """Persist the work census without disrupting message handling.
+
+        Runtime status is diagnostic and explicitly best-effort.  The shared
+        serial persistence lane is bounded, so a burst of simultaneous turn
+        boundaries can temporarily exhaust its capacity.  Do not let that
+        backpressure replace an otherwise valid platform response with an
+        error; a later boundary will publish the current authoritative count.
+        """
+        try:
+            await run_sync_in_detached_serial_daemon_thread(
+                self._persist_active_agents
+            )
+        except Exception as exc:
+            logger.warning(
+                "Active-agent status persistence skipped after diagnostic "
+                "worker failure: %s",
+                exc,
+            )
 
     # ------------------------------------------------------------------
     # External drain control (NAS-driven quiesce-without-restart, Phase 2).
@@ -16925,19 +16941,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as _e:
                 logger.debug("residual-child forensics skipped: %s", _e)
 
-            def _release_runtime_identity() -> None:
-                remove_pid_file()
-                release_gateway_runtime_lock()
-
-            _remaining = GatewayRunner._shutdown_remaining(_shutdown_deadline)
-            if _remaining <= 0 or not await GatewayRunner._run_shutdown_sync_daemon(
-                self,
-                _release_runtime_identity,
-                timeout=_remaining,
-                context="runtime identity release",
-            ):
-                _cleanup_budget_exhausted = True
-
             # Write a clean-shutdown marker so the next startup knows this
             # wasn't a crash.  suspend_recently_active() only needs to run
             # after unexpected exits.  However, if the drain timed out and
@@ -17108,6 +17111,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # the detached async path above.
                 self._update_runtime_status(_terminal_state, self._exit_reason)
             _shutdown_gateway_health_export(self)
+
+            # Publish terminal state and clean/planned-restart markers while
+            # this generation still owns the runtime lock. Only after every
+            # ownership-sensitive write is complete may a successor start.
+            def _release_runtime_identity() -> bool:
+                remove_pid_file()
+                return release_gateway_runtime_lock(timeout=0.0)
+
+            _remaining = GatewayRunner._shutdown_remaining(_shutdown_deadline)
+            if _remaining <= 0 or not await GatewayRunner._run_shutdown_sync_daemon(
+                self,
+                _release_runtime_identity,
+                timeout=_remaining,
+                context="runtime identity release",
+            ):
+                _cleanup_budget_exhausted = True
+
             logger.info("Gateway stopped (total teardown %.2fs)", _phase_elapsed())
 
         self._stop_task = asyncio.create_task(_stop_impl())
@@ -33962,7 +33982,7 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
     try:
         from gateway.status import remove_pid_file, release_gateway_runtime_lock
         remove_pid_file()
-        release_gateway_runtime_lock()
+        release_gateway_runtime_lock(timeout=0.0)
     except Exception:
         pass
     # Mark this life cleanly exited in the lifecycle sentinel (NS-608). This
