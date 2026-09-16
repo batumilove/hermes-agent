@@ -21,7 +21,47 @@ async def _run_stop(runner):
     ):
         await runner.stop()
     remove_pid.assert_called_once()
-    release_lock.assert_called_once()
+    release_lock.assert_called_once_with(timeout=0.0)
+
+
+def test_runtime_identity_release_runs_inline_after_budget_exhaustion(monkeypatch):
+    """Final nonblocking identity handoff is not deferred to a daemon thread."""
+    runner, _adapter = make_restart_runner()
+    _configure_fast_forced_shutdown(runner, monkeypatch, {})
+    monkeypatch.setattr(
+        runner,
+        "_shutdown_remaining",
+        lambda deadline: 0.0,
+    )
+
+    original_daemon = gateway_run.GatewayRunner._run_shutdown_sync_daemon
+
+    async def _reject_tail_daemon(self, func, *args, timeout, context):
+        if context == "runtime identity release":
+            raise AssertionError("tail identity release must execute inline")
+        return await original_daemon(
+            self,
+            func,
+            *args,
+            timeout=timeout,
+            context=context,
+        )
+
+    monkeypatch.setattr(
+        gateway_run.GatewayRunner,
+        "_run_shutdown_sync_daemon",
+        _reject_tail_daemon,
+    )
+
+    with (
+        patch("gateway.status.remove_pid_file") as remove_pid,
+        patch("gateway.status.release_gateway_runtime_lock", return_value=True) as release_lock,
+        patch("gateway.status.write_runtime_status"),
+    ):
+        asyncio.run(runner.stop())
+
+    remove_pid.assert_called_once_with()
+    release_lock.assert_called_once_with(timeout=0.0)
 
 
 def _configure_fast_forced_shutdown(runner, monkeypatch, active_agents):
