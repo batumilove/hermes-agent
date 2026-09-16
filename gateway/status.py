@@ -999,19 +999,43 @@ def acquire_gateway_runtime_lock() -> bool:
     return True
 
 
-def release_gateway_runtime_lock() -> None:
-    """Release the gateway runtime lock when owned by this process."""
+def release_gateway_runtime_lock(
+    *, timeout: Optional[float] = _RUNTIME_STATUS_WRITE_LOCK_TIMEOUT_SECONDS
+) -> bool:
+    """Release the gateway runtime lock when owned by this process.
+
+    Coordinate with runtime-status commits so ownership cannot be released
+    after a serial writer validates it but before that writer atomically
+    replaces ``gateway_state.json``. Acquisition is bounded: watchdog and
+    hard-exit callers must never wedge behind a stalled filesystem write.
+    Returns ``False`` when the coordination lock cannot be acquired in time.
+    """
     global _gateway_lock_handle
-    handle = _gateway_lock_handle
-    if handle is None:
-        return
-    _gateway_lock_handle = None
-    _release_file_lock(handle)
+    if timeout is None:
+        acquired = _runtime_status_write_lock.acquire()
+    else:
+        acquired = _runtime_status_write_lock.acquire(timeout=max(float(timeout), 0.0))
+    if not acquired:
+        logger.warning(
+            "Gateway runtime lock release skipped because status-write "
+            "coordination remained busy after %.3fs",
+            max(float(timeout or 0.0), 0.0),
+        )
+        return False
     try:
-        handle.close()
-    except OSError:
-        pass
-    _clear_running_pid_cache()
+        handle = _gateway_lock_handle
+        if handle is None:
+            return True
+        _gateway_lock_handle = None
+        _release_file_lock(handle)
+        try:
+            handle.close()
+        except OSError:
+            pass
+        _clear_running_pid_cache()
+        return True
+    finally:
+        _runtime_status_write_lock.release()
 
 
 def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
@@ -1163,6 +1187,49 @@ def write_runtime_status(
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status."""
     path = _get_runtime_status_path()
+    serial_sequence = current_serial_daemon_sequence()
+    if serial_sequence is not None:
+        current_record = _build_pid_record()
+        # Background status work is valid only while this process still owns
+        # the OS-backed runtime lock. The handle is cleared before shutdown
+        # releases the lock, so an abandoned old-generation worker fails closed
+        # without depending on lock-file JSON that a successor may be rewriting.
+        lock_path = _get_gateway_lock_path()
+        # Some direct/unit GatewayRunner starts do not claim the process lock;
+        # they have no lock file and may still emit diagnostic status. Once a
+        # real gateway generation has created the lock file, however, a serial
+        # writer without the in-process owner handle is an abandoned generation
+        # and must fail closed.
+        lock_handle = _gateway_lock_handle
+        handle_name = getattr(lock_handle, "name", None)
+        try:
+            handle_matches_path = (
+                handle_name is not None and Path(handle_name) == lock_path
+            )
+        except (TypeError, ValueError):
+            handle_matches_path = False
+        handle_is_live = (
+            lock_handle is not None
+            and not getattr(lock_handle, "closed", False)
+            and handle_matches_path
+        )
+        if not handle_is_live and lock_path.exists():
+            logger.warning(
+                "Skipping runtime-status write from a gateway generation that "
+                "no longer owns the runtime lock"
+            )
+            return
+        lock_record = _read_gateway_lock_record(lock_path)
+        if handle_is_live and (
+            not lock_record
+            or _pid_from_record(lock_record) != current_record["pid"]
+            or lock_record.get("start_time") != current_record["start_time"]
+        ):
+            logger.warning(
+                "Skipping runtime-status write because gateway lock ownership "
+                "is unavailable, malformed, or belongs to another generation"
+            )
+            return
     payload = _read_json_file(path) or _build_runtime_status_record()
     previous_payload = copy.deepcopy(payload)
     current_record = _build_pid_record()
