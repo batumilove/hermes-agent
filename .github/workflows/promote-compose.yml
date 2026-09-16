@@ -25,11 +25,11 @@ permissions:
 
 jobs:
   promote:
-    uses: batumilove/hermes-ops/.github/workflows/compose-deploy.yml@00047fd62468b7785f82dfaf688006f0433d6bfa
+    uses: batumilove/hermes-ops/.github/workflows/compose-deploy.yml@e2de0980d2898b3b629119cce4c3662b5988ff0a
     with:
       environment: ${{ inputs.environment }}
       operation: ${{ inputs.operation }}
       image_digest: ${{ inputs.image_digest }}
       source_sha: ${{ inputs.source_sha }}
-      ops_sha: 00047fd62468b7785f82dfaf688006f0433d6bfa
+      ops_sha: e2de0980d2898b3b629119cce4c3662b5988ff0a
     secrets: inherit

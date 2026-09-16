@@ -21,10 +21,10 @@ jobs:
       contents: read
       id-token: write
       packages: write
-    uses: batumilove/hermes-ops/.github/workflows/build-image.yml@00047fd62468b7785f82dfaf688006f0433d6bfa
+    uses: batumilove/hermes-ops/.github/workflows/build-image.yml@e2de0980d2898b3b629119cce4c3662b5988ff0a
     with:
       source_sha: ${{ github.sha }}
-      ops_sha: 00047fd62468b7785f82dfaf688006f0433d6bfa
+      ops_sha: e2de0980d2898b3b629119cce4c3662b5988ff0a
       deployment_lane: ${{ github.ref_name == 'rebuild/batumi-live' && 'candidate' || 'live' }}
     secrets: inherit
 
@@ -33,11 +33,11 @@ jobs:
     if: vars.HERMES_STAGING_DEPLOY_ENABLED == 'true'
     permissions:
       contents: read
-    uses: batumilove/hermes-ops/.github/workflows/compose-deploy.yml@00047fd62468b7785f82dfaf688006f0433d6bfa
+    uses: batumilove/hermes-ops/.github/workflows/compose-deploy.yml@e2de0980d2898b3b629119cce4c3662b5988ff0a
     with:
       environment: batumi-staging
       operation: deploy
       image_digest: ${{ needs.publish.outputs.digest }}
       source_sha: ${{ needs.publish.outputs.source_sha }}
-      ops_sha: 00047fd62468b7785f82dfaf688006f0433d6bfa
+      ops_sha: e2de0980d2898b3b629119cce4c3662b5988ff0a
     secrets: inherit
