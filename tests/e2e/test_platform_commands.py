@@ -123,6 +123,7 @@ class TestSlashCommands:
         response_text = send.call_args[1].get("content") or send.call_args[0][1]
         assert response_text == "agent-handled"
         runner.request_restart.assert_not_called()
+        runner._run_post_turn_hooks.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_personality_lists_options(self, adapter, platform):
