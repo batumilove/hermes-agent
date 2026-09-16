@@ -17115,17 +17115,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Publish terminal state and clean/planned-restart markers while
             # this generation still owns the runtime lock. Only after every
             # ownership-sensitive write is complete may a successor start.
-            def _release_runtime_identity() -> bool:
+            try:
                 remove_pid_file()
-                return release_gateway_runtime_lock(timeout=0.0)
-
-            _remaining = GatewayRunner._shutdown_remaining(_shutdown_deadline)
-            if _remaining <= 0 or not await GatewayRunner._run_shutdown_sync_daemon(
-                self,
-                _release_runtime_identity,
-                timeout=_remaining,
-                context="runtime identity release",
-            ):
+                if not release_gateway_runtime_lock(timeout=0.0):
+                    _cleanup_budget_exhausted = True
+            except Exception as exc:
+                logger.warning("Runtime identity release failed: %s", exc)
                 _cleanup_budget_exhausted = True
 
             logger.info("Gateway stopped (total teardown %.2fs)", _phase_elapsed())
