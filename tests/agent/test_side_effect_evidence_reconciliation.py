@@ -50,10 +50,38 @@ def test_non_fresh_deployment_descriptions_do_not_require_evidence(response):
             "is enabled and scheduled; no separate activation record is in scope."
         ),
         "Production cron: olah-health-monitor is enabled and scheduled every 30 minutes.",
+        (
+            "| Scheduler state | **PASS** | Producer `4f24a9fee88b` remains enabled "
+            "and scheduled every 60 minutes; latest status `ok`, failure streak `0`. |"
+        ),
+        "Current scheduler state: the cron job is enabled and scheduled every hour.",
     ],
 )
 def test_coordinated_present_state_cron_description_does_not_require_evidence(response):
     assert not _warns(response)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        "The scheduler remains enabled and scheduled the cron job.",
+        "The scheduler remains enabled and scheduled every cron job.",
+        "I made sure the scheduler remains enabled and scheduled every cron job.",
+        (
+            "The scheduler remains enabled and scheduled every 60 minutes, "
+            "and then scheduled the cron job."
+        ),
+        (
+            "The scheduler remains enabled and scheduled every 60 minutes, "
+            "then scheduled the cron job."
+        ),
+        "The release is ready and deployed to production.",
+        "The file is ready and uploaded to S3.",
+        "The GitHub issue is ready and created on GitHub.",
+    ],
+)
+def test_status_plus_fresh_mutation_clauses_still_require_evidence(response):
+    assert _warns(response)
 
 
 def test_coordinated_sentence_with_fresh_first_person_cron_action_requires_evidence():
