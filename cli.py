@@ -8367,9 +8367,27 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """
         if getattr(self, "_preload_skills_finalized", False):
             return
+        required_skills = [
+            value.strip()
+            for value in os.environ.pop(
+                "HERMES_REQUIRED_PRELOADED_SKILLS", ""
+            ).split(",")
+            if value.strip()
+        ]
+
+        def fail_required(unavailable: list[str]) -> None:
+            if not unavailable:
+                return
+            label = "skill" if len(unavailable) == 1 else "skills"
+            raise ValueError(
+                f"Required preloaded {label} unavailable: "
+                + ", ".join(unavailable)
+            )
+
         thread = getattr(self, "_preload_skills_thread", None)
         if thread is None:
             self._preload_skills_finalized = True
+            fail_required(required_skills)
             return
         thread.join(timeout=120)
         self._preload_skills_finalized = True
@@ -8378,8 +8396,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             raise err
         result = getattr(self, "_preload_skills_result", None)
         if not result:
+            fail_required(required_skills)
             return
         skills_prompt, loaded_skills, missing_skills = result
+        unavailable_required = [
+            value for value in required_skills if value not in loaded_skills
+        ]
+        fail_required(unavailable_required)
         if missing_skills:
             missing_display = ", ".join(missing_skills)
             # If at least one skill loaded, degrade gracefully: skip the

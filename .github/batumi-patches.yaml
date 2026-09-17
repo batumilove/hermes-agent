@@ -1382,6 +1382,7 @@ patches:
       - scripts/run_tests.sh tests/run_agent/test_run_agent.py::TestRunConversation::test_nous_401_refreshes_after_remint_and_retries tests/run_agent/test_run_agent.py::TestNousCredentialRefresh
     retirement: Remove when upstream-equivalent failed-bearer propagation, peer-token adoption, lock-timeout handling, and exact auxiliary cache-key replacement are present in the recorded upstream baseline.
 
+
   - id: live-state-db-access-guard
     kind: core
     rationale: >-
@@ -1492,3 +1493,21 @@ patches:
     tests:
       - scripts/run_tests.sh tests/hermes_cli/test_kanban_admission_policy.py tests/hermes_cli/test_kanban_launch_protocol.py tests/hermes_cli/test_kanban_wired_dispatcher.py
     retirement: Fold into the upstream Kanban admission kernel when it lands upstream.
+
+
+  - id: kanban-mandatory-restart-policy-skills
+    kind: operations
+    rationale: >-
+      Force-load the Kanban worker lifecycle and restart-window policy skills in
+      every dispatcher-owned worker so restart-impact classification, immutable
+      bundle queueing, and built/queued/sealed/activated/observed reporting do
+      not depend on mutable assignee-profile skill inventories.
+    paths:
+      - cli.py
+      - hermes_cli/kanban_db.py
+      - tests/cli/test_cli_preloaded_skills.py
+      - tests/hermes_cli/test_kanban_core_functionality.py
+    tests:
+      - scripts/run_tests.sh tests/cli/test_cli_preloaded_skills.py tests/hermes_cli/test_kanban_core_functionality.py::test_default_spawn_force_loads_worker_policy_skills tests/hermes_cli/test_kanban_worker_spawn_toolsets.py tests/hermes_cli/test_kanban_worker_session_source.py
+    retirement: Remove when upstream force-loads equivalent lifecycle and restart-window policy for every dispatcher-owned Kanban worker, preserving and de-duplicating per-task skills.
+
