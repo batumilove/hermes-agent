@@ -7,6 +7,20 @@ upstream:
   provenance_file: .github/upstream-sync-provenance.json
 
 patches:
+  - id: gateway-e2e-post-turn-hook-isolation
+    kind: compatibility
+    rationale: >-
+      Keep gateway-dispatch E2E fixtures hermetic by replacing post-turn goal
+      continuation with an observable async seam, preventing cold real SessionDB
+      initialization from delaying the Telegram group plaintext-restart response.
+    paths:
+      - tests/e2e/conftest.py
+      - tests/e2e/test_platform_commands.py
+    tests:
+      - python -m pytest tests/e2e/test_platform_commands.py -q
+      - python -m pytest tests/e2e -q
+    retirement: Remove when upstream gateway E2E fixtures isolate post-turn hooks with equivalent observable coverage.
+
   - id: supply-chain-build-input-pinning
     kind: operations
     rationale: >-

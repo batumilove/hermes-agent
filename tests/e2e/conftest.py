@@ -235,6 +235,11 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
     # telegram param only — first parametrization pays the cold-resolution cost).
     runner._reset_notice_session_info = lambda source: ""
 
+    # Keep the agent-turn path hermetic: post-turn goal continuation may lazily
+    # initialize a real SessionDB on an executor thread. This e2e fixture tests
+    # gateway dispatch, so retain the hook boundary without its external state.
+    runner._run_post_turn_hooks = AsyncMock()
+
     runner.pairing_store = MagicMock()
     runner.pairing_store._is_rate_limited = MagicMock(return_value=False)
     runner.pairing_store.generate_code = MagicMock(return_value="ABC123")
