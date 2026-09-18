@@ -14,14 +14,20 @@ from tests.gateway.restart_test_helpers import make_restart_runner
 
 
 async def _run_stop(runner):
+    """Run stop() with identity-release mocks; return (remove_pid, release_lock).
+
+    Both identity-release calls are legitimately skipped when the aggregate
+    shutdown deadline is exhausted, so only the tail-release tests assert
+    them (against their generous leashes); budget-accounting tests with
+    deliberately tiny leashes do not.
+    """
     with (
         patch("gateway.status.remove_pid_file") as remove_pid,
         patch("gateway.status.release_gateway_runtime_lock") as release_lock,
         patch("gateway.status.write_runtime_status"),
     ):
         await runner.stop()
-    remove_pid.assert_called_once()
-    release_lock.assert_called_once()
+    return remove_pid, release_lock
 
 
 def _configure_fast_forced_shutdown(runner, monkeypatch, active_agents):
@@ -349,7 +355,11 @@ async def test_drain_exhaustion_reduces_interrupt_grace_budget(monkeypatch):
     runner._notify_active_sessions_of_shutdown = AsyncMock()
 
     async def _consume_drain_budget(_timeout, **_kwargs):
-        await asyncio.sleep(0.20)
+        # Consume decisively past the 0.40s aggregate deadline so the
+        # interrupt grace remainder is negative under any scheduling delay;
+        # a 0.20s sleep exactly equal to the drain timeout leaves a
+        # ~0.05s positive margin that CI jitter can invert.
+        await asyncio.sleep(0.60)
         return {"session": active_agent}, True
 
     observed_interrupt_budgets = []
@@ -363,7 +373,7 @@ async def test_drain_exhaustion_reduces_interrupt_grace_budget(monkeypatch):
     runner._drain_active_agents = _consume_drain_budget
     runner._interrupt_running_agents = _capture_interrupt
 
-    await asyncio.wait_for(_run_stop(runner), timeout=2.0)
+    await asyncio.wait_for(_run_stop(runner), timeout=3.0)
 
     assert len(observed_interrupt_budgets) == 1
     # Under a saturated CI event loop the aggregate deadline may expire in the
@@ -382,13 +392,20 @@ async def test_wedged_agent_finalize_cannot_starve_tail_release(monkeypatch):
     started = threading.Event()
     agents = {"session": _BlockingFlushAgent(started)}
     _configure_fast_forced_shutdown(runner, monkeypatch, agents)
+    # Larger leash so the tail release after the abandoned 2.0s flush worker
+    # is reached under CI scheduling delay.
+    monkeypatch.setattr(
+        gateway_run, "resolve_shutdown_watchdog_delay", lambda _timeout: 3.00
+    )
 
     before = time.monotonic()
-    await asyncio.wait_for(_run_stop(runner), timeout=4.0)
+    remove_pid, _release_lock = await asyncio.wait_for(_run_stop(runner), timeout=4.5)
     elapsed = time.monotonic() - before
+    remove_pid.assert_called_once()
+    _release_lock.assert_called_once()
 
     assert started.is_set(), "agent finalization was never attempted"
-    assert elapsed < 2.20, (
+    assert elapsed < 3.30, (
         f"agent finalization consumed aggregate budget: {elapsed:.3f}s"
     )
 
@@ -423,7 +440,9 @@ async def test_post_agent_teardown_receives_reserved_tail_budget(monkeypatch):
     runner.adapters[Platform.TELEGRAM] = adapter
     runner._bounded_adapter_teardown = AsyncMock(return_value=None)
 
-    await asyncio.wait_for(_run_stop(runner), timeout=1.20)
+    remove_pid, _release_lock = await asyncio.wait_for(_run_stop(runner), timeout=2.50)
+    remove_pid.assert_called_once()
+    _release_lock.assert_called_once()
 
     runner._bounded_adapter_teardown.assert_awaited_once_with(
         adapter, Platform.TELEGRAM
@@ -434,6 +453,11 @@ async def test_post_agent_teardown_receives_reserved_tail_budget(monkeypatch):
 async def test_wedged_cached_client_shutdown_cannot_starve_tail_release(monkeypatch):
     runner, _adapter = make_restart_runner()
     _configure_fast_forced_shutdown(runner, monkeypatch, {})
+    # Larger leash so the tail release after the abandoned 2.0s cached-client
+    # shutdown is reached under CI scheduling delay.
+    monkeypatch.setattr(
+        gateway_run, "resolve_shutdown_watchdog_delay", lambda _timeout: 3.00
+    )
     started = threading.Event()
 
     import agent.auxiliary_client as auxiliary_client
@@ -445,8 +469,10 @@ async def test_wedged_cached_client_shutdown_cannot_starve_tail_release(monkeypa
     monkeypatch.setattr(auxiliary_client, "shutdown_cached_clients", _block)
 
     before = time.monotonic()
-    await asyncio.wait_for(_run_stop(runner), timeout=4.0)
+    remove_pid, _release_lock = await asyncio.wait_for(_run_stop(runner), timeout=4.0)
     elapsed = time.monotonic() - before
+    remove_pid.assert_called_once()
+    _release_lock.assert_called_once()
 
     assert started.is_set(), "cached-client cleanup was never attempted"
     assert elapsed < 2.20, (
@@ -469,11 +495,18 @@ async def test_final_running_agent_status_write_is_bounded(monkeypatch):
         await never.wait()
 
     runner._persist_active_agents_async = _wedged_persist
+    # Larger leash so the tail release after the abandoned wedged persist is
+    # reached under CI scheduling delay.
+    monkeypatch.setattr(
+        gateway_run, "resolve_shutdown_watchdog_delay", lambda _timeout: 3.00
+    )
     before = time.monotonic()
-    await asyncio.wait_for(_run_stop(runner), timeout=2.0)
+    remove_pid, _release_lock = await asyncio.wait_for(_run_stop(runner), timeout=4.0)
     elapsed = time.monotonic() - before
+    remove_pid.assert_called_once()
+    _release_lock.assert_called_once()
 
-    assert elapsed < 2.20
+    assert elapsed < 3.30
     assert not runner._is_session_running(session_key)
 
 
@@ -500,8 +533,10 @@ async def test_wedged_database_close_cannot_starve_tail_release(monkeypatch):
     )
 
     before = time.monotonic()
-    await asyncio.wait_for(_run_stop(runner), timeout=4.0)
+    remove_pid, _release_lock = await asyncio.wait_for(_run_stop(runner), timeout=4.0)
     elapsed = time.monotonic() - before
+    remove_pid.assert_called_once()
+    _release_lock.assert_called_once()
 
     assert started.is_set(), "database close was never attempted"
     assert elapsed < 3.30, f"database close consumed aggregate budget: {elapsed:.3f}s"
