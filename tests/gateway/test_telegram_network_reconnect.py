@@ -629,8 +629,15 @@ async def test_handle_polling_network_error_updater_stop_timeout():
     app.updater = MagicMock()
     app.updater.running = True
 
+    never = asyncio.Event()
+
     async def _hanging_stop():
-        await asyncio.sleep(0.2)  # simulate CLOSE-WAIT block
+        # A bounded sleep here can complete before the wall-clock deadline is
+        # processed on a saturated CI event loop (the threading.Timer fires on
+        # time but loop scheduling delays resolution past 0.2s), turning the
+        # timeout path into a nondeterministic race.  A never-set Event makes
+        # the hang unbounded, exactly like a real CLOSE-WAIT socket.
+        await never.wait()
 
     app.updater.stop = _hanging_stop
     app.updater.start_polling = AsyncMock()

@@ -1511,3 +1511,19 @@ patches:
       - scripts/run_tests.sh tests/cli/test_cli_preloaded_skills.py tests/hermes_cli/test_kanban_core_functionality.py::test_default_spawn_force_loads_worker_policy_skills tests/hermes_cli/test_kanban_worker_spawn_toolsets.py tests/hermes_cli/test_kanban_worker_session_source.py
     retirement: Remove when upstream force-loads equivalent lifecycle and restart-window policy for every dispatcher-owned Kanban worker, preserving and de-duplicating per-task skills.
 
+
+  - id: ci-load-flake-tolerant-timeouts
+    kind: operations
+    rationale: >-
+      De-flake test-only timing contracts under saturated CI event loops: the
+      telegram updater-stop timeout test must simulate an unbounded CLOSE-WAIT
+      hang (never-set Event) so loop scheduling delay cannot let the fake stop()
+      complete before the wall-clock deadline resolves, and shutdown
+      aggregate-budget tests must give phase-completion assertions watchdog
+      leash room proportional to CI scheduling delay.
+    paths:
+      - tests/gateway/test_telegram_network_reconnect.py
+      - tests/gateway/test_shutdown_aggregate_budget_contract.py
+    tests:
+      - scripts/run_tests.sh tests/gateway/test_telegram_network_reconnect.py tests/gateway/test_shutdown_aggregate_budget_contract.py
+    retirement: Remove when upstream tests tolerate parallel-runner scheduling delay equivalently.
