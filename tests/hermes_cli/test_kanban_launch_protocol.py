@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.hermes_cli.kanban_test_helpers import create_secure_home
+
 from hermes_cli import kanban_launch_protocol as launch_protocol
 from hermes_cli.kanban_launch_protocol import (
     BoardIdentityError,
@@ -89,7 +91,7 @@ def test_board_identity_rejects_invalid_or_non_regular_targets(tmp_path: Path) -
 
 def test_owner_lock_path_is_canonical_across_home_aliases(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    home.mkdir()
+    create_secure_home(home)
     alias = tmp_path / "home-alias"
     alias.symlink_to(home, target_is_directory=True)
 
@@ -98,7 +100,7 @@ def test_owner_lock_path_is_canonical_across_home_aliases(tmp_path: Path) -> Non
 
 def test_owner_lock_is_exclusive_and_release_allows_reacquire(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    home.mkdir()
+    create_secure_home(home)
     lease = acquire_dispatcher_owner(home, OWNER_GENERATION)
     try:
         assert lease.validate() is True
@@ -114,7 +116,7 @@ def test_owner_lock_is_exclusive_and_release_allows_reacquire(tmp_path: Path) ->
 
 def test_replaced_owner_lock_file_invalidates_lease(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    home.mkdir()
+    create_secure_home(home)
     lease = acquire_dispatcher_owner(home, OWNER_GENERATION)
     lock_path = dispatcher_owner_lock_path(home)
     lock_path.unlink()
@@ -127,7 +129,7 @@ def test_replaced_owner_lock_file_invalidates_lease(tmp_path: Path) -> None:
 
 def test_owner_generation_requires_exact_positive_integer(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    home.mkdir()
+    create_secure_home(home)
     for generation in (True, 1.0, 0, -1):
         with pytest.raises(DispatcherOwnerError):
             acquire_dispatcher_owner(home, generation)  # type: ignore[arg-type]
@@ -211,7 +213,7 @@ def _intent(conn: sqlite3.Connection, board, lease) -> None:
 
 def test_spawned_rejects_lost_owner_lease(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    home.mkdir()
+    create_secure_home(home)
     database = tmp_path / "board.db"
     database.touch()
     board = canonical_board_identity(database, BOARD_UUID)
@@ -242,7 +244,7 @@ def test_spawned_rejects_lost_owner_lease(tmp_path: Path) -> None:
 
 def test_spawned_rejects_policy_flip_inside_transaction(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    home.mkdir()
+    create_secure_home(home)
     database = tmp_path / "board.db"
     database.touch()
     board = canonical_board_identity(database, BOARD_UUID)
@@ -278,7 +280,7 @@ def test_spawned_rejects_policy_flip_inside_transaction(tmp_path: Path) -> None:
 
 def test_spawned_with_lease_succeeds_when_generations_match(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    home.mkdir()
+    create_secure_home(home)
     database = tmp_path / "board.db"
     database.touch()
     board = canonical_board_identity(database, BOARD_UUID)
@@ -309,7 +311,7 @@ def test_spawned_with_lease_succeeds_when_generations_match(tmp_path: Path) -> N
 
 def test_spawned_reentrant_release_during_cas_is_deferred(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    home.mkdir()
+    create_secure_home(home)
     database = tmp_path / "board.db"
     database.touch()
     board = canonical_board_identity(database, BOARD_UUID)
@@ -363,7 +365,7 @@ def test_spawned_reentrant_release_during_cas_is_deferred(tmp_path: Path) -> Non
 
 def test_spawned_lease_released_during_commit_stays_spawned(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    home.mkdir()
+    create_secure_home(home)
     database = tmp_path / "board.db"
     database.touch()
     board = canonical_board_identity(database, BOARD_UUID)
@@ -442,7 +444,7 @@ def _home_for_unit() -> Path:
 
 def test_policy_flip_before_spawn_intent_rolls_back(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    home.mkdir()
+    create_secure_home(home)
     database = tmp_path / "board.db"
     database.touch()
     board = canonical_board_identity(database, BOARD_UUID)
@@ -476,7 +478,7 @@ def test_policy_flip_before_spawn_intent_rolls_back(tmp_path: Path) -> None:
 
 def test_lost_owner_or_stale_token_cannot_create_spawn_intent(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    home.mkdir()
+    create_secure_home(home)
     database = tmp_path / "board.db"
     database.touch()
     board = canonical_board_identity(database, BOARD_UUID)
@@ -522,7 +524,7 @@ def test_spawn_requires_durable_intent_and_one_execution_identity(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
-    home.mkdir()
+    create_secure_home(home)
     database = tmp_path / "board.db"
     database.touch()
     board = canonical_board_identity(database, BOARD_UUID)
@@ -601,7 +603,7 @@ def test_owner_lock_rejects_unsafe_run_directory_and_hardlink(tmp_path: Path) ->
         acquire_dispatcher_owner(unsafe_home, OWNER_GENERATION)
 
     home = tmp_path / "home"
-    home.mkdir()
+    create_secure_home(home)
     run = home / "run"
     run.mkdir(mode=0o700)
     protected = tmp_path / "protected"
@@ -615,7 +617,7 @@ def test_owner_lock_rejects_unsafe_run_directory_and_hardlink(tmp_path: Path) ->
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="POSIX fork contract")
 def test_forked_child_release_does_not_unlock_parent(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    home.mkdir()
+    create_secure_home(home)
     lease = acquire_dispatcher_owner(home, OWNER_GENERATION)
     child = os.fork()
     if child == 0:  # pragma: no cover - assertions run in parent
@@ -697,7 +699,7 @@ def test_schema_verification_rejects_behavior_changing_trigger(tmp_path: Path) -
 
 def test_missing_policy_pointer_fails_closed_without_transition(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    home.mkdir()
+    create_secure_home(home)
     database = tmp_path / "board.db"
     database.touch()
     board = canonical_board_identity(database, BOARD_UUID)
@@ -742,7 +744,7 @@ def test_claim_not_spawned_persists_live_board_short_task_id(tmp_path: Path) -> 
     claim_not_spawned path — regex validation AND the SQLite schema CHECK
     (length(task_id) IN (10, 18)) — not just the in-memory validator."""
     home = tmp_path / "home"
-    home.mkdir()
+    create_secure_home(home)
     database = tmp_path / "board.db"
     database.touch()
     live_task_id = "t_04d0aa77"

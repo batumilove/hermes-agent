@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.hermes_cli.kanban_test_helpers import create_secure_home
+
 from hermes_cli.kanban_launch_protocol import (
     LaunchProtocolError,
     acquire_dispatcher_owner,
@@ -64,7 +66,8 @@ def _board(path: Path):
 def test_release_claim_removes_pre_spawn_row_under_valid_lease(tmp_path):
     home = tmp_path / "home"
     run_dir = home / "run"
-    run_dir.mkdir(parents=True, mode=0o700)
+    create_secure_home(home)
+    run_dir.mkdir(mode=0o700)
     db = tmp_path / "board.db"
     db.touch()
     board = _board(db)
@@ -100,7 +103,8 @@ def test_release_claim_removes_pre_spawn_row_under_valid_lease(tmp_path):
 
 def test_release_claim_rejects_spawned_rows(tmp_path):
     home = tmp_path / "home"
-    (home / "run").mkdir(parents=True, mode=0o700)
+    create_secure_home(home)
+    (home / "run").mkdir(mode=0o700)
     db = tmp_path / "board.db"
     db.touch()
     board = _board(db)
@@ -147,7 +151,8 @@ def test_release_claim_rejects_spawned_rows(tmp_path):
 
 def test_release_claim_fails_closed_on_stale_identity_or_lost_lease(tmp_path):
     home = tmp_path / "home"
-    (home / "run").mkdir(parents=True, mode=0o700)
+    create_secure_home(home)
+    (home / "run").mkdir(mode=0o700)
     db = tmp_path / "board.db"
     db.touch()
     board = _board(db)
@@ -194,7 +199,8 @@ def test_release_claim_fails_closed_on_stale_identity_or_lost_lease(tmp_path):
 
 def test_release_claim_rolls_back_on_policy_flip(tmp_path):
     home = tmp_path / "home"
-    (home / "run").mkdir(parents=True, mode=0o700)
+    create_secure_home(home)
+    (home / "run").mkdir(mode=0o700)
     db = tmp_path / "board.db"
     db.touch()
     board = _board(db)
@@ -222,7 +228,8 @@ def test_release_claim_rolls_back_on_policy_flip(tmp_path):
 
 def test_record_run_outcome_retires_spawned_row_with_bounded_evidence(tmp_path):
     home = tmp_path / "home"
-    (home / "run").mkdir(parents=True, mode=0o700)
+    create_secure_home(home)
+    (home / "run").mkdir(mode=0o700)
     db = tmp_path / "board.db"
     db.touch()
     board = _board(db)
@@ -272,7 +279,8 @@ def test_record_run_outcome_retires_spawned_row_with_bounded_evidence(tmp_path):
 
 def test_record_run_outcome_rejects_invalid_evidence_and_states(tmp_path):
     home = tmp_path / "home"
-    (home / "run").mkdir(parents=True, mode=0o700)
+    create_secure_home(home)
+    (home / "run").mkdir(mode=0o700)
     db = tmp_path / "board.db"
     db.touch()
     board = _board(db)
@@ -336,7 +344,8 @@ def test_record_run_outcome_rejects_invalid_evidence_and_states(tmp_path):
 
 def _spawned_fixture(tmp_path):
     home = tmp_path / "home"
-    (home / "run").mkdir(parents=True, mode=0o700)
+    create_secure_home(home)
+    (home / "run").mkdir(mode=0o700)
     db = tmp_path / "board.db"
     db.touch()
     board = canonical_board_identity(db, BOARD_UUID)
@@ -405,7 +414,8 @@ def test_record_run_outcome_requires_held_owner_lease(tmp_path):
 
 def test_record_run_outcome_rejects_stale_identity(tmp_path):
     home = tmp_path / "home"
-    (home / "run").mkdir(parents=True, mode=0o700)
+    create_secure_home(home)
+    (home / "run").mkdir(mode=0o700)
     db = tmp_path / "board.db"
     db.touch()
     board = _board(db)
