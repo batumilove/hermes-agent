@@ -100,11 +100,13 @@ async def test_reply_prefix_still_injected_when_text_in_history():
 
 
 @pytest.mark.asyncio
-async def test_long_reply_prefix_marks_clipped_excerpt_within_500_character_cap():
+@pytest.mark.parametrize("own_message", [False, True])
+@pytest.mark.parametrize("length", [499, 500, 501, 4000])
+async def test_long_reply_prefix_preserves_complete_resolved_text(own_message, length):
     runner = _make_runner()
     source = _source()
-    quoted = "A" * 501
-    marker = "… [reply excerpt clipped; original message may be longer]"
+    tail = '\n- Later list item\n```python\nprint("tail preserved")\n```'
+    quoted = "A" * (length - len(tail)) + tail
     event = MessageEvent(
         text="Investigate",
         source=source,
@@ -112,17 +114,14 @@ async def test_long_reply_prefix_marks_clipped_excerpt_within_500_character_cap(
         reply_to_text=quoted,
     )
 
+    event.reply_to_is_own_message = own_message
     result = await runner._prepare_inbound_message_text(
         event=event,
         source=source,
         history=[],
     )
 
-    assert result is not None
-    prefix, message = result.split("\n\n", 1)
-    excerpt = prefix.removeprefix('[Replying to: "').removesuffix('"]')
-    assert len(excerpt) == 500
-    assert excerpt.endswith(marker)
-    assert message == "Investigate"
+    label = "Replying to your previous message" if own_message else "Replying to"
+    assert result == f'[{label}: "{quoted}"]\n\nInvestigate'
 
 

@@ -10,8 +10,12 @@ actionable-looking text the user did not quote (#22619).
 
 from types import SimpleNamespace
 
+import pytest
+
 from gateway.config import PlatformConfig
+from gateway.platforms.base import MessageType
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from tests.gateway.test_reply_to_injection import _make_runner
 
 
 def _make_adapter():
@@ -72,3 +76,20 @@ def test_native_partial_quote_used_as_reply_to_text():
     assert event.reply_to_message_id == "42"
 
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native_quote", [False, True])
+async def test_resolved_reply_reaches_runner_without_losing_tail(native_quote):
+    selected = "Selected context " * 80 + '\n- Later selected item\n```python\nprint("selected tail")\n```'
+    full = "UNSELECTED PREFIX\n" + selected + "\nUNSELECTED SUFFIX"
+    message = _make_message(
+        text="Investigate", reply_to_text=full,
+        quote_text=selected if native_quote else None,
+    )
+    event = _make_adapter()._build_message_event(message, MessageType.TEXT)
+    expected = selected if native_quote else full
+    assert event.reply_to_text == expected
+    result = await _make_runner()._prepare_inbound_message_text(
+        event=event, source=event.source, history=[],
+    )
+    assert result == f'[Replying to: "{expected}"]\n\nInvestigate'
