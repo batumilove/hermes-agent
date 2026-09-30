@@ -7,6 +7,26 @@ upstream:
   provenance_file: .github/upstream-sync-provenance.json
 
 patches:
+  - id: gateway-full-reply-context
+    kind: compatibility
+    rationale: >-
+      Preserve complete resolved reply context, ownership labels, and
+      unconditional disambiguation in the fork's gateway runner, including
+      adapter-selected native Telegram quotes and full-message fallback.
+      Upstream already implements full reply context, but this fork retains
+      the older gateway layout and fork-local regression test ownership.
+      This supersedes the retired reply-context clipping-clarity patch.
+    paths:
+      - gateway/run.py
+      - tests/gateway/test_reply_to_injection.py
+      - tests/gateway/test_telegram_reply_quote.py
+    tests:
+      - python -m pytest tests/gateway/test_reply_to_injection.py tests/gateway/test_telegram_reply_quote.py tests/gateway/test_queue_command.py -o addopts= -q
+    retirement: >-
+      Remove when the recorded upstream baseline and fork gateway layout
+      converge on equivalent full-context injection and native-quote/fallback
+      regression coverage, leaving no fork-local delta in these paths.
+
   - id: gateway-e2e-post-turn-hook-isolation
     kind: compatibility
     rationale: >-
