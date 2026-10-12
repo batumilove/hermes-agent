@@ -12787,6 +12787,9 @@ def main():
     from hermes_cli.state_db_cmd import register_cli as register_state_db_cli
 
     register_state_db_cli(subparsers)
+    from hermes_cli.delivery_recovery_cmd import register_cli as register_recovery_cli
+
+    register_recovery_cli(subparsers)
 
     # =========================================================================
     # model command  (parser built in hermes_cli/subcommands/model.py)
