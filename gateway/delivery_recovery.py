@@ -35,8 +35,9 @@ def _path(db_path):
 @contextmanager
 def _connection(db_path, *, write=False):
     path = _path(db_path)
-    conn = sqlite3.connect(path.as_uri() + ('?mode=rw' if write else '?mode=ro'),
-                           uri=True, timeout=1.0)
+    from hermes_cli.sqlite_safe_read import connect_tracked
+    conn = connect_tracked(path.as_uri() + ('?mode=rw' if write else '?mode=ro'),
+                           tracking_path=path, uri=True, timeout=1.0)
     conn.row_factory = sqlite3.Row
     try:
         if not write:
