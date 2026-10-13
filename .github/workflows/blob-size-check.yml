@@ -26,7 +26,14 @@ jobs:
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
-          fetch-depth: 2 # the merge commit and its first parent (the base branch tip)
+          fetch-depth: 0 # verified import ancestry and the base branch tip
 
-      - name: Judge files added or modified against the base branch tip
-        run: python3 scripts/ci/check_blob_size.py --base HEAD^1
+      - name: Judge fork additions against the accepted import or base branch tip
+        # Initial reconciliation inherits official blobs; subsequent PRs retain the target gate.
+        run: |
+          git fetch --no-tags https://github.com/NousResearch/hermes-agent.git main:refs/remotes/upstream/main
+          accepted=$(tr -d '[:space:]' < .github/upstream-base)
+          [[ "$accepted" =~ ^[0-9a-f]{40}$ ]]
+          git merge-base --is-ancestor "$accepted" refs/remotes/upstream/main
+          BASE=$(python3 -m scripts.fork_check_base --comparison HEAD^1 --official-tip refs/remotes/upstream/main)
+          python3 scripts/ci/check_blob_size.py --base "$BASE"

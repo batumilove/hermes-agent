@@ -96,7 +96,7 @@ FEISHU_WEBHOOK_PORT=8765         # 默认：8765
 FEISHU_WEBHOOK_PATH=/feishu/webhook  # 默认：/feishu/webhook
 ```
 
-当飞书发送 URL 验证挑战（`type: url_verification`）时，webhook 会自动响应，以便你在飞书开发者控制台完成订阅配置。当设置了 `FEISHU_VERIFICATION_TOKEN` 时，挑战响应会进行 token 校验——token 缺失或不匹配的挑战请求将被拒绝，防止未经认证的远端通过回显攻击者控制的挑战数据来证明端点控制权。
+当飞书发送 URL 验证挑战（`type: url_verification`）时，webhook 会自动响应，以便你在飞书开发者控制台完成订阅配置。注册 webhook URL 前必须配置 `FEISHU_VERIFICATION_TOKEN`；token 缺失或不匹配的挑战请求会被拒绝。`FEISHU_ENCRYPT_KEY` 用于校验普通事件的原始请求签名，建议新 webhook 同时配置两个密钥。加密回调请求体仍不受支持。
 
 ## 第三步：配置 Hermes
 
@@ -186,7 +186,7 @@ SHA256(timestamp + nonce + encrypt_key + body)
 FEISHU_VERIFICATION_TOKEN=your-verification-token
 ```
 
-该 token 同样可在飞书应用的 **事件订阅** 部分找到。设置后，每个入站 webhook payload 的 `header` 对象中必须包含匹配的 `token`。token 不匹配的请求将被拒绝，返回 HTTP 401。
+该 token 可在飞书应用的 **事件订阅** 部分找到，webhook URL 验证必须配置它。配置后，请求必须携带匹配的 `header.token` 或顶层 `token`；URL 验证挑战使用顶层字段。token 缺失或不匹配时返回 HTTP 401。
 
 `FEISHU_ENCRYPT_KEY` 和 `FEISHU_VERIFICATION_TOKEN` 可同时使用，实现纵深防御。
 
@@ -405,22 +405,24 @@ Agent 工作期间，机器人会在你的消息上显示 `Typing` 表情回应�
 
 ## 速率限制（Webhook 模式）
 
-在 webhook 模式下，适配器对每个 IP 强制执行速率限制，防止滥用：
+在 webhook 模式下，请求通过已配置的 token 和签名校验后才计入投递配额。认证失败的请求不会消耗此配额：
 
-- **窗口：** 60 秒滑动窗口
-- **限制：** 每个（app_id, path, IP）三元组每窗口 120 次请求
+- **窗口：** 从第一个已认证请求开始的 60 秒固定窗口
+- **限制：** 每个（app_id, path, IP）三元组每窗口 120 次已认证请求
 - **追踪上限：** 最多追踪 4096 个唯一键（防止内存无限增长）
 
-超出限制的请求将收到 HTTP 429（请求过多）。
+超出限制的已认证请求将收到 HTTP 429（请求过多）。JSON 解析前另设认证前限额：每个 IP 在 60 秒固定窗口内最多 600 次请求，最多追踪 4096 个来源。将端点暴露到网络时，还应在入口或反向代理层配置请求和并发限制。
 
 ### Webhook 异常追踪
 
-适配器追踪每个 IP 地址的连续错误响应。同一 IP 在 6 小时窗口内连续出现 25 次错误后，将记录警告日志。这有助于检测配置错误的客户端或探测行为。
+适配器追踪每个 IP 地址的连续错误响应。同一 IP 在 6 小时窗口内连续出现 25 次错误后，将记录警告日志。这有助于检测配置错误的客户端或探测行为。追踪器最多记录 4096 个来源，每分钟最多扫描一次过期记录。
 
 额外的 webhook 保护措施：
+
 - **请求体大小限制：** 最大 1 MB
 - **请求体读取超时：** 30 秒
 - **Content-Type 强制：** 仅接受 `application/json`
+- **JSON 嵌套：** 最多 64 层容器；格式错误的请求会被拒绝
 
 ## WebSocket 调优
 
@@ -500,7 +502,7 @@ platforms:
 | `FEISHU_REQUIRE_MENTION` | — | `true` | 群消息是否必须 @提及 机器人 |
 | `FEISHU_HOME_CHANNEL` | — | — | cron/通知输出的聊天 ID |
 | `FEISHU_ENCRYPT_KEY` | — | _（空）_ | webhook 签名验证的加密密钥 |
-| `FEISHU_VERIFICATION_TOKEN` | — | _（空）_ | webhook payload 认证的验证 token |
+| `FEISHU_VERIFICATION_TOKEN` | — | _（空）_ | webhook payload 认证的验证 token；URL 验证必需 |
 | `FEISHU_GROUP_POLICY` | — | `allowlist` | 群消息策略：`open`、`allowlist`、`disabled` |
 | `FEISHU_BOT_OPEN_ID` | — | _（空）_ | 机器人的 open_id（用于 @提及 检测） |
 | `FEISHU_BOT_USER_ID` | — | _（空）_ | 机器人的 user_id（用于 @提及 检测） |

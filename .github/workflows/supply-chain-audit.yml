@@ -71,11 +71,25 @@ jobs:
           BASE="${{ github.event.pull_request.base.sha }}"
           HEAD="${{ github.event.pull_request.head.sha }}"
 
+          # Prove the accepted import before selecting its comparison tree.
+          # Incoming official bytes are the initial import's baseline; later
+          # PRs retain their ordinary target-branch comparison.
+          git fetch --no-tags https://github.com/NousResearch/hermes-agent.git main:refs/remotes/upstream/main
+          accepted=$(tr -d '[:space:]' < .github/upstream-base)
+          [[ "$accepted" =~ ^[0-9a-f]{40}$ ]]
+          git merge-base --is-ancestor "$accepted" refs/remotes/upstream/main
+          SCAN_BASE=$(python3 -m scripts.fork_check_base --comparison "$BASE" --official-tip refs/remotes/upstream/main)
+
           # Added lines only, excluding lockfiles.
-          # Three-point diff (base...head) diffs from the merge base to HEAD,
-          # so only changes introduced by this PR are included — not changes
-          # that landed on main after the PR branched off.
-          DIFF=$(git diff "$BASE"..."$HEAD" -- . ':!uv.lock' ':!*.lock' ':!package-lock.json' ':!yarn.lock' || true)
+          # An import's exact upstream tree may not be an ancestor after
+          # squash/rebase, so compare its trees directly. Ordinary PRs keep
+          # the three-point diff that excludes later target-branch changes.
+          if [ "$SCAN_BASE" = "$BASE" ]; then
+            diff_revisions=("$BASE...$HEAD")
+          else
+            diff_revisions=("$SCAN_BASE" "$HEAD")
+          fi
+          DIFF=$(git diff "${diff_revisions[@]}" -- . ':!uv.lock' ':!*.lock' ':!package-lock.json' ':!yarn.lock')
 
           FINDINGS=""
 

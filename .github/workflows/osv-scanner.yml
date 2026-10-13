@@ -50,6 +50,12 @@ jobs:
       - name: Stage nonstandard lockfiles
         run: |
           set -euo pipefail
+          # An editable checkout is source, not the published PyPI version
+          # 0.0.0. Mandatory source guard regressions cover first-party issues.
+          # Registry/nonlocal packages, including hermes-agent, stay scanned.
+          python3 scripts/ci/osv_scan_inputs.py \
+            --source uv.lock \
+            --destination .osv-lockfiles/hermes/uv.lock
           install -D -m 0644 \
             nix/node-gyp-11-4-0-package-lock.json \
             .osv-lockfiles/node-gyp-11-4-0/package-lock.json
@@ -69,7 +75,7 @@ jobs:
             ghcr.io/google/osv-scanner-action:v2.5.1@sha256:dcd947131d8d11b8d0964de6590661fb921a4ecbd7b90a7cb21083acfc3fd8cc \
             --output=results.json \
             --format=json \
-            --lockfile=uv.lock \
+            --lockfile=.osv-lockfiles/hermes/uv.lock \
             --lockfile=pm/uv.lock \
             --lockfile=package-lock.json \
             --lockfile=website/package-lock.json \

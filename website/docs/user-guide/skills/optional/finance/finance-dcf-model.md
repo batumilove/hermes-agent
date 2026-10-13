@@ -32,6 +32,7 @@ The following is the complete skill definition that Hermes loads when this skill
 ## Environment
 
 This skill assumes **headless openpyxl** — you are producing an .xlsx file on disk.
+Install Hermes with the locked DCF extra (`hermes-agent[dcf]`) before using this skill.
 Follow the `excel-author` skill's conventions for cell coloring, formulas, named ranges, and sensitivity tables.
 Recalculate before delivery: `python /path/to/excel-author/scripts/recalc.py ./out/model.xlsx`.
 

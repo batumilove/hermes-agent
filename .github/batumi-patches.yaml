@@ -5,6 +5,21 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: feishu-webhook-authentication-quota
+  kind: extension
+  rationale: Authenticate Feishu callbacks before charging delivery quota, require a verified token
+    for plaintext URL challenges, and bound callback parsing and anomaly state for the published
+    GHSA-pmqc-57g8-c22c finding. Preserve valid signed events and authenticated challenge delivery.
+  paths:
+  - plugins/platforms/feishu/adapter.py
+  - plugins/platforms/feishu/webhook_security.py
+  - tests/plugins/platforms/feishu/test_webhook_security.py
+  - website/docs/user-guide/messaging/feishu.md
+  - website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/messaging/feishu.md
+  tests:
+  - scripts/run_tests.sh tests/plugins/platforms/feishu/test_webhook_security.py
+  retirement: Remove when official upstream provides equivalent callback authentication, quota ordering,
+    and bounded parsing/state with the same valid-event and challenge contracts.
 - id: supply-chain-build-input-pinning
   kind: operations
   rationale: Pin npm bootstrap and Debian container inputs to reviewed immutable versions, suppress bootstrap
@@ -19,11 +34,14 @@ patches:
   - .github/workflows/e2e-desktop.yml
   - .github/workflows/js-autofix.yml
   - .github/workflows/js-tests.yml
+  - .github/workflows/termux-verify.yml
   - .github/workflows/osv-scanner.yml
   - .github/workflows/docker-lint.yml
   - Dockerfile
   - tests/scripts/test_js_tests_workflow.py
   - tests/scripts/test_osv_scanner_workflow.py
+  - scripts/ci/osv_scan_inputs.py
+  - tests/scripts/test_osv_scan_inputs.py
   - tests/tools/test_dockerfile_vulnerability_floors.py
   - pm/packages.py
   - pm/npm_security_overlay.py
@@ -78,6 +96,7 @@ patches:
   - scripts/whatsapp-bridge/package.json
   - tests-js/package.json
   - tests/test_npm_security_policy.py
+  - tests/plugins/test_chronos_security_compatibility.py
   - tests/tools/test_lazy_deps.py
   - tools/lazy_deps.py
   - ui-tui/package.json
@@ -113,6 +132,7 @@ patches:
     the supported installation path.
   paths:
   - optional-skills/finance/dcf-model/SKILL.md
+  - website/docs/user-guide/skills/optional/finance/finance-dcf-model.md
   - optional-skills/finance/dcf-model/requirements.txt
   - pyproject.toml
   - tests/test_dcf_dependency_contract.py
@@ -127,7 +147,8 @@ patches:
   rationale: Run the heavy CI lanes on free standard GitHub-hosted runners instead of paid larger runners
     (ubuntu-latest-96-core/32-core, windows-latest-32-core) which the fork has no allocation for; jobs
     queue forever otherwise. The lanes run slower on ubuntu-latest/windows-latest but complete at zero
-    cost on this public repository.
+    cost on this public repository. Bound per-file concurrency to standard runner capacity while
+    retaining all test selectors and deadlines.
   paths:
   - .github/workflows/ci.yaml
   - .github/workflows/docker.yml
@@ -170,7 +191,8 @@ patches:
 - id: fork-patch-governance
   kind: operations
   rationale: Require every fork-to-upstream path delta to have an explicit owner, verification command,
-    and retirement condition.
+    and retirement condition. Verify immutable import provenance before selecting an upstream comparison
+    for blob and critical-pattern gates; later PRs retain their target-branch gates.
   paths:
   - .github/batumi-patches.yaml
   - .github/batumi-contracts.yaml
@@ -210,6 +232,8 @@ patches:
   - tests/scripts/test_upstream_sync_workflow.py
   - contributors/emails/agent@agents-mac-mini.local
   - .github/workflows/lint.yml
+  - .github/workflows/blob-size-check.yml
+  - .github/workflows/supply-chain-audit.yml
   - scripts/ci/required_results.py
   - scripts/code_health/gitio.py
   - scripts/fork_check_base.py
@@ -218,6 +242,7 @@ patches:
   - scripts/fork_contributors.py
   - tests/scripts/test_fork_check_base.py
   - tests/scripts/test_fork_contributors.py
+  - tests/scripts/test_supply_chain_import_scan.py
   - hermes_cli/plugin_cli_registration.py
   - ruff.toml
   - .github/upstream-reconciliation.md

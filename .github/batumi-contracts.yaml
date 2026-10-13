@@ -1,5 +1,20 @@
 version: 1
 contracts:
+- id: verified-import-and-dependency-scan
+  rationale: Preserve exact import provenance, later PR gates, complete registry dependency scans,
+    and bounded JWT verification without breaking key rotation.
+  tests:
+  - tests/scripts/test_fork_provenance_v2.py
+  - tests/scripts/test_fork_check_base.py
+  - tests/scripts/test_supply_chain_import_scan.py
+  - tests/scripts/test_osv_scan_inputs.py
+  - tests/scripts/test_osv_scanner_workflow.py
+  - tests/plugins/test_chronos_security_compatibility.py
+- id: feishu-webhook-authentication
+  rationale: Preserve authenticated callback delivery while keeping invalid requests out of delivery quota
+    and bounding callback parsing and anomaly state.
+  tests:
+  - tests/plugins/platforms/feishu/test_webhook_security.py
 - id: cli-and-config
   rationale: Preserve public commands, profile loading, and config defaults.
   tests:

@@ -3,8 +3,11 @@
 This candidate reconciles `batumi/live` at
 `2c31abf2bcb4a6fa0abc868f707ec09a053cb1f0` with official upstream
 `6e7b83a2f1c093e992a8d838ed77ea320fbd8e51`. It is prepared on
-`codex/reconcile-upstream-6e7b83` as the immutable source branch; the linear
-review branch is `codex/update-fork-6e7b83`. Runtime deployment is a separate step.
+`codex/reconcile-upstream-6e7b83` as the initial immutable source branch. CI
+follow-ups use the separate immutable source `codex/reconcile-upstream-6e7b83-ci`;
+the linear review branch is `codex/update-fork-6e7b83`. Retain both source branches.
+The current provenance record identifies the exact accepted source tree.
+Runtime deployment is a separate step.
 
 ## History and patch ownership
 
@@ -52,10 +55,11 @@ Before enabling daily automation, configure `UPSTREAM_SYNC_PR_TOKEN` once as a
 repository-scoped App or PAT credential with contents read and pull-requests
 write permissions, alongside the existing `UPSTREAM_SYNC_DEPLOY_KEY`. The plan
 fails before publication if the PR token is missing. PR creation with
-`GITHUB_TOKEN` suppresses the pull-request event, and the CI push trigger covers
-only `main` and `batumi/live`; a separate PR credential is therefore necessary
-to run the required checks normally. This change declares that requirement and
-does not configure a live secret. The controller does not pass its credential
+`GITHUB_TOKEN` can suppress workflow execution or require additional approval,
+depending on GitHub's repository policy. The CI push trigger covers only
+`main` and `batumi/live`; a separate PR credential allows required checks to
+start through the normal pull-request authorization path. This declares the
+requirement and does not configure a live secret. The controller does not pass its credential
 into incoming CI.
 
 Ten patch entries are retired after verification of upstream equivalents:
@@ -70,7 +74,8 @@ Ten patch entries are retired after verification of upstream equivalents:
 - readonly streaming reasoning configuration.
 
 The obsolete ActiveGraph telemetry entry is also removed; its cron fixtures remain
-owned by the trigger-provenance contract. The manifest retains 67 explicit owners.
+owned by the trigger-provenance contract. The manifest retains those 67 explicit
+owners and adds one Feishu callback authentication/quota owner after CI source review.
 Ownership follows the new upstream topical modules. Equivalent regression coverage
 is retained even where production fork code has been removed.
 
@@ -119,7 +124,7 @@ health, portability guards, frontend checks and a production web build. External
 plugin acceptance uses disposable profile homes. Langfuse is installed and repaired
 through PM and exports an actual OTLP trace to a loopback test service.
 
-Final retained Python regression coverage passed 4,557 tests across 234 files
+The initial retained Python regression coverage passed 4,557 tests across 234 files
 with zero failures and 22 genuine platform skips. The stable runtime lane ran
 230 files and the provenance lane ran four files. Historical updater, real PM
 worker/TLS bootstrap, and fresh-source installer acceptance passed another
@@ -135,7 +140,49 @@ zero vulnerabilities at every npm-audit severity. The unpatched public braces
 nesting advisory uses a separately named, licensed derivative with reviewed
 depth/cycle guards, original and patched hashes, and installed consumer tests.
 Its one frozen tarball is the only hash-checked archive-boundary exception.
-There is no advisory suppression or global release-age relaxation.
+There is no registry-advisory suppression or global release-age relaxation.
+
+## CI follow-ups
+
+After the maintainer resolved GitHub's fork workflow blocker, a fresh PR event
+started the CI graph. Blob-size and critical-pattern checks now use the same
+verified import comparison as code health. They compare this initial import
+against its official upstream tree and retain ordinary target-branch gates for
+later PRs. The existing blob limits and critical expressions are unchanged.
+
+The root npm lock restores missing registry URLs and integrity values from
+exact-version registry metadata without changing existing package versions.
+Missing optional native bindings are restored for cross-platform SDK tests.
+A clean PM-owned npm install and the pinned Nix full-lock importer pass. Generated
+DCF docs match their source. JS jobs prepare desktop and website test inputs;
+script permissions reflect exact reviewed versions in the locks. JS installs
+enforce those decisions strictly, and installed-tree cache keys include script
+policy and toolchain inputs. Standard-runner file concurrency is bounded to
+four Linux and two Windows workers; all test selectors and deadlines remain.
+
+PM locks patched multidict, OAuthlib, PyJWT, Tornado and urllib3 within bounded
+constraints, retaining the three-day release-age policy. Consumer acceptance
+includes real OAuth/Google PKCE flows, native multidict, Telegram and a Chronos
+JWKS regression that fails with the old PyJWT and passes with the update while
+preserving key rotation. The test dependency group declares aiohttp so the
+mandatory Feishu HTTP regressions execute in the CI test environment.
+
+OSV receives all seven dependency scopes. The staged root uv lock removes only
+the exact first-party editable checkout entry; its placeholder version is not a
+published PyPI release. Registry dependencies and nonlocal same-named packages
+remain scanned. First-party findings were separately checked against source.
+The published Feishu finding GHSA-pmqc-57g8-c22c is addressed by callback
+authentication before delivery quota, authenticated plaintext challenges and
+bounded parsing/anomaly state, with real HTTP regression coverage.
+
+GHSA-xq8w-9jvx-gm3v (CVE-2026-10221) remains prompt-injection hardening under
+`SECURITY.md` section 3.2. The accepted upstream todo-tail merge, synthetic
+provenance and stale snapshot refresh are retained and their twelve contracts
+pass. Raw todo text can still appear in user-role API messages; no chained
+security-boundary outcome or model execution was established. This records the
+remaining behavior and policy scope; it does not claim that source finding fixed.
+
+## Remaining release acceptance
 
 The digest-pinned OSV scanner extracted all seven lockfile scopes, but its
 query to api.osv.dev received Forbidden under this environment network policy.

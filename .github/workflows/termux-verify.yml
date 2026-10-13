@@ -85,7 +85,14 @@ jobs:
           extras: '[]'
           cache-node: false
       - name: Install the locked JS workspace
-        run: npm ci --workspace ui-tui --workspace tests-js --include-workspace-root --include=dev --no-fund --no-audit
+        # tests-js also exercises the desktop compiler with its real prepared tools.
+        run: npm ci --workspace ui-tui --workspace tests-js --workspace apps/desktop --include-workspace-root --include=dev --no-fund --no-audit --ignore-scripts=false --strict-allow-scripts
+      - name: Install the locked website test inputs
+        # The braces regressions exercise the installed micromatch/chokidar graph.
+        uses: ./.github/actions/retry
+        with:
+          command: npm ci --ignore-scripts --no-fund --no-audit
+          working-directory: website
       - name: Check and bundle the TUI
         run: |
           npm run check --workspace tests-js
