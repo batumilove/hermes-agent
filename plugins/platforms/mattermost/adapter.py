@@ -30,6 +30,8 @@ from gateway.platforms._shared import (
     send_error
 )
 
+from .reply_context import MattermostReplyContextMixin
+
 logger = logging.getLogger(__name__)
 
 _Metadata = Optional[dict[str, Any]]
@@ -135,7 +137,7 @@ def validate_mattermost_config(config: PlatformConfig) -> bool:
     return True
 
 
-class MattermostAdapter(BasePlatformAdapter):
+class MattermostAdapter(MattermostReplyContextMixin, BasePlatformAdapter):
     """Gateway adapter for Mattermost (self-hosted or cloud)."""
 
     splits_long_messages = True  # send() chunks via truncate_message(MAX_POST_LENGTH)
@@ -166,7 +168,8 @@ class MattermostAdapter(BasePlatformAdapter):
     def _auth_header(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._token}"}
 
-    async def _api(self, method: str, path: str, payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    async def _api(self, method: str, path: str, payload: Optional[dict[str, Any]] = None,
+                   *, max_bytes: Optional[int] = None) -> dict[str, Any]:
         """{method} /api/v4/{path}; POST also records _last_post_status/_last_post_error."""
         import aiohttp
         if ".." in path:
@@ -185,6 +188,16 @@ class MattermostAdapter(BasePlatformAdapter):
             async with getattr(self._session, method.lower())(url, **kwargs) as resp:
                 if is_post:
                     self._last_post_status = resp.status
+                if max_bytes is not None:
+                    if resp.status >= 400:
+                        return {}
+                    body = bytearray()
+                    async for chunk in resp.content.iter_chunked(16384):
+                        body.extend(chunk)
+                        if len(body) > max_bytes:
+                            return {}
+                    result = json.loads(body)
+                    return result if isinstance(result, dict) else {}
                 if resp.status >= 400:
                     body = await resp.text()
                     if is_post:
@@ -198,7 +211,9 @@ class MattermostAdapter(BasePlatformAdapter):
             logger.error("MM API %s %s network error: %s", method, path, exc)
             return {}
 
-    async def _api_get(self, path: str) -> dict[str, Any]:
+    async def _api_get(self, path: str, *, max_bytes: Optional[int] = None) -> dict[str, Any]:
+        if max_bytes is not None:
+            return await self._api("GET", path, max_bytes=max_bytes)
         return await self._api("GET", path)
 
     async def _api_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -620,10 +635,12 @@ class MattermostAdapter(BasePlatformAdapter):
             user_id=sender_id, user_name=data.get("sender_name", "").lstrip("@") or sender_id,
             thread_id=thread_id, message_id=post_id)
         from gateway.platforms.base import resolve_channel_prompt
-        await self.handle_message(MessageEvent(
+        message_event = MessageEvent(
             text=message_text, message_type=msg_type, source=source, raw_message=post, message_id=post_id,
             media_urls=media_urls, media_types=media_types,
-            channel_prompt=resolve_channel_prompt(self.config.extra, channel_id, None)))
+            channel_prompt=resolve_channel_prompt(self.config.extra, channel_id, None))
+        await self._add_reply_context(message_event, post)
+        await self.handle_message(message_event)
 
 
 # --- Plugin standalone-send (out-of-process cron delivery via Mattermost REST) ---
