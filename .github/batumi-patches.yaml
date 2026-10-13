@@ -86,9 +86,12 @@ patches:
   paths:
   - .npmrc
   - apps/desktop/package.json
+  - nix/lib.nix
+  - nix/checks.nix
   - nix/node-gyp-11-4-0-package-lock.json
   - nix/node-gyp-11-4-0.nix
   - nix/tests/node-gyp-production.mjs
+  - nix/tests/npm-offline-overrides.mjs
   - package-lock.json
   - package.json
   - pyproject.toml
@@ -123,6 +126,7 @@ patches:
   - npm --prefix scripts/whatsapp-bridge ci --ignore-scripts && npm --prefix scripts/whatsapp-bridge audit
     --audit-level=high
   - nix build .#node-gyp
+  - nix build .#checks.x86_64-linux.npm-offline-overrides
   retirement: Remove when the recorded upstream baseline carries equivalent patched dependency floors,
     Electron pin parity, and production-only node-gyp Nix dependency closure with matching regression
     coverage.

@@ -206,17 +206,39 @@ let
     fileset = npmWorkspaceFiles;
   };
 
+  # Keep the locked security overrides during offline installation. Direct
+  # dependency specs become store paths, so their overrides must reference
+  # those imported specs rather than the original registry constraint.
+  directDependencies =
+    (rootPackageJson.dependencies or { }) // (rootPackageJson.devDependencies or { });
+  offlineOverrides = lib.mapAttrs (
+    key: value:
+    let
+      name = builtins.head (builtins.match "(@[^/]+/[^@]+|[^@]+)(@.*)?" key);
+      reference = "$" + name;
+    in
+    if builtins.hasAttr name directDependencies then
+      if builtins.isAttrs value then
+        value // lib.optionalAttrs ((value."." or null) == directDependencies.${name}) {
+          "." = reference;
+        }
+      else if value == directDependencies.${name} then
+        reference
+      else
+        value
+    else
+      value
+  ) (rootPackageJson.overrides or { });
+
   # npm dependencies for the workspace, shared by all members. importNpmLock
   # resolves each package from the lockfile's own `integrity` hashes, so the
   # lockfile is the single source of truth — no separate dependency hash to
   # keep in sync with it.
   npmDeps = importNpmLock.importNpmLock {
     npmRoot = npmDepsSrc;
-    # The lock already records override resolutions. importNpmLock changes
-    # direct specs to file:/nix/store tarballs, which conflict with the
-    # original semver overrides (EOVERRIDE). Drop them only from this offline
-    # build manifest; the hook restores the repository manifest afterwards.
-    package = builtins.removeAttrs rootPackageJson [ "overrides" ];
+    package = rootPackageJson // lib.optionalAttrs (rootPackageJson ? overrides) {
+      overrides = offlineOverrides;
+    };
   };
 
   # Build a per-package npm source: workspace resolution files + the
@@ -288,7 +310,7 @@ let
     buildNpmPackage finalAttrs;
 in
 {
-  inherit pythonSrc nodejs;
+  inherit pythonSrc nodejs npmDeps;
   node-gyp = node_gyp_11_4_0;
 
   # Regenerate the shared root lockfile from scratch and verify all npm
