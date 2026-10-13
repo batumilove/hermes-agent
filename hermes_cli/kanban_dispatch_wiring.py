@@ -28,6 +28,7 @@ only when) wiring is explicitly configured. Default is fully pass-through.
 
 from __future__ import annotations
 
+import logging
 import os
 import signal
 import sqlite3
@@ -46,13 +47,15 @@ from hermes_cli.kanban_launch_protocol import (
     release_claim,
 )
 
+logger = logging.getLogger(__name__)
+
 __all__ = [
     "LaunchWiringConfig",
     "WrappedSpawn",
-    "wrap_spawn_with_launch_protocol",
-    "configure_launch_wiring",
-    "clear_launch_wiring",
     "apply_launch_wiring",
+    "clear_launch_wiring",
+    "configure_launch_wiring",
+    "wrap_spawn_with_launch_protocol",
 ]
 
 
@@ -132,7 +135,7 @@ class WrappedSpawn:
             try:
                 release_claim(self._conn, owner_lease=lease, **common)
             except Exception:
-                pass
+                logger.debug("Launch claim retirement failed", exc_info=True)
 
         try:
             claim_not_spawned(self._conn, **common)
@@ -199,7 +202,7 @@ class WrappedSpawn:
             try:
                 lease.release()
             except Exception:
-                pass
+                logger.debug("Launch owner lease release failed", exc_info=True)
 
 
 def _best_effort_terminate(pid: int) -> None:
@@ -208,8 +211,8 @@ def _best_effort_terminate(pid: int) -> None:
     # pid outside os.kill's range, TypeError, ...) is swallowed.
     try:
         os.kill(pid, signal.SIGTERM)
-    except Exception:
-        pass
+    except (OSError, OverflowError, TypeError):
+        logger.debug("Unrecorded worker termination failed", exc_info=True)
 
 
 def _accepts_board(fn: Callable[..., Any]) -> bool:
@@ -270,8 +273,46 @@ def apply_launch_wiring(
         return spawn_fn
     conn, config = _WIRING
     if spawn_fn is None:
-        from hermes_cli.kanban_db import _default_spawn
+        from hermes_cli.kanban_db_dispatch import _default_spawn
 
         spawn_fn = _default_spawn
     assert spawn_fn is not None  # for type-checkers
     return wrap_spawn_with_launch_protocol(spawn_fn, conn, config)
+
+
+def apply_launch_wiring_to_spawn(spawn_fn):
+    """Decorate ``spawn_fn`` with the launch-protocol ledger when configured.
+
+    Delegates to ``hermes_cli.kanban_dispatch_wiring.apply_launch_wiring``
+    (lazy import: the wiring module imports from this one). With no wiring
+    configured this is an exact pass-through, so default dispatch behavior
+    is unchanged until the daemon path explicitly activates it.
+
+    Atomic round-3 finding 1: construction happens BEFORE the per-row claim
+    in the dispatch loop, and any construction failure is classified as a
+    normal spawn failure for that row (never a claim-stranding escape).
+    """
+    try:
+        return apply_launch_wiring(spawn_fn)
+    except Exception as exc:
+        logger.debug("Launch wiring construction failed", exc_info=True)
+        # Atomic round-3 finding 1: WrappedSpawn construction (owner home
+        # creation, board identity canonicalization) can fail. That must
+        # not escape _dispatch_once_locked (which would bypass the
+        # per-row spawn-failure machinery and strand board claims), and
+        # not silently fall back to an unwrapped spawn either. Return a
+        # callable that fails per-row inside the guarded spawn try-block,
+        # so each claimed row is retired via _record_spawn_failure.
+        # Atomic round-4 note: bind the exception now — Python clears the
+        # ``exc`` name at except-block exit, so a closure over it would
+        # raise NameError instead of the intended RuntimeError.
+        _cause = exc
+
+        def _unwirable_spawn(
+            task: Any, workspace: str, board: Any = None, *, _err: BaseException = _cause
+        ) -> int:
+            raise RuntimeError(
+                f"launch wiring construction failed: {_err}"
+            ) from _err
+
+        return _unwirable_spawn

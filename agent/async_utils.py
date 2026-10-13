@@ -1,24 +1,10 @@
 """Async/sync bridging helpers.
 
-The codebase has ~30 sites that schedule a coroutine onto an event loop from a
-worker thread via :func:`asyncio.run_coroutine_threadsafe`.  That function can
-raise :class:`RuntimeError` (e.g. the loop was closed during a shutdown race),
-and when it does the coroutine object is never awaited and never closed —
-which triggers a ``"coroutine '<name>' was never awaited"`` RuntimeWarning and
-leaks the coroutine's frame until GC.
-
-:func:`safe_schedule_threadsafe` wraps the call, closes the coroutine on
-scheduling failure, and returns ``None`` (instead of a half-formed future) so
-callers can branch cleanly:
-
-    fut = safe_schedule_threadsafe(coro, loop)
-    if fut is None:
-        return  # or fallback behavior
-    fut.result(timeout=5)
-
-The helper deliberately does NOT also handle ``future.result()`` failures —
-that is a separate concern.  Once the loop has accepted the coroutine, its
-lifecycle belongs to the loop, not the scheduling thread.
+``asyncio.run_coroutine_threadsafe`` can raise ``RuntimeError`` (loop closed during a
+shutdown race); the coroutine is then never awaited or closed, which triggers a
+"coroutine was never awaited" RuntimeWarning and leaks its frame. The helpers here
+close the coroutine on scheduling failure. ``future.result()`` failures are deliberately
+NOT handled: once the loop accepts the coroutine its lifecycle belongs to the loop.
 """
 from __future__ import annotations
 
@@ -31,12 +17,14 @@ import threading
 from concurrent.futures import Future
 from typing import Any, Callable, Coroutine, Optional, ParamSpec, TypeVar
 
+from agent.memory_provider import spawn_context_thread
+
 
 _DEFAULT_LOGGER = logging.getLogger(__name__)
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
 _SerialDelivery = Callable[[bool, Any], None]
-_SERIAL_DAEMON_QUEUE: "queue.SimpleQueue[tuple[int, contextvars.Context, Callable[[], Any], Optional[_SerialDelivery], Any]]" = queue.SimpleQueue()
+_SERIAL_DAEMON_QUEUE: queue.SimpleQueue[tuple[int, contextvars.Context, Callable[[], Any], Optional[_SerialDelivery], Any]] = queue.SimpleQueue()
 _SERIAL_DAEMON_LOCK = threading.Lock()
 _SERIAL_SEQUENCE_LOCK = threading.Lock()
 _SERIAL_JOB_TIMEOUT_SECONDS = 5.0
@@ -67,94 +55,102 @@ def current_serial_daemon_sequence() -> Optional[int]:
     return _current_serial_daemon_sequence.get()
 
 
-def _serial_daemon_worker() -> None:
-    while True:
-        sequence, context, bound, deliver, slots = _SERIAL_DAEMON_QUEUE.get()
-        completed = threading.Event()
-        abandoned = threading.Event()
-        result_lock = threading.Lock()
-        result: list[tuple[bool, Any]] = []
-        late_failure_logged = False
-        def _run_job() -> None:
-            nonlocal late_failure_logged
+def _run_serial_daemon_job(sequence, context, bound, deliver, slots) -> None:
+    """Keep each abandoned worker's reservation and completion state in its own frame."""
+    completed = threading.Event()
+    abandoned = threading.Event()
+    result_lock = threading.Lock()
+    result: list[tuple[bool, Any]] = []
+    late_failure_logged = False
+    def _run_job() -> None:
+        nonlocal late_failure_logged
 
-            def _invoke() -> Any:
-                token = _current_serial_daemon_sequence.set(sequence)
-                try:
-                    return bound()
-                finally:
-                    _current_serial_daemon_sequence.reset(token)
-
+        def _invoke() -> Any:
+            token = _current_serial_daemon_sequence.set(sequence)
             try:
-                outcome = context.run(_invoke)
-            except BaseException as exc:
-                with result_lock:
-                    result.append((False, exc))
-                    if abandoned.is_set():
-                        late_failure_logged = True
-                        _DEFAULT_LOGGER.error(
-                            "Timed-out serial daemon work failed after abandonment",
-                            exc_info=(type(exc), exc, exc.__traceback__),
-                        )
-            else:
-                with result_lock:
-                    result.append((True, outcome))
+                return bound()
             finally:
-                slots.release()
-                completed.set()
+                _current_serial_daemon_sequence.reset(token)
 
-        thread = threading.Thread(
-            target=_run_job,
-            name="hermes-detached-serial-sync-job",
-            daemon=True,
-        )
         try:
-            thread.start()
+            outcome = context.run(_invoke)
         except BaseException as exc:
-            slots.release()
-            if deliver is None:
-                _DEFAULT_LOGGER.error(
-                    "Detached serial daemon worker failed to start",
-                    exc_info=(type(exc), exc, exc.__traceback__),
-                )
-            else:
-                deliver(False, exc)
-            continue
-        if completed.wait(timeout=_SERIAL_JOB_TIMEOUT_SECONDS):
-            ok, value = result[0]
-            if deliver is not None:
-                deliver(ok, value)
-            elif not ok:
-                _DEFAULT_LOGGER.error(
-                    "Detached serial daemon work failed",
-                    exc_info=(type(value), value, value.__traceback__),
-                )
-        else:
-            abandoned.set()
             with result_lock:
-                if result and not result[0][0] and not late_failure_logged:
-                    value = result[0][1]
+                result.append((False, exc))
+                if abandoned.is_set():
                     late_failure_logged = True
                     _DEFAULT_LOGGER.error(
                         "Timed-out serial daemon work failed after abandonment",
-                        exc_info=(type(value), value, value.__traceback__),
+                        exc_info=(type(exc), exc, exc.__traceback__),
                     )
-            error = TimeoutError(
-                "serial daemon work exceeded "
-                f"{_SERIAL_JOB_TIMEOUT_SECONDS:.3f}s deadline"
+        else:
+            with result_lock:
+                result.append((True, outcome))
+        finally:
+            slots.release()
+            completed.set()
+
+    thread = spawn_context_thread(
+        target=_run_job,
+        name="hermes-detached-serial-sync-job",
+        daemon=True,
+    )
+    try:
+        thread.start()
+    except BaseException as exc:
+        slots.release()
+        if deliver is None:
+            _DEFAULT_LOGGER.error(
+                "Detached serial daemon worker failed to start",
+                exc_info=(type(exc), exc, exc.__traceback__),
             )
-            if deliver is None:
-                _DEFAULT_LOGGER.error("Detached serial daemon work timed out")
-            else:
-                deliver(False, error)
+        else:
+            deliver(False, exc)
+        return
+    if completed.wait(timeout=_SERIAL_JOB_TIMEOUT_SECONDS):
+        ok, value = result[0]
+        if deliver is not None:
+            deliver(ok, value)
+        elif not ok:
+            _DEFAULT_LOGGER.error(
+                "Detached serial daemon work failed",
+                exc_info=(type(value), value, value.__traceback__),
+            )
+    else:
+        abandoned.set()
+        with result_lock:
+            if result and not result[0][0] and not late_failure_logged:
+                value = result[0][1]
+                late_failure_logged = True
+                _DEFAULT_LOGGER.error(
+                    "Timed-out serial daemon work failed after abandonment",
+                    exc_info=(type(value), value, value.__traceback__),
+                )
+        error = TimeoutError(
+            "serial daemon work exceeded "
+            f"{_SERIAL_JOB_TIMEOUT_SECONDS:.3f}s deadline"
+        )
+        if deliver is None:
+            _DEFAULT_LOGGER.error("Detached serial daemon work timed out")
+        else:
+            deliver(False, error)
+
+
+
+def _serial_daemon_worker() -> None:
+    while True:
+        _run_serial_daemon_job(*_SERIAL_DAEMON_QUEUE.get())
 
 
 def _ensure_serial_daemon_worker() -> None:
     global _serial_daemon_thread
     with _SERIAL_DAEMON_LOCK:
         if _serial_daemon_thread is None or not _serial_daemon_thread.is_alive():
-            _serial_daemon_thread = threading.Thread(
-                target=_serial_daemon_worker,
+            # The lane serves many profiles; each queued job carries its own
+            # context. Do not retain the first submitter's scope forever.
+            _serial_daemon_thread = contextvars.Context().run(
+                spawn_context_thread,
+                _serial_daemon_worker,
                 name="hermes-detached-serial-sync",
                 daemon=True,
             )
@@ -246,10 +242,9 @@ def start_sync_in_detached_daemon_thread(
     func: Callable[_P, Any], /, *args: _P.args, **kwargs: _P.kwargs
 ) -> threading.Thread:
     """Start abandonable sync work and return its daemon thread."""
-    context = contextvars.copy_context()
     bound = functools.partial(func, *args, **kwargs)
-    thread = threading.Thread(
-        target=lambda: context.run(bound),
+    thread = spawn_context_thread(
+        target=bound,
         name="hermes-detached-sync",
         daemon=True,
     )
@@ -270,7 +265,6 @@ async def run_sync_in_detached_daemon_thread(
     """
     loop = asyncio.get_running_loop()
     future: asyncio.Future[_T] = loop.create_future()
-    context = contextvars.copy_context()
     bound = functools.partial(func, *args, **kwargs)
 
     def _deliver_result(value: _T) -> None:
@@ -283,8 +277,8 @@ async def run_sync_in_detached_daemon_thread(
 
     def _worker() -> None:
         try:
-            outcome = context.run(bound)
-        except BaseException as exc:
+            outcome = bound()
+        except BaseException as exc:  # health: allow BLE001 -- Worker boundary forwards arbitrary failures unchanged to the awaiting future.
             callback: Callable[[Any], None] = _deliver_error
             value: Any = exc
         else:
@@ -296,7 +290,7 @@ async def run_sync_in_detached_daemon_thread(
             # The loop closed after cancellation; no waiter remains.
             pass
 
-    threading.Thread(
+    spawn_context_thread(
         target=_worker,
         name="hermes-detached-sync",
         daemon=True,
@@ -305,34 +299,20 @@ async def run_sync_in_detached_daemon_thread(
 
 
 def safe_schedule_threadsafe(
-    coro: Coroutine[Any, Any, Any],
-    loop: Optional[asyncio.AbstractEventLoop],
-    *,
+    coro: Coroutine[Any, Any, Any], loop: Optional[asyncio.AbstractEventLoop], *,
     logger: Optional[logging.Logger] = None,
-    log_message: str = "Failed to schedule coroutine on loop",
-    log_level: int = logging.DEBUG,
+    log_message: str = "Failed to schedule coroutine on loop", log_level: int = logging.DEBUG,
 ) -> Optional[Future]:
     """Schedule ``coro`` on ``loop`` from a sync context, leak-safe.
 
-    Returns the :class:`concurrent.futures.Future` on success, or ``None`` if
-    the loop is missing or :func:`asyncio.run_coroutine_threadsafe` raised
-    (e.g. the loop was closed during a shutdown race).  In all failure paths
-    the coroutine is :meth:`close`-d so it does not trigger
-    ``"coroutine was never awaited"`` warnings or leak its frame.
-
-    Callers retain full control over what to do with the returned future
-    (call ``.result(timeout=...)``, attach ``add_done_callback``, ignore it
-    fire-and-forget, etc.).
+    Returns the Future on success, or ``None`` if the loop is missing or scheduling
+    raised; in every failure path the coroutine is closed. Callers keep full control
+    over the returned future (``.result(timeout=...)``, callbacks, fire-and-forget).
     """
     log = logger if logger is not None else _DEFAULT_LOGGER
-
-    if loop is None:
-        if asyncio.iscoroutine(coro):
-            coro.close()
-        log.log(log_level, "%s: loop is None", log_message)
-        return None
-
     try:
+        if loop is None:
+            raise RuntimeError("loop is None")
         return asyncio.run_coroutine_threadsafe(coro, loop)
     except Exception as exc:
         if asyncio.iscoroutine(coro):
@@ -341,16 +321,10 @@ def safe_schedule_threadsafe(
         return None
 
 
-def consume_detached_task_result(task: "asyncio.Future[Any]") -> None:
-    """Retrieve a detached task's result without surfacing cancellation.
-
-    Used as an ``add_done_callback`` on tasks that were cancelled and
-    detached (e.g. an adapter close path that swallows ``CancelledError``
-    past its teardown deadline). Observing ``task.exception()`` prevents
-    "exception was never retrieved" noise on the event loop; cancellation
-    and any terminal error are deliberately swallowed — the task's owner
-    already gave up on it.
-    """
+def consume_detached_task_result(task: asyncio.Future[Any]) -> None:
+    """``add_done_callback`` for cancelled-and-detached tasks: observe the exception so the
+    loop does not log "exception was never retrieved"; cancellation and terminal errors
+    are swallowed because the task's owner already gave up on it."""
     try:
         task.exception()
     except (asyncio.CancelledError, Exception):

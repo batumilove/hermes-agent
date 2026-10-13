@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.plugins import (
     PluginContext,
@@ -44,7 +44,7 @@ def _make_plugin_dir(
     if manifest_extra:
         manifest.update(manifest_extra)
 
-    (plugin_dir / "plugin.yaml").write_text(yaml.dump(manifest))
+    (plugin_dir / "plugin.yaml").write_text(yaml.safe_dump(manifest))
     (plugin_dir / "__init__.py").write_text(register_body)
 
     hermes_home_str = os.environ.get("HERMES_HOME")

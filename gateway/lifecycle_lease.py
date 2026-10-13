@@ -8,6 +8,9 @@ an explicit operator action; this module never guesses that it is safe.
 
 from __future__ import annotations
 
+import logging
+logger = logging.getLogger("gateway.run")
+
 import errno
 import hashlib
 import json
@@ -16,7 +19,7 @@ import re
 import stat
 import tempfile
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Mapping, TextIO
 
@@ -57,7 +60,7 @@ class LifecycleLeaseBlocked(RuntimeError):
 
 def _parse_utc(value: str, field_name: str) -> datetime:
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
     except (TypeError, ValueError) as exc:
         raise LifecycleLeaseBlocked(
             f"lifecycle lease metadata is malformed: {field_name}"
@@ -66,7 +69,7 @@ def _parse_utc(value: str, field_name: str) -> datetime:
         raise LifecycleLeaseBlocked(
             f"lifecycle lease metadata is malformed: {field_name}"
         )
-    return parsed.astimezone(timezone.utc)
+    return parsed.astimezone(UTC)
 
 
 def _read_metadata_record(path: Path) -> tuple[dict[str, Any], bytes]:
@@ -367,6 +370,7 @@ class LifecycleLease:
             self.metadata_path.unlink()
             _fsync_directory(self.home)
         except BaseException as exc:
+            logger.debug("release boundary operation failed", exc_info=True)
             error = exc
         finally:
             self._released = True
@@ -374,7 +378,7 @@ class LifecycleLease:
         if error is not None:
             raise error
 
-    def __enter__(self) -> "LifecycleLease":
+    def __enter__(self) -> LifecycleLease:
         return self
 
     def __exit__(self, exc_type, exc, traceback) -> None:
@@ -407,8 +411,8 @@ def acquire_lifecycle_lease(
             "provenance must contain exact source_head, source_tree, "
             "artifact_sha256, and evidence_id identities"
         )
-    current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    if expires_at.tzinfo is None or expires_at.astimezone(timezone.utc) <= current_time:
+    current_time = (now or datetime.now(UTC)).astimezone(UTC)
+    if expires_at.tzinfo is None or expires_at.astimezone(UTC) <= current_time:
         raise ValueError("expires_at must be a future timezone-aware timestamp")
     if fcntl is None:  # pragma: no cover - Linux controller requirement
         raise LifecycleLeaseBlocked("lifecycle lease requires POSIX file locking")
@@ -455,7 +459,7 @@ def acquire_lifecycle_lease(
             "state": "ACQUIRED",
             "pid": os.getpid(),
             "acquired_at": current_time.isoformat(),
-            "expires_at": expires_at.astimezone(timezone.utc).isoformat(),
+            "expires_at": expires_at.astimezone(UTC).isoformat(),
             "provenance": normalized_provenance,
         }
         _publish_json_exclusive(metadata_path, payload)
@@ -468,5 +472,6 @@ def acquire_lifecycle_lease(
             _metadata=payload,
         )
     except BaseException:
+        logger.debug("acquire_lifecycle_lease boundary operation failed", exc_info=True)
         _unlock_and_close(handle)
         raise

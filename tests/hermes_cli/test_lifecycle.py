@@ -71,7 +71,10 @@ async def test_finalize_session_async_awaits_core_before_plugin_export(monkeypat
         "observe_lifecycle_async",
         _observe_lifecycle_async,
     )
-    monkeypatch.setattr(plugins, "invoke_hook", manager.invoke_hook)
+    async def plugin_hook(name, **kwargs):
+        return manager.invoke_hook(name, **kwargs)
+
+    monkeypatch.setattr(plugins, "ainvoke_hook", plugin_hook)
     monkeypatch.setattr(relay_runtime, "SESSION_COORDINATOR", coordinator)
     monkeypatch.setattr(relay_runtime, "current_profile_key", lambda: "profile-1")
 

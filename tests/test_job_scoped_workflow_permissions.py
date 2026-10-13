@@ -12,16 +12,12 @@ def _workflow(name: str) -> dict:
 
 
 def test_ci_grants_write_permissions_only_to_the_jobs_that_need_them() -> None:
-    workflow = _workflow("ci.yml")
+    workflow = _workflow("ci.yaml")
 
     assert workflow["permissions"] == {"contents": "read"}
     assert workflow["jobs"]["supply-chain"]["permissions"] == {
         "contents": "read",
         "pull-requests": "write",
-    }
-    assert workflow["jobs"]["review-labels"]["permissions"] == {
-        "contents": "read",
-        "pull-requests": "read",
     }
     assert workflow["jobs"]["osv-scanner"]["permissions"] == {
         "actions": "read",

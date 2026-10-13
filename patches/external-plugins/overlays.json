@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "overlays": [
+    {
+      "id": "honcho-http-lifecycle",
+      "repository": "https://github.com/plastic-labs/honcho",
+      "commit": "e2d2aba182862deeb846e5cd4a30a41bce0ed82a",
+      "subdir": "hermes-plugin-honcho",
+      "patch": "patches/external-plugins/honcho-e2d2aba.patch",
+      "sha256": "9643272782fa7d5f04377a0321b66cf4edc86735bc92aaf87137d1028485b5b2",
+      "source_sha256": {
+        "client.py": "1ac859689b5c177d1686c817d5c4cb767b1b7905124ab0cb146e05d094ea87ce",
+        "client_cache.py": "c4e6b5b6bd615651211fde01084a880022db248c7e466060a0730399d38f20d0"
+      }
+    }
+  ]
+}

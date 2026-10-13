@@ -1,0 +1,205 @@
+--- a/client.py
++++ b/client.py
+@@ -8,6 +8,8 @@
+ from __future__ import annotations
+
+ import atexit
++import asyncio
++import inspect
+ import contextlib
+ import hashlib
+ import ipaddress
+@@ -571,17 +573,94 @@
+     return [t.name for t in threads if t.is_alive()]
+
+
++
++
++_pending_async_close_tasks: set[asyncio.Task] = set()
++
++
++def _observe_async_close(task: asyncio.Task) -> None:
++    """Retain scheduled closes until completion and retrieve any exception."""
++    _pending_async_close_tasks.discard(task)
++    try:
++        task.result()
++    except asyncio.CancelledError:
++        pass
++    except Exception:
++        logger.warning("Honcho async client close failed", exc_info=True)
++
++
++
++def _run_async_close(coro) -> None:
++    """Best-effort async close without blocking an already-running event loop."""
++    try:
++        loop = asyncio.get_running_loop()
++    except RuntimeError:
++        loop = None
++    if loop is None:
++        try:
++            asyncio.run(coro)
++        except asyncio.CancelledError:
++            pass
++        except Exception:
++            logger.warning("Honcho async client close failed", exc_info=True)
++        return
++
++    try:
++        task = loop.create_task(coro)
++        _pending_async_close_tasks.add(task)
++        task.add_done_callback(_observe_async_close)
++    except Exception:
++        logger.warning("Honcho async client close task scheduling failed", exc_info=True)
++        close_coro = getattr(coro, "close", None)
++        if callable(close_coro):
++            close_coro()
++
++
++
++def _close_honcho_client(client: "Honcho") -> None:
++    """Close the SDK's owned sync and already-created async HTTP clients."""
++    if client is None:
++        return
++
++    try:
++        http = getattr(client, "_http", None)
++        if http is not None and getattr(http, "_owns_client", True):
++            close_fn = getattr(http, "close", None)
++            if callable(close_fn) and not inspect.iscoroutinefunction(close_fn):
++                close_fn()
++    except Exception:
++        logger.warning("Honcho sync HTTP client close failed", exc_info=True)
++
++    # Read backing state directly: accessing _async_http_client would allocate
++    # a new async client just to close it.
++    try:
++        async_http = None
++        for state_name in ("__pydantic_private__", "__dict__"):
++            try:
++                state = object.__getattribute__(client, state_name)
++            except AttributeError:
++                continue
++            if isinstance(state, dict) and "_async_http" in state:
++                async_http = state["_async_http"]
++                break
++        if async_http is not None and getattr(async_http, "_owns_client", True):
++            close_fn = getattr(async_http, "close", None)
++            if inspect.iscoroutinefunction(close_fn):
++                _run_async_close(close_fn())
++            elif callable(close_fn):
++                close_fn()
++    except Exception:
++        logger.warning("Honcho async HTTP client close failed", exc_info=True)
++
++
++
+ def close_honcho_clients() -> None:
+-    """Close the HTTP pool of every cached client and drop the slots. Process exit only: one client
+-    serves every manager with the same identity, so a per-agent shutdown must never call this."""
++    """Release cached clients and their existing HTTP pools at reset or process exit."""
+     with _client_slots_lock:
+         slots = list(_client_slots.values())
+         _client_slots.clear()
+     for slot in slots:
+-        close = getattr(getattr(slot.peek(), "_http", None), "close", None)
+-        if callable(close):
+-            with contextlib.suppress(Exception):
+-                close()
++        _close_honcho_client(slot.peek())
+
+
+ _exit_close_registered = False
+@@ -690,7 +769,7 @@
+         timeout = _DEFAULT_HTTP_TIMEOUT  # an unconfigured install must not hang on a stalled request
+
+     if base_url:
+-        logger.info("Initializing Honcho client (base_url: %s, workspace: %s)", base_url, config.workspace_id)
++        logger.info("Initializing Honcho client (base_url: %s, workspace: %s)", _redact_base_url(base_url), config.workspace_id)
+     else:
+         # Name the SDK's environment fallback at INFO so a self-hosted user whose
+         # config wasn't picked up notices they're talking to the public cloud.
+@@ -711,13 +790,28 @@
+         import re
+         kwargs["base_url"] = re.sub(r"/v\d+/*$", "", base_url).rstrip("/")
+     _register_exit_close()
+-    return Honcho(**kwargs)
++    import httpx
++    owned_http_client = httpx.Client(
++        limits=httpx.Limits(max_keepalive_connections=0, max_connections=100),
++        timeout=httpx.Timeout(timeout),
++    )
++    kwargs["http_client"] = owned_http_client
++    try:
++        client = Honcho(**kwargs)
++    except BaseException:
++        owned_http_client.close()
++        raise
++    wrapper = getattr(client, "_http", None)
++    if wrapper is not None and getattr(wrapper, "_client", None) is owned_http_client:
++        wrapper._owns_client = True
++    else:
++        owned_http_client.close()
++    return client
+
+
+ def reset_honcho_client() -> None:
+     """Reset all cached Honcho clients (tests, OAuth re-login)."""
+-    with _client_slots_lock:
+-        _client_slots.clear()
++    close_honcho_clients()
+     _honcho_json_timeout_memo.clear()
+
+
+@@ -741,3 +835,19 @@
+     warn_once(__name__, name, *target)
+     return getattr(importlib.import_module(target[0]), target[1])
+ # ---- END PLUGIN-COMPAT ----
++
++
++def _redact_base_url(url: str) -> str:
++    from urllib.parse import urlsplit, urlunsplit
++    try:
++        parsed = urlsplit(url)
++        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
++            return "[redacted-url]"
++        host = parsed.hostname
++        if ":" in host:
++            host = f"[{host}]"
++        if parsed.port:
++            host = f"{host}:{parsed.port}"
++        return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
++    except ValueError:
++        return "[redacted-url]"
+--- a/client_cache.py
++++ b/client_cache.py
+@@ -109,14 +109,18 @@
+     retirement machinery inert.
+     """
+     identity = _slot_identity(key)
++    stale_clients = []
+     with _client_slots_lock:
+         slot = _client_slots.get(key)
+         if slot is None:
+             for k in [k for k in _client_slots if k != key and _slot_identity(k) == identity]:
+-                _client_slots.pop(k, None)
++                stale_clients.append(_client_slots.pop(k).peek())
+             slot = SingletonSlot()
+             _client_slots[key] = slot
+-        return slot
++    from .client import _close_honcho_client
++    for client in stale_clients:
++        _close_honcho_client(client)
++    return slot
+
+
+ def _config_yaml_timeout() -> float | None:
+@@ -193,6 +197,8 @@
+             if token:
+                 config.api_key = token
+         elif refreshed and token and not oauth.apply_token_to_client(client, token) and slot is not None:
++            from .client import _close_honcho_client
++            _close_honcho_client(client)
+             slot.reset()
+     except Exception:
+         logger.warning("Honcho OAuth %s refresh failed", "pre-build" if client is None else "cached", exc_info=True)

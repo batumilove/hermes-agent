@@ -16,6 +16,7 @@ Purity constraints (same as the kernel):
 from __future__ import annotations
 
 import dataclasses
+import logging
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
@@ -44,6 +45,9 @@ from hermes_cli.kanban_route_contract import RouteContract, resolve_route
 
 READY_STATUSES = ("ready",)
 TERMINAL_STATUSES = ("done", "blocked", "triage")
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -181,9 +185,7 @@ class WiredDispatcher:
         ).fetchone()
         return int(row[0])
 
-    def tick(self) -> TickReport:
-        report = TickReport()
-
+    def _tick_ready(self, report: TickReport) -> bool:
         # Startup fail-closed checks (wiring inventory §2.4 / R3 / PR2).
         if self.check_registry:
             try:
@@ -191,7 +193,7 @@ class WiredDispatcher:
             except ValueError:
                 for row in self.board.tasks():
                     report.refused_profiles.append(row["task_id"])
-                return report
+                return False
         # A dispatcher holding a policy snapshot whose generation no longer
         # matches the protected pointer must not spawn anything (stale
         # snapshot fail-closed): the pointer's policy was never evaluated.
@@ -207,13 +209,21 @@ class WiredDispatcher:
                             "detail": "stale policy snapshot",
                         }
                     )
-            return report
+            return False
         if not self.route_contract.valid or (
             self.expected_route_hash is not None
             and self.route_contract.hash != self.expected_route_hash
         ):
             for row in self.board.tasks():
                 report.refused_profiles.append(row["task_id"])
+            return False
+
+        return True
+
+    def tick(self) -> TickReport:
+        report = TickReport()
+
+        if not self._tick_ready(report):
             return report
 
         # Gate evaluation #1: pre-tick. Pause denies everything including
@@ -410,7 +420,8 @@ class WiredDispatcher:
                 return False
             report.spawned.append(task_id)
             return True
-        except Exception as exc:  # noqa: BLE001 - harness records every abort
+        except Exception as exc:
+            logger.debug("Wired dispatcher launch failed", exc_info=True)
             report.spawn_errors.append(f"{task_id}:{type(exc).__name__}")
             released = False
             try:
@@ -421,11 +432,11 @@ class WiredDispatcher:
                 )
                 report.released.append(task_id)
                 released = True
-            except Exception:  # noqa: BLE001
+            except Exception:
                 # Policy flipped mid-window: the kernel deliberately refuses
                 # to release a claim against a different active generation.
                 # The row stays as freeze-ack evidence; no process exists.
-                pass
+                logger.debug("Wired dispatcher claim retirement failed", exc_info=True)
             report.aborted.append(task_id)
             if not released:
                 report.unresolved.append(task_id)
@@ -493,8 +504,8 @@ class WiredDispatcher:
                     "detail": outcome.detail,
                 }
             )
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception:
+            logger.debug("Wired dispatcher reclaim failed", exc_info=True)
 
     def _kill_spawn(self, task_id: str, run_generation: int) -> None:
         """Remove a spawned process from the harness liveness source."""

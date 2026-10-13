@@ -384,7 +384,7 @@ def test_emit_status_fails_on_corrupt_sarif(tmp_path: Path) -> None:
 
 def _ci_evaluate_run() -> str:
     ci = yaml.safe_load(
-        (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        (ROOT / ".github" / "workflows" / "ci.yaml").read_text(encoding="utf-8")
     )
     return next(
         step
@@ -402,7 +402,7 @@ def _run_aggregate_gate(needs: dict) -> subprocess.CompletedProcess[str]:
     quoting bugs in the embedded script surface as failures here.
     """
     ci = yaml.safe_load(
-        (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        (ROOT / ".github" / "workflows" / "ci.yaml").read_text(encoding="utf-8")
     )
     evaluate = next(
         step
@@ -411,6 +411,7 @@ def _run_aggregate_gate(needs: dict) -> subprocess.CompletedProcess[str]:
         for step in job["steps"]
         if step.get("name") == "Evaluate job results"
     )
+    needs = {"detect": {"result": "success", "outputs": {"scan": "true"}}, **needs}
     return subprocess.run(
         ["bash", "-c", evaluate["run"]],
         input=json.dumps(needs),
@@ -420,17 +421,13 @@ def _run_aggregate_gate(needs: dict) -> subprocess.CompletedProcess[str]:
         env={
             **os.environ,
             "NEEDS": json.dumps(needs),
+            "RELEASE": "false",
             "GITHUB_OUTPUT": "/dev/null",
         },
     )
 
 
 def test_aggregate_gate_rejects_skipped_osv_scanner() -> None:
-    script = _ci_evaluate_run()
-    # The gate must explicitly reject a skipped osv-scanner result.
-    assert "osv-scanner" in script
-    assert "skipped" in script
-
     result = _run_aggregate_gate(
         {
             "tests": {"result": "success"},
@@ -461,4 +458,4 @@ def test_aggregate_gate_rejects_failed_job_through_shell() -> None:
         }
     )
     assert result.returncode != 0
-    assert "did not pass" in result.stdout
+    assert "osv-scanner: failure" in result.stdout

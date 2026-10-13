@@ -13,6 +13,14 @@ from gateway.config import Platform
 from tests.gateway.restart_test_helpers import make_restart_runner
 
 
+@pytest.fixture(autouse=True)
+def release_blocked_cleanup():
+    global blocked_cleanup
+    blocked_cleanup = threading.Event()
+    yield
+    blocked_cleanup.set()
+
+
 async def _run_stop(runner):
     """Run stop() with identity-release mocks; return (remove_pid, release_lock).
 
@@ -63,12 +71,12 @@ def _configure_fast_forced_shutdown(runner, monkeypatch, active_agents):
     runner.adapters.clear()
     runner._background_tasks.clear()
 
-    import agent.auxiliary_client as auxiliary_client
+    from agent import auxiliary_client
     import cron.scheduler as cron_scheduler
-    import tools.async_delegation as async_delegation
-    import tools.browser_tool as browser_tool
+    from tools import async_delegation
+    import tools.browser_tool_lifecycle as browser_tool
     import tools.process_registry as process_registry_module
-    import tools.terminal_tool as terminal_tool
+    import tools.terminal_tool_lifecycle as terminal_tool
 
     monkeypatch.setattr(auxiliary_client, "shutdown_cached_clients", lambda: None)
     monkeypatch.setattr(cron_scheduler, "mark_running_jobs_interrupted", lambda _r: [])
@@ -127,7 +135,7 @@ class _BlockingFlushAgent:
 
     def _flush_messages_to_session_db(self, _messages):
         self._started.set()
-        time.sleep(2.0)
+        blocked_cleanup.wait()
 
     def _drop_trailing_empty_response_scaffolding(self, _messages):
         return None
@@ -136,7 +144,7 @@ class _BlockingFlushAgent:
 @pytest.mark.asyncio
 async def test_agent_cleanup_keeps_remaining_aggregate_budget(monkeypatch):
     """One wedged agent cleanup must not monopolize the shared deadline."""
-    monkeypatch.setattr("hermes_cli.lifecycle.finalize_session", lambda **_kwargs: None)
+    monkeypatch.setattr("hermes_cli.lifecycle.finalize_session_async", AsyncMock(return_value=[]))
     runner, _adapter = make_restart_runner()
     runner._CLEANUP_TIMEOUT_S = 0.05
     runner._shutdown_cleanup_deadline = asyncio.get_running_loop().time() + 0.50
@@ -148,7 +156,7 @@ async def test_agent_cleanup_keeps_remaining_aggregate_budget(monkeypatch):
 
     def _wedged_cleanup(_agent):
         cleanup_started.set()
-        time.sleep(2.0)
+        blocked_cleanup.wait()
 
     runner._cleanup_agent_resources = _wedged_cleanup
 
@@ -171,7 +179,7 @@ async def test_agent_cleanup_keeps_remaining_aggregate_budget(monkeypatch):
 @pytest.mark.asyncio
 async def test_agent_cleanup_timeout_reports_blocking_subphase(caplog, monkeypatch):
     """A timed-out monolithic cleanup identifies its last entered subphase."""
-    monkeypatch.setattr("hermes_cli.lifecycle.finalize_session", lambda **_kwargs: None)
+    monkeypatch.setattr("hermes_cli.lifecycle.finalize_session_async", AsyncMock(return_value=[]))
     runner, _adapter = make_restart_runner()
     runner._CLEANUP_TIMEOUT_S = 0.05
     runner._shutdown_cleanup_deadline = asyncio.get_running_loop().time() + 0.50
@@ -183,7 +191,7 @@ async def test_agent_cleanup_timeout_reports_blocking_subphase(caplog, monkeypat
 
         def close(self):
             close_started.set()
-            time.sleep(2.0)
+            blocked_cleanup.wait()
 
     completed = await runner._finalize_shutdown_agents({"session": _Agent()})
 
@@ -320,7 +328,7 @@ async def test_pre_drain_work_reduces_agent_drain_budget(monkeypatch):
     )
 
     async def _slow_notification():
-        await asyncio.sleep(0.10)
+        await asyncio.sleep(0.10)  # health: allow HX013 -- notification duration consumes the shutdown deadline measured here
 
     observed_drain_budgets = []
 
@@ -359,7 +367,7 @@ async def test_drain_exhaustion_reduces_interrupt_grace_budget(monkeypatch):
         # interrupt grace remainder is negative under any scheduling delay;
         # a 0.20s sleep exactly equal to the drain timeout leaves a
         # ~0.05s positive margin that CI jitter can invert.
-        await asyncio.sleep(0.60)
+        await asyncio.sleep(0.60)  # health: allow HX013 -- drain deliberately exhausts the shared shutdown deadline
         return {"session": active_agent}, True
 
     observed_interrupt_budgets = []
@@ -431,7 +439,7 @@ async def test_post_agent_teardown_receives_reserved_tail_budget(monkeypatch):
         runner._running_agents.clear()
 
     async def _consume_pre_tail(*_args, **_kwargs):
-        await asyncio.sleep(0.31)
+        await asyncio.sleep(0.31)  # health: allow HX013 -- finalization consumes the pre-tail allowance to verify reserved adapter time
         return False
 
     runner._interrupt_running_agents = AsyncMock(side_effect=_interrupt)
@@ -460,11 +468,11 @@ async def test_wedged_cached_client_shutdown_cannot_starve_tail_release(monkeypa
     )
     started = threading.Event()
 
-    import agent.auxiliary_client as auxiliary_client
+    from agent import auxiliary_client
 
     def _block():
         started.set()
-        time.sleep(2.0)
+        blocked_cleanup.wait()
 
     monkeypatch.setattr(auxiliary_client, "shutdown_cached_clients", _block)
 
@@ -519,7 +527,7 @@ async def test_wedged_database_close_cannot_starve_tail_release(monkeypatch):
     class _BlockingDB:
         def close(self):
             started.set()
-            time.sleep(2.0)
+            blocked_cleanup.wait()
 
     database = _BlockingDB()
     runner._session_db = MagicMock()
@@ -548,11 +556,13 @@ async def test_terminal_attribution_retains_budget_after_wedged_tail_teardown(mo
     runner, _adapter = make_restart_runner()
     _configure_fast_forced_shutdown(runner, monkeypatch, {})
     runner._SHUTDOWN_TAIL_RESERVE_S = 0.20
-    # Reserve a generous terminal-attribution window: the wedged teardown
-    # consumes the pre-tail budget, and under saturated CI scheduling the
-    # measured remainder at attribution time must still cover the bounded
-    # attribution write (0.05s) with margin.
-    runner._SHUTDOWN_TERMINAL_ATTRIBUTION_RESERVE_S = 1.0
+    # Keep the terminal reserve inside the total 0.50s leash so teardown
+    # actually starts and wedges before the evidence boundary is reached.
+    runner._SHUTDOWN_TERMINAL_ATTRIBUTION_RESERVE_S = 0.20
+    # This case measures the adapter wedge and terminal reserve, independently
+    # of cold notification/tool hooks that have their own deadline contracts.
+    monkeypatch.setattr(gateway_run.GatewayRunner, "_stop_begin_teardown", AsyncMock())
+    monkeypatch.setattr(gateway_run.GatewayRunner, "_stop_interrupt_remaining_work", AsyncMock())
     monkeypatch.setattr(
         gateway_run, "resolve_shutdown_watchdog_delay", lambda _timeout: 0.50
     )
@@ -561,8 +571,11 @@ async def test_terminal_attribution_retains_budget_after_wedged_tail_teardown(mo
     runner.adapters[Platform.TELEGRAM] = adapter
     never = asyncio.Event()
 
+    teardown_started = asyncio.Event()
+
     async def _wedged_teardown(_adapter, _platform, *, profile=None):
         del profile
+        teardown_started.set()
         await never.wait()
 
     monkeypatch.setattr(runner, "_bounded_adapter_teardown", _wedged_teardown)
@@ -581,6 +594,7 @@ async def test_terminal_attribution_retains_budget_after_wedged_tail_teardown(mo
 
     await asyncio.wait_for(_run_stop(runner), timeout=1.20)
 
+    assert teardown_started.is_set(), "teardown never reached its wedged phase"
     assert len(terminal_budgets) == 1
     assert terminal_budgets[0] >= runner._DRAIN_ATTRIBUTION_WRITE_TIMEOUT_S, (
         "terminal cleanup_incomplete attribution received no reserved budget: "

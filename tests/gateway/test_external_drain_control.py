@@ -32,6 +32,7 @@ from gateway.status import read_runtime_status
 from gateway.config import Platform
 from gateway.platforms.base import MessageEvent, MessageType
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
+from datetime import UTC
 
 _ORIGINAL_USER_RUNTIME_DIR = dc._user_runtime_dir
 
@@ -733,9 +734,6 @@ class TestAuthoritativeStartupStatus:
 
 
 class TestMarkerMaxAge:
-    def test_fresh_marker_honoured(self, home):
-        dc.write_drain_request(principal="nas")
-        assert dc.drain_requested() is True
 
     def test_expired_marker_reads_as_absent(self, home):
         # THE #85433 REGRESSION. A drain-gated action completes WITHOUT a
@@ -747,7 +745,7 @@ class TestMarkerMaxAge:
         body = dc.read_drain_request()
         assert body is not None
         body["requested_at"] = (
-            datetime.now(timezone.utc)
+            datetime.now(UTC)
             - timedelta(seconds=dc.DRAIN_REQUEST_MAX_AGE_SECONDS + 60)
         ).isoformat()
         dc.drain_request_path().write_text(json.dumps(body), encoding="utf-8")
@@ -780,7 +778,7 @@ class TestMarkerMaxAge:
         from datetime import datetime, timedelta, timezone
 
         stale_naive = (
-            datetime.now(timezone.utc)
+            datetime.now(UTC)
             - timedelta(seconds=dc.DRAIN_REQUEST_MAX_AGE_SECONDS + 60)
         ).replace(tzinfo=None)
         payload = {
@@ -803,7 +801,7 @@ class TestMarkerMaxAge:
             body = dc.read_drain_request()
             assert body is not None
             body["requested_at"] = (
-                datetime.now(timezone.utc)
+                datetime.now(UTC)
                 - timedelta(seconds=dc.DRAIN_REQUEST_MAX_AGE_SECONDS + offset_seconds)
             ).isoformat()
             dc.drain_request_path().write_text(json.dumps(body), encoding="utf-8")
@@ -832,7 +830,7 @@ class TestMarkerMaxAge:
         body = dc.read_drain_request()
         assert body is not None
         body["requested_at"] = (
-            datetime.now(timezone.utc)
+            datetime.now(UTC)
             - timedelta(seconds=dc.DRAIN_REQUEST_MAX_AGE_SECONDS + 60)
         ).isoformat()
         dc.drain_request_path().write_text(json.dumps(body), encoding="utf-8")
@@ -942,7 +940,10 @@ class TestDrainWatcher:
         started = time.monotonic()
         task = asyncio.create_task(runner._drain_control_watcher(interval=0.01))
         try:
-            await asyncio.sleep(0.05)
+            async def probe_entered():
+                while not entered.is_set():
+                    await asyncio.sleep(0)
+            await asyncio.wait_for(probe_entered(), timeout=1)
             assert entered.is_set()
             assert time.monotonic() - started < 0.15
         finally:

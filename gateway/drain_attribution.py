@@ -8,13 +8,16 @@ identity evidence available before a forced shutdown.
 
 from __future__ import annotations
 
+import logging
+logger = logging.getLogger("gateway.run")
+
 import asyncio
 import hashlib
 import json
 import os
 import threading
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -51,6 +54,7 @@ def current_drain_generation() -> DrainGeneration:
 
         epoch = current_instantiation_epoch()
     except Exception:
+        logger.debug("current_drain_generation boundary operation failed", exc_info=True)
         epoch = ""
     return DrainGeneration(
         pid=os.getpid(),
@@ -76,10 +80,11 @@ def generation_is_current(generation: DrainGeneration, *, home: Path) -> bool:
             if current_instantiation_epoch() != generation.instantiation_epoch:
                 return False
         except Exception:
+            logger.debug("generation_is_current boundary operation failed", exc_info=True)
             return False
     lifecycle_path = Path(home) / "state" / "gateway.lifecycle.json"
     try:
-        lifecycle = json.loads(lifecycle_path.read_text(encoding="utf-8"))
+        lifecycle = json.loads(lifecycle_path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         lifecycle = None
     if isinstance(lifecycle, dict) and lifecycle.get("phase") == "running":
@@ -122,6 +127,7 @@ def _default_cron_provider() -> Sequence[Mapping[str, Any]]:
                 for job_id in sorted(get_running_job_ids())
             )
         except Exception:
+            logger.debug("_default_cron_provider boundary operation failed", exc_info=True)
             return ()
 
 
@@ -162,6 +168,7 @@ def collect_gateway_work(
     try:
         cron_records = list(provider())
     except Exception as exc:
+        logger.debug("collect_gateway_work boundary operation failed", exc_info=True)
         cron_records = []
         omissions.append(f"cron_snapshot_failed:{type(exc).__name__}")
     for record in cron_records:
@@ -208,6 +215,7 @@ def collect_gateway_work(
             api_snapshot_complete = bool(snapshot.get("attribution_complete", False))
             omissions.extend(str(item)[:128] for item in snapshot.get("omissions", ()))
         except Exception as exc:
+            logger.debug("collect_gateway_work boundary operation failed", exc_info=True)
             api_snapshot_complete = False
             omissions.append(f"api_snapshot_failed:{type(exc).__name__}")
         break
@@ -316,7 +324,7 @@ class DrainAttributionRecorder:
                 effective_omissions.append(f"units_truncated:{truncated}")
             payload: dict[str, Any] = {
                 "schema_version": 1,
-                "recorded_at": datetime.now(timezone.utc).isoformat(),
+                "recorded_at": datetime.now(UTC).isoformat(),
                 "generation": asdict(self.generation),
                 "sequence": self._sequence,
                 "phase": str(phase)[:64],
@@ -380,6 +388,7 @@ async def record_snapshot_bounded(
         try:
             result_box.append(recorder.record(**record_kwargs))
         except BaseException as exc:
+            logger.debug("_write boundary operation failed", exc_info=True)
             result_box.append(
                 DrainAttributionWriteResult(
                     status="attribution_incomplete",
@@ -395,7 +404,8 @@ async def record_snapshot_bounded(
                 # persist; never turn that late completion into a thread crash.
                 pass
 
-    worker = threading.Thread(
+    from agent.memory_provider import spawn_context_thread
+    worker = spawn_context_thread(
         target=_write,
         name="gateway-drain-attribution-write",
         daemon=True,

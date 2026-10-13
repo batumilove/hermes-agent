@@ -1,3 +1,12 @@
+Current upstream reconciliation (2026-10-13)
+-------------------------------------------
+The repository candidate now resolves its optional `provider_telemetry.metrics_file`
+setting through each owning profile's `config.yaml`. Empty uses the profile's
+`state/prometheus/hermes_provider_telemetry.prom`. The setting is registered for
+`hermes config set`; metric queues and label cardinality are bounded. Tests load
+repository-owned source and disposable profile homes. The historical evidence below
+records the earlier ownership fix.
+
 Provider telemetry writer ownership fix — integrated candidate evidence
 =====================================================================
 

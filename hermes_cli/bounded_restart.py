@@ -22,16 +22,19 @@ import argparse
 import contextlib
 import hashlib
 import json
+import logging
+import http.client
 import os
 import sqlite3
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 
@@ -77,12 +80,12 @@ def _require_int(value: Any, field: str, *, minimum: int = 0) -> int:
 def _parse_datetime(value: Any, field: str) -> datetime:
     raw = _require_str(value, field)
     try:
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(raw)
     except ValueError as exc:
         raise ValueError(f"{field} must be ISO-8601") from exc
     if parsed.tzinfo is None:
         raise ValueError(f"{field} must include a timezone")
-    return parsed.astimezone(timezone.utc)
+    return parsed.astimezone(UTC)
 
 
 def _sha256(path: Path) -> str:
@@ -163,7 +166,7 @@ class ServiceIdentity:
         }
 
     @classmethod
-    def from_mapping(cls, raw: Mapping[str, Any]) -> "ServiceIdentity":
+    def from_mapping(cls, raw: Mapping[str, Any]) -> ServiceIdentity:
         return cls(
             pid=int(raw.get("pid", 0)),
             invocation_id=str(raw.get("invocation_id", "")),
@@ -209,6 +212,9 @@ class Occupancy:
         }
 
 
+logger = logging.getLogger(__name__)
+
+
 @dataclass(frozen=True)
 class Manifest:
     transaction_id: str
@@ -251,7 +257,7 @@ class Manifest:
         controller_path: Path,
         now: datetime | None = None,
         manifest_sha256: str | None = None,
-    ) -> "Manifest":
+    ) -> Manifest:
         if raw.get("schema") != SCHEMA:
             raise ValueError(f"schema must be {SCHEMA}")
         controller = _require_mapping(raw.get("controller"), "controller")
@@ -286,7 +292,7 @@ class Manifest:
 
         approved_at = _parse_datetime(authorization.get("approved_at"), "authorization.approved_at")
         expires_at = _parse_datetime(authorization.get("expires_at"), "authorization.expires_at")
-        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        current = (now or datetime.now(UTC)).astimezone(UTC)
         if expires_at <= current:
             raise ValueError("authorization expired")
         scope_raw = authorization.get("scope")
@@ -320,27 +326,7 @@ class Manifest:
             or not all(isinstance(item, str) and item.strip() for item in expected_platforms_raw)
         ):
             raise ValueError("acceptance.expected_platforms must be a non-empty string array")
-        bootstrap_mode: str | None = None
-        old_code_sha: str | None = None
-        bootstrap_raw = raw.get("bootstrap")
-        if bootstrap_raw is not None:
-            bootstrap = _require_mapping(bootstrap_raw, "bootstrap")
-            bootstrap_mode = _require_str(bootstrap.get("mode"), "bootstrap.mode")
-            if bootstrap_mode != _BOOTSTRAP_MODE:
-                raise ValueError(f"bootstrap.mode must be {_BOOTSTRAP_MODE}")
-            old_code_sha = _require_str(
-                bootstrap.get("old_code_sha"), "bootstrap.old_code_sha"
-            )
-            if len(old_code_sha) != 40 or any(
-                c not in "0123456789abcdef" for c in old_code_sha
-            ):
-                raise ValueError(
-                    "bootstrap.old_code_sha must be a lowercase 40-character Git object ID"
-                )
-            if old_code_sha == head:
-                raise ValueError("bootstrap old code must differ from target source")
-            if _BOOTSTRAP_AUTHORIZATION not in scope:
-                raise ValueError("authorization.scope missing bootstrap_force_only")
+        bootstrap_mode, old_code_sha = _manifest_bootstrap(raw, head, scope)
         return cls(
             transaction_id=_require_str(raw.get("transaction_id"), "transaction_id"),
             manifest_sha256=(
@@ -440,7 +426,7 @@ class BoundedRestartController:
 
     def _load_existing(self) -> dict[str, Any] | None:
         try:
-            raw = json.loads(self.result_path.read_text(encoding="utf-8"))
+            raw = json.loads(self.result_path.read_text(encoding="utf-8-sig"))
         except FileNotFoundError:
             return None
         except (OSError, json.JSONDecodeError) as exc:
@@ -454,7 +440,7 @@ class BoundedRestartController:
         return raw
 
     def _assert_authorized(self) -> None:
-        if self.ops.wall_now().astimezone(timezone.utc) >= self.manifest.expires_at:
+        if self.ops.wall_now().astimezone(UTC) >= self.manifest.expires_at:
             raise ControllerBlocked("authorization expired before mutation")
 
     def _assert_source(self, actual: SourceIdentity) -> None:
@@ -787,7 +773,7 @@ class BoundedRestartController:
                 drain.write_request()
                 drain_written = True
                 result["state"] = "HANDOFF"
-                wall_now = self.ops.wall_now().astimezone(timezone.utc)
+                wall_now = self.ops.wall_now().astimezone(UTC)
                 persisted_deadline = result.get("handoff_deadline_at")
                 if isinstance(persisted_deadline, str):
                     deadline_at = _parse_datetime(
@@ -901,8 +887,8 @@ class BoundedRestartController:
                 if drain_written and result.get("restart_budget_consumed", 0) == 0:
                     try:
                         drain.clear_request()
-                    except Exception:
-                        pass
+                    except (OSError, RuntimeError, ValueError):
+                        logger.warning("Failed to clear uncommitted restart drain", exc_info=True)
                 if not drain_released:
                     drain.release()
         except (ControllerBlocked, ControllerFailed):
@@ -921,7 +907,7 @@ class SystemdOperations:
             raise ControllerBlocked("bounded restart v1 requires Linux")
 
     def wall_now(self) -> datetime:
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)
 
     def monotonic(self) -> float:
         return time.monotonic()
@@ -937,6 +923,7 @@ class SystemdOperations:
             text=True,
             encoding="utf-8",
             errors="replace",
+            check=False,
             timeout=timeout,
         )
         if check and result.returncode != 0:
@@ -955,7 +942,7 @@ class SystemdOperations:
         if pid <= 0:
             return ""
         try:
-            stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8-sig")
             return stat.rsplit(")", 1)[1].split()[19]
         except (OSError, IndexError):
             return ""
@@ -1079,7 +1066,7 @@ class SystemdOperations:
     def _cgroup_pids(self, control_group: str) -> tuple[int, ...]:
         path = self._cgroup_procs_path(control_group)
         try:
-            return tuple(sorted(int(line) for line in path.read_text(encoding="utf-8").splitlines()))
+            return tuple(sorted(int(line) for line in path.read_text(encoding="utf-8-sig").splitlines()))
         except FileNotFoundError as exc:
             raise ControllerBlocked("cannot read service cgroup membership") from exc
         except (OSError, ValueError) as exc:
@@ -1224,7 +1211,9 @@ class SystemdOperations:
                     return False
             payload = json.loads(body)
             return isinstance(payload, dict) and payload.get("status") == "ok"
-        except Exception:
+        except (OSError, urllib.error.URLError, http.client.HTTPException,
+                json.JSONDecodeError, UnicodeDecodeError):
+            logger.debug("Bounded restart health probe failed", exc_info=True)
             return False
 
     def old_cgroup_members_gone(
@@ -1343,6 +1332,33 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     print(json.dumps(result, sort_keys=True))
     return 0
+
+
+
+def _manifest_bootstrap(raw: Mapping[str, Any], head: str, scope: frozenset[str]) -> tuple[str | None, str | None]:
+    """Validate the optional source-generation bootstrap contract."""
+    bootstrap_mode: str | None = None
+    old_code_sha: str | None = None
+    bootstrap_raw = raw.get("bootstrap")
+    if bootstrap_raw is not None:
+        bootstrap = _require_mapping(bootstrap_raw, "bootstrap")
+        bootstrap_mode = _require_str(bootstrap.get("mode"), "bootstrap.mode")
+        if bootstrap_mode != _BOOTSTRAP_MODE:
+            raise ValueError(f"bootstrap.mode must be {_BOOTSTRAP_MODE}")
+        old_code_sha = _require_str(
+            bootstrap.get("old_code_sha"), "bootstrap.old_code_sha"
+        )
+        if len(old_code_sha) != 40 or any(
+            c not in "0123456789abcdef" for c in old_code_sha
+        ):
+            raise ValueError(
+                "bootstrap.old_code_sha must be a lowercase 40-character Git object ID"
+            )
+        if old_code_sha == head:
+            raise ValueError("bootstrap old code must differ from target source")
+        if _BOOTSTRAP_AUTHORIZATION not in scope:
+            raise ValueError("authorization.scope missing bootstrap_force_only")
+    return bootstrap_mode, old_code_sha
 
 
 if __name__ == "__main__":

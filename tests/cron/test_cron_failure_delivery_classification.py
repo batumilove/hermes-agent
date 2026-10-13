@@ -141,7 +141,7 @@ def test_agent_provider_timeout_wording_preserved():
     error = "ReadTimeout: HTTPSConnectionPool(host='api.openai.com'): Read timed out"
     msg = _summarize_cron_failure_for_delivery(_agent_job(), error)
 
-    assert "provider timeout" in msg.lower(), msg
+    assert "AI model service did not respond in time" in msg, msg
     assert "fallback" in msg.lower(), msg
 
 
@@ -149,7 +149,7 @@ def test_agent_generic_timeout_wording_preserved():
     """Agent job with a plain ``timed out`` provider error stays provider-side."""
     msg = _summarize_cron_failure_for_delivery(_agent_job(), "The request timed out.")
 
-    assert "provider timeout" in msg.lower(), msg
+    assert "AI model service did not respond in time" in msg, msg
     assert "fallback" in msg.lower(), msg
 
 
@@ -200,7 +200,7 @@ def test_no_agent_structured_timeout_rejects_non_finite_or_negative_seconds(inva
 
 def test_agent_rate_limit_wording_preserved():
     msg = _summarize_cron_failure_for_delivery(_agent_job(), "429 Too Many Requests")
-    assert "rate limit" in msg.lower(), msg
+    assert "rate-limited" in msg.lower(), msg
     assert "fallback" in msg.lower(), msg
 
 
@@ -210,7 +210,7 @@ def test_agent_rate_limit_wording_preserved():
 
 def test_agent_auth_wording_preserved():
     msg = _summarize_cron_failure_for_delivery(_agent_job(), "401 Unauthorized")
-    assert "authentication" in msg.lower(), msg
+    assert "rejected the sign-in" in msg.lower(), msg
 
 
 # ---------------------------------------------------------------------------

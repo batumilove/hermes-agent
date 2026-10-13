@@ -5,7 +5,7 @@ import signal
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 
 from gateway.lifecycle_lease import inspect_lifecycle_lease, reconcile_lifecycle_lease
@@ -31,7 +31,7 @@ def _run_command(home: Path, purpose: str, command: list[str]) -> list[str]:
         "--evidence-id",
         f"{purpose}-crash-evidence",
         "--expires-at",
-        (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+        (datetime.now(UTC) + timedelta(minutes=10)).isoformat(),
         "--",
         *command,
     ]
@@ -95,6 +95,7 @@ def test_killed_controller_leaves_orphan_and_blocks_next_mutation(tmp_path):
             env=env,
             text=True,
             capture_output=True,
+            check=False,
             timeout=10,
         )
         assert blocked.returncode == 2

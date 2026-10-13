@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 import pytest
 
@@ -48,7 +48,7 @@ def test_acquire_cli_lifecycle_binds_exact_source_and_manifest(
 
     monkeypatch.setattr(coordination, "acquire_lifecycle_lease", fake_acquire)
     monkeypatch.setattr(coordination.uuid, "uuid4", lambda: type("U", (), {"hex": "1" * 32})())
-    now = datetime(2026, 9, 2, 5, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 9, 2, 5, 0, tzinfo=UTC)
 
     result = coordination.acquire_cli_lifecycle_transaction(
         home=tmp_path / "home",

@@ -8,6 +8,7 @@ structurally unable to fire. These tests pin the out-of-loop backstop
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import queue
@@ -19,6 +20,7 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
+import gateway.shutdown_watchdog as shutdown_watchdog_module
 import pytest
 
 from gateway.shutdown_watchdog import (
@@ -237,5 +239,3 @@ def test_shutdown_watchdog_hard_exit_is_disarmed_on_completion():
         """,
     )
     assert completed.returncode == 0, completed.stderr
-
-

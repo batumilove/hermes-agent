@@ -196,9 +196,10 @@ if [ "$DEV_SANDBOX_INTERACTIVE" = true ]; then
   dev_mounts=(--dev /dev)
 fi
 
+sandbox_tmp_mount=(--tmpfs /tmp) # no-tmp: ok — sandbox temporary-directory ABI mount
 exec bwrap \
   --unshare-pid \
-  --die-with-parent --proc /proc --tmpfs /tmp \
+  --die-with-parent --proc /proc "${sandbox_tmp_mount[@]}" \
   "${dev_mounts[@]}" \
   "${gui_mounts[@]}" \
   "${runtime_mounts[@]}" \

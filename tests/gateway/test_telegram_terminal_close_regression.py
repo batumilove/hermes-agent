@@ -21,6 +21,7 @@ from typing import Any
 
 import httpx
 import pytest
+from tests.waiting import async_wait_until
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT))
@@ -120,7 +121,7 @@ async def test_retry_closes_raw_socket_when_network_aclose_does_nothing() -> Non
         except BaseException:
             pass
         # Give the detached retry task (base) or inline retry (fixed) time.
-        await asyncio.sleep(0.2)
+        await async_wait_until(lambda: child.fileno() == -1, timeout=2, what="raw socket closed")
 
         _assert_socket_closed(child, "network_stream.aclose() no-op")
     finally:
@@ -145,7 +146,7 @@ async def test_retry_closes_raw_socket_when_network_aclose_raises() -> None:
             await wrapper.aclose()
         except BaseException:
             pass
-        await asyncio.sleep(0.2)
+        await async_wait_until(lambda: child.fileno() == -1, timeout=2, what="raw socket closed")
 
         _assert_socket_closed(child, "network_stream.aclose() raised")
     finally:
@@ -170,7 +171,7 @@ async def test_retry_closes_asyncio_transport_socket_wrapper() -> None:
             await wrapper.aclose()
         except BaseException:
             pass
-        await asyncio.sleep(0.2)
+        await async_wait_until(lambda: child.fileno() == -1, timeout=2, what="raw socket closed")
 
         _assert_socket_closed(child, "asyncio.TransportSocket-compatible wrapper")
     finally:
@@ -201,7 +202,7 @@ async def test_abandoned_cleanup_closes_socket_despite_cancellation() -> None:
             # On base, _close_response catches Exception only and lets CancelledError
             # propagate; swallow it so we can inspect the socket state.
             pass
-        await asyncio.sleep(0.2)
+        await async_wait_until(lambda: child.fileno() == -1, timeout=2, what="raw socket closed")
 
         _assert_socket_closed(child, "abandoned cleanup with CancelledError")
     finally:
@@ -240,7 +241,7 @@ async def test_close_leak_soak_under_bounded_concurrency() -> None:
     # Allow any detached retry tasks from the base path to finish before
     # asserting socket state. The candidate closes inline, but this keeps the
     # test deterministic across both implementations.
-    await asyncio.sleep(0.3)
+    await async_wait_until(lambda: all(sock.fileno() == -1 for sock in sockets), timeout=2, what="all raw sockets closed")
 
     leaked = 0
     for sock in sockets:

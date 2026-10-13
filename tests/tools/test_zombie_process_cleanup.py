@@ -6,10 +6,13 @@ gateway deployments.
 """
 
 import os
-import signal
 import subprocess
 import sys
 import threading
+
+import pytest
+
+from tests.tools.delegate_fixtures import unpooled_mock_child
 
 
 
@@ -29,68 +32,6 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
-class TestZombieReproduction:
-    """Demonstrate that subprocesses survive when cleanup is not called."""
-
-    def test_orphaned_processes_survive_without_cleanup(self):
-        """REPRODUCTION: processes spawned directly survive if no one kills
-        them — this models the gap that causes zombie accumulation when
-        the gateway drops agent references without calling close()."""
-        pids = []
-
-        try:
-            for _ in range(3):
-                proc = _spawn_sleep(60)
-                pids.append(proc.pid)
-
-            for pid in pids:
-                assert _pid_alive(pid), f"PID {pid} should be alive after spawn"
-
-            # Simulate "session end" by just dropping the reference
-            del proc  # noqa: F821
-
-            # BUG: processes are still alive after reference is dropped
-            for pid in pids:
-                assert _pid_alive(pid), (
-                    f"PID {pid} died after ref drop — "
-                    f"expected it to survive (demonstrating the bug)"
-                )
-        finally:
-            for pid in pids:
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
-                    pass
-
-    def test_explicit_terminate_reaps_processes(self):
-        """Explicitly terminating+waiting on Popen handles works.
-        This models what ProcessRegistry.kill_process does internally."""
-        procs = []
-
-        try:
-            for _ in range(3):
-                proc = _spawn_sleep(60)
-                procs.append(proc)
-
-            for proc in procs:
-                assert _pid_alive(proc.pid)
-
-            for proc in procs:
-                proc.terminate()
-                proc.wait(timeout=5)
-
-            for proc in procs:
-                assert proc.returncode is not None, (
-                    f"PID {proc.pid} should have exited after terminate+wait"
-                )
-        finally:
-            for proc in procs:
-                try:
-                    proc.kill()
-                    proc.wait(timeout=1)
-                except Exception:
-                    pass
-
 
 class TestAgentCloseMethod:
     """Verify AIAgent.close() exists, is idempotent, and calls cleanup."""
@@ -103,6 +44,7 @@ class TestAgentCloseMethod:
             from run_agent import AIAgent
             agent = AIAgent.__new__(AIAgent)
             agent.session_id = "test-close-cleanup"
+            agent._process_owner_task_ids = {"sa-owned"}
             agent._active_children = []
             agent._active_children_lock = threading.Lock()
             agent.client = None
@@ -110,12 +52,18 @@ class TestAgentCloseMethod:
             with patch("tools.process_registry.process_registry") as mock_registry, \
                  patch("run_agent.cleanup_vm") as mock_cleanup_vm, \
                  patch("run_agent.cleanup_browser") as mock_cleanup_browser, \
-                 patch("tools.computer_use.release_computer_use_session") as mock_cleanup_cua:
+                 patch("tools.computer_use.tool.release_computer_use_session") as mock_cleanup_cua:
+                mock_registry.list_sessions.return_value = [
+                    {"session_id": "owned", "owner_task_id": "sa-owned", "status": "running"},
+                    {"session_id": "foreign", "owner_task_id": "parent", "status": "running"},
+                    {"session_id": "finished", "owner_task_id": "sa-owned", "status": "exited"},
+                ]
                 agent.close()
 
-                mock_registry.kill_all.assert_called_once_with(
-                    task_id="test-close-cleanup"
+                mock_registry.kill_process.assert_called_once_with(
+                    "owned", source="agent_close", consume_output=True,
                 )
+                mock_registry.kill_all.assert_not_called()
                 mock_cleanup_vm.assert_called_once_with("test-close-cleanup")
                 mock_cleanup_browser.assert_called_once_with("test-close-cleanup")
                 mock_cleanup_cua.assert_called_once_with("test-close-cleanup")
@@ -149,10 +97,10 @@ class TestAgentCloseMethod:
             agent.client = None
 
             with patch(
-                "tools.process_registry.process_registry.kill_all",
+                "tools.process_registry.process_registry.list_sessions",
                 side_effect=RuntimeError("process cleanup failed"),
             ), patch(
-                "tools.computer_use.release_computer_use_session",
+                "tools.computer_use.tool.release_computer_use_session",
             ) as mock_cleanup_cua:
                 agent.close()
 
@@ -173,7 +121,7 @@ class TestAgentCloseMethod:
             agent.client = None
 
             with patch(
-                "tools.computer_use.release_computer_use_session",
+                "tools.computer_use.tool.release_computer_use_session",
             ) as mock_cleanup_cua:
                 agent.release_clients()
 
@@ -259,106 +207,46 @@ class TestAgentCloseMethod:
 
             agent._session_db.end_session.assert_not_called()
 
-    def test_close_session_end_noops_without_session_db(self):
-        """close() is a no-op for session finalization when no DB is wired in."""
-        from unittest.mock import patch
 
-        with patch("run_agent.AIAgent.__init__", return_value=None):
-            from run_agent import AIAgent
-            agent = AIAgent.__new__(AIAgent)
-            agent.session_id = "test-close-no-db"
-            agent._active_children = []
-            agent._active_children_lock = threading.Lock()
-            agent.client = None
-            # No _session_db / _end_session_on_close attributes at all —
-            # getattr defaults must keep close() from raising.
-            agent.close()  # must not raise
-
-    def test_close_survives_partial_failures(self):
-        """close() continues cleanup even if one step fails."""
-        from unittest.mock import patch
-
-        with patch("run_agent.AIAgent.__init__", return_value=None):
-            from run_agent import AIAgent
-            agent = AIAgent.__new__(AIAgent)
-            agent.session_id = "test-close-partial"
-            agent._active_children = []
-            agent._active_children_lock = threading.Lock()
-            agent.client = None
-
-            with patch(
-                "tools.process_registry.process_registry"
-            ) as mock_reg, patch(
-                "run_agent.cleanup_vm"
-            ) as mock_vm, patch(
-                "run_agent.cleanup_browser"
-            ) as mock_browser:
-                mock_reg.kill_all.side_effect = RuntimeError("boom")
-
-                agent.close()
-
-                mock_vm.assert_called_once()
-                mock_browser.assert_called_once()
 
 
 class TestGatewayCleanupWiring:
     """Verify gateway lifecycle calls close() on agents."""
 
-    def test_gateway_stop_calls_close(self):
-        """gateway stop() should call close() on all running agents."""
+    def test_gateway_stop_calls_close(self, monkeypatch):
+        """Full shutdown must hard-close each running agent and its memory provider."""
         import asyncio
-        import threading
-        from unittest.mock import MagicMock, patch
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, Mock, patch
 
-        from gateway.run import GatewayRunner
+        from tests.gateway.restart_test_helpers import make_restart_runner
+        from tests.gateway.test_shutdown_aggregate_budget_contract import _configure_fast_forced_shutdown
 
-        runner = object.__new__(GatewayRunner)
-        runner._running = True
-        runner._running_agents = {}
-        runner._running_agents_ts = {}
-        runner.adapters = {}
-        runner._background_tasks = set()
-        runner._pending_messages = {}
-        runner._pending_approvals = {}
-        runner._pending_model_notes = {}
-        runner._shutdown_event = asyncio.Event()
-        runner._exit_reason = None
-        runner._exit_code = None
-        runner._stop_task = None
-        runner._draining = False
-        runner._restart_requested = False
-        runner._restart_task_started = False
-        runner._restart_detached = False
-        runner._restart_via_service = False
-        runner._restart_drain_timeout = 0.1
-        runner._voice_mode = {}
-        runner._session_model_overrides = {}
-        runner._update_prompt_pending = {}
-        runner._busy_input_mode = "interrupt"
-        runner._agent_cache = {}
-        runner._agent_cache_lock = threading.Lock()
-        runner._shutdown_all_gateway_honcho = lambda: None
-        runner._update_runtime_status = MagicMock()
-
-        mock_agent_1 = MagicMock()
-        mock_agent_2 = MagicMock()
-        runner._running_agents = {
-            "session-1": mock_agent_1,
-            "session-2": mock_agent_2,
+        runner, _adapter = make_restart_runner()
+        agents = {
+            key: SimpleNamespace(session_id=key, _session_messages=[],
+                                 shutdown_memory_provider=Mock(return_value=True), close=Mock())
+            for key in ("session-1", "session-2")
         }
+        _configure_fast_forced_shutdown(runner, monkeypatch, agents)
+        runner._running_agents = dict(agents)
+        for agent in agents.values():
+            agent.interrupt = Mock(side_effect=lambda *_args, **_kwargs: runner._running_agents.clear())
+        runner._cleanup_agent_resources = type(runner)._cleanup_agent_resources.__get__(runner)
+        runner._finalize_session_off_loop = AsyncMock(return_value=[])
 
-        loop = asyncio.new_event_loop()
-        try:
-            with patch("gateway.status.remove_pid_file"), \
-                 patch("gateway.status.write_runtime_status"), \
-                 patch("tools.terminal_tool.cleanup_all_environments"), \
-                 patch("tools.browser_tool.cleanup_all_browsers"):
-                loop.run_until_complete(GatewayRunner.stop(runner))
-        finally:
-            loop.close()
+        with (
+            patch("gateway.status.remove_pid_file"),
+            patch("gateway.status.release_gateway_runtime_lock"),
+            patch("gateway.status.write_runtime_status"),
+        ):
+            asyncio.run(runner.stop())
 
-        mock_agent_1.close.assert_called()
-        mock_agent_2.close.assert_called()
+        assert len(agents) == 2
+        for agent in agents.values():
+            agent.interrupt.assert_called_once()
+            agent.shutdown_memory_provider.assert_called_once_with([])
+            agent.close.assert_called_once()
 
     def test_evict_does_not_call_close(self):
         """_evict_cached_agent() should NOT call close() — it's also used
@@ -391,14 +279,14 @@ class TestDelegationCleanup:
             reset_hermes_home_override,
             set_hermes_home_override,
         )
-        from hermes_cli.observability import relay_runtime
+        from agent import relay_runtime
         from tools.delegate_tool import _run_single_child
 
         parent = MagicMock()
         parent._active_children = []
         parent._active_children_lock = threading.Lock()
 
-        child = MagicMock()
+        child = unpooled_mock_child()
         child.session_id = "child-session"
         child._delegate_saved_tool_names = ["tool1"]
         observed = {}
@@ -436,13 +324,13 @@ class TestDelegationCleanup:
     def test_active_child_turn_owns_relay_scope_cleanup(self, monkeypatch):
         from unittest.mock import MagicMock
 
-        from hermes_cli.observability import relay_runtime
+        from agent import relay_runtime
         from tools.delegate_tool import _run_single_child
 
         parent = MagicMock()
         parent._active_children = []
         parent._active_children_lock = threading.Lock()
-        child = MagicMock()
+        child = unpooled_mock_child()
         child.session_id = "active-child-session"
         child._delegate_saved_tool_names = ["tool1"]
         child.run_conversation.side_effect = RuntimeError("test abort")
@@ -463,6 +351,7 @@ class TestDelegationCleanup:
         )
 
         assert result["status"] == "error"
+        child.run_conversation.assert_called_once()
         relay_host.unregister_subagent.assert_not_called()
 
     def test_timed_out_child_keeps_relay_session_until_its_turn_exits(
@@ -483,17 +372,38 @@ class TestDelegationCleanup:
         child_started = threading.Event()
         release_child = threading.Event()
         child_finished = threading.Event()
+        child_closed = threading.Event()
         parent = MagicMock()
         parent._active_children = []
         parent._active_children_lock = threading.Lock()
-        child = MagicMock()
+        child = unpooled_mock_child()
         child.session_id = "timed-out-child"
+        child.close.side_effect = child_closed.set
         child._delegate_saved_tool_names = ["tool1"]
         child.get_activity_summary.return_value = {"api_call_count": 1}
         parent._active_children.append(child)
         relay_host = MagicMock()
         monkeypatch.setattr(relay_runtime, "get_runtime", lambda **_kwargs: relay_host)
-        monkeypatch.setattr("tools.delegate_tool._get_child_timeout", lambda: 0.1)
+        monkeypatch.setattr("tools.delegate_tool._get_child_timeout", lambda: 2)
+
+        # The parent's cap must not elapse before the worker thread has opened the child's turn, or
+        # the "late result" scenario degrades into "child never started" on a loaded runner. Gate the
+        # settle wait the timeout rides on (``_ChildRun.run`` waits on ``heartbeat.settled``).
+        class _GatedSettle(threading.Event):
+            def wait(self, timeout=None):
+                child_started.wait(timeout=5)
+                return super().wait(timeout)
+
+        from tools import delegate_tool
+
+        real_start_heartbeat = delegate_tool._start_heartbeat
+
+        def start_gated_heartbeat(*args, **kwargs):
+            heartbeat = real_start_heartbeat(*args, **kwargs)
+            heartbeat.settled = _GatedSettle()
+            return heartbeat
+
+        monkeypatch.setattr(delegate_tool, "_start_heartbeat", start_gated_heartbeat)
 
         def run_conversation(**kwargs):
             lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
@@ -508,7 +418,7 @@ class TestDelegationCleanup:
             )
             child_started.set()
             try:
-                release_child.wait(timeout=5)
+                assert release_child.wait(timeout=30), "test did not release the child"
                 return {
                     "final_response": "late result",
                     "completed": True,
@@ -540,14 +450,22 @@ class TestDelegationCleanup:
                 session_id=child.session_id,
             )
             relay_host.unregister_subagent.assert_not_called()
+            child.close.assert_not_called()
+            assert child in parent._active_children
 
             release_child.set()
             assert child_finished.wait(timeout=5)
+            assert child_closed.wait(timeout=5)
+            child.close.assert_called_once_with()
+            relay_host.unregister_subagent.assert_called_once_with({"child_session_id": child.session_id})
+            assert child not in parent._active_children
             assert not relay_runtime.SESSION_COORDINATOR.has_active_turn(
                 profile_key=str(profile_home),
                 session_id=child.session_id,
             )
         finally:
             release_child.set()
+            if child_started.is_set():
+                assert child_finished.wait(timeout=10)
             reset_hermes_home_override(profile_token)
             relay_runtime._reset_for_tests()

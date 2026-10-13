@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 
 import pytest
 
-import gateway.lifecycle_lease as lifecycle_lease
+from gateway import lifecycle_lease
 
 from gateway.lifecycle_lease import (
     LifecycleLeaseBlocked,
@@ -13,7 +13,7 @@ from gateway.lifecycle_lease import (
 )
 
 
-NOW = datetime(2026, 9, 1, 18, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 9, 1, 18, 0, tzinfo=UTC)
 
 
 def acquire(home, *, token="txn-a", purpose="bounded-restart"):

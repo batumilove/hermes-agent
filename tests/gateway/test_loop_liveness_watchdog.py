@@ -3,23 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import pathlib
 import threading
 import time
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from gateway.shutdown_watchdog import (
-    _arm_loop_floor_timer,
+    loop_heartbeat_forever,
     start_loop_liveness_watchdog,
 )
-
-
-def _immediate_loop() -> MagicMock:
-    loop = MagicMock(spec=asyncio.AbstractEventLoop)
-    loop.call_soon_threadsafe.side_effect = lambda callback: callback()
-    return loop
-
 
 def test_loop_liveness_watchdog_stop_during_dump_disarms_hard_exit():
     loop = MagicMock(spec=asyncio.AbstractEventLoop)
@@ -51,7 +43,6 @@ def test_loop_liveness_watchdog_stop_during_dump_disarms_hard_exit():
     critical.assert_called_once()
     dump.assert_called_once_with(all_threads=True)
     assert exit_codes == []
-
 
 def test_loop_liveness_watchdog_stop_during_final_miss_disarms_hard_exit():
     loop = MagicMock(spec=asyncio.AbstractEventLoop)
@@ -102,7 +93,6 @@ def test_loop_liveness_watchdog_stop_during_final_miss_disarms_hard_exit():
     critical.assert_not_called()
     dump.assert_not_called()
 
-
 def test_loop_liveness_watchdog_stop_after_first_recheck_skips_final_actions():
     loop = MagicMock(spec=asyncio.AbstractEventLoop)
     probe_scheduled = threading.Event()
@@ -149,7 +139,6 @@ def test_loop_liveness_watchdog_stop_after_first_recheck_skips_final_actions():
     dump.assert_not_called()
     hard_exit.assert_not_called()
 
-
 def test_gateway_config_loop_watchdog_round_trip():
     """loop_watchdog is a config.yaml knob: default on, nested-gateway form honored."""
     from gateway.config import GatewayConfig
@@ -164,7 +153,6 @@ def test_gateway_config_loop_watchdog_round_trip():
     )
     config = GatewayConfig.from_dict({"loop_watchdog": False})
     assert config.to_dict()["loop_watchdog"] is False
-
 
 def test_gateway_config_loop_watchdog_tuning_round_trip():
     """Watchdog tolerance knobs parse, serialize, and clamp malformed values."""
@@ -219,7 +207,6 @@ def test_gateway_config_loop_watchdog_tuning_round_trip():
     assert clamped.loop_watchdog_probe_timeout_s == 10.0
     assert clamped.loop_watchdog_max_strikes == 3
 
-
 def test_gateway_config_loop_watchdog_nonfinite_values_degrade():
     """NaN/Inf tuning values fall back to defaults instead of reaching the
     watchdog's Event.wait loop (or aborting config load via int(inf))."""
@@ -248,7 +235,6 @@ def test_gateway_config_loop_watchdog_nonfinite_values_degrade():
     assert big.loop_watchdog_probe_timeout_s == 10.0
     assert big.loop_watchdog_max_strikes == 3
 
-
 def test_load_gateway_config_bridges_loop_watchdog_keys(tmp_path, monkeypatch):
     """The real startup loader must honor gateway.loop_watchdog* from
     config.yaml — from_dict's nested fallback never sees the yaml gateway
@@ -271,6 +257,35 @@ def test_load_gateway_config_bridges_loop_watchdog_keys(tmp_path, monkeypatch):
     assert cfg.loop_watchdog_probe_timeout_s == 15.0
     assert cfg.loop_watchdog_max_strikes == 12
 
+def test_loop_liveness_watchdog_marks_runtime_degraded_before_restart():
+    """The terminal watchdog observation must be visible before ``os._exit``."""
+    from gateway.status import read_runtime_status, write_runtime_status
+
+    write_runtime_status(gateway_state="running", exit_reason=None)
+    loop = MagicMock(spec=asyncio.AbstractEventLoop)
+    fired = threading.Event()
+    exit_codes = []
+
+    def fake_exit(code: int) -> None:
+        exit_codes.append(code)
+        fired.set()
+
+    with (
+        patch("gateway.shutdown_watchdog.faulthandler.dump_traceback"),
+        patch("gateway.shutdown_watchdog.os._exit", side_effect=fake_exit),
+    ):
+        handle = start_loop_liveness_watchdog(
+            loop, probe_interval=0.01, probe_timeout=0.01, max_strikes=2
+        )
+        assert handle is not None
+        assert fired.wait(timeout=2.0), "watchdog did not reach its restart exit"
+        handle.stop()
+        handle.join(timeout=1.0)
+
+    assert exit_codes == [75]
+    status = read_runtime_status()
+    assert status["gateway_state"] == "degraded"
+    assert status["exit_reason"] == "loop_liveness_watchdog"
 
 def test_gateway_runner_liveness_guards_start_and_stop():
     from gateway.run import GatewayRunner
@@ -286,10 +301,10 @@ def test_gateway_runner_liveness_guards_start_and_stop():
 
     with (
         patch(
-            "gateway.run._arm_loop_floor_timer", return_value=floor_timer
+            "gateway.shutdown_watchdog._arm_loop_floor_timer", return_value=floor_timer
         ) as arm_floor,
         patch(
-            "gateway.run.start_loop_liveness_watchdog", return_value=watchdog
+            "gateway.shutdown_watchdog.start_loop_liveness_watchdog", return_value=watchdog
         ) as start_watchdog,
     ):
         runner._start_loop_liveness_guards(loop)

@@ -264,6 +264,17 @@ class DispatcherOwnerLease:
         self.release()
 
 
+def _dispatcher_directory_flags() -> tuple[int, int, int]:
+    required_flags = ("O_NOFOLLOW", "O_DIRECTORY")
+    if any(getattr(os, name, None) is None for name in required_flags):
+        raise DispatcherOwnerError("safe descriptor-relative locking is unsupported")
+    nofollow = cast(int, os.O_NOFOLLOW)
+    directory = cast(int, os.O_DIRECTORY)
+    close_on_exec = getattr(os, "O_CLOEXEC", 0)
+
+    return nofollow, directory, close_on_exec
+
+
 def acquire_dispatcher_owner(
     home: str | os.PathLike[str], owner_generation: object
 ) -> DispatcherOwnerLease:
@@ -279,12 +290,7 @@ def acquire_dispatcher_owner(
     exact_owner_generation = cast(int, owner_generation)
     canonical_home = _canonical_home(home)
 
-    required_flags = ("O_NOFOLLOW", "O_DIRECTORY")
-    if any(getattr(os, name, None) is None for name in required_flags):
-        raise DispatcherOwnerError("safe descriptor-relative locking is unsupported")
-    nofollow = cast(int, os.O_NOFOLLOW)
-    directory = cast(int, os.O_DIRECTORY)
-    close_on_exec = getattr(os, "O_CLOEXEC", 0)
+    nofollow, directory, close_on_exec = _dispatcher_directory_flags()
 
     try:
         import fcntl

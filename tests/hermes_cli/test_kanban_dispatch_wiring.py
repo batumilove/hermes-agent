@@ -187,7 +187,7 @@ def test_second_launch_of_same_task_advances_generation(tmp_path: Path) -> None:
         board_db,
         next_run_generation_fn=_gen,
         current_claim_token_fn=lambda task_id: (
-            "ctok_" + task_id[2:] + "g%02d0000" % gen_box["n"]
+            "ctok_" + task_id[2:] + f"g{gen_box['n']:02d}0000"
         ),
     )
     wrapped = wrap_spawn_with_launch_protocol(inner, launch, cfg)
@@ -307,7 +307,7 @@ def test_non_integer_pid_fails_closed(tmp_path: Path) -> None:
 
 
 def test_apply_launch_wiring_passthrough_when_unconfigured() -> None:
-    sentinel = lambda task, workspace: 1  # noqa: E731
+    sentinel = lambda task, workspace: 1
     clear_launch_wiring()
     assert apply_launch_wiring(sentinel) is sentinel
     assert apply_launch_wiring(None) is None
@@ -402,7 +402,7 @@ def test_dispatch_once_routes_spawn_through_wiring(
     driver = tmp_path / "driver.py"
     driver.write_text(
         "import os, pathlib, sqlite3\n"
-        "from hermes_cli import kanban_db as kb\n"
+        "from hermes_cli import kanban_db as kb, kanban_db_connect as kbc, kanban_db_dispatch as kbd\n"
         "from hermes_cli.kanban_dispatch_wiring import (\n"
         "    configure_launch_wiring, clear_launch_wiring,\n"
         ")\n"
@@ -428,8 +428,8 @@ def test_dispatch_once_routes_spawn_through_wiring(
         "inner = lambda task, ws, board=None: (print('SPAWN', task.id), 4242)[1]\n"
         "import hermes_cli.profiles as _P\n"
         "_P.profile_exists = lambda name: True\n"
-        "kb._default_spawn = inner\n"
-        "with kb.connect() as bc:\n"
+        "kbd._default_spawn = inner\n"
+        "with kbc.connect_closing() as bc:\n"
         "    task_id = kb.create_task(bc, title='probe', body='b', assignee='orch')\n"
         "configure_launch_wiring(launch, cfg := __import__('hermes_cli.kanban_dispatch_wiring', fromlist=['LaunchWiringConfig']).LaunchWiringConfig(\n"
         "    board_database=board_db, board_uuid=BOARD_UUID, owner_home=home,\n"
@@ -437,8 +437,8 @@ def test_dispatch_once_routes_spawn_through_wiring(
         "    current_claim_token_fn=lambda tid: 'ctok_' + tid[2:] + '0000',\n"
         "    next_run_generation_fn=lambda tid: 1))\n"
         "try:\n"
-        "    with kb.connect() as bc:\n"
-        "        kb.dispatch_once(bc, max_spawn=1, max_in_progress=99)\n"
+        "    with kbc.connect_closing() as bc:\n"
+        "        kbd.dispatch_once(bc, max_spawn=1, max_in_progress=99)\n"
         "finally:\n"
         "    clear_launch_wiring()\n"
         "    launch.close()\n"
@@ -460,6 +460,7 @@ def test_dispatch_once_routes_spawn_through_wiring(
     proc = subprocess.run(
         [sys.executable, str(driver)],
         env=env,
+        check=False,
         capture_output=True,
         text=True,
         cwd=str(tmp_path),
@@ -492,14 +493,14 @@ def test_apply_launch_wiring_is_idempotent(tmp_path: Path) -> None:
             assert twice is once, "second wiring must return the same wrapper"
             # And through the daemon-path helper (which the dispatch loop
             # calls): still the same single wrapper, never nested.
-            from hermes_cli.kanban_db import _apply_launch_wiring_to_spawn
-            assert _apply_launch_wiring_to_spawn(once) is once
+            from hermes_cli.kanban_dispatch_wiring import apply_launch_wiring_to_spawn
+            assert apply_launch_wiring_to_spawn(once) is once
         finally:
             wiring.clear_launch_wiring()
         # Unconfigured: exact identity even for a pre-wrapped callable.
-        from hermes_cli.kanban_db import _apply_launch_wiring_to_spawn
+        from hermes_cli.kanban_dispatch_wiring import apply_launch_wiring_to_spawn
         sentinel = _RecordingSpawn()
-        assert _apply_launch_wiring_to_spawn(sentinel) is sentinel
+        assert apply_launch_wiring_to_spawn(sentinel) is sentinel
     finally:
         launch.close()
 
@@ -530,7 +531,7 @@ def test_construction_failure_never_strands_board_claim(
     """Atomic round-3 finding 1: a WrappedSpawn construction failure (e.g.
     board identity canonicalization error) must be classified as a spawn
     failure for that row — the board task must NOT remain claimed."""
-    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc, kanban_db_dispatch as kbd
 
     def boom(*_a: Any, **_k: Any) -> Any:
         raise RuntimeError("board identity exploded")
@@ -541,7 +542,7 @@ def test_construction_failure_never_strands_board_claim(
     import hermes_cli.profiles as _profiles
 
     monkeypatch.setattr(_profiles, "profile_exists", lambda name: True)
-    conn = kb.connect()
+    conn = kbc.connect()
     task_id = kb.create_task(conn, title="c", body="b", assignee="orch")
     with kb.write_txn(conn):
         conn.execute(
@@ -549,7 +550,7 @@ def test_construction_failure_never_strands_board_claim(
         )
     wiring.configure_launch_wiring(conn, _config(tmp_path, tmp_path / "b.db"))
     try:
-        result = kb.dispatch_once(conn, max_spawn=1, max_in_progress=99)
+        kbd.dispatch_once(conn, max_spawn=1, max_in_progress=99)
         row = conn.execute(
             "SELECT status FROM tasks WHERE id = ?", (task_id,)
         ).fetchone()
@@ -602,11 +603,11 @@ def test_construction_failure_error_text_preserved(
         "hermes_cli.kanban_dispatch_wiring.canonical_board_identity", boom
     )
     wiring.configure_launch_wiring(launch, _config(tmp_path, board_db))
-    from hermes_cli.kanban_db import _apply_launch_wiring_to_spawn
+    from hermes_cli.kanban_dispatch_wiring import apply_launch_wiring_to_spawn
 
     try:
         sentinel = _RecordingSpawn()
-        unwirable = _apply_launch_wiring_to_spawn(sentinel)
+        unwirable = apply_launch_wiring_to_spawn(sentinel)
         assert unwirable is not sentinel
         assert not isinstance(unwirable, wiring.WrappedSpawn)
         with pytest.raises(RuntimeError) as exc_info:
@@ -641,7 +642,7 @@ def test_pid_identity_matrix_fails_closed(tmp_path: Path) -> None:
     try:
         for bad in bad_pids:
             wrapped = wrap_spawn_with_launch_protocol(
-                (lambda p: lambda task, ws, board=None: p)(bad),
+                (lambda task, ws, board=None, pid=bad: pid),
                 launch,
                 _config(tmp_path, board_db),
             )

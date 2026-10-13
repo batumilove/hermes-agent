@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_cli import main as hermes_main
+from hermes_cli import update_cmd
 
 
 class _Lease:
@@ -32,10 +33,11 @@ def _args():
 
 
 def _isolate_update_boundary(monkeypatch, events):
-    import hermes_cli.config as config
-    import hermes_cli.update_lock as update_lock
+    from hermes_cli import config
+    from hermes_cli import update_lock
 
     monkeypatch.setattr(config, "is_managed", lambda: False)
+    monkeypatch.setattr(hermes_main, "_update_preflight_handled", lambda _args: False)
     monkeypatch.setattr(config, "detect_install_method", lambda _root: "git")
     monkeypatch.setattr(
         hermes_main,
@@ -50,6 +52,9 @@ def _isolate_update_boundary(monkeypatch, events):
 
     class FakeUpdateLock:
         holder = None
+
+        def __init__(self, *, install_root=None):
+            self.install_root = install_root
 
         def acquire(self):
             events.append("update-lock-acquire")
@@ -75,7 +80,7 @@ def test_update_holds_one_deployment_lease_across_checkout_reconciliation(
         "hermes_cli.lifecycle_coordination.acquire_cli_lifecycle_transaction", acquire
     )
     monkeypatch.setattr(
-        hermes_main,
+        update_cmd,
         "_cmd_update_impl",
         # _cmd_update_impl contains checkout reconciliation (merge/reset and
         # rollback), so entering it only after acquisition proves that phase
@@ -112,7 +117,7 @@ def test_update_lease_block_prevents_impl_and_releases_update_lock(
         "hermes_cli.lifecycle_coordination.acquire_cli_lifecycle_transaction", blocked
     )
     monkeypatch.setattr(
-        hermes_main,
+        update_cmd,
         "_cmd_update_impl",
         lambda args, gateway_mode: events.append("impl"),
     )
@@ -140,7 +145,7 @@ def test_update_releases_deployment_lease_on_system_exit(monkeypatch):
         events.append("impl")
         sys.exit(7)
 
-    monkeypatch.setattr(hermes_main, "_cmd_update_impl", exit_impl)
+    monkeypatch.setattr(update_cmd, "_cmd_update_impl", exit_impl)
 
     with pytest.raises(SystemExit) as exc_info:
         hermes_main.cmd_update(_args())
@@ -161,7 +166,7 @@ def test_update_release_failure_is_not_hidden_by_primary_failure(monkeypatch):
     def fail_impl(args, gateway_mode):
         raise ValueError("primary update failure")
 
-    monkeypatch.setattr(hermes_main, "_cmd_update_impl", fail_impl)
+    monkeypatch.setattr(update_cmd, "_cmd_update_impl", fail_impl)
 
     with pytest.raises(RuntimeError, match="release refused metadata drift") as exc_info:
         hermes_main.cmd_update(_args())
@@ -180,7 +185,7 @@ def test_update_preserves_existing_behavior_when_posix_leases_are_unavailable(
         lambda **kwargs: pytest.fail("non-POSIX update must not acquire POSIX lease"),
     )
     monkeypatch.setattr(
-        hermes_main,
+        update_cmd,
         "_cmd_update_impl",
         lambda args, gateway_mode: events.append("impl"),
     )

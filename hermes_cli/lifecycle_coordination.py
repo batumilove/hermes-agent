@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import sys
+from contextlib import contextmanager
 import importlib
 import json
 import subprocess
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 
 from gateway.lifecycle_lease import (
@@ -43,7 +45,7 @@ def _git_identity(repo_root: Path) -> tuple[str, str]:
             stdout, _ = process.communicate(timeout=10)
         except subprocess.TimeoutExpired:
             process.kill()
-            process.communicate()
+            process.wait(timeout=5)
             raise
         if process.returncode:
             raise subprocess.CalledProcessError(process.returncode, process.args)
@@ -72,7 +74,7 @@ def acquire_cli_lifecycle_transaction(
     now: datetime | None = None,
 ) -> LifecycleLease:
     """Acquire common ownership bound to one exact CLI transaction manifest."""
-    observed_now = now or datetime.now(timezone.utc)
+    observed_now = now or datetime.now(UTC)
     if observed_now.tzinfo is None:
         raise ValueError("now must be timezone-aware")
     source_head, source_tree = _git_identity(Path(repo_root))
@@ -103,3 +105,40 @@ def acquire_cli_lifecycle_transaction(
         )
     except LifecycleLeaseBlocked as exc:
         raise LifecycleCoordinationBlocked(str(exc)) from exc
+
+
+@contextmanager
+def cli_update_transaction(home: Path, repo_root: Path):
+    """Own checkout reconciliation and update completion under one deployment lease."""
+    lease = None
+    primary = None
+    try:
+        if lifecycle_coordination_available():
+            try:
+                lease = acquire_cli_lifecycle_transaction(
+                    home=home, repo_root=repo_root, purpose="deployment", operation="hermes-update",
+                )
+            except LifecycleCoordinationBlocked as exc:
+                print(
+                    f"Update blocked by lifecycle coordination: {exc}\n"
+                    "Inspect ownership with `hermes lifecycle-lease inspect`.",
+                    file=sys.stderr,
+                )
+                raise SystemExit(2) from exc
+        else:
+            print(
+                "Warning: lifecycle coordination is unavailable on this platform; "
+                "continuing with the existing update lock only.", file=sys.stderr,
+            )
+        yield
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        if lease is not None:
+            try:
+                lease.release()
+            except BaseException as exc:
+                if primary is not None:
+                    raise exc from primary
+                raise

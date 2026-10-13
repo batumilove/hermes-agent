@@ -11,6 +11,7 @@ restarts do not zero request/failure/fallback series.
 from __future__ import annotations
 
 import os
+import logging
 import re
 import sys
 import threading
@@ -24,6 +25,32 @@ try:
     import fcntl
 except ImportError:  # pragma: no cover - deployed integration is Linux-only
     fcntl = None
+
+logger = logging.getLogger(__name__)
+_MAX_SERIES = 256
+_MAX_PENDING = 1024
+
+
+class _Series(dict):
+    """Bound dynamic provider/model series; overflow uses one stable tuple."""
+
+    def _key(self, key):
+        if key in self or len(self) < _MAX_SERIES - 1:
+            return key
+        return ("overflow",) * len(key)
+
+    def get(self, key, default=None):
+        return super().get(self._key(key), default)
+
+    def __setitem__(self, key, value):
+        super().__setitem__(self._key(key), value)
+
+
+def _remember(mapping: dict, key: str, value: Any) -> None:
+    if key not in mapping and len(mapping) >= _MAX_PENDING:
+        del mapping[next(iter(mapping))]
+    mapping[key] = value
+
 
 _METRICS_LOCK = threading.Lock()
 _WRITE_LOCK = threading.Lock()
@@ -46,6 +73,11 @@ _METRICS: dict[str, Any] = {
     "last_fallback_ts": {},  # (from_provider, from_model, to_provider, to_model) -> float
     "last_event_timestamp": 0.0,
 }
+
+for _metric_name, _metric_value in tuple(_METRICS.items()):
+    if isinstance(_metric_value, dict):
+        _METRICS[_metric_name] = _Series()
+del _metric_name, _metric_value
 
 _LABEL_RE = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)="((?:\\.|[^"\\])*)"')
 _SAMPLE_RE = re.compile(
@@ -77,7 +109,7 @@ def reset_metrics_for_tests() -> None:
             "approx_input_tokens",
             "last_fallback_ts",
         ):
-            _METRICS[key] = {}
+            _METRICS[key] = _Series()
         _METRICS["last_event_timestamp"] = 0.0
         _LAST_REASON_BY_SESSION.clear()
         _INFLIGHT.clear()
@@ -137,7 +169,7 @@ def _claim_writer_ownership() -> bool:
         _PROCESS_LOCK_FILE = lock_file
         _PROCESS_LOCK_PID = current_pid
         return True
-    except Exception as exc:
+    except (OSError, ValueError) as exc:
         if lock_file is not None and not lock_file.closed:
             lock_file.close()
         _warn(f"could not acquire provider telemetry writer lock: {exc}")
@@ -157,15 +189,15 @@ def on_pre_api_request(**kwargs: Any) -> None:
                 _METRICS["last_event_timestamp"] = time.time()
         if api_request_id:
             with _METRICS_LOCK:
-                _INFLIGHT[api_request_id] = {
+                _remember(_INFLIGHT, api_request_id, {
                     "provider": provider,
                     "model": model,
                     "started_at": kwargs.get("started_at") or time.time(),
                     "approx_input_tokens": tokens,
-                }
+                })
         _write_metrics()
-    except Exception as exc:  # pragma: no cover - fail-open
-        _warn(f"pre_api_request failed: {exc}")
+    except Exception:  # pragma: no cover - observer callback boundary
+        logger.exception("Provider telemetry pre_api_request failed")
 
 
 def on_post_api_request(**kwargs: Any) -> None:
@@ -201,8 +233,8 @@ def on_post_api_request(**kwargs: Any) -> None:
                 _METRICS["duration_count"][key] = _METRICS["duration_count"].get(key, 0) + 1
             _METRICS["last_event_timestamp"] = time.time()
         _write_metrics()
-    except Exception as exc:  # pragma: no cover - fail-open
-        _warn(f"post_api_request failed: {exc}")
+    except Exception:  # pragma: no cover - observer callback boundary
+        logger.exception("Provider telemetry post_api_request failed")
 
 
 def on_api_request_error(**kwargs: Any) -> None:
@@ -236,15 +268,15 @@ def on_api_request_error(**kwargs: Any) -> None:
             if tokens is not None:
                 _METRICS["approx_input_tokens"][(provider, model)] = tokens
             if session_id:
-                _LAST_REASON_BY_SESSION[session_id] = reason
+                _remember(_LAST_REASON_BY_SESSION, session_id, reason)
             # Keep map bounded.
             if len(_LAST_REASON_BY_SESSION) > 512:
                 for old in list(_LAST_REASON_BY_SESSION.keys())[:64]:
                     _LAST_REASON_BY_SESSION.pop(old, None)
             _METRICS["last_event_timestamp"] = time.time()
         _write_metrics()
-    except Exception as exc:  # pragma: no cover - fail-open
-        _warn(f"api_request_error failed: {exc}")
+    except Exception:  # pragma: no cover - observer callback boundary
+        logger.exception("Provider telemetry api_request_error failed")
 
 
 def on_fallback_activated(**kwargs: Any) -> None:
@@ -265,12 +297,12 @@ def on_fallback_activated(**kwargs: Any) -> None:
             key = (from_provider, from_model, to_provider, to_model, reason)
             _inc_locked(_METRICS["fallbacks"], key, 1)
             if session_id:
-                _ACTIVE_FALLBACKS[session_id] = key
+                _remember(_ACTIVE_FALLBACKS, session_id, key)
             _METRICS["last_fallback_ts"][(from_provider, from_model, to_provider, to_model)] = time.time()
             _METRICS["last_event_timestamp"] = time.time()
         _write_metrics()
-    except Exception as exc:  # pragma: no cover - fail-open
-        _warn(f"on_fallback_activated failed: {exc}")
+    except Exception:  # pragma: no cover - observer callback boundary
+        logger.exception("Provider telemetry on_fallback_activated failed")
 
 
 def on_fallback_chain_exhausted(**kwargs: Any) -> None:
@@ -289,8 +321,8 @@ def on_fallback_chain_exhausted(**kwargs: Any) -> None:
                 _ACTIVE_FALLBACKS.pop(session_id, None)
             _METRICS["last_event_timestamp"] = time.time()
         _write_metrics()
-    except Exception as exc:  # pragma: no cover - fail-open
-        _warn(f"on_fallback_chain_exhausted failed: {exc}")
+    except Exception:  # pragma: no cover - observer callback boundary
+        logger.exception("Provider telemetry on_fallback_chain_exhausted failed")
 
 
 def on_primary_restored(**kwargs: Any) -> None:
@@ -305,17 +337,20 @@ def on_primary_restored(**kwargs: Any) -> None:
                 _ACTIVE_FALLBACKS.pop(session_id, None)
             _METRICS["last_event_timestamp"] = time.time()
         _write_metrics()
-    except Exception as exc:  # pragma: no cover - fail-open
-        _warn(f"on_primary_restored failed: {exc}")
+    except Exception:  # pragma: no cover - observer callback boundary
+        logger.exception("Provider telemetry on_primary_restored failed")
 
 
 def _metrics_file() -> Path:
-    override = os.environ.get("HERMES_PROVIDER_TELEMETRY_METRICS_FILE", "").strip()
+    from hermes_cli.config import load_config_readonly
+
+    config = (load_config_readonly() or {}).get("provider_telemetry") or {}
+    override = str(config.get("metrics_file") or "").strip()
     if override:
         path = Path(override).expanduser()
         if path.name.endswith(".prom") and (not path.exists() or path.is_file()):
             return path
-        _warn("ignoring HERMES_PROVIDER_TELEMETRY_METRICS_FILE override that is not a .prom regular file")
+        _warn("ignoring provider_telemetry.metrics_file that is not a .prom regular file")
     return get_hermes_home() / "state" / "prometheus" / "hermes_provider_telemetry.prom"
 
 
@@ -335,7 +370,8 @@ def _load_metrics_from_file_locked() -> None:
         if not path.is_file():
             return
         text = path.read_text(encoding="utf-8")
-    except Exception:
+    except (OSError, UnicodeError):
+        logger.debug("Could not hydrate provider telemetry", exc_info=True)
         return
 
     for raw in text.splitlines():
@@ -358,59 +394,29 @@ def _load_metrics_from_file_locked() -> None:
         if name == "hermes_provider_telemetry_last_event_timestamp_seconds":
             _METRICS["last_event_timestamp"] = max(float(_METRICS["last_event_timestamp"] or 0.0), value)
             continue
-        if name == "hermes_model_requests_total":
-            key = (labels.get("provider", "unknown"), labels.get("model", "unknown"), labels.get("outcome", "unknown"))
-            _METRICS["requests"][key] = int(value)
-        elif name == "hermes_model_failures_total":
-            key = (labels.get("provider", "unknown"), labels.get("model", "unknown"), labels.get("reason", "unknown"))
-            _METRICS["failures"][key] = int(value)
-        elif name == "hermes_model_fallbacks_total":
-            key = (
-                labels.get("from_provider", "unknown"),
-                labels.get("from_model", "unknown"),
-                labels.get("to_provider", "unknown"),
-                labels.get("to_model", "unknown"),
-                labels.get("reason", "unknown"),
-            )
-            _METRICS["fallbacks"][key] = int(value)
-        elif name == "hermes_model_fallback_recoveries_total":
-            key = (
-                labels.get("from_provider", "unknown"),
-                labels.get("from_model", "unknown"),
-                labels.get("to_provider", "unknown"),
-                labels.get("to_model", "unknown"),
-                labels.get("reason", "unknown"),
-            )
-            _METRICS["fallback_recoveries"][key] = int(value)
-        elif name == "hermes_model_fallback_chain_exhaustions_total":
-            key = (
-                labels.get("provider", "unknown"),
-                labels.get("model", "unknown"),
-                labels.get("primary_provider", "unknown"),
-                labels.get("primary_model", "unknown"),
-                labels.get("reason", "unknown"),
-            )
-            _METRICS["chain_exhaustions"][key] = int(value)
-        elif name == "hermes_model_primary_restores_total":
-            key = (labels.get("provider", "unknown"), labels.get("model", "unknown"))
-            _METRICS["primary_restores"][key] = int(value)
-        elif name == "hermes_model_request_duration_seconds_sum":
-            key = (labels.get("provider", "unknown"), labels.get("model", "unknown"), labels.get("outcome", "unknown"))
-            _METRICS["duration_sum"][key] = float(value)
-        elif name == "hermes_model_request_duration_seconds_count":
-            key = (labels.get("provider", "unknown"), labels.get("model", "unknown"), labels.get("outcome", "unknown"))
-            _METRICS["duration_count"][key] = int(value)
-        elif name == "hermes_model_approx_input_tokens":
-            key = (labels.get("provider", "unknown"), labels.get("model", "unknown"))
-            _METRICS["approx_input_tokens"][key] = int(value)
-        elif name == "hermes_model_last_fallback_timestamp_seconds":
-            key = (
-                labels.get("from_provider", "unknown"),
-                labels.get("from_model", "unknown"),
-                labels.get("to_provider", "unknown"),
-                labels.get("to_model", "unknown"),
-            )
-            _METRICS["last_fallback_ts"][key] = float(value)
+        spec = _STORED_SERIES.get(name)
+        if spec is not None:
+            metric, dimensions, number_type = spec
+            key = tuple(_label(labels.get(dimension, "unknown")) for dimension in dimensions)
+            _METRICS[metric][key] = number_type(value)
+
+
+_PROVIDER_MODEL = ("provider", "model")
+_TRANSITION = ("from_provider", "from_model", "to_provider", "to_model")
+_STORED_SERIES = {
+    "hermes_model_requests_total": ("requests", (*_PROVIDER_MODEL, "outcome"), int),
+    "hermes_model_failures_total": ("failures", (*_PROVIDER_MODEL, "reason"), int),
+    "hermes_model_fallbacks_total": ("fallbacks", (*_TRANSITION, "reason"), int),
+    "hermes_model_fallback_recoveries_total": ("fallback_recoveries", (*_TRANSITION, "reason"), int),
+    "hermes_model_fallback_chain_exhaustions_total": (
+        "chain_exhaustions", (*_PROVIDER_MODEL, "primary_provider", "primary_model", "reason"), int,
+    ),
+    "hermes_model_primary_restores_total": ("primary_restores", _PROVIDER_MODEL, int),
+    "hermes_model_request_duration_seconds_sum": ("duration_sum", (*_PROVIDER_MODEL, "outcome"), float),
+    "hermes_model_request_duration_seconds_count": ("duration_count", (*_PROVIDER_MODEL, "outcome"), int),
+    "hermes_model_approx_input_tokens": ("approx_input_tokens", _PROVIDER_MODEL, int),
+    "hermes_model_last_fallback_timestamp_seconds": ("last_fallback_ts", _TRANSITION, float),
+}
 
 
 def _parse_labels(raw: str) -> dict[str, str]:
@@ -582,8 +588,8 @@ def _write_metrics_serialized() -> None:
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
         tmp.replace(path)
-    except Exception:
-        # Metrics must never interfere with agent execution.
+    except (OSError, TypeError, ValueError):
+        logger.exception("Provider telemetry write failed")
         return
 
 
