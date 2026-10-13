@@ -33,11 +33,9 @@ concurrency:
 
 jobs:
   test:
-    # Two 32-core slices instead of one box: on one runner the suite is ~10 min of
-    # nearly fully packed work, and a single bigger runner (96-core) scaled ~1.8x for
-    # 3x the price because files contend for the shared machine. Separate machines
-    # scale linearly. run_tests_parallel.py partitions from the checkout alone, so
-    # both slices agree on the split without a planning job.
+    # Two standard-runner slices bound per-file concurrency to their four cores.
+    # run_tests_parallel.py partitions from the checkout alone, so both slices
+    # agree on the split without a planning job.
     name: Run tests (${{ matrix.slice }}/2)
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -107,7 +105,7 @@ jobs:
           scripts/run_tests.sh
         env:
           HERMES_TEST_SLICE: ${{ matrix.slice }}/2
-          HERMES_TEST_WORKERS: 32
+          HERMES_TEST_WORKERS: 4
           HERMES_TEST_FILE_TIMEOUT: 600
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
@@ -382,10 +380,9 @@ jobs:
         env:
           SHARD: ${{ matrix.shard }}
           HERMES_E2E_STRICT_ACCEPTANCE: ${{ inputs.strict_acceptance }}
-          # Each file drives real installs/updaters (process trees plus uv and
-          # git I/O); cpu_count of them at once starves their deadlines. A
-          # shard holds at most ~7 files, so this runs each shard in one wave.
-          HERMES_TEST_WORKERS: "6"
+          # Each file drives real installs/updaters with nested process trees.
+          # Two workers leave standard-runner capacity for their children.
+          HERMES_TEST_WORKERS: "2"
           HERMES_TEST_FILE_TIMEOUT: "3000"
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""

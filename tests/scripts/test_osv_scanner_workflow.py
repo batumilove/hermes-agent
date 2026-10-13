@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "osv-scanner.yml"
 SHA_PIN_RE = re.compile(r"^[^@]+@[0-9a-f]{40}$")
 STAGED_LOCKFILES = {
+    "uv.lock": ".osv-lockfiles/hermes/uv.lock",
     "nix/node-gyp-11-4-0-package-lock.json": (
         ".osv-lockfiles/node-gyp-11-4-0/package-lock.json"
     ),
@@ -111,7 +112,8 @@ def test_nonstandard_lockfile_names_are_staged_under_supported_basenames() -> No
     for source, staged in STAGED_LOCKFILES.items():
         assert source in stage_script
         assert staged in stage_script
-        assert PurePosixPath(staged).name == "package-lock.json"
+        expected_basename = "uv.lock" if PurePosixPath(source).name == "uv.lock" else "package-lock.json"
+        assert PurePosixPath(staged).name == expected_basename
 
 
 def _run_results_validation(tmp_path: Path) -> subprocess.CompletedProcess[str]:
