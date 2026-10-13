@@ -20,7 +20,7 @@ class TestSessionManagerClose:
     def test_close_closes_lazily_opened_db(self):
         mgr = SessionManager()
         db = MagicMock()
-        with patch("hermes_state.SessionDB", return_value=db):
+        with patch("hermes_state_registry.acquire", return_value=db):
             mgr._get_db()
             mgr.close()
 
@@ -29,7 +29,7 @@ class TestSessionManagerClose:
     def test_close_is_idempotent(self):
         mgr = SessionManager()
         db = MagicMock()
-        with patch("hermes_state.SessionDB", return_value=db):
+        with patch("hermes_state_registry.acquire", return_value=db):
             mgr._get_db()
             mgr.close()
             mgr.close()
@@ -40,7 +40,7 @@ class TestSessionManagerClose:
         mgr = SessionManager()
         db = MagicMock()
         db.close.side_effect = RuntimeError("already closed")
-        with patch("hermes_state.SessionDB", return_value=db):
+        with patch("hermes_state_registry.acquire", return_value=db):
             mgr._get_db()
             mgr.close()  # must not raise
 
@@ -50,12 +50,12 @@ class TestSessionManagerClose:
     def test_get_db_reopens_after_close(self):
         mgr = SessionManager()
         first = MagicMock()
-        with patch("hermes_state.SessionDB", return_value=first):
+        with patch("hermes_state_registry.acquire", return_value=first):
             mgr._get_db()
             mgr.close()
 
         second = MagicMock()
-        with patch("hermes_state.SessionDB", return_value=second):
+        with patch("hermes_state_registry.acquire", return_value=second):
             assert mgr._get_db() is second
         first.close.assert_called_once()
         second.close.assert_not_called()

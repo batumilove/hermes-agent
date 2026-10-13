@@ -16,6 +16,7 @@ from agent.async_utils import (
     run_sync_in_detached_daemon_thread,
     run_sync_in_detached_serial_daemon_thread,
     safe_schedule_threadsafe,
+    start_sync_in_detached_daemon_thread,
     submit_sync_to_detached_serial_daemon,
 )
 
@@ -49,16 +50,12 @@ class TestSafeScheduleThreadsafe:
         try:
             import threading
             ready = threading.Event()
-            stop = threading.Event()
+            stop = asyncio.Event()
 
             def _runner():
                 asyncio.set_event_loop(loop)
                 ready.set()
-                loop.run_until_complete(_wait_for_stop(stop))
-
-            async def _wait_for_stop(ev):
-                while not ev.is_set():
-                    await asyncio.sleep(0.005)
+                loop.run_until_complete(stop.wait())
 
             t = threading.Thread(target=_runner, daemon=True)
             t.start()
@@ -71,7 +68,7 @@ class TestSafeScheduleThreadsafe:
             assert isinstance(fut, Future)
             assert fut.result(timeout=2) == 42
 
-            stop.set()
+            loop.call_soon_threadsafe(stop.set)
             t.join(timeout=2)
         finally:
             if loop.is_running():
@@ -80,7 +77,8 @@ class TestSafeScheduleThreadsafe:
 
 
 
-    def test_scheduling_exception_closes_coroutine(self):
+    @pytest.mark.parametrize("error", [RuntimeError("scheduler down"), ValueError("invalid scheduler state")])
+    def test_scheduling_exception_closes_coroutine(self, error):
         """If run_coroutine_threadsafe raises, close the coroutine and return None."""
         # A loop that *looks* open but raises on submission
         loop = asyncio.new_event_loop()
@@ -93,7 +91,7 @@ class TestSafeScheduleThreadsafe:
                 warnings.simplefilter("always")
                 with patch(
                     "agent.async_utils.asyncio.run_coroutine_threadsafe",
-                    side_effect=RuntimeError("scheduler down"),
+                    side_effect=error,
                 ):
                     result = safe_schedule_threadsafe(coro, loop)
                 del coro
@@ -106,6 +104,60 @@ class TestSafeScheduleThreadsafe:
 
 
 class TestRunSyncInDetachedDaemonThread:
+    def test_worker_failure_is_delivered_unchanged(self):
+        class WorkerFailure(Exception):
+            pass
+
+        error = WorkerFailure("worker failed")
+
+        def fail():
+            raise error
+
+        with pytest.raises(WorkerFailure) as caught:
+            asyncio.run(run_sync_in_detached_daemon_thread(fail))
+        assert caught.value is error
+
+    @pytest.mark.parametrize("mode", ["detached", "serial", "start", "submit"])
+    def test_each_worker_keeps_its_submitting_profile(self, tmp_path, mode):
+        import threading
+
+        from hermes_constants import (
+            get_hermes_home,
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        async def _exercise():
+            observed = []
+            for name in ("first-profile", "second-profile"):
+                profile_home = tmp_path / name
+                token = set_hermes_home_override(profile_home)
+                try:
+                    if mode == "detached":
+                        observed.append(await run_sync_in_detached_daemon_thread(get_hermes_home))
+                    elif mode == "serial":
+                        observed.append(await run_sync_in_detached_serial_daemon_thread(get_hermes_home))
+                    else:
+                        finished = threading.Event()
+
+                        def _probe():
+                            observed.append(get_hermes_home())
+                            finished.set()
+
+                        if mode == "start":
+                            start_sync_in_detached_daemon_thread(_probe)
+                        else:
+                            submit_sync_to_detached_serial_daemon(_probe)
+                        assert finished.wait(timeout=2)
+                finally:
+                    reset_hermes_home_override(token)
+            return observed
+
+        assert asyncio.run(_exercise()) == [
+            tmp_path / "first-profile",
+            tmp_path / "second-profile",
+        ]
+
     def test_runs_off_loop_without_default_executor_ownership(self):
         async def _exercise():
             import threading
@@ -149,7 +201,7 @@ class TestRunSyncInDetachedDaemonThread:
         submit_sync_to_detached_serial_daemon(_first)
         assert first_started.wait(timeout=1)
         submit_sync_to_detached_serial_daemon(_second)
-        assert not finished.wait(timeout=0.05)
+        assert not finished.is_set()
         release_first.set()
         assert finished.wait(timeout=1)
         assert observed == [("first", True), ("second", True)]
@@ -180,7 +232,7 @@ class TestRunSyncInDetachedDaemonThread:
             second = asyncio.create_task(
                 run_sync_in_detached_serial_daemon_thread(_second)
             )
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0)
             assert observed == []
             release_first.set()
             assert await asyncio.gather(first, second) == [1, 2]
@@ -227,7 +279,7 @@ class TestRunSyncInDetachedDaemonThread:
     def test_late_timed_out_status_write_cannot_overwrite_newer_work(self):
         async def _exercise():
             import threading
-            import gateway.status as status
+            from gateway import status_sequence as status
 
             first_started = threading.Event()
             release_first = threading.Event()
@@ -271,7 +323,7 @@ class TestRunSyncInDetachedDaemonThread:
     def test_direct_status_write_supersedes_equal_submitted_sequence(self):
         async def _exercise():
             import threading
-            import gateway.status as status
+            from gateway import status_sequence as status
 
             old_started = threading.Event()
             release_old = threading.Event()
@@ -312,7 +364,7 @@ class TestRunSyncInDetachedDaemonThread:
     def test_repeated_stalls_have_bounded_worker_capacity(self):
         async def _exercise():
             import threading
-            import agent.async_utils as async_utils
+            from agent import async_utils
 
             release = threading.Event()
             started = [threading.Event(), threading.Event()]
@@ -352,7 +404,7 @@ class TestRunSyncInDetachedDaemonThread:
     def test_capacity_exhaustion_does_not_admit_unbounded_queue_work(self):
         async def _exercise():
             import threading
-            import agent.async_utils as async_utils
+            from agent import async_utils
 
             release = threading.Event()
             started = threading.Event()
@@ -383,7 +435,8 @@ class TestRunSyncInDetachedDaemonThread:
                         )
                         for index in range(4)
                     )
-                    await asyncio.sleep(0.05)
+                    rejected = await asyncio.gather(*tasks[1:], return_exceptions=True)
+                    assert all(isinstance(error, TimeoutError) for error in rejected)
                     assert async_utils._SERIAL_DAEMON_QUEUE.qsize() == 0
             finally:
                 release.set()

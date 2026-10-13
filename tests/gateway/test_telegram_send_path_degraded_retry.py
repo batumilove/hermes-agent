@@ -50,8 +50,8 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
-from gateway.config import PlatformConfig  # noqa: E402
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from gateway.config import PlatformConfig
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _make_degraded_adapter() -> TelegramAdapter:
@@ -74,7 +74,6 @@ async def test_send_path_degraded_not_retried_by_send_with_retry(monkeypatch):
 
     # Track sleep calls — if the retry loop fires, sleep will be called.
     sleep_calls = []
-    original_sleep = asyncio.sleep
 
     async def _tracking_sleep(delay):
         sleep_calls.append(delay)

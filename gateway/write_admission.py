@@ -33,6 +33,9 @@ Design rules honored here:
 
 from __future__ import annotations
 
+import logging
+logger = logging.getLogger("gateway.run")
+
 import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -44,11 +47,11 @@ from hermes_state import (
 
 __all__ = [
     "SessionDBWriteAdmissionFullError",
+    "admission_limit_response",
     "get_admission_for_profile",
+    "reset_gateway_admissions_for_tests",
     "try_acquire_turn_admission",
     "try_acquire_turn_admission_or_raise",
-    "admission_limit_response",
-    "reset_gateway_admissions_for_tests",
 ]
 
 # profile-home → shared controller. Normally identical to the hermes_state
@@ -56,7 +59,7 @@ __all__ = [
 # profile home with a NON-default state.db name/config still gets exactly one
 # controller per profile, and so tests can exercise the gateway front door
 # without touching real profile dirs.
-_PROFILE_ADMISSIONS: "Dict[str, SessionDBWriteAdmission]" = {}
+_PROFILE_ADMISSIONS: dict[str, SessionDBWriteAdmission] = {}
 _PROFILE_ADMISSIONS_LOCK = threading.Lock()
 
 # Turn admission bounds: the turn-level queue is the one callers see as 429.
@@ -103,6 +106,7 @@ def try_acquire_turn_admission(
     except SessionDBWriteAdmissionFullError as exc:
         return exc
     except Exception:
+        logger.debug("try_acquire_turn_admission boundary operation failed", exc_info=True)
         # Closed mid-drain or any unexpected controller state: admission is
         # backpressure, not correctness — fail open so a draining gateway
         # still serves already-queued work without inventing a new failure
@@ -119,7 +123,7 @@ def try_acquire_turn_admission_or_raise(
     return admission.acquire(session_key=session_key)
 
 
-def admission_limit_response(full_error: SessionDBWriteAdmissionFullError) -> Dict[str, Any]:
+def admission_limit_response(full_error: SessionDBWriteAdmissionFullError) -> dict[str, Any]:
     """Serialize queue-full as an OpenAI-style 429 envelope + Retry-After."""
     retry_after = max(1, int(getattr(full_error, "retry_after_s", 1.0) or 1.0))
     return {

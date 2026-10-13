@@ -63,7 +63,7 @@ class TestGateShortCircuitsNeverOpenSessionDB:
             return db
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_state.SessionDB", side_effect=_track), \
@@ -79,14 +79,14 @@ class TestGateShortCircuitsNeverOpenSessionDB:
     ):
         """Highest-frequency offender: every silent watchdog tick returns at
         the wake gate — it must not construct a SessionDB at all."""
-        import cron.scheduler as scheduler
+        from cron import scheduler
 
         with patch.object(
             scheduler,
-            "_run_job_script",
+            "_run_job_script_with_claim_heartbeat",
             return_value=(True, '{"wakeAgent": false}'),
         ):
-            (success, doc, final, err), constructed = self._run(
+            (success, _doc, final, _err), constructed = self._run(
                 _make_job("wake-gate"), tmp_path
             )
 
@@ -100,11 +100,11 @@ class TestGateShortCircuitsNeverOpenSessionDB:
     def test_injection_blocked_return_never_opens_session_db(
         self, tmp_path, _stub_runtime_provider
     ):
-        import cron.scheduler as scheduler
+        from cron import scheduler
 
         with patch.object(
             scheduler,
-            "_run_job_script",
+            "_run_job_script_with_claim_heartbeat",
             return_value=(True, '{"wakeAgent": true}'),
         ), patch.object(
             scheduler,
@@ -117,7 +117,7 @@ class TestGateShortCircuitsNeverOpenSessionDB:
             # raised exception then escapes uncaught.
             side_effect=scheduler.CronPromptInjectionBlocked("threat pattern"),
         ):
-            (success, doc, final, err), constructed = self._run(
+            (success, doc, _final, _err), constructed = self._run(
                 _make_job("injection-blocked"), tmp_path
             )
 
@@ -131,14 +131,14 @@ class TestGateShortCircuitsNeverOpenSessionDB:
     def test_empty_prompt_return_never_opens_session_db(
         self, tmp_path, _stub_runtime_provider
     ):
-        import cron.scheduler as scheduler
+        from cron import scheduler
 
         with patch.object(
             scheduler,
-            "_run_job_script",
+            "_run_job_script_with_claim_heartbeat",
             return_value=(True, ""),
         ), patch.object(scheduler, "_build_job_prompt", return_value=None):
-            (success, doc, final, err), constructed = self._run(
+            (success, _doc, final, _err), constructed = self._run(
                 _make_job("empty-prompt"), tmp_path
             )
 
@@ -159,7 +159,7 @@ class TestAgentPathStillOwnsSessionDB:
     def test_agent_run_opens_and_closes_session_db(
         self, tmp_path, _stub_runtime_provider
     ):
-        import cron.scheduler as scheduler
+        from cron import scheduler
 
         job = _make_job("agent-path")
         job.pop("script")
@@ -172,7 +172,7 @@ class TestAgentPathStillOwnsSessionDB:
             return db
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_state.SessionDB", side_effect=_track), \
@@ -181,10 +181,10 @@ class TestAgentPathStillOwnsSessionDB:
             agent.run_conversation.return_value = {"final_response": "ok"}
             agent_cls.return_value = agent
 
-            success, doc, final, err = run_job(job)
+            success, _doc, final, _err = run_job(job)
 
         assert success is True
         assert final == "ok"
         assert len(constructed) == 1, "agent path opens exactly one SessionDB"
-        agent_cls.call_args.kwargs["session_db"] is not None
+        assert agent_cls.call_args.kwargs["session_db"] is not None
         constructed[0].close.assert_called_once()

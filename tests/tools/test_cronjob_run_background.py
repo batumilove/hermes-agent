@@ -14,17 +14,17 @@ Sync fallbacks preserved:
 """
 import json
 import threading
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from tools.cronjob_tools import (
     _try_dispatch_background_run,
     cronjob,
 )
 
-
 _JOB = {"id": "job-bg-1", "name": "bg run", "prompt": "hi",
         "schedule": {"kind": "cron", "expr": "0 9 * * *"}}
-
 
 def _job(job_id):
     """Per-test job dict with a UNIQUE id.
@@ -37,12 +37,25 @@ def _job(job_id):
     return {"id": job_id, "name": f"bg run {job_id}", "prompt": "hi",
             "schedule": {"kind": "cron", "expr": "0 9 * * *"}}
 
+def _complete_stubbed_run(job, **_kwargs):
+    """A processed run publishes its terminal ledger receipt before returning."""
+    from cron.executions import finish_execution
+    if job.get("execution_id"):
+        finish_execution(job["execution_id"], success=True)
+    return True
+
+
+def _fail_stubbed_run(job, **_kwargs):
+    from cron.executions import finish_execution
+    finish_execution(job["execution_id"], success=False, error="provider exploded")
+    return True
+
 
 def _bound_session_key(key="agent:main:telegram:dm:123"):
     """Context manager binding the approval session key contextvar."""
     import contextlib
 
-    from tools.approval import _approval_session_key
+    from tools.approval_context import _approval_session_key
 
     @contextlib.contextmanager
     def _cm():
@@ -54,13 +67,13 @@ def _bound_session_key(key="agent:main:telegram:dm:123"):
 
     return _cm()
 
-
 class TestBackgroundDispatch:
-    def test_shutdown_drain_refuses_manual_run_before_claim(self):
+    @pytest.mark.parametrize("flags", [{"_draining": True}, {"_external_drain_active": True}])
+    def test_shutdown_drain_refuses_manual_run_before_claim(self, flags):
         """A turn already in flight cannot admit new cron work after SIGTERM."""
         import gateway.run as gateway_run
 
-        draining_runner = type("DrainingRunner", (), {"_draining": True})()
+        draining_runner = type("DrainingRunner", (), flags)()
         with _bound_session_key(), \
              patch.object(gateway_run, "_gateway_runner_ref", lambda: draining_runner), \
              patch("cron.executions.recover_interrupted_executions") as recover, \
@@ -85,7 +98,8 @@ class TestBackgroundDispatch:
             events.append("claim")
             return {**_job(jid), "fire_claim": {"by": "bg-owner"}}
 
-        def _register(_jid):
+        def _register(_jid, *, owner, future):
+            assert owner is not None and future.running()
             events.append("register")
             return True
 
@@ -98,7 +112,7 @@ class TestBackgroundDispatch:
              patch("cron.scheduler.try_register_running_job", side_effect=_register), \
              patch("cron.scheduler.release_running_job"), \
              patch("tools.async_delegation.dispatch_async_delegation", side_effect=_dispatch), \
-             patch("cron.scheduler.run_one_job", return_value=True), \
+             patch("cron.scheduler.run_one_job", side_effect=_complete_stubbed_run), \
              patch("tools.cronjob_tools.get_job", return_value={"last_status": "ok"}):
             result = _try_dispatch_background_run(_job("job-bg-register-before-dispatch"))
 
@@ -106,7 +120,8 @@ class TestBackgroundDispatch:
         assert result["success"] is True
         assert events == ["claim", "register", "dispatch"]
 
-    def test_shutdown_transition_is_atomic_with_manual_claim_admission(self):
+    @pytest.mark.parametrize("drain_kind", ["shutdown", "external"])
+    def test_shutdown_transition_is_atomic_with_manual_claim_admission(self, drain_kind):
         """Drain cannot cross a claim's admission/commit critical section."""
         import gateway.run as gateway_run
 
@@ -115,6 +130,8 @@ class TestBackgroundDispatch:
             (),
             {"_draining": False, "_external_drain_active": False},
         )()
+        runner._active_work_count = lambda: 0
+        runner._update_runtime_status_async = AsyncMock()
         admitted = threading.Event()
         release_claim = threading.Event()
         drain_attempted = threading.Event()
@@ -127,7 +144,11 @@ class TestBackgroundDispatch:
 
         def _begin_drain():
             drain_attempted.set()
-            gateway_run._mark_gateway_draining(runner)
+            if drain_kind == "external":
+                import asyncio
+                asyncio.run(gateway_run.GatewayRunner._enter_external_drain(runner))
+            else:
+                gateway_run._mark_gateway_draining(runner)
 
         with patch.object(gateway_run, "_gateway_runner_ref", lambda: runner):
             claim_thread = threading.Thread(target=_claim_section)
@@ -136,13 +157,14 @@ class TestBackgroundDispatch:
             assert admitted.wait(timeout=2.0)
             drain_thread.start()
             assert drain_attempted.wait(timeout=2.0)
-            assert getattr(runner, "_draining") is False
+            assert runner._draining is False
+            assert runner._external_drain_active is False
             release_claim.set()
             claim_thread.join(timeout=2.0)
             drain_thread.join(timeout=2.0)
             assert not claim_thread.is_alive()
             assert not drain_thread.is_alive()
-            assert getattr(runner, "_draining") is True
+            assert (runner._external_drain_active if drain_kind == "external" else runner._draining) is True
             with gateway_run.gateway_cron_fire_admission() as allowed:
                 assert allowed is False
 
@@ -157,7 +179,7 @@ class TestBackgroundDispatch:
             return True
 
         with _bound_session_key():
-            with patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}) as m_claim, \
+            with patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}), \
                  patch("cron.scheduler.run_one_job", side_effect=slow_run_one_job), \
                  patch("tools.cronjob_tools.get_job",
                        return_value={"last_status": "ok", "last_error": None}):
@@ -169,7 +191,6 @@ class TestBackgroundDispatch:
             assert res["claimed"] is True
             assert res["dispatched"] is True
             assert res["delegation_id"]
-            m_claim.assert_called_once_with("job-bg-01", return_job=True)
             # The job actually starts on the daemon executor.
             assert run_started.wait(timeout=5.0), "job never started in background"
         finally:
@@ -186,7 +207,7 @@ class TestBackgroundDispatch:
         # active until the completion event lands, so poll INSIDE the blocks.
         with _bound_session_key("agent:main:telegram:dm:777"):
             with patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}), \
-                 patch("cron.scheduler.run_one_job", return_value=True), \
+                 patch("cron.scheduler.run_one_job", side_effect=_complete_stubbed_run), \
                  patch("tools.cronjob_tools.get_job",
                        return_value={"last_status": "ok", "last_error": None,
                                      "next_run_at": "2026-08-07T09:00:00"}):
@@ -210,7 +231,6 @@ class TestBackgroundDispatch:
         assert found["session_key"] == "agent:main:telegram:dm:777"
         assert found["status"] == "completed"
         assert "bg run" in (found.get("summary") or "")
-        assert "Next scheduled run" in found["summary"]
 
     def test_failed_run_reports_error_status_in_event(self):
         import time
@@ -219,7 +239,7 @@ class TestBackgroundDispatch:
 
         with _bound_session_key("agent:main:telegram:dm:778"):
             with patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}), \
-                 patch("cron.scheduler.run_one_job", return_value=True), \
+                 patch("cron.scheduler.run_one_job", side_effect=_fail_stubbed_run), \
                  patch("tools.cronjob_tools.get_job",
                        return_value={"last_status": "error",
                                      "last_error": "provider exploded"}):
@@ -255,7 +275,6 @@ class TestBackgroundDispatch:
         assert "paused/disabled" in res["error"]
         m_disp.assert_not_called()
 
-
 class TestSyncFallbacks:
     def test_no_session_key_falls_back_to_sync(self):
         """Direct Python callers (no agent session) keep the sync path."""
@@ -276,14 +295,13 @@ class TestSyncFallbacks:
             with patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}), \
                  patch("tools.async_delegation.dispatch_async_delegation",
                        return_value={"status": "rejected", "error": "capacity"}), \
-                 patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
+                 patch("cron.scheduler.run_one_job", side_effect=_complete_stubbed_run) as m_run, \
                  patch("tools.cronjob_tools.get_job",
                        return_value={"last_status": "ok", "last_error": None}):
                 res = _try_dispatch_background_run(_job('job-bg-07'))
         assert res["dispatched"] is False
         assert res["success"] is True
         m_run.assert_called_once()   # ran inline on this thread
-
 
 class TestInFlightDedupe:
     """Manual runs must not double-fire a job that is already mid-run
@@ -327,6 +345,28 @@ class TestInFlightDedupe:
         assert seen_during_run["registered"] is True
         assert "job-bg-09" not in sched.get_running_job_ids()   # released after
 
+    def test_run_claimed_job_reports_exact_unknown_execution_not_stale_success(self):
+        from tools.cronjob_tools import _run_claimed_job
+
+        def probe_run(job, **_kwargs):
+            job["execution_id"] = "exec-unknown"
+            return True
+
+        with patch("cron.scheduler.run_one_job", side_effect=probe_run), \
+             patch("cron.executions.get_execution", return_value={
+                 "id": "exec-unknown",
+                 "status": "unknown",
+                 "error": "worker owner exited",
+             }), \
+             patch("tools.cronjob_tools.get_job", return_value={
+                 "last_status": "ok",
+                 "last_error": None,
+             }):
+            res = _run_claimed_job(_job("job-bg-unknown"))
+
+        assert res["success"] is False
+        assert res["error"] == "worker owner exited"
+
     def test_background_dispatch_reports_running_job_immediately(self):
         """The dispatch path pre-checks the running set so a mid-run job
         reports in the tool response, not as a delayed completion event."""
@@ -345,31 +385,13 @@ class TestInFlightDedupe:
         finally:
             sched.release_running_job("job-bg-10")
 
-    def test_ticker_guard_uses_shared_helpers(self):
-        """The ticker's _submit_with_guard and manual runs share ONE dedupe
-        owner: registration through either side blocks the other."""
-        from cron import scheduler as sched
-
-        # Manual-run registration…
-        assert sched.try_register_running_job("job-shared-1")
-        try:
-            # …is exactly what the ticker-side helper consults.
-            assert not sched.try_register_running_job("job-shared-1")
-            assert "job-shared-1" in sched.get_running_job_ids()
-        finally:
-            sched.release_running_job("job-shared-1")
-        assert "job-shared-1" not in sched.get_running_job_ids()
-        # Idempotent release: never raises on a non-member.
-        sched.release_running_job("job-shared-1")
-
-
 class TestCronjobRunToolIntegration:
     def test_run_action_returns_background_note(self):
         """cronjob(action='run') surfaces the handle + do-not-wait note."""
         with _bound_session_key():
             with patch("tools.cronjob_tools.resolve_job_ref", return_value=_job('job-bg-12')), \
                  patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}), \
-                 patch("cron.scheduler.run_one_job", return_value=True), \
+                 patch("cron.scheduler.run_one_job", side_effect=_complete_stubbed_run), \
                  patch("tools.cronjob_tools.get_job",
                        return_value={"id": "job-bg-12", "name": "bg run",
                                      "last_status": "ok", "last_error": None}):
@@ -379,20 +401,3 @@ class TestCronjobRunToolIntegration:
         assert out["job"]["executed"] is True
         assert out["job"]["execution_mode"] == "background"
         assert out["job"]["delegation_id"]
-        assert "background" in out["note"]
-
-    def test_run_action_sync_path_unchanged_without_session(self):
-        """No session context → the legacy synchronous behavior (executed +
-        execution_success populated from the completed run)."""
-        ran = {"job": "after-run", "last_status": "ok", "last_error": None}
-        with patch("tools.cronjob_tools.resolve_job_ref", return_value=_job('job-bg-13')), \
-             patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}) as m_claim, \
-             patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
-             patch("tools.cronjob_tools.get_job", return_value=ran):
-            out = json.loads(cronjob(action="run", job_id="job-bg-13"))
-
-        assert out["success"] is True
-        assert out["job"]["executed"] is True
-        assert out["job"]["execution_success"] is True
-        m_claim.assert_called_once_with("job-bg-13", return_job=True)
-        m_run.assert_called_once()

@@ -300,3 +300,13 @@ def test_nonserializable_tool_result_fails_closed_without_skipping_regulator():
 )
 def test_routine_code_edit_prose_is_not_an_external_delete_claim(response):
     assert not _warns(response)
+
+
+def test_tool_evidence_inspection_failure_does_not_replace_executed_result():
+    class BrokenStatus:
+        def __str__(self):
+            raise RuntimeError("invalid extension status")
+
+    result = {"success": True, "status": BrokenStatus()}
+    assert tool_result_succeeded("write_file", result) is False
+    assert result["success"] is True

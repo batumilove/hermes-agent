@@ -8,16 +8,12 @@ for must still be returned.  Previously any of those raised straight out of
 traceback and lost the whole turn.
 """
 
-import socket
-import threading
-import time
-from pathlib import Path
+from unittest.mock import patch
 
-import httpx
+from run_agent import AIAgent
 import pytest
 
 from agent.turn_finalizer import finalize_turn
-from run_agent import AIAgent
 
 
 class _StubBudget:
@@ -30,12 +26,14 @@ class _StubCompressor:
     last_prompt_tokens = 0
 
 
-class _StubAgent:
+from agent.status_output import StatusOutputMixin
+
+
+class _StubAgent(StatusOutputMixin):
     """Minimal agent surface that ``finalize_turn`` reads from."""
 
     def __init__(self, *, raise_in):
         self._raise_in = set(raise_in)
-        self.request_client_close_reasons = []
         self.max_iterations = 3
         self.iteration_budget = _StubBudget()
         self.context_compressor = _StubCompressor()
@@ -107,9 +105,6 @@ class _StubAgent:
     def _sync_external_memory_for_turn(self, **k):
         pass
 
-    def _close_idle_cached_request_openai_client(self, *, reason):
-        self.request_client_close_reasons.append(reason)
-
 
 def _run(
     agent,
@@ -175,6 +170,37 @@ def test_clean_turn_has_no_cleanup_errors_key():
     assert "cleanup_errors" not in result
 
 
+@pytest.mark.parametrize(
+    ("persist_disabled", "expected_calls"),
+    [
+        (True, ["transform_llm_output"]),
+        (False, ["transform_llm_output", "post_llm_call", "on_session_end"]),
+    ],
+)
+def test_persist_disabled_turn_skips_session_end_hook(
+    persist_disabled, expected_calls
+):
+    agent = _StubAgent(raise_in=())
+    agent._persist_disabled = persist_disabled
+    calls = []
+
+    def capture(name, _logger, **_kwargs):
+        calls.append(name)
+        return []
+
+    with patch("agent.turn_finalizer._invoke_hook_safely", side_effect=capture):
+        _run(
+            agent,
+            final_response="done",
+            api_call_count=1,
+            turn_exit_reason="text_response(stop)",
+        )
+
+    assert ("on_session_end" in calls) == ("on_session_end" in expected_calls)
+
+
+
+
 def test_turn_wrapper_closes_idle_request_pool_on_early_return(monkeypatch):
     """Even loop returns that bypass finalize_turn must release the pool."""
     agent = AIAgent.__new__(AIAgent)
@@ -236,93 +262,4 @@ def test_turn_wrapper_cleanup_failure_never_masks_turn(monkeypatch, loop_raises)
         assert result["cleanup_errors"] == [
             "close_request_client: OSError: cleanup failed: turn_complete"
         ]
-
-
-def _tcp_state(local_port, remote_port):
-    with open("/proc/net/tcp", encoding="ascii") as table:
-        next(table)
-        for row in table:
-            fields = row.split()
-            local = int(fields[1].split(":")[1], 16)
-            remote = int(fields[2].split(":")[1], 16)
-            if local == local_port and remote == remote_port:
-                return fields[3]
-    return None
-
-
-@pytest.mark.skipif(
-    not Path("/proc/net/tcp").is_file(),
-    reason="Linux /proc/net/tcp is required for CLOSE_WAIT proof",
-)
-def test_turn_wrapper_clears_real_peer_fin_close_wait(monkeypatch):
-    """The turn boundary releases a real idle socket after the peer sends FIN."""
-    listener = socket.socket()
-    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    listener.bind(("127.0.0.1", 0))
-    listener.listen(1)
-    server_port = listener.getsockname()[1]
-    send_fin = threading.Event()
-    stop = threading.Event()
-    peer_port = []
-
-    def serve():
-        conn, peer = listener.accept()
-        peer_port.append(peer[1])
-        try:
-            data = b""
-            while b"\r\n\r\n" not in data:
-                data += conn.recv(4096)
-            conn.sendall(
-                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n"
-                b"Connection: keep-alive\r\n\r\nOK"
-            )
-            assert send_fin.wait(timeout=5.0)
-            conn.shutdown(socket.SHUT_WR)
-            stop.wait(timeout=5.0)
-        finally:
-            conn.close()
-            listener.close()
-
-    server = threading.Thread(target=serve, daemon=True)
-    server.start()
-    client = httpx.Client(trust_env=False)
-    try:
-        response = client.get(f"http://127.0.0.1:{server_port}/")
-        assert response.text == "OK"
-        send_fin.set()
-
-        deadline = time.monotonic() + 3.0
-        while time.monotonic() < deadline:
-            if peer_port and _tcp_state(peer_port[0], server_port) == "08":
-                break
-            time.sleep(0.02)
-        assert _tcp_state(peer_port[0], server_port) == "08", "peer FIN did not reach CLOSE_WAIT"
-
-        agent = AIAgent.__new__(AIAgent)
-        reasons = []
-
-        def close_pool(*, reason):
-            reasons.append(reason)
-            client.close()
-
-        agent._close_idle_cached_request_openai_client = close_pool
-        monkeypatch.setattr(
-            "agent.conversation_loop.run_conversation",
-            lambda *_args, **_kwargs: {"final_response": "ok"},
-        )
-        agent.run_conversation("test")
-
-        assert reasons == ["turn_complete"]
-        deadline = time.monotonic() + 3.0
-        while time.monotonic() < deadline:
-            if _tcp_state(peer_port[0], server_port) != "08":
-                break
-            time.sleep(0.02)
-        assert _tcp_state(peer_port[0], server_port) != "08"
-    finally:
-        client.close()
-        stop.set()
-        send_fin.set()
-        server.join(timeout=5.0)
-
 

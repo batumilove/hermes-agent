@@ -8,6 +8,7 @@ import sys
 
 import pytest
 
+pytestmark = pytest.mark.platforms("linux")
 
 @pytest.mark.skipif(
     not hasattr(socket, "AF_UNIX"), reason="Unix datagram sockets are unavailable"

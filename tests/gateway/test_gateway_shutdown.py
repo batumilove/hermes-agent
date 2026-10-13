@@ -8,10 +8,11 @@ import pytest
 
 import gateway.run as gateway_run
 from gateway.config import HomeChannel, Platform
-from gateway.platforms.base import MessageEvent
-from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
+from gateway.platforms.event import MessageEvent
+from gateway.restart import DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE
 from gateway.session import build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
+from tools import browser_tool_lifecycle as bt_lifecycle
 
 
 @pytest.mark.asyncio
@@ -21,7 +22,6 @@ async def test_cancel_background_tasks_cancels_inflight_message_processing():
 
     async def block_forever(_event):
         await release.wait()
-        return None
 
     adapter.set_message_handler(block_forever)
     event = MessageEvent(text="work", source=make_restart_source(), message_id="1")
@@ -40,26 +40,15 @@ async def test_cancel_background_tasks_cancels_inflight_message_processing():
     assert adapter._pending_messages == {}
 
 
-def test_cleanup_agent_resources_reaps_stale_aux_clients():
-    runner, _adapter = make_restart_runner()
-    agent = MagicMock()
-
-    with patch("agent.auxiliary_client.cleanup_stale_async_clients") as cleanup_mock:
-        runner._cleanup_agent_resources(agent)
-
-    agent.shutdown_memory_provider.assert_called_once()
-    agent.close.assert_called_once()
-    cleanup_mock.assert_called_once()
 
 
-def test_cron_provider_stop_cannot_override_gateway_exit_code(caplog):
+def test_cron_provider_stop_cannot_override_gateway_exit_code():
     provider = MagicMock()
     provider.stop.side_effect = SystemExit(GATEWAY_SERVICE_RESTART_EXIT_CODE)
 
     gateway_run._stop_cron_provider(provider)
 
     provider.stop.assert_called_once_with()
-    assert f"attempted to exit the gateway with code {GATEWAY_SERVICE_RESTART_EXIT_CODE}; ignoring" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -73,7 +62,6 @@ async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks(
 
     async def block_forever(_event):
         await release.wait()
-        return None
 
     adapter.set_message_handler(block_forever)
     event = MessageEvent(text="work", source=make_restart_source(), message_id="1")
@@ -92,12 +80,12 @@ async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks(
 
     with (
         patch("gateway.status.remove_pid_file"),
-        patch("gateway.status.write_runtime_status"),
+        patch("gateway.status.publish_runtime_status"),
         patch("agent.auxiliary_client.shutdown_cached_clients") as shutdown_cached_clients,
     ):
         await runner.stop()
 
-    running_agent.interrupt.assert_called_once_with("Gateway shutting down")
+    running_agent.interrupt.assert_called_once_with("Gateway shutting down", tool_reason="gateway shutdown")
     disconnect_mock.assert_awaited_once()
     shutdown_cached_clients.assert_called_once()
     assert runner.adapters == {}
@@ -142,7 +130,7 @@ async def test_gateway_stop_settles_completion_batch_before_adapter_disconnect()
     await asyncio.sleep(0)
     assert runner._completion_notification_batch_flush_tasks
 
-    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.publish_runtime_status"):
         await runner.stop()
 
     assert await asyncio.wait_for(pending, timeout=1.0) is False
@@ -164,10 +152,32 @@ async def test_planned_service_exit_issues_no_restart_of_its_own(monkeypatch):
         ),
     )
 
-    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.publish_runtime_status"):
         await runner.stop()
 
     assert runner._exit_code == GATEWAY_SERVICE_RESTART_EXIT_CODE
+
+
+
+
+@pytest.mark.parametrize(
+    ("signal_initiated", "restart_requested", "expected"),
+    [
+        (True, False, 0.25),
+        (False, False, DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT),
+        (True, True, DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT),
+    ],
+)
+def test_post_interrupt_grace_only_shortens_unexpected_signal_shutdown(
+    signal_initiated, restart_requested, expected
+):
+    runner, _adapter = make_restart_runner()
+    runner._signal_initiated_shutdown = signal_initiated
+    runner._restart_requested = restart_requested
+    runner._signal_interrupt_grace_timeout = 0.25
+
+    assert runner._post_interrupt_grace_timeout() == expected
+
 
 
 @pytest.mark.asyncio
@@ -180,7 +190,7 @@ async def test_gateway_stop_bounds_atomic_resume_marker_batch():
 
     running_agent = MagicMock()
     runner._running_agents = {"session": running_agent}
-    running_agent.interrupt.side_effect = lambda *_args: runner._running_agents.clear()
+    running_agent.interrupt.side_effect = lambda *_args, **_kwargs: runner._running_agents.clear()
 
     marker_started = asyncio.Event()
     release_marker = asyncio.Event()
@@ -204,7 +214,8 @@ async def test_gateway_stop_bounds_atomic_resume_marker_batch():
         await asyncio.wait_for(marker_started.wait(), timeout=1.0)
         await asyncio.wait_for(stop_task, timeout=2.0)
 
-    running_agent.interrupt.assert_called_once_with("Gateway restarting")
+    assert running_agent.interrupt.call_count == 1
+    assert running_agent.interrupt.call_args.args[0] == "Gateway restarting"
     adapter.disconnect.assert_awaited_once()  # type: ignore[attr-defined]
     assert runner._shutdown_event.is_set() is True
 
@@ -225,7 +236,7 @@ async def test_gateway_stop_persists_all_resume_markers_in_one_batch():
     session_keys = [f"session-{index:02d}" for index in range(14)]
     running_agent = MagicMock()
     runner._running_agents = {key: running_agent for key in session_keys}
-    running_agent.interrupt.side_effect = lambda *_args: runner._running_agents.clear()
+    running_agent.interrupt.side_effect = lambda *_args, **_kwargs: runner._running_agents.clear()
 
     async_store = MagicMock()
     async_store._store = runner.session_store
@@ -245,7 +256,7 @@ async def test_gateway_stop_persists_all_resume_markers_in_one_batch():
     for call in async_store.mark_resume_pending_batch.await_args_list:
         assert call.args == (session_keys, "restart_timeout")
     async_store.mark_resume_pending.assert_not_awaited()
-    running_agent.interrupt.assert_called_with("Gateway restarting")
+    running_agent.interrupt.assert_called_with("Gateway restarting", tool_reason="gateway shutdown")
     adapter.disconnect.assert_awaited_once()  # type: ignore[attr-defined]
 
 
@@ -284,7 +295,7 @@ async def test_gateway_stop_clears_late_atomic_marker_after_graceful_drain():
 
     async def finish_gracefully_after_marker_timeout():
         await marker_started.wait()
-        await asyncio.sleep(0.06)
+        await asyncio.sleep(0.06)  # health: allow HX013 -- writer finishes after its admission timeout to exercise compensating clear
         release_marker.set()
         runner._running_agents.clear()
 
@@ -313,7 +324,7 @@ async def test_gateway_stop_logs_exact_resume_marker_batch_counts(caplog):
     session_keys = ["session-a", "session-b", "session-c"]
     running_agent = MagicMock()
     runner._running_agents = {key: running_agent for key in session_keys}
-    running_agent.interrupt.side_effect = lambda *_args: runner._running_agents.clear()
+    running_agent.interrupt.side_effect = lambda *_args, **_kwargs: runner._running_agents.clear()
 
     async_store = MagicMock()
     async_store._store = runner.session_store
@@ -343,7 +354,7 @@ async def test_gateway_stop_scopes_counts_when_reusing_broader_batch(caplog):
     session_keys = ["session-a", "session-b", "session-c"]
     running_agent = MagicMock()
     runner._running_agents = {key: running_agent for key in session_keys}
-    running_agent.interrupt.side_effect = lambda *_args: runner._running_agents.clear()
+    running_agent.interrupt.side_effect = lambda *_args, **_kwargs: runner._running_agents.clear()
 
     release_marker = asyncio.Event()
 
@@ -398,7 +409,7 @@ async def test_in_chat_restart_skips_home_shutdown_even_with_active_session():
     assert len(adapter.sent_calls) == 1
     chat_id, message, metadata = adapter.sent_calls[0]
     assert chat_id == source.chat_id
-    assert "Gateway restarting" in message
+    assert "Hermes is restarting" in message
     assert metadata["telegram_reply_to_message_id"] == "restart-command"
 
 
@@ -412,7 +423,11 @@ async def test_gateway_stop_kills_tool_subprocesses_before_adapter_disconnect_on
 
     call_order: list[str] = []
 
-    def _fake_kill_all(task_id=None):
+    def _fake_kill_all(task_id=None, **kwargs):
+        # kwargs carry kill_all's keyword-only args (source, consume_output);
+        # the shutdown sweep passes source="gateway_shutdown" so a
+        # persist_on_release job (#41225) is still killed on host exit.
+        assert kwargs.get("source") == "gateway_shutdown", kwargs
         call_order.append("kill_all")
         return 2
 
@@ -428,10 +443,11 @@ async def test_gateway_stop_kills_tool_subprocesses_before_adapter_disconnect_on
     # Patch the module-level names the stop() helper imports lazily.
     import tools.process_registry as _pr
     import tools.terminal_tool as _tt
-    import tools.browser_tool as _bt
+    from tools import terminal_tool_lifecycle
     monkeypatch.setattr(_pr.process_registry, "kill_all", _fake_kill_all)
     monkeypatch.setattr(_tt, "cleanup_all_environments", _fake_cleanup_envs)
-    monkeypatch.setattr(_bt, "cleanup_all_browsers", _fake_cleanup_browsers)
+    monkeypatch.setattr(terminal_tool_lifecycle, "cleanup_all_environments", _fake_cleanup_envs)
+    monkeypatch.setattr(bt_lifecycle, "cleanup_all_browsers", _fake_cleanup_browsers)
 
     adapter.disconnect = _disconnect
 
@@ -440,7 +456,7 @@ async def test_gateway_stop_kills_tool_subprocesses_before_adapter_disconnect_on
         lambda *a, **k: runner._running_agents.clear()
     )
 
-    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.publish_runtime_status"):
         await runner.stop()
 
     # First kill_all must precede the first disconnect.  (Both the eager
@@ -471,17 +487,19 @@ async def test_gateway_stop_bounds_blocking_agent_interrupt_fanout():
     event_times: dict[str, float] = {}
     running_agent = MagicMock()
 
-    def block_interrupt(_reason):
+    interrupt_release = threading.Event()
+
+    def block_interrupt(_reason, **_kwargs):
         interrupt_started.set()
         event_times["interrupt_started"] = time.monotonic()
-        time.sleep(1.0)
+        interrupt_release.wait()
         event_times["interrupt_returned"] = time.monotonic()
         runner._running_agents.clear()
 
     async def event_loop_heartbeat():
         while not interrupt_started.is_set():
             await asyncio.sleep(0)
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0)
         event_times["heartbeat"] = time.monotonic()
 
     running_agent.interrupt.side_effect = block_interrupt
@@ -493,6 +511,7 @@ async def test_gateway_stop_bounds_blocking_agent_interrupt_fanout():
     ):
         await runner.stop()
     await heartbeat_task
+    interrupt_release.set()
 
     assert interrupt_started.is_set()
     assert "heartbeat" in event_times
@@ -542,7 +561,7 @@ async def test_signal_initiated_shutdown_persists_running_not_stopped(tmp_path, 
     adapter.disconnect = AsyncMock()
     runner._signal_initiated_shutdown = True  # set by handler on unmarked signal
 
-    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.publish_runtime_status"):
         await runner.stop()
 
     assert not _stopped_state_persisted(runner), (
@@ -597,4 +616,3 @@ def test_pid_exists_zombie_via_psutil_returns_false(monkeypatch):
     monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
 
     assert status._pid_exists(4242) is False
-

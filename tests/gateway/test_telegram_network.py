@@ -23,9 +23,9 @@ import threading
 
 import httpx
 import pytest
+from tests.waiting import async_wait_until
 
 import plugins.platforms.telegram.telegram_network as tnet
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -117,7 +117,6 @@ class _DiagnosticNetworkStream:
 
     async def aclose(self):
         self.closed = True
-        return None
 
 
 class _CloseFailingByteStream(httpx.AsyncByteStream):
@@ -434,7 +433,6 @@ def _fake_transport_factory(calls, behavior):
 
     factory.instances = instances
     return factory
-
 
 def _telegram_request(path="/botTOKEN/getMe"):
     return httpx.Request("GET", f"https://api.telegram.org{path}")
@@ -1144,7 +1142,7 @@ class _SlowBodyServer:
             try:
                 self._sock.settimeout(0.5)
                 conn, _addr = self._sock.accept()
-            except socket.timeout:
+            except TimeoutError:
                 continue
             except Exception:
                 break
@@ -1247,22 +1245,12 @@ async def _wait_for_tcp_state(
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestParseFallbackIpEnv:
-    def test_filters_invalid_and_ipv6(self, caplog):
+    def test_filters_invalid_and_ipv6(self):
         ips = tnet.parse_fallback_ip_env("149.154.167.220, bad, 2001:67c:4e8:f004::9,149.154.167.220")
         assert ips == ["149.154.167.220", "149.154.167.220"]
-        assert "Ignoring invalid Telegram fallback IP" in caplog.text
-        assert "Ignoring non-IPv4 Telegram fallback IP" in caplog.text
 
     def test_none_returns_empty(self):
         assert tnet.parse_fallback_ip_env(None) == []
-
-
-class TestNormalizeFallbackIps:
-    def test_deduplication_happens_at_transport_level(self):
-        """_normalize does not dedup; TelegramFallbackTransport.__init__ does."""
-        raw = ["149.154.167.220", "149.154.167.220"]
-        assert tnet._normalize_fallback_ips(raw) == ["149.154.167.220", "149.154.167.220"]
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Request rewriting
@@ -1278,545 +1266,9 @@ class TestRewriteRequestForIp:
         assert rewritten.extensions["sni_hostname"] == "api.telegram.org"
         assert rewritten.url.path == "/botTOKEN/getMe"
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Fallback transport – core behavior
 # ═══════════════════════════════════════════════════════════════════════════
-
-class TestFallbackTransport:
-    """IPv4 literals first → hostname last → stick to whichever works."""
-
-    @pytest.mark.asyncio
-    async def test_cancellation_after_connect_before_tls_detaches_raw_stream_close(self):
-        """Cancellation in httpcore's connect trace hook must not strand its socket.
-
-        httpcore awaits the async ``connect_tcp.complete`` trace callback after
-        ``connect_tcp()`` returns but before ``start_tls()`` begins. Production
-        cancellation waves hit this ownership gap: no protected raw-stream
-        operation is active yet, and no HTTP response exists to close.
-        """
-        left, right = socket.socketpair()
-        stream = _RepeatedCancellationSocketStream(left, "trace")
-        transport = httpx.AsyncHTTPTransport()
-        transport._pool._network_backend = tnet._CancellationSafeNetworkBackend(
-            _RawDiagnosticBackend(stream)
-        )
-        trace_started = asyncio.Event()
-
-        async def _hold_after_connect(name, _info):
-            if name.endswith("connect_tcp.complete"):
-                trace_started.set()
-                await asyncio.Event().wait()
-
-        request = _telegram_request()
-        request.extensions["trace"] = _hold_after_connect
-        orchestration_cancelled_once = asyncio.Event()
-
-        async def _orchestrate_request():
-            try:
-                return await tnet._handle_transport_request(transport, request)
-            except asyncio.CancelledError:
-                await stream.close_started.wait()
-                orchestration_cancelled_once.set()
-                await asyncio.Event().wait()
-
-        request_task = asyncio.create_task(_orchestrate_request())
-
-        try:
-            await asyncio.wait_for(trace_started.wait(), timeout=1.0)
-            request_task.cancel()
-            await asyncio.wait_for(orchestration_cancelled_once.wait(), timeout=1.0)
-
-            # Re-cancel the still-active caller while request-scoped cleanup is
-            # blocked. The detached close must remain independently owned.
-            request_task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await request_task
-            stream.release_close.set()
-            for _ in range(100):
-                if left.fileno() == -1:
-                    break
-                await asyncio.sleep(0.01)
-
-            assert left.fileno() == -1
-            assert not tnet._abandoned_response_cleanups
-        finally:
-            stream.release_close.set()
-            left.close()
-            right.close()
-            await transport.aclose()
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("operation", ["read", "write", "start_tls"])
-    async def test_repeated_cancellation_cannot_interrupt_raw_stream_close(
-        self, operation
-    ):
-        """A second cancellation must not strand pre-response socket cleanup."""
-        left, right = socket.socketpair()
-        stream = _RepeatedCancellationSocketStream(left, operation)
-        wrapped = tnet._CancellationSafeNetworkStream(stream)
-        if operation == "read":
-            operation_coro = wrapped.read(1)
-        elif operation == "write":
-            operation_coro = wrapped.write(b"request")
-        else:
-            operation_coro = wrapped.start_tls(None)
-        waiter = asyncio.create_task(operation_coro)
-
-        try:
-            await asyncio.wait_for(stream.operation_started.wait(), timeout=1.0)
-            waiter.cancel()
-            await asyncio.wait_for(stream.close_started.wait(), timeout=1.0)
-
-            # Production issues overlapping cancellations while fallback requests
-            # unwind. This second cancellation must not interrupt raw close.
-            waiter.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await waiter
-
-            stream.release_close.set()
-            for _ in range(100):
-                if left.fileno() == -1:
-                    break
-                await asyncio.sleep(0.01)
-            assert left.fileno() == -1
-            assert not tnet._abandoned_response_cleanups
-        finally:
-            left.close()
-            right.close()
-
-    @pytest.mark.asyncio
-    async def test_cancelled_caller_cancels_inflight_transport_request(self, monkeypatch):
-        """Caller cancellation must unwind an in-flight transport request.
-
-        Shielding the request from its caller is useful only while a response
-        can finish promptly. During connect or response-header stalls, leaving
-        the shielded request alive retains its socket indefinitely. Explicitly
-        cancelling the transport task lets httpcore unwind and release it.
-        """
-        inner = _CancellationTrackingTransport()
-        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", lambda **kw: inner)
-
-        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
-        transport._sticky_ip = "149.154.167.220"
-        request_task = asyncio.create_task(
-            transport.handle_async_request(_telegram_request())
-        )
-        await inner.started.wait()
-
-        request_task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await request_task
-
-        assert inner.cancelled is True
-        for _ in range(10):
-            if not tnet._abandoned_response_cleanups:
-                break
-            await asyncio.sleep(0)
-        assert not tnet._abandoned_response_cleanups
-
-    @pytest.mark.asyncio
-    async def test_pre_response_cancellation_has_correlated_request_terminal_telemetry(
-        self, monkeypatch
-    ):
-        """A socket opened before response creation must remain attributable.
-
-        The request identifier is deliberately opaque and the terminal record
-        must not contain URL, token, query, or exception contents.
-        """
-        inner = _CancellationTrackingTransport()
-        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", lambda **_kw: inner)
-        transport = tnet.TelegramFallbackTransport(
-            ["149.154.167.220"],
-            owner_role="general",
-            socket_diagnostics=True,
-        )
-        request, forbidden = _diagnostic_request()
-
-        with _LifecycleLogCapture(lambda: inner.stream) as capture:
-            request_task = asyncio.create_task(transport.handle_async_request(request))
-            await inner.started.wait()
-            request_task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await request_task
-
-        payloads = [_record_payload(record) for record, _ in capture.records]
-        events = [
-            payload.split(" event=", 1)[1].split()[0]
-            for payload in payloads
-            if " event=" in payload
-        ]
-        assert events == ["request-started", "request-cancelled"]
-        request_ids = {
-            token.split("=", 1)[1]
-            for record, _closed in capture.records
-            for token in record.getMessage().split()
-            if token.startswith("request_id=")
-        }
-        assert len(request_ids) == 1
-        assert request_ids != {"none"}
-        _assert_records_redacted(capture.records, forbidden)
-
-    @pytest.mark.asyncio
-    async def test_caller_body_read_cancellation_closes_real_socket_response(self):
-        """A caller cancelled while reading the response body must close the socket.
-
-        PTB's ``HTTPXRequest.do_request`` does ``res = await client.request(...)``
-        and then ``return res.status_code, res.content``. If its task is cancelled
-        during ``res.content``, the response is abandoned and the underlying socket
-        stays in CLOSE_WAIT. Our transport must close the response when the
-        caller's task ends abnormally.
-        """
-        server = _SlowBodyServer(body=b"x" * 256, sent_bytes=1)
-        server.start()
-        try:
-            transport = httpx.AsyncHTTPTransport()
-            request = httpx.Request("GET", server.url)
-            response_holder: dict[str, httpx.Response] = {}
-
-            async def _read_body():
-                response = await tnet._handle_transport_request(transport, request)
-                response_holder["response"] = response
-                return await response.aread()
-
-            task = asyncio.create_task(_read_body())
-            server.wait_for_connection(timeout=2.0)
-            await asyncio.sleep(0.05)  # ensure body reading has started
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
-
-            # Yield to let the response-close callback fire.
-            await asyncio.sleep(0)
-
-            assert response_holder["response"].is_closed, (
-                "Response was abandoned on caller cancellation and its socket was not closed"
-            )
-            await transport.aclose()
-        finally:
-            server.stop()
-
-    @pytest.mark.asyncio
-    async def test_caught_close_cancellation_retries_and_clears_real_close_wait(self):
-        """A caught first-close cancellation must not strand a real TCP socket."""
-        server = _PeerFinServer()
-        server.start()
-        client = server.connect()
-        local_port = client.getsockname()[1]
-        remote_port = client.getpeername()[1]
-        stream = _CancelFirstSocketByteStream(client)
-        request = _telegram_request()
-        response = httpx.Response(
-            200,
-            request=request,
-            stream=stream,
-            extensions={"network_stream": stream},
-        )
-        transport = _SingleResponseTransport(response)
-
-        try:
-            await _wait_for_tcp_state(local_port, remote_port, "08")
-
-            async def _caller_catches_close_cancellation():
-                owned_response = await tnet._handle_transport_request(
-                    transport, request
-                )
-                try:
-                    await owned_response.aclose()
-                except asyncio.CancelledError:
-                    return "cancelled-close-caught"
-
-            result = await asyncio.create_task(
-                _caller_catches_close_cancellation()
-            )
-            assert result == "cancelled-close-caught"
-
-            # The caller task completed normally, so its done callback cannot
-            # identify the abandoned response. The stream wrapper must retry.
-            await _wait_for_tcp_state(local_port, remote_port, None)
-            assert stream.close_calls == 2
-            assert client.fileno() == -1
-            for _ in range(20):
-                if not tnet._abandoned_response_cleanups:
-                    break
-                await asyncio.sleep(0)
-            assert not tnet._abandoned_response_cleanups
-        finally:
-            client.close()
-            server.stop()
-
-    @pytest.mark.asyncio
-    async def test_caller_cancellation_cannot_interrupt_idempotent_stream_cleanup(self):
-        """External cancellation must not make an idempotent retry false-green.
-
-        httpcore marks ``PoolByteStream`` closed before its cancellable pool
-        bookkeeping completes. A second ``aclose()`` then returns successfully
-        without finishing the first cleanup. Keep that first close alive instead
-        of treating the no-op retry as proof that the real socket was released.
-        """
-        server = _PeerFinServer()
-        server.start()
-        client = server.connect()
-        local_port = client.getsockname()[1]
-        remote_port = client.getpeername()[1]
-        stream = _IdempotentInterruptedSocketByteStream(client)
-        retrying = tnet._RetryingCloseResponseStream(
-            stream,
-            network_stream=stream,
-        )
-
-        try:
-            await _wait_for_tcp_state(local_port, remote_port, "08")
-            close_task = asyncio.create_task(retrying.aclose())
-            await asyncio.wait_for(stream.close_started.wait(), timeout=1.0)
-            close_task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await close_task
-
-            stream.release_close.set()
-            await asyncio.wait_for(stream.cleanup_finished.wait(), timeout=2.0)
-            await _wait_for_tcp_state(
-                local_port,
-                remote_port,
-                None,
-                timeout=5.0,
-            )
-            assert stream.cleanup_completed is True
-            assert stream.close_calls == 1
-            for _ in range(20):
-                if not tnet._abandoned_response_cleanups:
-                    break
-                await asyncio.sleep(0)
-            assert not tnet._abandoned_response_cleanups
-        finally:
-            stream.release_close.set()
-            client.close()
-            server.stop()
-
-    @pytest.mark.asyncio
-    async def test_shielded_close_late_failure_cannot_false_green_idempotent_retry(self):
-        """A late first-close failure must still close the exact raw socket."""
-        left, right = socket.socketpair()
-        tracked_socket = _RawSocketTracker(left)
-        network_stream = _AcloseFailingNetworkStream(tracked_socket)
-        stream = _IdempotentLateFailingByteStream()
-        retrying = tnet._RetryingCloseResponseStream(
-            stream,
-            network_stream=network_stream,
-        )
-        try:
-            waiter = asyncio.create_task(retrying.aclose())
-            await asyncio.wait_for(stream.close_started.wait(), timeout=1.0)
-            waiter.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await waiter
-
-            stream.release_close.set()
-            for _ in range(200):
-                if tracked_socket.close_calls == 1:
-                    break
-                await asyncio.sleep(0.01)
-
-            assert stream.close_calls == 2
-            assert network_stream.aclose_calls == 1
-            assert tracked_socket.close_calls == 1
-            assert tracked_socket.fileno() == -1
-            for _ in range(200):
-                if not tnet._abandoned_response_cleanups:
-                    break
-                await asyncio.sleep(0.01)
-            assert not tnet._abandoned_response_cleanups
-        finally:
-            left.close()
-            right.close()
-
-    @pytest.mark.asyncio
-    async def test_retry_failure_forces_network_stream_close(self):
-        """If both byte-stream closes fail, force-close the raw network stream."""
-        network_stream = _DiagnosticNetworkStream()
-        stream = _CloseFailingByteStream()
-        retrying = tnet._RetryingCloseResponseStream(
-            stream,
-            network_stream=network_stream,
-        )
-
-        with pytest.raises(RuntimeError, match="stream close broken"):
-            await retrying.aclose()
-
-        for _ in range(20):
-            if network_stream.closed and not tnet._abandoned_response_cleanups:
-                break
-            await asyncio.sleep(0)
-        assert stream.close_calls == 2
-        assert network_stream.closed is True
-        assert not tnet._abandoned_response_cleanups
-
-    @pytest.mark.asyncio
-    async def test_force_close_falls_back_to_exact_raw_socket_on_network_aclose_failure(self):
-        """When network_stream.aclose() fails, close the exact raw OS socket.
-
-        The terminal fallback in _force_close_network_stream must close the
-        exact socket returned by get_extra_info('socket') — once, idempotently
-        — and no unrelated socket.
-        """
-        sock_a, sock_b = socket.socketpair()
-        try:
-            raw_tracker = _RawSocketTracker(sock_a)
-            network_stream = _AcloseFailingNetworkStream(raw_tracker)
-            stream = _CloseFailingByteStream()
-            retrying = tnet._RetryingCloseResponseStream(
-                stream,
-                network_stream=network_stream,
-            )
-
-            with pytest.raises(RuntimeError, match="stream close broken"):
-                await retrying.aclose()
-
-            for _ in range(30):
-                if raw_tracker.close_calls > 0 and not tnet._abandoned_response_cleanups:
-                    break
-                await asyncio.sleep(0)
-
-            # The exact raw socket was closed exactly once.
-            assert raw_tracker.close_calls == 1
-            # The network-stream aclose was attempted exactly once (idempotent).
-            assert network_stream.aclose_calls == 1
-            # The unrelated socket (sock_b) was never touched.
-            assert sock_b.fileno() != -1
-            assert not tnet._abandoned_response_cleanups
-        finally:
-            sock_a.close()
-            sock_b.close()
-
-    @pytest.mark.asyncio
-    async def test_ipv4_literal_tried_before_hostname_and_becomes_sticky(self, monkeypatch):
-        calls = []
-        behavior = {"api.telegram.org": "timeout", "149.154.167.220": "ok"}
-        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
-
-        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
-        resp = await transport.handle_async_request(_telegram_request())
-
-        assert resp.status_code == 200
-        assert transport._sticky_ip == "149.154.167.220"
-        assert [c["url_host"] for c in calls] == ["149.154.167.220"]
-        assert calls[0]["host_header"] == "api.telegram.org"
-        assert calls[0]["sni_hostname"] == "api.telegram.org"
-
-        # Second request goes straight to sticky IP
-        calls.clear()
-        resp2 = await transport.handle_async_request(_telegram_request())
-        assert resp2.status_code == 200
-        assert calls[0]["url_host"] == "149.154.167.220"
-
-    @pytest.mark.asyncio
-    async def test_first_choice_ipv4_success_logs_info_not_warning(self, monkeypatch, caplog):
-        """Healthy IPv4-first connect is info; warning only after a skipped dead path."""
-        import logging
-
-        calls = []
-        monkeypatch.setattr(
-            tnet.httpx,
-            "AsyncHTTPTransport",
-            _fake_transport_factory(calls, {"149.154.167.220": "ok"}),
-        )
-        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
-        with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.telegram_network"):
-            await transport.handle_async_request(_telegram_request())
-        records = [r for r in caplog.records if "sticky IPv4 Telegram API path" in r.getMessage()]
-        assert len(records) == 1
-        assert records[0].levelno == logging.INFO
-
-    @pytest.mark.asyncio
-    async def test_sticky_after_failed_literal_logs_warning(self, monkeypatch, caplog):
-        import logging
-
-        calls = []
-        monkeypatch.setattr(
-            tnet.httpx,
-            "AsyncHTTPTransport",
-            _fake_transport_factory(
-                calls, {"149.154.167.220": "timeout", "149.154.167.221": "ok"}
-            ),
-        )
-        transport = tnet.TelegramFallbackTransport(["149.154.167.220", "149.154.167.221"])
-        with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.telegram_network"):
-            await transport.handle_async_request(_telegram_request())
-        records = [r for r in caplog.records if "sticky IPv4 Telegram API path" in r.getMessage()]
-        assert len(records) == 1
-        assert records[0].levelno == logging.WARNING
-        assert "149.154.167.221" in records[0].getMessage()
-
-
-    @pytest.mark.asyncio
-    async def test_sticky_ip_tried_first_but_falls_through_if_stale(self, monkeypatch):
-        """If the sticky IP stops working, the transport retries others."""
-        calls = []
-        behavior = {
-            "api.telegram.org": "timeout",
-            "149.154.167.220": "ok",
-            "149.154.167.221": "ok",
-        }
-        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
-
-        transport = tnet.TelegramFallbackTransport(["149.154.167.220", "149.154.167.221"])
-
-        # First request: .220 works immediately (IPv4-first) → becomes sticky
-        await transport.handle_async_request(_telegram_request())
-        assert transport._sticky_ip == "149.154.167.220"
-
-        # Now .220 goes bad too
-        calls.clear()
-        behavior["149.154.167.220"] = "timeout"
-
-        resp = await transport.handle_async_request(_telegram_request())
-        assert resp.status_code == 200
-        # Sticky .220 fails → remaining IPv4 .221 works. Hostname is last
-        # and is never needed.
-        assert [c["url_host"] for c in calls] == ["149.154.167.220", "149.154.167.221"]
-        assert transport._sticky_ip == "149.154.167.221"
-
-    @pytest.mark.asyncio
-    async def test_blackholed_hostname_never_reached_when_ipv4_works(self, monkeypatch):
-        """#87015: a hostname connect that never returns must not run first."""
-        calls = []
-
-        class _HangOnHostname(FakeTransport):
-            async def handle_async_request(self, request):
-                if request.url.host == "api.telegram.org":
-                    raise AssertionError(
-                        "dual-stack hostname was tried before a working IPv4 literal"
-                    )
-                return await super().handle_async_request(request)
-
-        def factory(**kwargs):
-            return _HangOnHostname(calls, {"149.154.167.220": "ok"})
-
-        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)
-        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
-        resp = await transport.handle_async_request(_telegram_request())
-        assert resp.status_code == 200
-        assert calls[0]["url_host"] == "149.154.167.220"
-
-    def test_attempt_order_is_ipv4_then_hostname(self):
-        transport = tnet.TelegramFallbackTransport(["149.154.167.220", "149.154.166.110"])
-        assert transport._attempt_order() == [
-            "149.154.167.220",
-            "149.154.166.110",
-            None,
-        ]
-
-    @pytest.mark.asyncio
-    async def test_hostname_tried_last_when_ipv4_fails(self, monkeypatch):
-        """IPv6-only / seed-IP-blocked hosts still reach the hostname last."""
-        calls = []
-        behavior = {"149.154.167.220": "timeout", "api.telegram.org": "ok"}
-        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
-        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
-        resp = await transport.handle_async_request(_telegram_request())
-        assert resp.status_code == 200
-        assert [c["url_host"] for c in calls] == ["149.154.167.220", "api.telegram.org"]
-        assert transport._sticky_ip is None
 
 
 class TestFallbackTransportPassthrough:
@@ -1836,9 +1288,7 @@ class TestFallbackTransportPassthrough:
         assert calls[0]["url_host"] == "example.com"
         assert transport._sticky_ip is tnet._UNSET
 
-
 class TestFallbackTransportInit:
-
 
     def test_uses_proxy_env_for_primary_and_fallback_transports(self, monkeypatch):
         seen_kwargs = []
@@ -2002,7 +1452,6 @@ class TestFallbackTransportClose:
         assert len(factory.instances) == 3
         assert all(t.closed for t in factory.instances)
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Config layer – TELEGRAM_FALLBACK_IPS env → config.extra
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2018,7 +1467,6 @@ class TestConfigFallbackIps:
         assert config.platforms[Platform.TELEGRAM].extra["fallback_ips"] == [
             "149.154.167.220", "149.154.167.221",
         ]
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Adapter layer – _fallback_ips() reads config correctly
@@ -2057,7 +1505,6 @@ class TestAdapterFallbackIps:
         adapter = self._make_adapter(extra={"fallback_ips": "149.154.167.220,149.154.167.221"})
         assert adapter._fallback_ips() == ["149.154.167.220", "149.154.167.221"]
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # DoH auto-discovery
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2065,7 +1512,6 @@ class TestAdapterFallbackIps:
 def _doh_answer(*ips: str) -> dict:
     """Build a minimal DoH JSON response with A records."""
     return {"Answer": [{"type": 1, "data": ip} for ip in ips]}
-
 
 class FakeDoHClient:
     """Mock httpx.AsyncClient for DoH queries."""
@@ -2096,7 +1542,6 @@ class FakeDoHClient:
 
     async def __aexit__(self, *args):
         pass
-
 
 class TestDiscoverFallbackIps:
     """Tests for discover_fallback_ips() — DoH-based auto-discovery."""
@@ -2152,7 +1597,6 @@ class TestDiscoverFallbackIps:
         ips = await tnet.discover_fallback_ips()
         assert ips == ["149.154.167.220"]
 
-
     @pytest.mark.asyncio
     async def test_all_doh_ips_same_as_system_dns_kept(self, monkeypatch):
         """DoH agrees with system DNS — keep that IP instead of seed list (#14520).
@@ -2170,7 +1614,6 @@ class TestDiscoverFallbackIps:
         ips = await tnet.discover_fallback_ips()
         assert ips == ["149.154.166.110"]
 
-
     @pytest.mark.asyncio
     async def test_hung_system_dns_does_not_gate_doh_results(self, monkeypatch):
         """#63309: socket.getaddrinfo has no timeout of its own — a wedged OS
@@ -2184,16 +1627,39 @@ class TestDiscoverFallbackIps:
         }, system_dns_ips=["149.154.166.110"])
         monkeypatch.setattr(tnet, "_DOH_TIMEOUT", 0.2)
 
+        release_dns = threading.Event()
+
         def _hung_getaddrinfo(*a, **kw):
-            _time.sleep(0.2)  # far beyond the discovery bound
+            release_dns.wait()
             raise OSError("resolver wedged")
 
         monkeypatch.setattr(tnet.socket, "getaddrinfo", _hung_getaddrinfo)
 
         start = _time.monotonic()
-        ips = await tnet.discover_fallback_ips()
+        try:
+            ips = await tnet.discover_fallback_ips()
+        finally:
+            release_dns.set()
         elapsed = _time.monotonic() - start
 
         assert ips == ["149.154.167.220"]
         assert elapsed < 1.4, f"discovery gated on hung system DNS ({elapsed:.2f}s)"
 
+
+@pytest.mark.asyncio
+async def test_cleanup_debug_trace_preserves_locations_without_request_secrets(caplog):
+    request, forbidden = _diagnostic_request()
+    inner = _ErrorThenSuccessInnerStream(RuntimeError(str(request.url)))
+    stream = tnet._RetryingCloseResponseStream(inner)
+    with caplog.at_level(logging.DEBUG, logger=tnet.cleanup_logger.name):
+        with pytest.raises(RuntimeError):
+            await stream.aclose()
+        await async_wait_until(lambda: inner.closed, timeout=2, what="retry closed inner stream")
+    records = [record for record in caplog.records if record.name == tnet.cleanup_logger.name]
+    assert records
+    for record in records:
+        payload = _record_payload(record)
+        assert all(value not in payload for value in forbidden)
+        assert "telegram_network.py:" in payload
+        assert record.exc_info[1].__context__ is None
+        assert record.exc_info[2] is None

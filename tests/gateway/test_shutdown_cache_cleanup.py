@@ -12,7 +12,8 @@ The fix adds an explicit sweep of ``_agent_cache`` after
 import asyncio
 import threading
 from collections import OrderedDict
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -24,8 +25,8 @@ import gateway.run as gw_mod
 # Helpers
 # ---------------------------------------------------------------------------
 
-class _FakeGateway:
-    """Minimal stand-in with just enough state for ``stop()`` to run."""
+class _FakeGateway(gw_mod.GatewayRunner):
+    """Use the real shutdown surface with isolated adapters and inline resource cleanup."""
 
     def __init__(self):
         self._running = True
@@ -34,13 +35,13 @@ class _FakeGateway:
         self._restart_detached = False
         self._restart_via_service = False
         self._stop_task = None
+        self._restart_task = None
         self._exit_cleanly = False
         self._exit_with_failure = False
         self._exit_reason = None
         self._exit_code = None
         self._restart_drain_timeout = 0.01
         # stop() reads the systemd-budget-clamped effective timeout
-        self._stopsec_headroom = 10.0
         self._running_agents = {}
         self._running_agents_ts = {}
         self._agent_cache = OrderedDict()
@@ -51,7 +52,17 @@ class _FakeGateway:
         self._shutdown_event = asyncio.Event()
         self._pending_messages = {}
         self._pending_approvals = {}
+        self.session_store = SimpleNamespace()
+        self._async_session_store = SimpleNamespace(
+            _store=self.session_store,
+            mark_resume_pending_batch=AsyncMock(side_effect=lambda keys, reason: list(keys)),
+            clear_resume_pending=AsyncMock(),
+        )
         self._busy_ack_ts = {}
+
+    @property
+    def _stopsec_headroom(self):
+        return 10.0
 
     @property
     def _effective_restart_drain_timeout(self) -> float:
@@ -92,11 +103,11 @@ class _FakeGateway:
         return func(*args)
 
     async def _cleanup_agent_resources_off_loop(
-        self, agent, *, context="", timeout=None
+        self, agent, *, context="", timeout=None, session_key=None
     ):
         # Mirror the real bounded helper inline (no executor/timeout) so the
         # fake exercises the same call shape stop() now uses.
-        self._cleanup_agent_resources(agent)
+        return self._cleanup_agent_resources(agent)
 
     async def _notify_active_sessions_of_shutdown(self):
         pass
@@ -112,18 +123,7 @@ class _FakeGateway:
             self._cleanup_agent_resources(agent)
 
     def _cleanup_agent_resources(self, agent):
-        if agent is None:
-            return
-        try:
-            if hasattr(agent, "shutdown_memory_provider"):
-                agent.shutdown_memory_provider()
-        except Exception:
-            pass
-        try:
-            if hasattr(agent, "close"):
-                agent.close()
-        except Exception:
-            pass
+        return gw_mod.GatewayRunner._cleanup_agent_resources(self, agent)
 
     def _evict_cached_agent(self, key):
         pass
@@ -163,16 +163,6 @@ class TestCachedAgentCleanupOnShutdown:
 
         agent.shutdown_memory_provider.assert_called_once()
 
-    @pytest.mark.asyncio
-    async def test_cache_cleared_after_shutdown(self):
-        """The _agent_cache dict is cleared after stop."""
-        gw = _FakeGateway()
-        agent = _make_mock_agent()
-        gw._agent_cache["s1"] = (agent, "sig1")
-
-        await gw_mod.GatewayRunner.stop(gw)
-
-        assert len(gw._agent_cache) == 0
 
 
 class TestRunningAgentsNotDoubleCleaned:

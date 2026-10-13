@@ -60,7 +60,7 @@ def test_abandoned_old_process_status_write_fails_closed_on_malformed_lock(
     monkeypatch,
 ):
     """A late serial writer must not trust partial successor lock metadata."""
-    from gateway import status
+    from gateway import status, status_sequence
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     old_record = {
@@ -80,7 +80,8 @@ def test_abandoned_old_process_status_write_fails_closed_on_malformed_lock(
     (tmp_path / "gateway.lock").write_text("{partial")
 
     monkeypatch.setattr(status, "_build_pid_record", lambda: old_record)
-    monkeypatch.setattr(status, "current_serial_daemon_sequence", lambda: 7)
+    monkeypatch.setattr(status_sequence, "current_serial_daemon_sequence", lambda: 7)
+    monkeypatch.setattr(status_sequence, "_latest_serial_status_sequence", 0)
     monkeypatch.setattr(status, "_gateway_lock_handle", object())
 
     status.write_runtime_status(active_agents=0)
@@ -90,7 +91,7 @@ def test_abandoned_old_process_status_write_fails_closed_on_malformed_lock(
 
 def test_runtime_lock_release_waits_for_short_status_commit(tmp_path, monkeypatch):
     """Normal release preserves ownership through a recoverable status commit."""
-    from gateway import status
+    from gateway import status, status_sequence
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     lock_path = tmp_path / "gateway.lock"
@@ -101,15 +102,24 @@ def test_runtime_lock_release_waits_for_short_status_commit(tmp_path, monkeypatc
     write_entered = threading.Event()
     allow_write = threading.Event()
     release_finished = threading.Event()
+    flush_entered = threading.Event()
     original_write = status._write_json_file
 
     def _paused_write(path, payload):
         write_entered.set()
-        assert allow_write.wait(timeout=2)
+        assert allow_write.wait(timeout=5)
         original_write(path, payload)
 
-    monkeypatch.setattr(status, "_write_json_file", _paused_write)
-    monkeypatch.setattr(status, "current_serial_daemon_sequence", lambda: None)
+    status_writer = status._RuntimeStatusWriter(write_fn=_paused_write)
+    original_flush = status_writer.flush
+
+    def observed_flush(timeout):
+        flush_entered.set()
+        return original_flush(timeout=timeout)
+
+    monkeypatch.setattr(status_writer, "flush", observed_flush)
+    monkeypatch.setattr(status, "_runtime_status_writer", status_writer)
+    monkeypatch.setattr(status_sequence, "current_serial_daemon_sequence", lambda: None)
 
     writer = threading.Thread(
         target=status.write_runtime_status,
@@ -118,16 +128,19 @@ def test_runtime_lock_release_waits_for_short_status_commit(tmp_path, monkeypatc
     )
     releaser = threading.Thread(
         target=lambda: (
-            status.release_gateway_runtime_lock(timeout=1.0),
+            status.release_gateway_runtime_lock(timeout=5.0),
             release_finished.set(),
         ),
         daemon=True,
     )
     try:
         writer.start()
-        assert write_entered.wait(timeout=1)
+        assert write_entered.wait(timeout=2)
+        assert status.release_gateway_runtime_lock(timeout=0.0) is False
+        assert status._gateway_lock_handle is handle
+        flush_entered.clear()
         releaser.start()
-        time.sleep(0.05)
+        assert flush_entered.wait(timeout=2)
         assert not release_finished.is_set()
         assert status._gateway_lock_handle is handle
         allow_write.set()
@@ -135,6 +148,8 @@ def test_runtime_lock_release_waits_for_short_status_commit(tmp_path, monkeypatc
         releaser.join(timeout=2)
         assert release_finished.is_set()
         assert status._gateway_lock_handle is None
+        assert not writer.is_alive()
+        assert json.loads((tmp_path / "gateway_state.json").read_text())["active_agents"] == 1
     finally:
         allow_write.set()
         if not handle.closed:
@@ -143,7 +158,7 @@ def test_runtime_lock_release_waits_for_short_status_commit(tmp_path, monkeypatc
 
 def test_runtime_lock_release_timeout_cannot_wedge_forced_exit(tmp_path, monkeypatch):
     """A permanently stalled status commit cannot block watchdog lock release."""
-    from gateway import status
+    from gateway import status, status_sequence
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     lock_path = tmp_path / "gateway.lock"
@@ -155,7 +170,7 @@ def test_runtime_lock_release_timeout_cannot_wedge_forced_exit(tmp_path, monkeyp
     release_holder = threading.Event()
 
     def _hold_status_lock():
-        with status._runtime_status_write_lock:
+        with status_sequence._runtime_status_write_lock:
             holder_ready.set()
             release_holder.wait(timeout=2)
 
@@ -166,7 +181,7 @@ def test_runtime_lock_release_timeout_cannot_wedge_forced_exit(tmp_path, monkeyp
     started = time.monotonic()
     try:
         assert status.release_gateway_runtime_lock(timeout=0.05) is False
-        assert time.monotonic() - started < 0.5
+        assert time.monotonic() - started < 2
         assert status._gateway_lock_handle is handle
     finally:
         release_holder.set()

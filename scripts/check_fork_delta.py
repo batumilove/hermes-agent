@@ -15,6 +15,9 @@ from typing import Any
 
 import yaml
 
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from scripts import fork_provenance
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / ".github" / "batumi-patches.yaml"
@@ -53,6 +56,8 @@ def _git(*args: str, cwd: Path = ROOT) -> str:
         cwd=cwd,
         capture_output=True,
         text=True,
+        timeout=120,
+        check=False,
     )
     if result.returncode:
         detail = (result.stderr or result.stdout).strip().splitlines()
@@ -66,6 +71,8 @@ def _is_ancestor(ancestor: str, descendant: str, *, cwd: Path) -> bool:
         cwd=cwd,
         capture_output=True,
         text=True,
+        timeout=120,
+        check=False,
     )
     if result.returncode == 0:
         return True
@@ -85,9 +92,9 @@ def _nonempty_string(value: Any, field: str) -> str:
     return value.strip()
 
 
-def _repo_path(value: Any, field: str) -> Path:
+def _repo_path(value: Any, field: str, *, root: Path | None = None) -> Path:
     relative = _nonempty_string(value, field)
-    root = ROOT.resolve()
+    root = (ROOT if root is None else root).resolve()
     candidate = (root / relative).resolve()
     try:
         candidate.relative_to(root)
@@ -96,9 +103,9 @@ def _repo_path(value: Any, field: str) -> Path:
     return candidate
 
 
-def load_manifest(path: Path) -> tuple[Path, Path | None, list[PatchOwner]]:
+def load_manifest(path: Path, *, root: Path | None = None) -> tuple[Path, Path | None, list[PatchOwner]]:
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw = yaml.safe_load(path.read_text(encoding="utf-8-sig"))
     except (OSError, yaml.YAMLError) as exc:
         raise DeltaError(f"could not read manifest {path}: {exc}") from exc
     if not isinstance(raw, dict) or raw.get("version") != 1:
@@ -107,10 +114,10 @@ def load_manifest(path: Path) -> tuple[Path, Path | None, list[PatchOwner]]:
     upstream = raw.get("upstream")
     if not isinstance(upstream, dict):
         raise DeltaError("manifest upstream section must be a mapping")
-    base_file = _repo_path(upstream.get("base_file"), "upstream.base_file")
+    base_file = _repo_path(upstream.get("base_file"), "upstream.base_file", root=root)
     provenance_value = upstream.get("provenance_file")
     provenance_file = (
-        _repo_path(provenance_value, "upstream.provenance_file")
+        _repo_path(provenance_value, "upstream.provenance_file", root=root)
         if provenance_value is not None
         else None
     )
@@ -150,7 +157,7 @@ def load_manifest(path: Path) -> tuple[Path, Path | None, list[PatchOwner]]:
 
 def _read_sha_file(path: Path, field: str) -> str:
     try:
-        value = path.read_text(encoding="utf-8").strip()
+        value = path.read_text(encoding="utf-8-sig").strip()
     except OSError as exc:
         raise DeltaError(f"could not read {field} {path}: {exc}") from exc
     if not _SHA_RE.fullmatch(value):
@@ -160,9 +167,14 @@ def _read_sha_file(path: Path, field: str) -> str:
 
 def _load_provenance(path: Path) -> dict[str, Any]:
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
         raise DeltaError(f"could not read squash-sync provenance {path}: {exc}") from exc
+    if isinstance(raw, dict) and raw.get("version") == 2:
+        try:
+            return fork_provenance.validate_v2(raw)
+        except fork_provenance.ProvenanceError as error:
+            raise DeltaError(str(error)) from error
     if not isinstance(raw, dict) or raw.get("version") != 1:
         raise DeltaError("squash-sync provenance version must be 1")
     expected = {
@@ -207,12 +219,22 @@ def resolve_upstream_relationship(
     *,
     head: str = "HEAD",
     cwd: Path = ROOT,
+    official_tip: str | None = None,
 ) -> UpstreamRelationship:
-    base_file, provenance_file, _ = load_manifest(manifest_path)
-    base = _read_sha_file(base_file, str(base_file.relative_to(ROOT.resolve())))
+    base_file, provenance_file, _ = load_manifest(manifest_path, root=cwd)
+    base_relative = base_file.relative_to(cwd.resolve()).as_posix()
+    base = _read_sha_file(base_file, base_relative)
     resolved_head = _git("rev-parse", head, cwd=cwd)
-    _git("cat-file", "-e", f"{base}^{{commit}}", cwd=cwd)
-    if _is_ancestor(base, resolved_head, cwd=cwd):
+    if official_tip is not None:
+        official_tip = _git("rev-parse", "--verify", f"{official_tip}^{{commit}}", cwd=cwd)
+    try:
+        _git("cat-file", "-e", f"{base}^{{commit}}", cwd=cwd)
+        direct = _is_ancestor(base, resolved_head, cwd=cwd)
+    except DeltaError:
+        direct = False
+    if direct:
+        if official_tip is not None and not _is_ancestor(base, official_tip, cwd=cwd):
+            raise DeltaError("recorded upstream base is not in the trusted official upstream history")
         return UpstreamRelationship(base, base, "direct")
     if provenance_file is None:
         raise DeltaError("recorded upstream base is not an ancestor and no provenance file is configured")
@@ -220,6 +242,18 @@ def resolve_upstream_relationship(
     provenance = _load_provenance(provenance_file)
     if provenance["upstream_base"] != base:
         raise DeltaError("squash-sync provenance upstream base does not match the recorded base")
+    if provenance.get("version") == 2:
+        if provenance_file.relative_to(cwd.resolve()).as_posix() != fork_provenance.PROVENANCE_PATH:
+            raise DeltaError("version 2 provenance must use the canonical upstream-sync-provenance.json path")
+        try:
+            imported = fork_provenance.resolve_v2(
+                cwd, base, resolved_head, proof=provenance, base_relative=base_relative,
+            )
+            if official_tip is not None and not fork_provenance.is_ancestor(cwd, base, official_tip):
+                raise DeltaError("recorded upstream base is not in the trusted official upstream history")
+        except fork_provenance.ProvenanceError as error:
+            raise DeltaError(str(error)) from error
+        return UpstreamRelationship(base, imported, "tree-import")
     source = provenance["source_head"]
     squash = provenance["squash_commit"]
     fetch_provenance_source(manifest_path, head=head, cwd=cwd)
@@ -234,10 +268,11 @@ def resolve_upstream_relationship(
     squash_tree = _git("rev-parse", f"{squash}^{{tree}}", cwd=cwd)
     if source_tree != squash_tree:
         raise DeltaError("recorded sync source and squash trees differ")
-    base_relative = base_file.relative_to(ROOT.resolve()).as_posix()
     source_base = _git("show", f"{source}:{base_relative}", cwd=cwd).strip()
     if source_base != base:
         raise DeltaError("recorded sync source does not contain the recorded upstream base")
+    if official_tip is not None and not _is_ancestor(base, official_tip, cwd=cwd):
+        raise DeltaError("recorded upstream base is not in the trusted official upstream history")
     return UpstreamRelationship(base, squash, "squash-sync")
 
 
@@ -246,8 +281,9 @@ def resolve_contributor_base(
     *,
     head: str = "HEAD",
     cwd: Path = ROOT,
+    official_tip: str | None = None,
 ) -> str:
-    return resolve_upstream_relationship(manifest_path, head=head, cwd=cwd).contributor_base
+    return resolve_upstream_relationship(manifest_path, head=head, cwd=cwd, official_tip=official_tip).contributor_base
 
 
 def fetch_provenance_source(
@@ -256,10 +292,10 @@ def fetch_provenance_source(
     head: str = "HEAD",
     cwd: Path = ROOT,
 ) -> str | None:
-    base_file, provenance_file, _ = load_manifest(manifest_path)
+    base_file, provenance_file, _ = load_manifest(manifest_path, root=cwd)
     if provenance_file is None:
         return None
-    base = _read_sha_file(base_file, str(base_file.relative_to(ROOT.resolve())))
+    base = _read_sha_file(base_file, str(base_file.relative_to(cwd.resolve())))
     resolved_head = _git("rev-parse", head, cwd=cwd)
     try:
         _git("cat-file", "-e", f"{base}^{{commit}}", cwd=cwd)
@@ -270,14 +306,23 @@ def fetch_provenance_source(
             return None
     provenance = _load_provenance(provenance_file)
     source = provenance["source_head"]
+    if provenance.get("version") == 2:
+        if provenance_file.relative_to(cwd.resolve()).as_posix() != fork_provenance.PROVENANCE_PATH:
+            raise DeltaError("version 2 provenance must use the canonical upstream-sync-provenance.json path")
+        if provenance["upstream_base"] != base:
+            raise DeltaError("tree-import provenance upstream base does not match the recorded base")
+        try:
+            return fork_provenance.fetch_source(cwd, source, provenance["fetch_depth"], required_ancestor=base)
+        except fork_provenance.ProvenanceError as error:
+            raise DeltaError(str(error)) from error
     try:
         _git("cat-file", "-e", f"{source}^{{commit}}", cwd=cwd)
         return source
     except DeltaError:
         pass
+    depth = [f"--depth={provenance['fetch_depth']}"] if _git("rev-parse", "--is-shallow-repository", cwd=cwd) == "true" else []
     _git(
-        "fetch",
-        f"--depth={provenance['fetch_depth']}",
+        "fetch", *depth,
         "--filter=blob:none",
         "--no-tags",
         "origin",
@@ -316,9 +361,10 @@ def check_delta(
     *,
     head: str = "HEAD",
     cwd: Path = ROOT,
+    official_tip: str | None = None,
 ) -> dict[str, Any]:
-    _, _, owners = load_manifest(manifest_path)
-    relationship = resolve_upstream_relationship(manifest_path, head=head, cwd=cwd)
+    _, _, owners = load_manifest(manifest_path, root=cwd)
+    relationship = resolve_upstream_relationship(manifest_path, head=head, cwd=cwd, official_tip=official_tip)
     base = relationship.base
     resolved_head = _git("rev-parse", head, cwd=cwd)
     changed = _git(
@@ -345,6 +391,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--head", default="HEAD")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--official-tip", help="Trusted, separately fetched official upstream ref")
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--contributor-base", action="store_true")
     action.add_argument("--fetch-provenance-source", action="store_true")
@@ -361,10 +408,11 @@ def main(argv: list[str] | None = None) -> int:
                 resolve_contributor_base(
                     args.manifest.resolve(),
                     head=args.head,
+                    official_tip=args.official_tip,
                 )
             )
             return 0
-        report = check_delta(args.manifest.resolve(), head=args.head)
+        report = check_delta(args.manifest.resolve(), head=args.head, official_tip=args.official_tip)
     except DeltaError as exc:
         print(f"fork delta check failed: {exc}", file=sys.stderr)
         return 2

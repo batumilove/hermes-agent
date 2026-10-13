@@ -195,4 +195,5 @@ def test_scheduler_marks_only_generated_named_topic_as_ephemeral():
     assert route_metadata == {
         "job_id": "job1",
         "_telegram_ephemeral_dm_topic": True,
+        "notify": True,
     }

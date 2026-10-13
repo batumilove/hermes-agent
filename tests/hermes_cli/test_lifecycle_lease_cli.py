@@ -5,7 +5,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 
 import pytest
 
@@ -38,7 +38,7 @@ def _orphan(home):
         owner_token="operator-test",
         purpose="lcm-activation",
         provenance=_PROVENANCE,
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
     )
     lease._handle.close()
     return inspect_lifecycle_lease(home=home)
@@ -138,6 +138,7 @@ def test_root_cli_exposes_lifecycle_lease_inspect(tmp_path):
         env=env,
         text=True,
         capture_output=True,
+        check=False,
         timeout=30,
     )
 
@@ -157,7 +158,7 @@ class _Lease:
 
 
 def _run_args(*, purpose="lcm-activation"):
-    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+    expires_at = (datetime.now(UTC) + timedelta(minutes=10)).isoformat()
     return _parse(
         "run",
         "--purpose",
@@ -207,7 +208,8 @@ def test_run_holds_exact_external_controller_lease(purpose, tmp_path, monkeypatc
     assert events[0] == "lease-acquire"
     assert events[1][0] == "command"
     assert events[1][1][0] == sys.executable
-    assert events[1][2] == {"check": False}
+    assert events[1][2]["check"] is False
+    assert 0 < events[1][2]["timeout"] <= 600
     assert events[2] == "lease-release"
     assert captured["home"] == tmp_path
     assert captured["purpose"] == purpose
@@ -266,7 +268,7 @@ def test_root_cli_run_executes_inert_controller_and_cleans_lease(tmp_path):
     home = tmp_path / "profile-home"
     env = dict(os.environ)
     env["HERMES_HOME"] = str(home)
-    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+    expires_at = (datetime.now(UTC) + timedelta(minutes=10)).isoformat()
 
     result = subprocess.run(
         [
@@ -298,6 +300,7 @@ def test_root_cli_run_executes_inert_controller_and_cleans_lease(tmp_path):
         env=env,
         text=True,
         capture_output=True,
+        check=False,
         timeout=30,
     )
 

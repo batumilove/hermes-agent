@@ -30,6 +30,9 @@ Design constraints (enforced by tests in ``test_lifecycle_counters.py``):
 
 from __future__ import annotations
 
+import logging
+logger = logging.getLogger("gateway.run")
+
 import threading
 from typing import Any, Dict, Optional
 
@@ -94,13 +97,13 @@ class GatewayLifecycleCounters:
         self._lock = threading.Lock()
         self._seq = 0
         # agent_cache.events: flat int counters keyed by event name.
-        self._events: Dict[str, int] = {}
+        self._events: dict[str, int] = {}
         # agent_cache size / config mirror (set via set_agent_cache_size).
         self._cache_entries: int = 0
         self._cache_max_size: Optional[int] = None
         self._cache_idle_ttl: Optional[float] = None
         # context_engines: by-type counts (class/type name -> count).
-        self._ce_by_type: Dict[str, int] = {}
+        self._ce_by_type: dict[str, int] = {}
         self._ce_total: int = 0
         # Aggregate executor mirror only; never retain the executor object.
         self._executor_present = False
@@ -116,13 +119,14 @@ class GatewayLifecycleCounters:
         self._gc_enabled = self._enabled and bool(gc_enabled)
 
     @classmethod
-    def from_config(cls) -> "GatewayLifecycleCounters":
+    def from_config(cls) -> GatewayLifecycleCounters:
         """Construct from the existing local shared-metrics opt-in policy."""
         try:
             from hermes_cli.config import read_raw_config_readonly
 
             config = read_raw_config_readonly() or {}
         except Exception:
+            logger.debug("from_config boundary operation failed", exc_info=True)
             enabled = False
         else:
             telemetry = config.get("telemetry") if isinstance(config, dict) else None
@@ -303,17 +307,17 @@ class GatewayLifecycleCounters:
             try:
                 shutdown = bool(getattr(executor, "_shutdown", False))
             except Exception:
-                pass
+                logger.debug("set_executor boundary operation failed", exc_info=True)
             try:
                 threads = int(getattr(executor, "_max_workers", 0))
             except Exception:
-                pass
+                logger.debug("set_executor boundary operation failed", exc_info=True)
             try:
                 queue = getattr(executor, "_work_queue", None)
                 if queue is not None and hasattr(queue, "qsize"):
                     queued = int(queue.qsize())
             except Exception:
-                pass
+                logger.debug("set_executor boundary operation failed", exc_info=True)
         with self._lock:
             self._seq += 1
             self._executor_present = present
@@ -324,7 +328,7 @@ class GatewayLifecycleCounters:
     # ------------------------------------------------------------------
     # Snapshot
     # ------------------------------------------------------------------
-    def _executor_snapshot(self) -> Dict[str, Any]:
+    def _executor_snapshot(self) -> dict[str, Any]:
         """Return the aggregate executor mirror — never an object reference."""
         with self._lock:
             return {
@@ -334,7 +338,7 @@ class GatewayLifecycleCounters:
                 "queued": self._executor_queued,
             }
 
-    def _gc_snapshot(self) -> Dict[str, Any]:
+    def _gc_snapshot(self) -> dict[str, Any]:
         """Optional gc stats — evaluated lazily on snapshot, never raises."""
         if not self._gc_enabled:
             return {}
@@ -346,16 +350,18 @@ class GatewayLifecycleCounters:
                 "stats": [dict(s) for s in gc.get_stats()],
             }
         except Exception:
+            logger.debug("_gc_snapshot boundary operation failed", exc_info=True)
             return {}
 
-    def _threads_snapshot(self) -> Dict[str, Any]:
+    def _threads_snapshot(self) -> dict[str, Any]:
         """Active thread count (best-effort)."""
         try:
             return {"active": threading.active_count()}
         except Exception:
+            logger.debug("_threads_snapshot boundary operation failed", exc_info=True)
             return {"active": 0}
 
-    def _tasks_snapshot(self) -> Dict[str, Any]:
+    def _tasks_snapshot(self) -> dict[str, Any]:
         """Background/cleanup task counts.
 
         These are populated by the gateway via ``set_task_counts`` if available;
@@ -379,7 +385,7 @@ class GatewayLifecycleCounters:
             self._tasks_background = int(background_active)
             self._tasks_cleanup = int(cleanup_active)
 
-    def snapshot(self) -> Dict[str, Any]:
+    def snapshot(self) -> dict[str, Any]:
         """Return a deep-ish copy of the current counter state.
 
         The returned dict is fully isolated from the live counter — mutating it
@@ -405,7 +411,7 @@ class GatewayLifecycleCounters:
                 "cleanup_active": self._tasks_cleanup,
             }
 
-        snap: Dict[str, Any] = {
+        snap: dict[str, Any] = {
             "enabled": self._enabled,
             "schema_version": _SCHEMA_VERSION,
             "monotonic_seq": seq,

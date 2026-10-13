@@ -38,6 +38,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT))
 
 import plugins.platforms.telegram.telegram_network as tnet
+from tests.waiting import async_wait_until
 
 _DRAIN_SECONDS = 0.5
 _LEAK_STATUSES = {"ESTABLISHED", "CLOSE_WAIT", "FIN_WAIT1", "FIN_WAIT2"}
@@ -95,6 +96,7 @@ class _SocketLifecycleCapture(logging.Handler):
 def _ptb_request_available() -> bool:
     return subprocess.run(
         [sys.executable, "-c", "from telegram.request import HTTPXRequest"],
+        check=False,
         cwd=_REPO_ROOT,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -109,6 +111,8 @@ def _case_params():
         marks = []
         if case in _PTB_CASES and not ptb_available:
             marks.append(pytest.mark.skip(reason="python-telegram-bot is not installed"))
+        if case == "pre_response_inactive_route":
+            marks.append(pytest.mark.platforms("linux"))
         if case == "pre_response_inactive_route" and not Path("/proc/net/tcp").is_file():
             marks.append(
                 pytest.mark.skip(
@@ -161,7 +165,7 @@ def _owned_connections_to_port(port: int) -> list[dict[str, Any]]:
         next(tcp_table)
         for row in tcp_table:
             fields = row.split()
-            tx_q_hex, recv_q_hex = fields[4].split(":")
+            _tx_q_hex, recv_q_hex = fields[4].split(":")
             recv_q_by_inode[int(fields[9])] = int(recv_q_hex, 16)
 
     owned: list[dict[str, Any]] = []
@@ -205,10 +209,11 @@ class _PauseBeforeSocketRead:
         return self._stream.get_extra_info(info)
 
 
-async def _drain() -> None:
-    await asyncio.sleep(_DRAIN_SECONDS)
+async def _drain(*, port: int) -> None:
+    await asyncio.sleep(0)
+    await async_wait_until(lambda: not tnet._abandoned_response_cleanups, timeout=3, what="response cleanup finished")
     gc.collect()
-    await asyncio.sleep(0.1)
+    await async_wait_until(lambda: not _connections_to_port(port), timeout=3, what="request sockets closed")
 
 
 class _ProtocolServer:
@@ -232,7 +237,7 @@ class _ProtocolServer:
         scheme = "https" if self.mode == "tls_handshake" else "http"
         return f"{scheme}://api.telegram.org:{self.port}{path}"
 
-    async def start(self) -> "_ProtocolServer":
+    async def start(self) -> _ProtocolServer:
         self.server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
         self.port = self.server.sockets[0].getsockname()[1]
         return self
@@ -390,7 +395,7 @@ class _ConnectProxy:
     def url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
 
-    async def start(self) -> "_ConnectProxy":
+    async def start(self) -> _ConnectProxy:
         self.server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
         self.port = self.server.sockets[0].getsockname()[1]
         return self
@@ -471,7 +476,7 @@ class _TlsOrigin:
         self.port = 0
         self.requests = 0
 
-    async def start(self) -> "_TlsOrigin":
+    async def start(self) -> _TlsOrigin:
         self.server = await asyncio.start_server(
             self._handle, "127.0.0.1", 0, ssl=self.ssl_context
         )
@@ -612,7 +617,7 @@ async def _single_cancel_case(mode: str) -> dict[str, Any]:
     server = await _ProtocolServer(mode).start()
     try:
         await _cancel_request(runtime, server)
-        await _drain()
+        await _drain(port=server.port)
         leaks = _connections_to_port(server.port)
         result = {
             "case": mode,
@@ -643,7 +648,7 @@ async def _peer_fin_cancel_wave_case() -> dict[str, Any]:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        await _drain()
+        await _drain(port=server.port)
         leaks = _connections_to_port(server.port)
         result = {
             "case": "response_headers_peer_fin_wave",
@@ -677,7 +682,7 @@ async def _peer_fin_idle_case() -> dict[str, Any]:
         await asyncio.wait_for(server.peer_fin_sent.wait(), timeout=5.0)
         with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(server.client_eof.wait(), timeout=1.0)
-        await asyncio.sleep(0.1)
+        await _drain(port=server.port)
         leaks = _connections_to_port(server.port)
         result = {
             "case": "peer_fin_idle",
@@ -705,7 +710,7 @@ async def _repeated_case() -> dict[str, Any]:
         for _ in range(5):
             server.started = asyncio.Event()
             await _cancel_request(runtime, server)
-        await _drain()
+        await _drain(port=server.port)
         leaks = _connections_to_port(server.port)
         result = {
             "case": "repeated",
@@ -732,7 +737,7 @@ async def _concurrent_case() -> dict[str, Any]:
         with contextlib.suppress(asyncio.CancelledError):
             await stalled
         healthy_result = await asyncio.wait_for(healthy, timeout=5.0)
-        await _drain()
+        await _drain(port=server.port)
         leaks = _connections_to_port(server.port)
         result = {
             "case": "concurrent",
@@ -894,7 +899,7 @@ async def _proxy_tls_handshake_case() -> dict[str, Any]:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
-        await _drain()
+        await _drain(port=proxy.port)
         leaks = _connections_to_port(proxy.port)
         opened = [message for message in capture.messages if "event=socket-opened" in message]
         closed = [message for message in capture.messages if "event=socket-closed" in message]
@@ -944,7 +949,8 @@ async def _proxy_https_healthy_case() -> dict[str, Any]:
         try:
             async with httpx.AsyncClient(transport=transport, timeout=5.0) as client:
                 response = await client.get(f"https://localhost:{origin.port}/healthy")
-            await _drain()
+            await _drain(port=proxy.port)
+            await async_wait_until(lambda: proxy.disconnects >= proxy.accepted, timeout=3, what="proxy observed client EOF")
             leaks = _connections_to_port(proxy.port)
             result = {
                 "case": "proxy_https_healthy",
@@ -1006,6 +1012,7 @@ def _child_command(case: str) -> list[str]:
 def _run_child(case: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         _child_command(case),
+        check=False,
         cwd=Path(__file__).resolve().parents[2],
         text=True,
         stdout=subprocess.PIPE,

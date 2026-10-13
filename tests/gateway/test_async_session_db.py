@@ -1,13 +1,13 @@
-"""AsyncSessionDB offload facade + gateway raw-call guard.
+"""AsyncSessionDB offload facade.
 
 The gateway runs one asyncio loop for every session; SessionDB is synchronous,
 so a raw call on the loop freezes every conversation until it returns.
 AsyncSessionDB offloads each call via asyncio.to_thread. These tests pin the
-facade's contract and lock the gateway boundary so a 39th raw call can't regress.
+facade's contract.
 """
 
-import ast
 import asyncio
+import ast
 import threading
 from pathlib import Path
 
@@ -29,7 +29,6 @@ class _SpyDB:
 
     def returns_none(self):
         self._ran_on("returns_none")
-        return None
 
     def returns_bool(self):
         self._ran_on("returns_bool")
@@ -77,7 +76,7 @@ async def test_offload_goes_through_detached_worker(monkeypatch):
     must be abandonable), so spy the detached offload it now imports; the
     ``asyncio.to_thread`` path is spied too in case the mechanism changes.
     """
-    import agent.async_utils as async_utils
+    from agent import async_utils
 
     db = _SpyDB()
     facade = AsyncSessionDB(db)

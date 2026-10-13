@@ -35,14 +35,11 @@ import pytest
 from hermes_cli.plugins import PluginContext, PluginManifest, PluginManager
 
 
-# Prefer the installed user plugin for live-host verification; fall back to the
-# repository-owned candidate so clean CI runners exercise the same source.
+# Always exercise the repository-owned candidate; tests never inspect a live user plugin.
 _PLUGIN_CANDIDATES = [
-    Path.home() / ".hermes" / "plugins" / "provider_telemetry" / "__init__.py",
-    Path("/home/ubuntu/.hermes/plugins/provider_telemetry/__init__.py"),
     Path(__file__).resolve().parents[2] / "evidence" / "provider_telemetry_fixed.py",
-    Path(__file__).resolve().parents[2] / "plugins" / "observability" / "provider_telemetry" / "__init__.py",
 ]
+
 
 
 def _installed_plugin_path() -> Path:
@@ -101,7 +98,8 @@ def telemetry_env(monkeypatch, tmp_path):
     """Point provider telemetry at temp paths and clean module state."""
     metrics_file = tmp_path / "hermes_provider_telemetry.prom"
     lock_file = metrics_file.with_suffix(metrics_file.suffix + ".lock")
-    monkeypatch.setenv("HERMES_PROVIDER_TELEMETRY_METRICS_FILE", str(metrics_file))
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly",
+                        lambda: {"provider_telemetry": {"metrics_file": str(metrics_file)}})
     # Ensure no stale state leaks between tests.
     for name in list(sys.modules.keys()):
         if name.startswith("provider_telemetry_"):
@@ -396,3 +394,25 @@ def test_patched_plugin_fixes_dashboard_bug(telemetry_env, tmp_path):
     assert not telemetry_env["lock_file"].exists()
     assert not telemetry_env["metrics_file"].exists()
     assert not ctx.hooks
+
+
+def test_provider_series_and_pending_requests_are_bounded(telemetry_env, tmp_path):
+    module = _load_plugin_module(tmp_path, patched=True)
+    for index in range(module._MAX_PENDING + 1):
+        module.on_pre_api_request(provider="custom", model=f"model-{index}",
+                                  api_request_id=f"request-{index}", approx_input_tokens=1)
+    assert len(module._INFLIGHT) == module._MAX_PENDING
+    assert "request-0" not in module._INFLIGHT
+    assert len(module._METRICS["approx_input_tokens"]) == module._MAX_SERIES
+    assert ("overflow", "overflow") in module._METRICS["approx_input_tokens"]
+
+
+def test_rehydrated_provider_series_are_bounded(telemetry_env, tmp_path):
+    module = _load_plugin_module(tmp_path, patched=True)
+    telemetry_env["metrics_file"].write_text("\n".join(
+        f'hermes_model_requests_total{{provider="custom",model="model-{index}",outcome="success"}} 1'
+        for index in range(module._MAX_SERIES + 1)
+    ))
+    module._ensure_loaded_from_disk()
+    assert len(module._METRICS["requests"]) == module._MAX_SERIES
+    assert ("overflow",) * 3 in module._METRICS["requests"]

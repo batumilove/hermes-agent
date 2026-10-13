@@ -320,8 +320,9 @@ def test_fetch_provenance_source_skips_obsolete_proof_for_direct_ancestry(
     assert MODULE.fetch_provenance_source(manifest, cwd=repo) is None
 
 
+@pytest.mark.parametrize("is_shallow", [False, True])
 def test_fetch_provenance_source_uses_bounded_filtered_history(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, is_shallow: bool
 ) -> None:
     repo, manifest, _ = _squash_sync_fixture(tmp_path)
     monkeypatch.setattr(MODULE, "ROOT", repo)
@@ -334,6 +335,8 @@ def test_fetch_provenance_source_uses_bounded_filtered_history(
     )["source_head"]
 
     def missing_source(*args: str, cwd: Path) -> str:
+        if args == ("rev-parse", "--is-shallow-repository"):
+            return "true" if is_shallow else "false"
         if args[0] == "cat-file":
             raise MODULE.DeltaError("missing")
         if args[0] == "fetch":
@@ -348,7 +351,7 @@ def test_fetch_provenance_source_uses_bounded_filtered_history(
     assert calls == [
         (
             "fetch",
-            "--depth=8",
+            *(("--depth=8",) if is_shallow else ()),
             "--filter=blob:none",
             "--no-tags",
             "origin",
@@ -391,7 +394,6 @@ def test_check_delta_fetches_missing_provenance_source(
     assert fetches == [
         (
             "fetch",
-            "--depth=8",
             "--filter=blob:none",
             "--no-tags",
             "origin",
@@ -462,3 +464,10 @@ def test_load_provenance_accepts_optional_history(tmp_path: Path) -> None:
     bad_history.write_text(json.dumps({**base, "history": "not-a-list"}), encoding="utf-8")
     with pytest.raises(MODULE.DeltaError, match="history must be a list"):
         MODULE._load_provenance(bad_history)
+
+
+def test_v1_relationship_also_requires_supplied_official_history(tmp_path, monkeypatch):
+    repo, manifest, _ = _squash_sync_fixture(tmp_path)
+    monkeypatch.setattr(MODULE, "ROOT", repo)
+    with pytest.raises(MODULE.DeltaError, match="trusted official upstream"):
+        MODULE.resolve_upstream_relationship(manifest, cwd=repo, official_tip="HEAD")

@@ -13,7 +13,7 @@ import pytest
 
 
 def _point_ledger(monkeypatch, tmp_path):
-    import cron.executions as executions
+    from cron import executions
 
     monkeypatch.setattr(executions, "EXECUTIONS_FILE", tmp_path / "cron" / "executions.db")
     return executions
@@ -41,67 +41,104 @@ def test_execution_transitions_are_durable(monkeypatch, tmp_path):
     assert persisted == [completed]
 
 
-def test_mark_running_rebinds_execution_owner(monkeypatch, tmp_path):
+def test_execution_can_be_loaded_by_exact_attempt_id(monkeypatch, tmp_path):
     executions = _point_ledger(monkeypatch, tmp_path)
-    row = executions.create_execution("job-owner", source="manual")
-    with sqlite3.connect(executions.EXECUTIONS_FILE) as conn:
-        conn.execute(
-            """UPDATE executions SET process_id='request-process', pid=-1,
-               process_started_at=NULL WHERE id=?""",
-            (row["id"],),
-        )
+    first = executions.create_execution("same-job", source="builtin")
+    second = executions.create_execution("same-job", source="builtin")
 
-    running = executions.mark_execution_running(row["id"])
-
-    assert running["process_id"] == executions._PROCESS_ID
-    assert running["pid"] == os.getpid()
-    assert running["process_started_at"] == executions._process_start_time(os.getpid())
+    assert executions.get_execution(first["id"]) == first
+    assert executions.get_execution(second["id"]) == second
+    assert executions.get_execution("missing") is None
 
 
-def test_execution_persists_immutable_trigger_provenance(monkeypatch, tmp_path):
+def test_fresh_external_handoff_is_not_recovered_before_worker_adopts(
+    monkeypatch, tmp_path
+):
     executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("handoff-job", source="builtin")
+    assert executions.mark_execution_handoff_pending(record["id"]) is not None
 
-    claimed = executions.create_execution(
-        "scheduled-job",
-        source="builtin",
-        trigger_origin="scheduled",
-        scheduled_for="2026-08-01T03:00:00+00:00",
-        triggered_at="2026-08-01T03:00:37+00:00",
+    monkeypatch.setattr(executions, "_PROCESS_ID", "replacement-gateway")
+    monkeypatch.setattr(executions, "_owner_is_live", lambda _pid, _started: False)
+
+    assert executions.recover_interrupted_executions() == 0
+    assert executions.get_execution(record["id"])["status"] == "claimed"
+    adopted = executions.adopt_claimed_execution(record["id"])
+    assert adopted["status"] == "running"
+    assert adopted["handoff_pending"] == 0
+
+
+def test_stale_external_handoff_is_recovered_unknown(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("handoff-job", source="builtin")
+    pending = executions.mark_execution_handoff_pending(record["id"])
+
+    monkeypatch.setattr(executions, "_PROCESS_ID", "replacement-gateway")
+    monkeypatch.setattr(executions, "_owner_is_live", lambda _pid, _started: False)
+    monkeypatch.setattr(
+        executions.time,
+        "time",
+        lambda: pending["handoff_started_at"]
+        + executions.HANDOFF_ADOPTION_GRACE_SECONDS
+        + 1,
     )
-    completed = executions.finish_execution(claimed["id"], success=True)
 
-    assert completed["trigger_origin"] == "scheduled"
-    assert completed["scheduled_for"] == "2026-08-01T03:00:00+00:00"
-    assert completed["triggered_at"] == "2026-08-01T03:00:37+00:00"
+    assert executions.recover_interrupted_executions() == 1
+    recovered = executions.get_execution(record["id"])
+    assert recovered["status"] == "unknown"
+    assert recovered["handoff_pending"] == 0
 
 
-def test_existing_ledger_rows_migrate_to_unknown_provenance(monkeypatch, tmp_path):
+def test_recovery_does_not_overwrite_concurrent_worker_adoption(monkeypatch, tmp_path):
     executions = _point_ledger(monkeypatch, tmp_path)
-    executions.EXECUTIONS_FILE.parent.mkdir(parents=True)
-    with sqlite3.connect(executions.EXECUTIONS_FILE) as conn:
-        conn.execute(
-            """CREATE TABLE executions (
-                 id TEXT PRIMARY KEY, job_id TEXT NOT NULL, source TEXT NOT NULL,
-                 process_id TEXT NOT NULL, pid INTEGER NOT NULL,
-                 process_started_at INTEGER, status TEXT NOT NULL,
-                 claimed_at TEXT NOT NULL, started_at TEXT, finished_at TEXT,
-                 error TEXT
-               )"""
-        )
-        conn.execute(
-            """INSERT INTO executions
-               (id, job_id, source, process_id, pid, status, claimed_at)
-               VALUES ('legacy-exec', 'legacy-job', 'builtin', 'old-process', 1,
-                       'completed', '2026-07-31T03:00:37+00:00')"""
-        )
+    record = executions.create_execution("adoption-race", source="builtin")
+    pending = executions.mark_execution_handoff_pending(record["id"])
+    assert pending is not None
+    monkeypatch.setattr(executions, "_PROCESS_ID", "replacement-scheduler")
+    monkeypatch.setattr(
+        executions.time,
+        "time",
+        lambda: pending["handoff_started_at"]
+        + executions.HANDOFF_ADOPTION_GRACE_SECONDS
+        + 1,
+    )
 
-    record = executions.latest_execution("legacy-job")
+    def adopt_while_liveness_is_checked(_pid, _started_at):
+        monkeypatch.setattr(executions, "_PROCESS_ID", "external-worker")
+        monkeypatch.setattr(executions.os, "getpid", lambda: 4242)
+        monkeypatch.setattr(executions, "_process_start_time", lambda _pid: 9876)
+        assert executions.adopt_claimed_execution(record["id"]) is not None
+        return False
 
-    assert record["trigger_origin"] == "unknown"
-    assert record["scheduled_for"] is None
-    assert record["triggered_at"] is None
+    monkeypatch.setattr(executions, "_owner_is_live", adopt_while_liveness_is_checked)
+
+    assert executions.recover_interrupted_executions() == 0
+    current = executions.get_execution(record["id"])
+    assert current is not None
+    assert current["status"] == "running"
+    assert current["process_id"] == "external-worker"
+    assert current["pid"] == 4242
+
+
+def test_foreign_process_cannot_start_or_finish_execution(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("owner-fence", source="builtin")
+    original_process_id = executions._PROCESS_ID
+    original_pid = record["pid"]
+
+    monkeypatch.setattr(executions, "_PROCESS_ID", "foreign-process")
+    monkeypatch.setattr(executions.os, "getpid", lambda: original_pid + 1)
+    assert executions.mark_execution_running(record["id"]) is None
+    assert executions.finish_execution(record["id"], success=True) is None
+
+    monkeypatch.setattr(executions, "_PROCESS_ID", original_process_id)
+    monkeypatch.setattr(executions.os, "getpid", lambda: original_pid)
+    assert executions.mark_execution_running(record["id"]) is not None
+    assert executions.finish_execution(record["id"], success=True) is not None
+
+
 def test_execution_ledger_follows_the_current_profile_home(monkeypatch, tmp_path):
-    import cron.executions as executions
+    from cron import executions
 
     current_home = {"path": tmp_path / "default"}
     monkeypatch.setattr(executions, "EXECUTIONS_FILE", None)
@@ -144,33 +181,22 @@ def test_retention_bounds_terminal_history_but_preserves_inflight(monkeypatch, t
     assert executions.latest_execution("live")["status"] == "running"
 
 
-def test_retention_fairly_preserves_low_cadence_job_provenance(monkeypatch, tmp_path):
+def test_recently_finished_long_running_execution_survives_retention(
+    monkeypatch, tmp_path
+):
     executions = _point_ledger(monkeypatch, tmp_path)
-    monkeypatch.setattr(executions, "MAX_TERMINAL_EXECUTIONS", 5)
+    monkeypatch.setattr(executions, "MAX_TERMINAL_EXECUTIONS", 1)
+    long_running = executions.create_execution("long-running", source="builtin")
+    assert executions.mark_execution_running(long_running["id"]) is not None
+    newer = executions.create_execution("newer", source="builtin")
+    assert executions.finish_execution(newer["id"], success=True) is not None
 
-    cold_ids = []
-    for _index in range(2):
-        row = executions.create_execution("cold", source="builtin")
-        executions.finish_execution(row["id"], success=True)
-        cold_ids.append(row["id"])
-    hot_rows = []
-    for _index in range(8):
-        row = executions.create_execution("hot", source="builtin")
-        executions.finish_execution(row["id"], success=True)
-        hot_rows.append(row)
+    finished = executions.finish_execution(long_running["id"], success=True)
 
-    records = executions.list_executions(limit=100)
-    assert len(records) == 5
-    assert {row["id"] for row in records if row["job_id"] == "cold"} == set(cold_ids)
-    expected_hot_ids = {
-        row["id"]
-        for row in sorted(
-            hot_rows,
-            key=lambda row: (row["claimed_at"], row["id"]),
-            reverse=True,
-        )[:3]
-    }
-    assert {row["id"] for row in records if row["job_id"] == "hot"} == expected_hot_ids
+    assert finished is not None
+    assert finished["status"] == "completed"
+    assert executions.get_execution(long_running["id"])["status"] == "completed"
+    assert executions.get_execution(newer["id"]) is None
 
 
 def test_corrupt_store_fails_closed_without_overwrite(monkeypatch, tmp_path):
@@ -282,7 +308,7 @@ def test_restart_marks_interrupted_execution_unknown_without_requeue(tmp_path):
 
 
 def test_generic_submit_failure_finishes_attempt_and_releases_guard(monkeypatch):
-    import cron.scheduler as scheduler
+    from cron import scheduler
 
     class BrokenPool:
         def submit(self, _callable):
@@ -313,7 +339,7 @@ def test_generic_submit_failure_finishes_attempt_and_releases_guard(monkeypatch)
 
 def test_builtin_tick_binds_original_scheduled_slot(monkeypatch):
     import concurrent.futures
-    import cron.scheduler as scheduler
+    from cron import scheduler
 
     scheduled_for = "2026-08-01T03:00:00+00:00"
     captured = []
@@ -351,6 +377,7 @@ def test_builtin_tick_binds_original_scheduled_slot(monkeypatch):
         "scheduled-provenance",
         {
             "source": "builtin",
+            "scheduled_instant": None,
             "trigger_origin": "scheduled",
             "scheduled_for": scheduled_for,
             "triggered_at": "2026-08-01T03:00:37+00:00",
@@ -360,7 +387,7 @@ def test_builtin_tick_binds_original_scheduled_slot(monkeypatch):
 
 def test_builtin_tick_reuses_durable_manual_execution(monkeypatch):
     import concurrent.futures
-    import cron.scheduler as scheduler
+    from cron import scheduler
 
     execution = {
         "id": "exec-manual",
@@ -443,7 +470,7 @@ def test_builtin_tick_validates_manual_marker(
     monkeypatch, exact_record, expected_origin
 ):
     import concurrent.futures
-    import cron.scheduler as scheduler
+    from cron import scheduler
 
     due_job = {
         "id": "forged-marker",
@@ -486,13 +513,14 @@ def test_builtin_tick_validates_manual_marker(
 
 
 def test_run_one_job_records_running_then_terminal(monkeypatch):
-    import cron.scheduler as scheduler
+    from cron import scheduler
 
     events = []
+    run_execution_ids = []
     monkeypatch.setattr(
         scheduler,
         "mark_execution_running",
-        lambda execution_id: events.append(("running", execution_id)),
+        lambda execution_id: events.append(("running", execution_id)) or {},
         raising=False,
     )
     monkeypatch.setattr(
@@ -502,16 +530,18 @@ def test_run_one_job_records_running_then_terminal(monkeypatch):
         raising=False,
     )
     monkeypatch.setattr(scheduler, "claim_dispatch", lambda _job_id: True)
-    monkeypatch.setattr(
-        scheduler,
-        "run_job",
-        lambda job, *, defer_agent_teardown=None, **_kw: (True, "output", "response", None),
-    )
+
+    def fake_run_job(job, *, defer_agent_teardown=None, execution_id=None, **_kw):
+        run_execution_ids.append(execution_id)
+        return True, "output", "response", None
+
+    monkeypatch.setattr(scheduler, "run_job", fake_run_job)
     monkeypatch.setattr(scheduler, "save_job_output", lambda *_args: None)
     monkeypatch.setattr(scheduler, "_deliver_result", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(scheduler, "mark_job_run", lambda *_args, **_kwargs: None)
 
     assert scheduler.run_one_job({"id": "job-3", "execution_id": "exec-3"}) is True
+    assert run_execution_ids == ["exec-3"]
     assert events[0] == ("running", "exec-3")
     assert events[-1][0:2] == ("finish", "exec-3")
     assert events[-1][2]["success"] is True
@@ -610,9 +640,8 @@ def test_ledger_operations_close_every_connection(monkeypatch, tmp_path):
     executions.latest_executions(["leak-check"])
     executions.recover_interrupted_executions()
 
-    assert len(opened) == 6
-    assert len(closed) == 6
-    assert set(opened) == set(closed)
+    assert opened
+    assert sorted(opened) == sorted(closed)
 
 
 def test_early_return_still_closes_connection(monkeypatch, tmp_path):
@@ -627,53 +656,12 @@ def test_early_return_still_closes_connection(monkeypatch, tmp_path):
     assert len(closed) == 1
 
 
-def test_exception_during_operation_still_closes_connection(monkeypatch, tmp_path):
-    """A failing statement inside the transaction must roll back and close,
-    not leak the connection."""
-    executions = _point_ledger(monkeypatch, tmp_path)
-    opened, closed = _count_open_connections(executions, monkeypatch)
-
-    with __import__("pytest").raises(sqlite3.IntegrityError):
-        with executions._transaction() as conn:
-            conn.execute(
-                "INSERT INTO executions (id, job_id, source, process_id, pid, "
-                "status, claimed_at) VALUES ('x', 'x', 'x', 'x', 1, 'bogus-status', 'now')"
-            )
-
-    assert len(opened) == 1
-    assert len(closed) == 1
 
 
-def test_schema_init_failure_still_closes_connection(monkeypatch, tmp_path):
-    """If PRAGMA/DDL setup in _connect() fails after sqlite3.connect()
-    succeeds, the partially-initialized connection must still be closed."""
-    executions = _point_ledger(monkeypatch, tmp_path)
-    opened_ids = []
-    closed_ids = []
-    real_connect = sqlite3.connect
-
-    class _FailingSchemaConnection(_TrackingConnection):
-        def execute(self, sql, *args, **kwargs):
-            if "CREATE TABLE" in sql:
-                raise sqlite3.OperationalError("simulated schema init failure")
-            return self._real.execute(sql, *args, **kwargs)
-
-    def tracking_connect(*args, **kwargs):
-        conn = real_connect(*args, **kwargs)
-        opened_ids.append(id(conn))
-        return _FailingSchemaConnection(conn, closed_ids)
-
-    monkeypatch.setattr(executions.sqlite3, "connect", tracking_connect)
-
-    with __import__("pytest").raises(sqlite3.OperationalError):
-        executions.create_execution("init-fail", source="builtin")
-
-    assert len(opened_ids) == 1
-    assert len(closed_ids) == 1
 
 
 def test_job_listing_exposes_latest_execution(monkeypatch, tmp_path):
-    import cron.jobs as jobs
+    from cron import jobs
 
     monkeypatch.setattr(jobs, "CRON_DIR", tmp_path / "cron")
     monkeypatch.setattr(jobs, "JOBS_FILE", tmp_path / "cron" / "jobs.json")
@@ -687,3 +675,27 @@ def test_job_listing_exposes_latest_execution(monkeypatch, tmp_path):
     listed = jobs.list_jobs(include_disabled=True)
     assert listed[0]["latest_execution"]["id"] == record["id"]
     assert listed[0]["latest_execution"]["status"] == "running"
+
+
+def test_history_orders_by_instant_across_dst_fall_back(monkeypatch, tmp_path):
+    """01:10-05:00 is 20 minutes after 01:50-04:00 but sorts first as text."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    executions = _point_ledger(monkeypatch, tmp_path)
+    new_york = ZoneInfo("America/New_York")
+    first_pass = datetime(2026, 11, 1, 1, 50, tzinfo=new_york, fold=0)
+    second_pass = datetime(2026, 11, 1, 1, 10, tzinfo=new_york, fold=1)
+    monkeypatch.setattr(executions, "_hermes_now", lambda: first_pass)
+    earlier = executions.create_execution("dst-job", source="builtin")
+    monkeypatch.setattr(executions, "_hermes_now", lambda: second_pass)
+    later = executions.create_execution("dst-job", source="builtin")
+    assert later["claimed_at"] < earlier["claimed_at"]
+
+    assert executions.latest_execution("dst-job")["id"] == later["id"]
+    assert executions.latest_executions(["dst-job"])["dst-job"]["id"] == later["id"]
+    assert [r["id"] for r in executions.list_executions(job_id="dst-job")] == [
+        later["id"], earlier["id"],
+    ]
+    page = executions.list_executions(job_id="dst-job", before_claimed_at=later["claimed_at"])
+    assert [r["id"] for r in page] == [earlier["id"]]

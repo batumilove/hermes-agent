@@ -53,7 +53,8 @@ def test_concurrent_soft_release_shuts_down_owned_context_engine_once():
     first.start()
     assert shutdown_started.wait(timeout=2)
     second.start()
-    time.sleep(0.05)
+    second.join(timeout=2)
+    assert not second.is_alive()
     allow_shutdown.set()
     first.join(timeout=2)
     second.join(timeout=2)
@@ -71,11 +72,7 @@ def test_hard_close_after_soft_release_does_not_double_shutdown_engine():
     agent._end_session_on_close = False
 
     agent.release_clients()
-    with patch("tools.process_registry.process_registry.kill_all"), patch(
-        "run_agent.cleanup_vm"
-    ), patch("run_agent.cleanup_browser"), patch(
-        "tools.computer_use.release_computer_use_session"
-    ):
+    with patch.object(agent, "_close_task_resources"):
         agent.close()
 
     engine.shutdown.assert_called_once_with()
@@ -105,14 +102,7 @@ def test_soft_release_preserves_external_session_tool_state():
     agent = _partial_agent()
     agent.context_compressor = MagicMock()
 
-    with patch("tools.process_registry.process_registry.kill_all") as kill_all, patch(
-        "run_agent.cleanup_vm"
-    ) as cleanup_vm, patch("run_agent.cleanup_browser") as cleanup_browser, patch(
-        "tools.computer_use.release_computer_use_session"
-    ) as cleanup_computer_use:
+    with patch.object(agent, "_close_task_resources") as cleanup_resources:
         agent.release_clients()
 
-    kill_all.assert_not_called()
-    cleanup_vm.assert_not_called()
-    cleanup_browser.assert_not_called()
-    cleanup_computer_use.assert_not_called()
+    cleanup_resources.assert_not_called()

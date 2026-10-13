@@ -25,7 +25,9 @@ from hermes_constants import (
     reset_hermes_home_override,
     set_hermes_home_override,
 )
-from hermes_state import PostResponseAction, _scrub_surrogates
+from agent.memory_provider import spawn_context_thread
+from hermes_state import PostResponseAction
+from hermes_state_messages import _scrub_surrogates
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +54,8 @@ class FinalResponseHandoff(str):
         touch_activity: bool,
         append_final_text: bool,
         clear_resume_pending: bool,
-        gateway_actions: Optional[Iterable[Dict[str, Any]]] = None,
-        source_data: Optional[Dict[str, Any]] = None,
+        gateway_actions: Optional[Iterable[dict[str, Any]]] = None,
+        source_data: Optional[dict[str, Any]] = None,
     ):
         value = super().__new__(cls, text)
         value.runner = runner
@@ -99,15 +101,15 @@ class FinalResponseHandoff(str):
             if db_path:
                 value.post_response_db_path = Path(db_path).absolute()
                 value.post_response_home = value.post_response_db_path.parent
-        except Exception:
+        except (AttributeError, TypeError, ValueError, OSError):
             # Existing fake stores can omit a concrete SessionDB. The receipt
             # path will use its active store as the compatibility fallback.
             pass
         return value
 
-    def actions_for_text(self, text_content: str) -> list[Dict[str, Any]]:
+    def actions_for_text(self, text_content: str) -> list[dict[str, Any]]:
         """Build the restricted, replay-idempotent action plan for final text."""
-        actions: list[Dict[str, Any]] = []
+        actions: list[dict[str, Any]] = []
         target_session_id = self.expected_session_id
         rebind_target = self.new_session_id or self.expected_session_id
         session_changed = rebind_target != self.expected_session_id
@@ -133,7 +135,7 @@ class FinalResponseHandoff(str):
                             SessionSource.from_dict(self.source_data)
                         )
                     )
-                except Exception:
+                except Exception:  # health: allow BLE001 -- Optional adapter capability callback failure must leave the durable generic receipt valid.
                     is_topic_lane = False
                 if is_topic_lane:
                     actions.append(
@@ -224,13 +226,13 @@ class PostResponseWorker:
         else:
             self._root_home = Path(get_process_hermes_home()).absolute()
             self._root_db_path = self._root_home / "state.db"
-        self._db_paths: "OrderedDict[Path, None]" = OrderedDict()
+        self._db_paths: OrderedDict[Path, None] = OrderedDict()
         self._db_paths_lock = threading.Lock()
         self._round_robin_index = 0
         self._capacity_warning_emitted = False
         self.register_db_path(self._root_db_path)
         self._discover_db_paths()
-        self.thread = threading.Thread(
+        self.thread = spawn_context_thread(
             target=self._run,
             name="gateway-post-response",
             daemon=True,
@@ -412,7 +414,7 @@ class PostResponseWorker:
                 try:
                     with self._db_scope(db_path) as db:
                         actions = db.claim_ready_post_response_actions(limit=1)
-                except Exception as exc:
+                except Exception as exc:  # health: allow BLE001 -- Worker retries arbitrary scoped store failures without exposing action payloads in tracebacks.
                     logger.warning(
                         "post-response action claim failed (%s)", type(exc).__name__, exc_info=False
                     )
@@ -431,7 +433,7 @@ class PostResponseWorker:
             try:
                 with self._db_scope(db_path):
                     self._dispatch(action)
-            except Exception as exc:
+            except Exception as exc:  # health: allow BLE001 -- Durable action callbacks may fail arbitrarily; persist redacted failure and keep the barrier replayable.
                 try:
                     with self._db_scope(db_path) as db:
                         db.fail_post_response_action(
@@ -441,7 +443,7 @@ class PostResponseWorker:
                             owner_started_at=action.owner_started_at,
                             error=self._error_token(exc),
                         )
-                except Exception:
+                except Exception:  # health: allow BLE001 -- A terminal checkpoint failure must preserve action ownership for replay; diagnostics omit private payloads.
                     logger.warning("post-response action failure could not be recorded", exc_info=False)
             else:
                 try:
@@ -458,198 +460,134 @@ class PostResponseWorker:
                             owner_pid=action.owner_pid,
                             owner_started_at=action.owner_started_at,
                         )
-                except Exception:
+                except Exception:  # health: allow BLE001 -- A terminal checkpoint failure must preserve action ownership for replay; diagnostics omit private payloads.
                     logger.warning("post-response action completion could not be recorded", exc_info=False)
             # Drain immediately after useful work.  Round-robin path ordering
             # advances on every claim pass, so a busy profile cannot starve a
             # second ready profile after one shared wake.
             draining = True
 
+    _ACTION_HANDLERS = {
+        "rebind_session_id": "_apply_rebind_session_id",
+        "append_to_transcript": "_apply_append_to_transcript",
+        "update_session": "_apply_update_session",
+        "clear_restart_failure_count": "_apply_clear_restart_failure_count",
+        "sync_topic_binding": "_apply_sync_topic_binding",
+        "finalize_turn": "_apply_finalize_turn",
+        "clear_resume_pending": "_apply_clear_resume_pending",
+        "clear_active_turn": "_apply_clear_active_turn",
+    }
+
     def _dispatch(self, action: PostResponseAction) -> None:
         """Execute only the explicitly supported durable action kinds."""
+        method = self._ACTION_HANDLERS.get(action.action_kind)
+        if method is None:
+            raise ValueError("unsupported post-response action kind")
         payload = action.payload if isinstance(action.payload, dict) else {}
-        kind = action.action_kind
-        if kind == "rebind_session_id":
-            session_key = str(payload["session_key"])
-            new_session_id = str(payload["new_session_id"])
-            rebound = self.store.rebind_session_id(
-                session_key,
-                str(payload["expected_session_id"]),
-                new_session_id,
-            )
-            if not rebound and self.store.peek_session_id(session_key) != new_session_id:
-                raise RuntimeError("post-response rebind was not persisted")
-            if self.store.peek_session_id(session_key) != new_session_id:
-                raise RuntimeError("post-response rebind target verification failed")
-            source_payload = payload.get("source")
-            if isinstance(source_payload, dict):
-                from gateway.session import SessionSource
+        getattr(self, method)(action, payload)
 
-                self.store._record_gateway_session_peer(
-                    new_session_id,
-                    session_key,
-                    SessionSource.from_dict(source_payload),
-                )
-                peer = self.store._db.get_session(new_session_id)
-                if peer is None or str(peer.get("session_key") or "") != session_key:
-                    raise RuntimeError("post-response peer refresh was not persisted")
-            return
-        if kind == "append_to_transcript":
-            session_id = str(payload["session_id"])
-            message = dict(payload["message"])
-            if bool(payload.get("skip_db", False)):
-                raise RuntimeError("durable skip_db transcript action is invalid")
-            # The action can be reclaimed after a process dies between the
-            # append and action completion.  Ordered post-response work holds
-            # the active turn, so an equal terminal row proves this action's
-            # effect already landed and avoids a duplicate replay append.
-            def terminal_row_matches() -> bool:
-                # Verify the physical SessionDB row, not SessionStore's live
-                # replay projection: that projection repairs alternation and
-                # can omit session_meta fields, while a queued/spooled write
-                # must never count as completion.
-                rows = self.store._db.get_messages(
-                    session_id, latest=True, limit=1
-                )
-                if not rows:
-                    return False
-                row = rows[-1]
-                db = self.store._db
-                role = message.get("role", "unknown")
-                tool_calls = message.get("tool_calls")
-                if isinstance(tool_calls, str):
-                    try:
-                        tool_calls = json.loads(tool_calls)
-                    except (json.JSONDecodeError, TypeError):
-                        tool_calls = []
-
-                # Match SessionStore._append_transcript_message's complete
-                # SessionDB payload, not only the replay-visible role/content
-                # subset.  These canonicalizations are precisely the ones
-                # SessionDB applies while serializing the row.
-                expected = {
-                    "role": role,
-                    "content": db._decode_content(db._encode_content(message.get("content"))),
-                    "tool_call_id": message.get("tool_call_id"),
-                    "tool_calls": tool_calls if tool_calls else None,
-                    "tool_name": _scrub_surrogates(message.get("tool_name")),
-                    "effect_disposition": None,
-                    "token_count": None,
-                    "finish_reason": None,
-                    "reasoning": (
-                        _scrub_surrogates(message.get("reasoning"))
-                        if role == "assistant" else None
-                    ),
-                    "reasoning_content": (
-                        _scrub_surrogates(message.get("reasoning_content"))
-                        if role == "assistant" else None
-                    ),
-                    "reasoning_details": db._reasoning_json_text(
-                        message.get("reasoning_details") if role == "assistant" else None
-                    ),
-                    "codex_reasoning_items": db._reasoning_json_text(
-                        message.get("codex_reasoning_items") if role == "assistant" else None
-                    ),
-                    "codex_message_items": db._reasoning_json_text(
-                        message.get("codex_message_items") if role == "assistant" else None
-                    ),
-                    "platform_message_id": (
-                        message.get("platform_message_id") or message.get("message_id")
-                    ),
-                    "observed": 1 if message.get("observed") else 0,
-                    "api_content": _scrub_surrogates(
-                        message.get("api_content")
-                        if isinstance(message.get("api_content"), str) else None
-                    ),
-                    "display_kind": _scrub_surrogates(message.get("display_kind")),
-                    "display_metadata": db._decode_display_metadata(
-                        db._encode_display_metadata(message.get("display_metadata"))
-                    ),
-                }
-                timestamp = message.get("timestamp")
-                if timestamp is not None:
-                    try:
-                        expected["timestamp"] = float(
-                            timestamp.timestamp() if hasattr(timestamp, "timestamp") else timestamp
-                        )
-                    except (TypeError, ValueError):
-                        # SessionDB substitutes time.time() for an absent or
-                        # malformed timestamp; no stable intended value exists
-                        # to verify in that case.
-                        pass
-                for field, value in expected.items():
-                    if row.get(field) != value:
-                        return False
-                return True
-
-            if not terminal_row_matches():
-                self.store.append_to_transcript(session_id, message)
-            if not terminal_row_matches():
-                raise RuntimeError("post-response transcript append was not durable")
-            return
-        if kind == "update_session":
-            session_key = str(payload["session_key"])
-            self.store.update_session(
-                session_key,
-                last_prompt_tokens=payload.get("last_prompt_tokens"),
-                touch_activity=bool(payload.get("touch_activity", True)),
-            )
-            if payload.get("clear_resume_pending"):
-                self.store.clear_resume_pending(session_key)
-            durable = self.store.load_durable_routing_entry(session_key)
-            if not isinstance(durable, dict):
-                raise RuntimeError("post-response session update was not durable")
-            if payload.get("last_prompt_tokens") is not None and durable.get(
-                "last_prompt_tokens"
-            ) != payload.get("last_prompt_tokens"):
-                raise RuntimeError("post-response session token update was not durable")
-            if payload.get("clear_resume_pending") and durable.get("resume_pending"):
-                raise RuntimeError("post-response resume clear was not durable")
-            return
-        if kind == "clear_restart_failure_count":
-            runner = self.runner
-            if runner is None:
-                raise RuntimeError("post-response runner no longer exists")
-            runner._clear_restart_failure_count_sync(str(payload["session_key"]))
-            return
-        if kind == "sync_topic_binding":
+    def _apply_rebind_session_id(self, _action: PostResponseAction, payload: dict[str, Any]) -> None:
+        session_key = str(payload["session_key"])
+        new_session_id = str(payload["new_session_id"])
+        rebound = self.store.rebind_session_id(
+            session_key,
+            str(payload["expected_session_id"]),
+            new_session_id,
+        )
+        if not rebound and self.store.peek_session_id(session_key) != new_session_id:
+            raise RuntimeError("post-response rebind was not persisted")
+        if self.store.peek_session_id(session_key) != new_session_id:
+            raise RuntimeError("post-response rebind target verification failed")
+        source_payload = payload.get("source")
+        if isinstance(source_payload, dict):
             from gateway.session import SessionSource
 
-            source = SessionSource.from_dict(dict(payload["source"]))
-            entry = self.store.lookup_by_session_key(str(payload["session_key"]))
-            if entry is None:
-                raise RuntimeError("post-response topic route is missing")
-            runner = self.runner
-            if runner is None:
-                raise RuntimeError("post-response runner no longer exists")
-            runner._sync_telegram_topic_binding(
-                source, entry, reason="post-response-finalize"
+            self.store._record_gateway_session_peer(
+                new_session_id,
+                session_key,
+                SessionSource.from_dict(source_payload),
             )
-            if runner._is_telegram_topic_lane(source):
-                binding = self.store._db.get_telegram_topic_binding(
-                    chat_id=str(source.chat_id), thread_id=str(source.thread_id)
-                )
-                if binding is None or str(binding.get("session_id") or "") != entry.session_id:
-                    raise RuntimeError("post-response topic binding was not persisted")
-            return
-        if kind == "finalize_turn":
-            # Claim SQL keeps this action behind a delivered receipt;
-            # retain the defensive check for manually injected/corrupt rows.
-            if not self.store._db.is_final_delivery_delivered(action.obligation_id):
-                raise RuntimeError("finalize_turn claimed before delivery receipt")
-            runner = self.runner
-            if runner is None:
-                raise RuntimeError("post-response runner no longer exists")
-            runner._finalize_post_response_turn(payload)
-            return
-        if kind == "clear_resume_pending":
-            self.store.clear_resume_pending(str(payload["session_key"]))
-            return
-        if kind == "clear_active_turn":
-            session_key = str(payload["session_key"])
-            token = str(payload["token"])
-            cleared = self.store.clear_turn_active(session_key, token)
-            if not cleared and self.store.peek_active_turn_token(session_key) == token:
-                raise RuntimeError("post-response active-turn clear was not persisted")
-            return
-        raise ValueError("unsupported post-response action kind")
+            peer = self.store._db.get_session(new_session_id)
+            if peer is None or str(peer.get("session_key") or "") != session_key:
+                raise RuntimeError("post-response peer refresh was not persisted")
+
+    def _apply_append_to_transcript(self, _action: PostResponseAction, payload: dict[str, Any]) -> None:
+        session_id = str(payload["session_id"])
+        message = dict(payload["message"])
+        if bool(payload.get("skip_db", False)):
+            raise RuntimeError("durable skip_db transcript action is invalid")
+        # The action can be reclaimed after a process dies between the
+        # append and action completion.  Ordered post-response work holds
+        # the active turn, so an equal terminal row proves this action's
+        # effect already landed and avoids a duplicate replay append.
+        from gateway.post_response_transcript import terminal_row_matches
+
+        if not terminal_row_matches(self.store, session_id, message):
+            self.store.append_to_transcript(session_id, message)
+        if not terminal_row_matches(self.store, session_id, message):
+            raise RuntimeError("post-response transcript append was not durable")
+
+    def _apply_update_session(self, _action: PostResponseAction, payload: dict[str, Any]) -> None:
+        session_key = str(payload["session_key"])
+        self.store.update_session(
+            session_key,
+            last_prompt_tokens=payload.get("last_prompt_tokens"),
+            touch_activity=bool(payload.get("touch_activity", True)),
+        )
+        if payload.get("clear_resume_pending"):
+            self.store.clear_resume_pending(session_key)
+        durable = self.store.load_durable_routing_entry(session_key)
+        if not isinstance(durable, dict):
+            raise RuntimeError("post-response session update was not durable")
+        if payload.get("last_prompt_tokens") is not None and durable.get(
+            "last_prompt_tokens"
+        ) != payload.get("last_prompt_tokens"):
+            raise RuntimeError("post-response session token update was not durable")
+        if payload.get("clear_resume_pending") and durable.get("resume_pending"):
+            raise RuntimeError("post-response resume clear was not durable")
+
+    def _apply_clear_restart_failure_count(self, _action: PostResponseAction, payload: dict[str, Any]) -> None:
+        runner = self.runner
+        if runner is None:
+            raise RuntimeError("post-response runner no longer exists")
+        runner._clear_restart_failure_count_sync(str(payload["session_key"]))
+
+    def _apply_sync_topic_binding(self, _action: PostResponseAction, payload: dict[str, Any]) -> None:
+        from gateway.session import SessionSource
+
+        source = SessionSource.from_dict(dict(payload["source"]))
+        entry = self.store.lookup_by_session_key(str(payload["session_key"]))
+        if entry is None:
+            raise RuntimeError("post-response topic route is missing")
+        runner = self.runner
+        if runner is None:
+            raise RuntimeError("post-response runner no longer exists")
+        runner._sync_telegram_topic_binding(
+            source, entry, reason="post-response-finalize"
+        )
+        if runner._is_telegram_topic_lane(source):
+            binding = self.store._db.get_telegram_topic_binding(
+                chat_id=str(source.chat_id), thread_id=str(source.thread_id)
+            )
+            if binding is None or str(binding.get("session_id") or "") != entry.session_id:
+                raise RuntimeError("post-response topic binding was not persisted")
+
+    def _apply_finalize_turn(self, action: PostResponseAction, payload: dict[str, Any]) -> None:
+        # Claim SQL keeps this action behind a delivered receipt;
+        # retain the defensive check for manually injected/corrupt rows.
+        if not self.store._db.is_final_delivery_delivered(action.obligation_id):
+            raise RuntimeError("finalize_turn claimed before delivery receipt")
+        runner = self.runner
+        if runner is None:
+            raise RuntimeError("post-response runner no longer exists")
+        runner._finalize_post_response_turn(payload)
+
+    def _apply_clear_resume_pending(self, _action: PostResponseAction, payload: dict[str, Any]) -> None:
+        self.store.clear_resume_pending(str(payload["session_key"]))
+
+    def _apply_clear_active_turn(self, _action: PostResponseAction, payload: dict[str, Any]) -> None:
+        session_key = str(payload["session_key"])
+        token = str(payload["token"])
+        cleared = self.store.clear_turn_active(session_key, token)
+        if not cleared and self.store.peek_active_turn_token(session_key) == token:
+            raise RuntimeError("post-response active-turn clear was not persisted")

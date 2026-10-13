@@ -8,6 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from hermes_state import SessionDB
+from tests.waiting import wait_until
 
 
 def _logged_seconds(message, field):
@@ -16,21 +17,33 @@ def _logged_seconds(message, field):
     return float(match.group(1))
 
 
-class _DelayedPhaseConnection:
-    """Real SQLite connection proxy with deterministic per-phase delays."""
+class _ProbeClock:
+    def __init__(self):
+        self.now = time.monotonic()
 
-    def __init__(self, wrapped, *, begin_s, commit_s):
+    def monotonic(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += seconds
+
+
+class _DelayedPhaseConnection:
+    """Real SQLite proxy advancing a controlled measurement clock per phase."""
+
+    def __init__(self, wrapped, *, clock, begin_s, commit_s):
         self._wrapped = wrapped
+        self._clock = clock
         self._begin_s = begin_s
         self._commit_s = commit_s
 
     def execute(self, sql, *args, **kwargs):
         if sql == "BEGIN IMMEDIATE":
-            time.sleep(self._begin_s)
+            self._clock.advance(self._begin_s)
         return self._wrapped.execute(sql, *args, **kwargs)
 
     def commit(self):
-        time.sleep(self._commit_s)
+        self._clock.advance(self._commit_s)
         return self._wrapped.commit()
 
     def __getattr__(self, name):
@@ -78,16 +91,18 @@ def test_execute_write_warns_when_waiting_for_session_db_lock(tmp_path, caplog):
     db.close()
 
 
-def test_execute_write_splits_transaction_phases_and_identifies_runtime(tmp_path, caplog):
+def test_execute_write_splits_transaction_phases_and_identifies_runtime(tmp_path, caplog, monkeypatch):
     db = SessionDB(db_path=tmp_path / "state.db")
     db._SLOW_WRITE_WARN_S = 0.0
     db._SLOW_LOCK_WAIT_WARN_S = 0.0
+    clock = _ProbeClock()
+    monkeypatch.setattr("hermes_state_write.time", clock)
     db._conn = _DelayedPhaseConnection(  # type: ignore[assignment]
-        db._conn, begin_s=0.04, commit_s=0.03
+        db._conn, clock=clock, begin_s=0.04, commit_s=0.03
     )
 
     def insert_session(conn):
-        time.sleep(0.02)
+        clock.advance(0.02)
         conn.execute(
             "INSERT OR IGNORE INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
             ("phase-session", "test", time.time()),
@@ -173,7 +188,7 @@ def test_execute_write_attributes_admission_wait_to_observed_owner(tmp_path, cap
                 wait_for_writer,
                 operation="wait_for_writer",
             )
-            time.sleep(0.05)
+            wait_until(lambda: db._write_admission().stats()["waiting"] == 1, timeout=2)
             release_holder.set()
             holder.result(timeout=2)
             waiter.result(timeout=2)
@@ -220,7 +235,7 @@ def test_execute_write_attributes_fallback_read_holder(tmp_path, caplog):
                 wait_for_read_holder,
                 operation="wait_for_read_holder",
             )
-            time.sleep(0.05)
+            wait_until(lambda: db._write_waiter_count == 1, timeout=2)
             release_holder.set()
             holder.result(timeout=2)
             waiter.result(timeout=2)
@@ -275,27 +290,15 @@ def test_execute_write_counts_admission_owner_transitions_while_queued(tmp_path,
                 )
                 for name in ("second", "third")
             }
-            deadline = time.monotonic() + 2
             admission = db._write_admission()
-            while time.monotonic() < deadline:
-                if admission.stats()["waiting"] == 2:
-                    break
-                time.sleep(0.005)
-            else:
-                raise AssertionError("queued writers did not both reach admission")
+            wait_until(lambda: admission.stats()["waiting"] == 2, timeout=2)
 
             release_first.set()
             first.result(timeout=2)
-            deadline = time.monotonic() + 2
-            winner = None
-            while time.monotonic() < deadline:
-                winner = next(
-                    (name for name, event in entered.items() if event.is_set()), None
-                )
-                if winner is not None:
-                    break
-                time.sleep(0.005)
-            assert winner is not None
+            winner = wait_until(
+                lambda: next((name for name, event in entered.items() if event.is_set()), None),
+                timeout=2,
+            )
             loser = "third" if winner == "second" else "second"
             release[winner].set()
             queued[winner].result(timeout=2)
@@ -395,13 +398,15 @@ def test_execute_write_reports_retry_elapsed_and_uses_it_for_warning(
     db.close()
 
 
-def test_nonwrite_lock_logs_content_free_holder_latency(tmp_path, caplog):
+def test_nonwrite_lock_logs_content_free_holder_latency(tmp_path, caplog, monkeypatch):
     db = SessionDB(db_path=tmp_path / "state.db")
     db._SLOW_LOCK_HOLD_WARN_S = 0.0
+    clock = _ProbeClock()
+    monkeypatch.setattr("hermes_state_admission.time", clock)
 
     with caplog.at_level(logging.WARNING, logger="hermes_state"):
         with db._attributed_lock("maintenance_probe", holder_kind="maintenance"):
-            time.sleep(0.01)
+            clock.advance(0.01)
 
     message = next(
         record.getMessage()

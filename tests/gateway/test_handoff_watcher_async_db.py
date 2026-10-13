@@ -20,7 +20,7 @@ import types
 
 import pytest
 
-import gateway.run as run
+from gateway import run
 
 
 class _RecordingSessionDB:
@@ -120,7 +120,7 @@ async def test_watcher_wraps_calls_via_detached_offload(monkeypatch):
     handed to it. Mutation-survivable: dropping any await removes its
     callable from the set.
     """
-    import agent.async_utils as async_utils
+    from agent import async_utils
 
     db = _RecordingSessionDB(loop_thread_ident=-1)
     fake = _make_fake_runner(db, fail_process=False)

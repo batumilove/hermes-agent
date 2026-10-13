@@ -22,7 +22,7 @@ import subprocess
 import tempfile
 import time
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -30,18 +30,13 @@ from urllib.parse import urlsplit, urlunsplit
 # Use Teleport SSH by default. The Honcho host is enrolled and available via
 # the cron tbot config, which keeps unattended runs off the interactive LAN path.
 # Keep HONCHO_MONITOR_HOST as an explicit escape hatch.
-HONCHO_TARGET = os.environ.get("HONCHO_MONITOR_HOST", "ubuntu@honcho.teleport.batumi.works")
-STATE_PATH = Path(
-    os.environ.get(
-        "HONCHO_MONITOR_STATE",
-        str(Path.home() / ".hermes" / "cache" / "honcho_monitor.json"),
-    )
-)
-HERMES_STATE_DB = Path(os.environ.get("HONCHO_MONITOR_HERMES_STATE_DB", str(Path.home() / ".hermes" / "state.db")))
-INGESTION_STALE_SECONDS = int(os.environ.get("HONCHO_MONITOR_INGESTION_STALE_SECONDS", "3600"))
-DERIVER_STALE_ACTIVE_SECONDS = int(os.environ.get("HONCHO_MONITOR_DERIVER_STALE_ACTIVE_SECONDS", "600"))
-DREAM_STALE_ACTIVE_SECONDS = int(os.environ.get("HONCHO_MONITOR_DREAM_STALE_ACTIVE_SECONDS", "1800"))
-SSH_FAILURE_ALERT_THRESHOLD = int(os.environ.get("HONCHO_MONITOR_SSH_FAILURE_ALERT_THRESHOLD", "2"))
+HONCHO_TARGET = "ubuntu@honcho.teleport.batumi.works"
+STATE_PATH: Path | None = None
+HERMES_STATE_DB: Path | None = None
+INGESTION_STALE_SECONDS = 3600
+DERIVER_STALE_ACTIVE_SECONDS = 600
+DREAM_STALE_ACTIVE_SECONDS = 1800
+SSH_FAILURE_ALERT_THRESHOLD = 2
 SPARK_CHAT_DEGRADED_SECONDS = 5.0
 SPARK_CHAT_CRITICAL_SECONDS = 30.0
 LOCAL_DISK_MIN_FREE_BYTES = 10 * 1024**3
@@ -90,7 +85,26 @@ _SAVE_REPRESENTATION_SIGNAL = re.compile(
 # (100.69.54.37) can refuse :8001 while Honcho and Hermes both reach the live
 # vLLM service through the current LAN address advertised in Honcho's loaded
 # config.
-SPARK_CHAT_BASE = os.environ.get("HONCHO_MONITOR_SPARK_CHAT_BASE", "http://192.168.10.211:8001")
+SPARK_CHAT_BASE = "http://192.168.10.211:8001"
+
+
+def _monitor_int(name: str, default: int) -> int:
+    return int(os.environ.get(f"HONCHO_MONITOR_{name}", str(default)))
+
+
+def _state_path() -> Path:
+    from hermes_constants import get_hermes_home
+
+    override = os.environ.get("HONCHO_MONITOR_STATE")
+    return Path(override) if override else STATE_PATH or get_hermes_home() / "cache" / "honcho_monitor.json"
+
+
+def _state_db_path() -> Path:
+    from hermes_constants import get_hermes_home
+
+    override = os.environ.get("HONCHO_MONITOR_HERMES_STATE_DB")
+    return Path(override) if override else HERMES_STATE_DB or get_hermes_home() / "state.db"
+
 
 
 @dataclass(frozen=True)
@@ -199,13 +213,13 @@ def parse_pipeline_env(raw: str) -> dict[str, dict[str, str]]:
     return parsed
 
 
-def load_state(path: Path | str = STATE_PATH) -> dict[str, Any]:
-    state_path = Path(path)
+def load_state(path: Path | str | None = None) -> dict[str, Any]:
+    state_path = Path(path) if path is not None else _state_path()
     try:
-        return json.loads(state_path.read_text(encoding="utf-8"))
+        return json.loads(state_path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return {}
-    except Exception:
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return {}
 
 
@@ -245,16 +259,16 @@ def preserve_last_valid_probe_state(
 
 def _now_utc(now: datetime | None = None) -> datetime:
     if now is None:
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)
     if now.tzinfo is None:
-        return now.replace(tzinfo=timezone.utc)
-    return now.astimezone(timezone.utc)
+        return now.replace(tzinfo=UTC)
+    return now.astimezone(UTC)
 
 
 def _fmt_s(value: Any) -> str:
     try:
         return f"{float(value):.1f}s"
-    except Exception:
+    except (TypeError, ValueError):
         return "?"
 
 
@@ -345,7 +359,7 @@ def _has_fresh_dream_contention(snapshot: HonchoSnapshot) -> bool:
         and not bool(spark.get("thinking"))
         and float(spark.get("latency_s", 0.0) or 0.0) > SPARK_CHAT_DEGRADED_SECONDS
         and int(deriver.get("active_dream_count") or 0) > 0
-        and int(float(deriver.get("active_dream_oldest_age_s") or 0)) < DREAM_STALE_ACTIVE_SECONDS
+        and int(float(deriver.get("active_dream_oldest_age_s") or 0)) < _monitor_int("DREAM_STALE_ACTIVE_SECONDS", DREAM_STALE_ACTIVE_SECONDS)
     )
 
 
@@ -388,8 +402,8 @@ def _has_representation_stall_candidate(
     except (TypeError, ValueError):
         deriver_workers = 0
     sole_worker_has_fresh_non_representation = deriver_workers == 1 and (
-        (active_dream_count > 0 and active_dream_oldest_age_s < DREAM_STALE_ACTIVE_SECONDS)
-        or (active_other_count > 0 and active_other_oldest_age_s < DERIVER_STALE_ACTIVE_SECONDS)
+        (active_dream_count > 0 and active_dream_oldest_age_s < _monitor_int("DREAM_STALE_ACTIVE_SECONDS", DREAM_STALE_ACTIVE_SECONDS))
+        or (active_other_count > 0 and active_other_oldest_age_s < _monitor_int("DERIVER_STALE_ACTIVE_SECONDS", DERIVER_STALE_ACTIVE_SECONDS))
     )
 
     rep_done = int(snapshot.queue_by_type.get("representation", {}).get("done", 0))
@@ -420,7 +434,16 @@ def next_representation_stall_streak(
 
 def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None = None) -> list[str]:
     alerts: list[str] = []
+    if not _observer_service_alerts(snapshot, previous_state, alerts):
+        return alerts
+    _embedding_alerts(snapshot, alerts)
+    _spark_alerts(snapshot, previous_state, alerts)
+    _ingestion_alerts(snapshot, alerts)
+    _deriver_alerts(snapshot, previous_state, alerts)
+    return alerts
 
+
+def _observer_service_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None, alerts: list[str]) -> bool:
     observer = snapshot.observer or {}
     disk_free_bytes = int(observer.get("disk_free_bytes") or 0)
     disk_used_percent = int(observer.get("disk_used_percent") or 0)
@@ -437,19 +460,23 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
     if svc.get("ssh_ok") is False:
         previous_streak = int((previous_state or {}).get("ssh_failure_streak", 0))
         streak = previous_streak + 1
-        if streak >= SSH_FAILURE_ALERT_THRESHOLD:
+        if streak >= _monitor_int("SSH_FAILURE_ALERT_THRESHOLD", SSH_FAILURE_ALERT_THRESHOLD):
             alerts.append(
                 f"Honcho SSH probe failed ({streak} consecutive): {_ssh_error_reason(svc)}"
             )
-        return alerts
+        return False
     for key, label in (("api_ok", "API"), ("deriver_up", "Deriver"), ("db_ok", "DB"), ("redis_ok", "Redis")):
         if not svc.get(key, False):
             alerts.append(f"{label} down")
 
     if svc.get("db_ok") and snapshot.db.get("probe_ok") is False:
         alerts.append("DB stats probe failed")
-        return alerts
+        return False
 
+    return True
+
+
+def _embedding_alerts(snapshot: HonchoSnapshot, alerts: list[str]) -> None:
     embed = snapshot.pipeline.get("embedding", {})
     embed_model = embed.get("model", "")
     embed_url = embed.get("base_url", "")
@@ -476,6 +503,9 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
     if int(snapshot.errors.get("save_representation", 0)) > 0 or int(snapshot.errors.get("four_oh_one", 0)) > 0:
         alerts.append("Recent representation save / 401 errors")
 
+
+
+def _spark_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None, alerts: list[str]) -> None:
     spark = snapshot.spark_goat
     if not spark.get("ok"):
         alerts.append("spark-goat chat failed")
@@ -485,7 +515,7 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
         deriver = snapshot.deriver or {}
         active_dream_count = int(deriver.get("active_dream_count") or 0)
         active_dream_age_s = int(float(deriver.get("active_dream_oldest_age_s") or 0))
-        if active_dream_count > 0 and active_dream_age_s < DREAM_STALE_ACTIVE_SECONDS:
+        if active_dream_count > 0 and active_dream_age_s < _monitor_int("DREAM_STALE_ACTIVE_SECONDS", DREAM_STALE_ACTIVE_SECONDS):
             previous_streak = int((previous_state or {}).get("dream_contention_streak", 0))
             if (
                 float(spark.get("latency_s") or 0.0) >= SPARK_CHAT_CRITICAL_SECONDS
@@ -498,15 +528,21 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
         else:
             alerts.append("spark-goat chat latency degraded")
 
+
+
+def _ingestion_alerts(snapshot: HonchoSnapshot, alerts: list[str]) -> None:
     ingestion = snapshot.ingestion or {}
     if ingestion.get("source_fresh") and not ingestion.get("downstream_fresh"):
         try:
             drift_s = int(float(ingestion.get("drift_s") or 0))
-        except Exception:
+        except (TypeError, ValueError):
             drift_s = 0
-        if drift_s > INGESTION_STALE_SECONDS:
+        if drift_s > _monitor_int("INGESTION_STALE_SECONDS", INGESTION_STALE_SECONDS):
             alerts.append(f"Hermes→Honcho ingestion stale ({_format_age(drift_s)} drift)")
 
+
+
+def _deriver_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None, alerts: list[str]) -> None:
     deriver = snapshot.deriver or {}
     active_count = int(deriver.get("active_count") or 0)
     active_oldest_age_s = int(float(deriver.get("active_oldest_age_s") or 0))
@@ -549,19 +585,19 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
                 "Representation",
                 active_representation_count,
                 int(float(deriver.get("active_representation_oldest_age_s") or 0)),
-                DERIVER_STALE_ACTIVE_SECONDS,
+                _monitor_int("DERIVER_STALE_ACTIVE_SECONDS", DERIVER_STALE_ACTIVE_SECONDS),
             ),
             (
                 "Dream",
                 active_dream_count,
                 active_dream_oldest_age_s,
-                DREAM_STALE_ACTIVE_SECONDS,
+                _monitor_int("DREAM_STALE_ACTIVE_SECONDS", DREAM_STALE_ACTIVE_SECONDS),
             ),
             (
                 "Other",
                 active_other_count,
                 active_other_oldest_age_s,
-                DERIVER_STALE_ACTIVE_SECONDS,
+                _monitor_int("DERIVER_STALE_ACTIVE_SECONDS", DERIVER_STALE_ACTIVE_SECONDS),
             ),
         )
         for label, count, oldest_age_s, threshold in active_groups:
@@ -573,9 +609,9 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
         # Backward compatibility for cached state and callers that predate the
         # per-task query. New snapshots always report all three active groups.
         stale_threshold = (
-            DREAM_STALE_ACTIVE_SECONDS
+            _monitor_int("DREAM_STALE_ACTIVE_SECONDS", DREAM_STALE_ACTIVE_SECONDS)
             if active_task_type == "dream"
-            else DERIVER_STALE_ACTIVE_SECONDS
+            else _monitor_int("DERIVER_STALE_ACTIVE_SECONDS", DERIVER_STALE_ACTIVE_SECONDS)
         )
         if active_count > 0 and active_oldest_age_s >= stale_threshold:
             label = "Dream" if active_task_type == "dream" else "Deriver"
@@ -583,13 +619,10 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
                 f"{label} active work stale ({active_count} active, oldest {_format_age(active_oldest_age_s)})"
             )
 
-    return alerts
-
-
-def _format_age(seconds: int | float | None) -> str:
+def _format_age(seconds: float | None) -> str:
     try:
         total = max(0, int(float(seconds or 0)))
-    except Exception:
+    except (TypeError, ValueError):
         return "?"
     if total >= 86400:
         return f"{total / 86400:.1f}d"
@@ -600,7 +633,7 @@ def _format_age(seconds: int | float | None) -> str:
     return f"{total}s"
 
 
-def _format_bytes(value: int | float | None) -> str:
+def _format_bytes(value: float | None) -> str:
     size = max(0.0, float(value or 0))
     for unit in ("bytes", "KiB", "MiB", "GiB", "TiB"):
         if size < 1024 or unit == "TiB":
@@ -619,14 +652,14 @@ def _parse_pg_timestamptz(value: str | None) -> datetime | None:
         text = text[:-3] + "+00:00"
     try:
         dt = datetime.fromisoformat(text)
-    except Exception:
+    except (TypeError, ValueError):
         return None
     return _now_utc(dt)
 
 
-def latest_local_message_timestamp(path: Path | str = HERMES_STATE_DB) -> float | None:
+def latest_local_message_timestamp(path: Path | str | None = None) -> float | None:
     try:
-        con = sqlite3.connect(Path(path))
+        con = sqlite3.connect(Path(path) if path is not None else _state_db_path())
         try:
             row = con.execute(
                 """
@@ -641,20 +674,20 @@ def latest_local_message_timestamp(path: Path | str = HERMES_STATE_DB) -> float 
             ).fetchone()
         finally:
             con.close()
-    except Exception:
+    except (sqlite3.Error, OSError):
         return None
     if not row or row[0] is None:
         return None
     try:
         return float(row[0])
-    except Exception:
+    except (TypeError, ValueError):
         return None
 
 
 def build_ingestion_status(local_ts: float | None, honcho_latest_raw: str | None, now: datetime | None = None) -> dict[str, Any]:
     now_dt = _now_utc(now)
     honcho_dt = _parse_pg_timestamptz(honcho_latest_raw)
-    local_dt = datetime.fromtimestamp(local_ts, tz=timezone.utc) if local_ts else None
+    local_dt = datetime.fromtimestamp(local_ts, tz=UTC) if local_ts else None
     source_age_s = int((now_dt - local_dt).total_seconds()) if local_dt else None
     downstream_age_s = int((now_dt - honcho_dt).total_seconds()) if honcho_dt else None
     drift_s = int((local_dt - honcho_dt).total_seconds()) if local_dt and honcho_dt else None
@@ -666,8 +699,8 @@ def build_ingestion_status(local_ts: float | None, honcho_latest_raw: str | None
         "source_age_s": source_age_s,
         "downstream_age_s": downstream_age_s,
         "drift_s": drift_s,
-        "source_fresh": source_age_s is not None and source_age_s <= INGESTION_STALE_SECONDS,
-        "downstream_fresh": downstream_age_s is not None and downstream_age_s <= INGESTION_STALE_SECONDS,
+        "source_fresh": source_age_s is not None and source_age_s <= _monitor_int("INGESTION_STALE_SECONDS", INGESTION_STALE_SECONDS),
+        "downstream_fresh": downstream_age_s is not None and downstream_age_s <= _monitor_int("INGESTION_STALE_SECONDS", INGESTION_STALE_SECONDS),
     }
 
 
@@ -805,7 +838,7 @@ def ssh(command: str, timeout: int = 20) -> str:
             "BatchMode=yes",
             "-o",
             "StrictHostKeyChecking=accept-new",
-            HONCHO_TARGET,
+            os.environ.get("HONCHO_MONITOR_HOST", HONCHO_TARGET),
             command,
         ]
     )
@@ -814,6 +847,7 @@ def ssh(command: str, timeout: int = 20) -> str:
         try:
             result = subprocess.run(
                 ssh_cmd,
+                check=False,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -834,6 +868,7 @@ def curl_json(url: str, timeout: int = 10) -> tuple[bool, dict[str, Any] | None]
     try:
         result = subprocess.run(
             ["curl", "-s", "-m", str(timeout), url],
+            check=False,
             capture_output=True,
             text=True,
             timeout=timeout + 5,
@@ -841,7 +876,7 @@ def curl_json(url: str, timeout: int = 10) -> tuple[bool, dict[str, Any] | None]
         if result.returncode != 0 or not result.stdout:
             return False, None
         return True, json.loads(result.stdout)
-    except Exception:
+    except (OSError, subprocess.TimeoutExpired, TypeError, ValueError):
         return False, None
 
 
@@ -849,12 +884,13 @@ def curl_text(url: str, timeout: int = 10) -> str:
     try:
         result = subprocess.run(
             ["curl", "-s", "-m", str(timeout), url],
+            check=False,
             capture_output=True,
             text=True,
             timeout=timeout + 5,
         )
         return result.stdout if result.returncode == 0 else ""
-    except Exception:
+    except (OSError, subprocess.TimeoutExpired, TypeError, ValueError):
         return ""
 
 
@@ -875,6 +911,7 @@ def curl_post_json(url: str, payload: dict[str, Any], timeout: int = 30) -> tupl
                 "-d",
                 json.dumps(payload),
             ],
+            check=False,
             capture_output=True,
             text=True,
             timeout=timeout + 5,
@@ -883,7 +920,7 @@ def curl_post_json(url: str, payload: dict[str, Any], timeout: int = 30) -> tupl
         if result.returncode != 0 or not result.stdout:
             return False, None, dt
         return True, json.loads(result.stdout), dt
-    except Exception:
+    except (OSError, subprocess.TimeoutExpired, TypeError, ValueError):
         return False, None, time.perf_counter() - start
 
 
@@ -905,14 +942,9 @@ def _parse_service_status(raw: str) -> dict[str, Any]:
         name, status = parts
         key = name.replace("honcho-", "").replace("-1", "")
         up = status.startswith("Up")
-        if key == "api":
-            services["api_ok"] = up
-        elif key == "deriver":
-            services["deriver_up"] = up
-        elif key == "database":
-            services["db_ok"] = up
-        elif key == "redis":
-            services["redis_ok"] = up
+        field = {"api": "api_ok", "deriver": "deriver_up", "database": "db_ok", "redis": "redis_ok"}.get(key)
+        if field is not None:
+            services[field] = up
     return services
 
 
@@ -959,7 +991,7 @@ def collect_recent_deriver_errors(ssh_fn=None) -> dict[str, int]:
 def _int_or_zero(value: str | None) -> int:
     try:
         return int(value) if value is not None else 0
-    except Exception:
+    except (TypeError, ValueError):
         return 0
 
 
@@ -1071,8 +1103,18 @@ def collect_deriver_conclusions(ssh_fn=ssh) -> int:
     return _int_or_zero(raw.strip().splitlines()[-1]) if raw and not raw.startswith("__SSH_ERROR__") else 0
 
 
+def _deriver_log_command() -> str:
+    return (
+        "monitor_log=$(mktemp -t hermes-honcho-monitor.XXXXXX) || exit 1; "
+        "trap 'rm -f \"$monitor_log\"' EXIT; "
+        "docker logs honcho-deriver-1 --since 15m > \"$monitor_log\" 2>&1; "
+        "printf 'count|%s\\n' \"$(grep -c 'Observation Count' \"$monitor_log\" || true)\"; "
+        "printf 'last|%s\\n' \"$(grep 'Llm Call Duration' \"$monitor_log\" | tail -1 || true)\""
+    )
+
+
 def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
-    disk_usage = shutil.disk_usage(STATE_PATH.parent)
+    disk_usage = shutil.disk_usage(_state_path().parent)
     observer = {
         "disk_total_bytes": disk_usage.total,
         "disk_free_bytes": disk_usage.free,
@@ -1133,7 +1175,7 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
     spark_model = select_spark_model(pipeline)
 
     spark_ok, spark_data, spark_dt = curl_post_json(
-        f"{SPARK_CHAT_BASE}/v1/chat/completions",
+        f"{os.environ.get('HONCHO_MONITOR_SPARK_CHAT_BASE', SPARK_CHAT_BASE)}/v1/chat/completions",
         {
             "model": spark_model,
             "messages": [{"role": "user", "content": "hi"}],
@@ -1154,12 +1196,7 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
         # HTTP succeeded but body wasn't JSON / no choices -> treat as failure
         spark_ok = False
 
-    logs_raw = ssh(
-        "docker logs honcho-deriver-1 --since 15m > /tmp/honcho-deriver-monitor.log 2>&1; "
-        "printf 'count|%s\n' \"$(grep -c 'Observation Count' /tmp/honcho-deriver-monitor.log || true)\"; "
-        "printf 'last|%s\\n' \\\"$(grep 'Llm Call Duration' /tmp/honcho-deriver-monitor.log | tail -1 || true)\\\"",
-        timeout=30,
-    )
+    logs_raw = ssh(_deriver_log_command(), timeout=30)
     log_parts = _parse_kv_lines(logs_raw)
     runs_15m = _int_or_zero(log_parts.get("count", "0"))
     # Conclusions come from the DB now (collect_deriver_conclusions); the old
@@ -1171,7 +1208,7 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
     if last_match:
         try:
             last_duration_s = int(int(last_match.group(1).replace(",", "")) / 1000)
-        except Exception:
+        except (TypeError, ValueError):
             last_duration_s = 0
 
     active_raw = ssh(
@@ -1277,7 +1314,7 @@ def should_emit_report(snapshot: HonchoSnapshot, previous_state: dict[str, Any] 
 
 def main() -> int:
     snapshot, current_state = collect_snapshot()
-    previous_state = load_state(STATE_PATH)
+    previous_state = load_state(_state_path())
     current_state["dream_contention_streak"] = next_dream_contention_streak(snapshot, previous_state)
     current_state["representation_stall_streak"] = next_representation_stall_streak(
         snapshot, previous_state
@@ -1295,7 +1332,7 @@ def main() -> int:
         current_state["ssh_failure_streak"] = 0
     current_state = preserve_last_valid_probe_state(snapshot, current_state, previous_state)
     try:
-        save_state(STATE_PATH, current_state)
+        save_state(_state_path(), current_state)
     except OSError as exc:
         print(f"⚠️ Local observer state save failed: {exc}")
         return 1

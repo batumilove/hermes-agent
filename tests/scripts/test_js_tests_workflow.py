@@ -49,7 +49,6 @@ def _global_npm_install_tokens(text: str) -> list[list[str]]:
                             break
                     if sub_idx is None:
                         continue
-                    remaining = tokens[sub_idx + 1:]
                     # Check -g/--global anywhere in tokens after "npm".
                     if not any(
                         token in {"-g", "--global"} or token.startswith("--global=")
@@ -61,19 +60,8 @@ def _global_npm_install_tokens(text: str) -> list[list[str]]:
 
 
 def _assert_approved_global_npm_installs(text: str) -> None:
-    installs = _global_npm_install_tokens(text)
-    assert len(installs) == 2
-    for tokens in installs:
-        # Collect all non-flag arguments (packages) and all flags.
-        sub_idx = next(i for i, t in enumerate(tokens) if t in {"install", "i"})
-        arguments = tokens[sub_idx + 1:]
-        # Also check flags before install subcommand.
-        pre_flags = tokens[1:sub_idx]
-        all_args = pre_flags + arguments
-        packages = [token for token in arguments if not token.startswith("-")]
-        assert packages == ["npm@12.0.1"]
-        assert "--ignore-scripts" in all_args
-        assert "--min-release-age=14" in all_args
+    # The PM lock is the sole bootstrap authority; global npm installs bypass it.
+    assert _global_npm_install_tokens(text) == []
 
 
 def test_js_workflow_has_read_only_permissions() -> None:
@@ -81,7 +69,7 @@ def test_js_workflow_has_read_only_permissions() -> None:
     assert workflow["permissions"] == {"contents": "read"}
 
 
-def test_js_workflow_installs_only_the_exact_cooldown_protected_npm() -> None:
+def test_js_workflow_uses_pm_without_global_npm_bootstrap() -> None:
     _assert_approved_global_npm_installs(WORKFLOW.read_text(encoding="utf-8"))
 
 
@@ -99,15 +87,14 @@ def _run_contract_against(tmp_path: Path, monkeypatch, commands: list[str]) -> N
         encoding="utf-8",
     )
     monkeypatch.setitem(globals(), "WORKFLOW", fixture)
-    test_js_workflow_installs_only_the_exact_cooldown_protected_npm()
+    test_js_workflow_uses_pm_without_global_npm_bootstrap()
 
 
-def test_contract_accepts_global_flag_and_reordered_approved_arguments(
+def test_contract_accepts_project_install_without_global_bootstrap(
     tmp_path: Path, monkeypatch
 ) -> None:
     approved = (
-        "npm install --ignore-scripts npm@12.0.1 "
-        "--min-release-age=14 --global"
+        "npm ci --ignore-scripts"
     )
     _run_contract_against(tmp_path, monkeypatch, [approved, approved])
 
@@ -132,7 +119,7 @@ def test_contract_accepts_global_flag_and_reordered_approved_arguments(
 def test_contract_rejects_equivalent_unapproved_global_bootstraps(
     tmp_path: Path, monkeypatch, unapproved: str
 ) -> None:
-    approved = "npm install -g npm@12.0.1 --ignore-scripts --min-release-age=14"
+    approved = "npm ci --ignore-scripts"
     with pytest.raises(AssertionError):
         _run_contract_against(
             tmp_path,

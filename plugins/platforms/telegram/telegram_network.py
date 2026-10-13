@@ -1,11 +1,5 @@
-"""Telegram-specific network helpers.
-
-Provides a hostname-preserving fallback transport for networks where
-api.telegram.org resolves to an endpoint that is unreachable from the current
-host. The transport keeps the logical request host and TLS SNI as
-api.telegram.org while retrying the TCP connection against one or more fallback
-IPv4 addresses.
-"""
+"""Telegram network helpers: a hostname-preserving fallback transport (Host + SNI stay
+api.telegram.org while TCP retries known IPv4 literals) plus DoH-based IP discovery."""
 
 from __future__ import annotations
 
@@ -16,13 +10,34 @@ import itertools
 import logging
 import os
 import socket
+import sys
+import traceback
 from typing import Any, Iterable, Optional
 
 import httpx
 
 _HTTPX_ASYNC_HTTP_TRANSPORT_TYPE = httpx.AsyncHTTPTransport
+from agent.ssl_verify import platform_ssl_context
 
 logger = logging.getLogger(__name__)
+cleanup_logger = logging.getLogger("hermes.telegram.network_cleanup")
+
+
+def _redacted_cleanup_exception_info():
+    """Keep exception type while discarding transport messages and request objects."""
+    error = sys.exception()
+    safe = RuntimeError(f"{type(error).__name__}: Telegram network boundary failure (details redacted)")
+    return RuntimeError, safe, None
+
+
+def _redacted_cleanup_frames() -> str:
+    """Expose code locations without source text, exception messages or frame locals."""
+    error = sys.exception()
+    return "\n".join(
+        f"{frame.filename}:{frame.lineno} in {frame.name}"
+        for frame in traceback.extract_tb(error.__traceback__)
+    )
+
 
 _TELEGRAM_API_HOST = "api.telegram.org"
 
@@ -34,7 +49,7 @@ def _parse_tcp_connect_deadline() -> float:
     hot path can read without per-connect env parsing, with the env override
     kept as an escape hatch for incident response.
     """
-    raw = os.environ.get("HERMES_TELEGRAM_TCP_CONNECT_DEADLINE")
+    raw = os.environ.get("HERMES_TELEGRAM_TCP_CONNECT_DEADLINE")  # health: allow HX002 -- Non-secret process-wide TCP shutdown budget; all profile transports share this backend deadline.
     if not raw:
         return 15.0
     try:
@@ -70,7 +85,7 @@ _diagnostic_request_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     "telegram_diagnostic_request_id", default="none"
 )
 _request_network_streams: contextvars.ContextVar[
-    list["_CancellationSafeNetworkStream"] | None
+    list[_CancellationSafeNetworkStream] | None
 ] = contextvars.ContextVar("telegram_request_network_streams", default=None)
 
 
@@ -89,7 +104,7 @@ def _stream_local_port(stream: Any) -> str:
             if type(port) is int and 1 <= port <= 65535:
                 return str(port)
     except Exception:
-        pass
+        cleanup_logger.debug("_stream_local_port boundary operation failed\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
     return "unknown"
 
 
@@ -170,12 +185,13 @@ class _CancellationSafeNetworkStream:
         try:
             await self.aclose()
         except BaseException:
-            pass
+            cleanup_logger.debug("_close_after_failure boundary operation failed\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
 
     async def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
         try:
             return await self._stream.read(max_bytes, timeout=timeout)
         except BaseException:
+            cleanup_logger.debug("read boundary operation failed\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
             # A caller cancellation can arrive after the peer has queued bytes
             # plus FIN but before httpcore creates a Response. Close this exact
             # stream while ownership is still local; no response-level cleanup
@@ -187,6 +203,7 @@ class _CancellationSafeNetworkStream:
         try:
             await self._stream.write(buffer, timeout=timeout)
         except BaseException:
+            cleanup_logger.debug("write boundary operation failed\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
             await self._close_after_failure()
             raise
 
@@ -206,6 +223,7 @@ class _CancellationSafeNetworkStream:
         try:
             task.result()
         except BaseException:
+            cleanup_logger.debug("_close_done boundary operation failed\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
             self._close_finished(error=True)
         else:
             self._close_finished(error=False)
@@ -215,12 +233,13 @@ class _CancellationSafeNetworkStream:
 
     async def start_tls(
         self, ssl_context, server_hostname=None, timeout=None
-    ) -> "_CancellationSafeNetworkStream":
+    ) -> _CancellationSafeNetworkStream:
         try:
             stream = await self._stream.start_tls(
                 ssl_context, server_hostname, timeout
             )
         except BaseException:
+            cleanup_logger.debug("start_tls boundary operation failed\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
             await self._close_after_failure()
             raise
         return _CancellationSafeNetworkStream(stream)
@@ -244,12 +263,13 @@ class _DiagnosticCancellationSafeNetworkStream(_CancellationSafeNetworkStream):
 
     async def start_tls(
         self, ssl_context, server_hostname=None, timeout=None
-    ) -> "_DiagnosticCancellationSafeNetworkStream":
+    ) -> _DiagnosticCancellationSafeNetworkStream:
         try:
             stream = await self._stream.start_tls(
                 ssl_context, server_hostname, timeout
             )
         except BaseException:
+            cleanup_logger.debug("start_tls boundary operation failed\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
             await self._close_after_failure()
             raise
         return _DiagnosticCancellationSafeNetworkStream(stream, self._lifecycle)
@@ -268,11 +288,12 @@ class _CancellationSafeNetworkBackend:
         try:
             stream = connect_task.result()
         except BaseException:
+            cleanup_logger.debug("_close_abandoned_connect_result boundary operation failed\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
             return
         try:
             await self._wrap(stream).aclose()
         except BaseException:
-            pass
+            cleanup_logger.debug("_close_abandoned_connect_result boundary operation failed\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
 
     def _abandoned_connect_done(self, connect_task: asyncio.Task) -> None:
         _abandoned_response_cleanups.discard(connect_task)
@@ -305,6 +326,7 @@ class _CancellationSafeNetworkBackend:
                 timeout=_TCP_CONNECT_DEADLINE,
             )
         except BaseException:
+            cleanup_logger.debug("_connect boundary operation failed\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
             # A done callback captures its registration Context by default. Do not
             # retain the failed request's stream registry while an abandoned
             # backend connect finishes, or append the eventual wrapper to a stale
@@ -390,7 +412,7 @@ async def _close_response(response: httpx.Response) -> None:
     try:
         await response.aclose()
     except BaseException:
-        logger.debug("Failed to close abandoned Telegram response", exc_info=True)
+        cleanup_logger.debug("Failed to close abandoned Telegram response\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
 
 
 class _RetryingCloseResponseStream(httpx.AsyncByteStream):
@@ -442,6 +464,7 @@ class _RetryingCloseResponseStream(httpx.AsyncByteStream):
         try:
             task.result()
         except BaseException:
+            cleanup_logger.debug("_initial_close_done boundary operation failed\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
             self._schedule_detached_retry()
 
     def _schedule_detached_retry(self) -> None:
@@ -466,7 +489,7 @@ class _RetryingCloseResponseStream(httpx.AsyncByteStream):
         try:
             await asyncio.wait_for(self._stream.aclose(), timeout=5.0)
         except BaseException:
-            pass
+            cleanup_logger.debug("_retry_close boundary operation failed\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
         if self._raw_socket_is_closed():
             return
         # A response stream may mark itself closed before failing, making this
@@ -486,6 +509,7 @@ class _RetryingCloseResponseStream(httpx.AsyncByteStream):
             fileno = getattr(raw_socket, "fileno", None)
             return fileno is not None and fileno() == -1
         except Exception:
+            cleanup_logger.debug("_raw_socket_is_closed boundary operation failed\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
             return False
 
     async def _force_close_network_stream(self) -> None:
@@ -504,7 +528,7 @@ class _RetryingCloseResponseStream(httpx.AsyncByteStream):
             # so the socket does not outlive the cancelled task.
             pass
         except BaseException:
-            pass
+            cleanup_logger.debug("_force_close_network_stream boundary operation failed\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
 
         if self._raw_socket_is_closed():
             return
@@ -515,7 +539,7 @@ class _RetryingCloseResponseStream(httpx.AsyncByteStream):
             try:
                 close()
             except BaseException:
-                pass
+                cleanup_logger.debug("_force_close_network_stream boundary operation failed\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
 
         if self._raw_socket_is_closed():
             return
@@ -553,12 +577,13 @@ class _RetryingCloseResponseStream(httpx.AsyncByteStream):
                 try:
                     close()
                 except Exception:
+                    cleanup_logger.debug("_close_raw_socket_fallback boundary operation failed\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
                     continue
                 if self._raw_socket_is_closed():
                     self._raw_socket_closed = True
                     return
         except Exception:
-            pass
+            cleanup_logger.debug("_close_raw_socket_fallback boundary operation failed\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
 
         logger.debug("Failed to close raw Telegram response socket fallback")
 
@@ -602,6 +627,7 @@ async def _handle_transport_request(
     try:
         response = await transport.handle_async_request(request)
     except BaseException:
+        cleanup_logger.debug("_handle_transport_request boundary operation failed\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
         if request_streams:
             cleanup_task = asyncio.create_task(
                 _close_request_network_streams(tuple(reversed(request_streams)))
@@ -686,7 +712,7 @@ def _response_local_port(response: httpx.Response) -> str:
         if isinstance(sockname, tuple) and len(sockname) >= 2:
             return str(sockname[1])
     except Exception:
-        pass
+        cleanup_logger.debug("_response_local_port boundary operation failed\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
     return "unknown"
 
 
@@ -721,6 +747,7 @@ class _DiagnosticResponseStream(httpx.AsyncByteStream):
         try:
             await self._stream.aclose()
         except BaseException:
+            cleanup_logger.debug("aclose boundary operation failed\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
             if not self._close_error_reported:
                 self._close_error_reported = True
                 _log_socket_lifecycle(
@@ -745,42 +772,59 @@ class _DiagnosticResponseStream(httpx.AsyncByteStream):
 # from the (potentially unreachable) IP returned by the local system resolver.
 _DOH_TIMEOUT = 4.0  # seconds — bounded so connect() isn't noticeably delayed
 
-_DOH_PROVIDERS: list[dict] = [
-    {
-        "url": "https://dns.google/resolve",
-        "params": {"name": _TELEGRAM_API_HOST, "type": "A"},
-        "headers": {},
-    },
-    {
-        "url": "https://cloudflare-dns.com/dns-query",
-        "params": {"name": _TELEGRAM_API_HOST, "type": "A"},
-        "headers": {"Accept": "application/dns-json"},
-    },
-]
+def _describe_transport_error(error: Exception) -> str:
+    """Return a non-empty, secret-safe exception representation for diagnostics."""
+    try:
+        from agent.redact import redact_sensitive_text
 
-# Last-resort IPv4 Telegram Bot API endpoints in 149.154.160.0/20
-# (same seed used by OpenClaw). Used when DoH is blocked AND as the
-# first-try connect targets so a blackholed IPv6 AAAA for the hostname
-# cannot pin initialize() (#87015).
+        return redact_sensitive_text(repr(error), force=True)
+    except Exception:
+        cleanup_logger.debug("_describe_transport_error boundary operation failed\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
+        return type(error).__name__
+
+# TCP keepalive so a half-open/CLOSE-WAIT long-poll errors out instead of blocking getUpdates forever
+# (Windows leaves SO_KEEPALIVE off). Idle/interval knobs are best-effort per Python/OS combo.
+# Windows does not enable SO_KEEPALIVE on new sockets by default, so a dead api.telegram.org peer can hang
+# forever (#87057).
+_TCP_KEEPALIVE_IDLE_S = 30
+_TCP_KEEPALIVE_INTERVAL_S = 10
+_TCP_KEEPALIVE_COUNT = 3
+
+
+def tcp_keepalive_socket_options() -> list[tuple[int, int, int]]:
+    """``setsockopt`` tuples for httpx ``socket_options``: always SO_KEEPALIVE, plus idle/interval/count
+    when the interpreter exposes those option names."""
+    options: list[tuple[int, int, int]] = [(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)]
+    idle = getattr(socket, "TCP_KEEPIDLE", None) or getattr(socket, "TCP_KEEPALIVE", None)
+    for opt, value in ((idle, _TCP_KEEPALIVE_IDLE_S), (getattr(socket, "TCP_KEEPINTVL", None), _TCP_KEEPALIVE_INTERVAL_S),
+                       (getattr(socket, "TCP_KEEPCNT", None), _TCP_KEEPALIVE_COUNT)):
+        if opt is not None:
+            options.append((socket.IPPROTO_TCP, opt, value))
+    return options
+
+# DNS-over-HTTPS providers: discover Telegram API IPs the (possibly unreachable) local resolver may not
+# return. Bounded so connect() isn't delayed.
+_DOH_TIMEOUT = 4.0
+_DOH_PROVIDERS: list[dict] = [
+    {"url": "https://dns.google/resolve", "params": {"name": _TELEGRAM_API_HOST, "type": "A"}, "headers": {}},
+    {
+        "url": "https://cloudflare-dns.com/dns-query", "params": {"name": _TELEGRAM_API_HOST, "type": "A"},
+        "headers": {"Accept": "application/dns-json"}},
+]
+# Last-resort IPv4 Bot API endpoints (149.154.160.0/20). Used when DoH is blocked AND as
+# first-try connect targets so a blackholed IPv6 AAAA for the hostname can't pin initialize().
 SEED_FALLBACK_IPS: list[str] = ["149.154.166.110", "149.154.167.220"]
 _UNSET = object()
 
 
 def _resolve_proxy_url(target_hosts=None) -> str | None:
-    # Delegate to shared implementation (env vars + macOS system proxy detection)
-    from gateway.platforms.base import resolve_proxy_url
+    from gateway.platforms.base import resolve_proxy_url  # env vars + macOS system proxy
     return resolve_proxy_url("TELEGRAM_PROXY", target_hosts=target_hosts)
 
 
 class TelegramFallbackTransport(httpx.AsyncBaseTransport):
-    """Reach Telegram Bot API via known IPv4 literals first, hostname last.
-
-    Requests still target https://api.telegram.org/... logically (Host + SNI
-    stay on the hostname). TCP connects to a known A-record IP first so a
-    blackholed IPv6 AAAA cannot pin initialize(). Equivalent to
-    ``curl --resolve api.telegram.org:443:<ip>``. The dual-stack hostname
-    is last resort for IPv6-only networks.
-    """
+    """Reach the Bot API via known IPv4 literals first, dual-stack hostname last. Host + SNI stay on
+    api.telegram.org (like ``curl --resolve``) so a blackholed IPv6 AAAA can't pin initialize()."""
 
     _POOL_LIMITS = httpx.Limits(
         max_connections=8,
@@ -818,6 +862,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
         if proxy_url and "proxy" not in transport_kwargs:
             transport_kwargs["proxy"] = proxy_url
+        transport_kwargs.setdefault("socket_options", tcp_keepalive_socket_options())
         self._primary = _new_async_http_transport(
             socket_diagnostics=self._socket_diagnostics,
             diagnostic_owner=self._owner_role,
@@ -829,11 +874,10 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         self._primary_lock = asyncio.Lock()
         self._primary_closed = False
         self._fallback_lock = asyncio.Lock()
-        # ``_UNSET`` vs ``None`` vs ``str``: unset / sticky hostname / sticky IPv4.
-        # ``None`` cannot mean both "no sticky yet" and "sticky dual-stack
-        # hostname" (#87015).
+        # ``_UNSET`` / ``None`` / ``str`` = no sticky yet / sticky hostname / sticky IPv4.
         self._sticky_ip: object = _UNSET
         self._sticky_lock = asyncio.Lock()
+        self._last_failure: tuple[str, str] | None = None
 
     async def _get_fallback(self, ip: str) -> httpx.AsyncBaseTransport:
         async with self._fallback_lock:
@@ -863,10 +907,16 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         try:
             await transport.aclose()
         except Exception as exc:
+            cleanup_logger.debug("_reset_primary boundary operation failed\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
             logger.debug("[Telegram] Error closing primary transport: %s", exc)
 
     async def _reset_fallback(self, ip: str) -> None:
-        """Discard a failed fallback pool so dead sockets are released."""
+        """Discard a failed fallback pool: a peer-closed connect leaves a CLOSE_WAIT socket in it, and the
+        poisoned pool would leak one fd per retry.
+
+        Retaining the poisoned pool leaks one descriptor per retry until the process hits its file limit and
+        can no longer accept connections or resolve DNS (#63311).
+        """
         async with self._fallback_lock:
             transport = self._fallbacks.pop(ip, None)
         if transport is None:
@@ -874,6 +924,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         try:
             await transport.aclose()
         except Exception as exc:
+            cleanup_logger.debug("_reset_fallback boundary operation failed\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
             logger.debug(
                 "[Telegram] Error closing fallback transport %s: %s",
                 ip,
@@ -915,6 +966,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                 )
                 raise
             except BaseException:
+                cleanup_logger.debug("_request_for_route boundary operation failed\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
                 _log_socket_lifecycle(
                     event="request-failed",
                     owner=self._owner_role,
@@ -937,21 +989,12 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
             _diagnostic_request_id.reset(token)
 
     def _attempt_order(self) -> list[Optional[str]]:
-        """IPv4 literals first; dual-stack hostname last.
-
-        A blackholed IPv6 path to ``api.telegram.org`` never errors — Happy
-        Eyeballs waits on AAAA until the OS TCP timeout, which can pin the
-        event loop so ``_await_with_thread_deadline`` never fires (#87015).
-        Known A-record IPs connect over IPv4 immediately. The hostname is
-        kept as a last resort for IPv6-only networks.
-        """
+        """Sticky path first, then IPv4 literals, dual-stack hostname last (a blackholed IPv6 path never
+        errors — Happy Eyeballs waits on AAAA until the OS TCP timeout and can pin the loop)."""
         order: list[Optional[str]] = []
         if self._sticky_ip is not _UNSET:
-            sticky = self._sticky_ip
-            order.append(sticky if sticky is None else str(sticky))
-        for ip in self._fallback_ips:
-            if ip not in order:
-                order.append(ip)
+            order.append(None if self._sticky_ip is None else str(self._sticky_ip))
+        order.extend(ip for ip in self._fallback_ips if ip not in order)
         if None not in order:
             order.append(None)
         return order
@@ -960,10 +1003,9 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         if request.url.host != _TELEGRAM_API_HOST or not self._fallback_ips:
             return await self._request_for_route(self._primary, request, "primary")
 
-        attempt_order = self._attempt_order()
 
         last_error: Exception | None = None
-        for ip in attempt_order:
+        for ip in self._attempt_order():
             candidate = request if ip is None else _rewrite_request_for_ip(request, ip)
             transport = self._primary if ip is None else await self._get_fallback(ip)
             try:
@@ -972,42 +1014,45 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                     candidate,
                     "primary" if ip is None else ip,
                 )
+                if self._last_failure is not None:
+                    failed_path, failure = self._last_failure
+                    self._last_failure = None
+                    logger.info(
+                        "[Telegram] Telegram API transport recovered via %s after %s failed: %s",
+                        ip or _TELEGRAM_API_HOST,
+                        failed_path,
+                        failure,
+                    )
                 if self._sticky_ip is _UNSET or self._sticky_ip != ip:
                     async with self._sticky_lock:
                         if self._sticky_ip is _UNSET or self._sticky_ip != ip:
                             self._sticky_ip = ip
                             if ip is not None:
                                 log = logger.warning if last_error is not None else logger.info
-                                log(
-                                    "[Telegram] Using sticky IPv4 Telegram API path %s "
-                                    "(dual-stack hostname tried last — #87015)",
-                                    ip,
-                                )
+                                log("[Telegram] Using sticky IPv4 Telegram API path %s (dual-stack hostname tried last — #87015)", ip)
                 return response
             except Exception as exc:
+                cleanup_logger.debug("handle_async_request boundary operation failed\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
                 last_error = exc
                 if not _is_retryable_connect_error(exc):
                     raise
+                path = ip or _TELEGRAM_API_HOST
+                failure = _describe_transport_error(exc)
+                self._last_failure = (path, failure)
                 if self._sticky_ip is not _UNSET and ip == self._sticky_ip:
                     async with self._sticky_lock:
                         if self._sticky_ip is not _UNSET and self._sticky_ip == ip:
                             self._sticky_ip = _UNSET
                             logger.warning(
-                                "[Telegram] Sticky Telegram path %s failed; "
-                                "re-walking IPv4 literals before the hostname",
-                                ip if ip is not None else "api.telegram.org",
-                            )
+                                "[Telegram] Sticky Telegram path %s failed; re-walking IPv4 literals before the hostname",
+                                ip if ip is not None else "api.telegram.org")
                 if ip is None:
                     await self._reset_primary(transport)
-                    logger.warning(
-                        "[Telegram] Dual-stack api.telegram.org path failed (%s)",
-                        exc,
-                    )
+                    logger.warning("[Telegram] Dual-stack api.telegram.org path failed (%s)", failure)
                     continue
-                logger.warning("[Telegram] IPv4 Telegram API IP %s failed: %s", ip, exc)
+                logger.warning("[Telegram] IPv4 Telegram API IP %s failed: %s", ip, failure)
                 await self._reset_fallback(ip)
                 continue
-
         if last_error is None:
             raise RuntimeError("All Telegram fallback IPs exhausted but no error was recorded")
         raise last_error
@@ -1037,19 +1082,15 @@ def _normalize_fallback_ips(values: Iterable[str]) -> list[str]:
             continue
         if addr.version != 4:
             logger.warning("Ignoring non-IPv4 Telegram fallback IP: %s", raw)
-            continue
-        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_unspecified:
+        elif addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_unspecified:
             logger.warning("Ignoring private/internal Telegram fallback IP: %s", raw)
-            continue
-        normalized.append(str(addr))
+        else:
+            normalized.append(str(addr))
     return normalized
 
 
 def parse_fallback_ip_env(value: str | None) -> list[str]:
-    if not value:
-        return []
-    parts = [part.strip() for part in value.split(",")]
-    return _normalize_fallback_ips(parts)
+    return _normalize_fallback_ips(part.strip() for part in value.split(",")) if value else []
 
 
 def _resolve_system_dns() -> set[str]:
@@ -1058,17 +1099,14 @@ def _resolve_system_dns() -> set[str]:
         results = socket.getaddrinfo(_TELEGRAM_API_HOST, 443, socket.AF_INET)
         return {addr[4][0] for addr in results}
     except Exception:
+        cleanup_logger.debug("_resolve_system_dns boundary operation failed\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
         return set()
 
 
-async def _query_doh_provider(
-    client: httpx.AsyncClient, provider: dict
-) -> list[str]:
+async def _query_doh_provider(client: httpx.AsyncClient, provider: dict) -> list[str]:
     """Query one DoH provider and return A-record IPs."""
     try:
-        resp = await client.get(
-            provider["url"], params=provider["params"], headers=provider["headers"]
-        )
+        resp = await client.get(provider["url"], params=provider["params"], headers=provider["headers"])
         resp.raise_for_status()
         data = resp.json()
         ips: list[str] = []
@@ -1078,69 +1116,49 @@ async def _query_doh_provider(
             raw = answer.get("data", "").strip()
             try:
                 ipaddress.ip_address(raw)
-                ips.append(raw)
             except ValueError:
                 continue
+            ips.append(raw)
         return ips
     except Exception as exc:
+        cleanup_logger.debug("_query_doh_provider boundary operation failed\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
         logger.debug("DoH query to %s failed: %s", provider["url"], exc)
         return []
 
 
 async def discover_fallback_ips() -> list[str]:
-    """Auto-discover Telegram API IPs via DNS-over-HTTPS.
+    """Resolve api.telegram.org via Google + Cloudflare DoH; unique A records, in order. IPs matching the
+    system resolver are deliberately KEPT (often the most reliable path). Falls back to
+    ``SEED_FALLBACK_IPS`` only when DoH yields nothing usable.
 
-    Resolves api.telegram.org through Google and Cloudflare DoH and returns all
-    unique A records.  IPs that match the local system resolver are kept rather
-    than excluded: in many networks the system-DNS IP is the most reliable path
-    to api.telegram.org and a transient primary-path failure should be retried
-    against the same address via the IP-rewrite path before the seed list is
-    consulted (#14520).  Falls back to a hardcoded seed list only when DoH
-    yields no usable answers.
+    IPs that match the local system resolver are kept rather than excluded: in many networks the system-DNS
+    IP is the most reliable path to api.telegram.org and a transient primary-path failure should be retried
+    against the same address via the IP-rewrite path before the seed list is consulted (#14520).
     """
-    async with httpx.AsyncClient(timeout=httpx.Timeout(_DOH_TIMEOUT)) as client:
-        doh_tasks = [_query_doh_provider(client, p) for p in _DOH_PROVIDERS]
+    async with httpx.AsyncClient(timeout=httpx.Timeout(_DOH_TIMEOUT), verify=platform_ssl_context()) as client:
         system_dns_task = asyncio.ensure_future(asyncio.to_thread(_resolve_system_dns))
-        results = await asyncio.gather(*doh_tasks, return_exceptions=True)
-
-    # The system-resolver leg runs socket.getaddrinfo in a worker thread with
-    # no timeout of its own — a wedged OS resolver (broken VPN/DNS) can sit for
-    # minutes. Its result only feeds the no-usable-answers log line below, so
-    # it must never gate discovery: bound it and move on (#63309). The DoH legs
-    # are already bounded by the client timeout above.
+        results = await asyncio.gather(*[_query_doh_provider(client, p) for p in _DOH_PROVIDERS], return_exceptions=True)
+    # The getaddrinfo leg has no timeout of its own and only feeds the log line below — bound it.
+    # The system-resolver leg runs socket.getaddrinfo in a worker thread with no timeout of its own — a
+    # wedged OS resolver (broken VPN/DNS) can sit for minutes. Its result only feeds the no-usable-answers
+    # log line below, so it must never gate discovery: bound it and move on (#63309). The DoH legs are
+    # already bounded by the client timeout above.
     system_ips: set[str] = set()
     try:
         system_result = await asyncio.wait_for(system_dns_task, timeout=_DOH_TIMEOUT)
         if isinstance(system_result, set):
             system_ips = system_result
     except Exception:
+        cleanup_logger.debug("discover_fallback_ips boundary operation failed\n%s", _redacted_cleanup_frames(), exc_info=_redacted_cleanup_exception_info())
         logger.debug("System-DNS resolution for %s did not complete in time", _TELEGRAM_API_HOST)
-
-    doh_ips: list[str] = []
-    for r in results:
-        if isinstance(r, list):
-            doh_ips.extend(r)
-
-    # Deduplicate preserving order
-    seen: set[str] = set()
-    candidates: list[str] = []
-    for ip in doh_ips:
-        if ip not in seen:
-            seen.add(ip)
-            candidates.append(ip)
-
-    # Validate through existing normalization
-    validated = _normalize_fallback_ips(candidates)
-
+    doh_ips = [ip for r in results if isinstance(r, list) for ip in r]
+    validated = _normalize_fallback_ips(list(dict.fromkeys(doh_ips)))  # dedupe, keep order
     if validated:
         logger.debug("Discovered Telegram fallback IPs via DoH: %s", ", ".join(validated))
         return validated
-
     logger.info(
         "DoH discovery yielded no usable IPs (system DNS: %s); using seed fallback IPs %s",
-        ", ".join(system_ips) or "unknown",
-        ", ".join(SEED_FALLBACK_IPS),
-    )
+        ", ".join(system_ips) or "unknown", ", ".join(SEED_FALLBACK_IPS))
     return list(SEED_FALLBACK_IPS)
 
 
@@ -1151,13 +1169,7 @@ def _rewrite_request_for_ip(request: httpx.Request, ip: str) -> httpx.Request:
     headers["host"] = original_host
     extensions = dict(request.extensions)
     extensions["sni_hostname"] = original_host
-    return httpx.Request(
-        method=request.method,
-        url=url,
-        headers=headers,
-        stream=request.stream,
-        extensions=extensions,
-    )
+    return httpx.Request(method=request.method, url=url, headers=headers, stream=request.stream, extensions=extensions)
 
 
 def _is_retryable_connect_error(exc: Exception) -> bool:

@@ -8,9 +8,13 @@ matching successful tool result in the current turn.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any
+
+
+logger = logging.getLogger(__name__)
 
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?;])\s+|\n+")
@@ -269,6 +273,7 @@ def tool_result_succeeded(tool_name: str, content: Any) -> bool:
     try:
         return _tool_result_succeeded(tool_name, content)
     except Exception:
+        logger.debug("Tool evidence inspection failed; retaining a negative verdict", exc_info=True)
         return False
 
 

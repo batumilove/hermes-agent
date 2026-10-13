@@ -30,9 +30,9 @@ def test_runner_binds_loop_freeze_backstop_to_supervisor_deadline():
     watchdog.is_alive.return_value = True
 
     with (
-        patch("gateway.run._arm_loop_floor_timer", return_value=MagicMock()),
+        patch("gateway.shutdown_watchdog._arm_loop_floor_timer", return_value=MagicMock()),
         patch(
-            "gateway.run.start_loop_liveness_watchdog", return_value=watchdog
+            "gateway.shutdown_watchdog.start_loop_liveness_watchdog", return_value=watchdog
         ) as start_watchdog,
     ):
         runner._start_loop_liveness_guards(loop)
@@ -59,12 +59,14 @@ async def test_drain_waits_for_detached_delegation_to_settle(monkeypatch):
 
     runner, _adapter = make_restart_runner()
     live = {"count": 1}
-    monkeypatch.setattr(
-        "tools.async_delegation.active_count", lambda: live["count"]
-    )
+    observed = asyncio.Event()
+    def delegation_count():
+        observed.set()
+        return live["count"]
+    monkeypatch.setattr("tools.async_delegation.active_count", delegation_count)
 
     drain_task = asyncio.create_task(runner._drain_active_agents(0.5))
-    await asyncio.sleep(0.03)
+    await asyncio.wait_for(observed.wait(), timeout=1)
     assert not drain_task.done(), "drain returned while detached work was still live"
 
     live["count"] = 0
@@ -96,6 +98,7 @@ async def test_async_completion_wake_is_marked_as_internal_new_work():
 
         async def handle_message(self, event):
             captured.append(event)
+            event._gateway_accepted = True
 
     await deliver_wake(
         PushAdapter(),
