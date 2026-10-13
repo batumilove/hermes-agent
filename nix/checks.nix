@@ -8,6 +8,7 @@
     let
       hermes-agent = self'.packages.default;
       hermesVenv = hermes-agent.hermesVenv;
+      hermesNpmLib = pkgs.callPackage ./lib.nix { };
 
       configMergeScript = pkgs.callPackage ./configMergeScript.nix { };
 
@@ -1042,6 +1043,14 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "=== All checks passed ==="
           mkdir -p $out
           echo "ok" > $out/result
+        '';
+
+        npm-offline-overrides = pkgs.runCommand "hermes-npm-offline-overrides" {
+          nativeBuildInputs = [ hermesNpmLib.nodejs ];
+        } ''
+          node ${./tests/npm-offline-overrides.mjs} ${hermesNpmLib.npmDeps} \
+            ${../package.json} ${../apps/bootstrap-installer/package.json}
+          touch $out
         '';
 
         # Exercise every declared command and the environment delivered by

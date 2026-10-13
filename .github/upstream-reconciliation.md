@@ -4,8 +4,9 @@ This candidate reconciles `batumi/live` at
 `2c31abf2bcb4a6fa0abc868f707ec09a053cb1f0` with official upstream
 `6e7b83a2f1c093e992a8d838ed77ea320fbd8e51`. It is prepared on
 `codex/reconcile-upstream-6e7b83` as the initial immutable source branch. CI
-follow-ups use the separate immutable source `codex/reconcile-upstream-6e7b83-ci`;
-the linear review branch is `codex/update-fork-6e7b83`. Retain both source branches.
+follow-ups use separate immutable sources `codex/reconcile-upstream-6e7b83-ci`
+and `codex/reconcile-upstream-6e7b83-ci2`; the linear review branch is
+`codex/update-fork-6e7b83`. Retain all three source branches.
 The current provenance record identifies the exact accepted source tree.
 Runtime deployment is a separate step.
 
@@ -159,6 +160,22 @@ script permissions reflect exact reviewed versions in the locks. JS installs
 enforce those decisions strictly, and installed-tree cache keys include script
 policy and toolchain inputs. Standard-runner file concurrency is bounded to
 four Linux and two Windows workers; all test selectors and deadlines remain.
+
+The next Nix build exposed an offline manifest defect: dropping root overrides
+made npm try to resolve the older transitive KaTeX range from the registry.
+The offline manifest now preserves the security overrides and refers to each
+direct dependency's imported tarball spec through npm's `$name` syntax.
+An actual empty-cache npm consumer reproduces both the missing-cache failure
+with dropped overrides and the direct-spec conflict with unchanged overrides;
+the adapted overrides install the exact patched packages offline. The registry
+manifests, dependency locks, integrity hashes and release-age policy are unchanged.
+Full Nix realization still requires CI.
+
+The repaired predecessor passed Termux, the running-stack shadow and both
+Windows ARM64 cold SDK jobs. The Windows jobs provisioned and executed the SDK
+from an empty cache; the Azure signing service boundary remains stubbed.
+This is ARM64 acceptance, without an x64 execution claim. CI and PM Bundle were
+individually disabled at that point and still need enabled runs on the final head.
 
 PM locks patched multidict, OAuthlib, PyJWT, Tornado and urllib3 within bounded
 constraints, retaining the three-day release-age policy. Consumer acceptance
