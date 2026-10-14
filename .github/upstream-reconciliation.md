@@ -5,8 +5,9 @@ This candidate reconciles `batumi/live` at
 `6e7b83a2f1c093e992a8d838ed77ea320fbd8e51`. It is prepared on
 `codex/reconcile-upstream-6e7b83` as the initial immutable source branch. CI
 follow-ups use separate immutable sources `codex/reconcile-upstream-6e7b83-ci`,
-`codex/reconcile-upstream-6e7b83-ci2`, and `codex/reconcile-upstream-6e7b83-ci3`;
-the linear review branch is `codex/update-fork-6e7b83`. Retain all four source branches.
+`codex/reconcile-upstream-6e7b83-ci2`, `codex/reconcile-upstream-6e7b83-ci3`, and
+`codex/reconcile-upstream-6e7b83-ci4`; the linear review branch is
+`codex/update-fork-6e7b83`. Retain all five source branches after publication.
 The current provenance record identifies the exact accepted source tree.
 Runtime deployment is a separate step.
 
@@ -237,6 +238,71 @@ security-boundary outcome or model execution was established. This records the
 remaining behavior and policy scope; it does not claim that source finding fixed.
 
 ## Remaining release acceptance
+
+The full dispatch on review revision `7ed0775` completed every Linux partition
+within the unchanged job limits. PM Bundle passed all four native targets;
+macOS Python, the ten JS workspace checks, Nix, SDK, documentation and Rust
+checks also passed. The complete dispatch exposed additional fixture and
+end-to-end failures that the earlier partial run had not reached.
+
+The next source corrects premature shutdown completion and stops the durable
+action worker before database closure, preserving an open database when that
+worker remains live. Empty child-constructor errors now remain explicit
+failures. Real browser evidence also distinguishes old-document socket records
+left by reload from an actual second live connection; the recorder retires
+only entries from the successfully reloaded document. Assertions against
+genuine duplicate connections remain intact.
+
+Failed durable final responses retain the existing bounded delivery retry
+policy, including a visible marker when an acknowledgement may have been
+lost. Recovery carries the receiving adapter identity, exact database and
+attempt compare-and-swap through scheduling, reconnect and restart. Permanent
+dead-target rejection is recorded as abandonment rather than successful
+delivery, allowing the ordered finalization barrier to finish truthfully.
+Explicit recovery opens an existing database without creating a removed
+profile's store. Transport errors retain only safe retry classification and
+opaque digests in durable state.
+
+The remaining eleven-case Windows Python handoff portfolio is partitioned
+without changing its cases, programs, assertions or deadlines. Test-only
+process birth observation uses the native limited-rights process-time API
+instead of a slow WMI query. Native acceptance on the successor is still
+required. Fixed-credential mocks explicitly declare no credential pool;
+genuine credential leases and their fail-closed ownership checks remain.
+
+The Windows install/update journey now limits cold PM installation/build
+pipelines to two concurrent file workers. Six independent cold stores on the
+standard runner exhausted the unchanged 1,500-second installation deadline
+before the update assertions ran. The ten journey files, native markers,
+strict-mode input, zero retries, 3,600-second file limit and 75-minute job limit
+are retained. This capacity adjustment still requires native timing acceptance.
+
+Historical upgrade rehearsal validates the exact import before checking out
+its immutable ancestry-preserving source. The authenticated pre-PM release
+`v2026.9.24` at `f97608f178d1ffeca59860195ab7da295f7c8e5f` supplies the
+unchanged historical manifest and lock. That release fast-forwards to the
+source, while live fork `2c31abf2` fast-forwards to the linear review; the
+official release cannot fast-forward directly to that linear review.
+Ordinary later fork commits retain their own checkout and normal comparison
+instead of being replaced by an older import. Their historical-release
+baseline remains a separate validation requirement; this rehearsal does not
+claim to solve all later linear-fork upgrade scenarios.
+
+Interrupted-update coverage respects the retained lifecycle lease policy:
+ordinary retry fails closed on orphaned ownership, then explicit operator
+reconciliation of the exact SHA, token and purpose precedes retry. Automatic
+orphan removal is not introduced. Required Kanban policy skill assets are a
+separate dependency: neither required name is present in the original pinned
+skills, operations or extensions sources. Both authentic skill trees were
+located in `batumilove/hermes-skills` at
+`8474d463f4fcd2608f5deeb0ad0a26f731ceb36c`, now pinned by the skills component.
+Provisioning and full worker/handoff acceptance must use verified source
+assets; the missing-skill gate is not disabled to obtain a passing result.
+The external validator's full self-test has a Python 3.14 diagnostic mismatch
+for a deeply nested malformed list: it still blocks the input but reports a
+different error and exit code. Authentic source bytes are retained. Fixture
+acceptance checks the real valid/invalid manifest CLI behavior separately;
+it does not claim the external self-test passed.
 
 The local digest-pinned OSV query was blocked by this environment's network
 policy. The repaired predecessor's hosted scan reported no issues across all

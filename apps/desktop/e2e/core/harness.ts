@@ -326,6 +326,16 @@ export function recordWebSockets(page: Page): WsRecorder {
   return rec
 }
 
+/** Chromium can omit close events for sockets of a document destroyed by reload. */
+export async function reloadRecordedPage(page: Page, recorder: WsRecorder): Promise<void> {
+  const previousDocumentSockets = [...recorder.sockets]
+  await page.reload()
+
+  for (const socket of previousDocumentSockets) {
+    socket.closed = true
+  }
+}
+
 // ─── Network fault injection ────────────────────────────────────────────
 
 export interface TcpProxy {

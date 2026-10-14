@@ -13,11 +13,11 @@ boundary, observed from outside through the files PM itself writes:
 
 (The gateway relaunch hand-off after an update is lane ``handoff``'s suite.)
 
-The user-visible contract after the kill, as a user retries later (no lazy-install override, so
-the real launch path runs): the very next ``hermes`` works and reaches the provider; ``hermes
-update`` exits 0 at the target commit and leaves no pending marker; the launch after that does
-not re-run the completion again (a marker that loops forever is #123933's failure), and a
-half-built generation is never the one selected.
+The fork's lifecycle lease keeps the default retry blocked after a kill until an operator
+inspects and reconciles the exact orphan. After that explicit recovery, the real launch path
+works and reaches the provider; ``hermes update`` exits 0 at the target commit and leaves no
+pending marker; the next launch does not re-run completion (a marker that loops forever is
+#123933's failure), and a half-built generation is never the one selected.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ import pytest
 
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
+from tests.e2e.core.upgrade import _lifecycle_fixture as L
 from tests.e2e.core.upgrade.pm import _pm as P
 from tests.e2e.core.upgrade.test_upgrade_path import _KILLED_RUN_PREFIX, _RETRY_PREFIX
 from tests.fakes.fake_llm_provider import FakeLLMServer
@@ -63,6 +64,16 @@ def home(tmp_path_factory, provider):
 def _retry(sb: I.Sandbox, *args: str, timeout: float = P.UPDATE_TIMEOUT) -> subprocess.CompletedProcess:
     """A later retry by the user: a fresh process whose pid is never the dead updater's."""
     return P.run_env(sb, [*_RETRY_PREFIX, sb.hermes, *args], P.lazy_env(sb), timeout=timeout)
+
+
+
+
+def _recover_orphaned_update(sb: I.Sandbox) -> None:
+    selected = P.selected_generation(sb)
+    blocked = L.recover_exact_orphan(
+        sb, L.inspect(sb), lambda: _retry(sb, "update", "--yes", "--branch", "main"),
+    )
+    assert P.selected_generation(sb) == selected and P.pending_marker(sb).exists(), P.diagnostics(sb, blocked)
 
 
 def _turn(sb: I.Sandbox, provider: FakeLLMServer, marker: str) -> subprocess.CompletedProcess:
@@ -118,7 +129,9 @@ def test_sigkill_mid_dependency_update_recovers(home, provider, phase):
     else:
         assert killed["at_kill"] != killed["gen0"], f"harness: killed before publish: {killed}"
 
-    # The very next launch works and reaches the provider.
+    # An orphan requires an operator's exact confirmation, never a dead-PID guess.
+    _recover_orphaned_update(sb)
+    # The next ordinary launch after explicit recovery works and reaches the provider.
     first = _turn(sb, provider, f"first turn after a kill at {phase}")
     # The user re-runs the update: it converges at the target and owes nothing.
     again = _retry(sb, "update", "--yes", "--branch", "main")

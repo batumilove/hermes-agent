@@ -461,7 +461,7 @@ def _build_children(
             logger.warning("Delegated child construction failed", exc_info=True)
             for _, _, built_child in children:
                 _retire_child_without_owner(built_child, parent_agent)
-            return [], str(exc)
+            return [], str(exc) or f"Child construction failed ({type(exc).__name__})"
         if _task_schema is not None:
             with _quiet("Could not attach output schema to child %d", i):
                 child._delegate_output_schema = _task_schema

@@ -10,6 +10,8 @@ import time
 
 import pytest
 
+from tests.scripts.desktop_update.windows_process_support import process_creation_time as _creation_time
+
 
 ROOT = Path(__file__).resolve().parent.parent.parent.parent
 SCRIPT = ROOT / 'scripts/desktop-update/windows.ps1'
@@ -41,10 +43,6 @@ def _ps(command: str, timeout: int = 60) -> str:
                           capture_output=True, text=True, timeout=timeout, check=True).stdout.strip()
 
 
-def _creation_time(pid: int) -> str:
-    out = _ps(f"$c = (Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CreationDate; "
-              "[DateTimeOffset]::new($c.ToUniversalTime()).ToUnixTimeMilliseconds().ToString()")
-    return f'{int(out) / 1000:.3f}'
 
 
 def _alive(pid: int) -> bool:

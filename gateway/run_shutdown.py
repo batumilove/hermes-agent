@@ -2021,7 +2021,6 @@ class GatewayShutdownMixin(GatewayShutdownBudgetMixin, GatewaySessionEndMixin):
         for _attr in ("_active_session_leases", "_busy_ack_ts"):  # absent on bare shutdown-path doubles
             if hasattr(self, _attr):
                 getattr(self, _attr).clear()
-        self._shutdown_event.set()
         # Global catch-all subprocess kill (safe to repeat) for the graceful path and late respawns.
         # Off-loop: same blocking sweep as the post-interrupt kill (#116327).
         await GatewayRunner._stop_kill_tool_subprocesses_off_loop("final-cleanup")
@@ -2040,85 +2039,6 @@ class GatewayShutdownMixin(GatewayShutdownBudgetMixin, GatewaySessionEndMixin):
             _reap_aux_clients, timeout=min(1.0, self._shutdown_remaining(ctx.cleanup_deadline)),
             context="shutdown cached clients",
         )
-
-    def _stop_quiesce_and_close_session_dbs(self, timeout: float, ctx: GatewayShutdownMixin._StopContext) -> None:
-        """Quiesce the executor, then close SessionDB handles only if no worker is still live."""
-        from gateway.run import GatewayRunner, _EXECUTOR_QUIESCE_TIMEOUT
-        # Quiesce the thread pool BEFORE closing session DBs: a late executor write after
-        # SessionDB.close() checkpointed the WAL reopens the handle and splits the WAL generation
-        # (close-time corruption). Clamped to the remaining watchdog leash minus 1s for the close.
-        # This used to run *after* the close block below, which left two holes: (a) `_executor_closing` was
-        # still False during the close, so any coroutine reaching `_run_in_executor_with_context` minted a
-        # brand-new pool and ran more blocking DB work against handles that had just been closed; (b)
-        # cancelling `self._background_tasks` above does not stop a `run_in_executor` future that already
-        # started — the task dies, the worker thread keeps writing. Either way a write lands after
-        # `SessionDB.close()`, which has already checkpointed the WAL and let SQLite unlink the sidecar. The
-        # late write silently reopens the handle (#94736) and mints a fresh WAL generation behind that
-        # checkpoint, so teardown checkpoints the same file a second time from a connection the shutdown log
-        # never accounts for — the close-time page-write damage in #101093 and the split WAL generation in
-        # #101064. The wait is bounded and clamped to what is left of the shutdown watchdog leash (minus a
-        # second for the close itself), so a stuck worker can never cost us the post-close cleanup window
-        # (#82161).
-        _exec_quiesce_budget = max(
-            0.0, min(_EXECUTOR_QUIESCE_TIMEOUT, resolve_shutdown_watchdog_delay(timeout) - ctx.elapsed() - 1.0),
-        )
-        _exec_live = GatewayRunner._shutdown_executor(self, drain_timeout=_exec_quiesce_budget)
-        if _exec_live:
-            # A live worker may be mid-write (the #101093 corruption sequence): skip the close and let
-            # SQLite recover from its WAL on next open (at worst a transient "database is locked").
-            logger.warning(
-                "Shutdown phase: %d executor worker(s) still running after a %.2fs quiesce — skipping the "
-                "SessionDB close/checkpoint to avoid racing a live write (#101093); handles are left "
-                "open for SQLite to recover on next open", _exec_live, _exec_quiesce_budget,
-            )
-            return
-        logger.info("Shutdown phase: executor quiesced at +%.2fs", ctx.elapsed())
-        # Cron jobs (scheduler pool), API-server runs and deferred hygiene workers (both on the loop's
-        # default executor) never touch self._executor, so the join above cannot see them. A writer that
-        # outlived the drain is mid-write for the same #101093 reasons; the drain already spent its
-        # budget, so no second wait — leave the handles open (#102198). The API count is the snapshot
-        # taken before the adapters were released; a run whose handler task was cancelled at disconnect
-        # has already left it, so that term under-counts — the live worker-scoped count below covers
-        # the cancelled-handler case (#116535).
-        _cron_live = self._active_cron_job_count()
-        _api_live = ctx.api_live
-        _api_worker_live = self._active_api_worker_count()
-        _deferred_live = ctx.deferred_count()
-        if _cron_live or _api_live or _api_worker_live or _deferred_live:
-            logger.warning(
-                "Shutdown phase: %d cron job(s) / %d API-server run(s) / %d API-server worker(s) / "
-                "%d deferred worker(s) still running after the executor quiesce — skipping the SessionDB "
-                "close/checkpoint, leaving state.db open for the live writer (#102198, #116535)",
-                _cron_live, _api_live, _api_worker_live, _deferred_live,
-            )
-            return
-        _step = GatewayShutdownMixin._quiet_step
-        # Close SQLite session DBs so --replace's new gateway does not hit 'database is locked'.
-        # ``_session_db`` is an AsyncSessionDB facade — unwrap; ``session_store`` holds ``_db``.
-        _self_db = getattr(self, "_session_db", None)
-        _self_db = getattr(_self_db, "_db", _self_db)
-        store = getattr(self, "session_store", None)
-        for _db in (_self_db, getattr(store, "_db", None)):
-            if _db is not None and hasattr(_db, "close"):
-                _step("SessionDB close error", _db.close)
-        # Multiplexed session_store caches one SessionDB per profile; sweep the secondary WAL locks too.
-        _sweep = getattr(store, "close_all_db_handles", None)
-        if _sweep is not None:
-            _step("SessionDB handle sweep error", _sweep)
-        # Same sweep for the runner's own per-profile session_search handles.
-        _step("Runner SessionDB handle sweep error", lambda: GatewayRunner.close_all_session_db_handles(self))
-
-        def _close_shared() -> None:
-            # Shared SessionDB instances still held by the process-wide registry (tools, cron, mirror).
-            # This is the safety net that guarantees no WAL write lock survives past gateway shutdown
-            # (#90837).
-            from hermes_state_registry import close_all
-            closed = close_all()
-            if closed:
-                logger.debug("Closed %d shared SessionDB instance(s) at shutdown", closed)
-
-        _step("Shared SessionDB close error", _close_shared)
-        logger.info("Shutdown phase: SessionDB close done at +%.2fs", ctx.elapsed())
 
     async def _stop_persist_exit_state(self, ctx: GatewayShutdownMixin._StopContext) -> None:
         """PID/lock release, clean-shutdown marker, restart markers, terminal runtime status."""

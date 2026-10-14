@@ -27,6 +27,7 @@ def open_db(
     check_same_thread: bool = True,
     wal_lock_retries: int = 1,
     initialize: Callable[[sqlite3.Connection], None] | None = None,
+    create: bool = True,
 ) -> sqlite3.Connection:
     """Open ``path`` (parent created), apply the PRAGMA set, run ``initialize``; closed if anything raises.
 
@@ -36,13 +37,18 @@ def open_db(
     fallback and the never-live-downgrade invariant; a raw ``PRAGMA journal_mode=WAL`` bypasses all
     three. Only the transient ``database is locked`` from that pragma is retried (``wal_lock_retries``):
     a first opener initializing a shared DB can make it ignore the busy timeout, notably on Windows.
+    ``create=False`` opens an existing database read-write through SQLite's
+    ``mode=rw`` and never creates a missing database or parent directory.
     """
     from hermes_state_wal import apply_wal_with_fallback
 
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if create:
+        path.parent.mkdir(parents=True, exist_ok=True)
     # Resolved at call time: fd-leak tests patch ``sqlite3.connect`` through the caller's module.
-    conn = sqlite3.connect(path, timeout=busy_timeout_ms / 1000, check_same_thread=check_same_thread)
+    location = path if create else path.absolute().as_uri() + "?mode=rw"
+    conn = sqlite3.connect(location, timeout=busy_timeout_ms / 1000, check_same_thread=check_same_thread,
+                           **({"uri": True} if not create else {}))
     try:
         conn.row_factory = row_factory
         conn.execute(f"PRAGMA busy_timeout={int(busy_timeout_ms)}")

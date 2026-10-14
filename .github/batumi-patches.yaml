@@ -7,9 +7,9 @@ upstream:
 patches:
 - id: feishu-webhook-authentication-quota
   kind: extension
-  rationale: Authenticate Feishu callbacks before charging delivery quota, require a verified token
-    for plaintext URL challenges, and bound callback parsing and anomaly state for the published
-    GHSA-pmqc-57g8-c22c finding. Preserve valid signed events and authenticated challenge delivery.
+  rationale: Authenticate Feishu callbacks before charging delivery quota, require a verified token for
+    plaintext URL challenges, and bound callback parsing and anomaly state for the published GHSA-pmqc-57g8-c22c
+    finding. Preserve valid signed events and authenticated challenge delivery.
   paths:
   - plugins/platforms/feishu/adapter.py
   - plugins/platforms/feishu/webhook_security.py
@@ -120,6 +120,8 @@ patches:
   - website/tests/braces-security.test.*
   - apps/desktop/electron/git-review-ops.ts
   - apps/desktop/electron/git-review-ops.test.ts
+  - tests/e2e/core/upgrade/network/test_mirrors.py
+  - tests/pm/test_update_request_reuse.py
   tests:
   - scripts/run_tests.sh tests/test_npm_security_policy.py tests/tools/test_lazy_deps.py
   - npm ci --ignore-scripts && npm audit --audit-level=high
@@ -128,6 +130,7 @@ patches:
     --audit-level=high
   - nix build .#node-gyp
   - nix build .#checks.x86_64-linux.npm-offline-overrides
+  - scripts/run_tests.sh tests/e2e/core/upgrade/network/test_mirrors.py tests/pm/test_update_request_reuse.py
   retirement: Remove when the recorded upstream baseline carries equivalent patched dependency floors,
     Electron pin parity, and production-only node-gyp Nix dependency closure with matching regression
     coverage.
@@ -152,8 +155,8 @@ patches:
   rationale: Run the heavy CI lanes on free standard GitHub-hosted runners instead of paid larger runners
     (ubuntu-latest-96-core/32-core, windows-latest-32-core) which the fork has no allocation for; jobs
     queue forever otherwise. The lanes run slower on ubuntu-latest/windows-latest but complete at zero
-    cost on this public repository. Bound per-file concurrency to standard runner capacity while
-    retaining all test selectors and deadlines.
+    cost on this public repository. Bound per-file concurrency to standard runner capacity while retaining
+    all test selectors and deadlines.
   paths:
   - .github/workflows/ci.yaml
   - .github/workflows/docker.yml
@@ -191,9 +194,22 @@ patches:
   - tests/scripts/desktop_update/test_desktop_update_windows_desktop_exit.py
   - tests/scripts/desktop_update/test_desktop_update_windows_ui_profile.py
   - tests/scripts/desktop_update/test_desktop_update_windows_marker_custody.py
+  - apps/desktop/e2e/core/harness.ts
+  - apps/desktop/e2e/core/transcript-integrity.spec.ts
+  - scripts/run_tests.sh
+  - tests/e2e/core/upgrade/git/_git_world.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_python_handoff.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_python_idle_watchdog.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_python_launcher_probe.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_python_update_failures.py
+  - tests/scripts/desktop_update/windows_handoff_support.py
+  - tests/scripts/desktop_update/windows_process_support.py
+  - tests/scripts/desktop_update/windows_python_handoff_support.py
   tests:
   - python3 -c "import pathlib, yaml; [yaml.safe_load(p.read_text()) for p in pathlib.Path('.github/workflows').glob('*.yml')]"
   - python3 scripts/check_fork_delta.py
+  - scripts/run_tests.sh tests/scripts/desktop_update/test_desktop_update_windows_python_handoff.py tests/scripts/desktop_update/test_desktop_update_windows_python_idle_watchdog.py
+    tests/scripts/desktop_update/test_desktop_update_windows_python_launcher_probe.py tests/scripts/desktop_update/test_desktop_update_windows_python_update_failures.py
   retirement: Remove when the fork account has a larger-runner allocation and the upstream runner labels
     are restored.
 - id: install-e2e-sandbox-node-ca
@@ -271,9 +287,13 @@ patches:
   - ruff.toml
   - .github/upstream-reconciliation.md
   - tests/ci/test_update_ci_routing.py
+  - scripts/ci/prepare_upgrade_source.py
+  - tests/scripts/test_upgrade_source_checkout.py
+  - tests/scripts/test_code_health_cli.py
   tests:
   - scripts/run_tests.sh tests/scripts/test_check_fork_delta.py tests/scripts/test_ci_workflow.py tests/scripts/test_install_batumi_components.py
     tests/scripts/test_upstream_sync_workflow.py
+  - scripts/run_tests.sh tests/scripts/test_upgrade_source_checkout.py tests/scripts/test_code_health_cli.py
   retirement: Retain while batumi/live carries any fork-only patch.
 - id: import-restore-fidelity
   kind: core
@@ -327,6 +347,11 @@ patches:
   - tools/terminal_tool_guards.py
   - hermes_cli/gateway_commands.py
   - hermes_cli/update_cmd_validation.py
+  - tests/e2e/core/upgrade/pm/test_interrupted_update.py
+  - tests/e2e/core/upgrade/_lifecycle_fixture.py
+  - tests/e2e/core/upgrade/git/test_hostile_pause.py
+  - tests/e2e/core/upgrade/git/test_hostile_post.py
+  - tests/e2e/core/upgrade/test_lifecycle_fixture.py
   tests:
   - scripts/run_tests.sh tests/gateway/test_lifecycle_lease.py tests/gateway/test_lifecycle_lease_operator.py
     tests/hermes_cli/test_bounded_restart_controller.py tests/hermes_cli/test_cmd_update.py tests/hermes_cli/test_gateway_restart_lifecycle_lease.py
@@ -334,6 +359,9 @@ patches:
     tests/hermes_cli/test_lifecycle_lease_cli.py tests/hermes_cli/test_update_lifecycle_lease.py tests/tools/test_terminal_self_repo_guard.py
   - python -m py_compile gateway/lifecycle_lease.py hermes_cli/lifecycle_coordination.py hermes_cli/lifecycle_lease_cmd.py
     hermes_cli/subcommands/lifecycle_lease.py
+  - scripts/run_tests.sh tests/e2e/core/upgrade/pm/test_interrupted_update.py
+  - scripts/run_tests.sh tests/e2e/core/upgrade/git/test_hostile_pause.py tests/e2e/core/upgrade/git/test_hostile_post.py
+  - scripts/run_tests.sh tests/e2e/core/upgrade/test_lifecycle_fixture.py
   retirement: Remove when upstream serializes every equivalent lifecycle mutation caller with a durable
     profile-wide lease, exact provenance binding, crash-orphan exclusion, tamper-resistant release, explicit
     reconciliation, and matching cross-controller tests.
@@ -385,8 +413,10 @@ patches:
   - tests/agent/test_codex_usage_attribution.py
   - website/docs/user-guide/configuration.md
   - agent/codex_headers.py
+  - tests/plugins/image_gen/test_openai_codex_provider.py
   tests:
   - scripts/run_tests.sh tests/agent/test_codex_attribution_policy.py tests/agent/test_codex_cloudflare_headers.py
+  - scripts/run_tests.sh tests/plugins/image_gen/test_openai_codex_provider.py
   retirement: Remove only after a generic user-facing opt-in gate and setup/tooling controls exist for
     outbound attribution.
 - id: upstream-sync-whitespace-cleanup
@@ -557,6 +587,9 @@ patches:
   - tests/tools/test_delegate_ownership_setup.py
   - tests/tools/delegate_fixtures.py
   - tests/hermes_cli/test_cli_interrupt_subagent.py
+  - tests/tools/test_subagent_steer.py
+  - tests/tools/test_delegate_cost_footer.py
+  - tests/tools/test_delegate_fallback_matrix.py
   tests:
   - scripts/run_tests.sh tests/agent/test_credential_pool_lease_refresh_reselect.py tests/agent/test_subagent_lifecycle.py
     tests/tools/test_delegate_subagent_timeout_diagnostic.py tests/tools/test_delegate.py tests/tools/test_zombie_process_cleanup.py
@@ -564,6 +597,7 @@ patches:
     tests/agent/test_background_review.py
   - python -m py_compile agent/subagent_lifecycle.py run_agent.py tools/delegate_tool.py tests/agent/test_subagent_lifecycle.py
     tests/tools/test_delegate.py tests/tools/test_delegate_subagent_timeout_diagnostic.py tests/tools/test_zombie_process_cleanup.py
+  - scripts/run_tests.sh tests/tools/test_subagent_steer.py tests/tools/test_delegate_cost_footer.py tests/tools/test_delegate_fallback_matrix.py
   retirement: Remove when upstream provides equivalent pre-registration, full-child-lifecycle, public-launch,
     batch-failure, parent-shutdown, cache-eviction, and close-exactly-once ownership contracts.
 - id: test-dns-isolation
@@ -594,11 +628,13 @@ patches:
   - tests/test_log_isolation.py
   - tests/gateway/test_multiplex_busy_input_mode.py
   - tests/gateway/test_multiplex_primary_token_scope.py
+  - tests/hermes_cli/test_update_pause_unmapped_home_proof.py
   tests:
   - scripts/run_tests.sh tests/test_log_isolation.py
   - scripts/run_tests.sh tests/hermes_state/test_default_db_profile_fixture.py
   - scripts/run_tests.sh tests/gateway/test_multiplex_busy_input_mode.py
   - scripts/run_tests.sh tests/cron
+  - scripts/run_tests.sh tests/hermes_cli/test_update_pause_unmapped_home_proof.py
   retirement: Remove when upstream always isolates inherited HERMES_HOME before test collection with equivalent
     cron-ledger regression coverage.
 - id: gateway-session-request-resource-lifecycle
@@ -941,7 +977,8 @@ patches:
   kind: core
   rationale: Require current-turn execution evidence before preserving fresh external side-effect claims
     in final responses, compute trusted verdicts before framework decoration, and preserve their tool
-    identity across restart, resume, and historical fork database recovery while leaving descriptive parity headings unchanged.
+    identity across restart, resume, and historical fork database recovery while leaving descriptive parity
+    headings unchanged.
   paths:
   - agent/side_effect_evidence.py
   - agent/tool_executor.py
@@ -963,12 +1000,14 @@ patches:
   - tests/hermes_cli/test_session_schema_history.py
   - hermes_cli/session_lost_and_found.py
   - tests/hermes_cli/test_session_recovery_fork_layouts.py
+  - tests/hermes_state/test_session_id_recognition_recovery.py
   tests:
   - scripts/run_tests.sh tests/agent/test_side_effect_evidence_reconciliation.py tests/agent/transports/test_chat_completions.py
     tests/run_agent/test_tool_executor_contextvar_propagation.py tests/agent/test_sequential_tool_timeout.py
     tests/agent/test_tool_call_incremental_persistence.py tests/agent/test_tool_call_guardrail_runtime.py
     tests/agent/test_tool_batch_segmentation.py tests/hermes_state/test_hermes_state.py
   - scripts/run_tests.sh tests/hermes_cli/test_session_schema_history.py tests/hermes_cli/test_session_recovery_fork_layouts.py
+  - scripts/run_tests.sh tests/hermes_state/test_session_id_recognition_recovery.py
   retirement: Remove when upstream provides equivalent fail-closed current-turn side-effect evidence validation,
     trusted pre-decoration verdict persistence, and resume-safe tool identity.
 - id: provider-fallback-lifecycle
@@ -1130,12 +1169,17 @@ patches:
   - tests/gateway/test_session_race_guard.py
   - tests/gateway/test_cleanup_off_loop.py
   - tests/gateway/test_hygiene_deferred_work_drain.py
+  - gateway/delivery_failure.py
+  - gateway/run_delivery_recovery.py
+  - tests/gateway/test_durable_delivery_recovery.py
+  - hermes_cli/sqlite_util.py
   tests:
   - scripts/run_tests.sh tests/gateway/test_delivery_ledger.py tests/gateway/test_delivery_ledger_fd_leak.py
     tests/gateway/test_delivery_ledger_producer.py tests/gateway/test_gateway_shutdown.py tests/gateway/test_restart_drain.py
     tests/gateway/test_shutdown_aggregate_budget_contract.py
   - scripts/run_tests.sh tests/gateway/test_session_hygiene.py tests/gateway/test_telegram_send_path_degraded_retry.py
     tests/gateway/test_telegram_text_batching.py tests/test_session_db_recall_reader.py
+  - scripts/run_tests.sh tests/gateway/test_durable_delivery_recovery.py
   retirement: Remove individual paths when upstream passes their contention, cancellation, degraded-delivery,
     and aggregate-shutdown contracts.
 - id: telegram-general-pool-timeout-recovery
@@ -1341,6 +1385,7 @@ patches:
   - tests/gateway/test_shutdown_kill_off_loop.py
   - tests/gateway/test_shutdown_flush_recovery.py
   - website/docs/developer-guide/gateway-monitoring.md
+  - tests/gateway/test_shutdown_completion_barrier.py
   tests:
   - scripts/run_tests.sh tests/gateway/test_drain_attribution.py tests/gateway/test_drain_attribution_lifecycle.py
     tests/gateway/test_gateway_shutdown.py tests/gateway/test_shutdown_forensics.py tests/gateway/test_shutdown_watchdog.py
@@ -1349,6 +1394,7 @@ patches:
   - scripts/run_tests.sh tests/tools/test_cronjob_run_background.py tests/tools/test_cronjob_run_immediate.py
     tests/cron/test_cron_run_stale_claim_reap_86721.py
   - scripts/run_tests.sh tests/gateway/test_shutdown_residual_lifecycle.py
+  - scripts/run_tests.sh tests/gateway/test_shutdown_completion_barrier.py
   retirement: Remove when upstream preserves equivalent generation-scoped shutdown work identities, bounded
     evidence writes, watchdog-safe snapshots, and false-clean-exit prevention.
 - id: sessiondb-p0-write-admission-handle-leaks
@@ -1529,6 +1575,11 @@ patches:
   - tests/conformance/persistence/test_cell5_delivery_outbox_exactly_once.py
   - tests/hermes_state/test_purge_profile_state.py
   - tests/hermes_state/test_rekey_profile_state.py
+  - tests/gateway/test_shutdown_completion_barrier.py
+  - gateway/delivery_failure.py
+  - gateway/run_delivery_recovery.py
+  - tests/gateway/test_durable_delivery_recovery.py
+  - hermes_cli/sqlite_util.py
   tests:
   - scripts/run_tests.sh tests/gateway/test_post_response_actions.py tests/gateway/test_post_response_delivery.py
   - scripts/run_tests.sh tests/gateway/test_42039_duplicate_user_message.py tests/gateway/test_first_turn_session_meta_rebaseline.py
@@ -1538,6 +1589,8 @@ patches:
     tests/hermes_state/test_session_db_write_admission.py tests/state/test_session_git_metadata_generation.py
   - scripts/run_tests.sh tests/gateway/test_signal.py tests/gateway/test_send_multiple_images.py tests/gateway/test_media_extraction.py
     tests/gateway/test_media_tag_cleanup.py tests/gateway/test_multiplex_session_db_profile_scope.py
+  - scripts/run_tests.sh tests/gateway/test_shutdown_completion_barrier.py
+  - scripts/run_tests.sh tests/gateway/test_durable_delivery_recovery.py
   retirement: Remove when upstream contains the equivalent SessionDB-owned durable post-response schema,
     transaction boundary, bounded worker handoff, and behavioral regression coverage.
 - id: kanban-worker-pid-race-guard
@@ -1615,9 +1668,19 @@ patches:
   - hermes_cli/kanban_db_dispatch.py
   - tests/hermes_cli/test_kanban_dispatch_races.py
   - hermes_cli/kanban_worker_policy.py
+  - .github/batumi-components.lock.yaml
+  - tests/fixtures/kanban_policy_skills/SOURCE.json
+  - tests/fixtures/kanban_policy_skills/skills.zip
+  - tests/e2e/core/_policy_skills.py
+  - tests/fixtures/kanban_policy_skills/README.md
+  - tests/e2e/core/kanban/_helpers.py
+  - tests/e2e/core/upgrade/handoff/_handoff.py
+  - tests/e2e/core/upgrade/pm/_pm.py
+  - tests/e2e/core/test_policy_skill_fixtures.py
   tests:
   - scripts/run_tests.sh tests/hermes_cli/test_cli_preloaded_skills.py tests/hermes_cli/test_kanban_core_functionality.py::test_default_spawn_force_loads_worker_policy_skills
     tests/hermes_cli/test_kanban_worker_spawn_toolsets.py tests/hermes_cli/test_kanban_worker_session_source.py
+  - scripts/run_tests.sh tests/e2e/core/test_policy_skill_fixtures.py
   retirement: Remove when upstream force-loads equivalent lifecycle and restart-window policy for every
     dispatcher-owned Kanban worker, preserving and de-duplicating per-task skills.
 - id: ci-load-flake-tolerant-timeouts

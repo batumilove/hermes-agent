@@ -57,6 +57,7 @@ import pytest
 import hermes_yaml as yaml
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
+from tests.e2e.core.upgrade import _lifecycle_fixture as L
 from tests.e2e.core.upgrade.git import _git_world as G
 from tests.e2e.core.upgrade.handoff._nshost import NamespaceHost
 
@@ -289,7 +290,7 @@ def _namespace(w: G.World) -> Iterator[NamespaceHost]:
     try:
         yield host
     finally:
-        leaked = host.close()
+        leaked = L.close_namespace(w.sb, host, lambda: w.update("--no-gateway-restart"))
         assert not leaked, f"processes outlived the sandbox: {leaked}"
 
 
@@ -486,6 +487,7 @@ def test_sigkill_during_post_commit_tail_leaves_a_running_receipt(w):
                 H.wait_for(lambda: re.search(r"web UI|slow web build", _read(_update_log(w))[log0:]),
                            timeout=30, interval=0.5, what="update.log to show the web build")
             log_shows_build = bool(re.search(r"web UI|slow web build", _read(_update_log(w))[log0:]))
+            L.remember_update_lease(w.sb, host)
             killed = _kill_born_after(host, before)
             rec = w.receipt()
             facts = _facts(w, killed=killed, update_spawn_pid=upd, log_shows_web_build=log_shows_build,
@@ -629,6 +631,7 @@ def test_ctrl_c_after_commit_reports_the_new_code_not_a_failed_update(w):
                 return False
 
             H.wait_for(_slow_build_running, timeout=1200, interval=1.0, what="the slow web build to start")
+            L.remember_update_lease(w.sb, host)
             interrupted = _foreground_group(host, upd)
             for pid in interrupted:
                 host.kill(pid, signal.SIGINT)

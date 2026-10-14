@@ -308,8 +308,9 @@ class GatewayStartupMixin(GatewayRecoveryMixin):
         return sendable
 
 
-    @staticmethod
-    async def _release_runtime_claim_quiet(obligation_id, log_fmt: str, error: str = "send_path_degraded") -> None:
+    async def _release_runtime_claim_quiet(
+        self, obligation_id, log_fmt: str, error: str = "send_path_degraded", *, db_path=None,
+    ) -> None:
         """Release an unsent runtime delivery-ledger claim; log-only on failure. ``error`` is what the row
         goes back to ``failed`` with: the claim's own pre-claim error when the caller knows it, so a
         flood-refused row keeps its ``flood_control:<seconds>`` and stays on the flood timer's list (the
@@ -317,15 +318,19 @@ class GatewayStartupMixin(GatewayRecoveryMixin):
         ``send_path_degraded``."""
         from gateway.delivery_ledger import release_runtime_claim
         try:
-            await run_sync_in_detached_daemon_thread(release_runtime_claim, obligation_id, error)
+            await self._run_delivery_ledger_sync(
+                release_runtime_claim, obligation_id, error,
+                **({"db_path": db_path} if db_path is not None else {}))
         except Exception:
             logger.debug(log_fmt, obligation_id, exc_info=True)
 
-    def _schedule_flood_redelivery(self, platform, *, profile: Optional[str] = None) -> None:
+    def _schedule_flood_redelivery(self, platform, *, profile: Optional[str] = None, db_path=None) -> None:
         """Wake one deadline-driven ledger worker per bot identity, never sleep in a send."""
         from gateway.delivery_ledger import flood_retry_delay, pending_retries
         target = platform if isinstance(platform, Platform) else Platform(str(platform))
         key = (target.value, profile or "default")
+        if db_path is not None:
+            key += (str(db_path),)
         pending = getattr(self, "_flood_redelivery_tasks", None)
         if pending is None:
             pending = self._flood_redelivery_tasks = {}
@@ -342,9 +347,10 @@ class GatewayStartupMixin(GatewayRecoveryMixin):
             try:
                 while getattr(self, "_running", False):
                     wake.clear()
-                    waiting = await run_sync_in_detached_daemon_thread(pending_retries)
+                    waiting = await self._run_delivery_ledger_sync(
+                        pending_retries, **({"db_path": db_path} if db_path is not None else {}))
                     deadlines = [r["not_before"] for r in waiting
-                                 if (r["platform"], r["profile"]) == key]
+                                 if (r["platform"], r["profile"]) == key[:2]]
                     if not deadlines:
                         if wake.is_set():
                             continue
@@ -356,38 +362,45 @@ class GatewayStartupMixin(GatewayRecoveryMixin):
                     except TimeoutError:
                         pass
                     if getattr(self, "_running", False):
-                        await self._redeliver_failed_obligations_for_platform(target, profile=profile)
+                        await self._redeliver_failed_obligations_for_platform(
+                            target, profile=profile, **({"db_path": db_path} if db_path is not None else {}))
             finally:
                 pending.pop(key, None)
                 wakes.pop(key, None)
 
-        task = asyncio.create_task(_redeliver_after_wait(), name="flood-redelivery:{}:{}".format(*key))
+        task = asyncio.create_task(_redeliver_after_wait(), name="flood-redelivery:{}:{}".format(*key[:2]))
         pending[key] = task
         # The gateway's ordinary shutdown drain must cancel sleeping timers too.
         background = getattr(self, "_background_tasks", None)
         if background is not None:
             self._track_task_in(background, task)
 
-    async def _arm_flood_timers_for_waiting_rows(self) -> None:
+    async def _arm_flood_timers_for_waiting_rows(self, *, db_path=None) -> None:
         """Recover adopted, newly refused/rejected and unsent released rows without blocking the loop."""
         from gateway.delivery_ledger import pending_retries
-        for row in await run_sync_in_detached_daemon_thread(pending_retries):
-            self._schedule_flood_redelivery(row["platform"], profile=row["profile"])
+        for row in await self._run_delivery_ledger_sync(
+                pending_retries, **({"db_path": db_path} if db_path is not None else {})):
+            self._schedule_flood_redelivery(
+                row["platform"], profile=row["profile"],
+                **({"db_path": db_path} if db_path is not None else {}))
 
 
 
 
     async def _redeliver_failed_obligations_for_platform(
-        self, platform: Platform, *, profile: Optional[str] = None,
+        self, platform: Platform, *, profile: Optional[str] = None, db_path=None,
     ) -> int:
         """Replay one adapter identity's transient failures after reconnect: the startup sweep cannot
         claim live-owner rows, so ``send_path_degraded`` responses would otherwise stay failed until
         the next restart. Best-effort; reuses the startup redelivery contract."""
+        if db_path is None and callable(getattr(
+                getattr(self, "_post_response_controller", None), "_round_robin_db_paths", None)):
+            return await self._redeliver_registered_databases(platform, profile)
         try:
-            from gateway.delivery_ledger import ledger_enabled, sweep_failed_for_runtime
+            from gateway.delivery_ledger import ledger_enabled
             if not await run_sync_in_detached_daemon_thread(ledger_enabled):
                 return 0
-            claimed = await run_sync_in_detached_daemon_thread(sweep_failed_for_runtime, platform.value, profile=profile)
+            claimed = await self._claim_runtime_delivery_rows(platform, profile, db_path)
         except Exception:
             logger.debug(
                 "runtime delivery ledger sweep failed after %s reconnect", platform.value, exc_info=True,
@@ -403,6 +416,7 @@ class GatewayStartupMixin(GatewayRecoveryMixin):
                 await self._release_runtime_claim_quiet(
                     row["obligation_id"], "failed to release runtime delivery claim %s",
                     error=row.get("last_error") or "send_path_degraded",
+                    **({"db_path": row["db_path"]} if row.get("db_path") is not None else {}),
                 )
         return await self._redeliver_claimed_obligations(sendable)
 

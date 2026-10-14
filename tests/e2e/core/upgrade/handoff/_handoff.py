@@ -35,6 +35,7 @@ from pathlib import Path
 
 import hermes_yaml as yaml
 
+from tests.e2e.core._policy_skills import provision_policy_skills
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
 from tests.e2e.core.upgrade.handoff._nshost import NamespaceHost
@@ -244,6 +245,7 @@ def write_config(home: Path, provider_url: str, *, port: int | None = None, extr
         cfg[k] = {**cfg.get(k, {}), **v} if isinstance(v, dict) and isinstance(cfg.get(k), dict) else v
     (home / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
     (home / ".env").write_text(f"OPENAI_API_KEY={I.FAKE_KEY}\nAPI_SERVER_KEY={API_KEY}\n", encoding="utf-8")
+    provision_policy_skills(home)
 
 
 # -- talking to the gateway ---------------------------------------------------------------------

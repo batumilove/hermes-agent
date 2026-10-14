@@ -1,17 +1,21 @@
 version: 1
 contracts:
 - id: recovered-state-and-native-freshness
-  rationale: Preserve routed test isolation, explicit DB pins, historical fork recovery layouts,
-    ordered recovery obligations, native Relay freshness after compaction, and overlapping logical-call isolation.
+  rationale: Preserve routed test isolation, explicit DB pins, historical fork recovery layouts, ordered
+    recovery obligations, native Relay freshness after compaction, and overlapping logical-call isolation.
   tests:
   - tests/hermes_state/test_default_db_profile_fixture.py
   - tests/hermes_cli/test_session_recovery_post_response.py
   - tests/hermes_cli/test_session_recovery_fork_layouts.py
   - tests/agent/test_relay_compaction_atof.py
   - tests/agent/test_relay_scope_isolation.py
+  - tests/gateway/test_shutdown_completion_barrier.py
+  - tests/tools/test_delegate_fallback_matrix.py
+  - tests/tools/test_subagent_steer.py
+  - tests/hermes_state/test_session_id_recognition_recovery.py
 - id: verified-import-and-dependency-scan
-  rationale: Preserve exact import provenance, later PR gates, complete registry dependency scans,
-    and bounded JWT verification without breaking key rotation.
+  rationale: Preserve exact import provenance, later PR gates, complete registry dependency scans, and
+    bounded JWT verification without breaking key rotation.
   tests:
   - tests/scripts/test_fork_provenance_v2.py
   - tests/scripts/test_fork_check_base.py
@@ -19,6 +23,7 @@ contracts:
   - tests/scripts/test_osv_scan_inputs.py
   - tests/scripts/test_osv_scanner_workflow.py
   - tests/plugins/test_chronos_security_compatibility.py
+  - tests/scripts/test_upgrade_source_checkout.py
 - id: feishu-webhook-authentication
   rationale: Preserve authenticated callback delivery while keeping invalid requests out of delivery quota
     and bounding callback parsing and anomaly state.
@@ -52,6 +57,7 @@ contracts:
   - tests/tools/test_plugin_skills.py
   - tests/tools/test_environment_registry.py
   - tests/plugins/test_provider_telemetry_config.py
+  - tests/e2e/core/test_policy_skill_fixtures.py
 - id: honcho
   rationale: Preserve deterministic HTTP connection cleanup for memory operations.
   tests:
@@ -97,6 +103,7 @@ contracts:
   - tests/gateway/test_shutdown_residual_lifecycle.py
   - tests/gateway/test_control_socket_status_io.py
   - tests/gateway/test_drain_attribution_lifecycle.py
+  - tests/gateway/test_durable_delivery_recovery.py
 - id: provider-fallback
   rationale: Preserve classification and per-episode fallback transitions.
   tests:
@@ -118,6 +125,7 @@ contracts:
   - tests/scripts/install/test_install_diverged_rescue_ref.py
   - tests/docker/test_container_restart.py
   - tests/docker/test_gateway_run_supervised.py
+  - tests/e2e/core/upgrade/test_lifecycle_fixture.py
 - id: langfuse
   rationale: Preserve fail-open tracing and SDK selection after catalog migration.
   tests:

@@ -78,8 +78,9 @@ jobs:
           HERMES_E2E_MACHINE_ROOT: ${{ runner.temp }}\wm
           HERMES_E2E_PROFILES_ROOT: C:\Users
           HERMES_E2E_ARTIFACTS: ${{ runner.temp }}\win-update-e2e
-          # One journey per file, all in parallel (each is mostly network + subprocess wait).
-          HERMES_TEST_WORKERS: '6'
+          # Each file owns a cold PM install/build pipeline. Bound concurrency
+          # to the standard runner so installation finishes within its deadline.
+          HERMES_TEST_WORKERS: '2'
           # test_crash_cells.py runs its whole journey (install, gateway phase, six crash cells)
           # inside one file: ~2,100 s on a normal runner, past 2,400 s on a slow one.
           HERMES_TEST_FILE_TIMEOUT: '3600'

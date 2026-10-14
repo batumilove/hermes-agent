@@ -1,4 +1,4 @@
-"""Unchanged real-process helpers shared by the native Windows marker cases."""
+"""Real-process helpers shared by the native Windows marker cases."""
 
 from __future__ import annotations
 
@@ -9,6 +9,8 @@ import subprocess
 import sys
 import time
 import pytest
+
+from tests.scripts.desktop_update.windows_process_support import process_creation_time as _creation_time
 
 
 ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -42,22 +44,6 @@ def sleeper():
     proc.wait()
 
 
-def _creation_time(pid: int) -> str:
-    # Limited query rights (what Python/Rust readers use): works for every process.
-    out = subprocess.run(
-        [
-            "powershell",
-            "-NoProfile",
-            "-Command",
-            f"$c = (Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CreationDate; "
-            "[DateTimeOffset]::new($c.ToUniversalTime()).ToUnixTimeMilliseconds().ToString()",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=True,
-    ).stdout.strip()
-    return f"{int(out) / 1000:.3f}"
 
 
 def _protected_pid() -> int:

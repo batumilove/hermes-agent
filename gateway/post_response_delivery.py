@@ -31,6 +31,7 @@ class FinalDeliveryState:
     def __init__(self):
         self.handoff: Any = None
         self.outcomes: list[bool] = []
+        self.failures: list[str] = []
         self.suppressed = False
         self.generated_files: set[str] = set()
 
@@ -43,6 +44,9 @@ class FinalDeliveryState:
     def observe(self, result):
         if result is not None:
             self.outcomes.append(bool(getattr(result, "success", False)))
+            if not getattr(result, "success", False):
+                from gateway.delivery_failure import delivery_failure_token
+                self.failures.append(delivery_failure_token(result))
 
     async def prepare(self, event, text_content, extracted, tts_paths, requested_tts_path):
         """Commit before the first text, image, document or voice output."""
@@ -84,13 +88,19 @@ class FinalDeliveryState:
         if getattr(handoff, "obligation_id", None):
             delivered = bool(self.outcomes) and all(self.outcomes)
             try:
-                await run_sync_in_detached_daemon_thread(
+                error = self.failures[0] if self.failures else "final delivery incomplete"
+                settled = await run_sync_in_detached_daemon_thread(
                     handoff.runner._settle_final_response_handoff, handoff,
-                    delivered=delivered, error=None if delivered else "final delivery incomplete")
-                if delivered:
-                    controller = getattr(handoff.runner, "_post_response_controller", None)
-                    if controller is not None:
-                        controller.wake()
+                    delivered=delivered, error=None if delivered else error)
+                if settled is False:
+                    return  # A stale producer cannot schedule or finalize a newer claim.
+                controller = getattr(handoff.runner, "_post_response_controller", None)
+                if controller is not None:
+                    controller.wake()
+                if not delivered:
+                    schedule = getattr(handoff.runner, "_schedule_final_response_redelivery", None)
+                    if callable(schedule):
+                        await schedule(handoff, error)
             except Exception:  # health: allow BLE001 -- A late store callback failure leaves the receipt replayable and must not prevent adapter cleanup.
                 logger.warning("Final response settlement remains pending", exc_info=True)
         elif self.suppressed or not getattr(handoff, "receipt_attempted", False):
