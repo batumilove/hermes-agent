@@ -13,9 +13,10 @@ registration, interrupt propagation, and child detection.
 import threading
 import time
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from tools.interrupt import set_interrupt
+from tests.tools.delegate_fixtures import unpooled_mock_child
 
 
 class TestCLISubagentInterrupt(unittest.TestCase):
@@ -105,7 +106,7 @@ class TestCLISubagentInterrupt(unittest.TestCase):
         def run_delegate():
             try:
                 with patch('run_agent.AIAgent') as MockAgent:
-                    mock_instance = MagicMock()
+                    mock_instance = unpooled_mock_child()
                     mock_instance._interrupt_requested = False
                     mock_instance._interrupt_message = None
                     mock_instance._active_children = []

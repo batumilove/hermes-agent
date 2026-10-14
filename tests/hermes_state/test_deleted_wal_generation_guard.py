@@ -357,7 +357,7 @@ def _assert_retirement_preserves_recoverable_wal(tmp_path, *, fd_directory, also
     db = make_db(path, "gw-0", "seed")
     wal = require_wal(db)
     db._conn.execute("PRAGMA wal_autocheckpoint=0")
-    db._try_wal_checkpoint()
+    db._checkpoint_now()
     sentinel = "committed only in the retired WAL " + "x" * 3000
     db.append_message("gw-0", role="assistant", content=sentinel)
     original_stat = wal.stat()

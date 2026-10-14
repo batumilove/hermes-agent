@@ -637,6 +637,12 @@ Semantics: `all` expands to every platform with a configured home channel. Zero 
 
 ### Telegram cron topic (`TELEGRAM_CRON_THREAD_ID`)
 
+Set `cron.telegram_new_thread_per_output: true` in `config.yaml` to create a
+fresh named Telegram DM topic for each cron output. The default is `false`.
+This applies to private chats on adapters that support named DM topics;
+group/channel destinations keep their configured target. Each output topic
+is temporary and does not replace the job's saved continuation thread.
+
 When Telegram topic mode is enabled, the root DM is reserved as a system lobby — replies sent there are rebuffed with a lobby reminder and `reply_to_message_id` is dropped, so you cannot reply to a cron message that landed in the main chat.
 
 Point cron at a dedicated forum topic instead:

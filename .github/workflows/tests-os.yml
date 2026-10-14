@@ -19,9 +19,9 @@ name: OS-specific tests
 # platforms`` expression selects "this host's own marked tests" on either
 # lane — the helper narrows WHICH FILES get imported first.)
 #
-# Deliberately NOT sliced. The marked set is small (tens of tests, not
-# thousands), so one plain ``pytest`` process per OS is both faster and far
-# less machinery than the per-file parallel runner the Linux lane uses.
+# Native lanes use the canonical per-file runner. macOS and Windows x64
+# partition the marked file list deterministically within their 30m budget;
+# Windows ARM keeps its existing unsliced 60m lane for native wheel builds.
 # Each lane FAILS when it selects zero tests (pytest exit code 5) — a
 # renamed marker or bad selector can never report a green job that ran
 # nothing.
@@ -88,9 +88,24 @@ jobs:
             runner: macos-latest
             marker: macos
             slice: 2/2
-          - name: Windows-only tests
+          # Four slices preserve the full native set at two workers per runner;
+          # setup consumes part of the same 30m job budget on Windows.
+          - name: Windows-only tests (1/4)
             runner: windows-latest
             marker: windows
+            slice: 1/4
+          - name: Windows-only tests (2/4)
+            runner: windows-latest
+            marker: windows
+            slice: 2/4
+          - name: Windows-only tests (3/4)
+            runner: windows-latest
+            marker: windows
+            slice: 3/4
+          - name: Windows-only tests (4/4)
+            runner: windows-latest
+            marker: windows
+            slice: 4/4
           - name: Windows-only tests (arm64)
             runner: windows-11-arm
             marker: windows

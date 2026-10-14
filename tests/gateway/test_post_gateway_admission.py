@@ -37,7 +37,8 @@ def _runner(*, multiplex=False):
     adapter = SimpleNamespace(send=AsyncMock())
     runner.adapters = {Platform.WHATSAPP: adapter}
     runner.pairing_store = MagicMock()
-    runner.session_store = MagicMock()
+    runner._init_session_store()
+    runner._init_session_db()
     runner._is_user_authorized_for_source = lambda _s: True
     runner._admit_bot_message_for_source = lambda _s: True
     runner._delivery_adapter_for = lambda _s: adapter

@@ -382,6 +382,18 @@ def test_every_detect_output_a_lane_sets_is_consumed_by_some_job():
     assert unread == []
 
 
+@pytest.mark.parametrize("paths", [["README.md"], ["gateway/run.py"]])
+def test_retained_fork_contracts_run_independently_of_classified_lanes(paths):
+    """Compatibility contracts are mandatory, including for a docs-only diff."""
+    classified = _real_classifier(paths)
+    run = _ci_run(classified)
+    contracts = _reached(run, "fork-contracts")
+    assert contracts is not None
+    step = next(s for s in contracts["body"]["steps"]
+                if s.get("name") == "Run retained behavioral contracts")
+    workflow_steps.required(step, contracts["ctx"])
+
+
 # -- shared cross-language fixtures (review D14) --------------------------------------------
 
 # The job (path from ci.yaml down) that runs each lane's consumers of a shared fixture.

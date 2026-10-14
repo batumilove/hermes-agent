@@ -7,6 +7,7 @@ hygiene runs outside any turn). Relay resets LLM-history freshness only for the 
 
 from __future__ import annotations
 
+import contextvars
 import threading
 import time
 from typing import Any
@@ -174,21 +175,23 @@ def test_stalled_relay_event_does_not_hold_the_caller(monkeypatch, relay):
         publisher.join(timeout=2)
 
 
-def test_a_turn_relay_does_not_instrument_records_no_mark(relay):
-    """A second concurrent turn on a live session (a background-review fork, or a concurrent gateway turn) runs
-    with Relay instrumentation off. Its compaction must not mark the live session or reset its freshness."""
+def test_concurrent_turn_compactions_mark_their_own_turn_scopes(relay):
+    """Concurrent turns have separate Relay contexts; each mark belongs to its caller."""
     fake, runtime, coordinator = relay
     lease = coordinator.acquire_conversation(profile_key=runtime.profile_key, session_id="s1", platform="cli")
     live = coordinator.begin_turn(lease, turn_id="live", task_id="task")
     fork = coordinator.begin_turn(lease, turn_id="fork", task_id="task")
     try:
-        assert fork.relay_enabled is False
-        assert emit_compaction_mark("s1", "compaction", _committed("s1")) is False
+        assert emit_compaction_mark("s1", "compaction", _committed("s1")) is True
+        assert fake.scope.events[-1]["handle"] is fork.handle
+        coordinator.end_turn(fork, outcome="success")
+        assert emit_compaction_mark("s1", "compaction", _committed("s1")) is True
+        assert fake.scope.events[-1]["handle"] is live.handle
     finally:
         coordinator.end_turn(fork, outcome="success")
         coordinator.end_turn(live, outcome="success")
 
-    assert fake.scope.events == []
+    assert len(fake.scope.events) == 2
 
 
 def test_a_turn_fallback_lands_only_on_the_turn_the_agent_started_in(relay):
@@ -305,3 +308,28 @@ def test_a_post_turn_micro_compaction_in_a_rotated_child_is_marked_on_the_turn(r
     assert child != "rotating-session"
     micro = [event for event in fake.scope.events if event["data"]["kind"] == "micro_summarize"]
     assert [(mark["data"]["session_id"], mark["handle"]) for mark in micro] == [(child, turn.handle)]
+
+
+def test_mark_on_reused_native_stack_preserves_routed_profile_callback_scope(relay, monkeypatch):
+    from hermes_constants import get_hermes_home, get_hermes_home_override, reset_hermes_home_override, set_hermes_home_override
+
+    fake, runtime, coordinator = relay
+    lease = coordinator.acquire_conversation(profile_key=runtime.profile_key, session_id="s1", platform="cli")
+    turn = coordinator.begin_turn(lease, turn_id="t1", task_id="task")
+    turn.idle_logical_llm_contexts["primary"] = contextvars.Context()
+    home = get_hermes_home()
+    token = set_hermes_home_override(home)
+    seen = []
+    original = fake.scope.event
+
+    def event(name, **kwargs):
+        seen.append(get_hermes_home_override())
+        return original(name, **kwargs)
+
+    monkeypatch.setattr(fake.scope, "event", event)
+    try:
+        assert emit_compaction_mark("s1", "compaction", _committed("s1"))
+        assert seen == [str(home)]
+    finally:
+        reset_hermes_home_override(token)
+        coordinator.end_turn(turn, outcome="success")

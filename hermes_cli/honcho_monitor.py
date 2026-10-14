@@ -850,6 +850,8 @@ def ssh(command: str, timeout: int = 20) -> str:
                 check=False,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout,
             )
         except subprocess.TimeoutExpired as exc:
@@ -871,6 +873,8 @@ def curl_json(url: str, timeout: int = 10) -> tuple[bool, dict[str, Any] | None]
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout + 5,
         )
         if result.returncode != 0 or not result.stdout:
@@ -887,6 +891,8 @@ def curl_text(url: str, timeout: int = 10) -> str:
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout + 5,
         )
         return result.stdout if result.returncode == 0 else ""
@@ -914,6 +920,8 @@ def curl_post_json(url: str, payload: dict[str, Any], timeout: int = 30) -> tupl
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout + 5,
         )
         dt = time.perf_counter() - start

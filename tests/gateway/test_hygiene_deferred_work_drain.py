@@ -70,7 +70,9 @@ async def test_timed_out_codex_hygiene_worker_remains_visible_to_shutdown():
     assert outcome == "failed:timeout"
     assert runner._active_deferred_agent_worker_count() == 1
     with patch("gateway.run.request_hard_interrupt") as interrupt:
-        runner._interrupt_running_agents("gateway shutdown")
+        await runner._interrupt_running_agents(
+            "gateway shutdown", asyncio.get_running_loop().time() + 5.0
+        )
     interrupt.assert_called_once_with(agent, "gateway shutdown", tool_reason="gateway shutdown")
 
     release.set()
@@ -111,7 +113,9 @@ async def test_deferred_hygiene_worker_times_out_and_receives_interrupt():
     assert timed_out is True
     assert _snapshot == {}
     with patch("gateway.run.request_hard_interrupt") as interrupt:
-        runner._interrupt_running_agents("gateway shutdown")
+        await runner._interrupt_running_agents(
+            "gateway shutdown", asyncio.get_running_loop().time() + 5.0
+        )
     interrupt.assert_called_once_with(agent, "gateway shutdown", tool_reason="gateway shutdown")
 
     worker.cancel()

@@ -4370,7 +4370,7 @@ class APIServerAdapter(APIAdmissionMixin, OpenAICompatRoutesMixin, BasePlatformA
     def _durable_run_status(self, request: web.Request, run_id: str) -> dict[str, Any] | None:
         return _api_runs._durable_run_status(self, request, run_id)
 
-    @_admit_api_agent_request
+    @_admit_api_agent_request(run_permission="dispatch")
     async def _handle_runs(self, request: web.Request) -> web.Response:
         return await _api_runs._handle_runs(self, request, _api_server=sys.modules[__name__])
 

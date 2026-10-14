@@ -69,7 +69,12 @@ def _make_runner(
     r._is_user_authorized = lambda s: True
     r._set_session_env = lambda c: None
     r._handle_active_session_busy_message = AsyncMock(return_value=False)
-    r._session_db = MagicMock()
+    session_db = MagicMock()
+    # The off-loop cache read and the raw-handle post-turn refresh share one
+    # DB; distinct auto-created MagicMock children simulate external writes.
+    session_db._db = session_db
+    session_db.get_session.return_value = {"message_count": 0}
+    r._session_db = session_db
     r._recover_telegram_topic_thread_id = lambda s: None
     r._cache_session_source = lambda k, s: None
     r._is_session_run_current = lambda k, g: True

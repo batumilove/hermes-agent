@@ -35,12 +35,18 @@ def _init_delivery_ledger_schema(conn: sqlite3.Connection) -> None:
     _initialize_schema(conn)
 
 
-# state.db tables created lazily by a gateway module (base ``SessionDB`` never creates them on a fresh
-# destination) -> the initializer owning their DDL. Recovery creates them before copying so owed rows
-# don't silently vanish from a "complete" salvage. Register new lazy tables HERE, not as ``if table ==``.
+def _init_post_response_schema(conn: sqlite3.Connection) -> None:
+    from hermes_state_schema import reconcile_state_schema
+    reconcile_state_schema(conn)
+
+
+# Gateway-owned tables, copied after the canonical session rows and in parent-before-child order.
+# Initializers also support recovered legacy images lacking their DDL. Owed receipts and actions
+# must not silently vanish from a "complete" salvage. Register their schema authority HERE.
 # See #100313, #86236.
 _AUXILIARY_TABLE_SCHEMAS: dict[str, Callable[[sqlite3.Connection], None]] = {
     "delivery_obligations": _init_delivery_ledger_schema,
+    "gateway_post_response_actions": _init_post_response_schema,
 }
 _AUXILIARY_TABLES = tuple(_AUXILIARY_TABLE_SCHEMAS)
 _INVENTORY_TABLES = (*_CANONICAL_TABLES, "state_meta", *_TOPIC_TABLES, *_AUXILIARY_TABLES)

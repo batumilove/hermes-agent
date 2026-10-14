@@ -310,17 +310,31 @@ def _gateway_reply(text: str, *, own: bool = False, discord_id: str | None = Non
     [{}, {"own": True}, {"discord_id": "42"}],
     ids=["reply", "own-reply", "discord-note"],
 )
-def test_reply_pointer_does_not_count_toward_the_request_size(gateway_kwargs: dict[str, Any]) -> None:
+@pytest.mark.parametrize("pointer_source", ["current_gateway", "persisted_legacy"])
+def test_reply_pointer_does_not_count_toward_the_request_size(
+    gateway_kwargs: dict[str, Any], pointer_source: str,
+) -> None:
     """A short reply to a long answer must still split, and the snapshot must keep the request
     rather than the quote: past the cap it drops the gateway ``[Replying to: …]`` pointer
     before eliding.
     """
     request = _gateway_reply(_ACTIVE_REQUEST, **gateway_kwargs)
-    assert len(request) > _ACTIVE_TASK_MAX_CHARS
+    if pointer_source == "persisted_legacy":
+        # Saved conversations from before reply excerpts were capped still
+        # contain the complete quote and must remain safely compressible.
+        who = " your previous message" if gateway_kwargs.get("own") else ""
+        request = f'[Replying to{who}: "{_LONG_QUOTE}"]\n\n{_ACTIVE_REQUEST}'
+        if gateway_kwargs.get("discord_id"):
+            from gateway.run_inbound import discord_triggering_note
+            request = f"{discord_triggering_note(gateway_kwargs['discord_id'])}\n\n{request}"
+        assert len(request) > _ACTIVE_TASK_MAX_CHARS
+    else:
+        assert len(request) < _ACTIVE_TASK_MAX_CHARS
     assert _authored_request_text(request) == _ACTIVE_REQUEST
     # Past the cap the deterministic snapshot must drop the quote, not elide the request away.
     snapshot = ContextCompressor._latest_user_task_snapshot([{"role": "user", "content": request}])
     assert _ACTIVE_REQUEST in (snapshot or "")
+    assert _LONG_QUOTE not in (snapshot or "")
     compressor = _make_compressor()
     compressor.tail_token_budget = 1_000
     messages = _oversized_active_turn(request, 30)

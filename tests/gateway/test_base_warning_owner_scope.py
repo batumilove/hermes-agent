@@ -70,7 +70,9 @@ def profiles(tmp_path, monkeypatch):
 async def test_recursive_three_turn_chain_then_human(profiles, monkeypatch, diagnostic_first, setting):
     """Real runner recursion and final-event handoff, not a copied mute snapshot."""
     import gateway.run as gateway_run
+    from agent.async_utils import run_sync_in_detached_daemon_thread
     from gateway.session import SessionSource
+    from tests.waiting import wait_until
 
     root, _ = profiles
     monkeypatch.setattr(gateway_run, "_hermes_home", root)
@@ -133,6 +135,14 @@ async def test_recursive_three_turn_chain_then_human(profiles, monkeypatch, diag
         expected = [f"result-{i}" for i in range(3)
                     if not (setting is True and original_authority[i][0])]
         assert [row[0] for row in adapter.wire] == expected
+        # Adapter delivery wakes durable post-response work. Human admission
+        # remains fenced until that work settles, even though send completed.
+        db = runner.session_store._db
+        entry = runner.session_store.lookup_by_session_key(key)
+        await run_sync_in_detached_daemon_thread(
+            wait_until, lambda: not db.has_post_response_barrier(key, entry.session_id),
+            what="final response actions settled before the next human turn",
+        )
         await adapter._process_message_background(events[3], key)
         assert len(calls) == 4
         assert [row[0] for row in adapter.wire] == expected + ["result-3"]
@@ -151,6 +161,7 @@ async def test_recursive_three_turn_chain_then_human(profiles, monkeypatch, diag
         assert get_hermes_home() == root
     finally:
         await adapter.cancel_background_tasks()
+        await run_sync_in_detached_daemon_thread(runner._post_response_controller.shutdown, 2.0)
 
 
 @pytest.mark.asyncio

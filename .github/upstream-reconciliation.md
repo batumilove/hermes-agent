@@ -4,9 +4,9 @@ This candidate reconciles `batumi/live` at
 `2c31abf2bcb4a6fa0abc868f707ec09a053cb1f0` with official upstream
 `6e7b83a2f1c093e992a8d838ed77ea320fbd8e51`. It is prepared on
 `codex/reconcile-upstream-6e7b83` as the initial immutable source branch. CI
-follow-ups use separate immutable sources `codex/reconcile-upstream-6e7b83-ci`
-and `codex/reconcile-upstream-6e7b83-ci2`; the linear review branch is
-`codex/update-fork-6e7b83`. Retain all three source branches.
+follow-ups use separate immutable sources `codex/reconcile-upstream-6e7b83-ci`,
+`codex/reconcile-upstream-6e7b83-ci2`, and `codex/reconcile-upstream-6e7b83-ci3`;
+the linear review branch is `codex/update-fork-6e7b83`. Retain all four source branches.
 The current provenance record identifies the exact accepted source tree.
 Runtime deployment is a separate step.
 
@@ -169,13 +169,50 @@ An actual empty-cache npm consumer reproduces both the missing-cache failure
 with dropped overrides and the direct-spec conflict with unchanged overrides;
 the adapted overrides install the exact patched packages offline. The registry
 manifests, dependency locks, integrity hashes and release-age policy are unchanged.
-Full Nix realization still requires CI.
+Full Nix realization and the wired offline regression passed on the repaired
+predecessor; the final successor still requires its own CI acceptance.
 
 The repaired predecessor passed Termux, the running-stack shadow and both
 Windows ARM64 cold SDK jobs. The Windows jobs provisioned and executed the SDK
 from an empty cache; the Azure signing service boundary remains stubbed.
 This is ARM64 acceptance, without an x64 execution claim. CI and PM Bundle were
-individually disabled at that point and still need enabled runs on the final head.
+individually disabled at that point; the maintainer subsequently enabled both.
+
+After those workflow identities were enabled, the required dependency scan
+reported no issues across all seven lockfiles. Full Nix realization, all ten
+JS/TypeScript workspace checks, the native Windows SDK jobs and all four PM
+bundles passed on the repaired predecessor. Linux test jobs and Windows x64
+reached their unchanged 30-minute limits before completing. Linux now uses
+eight four-worker slices and Windows x64 four two-worker slices; canonical
+partition checks prove complete, disjoint coverage with the same selectors.
+macOS and Windows ARM64 keep their existing slice layout and deadlines.
+
+Three Windows desktop-update files exceeded their 300-second file budget from
+cumulative native PowerShell startup; ARM64 even reported all twelve commit
+cases passing just before that file was terminated. Those portfolios now keep
+the original 41 native cases, helpers, embedded programs and assertions across
+sixteen topical files, with at most four cases per file. The file and job limits
+remain unchanged. Shared test isolation rebinds both import-time DB defaults,
+so profile-scoped tests use their actual profile while later explicit DB pins
+continue to work. Lifecycle fixtures use current async deadlines and real
+shutdown ordering rather than obsolete internal interfaces.
+
+The source review also restores hosted-room dispatch grant validation before
+body parsing or admission, records the retained side-effect column in recovery
+schema history, and preserves ordered post-response actions in normal recovery
+and lost-and-found copies. Recovery regressions verify receiver identity, action
+order, attempt compare-and-swap, and unchanged source data. Native Relay scopes
+retain sequential request freshness while overlapping calls remain independent;
+committed compaction refreshes the owning main request history. These repairs
+retain the accepted todo snapshot behavior and its separate advisory disposition.
+Raw-page recovery also recognizes the live fork's fresh 24-column layout,
+its earlier 23-column stores with the evidence column appended, and their
+31-column physical upgrades. Common fields retain their column identity.
+Some anonymous legacy tail cells are indistinguishable from an official
+summary flag; consensus leaves those cells unknown instead of inventing
+successful side-effect evidence. Schema-aware recovery preserves named evidence
+exactly. The mapper accepts SQLite's integral on-disk encoding of REAL-affinity
+values while retaining its other candidate, timestamp and consensus checks.
 
 PM locks patched multidict, OAuthlib, PyJWT, Tornado and urllib3 within bounded
 constraints, retaining the three-day release-age policy. Consumer acceptance
@@ -201,15 +238,18 @@ remaining behavior and policy scope; it does not claim that source finding fixed
 
 ## Remaining release acceptance
 
-The digest-pinned OSV scanner extracted all seven lockfile scopes, but its
-query to api.osv.dev received Forbidden under this environment network policy.
-A fresh full OSV result remains required in CI; npm audit is separate evidence.
+The local digest-pinned OSV query was blocked by this environment's network
+policy. The repaired predecessor's hosted scan reported no issues across all
+seven lockfile scopes. The final successor requires a fresh hosted result;
+npm audit remains separate evidence.
 
 A container build was attempted with the session CA mounted transiently and TLS
 verification enabled. SQLite's primary and fallback download hosts returned HTTP
-403 under this environment's network policy. A complete production image, fresh
-advisory scan, Windows/macOS execution and production rollout still require CI or
-the appropriate release host; this candidate does not claim those outcomes.
+403 under this environment's network policy. The repaired predecessor's
+running-stack shadow built and exercised the production image, and its macOS
+Python lanes passed. The final successor requires the complete CI graph,
+including native Windows acceptance for the split portfolios. Production
+rollout remains a separate release action.
 
 After review and required CI, land the linear review branch into `batumi/live`
 using either permitted squash or rebase method. Retain its immutable source

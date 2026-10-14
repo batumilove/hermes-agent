@@ -17,12 +17,15 @@ import asyncio
 import concurrent.futures
 import threading
 import time
-from collections import OrderedDict
 from contextlib import suppress
+from unittest.mock import AsyncMock
 
 import pytest
 
 import gateway.run as gw_mod
+from gateway.session_db_recovery import RecoverableHandleCache
+from tests.gateway.restart_test_helpers import make_restart_runner
+from tests.waiting import async_wait_until
 
 class _FakeSessionDB:
     """Records when the gateway closed it, on a shared event log."""
@@ -34,112 +37,59 @@ class _FakeSessionDB:
     def close(self):
         self._events.append(f"close:{self._name}")
 
-class _FakeGateway:
-    """Minimal stand-in with just enough state for ``stop()`` to run."""
-
-    def __init__(self, events):
-        self._events = events
-        self._running = True
-        self._draining = False
-        self._restart_requested = False
-        self._restart_detached = False
-        self._restart_via_service = False
-        self._stop_task = None
-        self._exit_cleanly = False
-        self._exit_with_failure = False
-        self._exit_reason = None
-        self._exit_code = None
-        self._restart_drain_timeout = 0.01
-        self._running_agents = {}
-        self._running_agents_ts = {}
-        self._agent_cache = OrderedDict()
-        self._agent_cache_lock = threading.Lock()
-        self.adapters = {}
-        self._background_tasks = set()
-        self._failed_platforms = []
-        self._shutdown_event = asyncio.Event()
-        self._pending_messages = {}
-        self._pending_approvals = {}
-        self._busy_ack_ts = {}
-        self._executor_lock = threading.Lock()
-        self._executor_closing = False
-        self._executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=2, thread_name_prefix="quiesce-test"
-        )
-        self._session_db = _FakeSessionDB(events, "session_db")
-        self.session_store = None
-
-    # -- shutdown collaborators the real stop() reaches into ---------------
-
-    def _running_agent_count(self):
-        return len(self._running_agents)
-
-    def _active_cron_job_count(self):
-        return 0
-
-    # Real hook + counter: 0 while ``adapters`` is empty, the API-server count once a fake adapter is in.
-    _api_server_hook = gw_mod.GatewayShutdownMixin._api_server_hook
-    _mark_api_runs_shutdown_requested = gw_mod.GatewayShutdownMixin._mark_api_runs_shutdown_requested
-    _active_api_run_count = gw_mod.GatewayShutdownMixin._active_api_run_count
-    _active_api_worker_count = gw_mod.GatewayShutdownMixin._active_api_worker_count
-    _active_deferred_agent_worker_count = gw_mod.GatewayShutdownMixin._active_deferred_agent_worker_count
-
-    def _update_runtime_status(self, *_a, **_kw):
-        pass
-
-    def _clear_plugin_message_injector(self):
-        pass
-
-    async def _run_in_executor_with_context(self, func, *args):
-        return func(*args)
-
-    async def _cleanup_agent_resources_off_loop(self, agent, *, context=""):
-        self._cleanup_agent_resources(agent)
-
-    async def _notify_active_sessions_of_shutdown(self):
-        pass
-
-    async def _cancel_secondary_profile_reconnect_tasks(self):
-        pass
-
-    async def _drain_active_agents(self, timeout, cron_timeout=None):
-        return {}, False
-
-    async def _finalize_shutdown_agents(self, agents):
-        pass
-
-    def _cleanup_agent_resources(self, agent):
-        pass
-
-    def _evict_cached_agent(self, key):
-        pass
-
-    def _release_running_agent_state(self, session_key, **_kwargs):
-        self._running_agents.pop(session_key, None)
-        self._running_agents_ts.pop(session_key, None)
-        return False
-
-    def close_all_session_db_handles(self):
-        pass
+def _make_gateway(events):
+    """Native shutdown runner with a recording DB and an owned executor."""
+    runner, _adapter = make_restart_runner()
+    runner._restart_drain_timeout = 0.01
+    runner._cron_drain_timeout = 0.01
+    runner._signal_interrupt_grace_timeout = 0.01
+    runner._restart_task = None
+    runner._systemd_watchdog = None
+    runner._stop_hosted_room_worker = AsyncMock(return_value=True)
+    runner._agent_cache = {}
+    runner._agent_cache_lock = threading.Lock()
+    runner.adapters = {}
+    runner._failed_platforms = {}
+    runner._busy_ack_ts = {}
+    runner._executor_lock = threading.Lock()
+    runner._executor_closing = False
+    runner._executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=2, thread_name_prefix="quiesce-test"
+    )
+    runner._session_db = _FakeSessionDB(events, "session_db")
+    runner._session_db_handle_cache = RecoverableHandleCache(
+        handles={}, lock=threading.Lock()
+    )
+    runner.session_store = None
+    runner._active_cron_job_count = lambda: 0
+    return runner
 
 @pytest.mark.asyncio
 async def test_running_executor_work_finishes_before_session_db_close():
     """A future already running when stop() begins writes before the close."""
     events = []
-    gw = _FakeGateway(events)
+    gw = _make_gateway(events)
     started = threading.Event()
+    release = threading.Event()
 
     def _blocking_db_write():
         started.set()
-        # Longer than the rest of the shutdown tail (~0.4s), shorter than the
-        # 2s quiesce ceiling: without the wait the close lands first.
-        time.sleep(1.0)
+        assert release.wait(5.0), "worker was not released during executor quiesce"
         events.append("worker_write")
 
     future = gw._executor.submit(_blocking_db_write)
     assert started.wait(2.0), "worker never started"
 
-    await gw_mod.GatewayRunner.stop(gw)
+    stopping = asyncio.create_task(gw.stop())
+    try:
+        await async_wait_until(
+            lambda: gw._executor_closing, timeout=5.0, what="executor quiesce began"
+        )
+        assert "worker_write" not in events, events
+        assert "close:session_db" not in events, events
+    finally:
+        release.set()
+        await stopping
     future.result(timeout=5)
 
     assert "worker_write" in events, "worker never ran"
@@ -152,7 +102,7 @@ async def test_running_executor_work_finishes_before_session_db_close():
 async def test_executor_refuses_new_work_before_session_db_close():
     """``_executor_closing`` is set before the close, so no fresh pool is minted."""
     events = []
-    gw = _FakeGateway(events)
+    gw = _make_gateway(events)
 
     real_close = gw._session_db.close
 
@@ -182,7 +132,7 @@ async def test_stuck_worker_skips_the_session_db_close():
     budget, not merely logged around.
     """
     events = []
-    gw = _FakeGateway(events)
+    gw = _make_gateway(events)
     release = threading.Event()
     started = threading.Event()
 
@@ -247,7 +197,7 @@ async def test_live_writer_outside_the_executor_skips_the_session_db_close(monke
     import hermes_state_registry
 
     events = []
-    gw = _FakeGateway(events)
+    gw = _make_gateway(events)
     arm(gw)
     monkeypatch.setattr(
         hermes_state_registry, "close_all", lambda: events.append("close_all") or 0
@@ -274,7 +224,7 @@ async def test_cancelled_api_handler_worker_still_blocks_session_db_close(monkey
     from gateway.platforms import api_server_runs as api_runs
 
     events = []
-    gw = _FakeGateway(events)
+    gw = _make_gateway(events)
     monkeypatch.setattr(
         hermes_state_registry, "close_all", lambda: events.append("close_all") or 0
     )
@@ -320,7 +270,7 @@ async def test_cancelled_api_handler_worker_still_blocks_session_db_close(monkey
 
 def test_shutdown_executor_defaults_to_no_wait():
     """The no-argument call keeps the historical fire-and-forget contract."""
-    gw = _FakeGateway([])
+    gw = _make_gateway([])
     release = threading.Event()
     started = threading.Event()
 
@@ -342,7 +292,7 @@ def test_shutdown_executor_defaults_to_no_wait():
 
 def test_shutdown_executor_reports_a_stuck_worker():
     """A worker that outlives the budget is reported, not waited on forever."""
-    gw = _FakeGateway([])
+    gw = _make_gateway([])
     release = threading.Event()
     started = threading.Event()
 
@@ -374,13 +324,10 @@ async def test_default_executor_worker_is_seen_by_the_close_guard():
     Drives the real ``_hmwa_hygiene_detached_attempt`` submission site, and stops the gateway
     while the awaiting turn has NOT been unwound yet (the window where nothing else tracks it).
     """
-    from types import MethodType, SimpleNamespace
+    from types import SimpleNamespace
 
     events = []
-    gw = _FakeGateway(events)
-    for name in ("_hmwa_hygiene_detached_attempt", "_track_deferred_agent_worker"):
-        setattr(gw, name, MethodType(getattr(gw_mod.GatewayRunner, name), gw))
-
+    gw = _make_gateway(events)
     release = threading.Event()
     started = threading.Event()
     turn_waiting = asyncio.Event()

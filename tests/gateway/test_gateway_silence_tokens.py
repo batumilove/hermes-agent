@@ -154,6 +154,7 @@ async def test_internal_silence_token_suppresses_delivery_but_preserves_transcri
         "last_prompt_tokens": 0,
         "api_calls": 1,
         "failed": False,
+        "agent_persisted": False,
     })
 
     response = await runner._handle_message_with_agent(
@@ -162,8 +163,9 @@ async def test_internal_silence_token_suppresses_delivery_but_preserves_transcri
 
     assert response == ""
     appended = [call.args[1] for call in runner.session_store.append_to_transcript.call_args_list]
-    assert {"role": "assistant", "content": "[SILENT]"}.items() <= appended[-1].items()
-    assert [msg["role"] for msg in appended if msg.get("role") in {"user", "assistant"}] == ["user", "assistant"]
+    turns = [msg for msg in appended if msg.get("role") in {"user", "assistant"}]
+    assert {"role": "assistant", "content": "[SILENT]"}.items() <= turns[-1].items()
+    assert [msg["role"] for msg in turns] == ["user", "assistant"]
 
 
 @pytest.mark.asyncio

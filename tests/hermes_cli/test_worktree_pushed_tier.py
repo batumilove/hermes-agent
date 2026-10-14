@@ -244,7 +244,7 @@ class TestAttendedGcPushedTier:
 
 class TestCronWorktreeMaintenance:
     def test_throttle_dispatches_once_per_interval(self, monkeypatch):
-        import cron.scheduler as sched
+        import cron.scheduler_worktree as sched
 
         calls = []
         monkeypatch.setattr(sched, "_last_worktree_maintenance_at", None)
@@ -278,7 +278,7 @@ class TestCronWorktreeMaintenance:
         assert repo in [Path(p) for p in repos]
 
     def test_maintenance_prunes_via_real_pruner(self, repo_with_bare_origin, monkeypatch):
-        import cron.scheduler as sched
+        import cron.scheduler_worktree as sched
 
         repo = repo_with_bare_origin
         wt = _mk_worktree(repo, "hermes-cronreap", "hermes/hermes-cronreap", push=True)

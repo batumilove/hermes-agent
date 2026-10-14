@@ -77,6 +77,7 @@ def _make_runner(store) -> GatewayRunner:
     runner.hooks = MagicMock()
     runner.hooks.emit = AsyncMock()
     runner.session_store = store
+    runner._init_session_db()
     runner.delivery_router = MagicMock()
     return runner
 

@@ -8,9 +8,10 @@ observable SIDE EFFECT — how many copies of a reply the platform received.
 
 Hermes' outbox is ``gateway/delivery_ledger.py``. Because a send and its
 ``mark_delivered`` can never be one atomic step, the ledger promises honest
-at-least-once rather than a silent resend: a row that was never sent
-('pending') is redelivered plainly; a row whose send may have landed
-('attempting' / 'failed') is redelivered WITH a visible recovery marker. The
+at-least-once rather than a silent resend: every dead-owner row is redelivered
+WITH a visible recovery marker. Even 'pending' can represent an older producer
+whose attempting checkpoint failed immediately before sending; recovery cannot
+prove that the platform saw nothing. The
 effect-level invariant that follows, per obligation id, is:
 
 * at most ONE unmarked copy ever reaches the platform (every extra copy is
@@ -232,8 +233,9 @@ runner.session_store = SessionStore(home / "sessions", GatewayConfig())
 
 async def main():
     claimed = await runner._claim_pending_obligations()
+    claimed_ids = [row["obligation_id"] for row in claimed]
     n = await runner._redeliver_claimed_obligations(claimed)
-    print(json.dumps({"claimed": [r["obligation_id"] for r in claimed], "redelivered": n}))
+    print(json.dumps({"claimed": claimed_ids, "redelivered": n}))
 
 
 asyncio.run(main())
@@ -401,7 +403,7 @@ KILL_POINTS = {
 # Expected copies per kind after the first clean sweep (deterministic).
 EXPECTED = {
     "delivered": (1, 0),   # control: sent + marked delivered, never resent
-    "pending": (1, 0),     # never sent -> one plain redelivery
+    "pending": (0, 1),     # no durable proof of non-delivery -> one marked recovery
     "attempting": (0, 1),  # may have landed -> one marked redelivery
     "sent": (1, 1),        # landed unmarked -> one marked (honest) duplicate
 }

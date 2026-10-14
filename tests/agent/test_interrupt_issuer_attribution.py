@@ -75,7 +75,12 @@ def test_gateway_lifecycle_producers_name_a_system_issuer():
             _running_agents={"k": stopping_agent}, _interrupt_api_server_runs=lambda reason: 0,
             _interrupt_deferred_agent_workers=lambda reason: 0,
         )
-        GatewayShutdownMixin._interrupt_running_agents(runner, "Gateway shutting down")
+        async def interrupt_gateway():
+            await GatewayShutdownMixin._interrupt_running_agents(
+                runner, "Gateway shutting down", asyncio.get_running_loop().time() + 5.0
+            )
+
+        asyncio.run(interrupt_gateway())
         assert interrupt_issuer(stopping_agent) == "gateway_shutdown"
 
         evicted_agent = _bare_agent()

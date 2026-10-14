@@ -86,9 +86,6 @@ def _drive_connect(monkeypatch, *, proxy_url, fallback_ips=None):
     # builder.request(...).get_updates_request(...).build() must be harmless;
     # make build() raise our sentinel so connect() stops right after the
     # HTTPXRequests are constructed (before any real network/init).
-    fake_built_app = MagicMock()
-    fake_built_app.initialize = MagicMock(side_effect=_StopConnect)
-
     chainable = MagicMock()
     chainable.token.return_value = chainable
     chainable.base_url.return_value = chainable
@@ -96,6 +93,7 @@ def _drive_connect(monkeypatch, *, proxy_url, fallback_ips=None):
     chainable.local_mode.return_value = chainable
     chainable.request.return_value = chainable
     chainable.get_updates_request.return_value = chainable
+    chainable.concurrent_updates.return_value = chainable
     chainable.build.side_effect = _StopConnect
 
     builder_root = MagicMock()
@@ -214,10 +212,9 @@ def test_fallback_branch_forwards_tuned_limits_to_inner_transports(monkeypatch):
             and opt[2] == 1
             for opt in sock_opts
         )
-        if index == 0:
-            assert limits.max_keepalive_connections >= 1
-        else:
-            assert limits.max_keepalive_connections == 0
+        # Inactive fallback routes cannot reap idle peer-closed connections;
+        # both general and polling transports must retain no idle sockets.
+        assert limits.max_keepalive_connections == 0
 
     for instance in instances:
         asyncio.run(instance.kwargs["httpx_kwargs"]["transport"].aclose())

@@ -38,6 +38,8 @@ def _git_identity(repo_root: Path) -> tuple[str, str]:
             ["git", "rev-parse", revision],
             cwd=repo_root,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )

@@ -6,8 +6,6 @@ the persisted ``model_override`` must ride along. ``reset_session()`` (/new) is 
 conversation boundary and must keep dropping it — otherwise the next turn's
 ``_rehydrate_session_model_override`` resurrects the override the user reset away.
 """
-from unittest.mock import patch
-
 import pytest
 
 from gateway.config import GatewayConfig, Platform
@@ -18,16 +16,8 @@ OVERRIDE = {"model": "nous/hermes-4", "provider": "nous"}
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    import hermes_state
-
-    def _raise():
-        raise RuntimeError("SQLite disabled in test")
-
-    monkeypatch.setattr(hermes_state, "SessionDB", _raise)
-    with patch("gateway.session.SessionStore._ensure_loaded"):
-        s = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
-    s._loaded = True
-    return s
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    return SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
 
 
 def _pinned_key(store):
@@ -41,6 +31,7 @@ def _pinned_key(store):
 
 def test_switch_session_keeps_model_override_on_the_route(store):
     key = _pinned_key(store)
+    store._db.create_session("other_session_id", source="telegram")
     switched = store.switch_session(key, "other_session_id")
     assert switched is not None and switched.session_id == "other_session_id"
     assert switched.model_override == OVERRIDE

@@ -460,9 +460,12 @@ def test_boot_recovery_runs_before_resume_turns_and_queued_inbound(monkeypatch):
     async def finish_startup_restore():
         order.append("drain inbound")
 
+    async def schedule_resume_pending_sessions():
+        order.append("resume")
+
     runner = SimpleNamespace(
         _start_post_connect_services=noop, _await_startup_boot_sends=noop,
-        _schedule_resume_pending_sessions=lambda: order.append("resume"),
+        _schedule_resume_pending_sessions=schedule_resume_pending_sessions,
         _finish_startup_restore=finish_startup_restore,
         _send_session_db_warning_notifications=noop, _spawn_supervised=lambda *a, **k: None,
     )

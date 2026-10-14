@@ -17,8 +17,8 @@ reporter's watchdog keyed on), and SIGTERM could not be serviced (requiring
 ``kill -9``).
 
 The fix routes all four call sites through ``_cleanup_agent_resources_off_loop``
-which offloads to a worker thread under a bounded ``asyncio.wait_for``, so the
-loop is never blocked and a stuck teardown degrades gracefully.
+which offloads housekeeping to an executor and shutdown to a bounded daemon,
+so the loop is never blocked and a stuck teardown degrades gracefully.
 
 These tests drive that shared helper directly — it is the single chokepoint
 every fixed call site now uses.
@@ -140,7 +140,8 @@ async def test_cleanup_off_loop_times_out_gracefully(caplog):
 
 
 @pytest.mark.asyncio
-async def test_cleanup_off_loop_swallows_executor_failure(caplog):
+@pytest.mark.parametrize("context", ["sweep", "shutdown finalize"])
+async def test_cleanup_off_loop_swallows_executor_failure(caplog, context):
     """If the offloaded cleanup raises, the helper logs and returns — a
     teardown failure must never abort the loop coroutine that triggered it."""
     runner, executor = _make_runner()
@@ -156,11 +157,13 @@ async def test_cleanup_off_loop_swallows_executor_failure(caplog):
     runner._cleanup_agent_resources = _boom_cleanup
 
     with caplog.at_level(logging.WARNING, logger="gateway.run"):
-        await runner._cleanup_agent_resources_off_loop(
-            _agent_with_close(boom), context="shutdown finalize"
+        completed = await runner._cleanup_agent_resources_off_loop(
+            _agent_with_close(boom), context=context
         )
     executor.shutdown(wait=False)
 
+    assert completed is False
     assert any(
-        "failed" in r.message and "#53175" in r.message for r in caplog.records
+        "failed" in r.message and context in r.message and "boom" in r.message
+        for r in caplog.records
     ), "expected the cleanup-failure warning to be logged"
