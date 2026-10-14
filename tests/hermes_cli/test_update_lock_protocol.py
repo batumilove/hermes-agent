@@ -549,9 +549,9 @@ import fcntl, os, sys, time
 from pathlib import Path
 path = sys.argv[2]
 end = time.monotonic() + float(sys.argv[3])
-Path(sys.argv[4]).write_text("go", encoding="utf-8")
+ready, stop = Path(sys.argv[4]), Path(sys.argv[5])
 n = 0
-while time.monotonic() < end:
+while not stop.exists() and time.monotonic() < end:
     fd = os.open(path, os.O_RDONLY)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -561,7 +561,10 @@ while time.monotonic() < end:
         pass
     os.close(fd)
     n += 1
+    if n == 1:
+        ready.write_text("go", encoding="utf-8")
     time.sleep(0.001)  # the next probe's process spawn
+assert stop.exists(), "acquisition sample did not finish before the probe deadline"
 print(n)
 """
 
@@ -574,18 +577,29 @@ def test_held_probe_never_fails_a_concurrent_acquire(tmp_path):
     install.mkdir()
     lock_path = update_lock.checkout_lock_path(install)
     lock_path.touch()
-    prober = _python(tmp_path, _PROBER, lock_path, 4, tmp_path / "go", stdout=subprocess.PIPE, text=True)
-    _wait_for(tmp_path / "go", prober)
+    stop = tmp_path / "stop"
+    prober = _python(tmp_path, _PROBER, lock_path, 60, tmp_path / "go", stop,
+                     stdout=subprocess.PIPE, text=True)
     attempts = refused = 0
     try:
-        while prober.poll() is None:
+        _wait_for(tmp_path / "go", prober)
+        deadline = time.monotonic() + 60
+        # Collect work, not a minimum throughput within the probe's lifetime.
+        while attempts <= 50:
+            assert prober.poll() is None, "probe stopped before acquisition sample completed"
+            assert time.monotonic() < deadline, f"acquisition sample stalled after {attempts} attempts"
             attempts += 1
             if update_lock._acquire_checkout(install) is not None:
                 refused += 1
             else:
                 update_lock._release_checkout()
+            assert prober.poll() is None, "probe exited during an acquisition"
+        stop.touch()
+        output, _ = prober.communicate(timeout=30)
+        assert prober.returncode == 0 and int(output.strip()) > 0, "concurrent probe did not complete"
     finally:
-        prober.kill()
+        if prober.poll() is None:
+            prober.kill()
         prober.wait()
     assert attempts > 50
     assert refused == 0, f"{refused}/{attempts} acquires failed against a probe with no real holder"

@@ -90,7 +90,8 @@ def python_bootstrap_problem(entry: Path, *, require_distlib: bool) -> str:
     if not require_distlib:
         return ""
     try:
-        suppliers = [library / "site-packages" / "distlib" for library in _libraries(entry)]
+        suppliers = [supplier for library in _libraries(entry)
+                     if (supplier := library / "site-packages" / "distlib").exists()]
         if len(suppliers) != 1:
             return "Python has no unambiguous standalone distlib launcher supplier"
         _checked_distlib(suppliers[0], entry)

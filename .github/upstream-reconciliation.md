@@ -475,3 +475,33 @@ revision and installs the resulting wheel offline after removing its source URL.
 The production Termux wheel builder continues to use the container's own native
 Python/pip; only its isolated test prerequisite changes. The successor still needs
 fresh hosted checks and rebuilt-image scanner acceptance.
+
+Full CI on immutable ci8 commit
+`2f026dce70e39cf3bab7aa4ad7c25814d1a7eeb3` passed the hosted Termux
+contracts but exposed a native macOS setup failure. On a case-insensitive
+filesystem, `Lib` aliases the parent `lib` directory; the bootstrap verifier
+counted its nonexistent distlib path alongside the real versioned library's
+supplier. `codex/reconcile-upstream-6e7b83-ci9` counts only present suppliers
+while retaining exact-one, containment, version, license, and bootstrap-payload
+checks. The retained ci8 branch remains unchanged. Fresh successor native
+macOS and full CI acceptance are required before rebuilt-image acceptance.
+The same run found that the fresh-install fixture's copied stdlib omitted
+standalone distlib, and that the ops workflow contract still required publication
+and deployment to share one revision. The successor carries the authentic host
+launcher supplier in the fixture archive and verifies immutable publication inputs
+separately from the locked deployment revision. The original installer fault and
+warm-path assertions remain enforced; deployment pins are unchanged.
+Custom cold-runtime, activation, startup-recovery, takeover, and pin-update
+fixtures now carry complete runnable Python libraries and the authentic launcher
+supplier before recording facts or archive digests. Their installed-fact checks,
+GC selection, recovery, dependency isolation, and lifecycle oracles stay intact.
+The handoff lane also exposed a baseline routing gap: ordinary descendants kept
+their candidate checkout but stopped publishing the authenticated N-1 release,
+so the fixture selected an older fork tag whose lock could not be installed.
+The successor authenticates and publishes the pinned release baseline on both
+import and descendant routes, retaining the descendant's actual HEAD and branch.
+The historical baseline lock remains enforced with `--locked`.
+The lock-probe concurrency fixture now ends after its required acquisition
+sample completes rather than imposing a four-second throughput floor. It still
+requires more than 50 real acquire/release attempts, zero refusals, and a live
+concurrent prober, with bounded failure and shutdown guards.

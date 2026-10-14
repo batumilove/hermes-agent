@@ -120,6 +120,47 @@ def test_cached_python_cannot_reintroduce_ensurepip_payload(bootstrap_tree):
     assert wheel.read_bytes() == b"reintroduced bootstrap"
 
 
+@pytest.mark.platforms("posix")
+def test_library_parent_alias_does_not_add_a_launcher_supplier(bootstrap_tree):
+    from pm.store import tree_digest
+
+    root, site, _bundle = bootstrap_tree
+    # Case-insensitive volumes already alias Lib to lib; reproduce the same
+    # parent-directory layout explicitly on a case-sensitive POSIX volume.
+    alias = root / "Lib"
+    if not alias.exists():
+        alias.symlink_to("lib", target_is_directory=True)
+    assert alias.samefile(root / "lib")
+    assert not (alias / "site-packages" / "distlib").exists()
+    package = Python()
+    package.stage(None, root, "3.14.7+20260901", current_target())
+    assert (site / "distlib" / "scripts.py").is_file()
+    digest = tree_digest(root)
+    assert package.verify(root, current_target()) == ""
+    assert tree_digest(root) == digest, "verification changed the staged tree"
+
+
+@pytest.mark.parametrize("damage", ["second_supplier", "malformed_supplier"])
+def test_cached_python_rejects_invalid_launcher_suppliers(bootstrap_tree, damage):
+    from pm.store import tree_digest
+
+    root, site, _bundle = bootstrap_tree
+    package = Python()
+    package.stage(None, root, "3.14.7+20260901", current_target())
+    if damage == "second_supplier":
+        other = root / "lib" / "python3.13" / "site-packages" / "distlib"
+        other.parent.mkdir(parents=True)
+        shutil.copytree(site / "distlib", other)
+        expected = "unambiguous"
+    else:
+        shutil.rmtree(site / "distlib")
+        (site / "distlib").write_bytes(b"not a launcher package")
+        expected = "invalid"
+    digest = tree_digest(root)
+    assert expected in package.verify(root, current_target())
+    assert tree_digest(root) == digest, "verification changed an invalid supplier"
+
+
 def test_deb_prefix_is_sanitized_without_executing_foreign_python(bootstrap_tree, tmp_path):
     from pm.python_bootstrap import python_bootstrap_problem
 

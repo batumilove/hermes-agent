@@ -64,11 +64,15 @@ patches:
   - tests/pm/test_npm_self_install.py
   - tests/pm/test_node_npm_layout.py
   - tests/pm/test_python_bootstrap.py
+  - tests/pm/test_cold_runtime_e2e.py
+  - tests/pm/test_activation_setup.py
+  - tests/pm/test_startup_recovery.py
   - tests/pm/test_node_libatomic_install_boundary.py
   - tests/pm/_fixtures.py
   - tests/pm/test_update_request_reuse.py
   - tests/scripts/test_image_identity.py
   - tests/scripts/test_termux_build_wheels.py
+  - tests/scripts/test_fresh_source_install.py
   - scripts/install.sh
   - scripts/install.ps1
   tests:
@@ -355,6 +359,7 @@ patches:
   - tests/hermes_cli/test_update_pause_lifecycle.py
   - tests/hermes_cli/test_update_finish.py
   - tests/hermes_cli/test_update_takeover_custody.py
+  - tests/hermes_cli/test_update_lock_protocol.py
   - hermes_cli/update_pause_record.py
   - hermes_cli/_old_updater.py
   - hermes_cli/_update_takeover.py
