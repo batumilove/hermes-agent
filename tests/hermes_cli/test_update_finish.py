@@ -183,6 +183,8 @@ def completion(tmp_path, monkeypatch):
                     source_build.build_source_web = lambda root, **kwargs: web(root, icons=root, **kwargs)
                     build = source_build.build_update_products
                     def build_products(root, *, desktop):
+                        if fault == 'posix-order':
+                            assert (root / 'early-resume.json').is_file(), 'product build preceded gateway resume'
                         (root / 'desktop-build.json').write_text(json.dumps(desktop), encoding='utf-8')
                         return build(root, desktop=desktop)
                     source_build.build_update_products = build_products
@@ -227,6 +229,14 @@ def completion(tmp_path, monkeypatch):
                         (root / 'resumed-token.json').write_text(json.dumps(token))
                         return merge(outcome, token, gateway_mode)
                     update._resume_windows_gateways_and_merge_outcome = resume
+                    if fault == 'posix-order':
+                        from hermes_cli import update_cmd_windows
+                        def early_resume(token):
+                            assert token['platform'] == 'posix'
+                            token['resume_needed'] = False
+                            (root / 'early-resume.json').write_text(json.dumps(token))
+                        module._resume_windows_gateways_after_update = early_resume
+                        update_cmd_windows._resume_windows_gateways_after_update = early_resume
                     if fault == 'scm':
                         # The Windows service manager refuses the paused gateway's restart.
                         from hermes_cli import update_cmd_windows
@@ -245,6 +255,30 @@ def completion(tmp_path, monkeypatch):
         return subprocess.run([str(python), "-I", "-B", str(runner), str(context), str(result), fault],
                               cwd=tmp_path, env=env, capture_output=True, text=True, timeout=90, check=False)
     return source, home / ".hermes", request, context, result, run
+
+
+def test_historical_posix_gateway_resumes_before_product_builds(completion):
+    source, home, request, context, result, run = completion
+    request["windows_resume"] = {"platform": "posix", "resume_needed": True, "unmapped": []}
+    context.write_text(json.dumps(request), encoding="utf-8")
+    child = run("posix-order")
+    assert child.returncode == 0, child.stdout + child.stderr
+    assert json.loads((source / "early-resume.json").read_text())["resume_needed"] is False
+    assert json.loads((home / "logs/update_receipts/latest.json").read_text())["outcome"] == "success"
+    assert json.loads(result.read_text())["resume_handled"] is True
+
+
+def test_original_no_gateway_restart_defers_the_historical_finish_fleet(completion):
+    source, home, request, context, result, run = completion
+    request["no_gateway_restart"] = True
+    context.write_text(json.dumps(request), encoding="utf-8")
+    child = run()
+    assert child.returncode == 0, child.stdout + child.stderr
+    assert not (source / "restarted-plan.json").exists()
+    assert "Gateway restart deferred" in child.stdout
+    receipt = json.loads((home / "logs/update_receipts/latest.json").read_text())
+    assert receipt["outcome"] == "success"
+    assert json.loads(result.read_text())["resume_handled"] is True
 
 
 @pytest.mark.platforms("posix")

@@ -17,6 +17,7 @@ contracts:
   rationale: Preserve exact import provenance, later PR gates, complete registry dependency scans, and
     bounded JWT verification without breaking key rotation.
   tests:
+  - tests/scripts/test_run_batumi_contracts.py
   - tests/scripts/test_fork_provenance_v2.py
   - tests/scripts/test_fork_check_base.py
   - tests/scripts/test_supply_chain_import_scan.py
@@ -53,6 +54,7 @@ contracts:
 - id: plugins
   rationale: Preserve plugin discovery, lifecycle hooks, and skill exposure.
   tests:
+  - tests/hermes_cli/test_plugins_module_eviction.py
   - tests/hermes_cli/test_plugins.py
   - tests/tools/test_plugin_skills.py
   - tests/tools/test_environment_registry.py
@@ -79,6 +81,7 @@ contracts:
 - id: cron
   rationale: Preserve verbatim scripts, topic ownership, and scheduler shutdown.
   tests:
+  - tests/cron/test_external_fire_rejection_audit.py
   - tests/cron/test_scheduler.py
   - tests/cron/test_cron_no_agent.py
   - tests/cron/test_shutdown_interrupt.py
@@ -119,6 +122,13 @@ contracts:
   rationale: Preserve safe update checks and running-container restart behavior.
   serial: true
   tests:
+  - tests/hermes_cli/test_update_finish.py
+  - tests/hermes_cli/test_update_pause_record.py
+  - tests/hermes_cli/test_update_pause_lifecycle.py
+  - tests/hermes_cli/test_update_takeover_custody.py
+  - tests/hermes_cli/test_update_takeover_pause.py
+  - tests/hermes_cli/test_old_updater_takeover.py
+  - tests/hermes_cli/test_venv_sync_lifecycle.py
   - tests/hermes_cli/test_cmd_update.py
   - tests/hermes_cli/test_batumi_source_channel.py
   - tests/hermes_cli/test_update_eol_churn.py

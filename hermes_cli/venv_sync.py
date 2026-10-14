@@ -359,7 +359,11 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     from hermes_cli._parser import command_argv
     from hermes_cli.steward import read_install_stamp
 
-    if (command_argv(argv)[:1] == ["pm"]
+    command = command_argv(argv)
+    # Inspection and exact operator reconciliation must be reachable without
+    # attempting the deployment completion that ambiguous ownership blocks.
+    if (command[:1] == ["pm"]
+            or command[:2] in (["lifecycle-lease", "inspect"], ["lifecycle-lease", "reconcile"])
             or _METADATA_FLAGS & set(argv)
             or os.environ.get("HERMES_DISABLE_LAZY_INSTALLS", "").lower() in ("1", "true", "yes")
             or not (root / ".git").exists()
@@ -426,7 +430,16 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
                 # child) still runs.
                 if not lock.acquire_checkout(root):
                     raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
-                _finish_source_update(root, current=current, pending=pending)
+                # A launch completing deployment owes the same profile ownership
+                # as `hermes update`, even after the old checkout lock is free.
+                # Keep the CLI's lock order: checkout first, lifecycle lease next.
+                # Live updater descendants took the no-tail branch above, so they
+                # never attempt to reacquire their controller's lifecycle lease.
+                from hermes_constants import get_hermes_home
+                from hermes_cli.lifecycle_coordination import cli_update_transaction
+
+                with cli_update_transaction(home=get_hermes_home(), repo_root=root):
+                    _finish_source_update(root, current=current, pending=pending)
         finally:
             lock.release()
     python = resolve_store_python(root)

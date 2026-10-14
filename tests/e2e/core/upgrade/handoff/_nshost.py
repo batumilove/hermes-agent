@@ -27,6 +27,21 @@ from tests.e2e.core.upgrade import _helpers as H
 _AGENT = Path(__file__).with_name("_ns_agent.py")
 
 
+def _descendants(parent: int) -> dict[_reaper.Identity, str]:
+    """Snapshot actual descendant identities, including children in other sessions."""
+    stats = _reaper.all_stats()
+    children: dict[int, list[int]] = {}
+    for pid, fields in stats.items():
+        children.setdefault(int(fields[1]), []).append(pid)
+    owned = {}
+    pending = list(children.get(parent, []))
+    while pending:
+        pid = pending.pop()
+        owned[(pid, int(stats[pid][19]))] = _reaper.cmdline(pid)
+        pending.extend(children.get(pid, []))
+    return owned
+
+
 class NamespaceHost:
     def __init__(self, root: Path, env: dict[str, str]):
         self.root = root
@@ -36,6 +51,7 @@ class NamespaceHost:
         self._pending: dict[int, Future] = {}
         self._lock = threading.Lock()
         self._wlock = threading.Lock()  # one request line at a time: probes run from helper threads too
+        self._close_result: tuple[str, ...] | None = None
         _reaper.adopt_orphans()
         self._proc = subprocess.Popen(
             H.sandbox_argv([sys.executable, "-u", str(_AGENT)], writable=[root]),
@@ -118,16 +134,39 @@ class NamespaceHost:
         return "   PID   PPID S CMD\n" + "\n".join(sorted(rows, key=lambda r: int(r.split()[0])))
 
     def close(self) -> list[str]:
-        """Kill the sandbox (its init takes every namespace process with it); returns leaked host pids."""
+        """Stop owned processes, then report anything that survives sandbox teardown."""
+        if self._close_result is not None:
+            return list(self._close_result)
+        deadline = time.monotonic() + 30
+        owned = {}
+        # Without optional bwrap, setsid children escape the agent's process group.
+        # Stop only actual descendants, fenced by kernel birth time; unrelated HOME
+        # matches remain the reaper's leak report, never an implicit ownership claim.
+        if self._proc.poll() is None:
+            owned = _descendants(self._proc.pid)
+            # Children before parents: killing a namespace's init first can
+            # break ancestry while its other recorded processes are exiting.
+            _reaper.kill_identified(dict(reversed(owned.items())))
         try:
-            os.killpg(self._proc.pid, signal.SIGKILL)
+            if self._proc.poll() is None:
+                os.killpg(self._proc.pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
         try:
-            self._proc.wait(timeout=30)
+            self._proc.wait(timeout=max(0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
             pass
         try:
-            return _reaper.reap(_reaper.with_home(Path(self.env["HOME"])), timeout=15)
+            self._reader.join(timeout=max(0, deadline - time.monotonic()))
+            assert not self._reader.is_alive(), "sandbox reader did not stop with its agent"
+            for stream in (self._proc.stdin, self._proc.stdout):
+                if stream is not None:
+                    stream.close()
+            # Retain killed identities too: adopted zombies no longer appear in
+            # the live HOME census, but still need waitpid before teardown ends.
+            self._close_result = tuple(_reaper.reap(
+                lambda: owned, _reaper.with_home(Path(self.env["HOME"])), timeout=15,
+            ))
+            return list(self._close_result)
         finally:
             _reaper.release_orphans()

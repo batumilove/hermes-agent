@@ -154,7 +154,8 @@ def run_with_load_deadline(plugin_key: str, ctx: PluginContext, fn: Callable[[],
 def _evict_modules(module_name: str) -> None:
     """Drop ``module_name`` and every ``module_name.*`` submodule from ``sys.modules``."""
     prefix = f"{module_name}."
-    for name in [n for n in sys.modules if n == module_name or n.startswith(prefix)]:
+    # Other startup threads can import while a plugin's cached namespace is evicted.
+    for name in [n for n in sys.modules.copy() if n == module_name or n.startswith(prefix)]:
         del sys.modules[name]
 
 

@@ -214,7 +214,7 @@ class CronScheduler(ABC):
             return self._claim_fire_admitted(job_id, force=force, manual=manual)
 
     def _claim_fire_admitted(self, job_id: str, *, force: bool = False, manual: bool = False) -> dict | None:
-        from cron.executions import create_execution
+        from cron.executions import create_execution, finish_execution
         from cron.jobs import claim_job_for_fire, release_fire_claim
         claim_kwargs = {"return_job": True}
         if force:
@@ -223,6 +223,10 @@ class CronScheduler(ABC):
             claim_kwargs["manual"] = True
         claimed_job = claim_job_for_fire(job_id, **claim_kwargs)
         if not isinstance(claimed_job, dict):
+            execution = create_execution(
+                job_id, source=self.name, trigger_origin="manual" if manual else "external",
+            )
+            finish_execution(execution["id"], success=False, error="Fire claim was not acquired")
             return None
         claim = claimed_job.get("fire_claim") or {}
         owner = str(claim["by"])

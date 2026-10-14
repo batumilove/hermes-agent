@@ -626,8 +626,9 @@ REPLICA_ROUNDS = 12
 
 def test_two_replicas_contend_for_every_fire(soak_env):
     """Two external-provider replicas (this process + a second OS process) receive the same fire
-    for every due occurrence and call the real ``fire_due`` at once (a barrier parks each inside
-    ``claim_job_for_fire`` until both are there). The winner's run is held open, so the loser
+    for every due occurrence and call the real ``fire_due`` at once (a barrier parks each before
+    maintenance admission). A transient admission refusal retries within the same deadline;
+    an actual store claim decision is never retried. The winner's run is held open, so the loser
     always meets a live claim. Per round: exactly one replica claims, exactly one run starts for
     that slot and is delivered once, the loser's attempt is recorded as not acquired, and the
     store re-arms to a later slot, so no occurrence is fired twice or skipped."""
@@ -666,11 +667,12 @@ def test_two_replicas_contend_for_every_fire(soak_env):
             mine: dict[str, bool] = {}
 
             def fire_here(job_id=job_id, rnd=rnd):
-                mine["won"] = H.fire_as_replica(provider, job_id, rnd)
+                mine["won"] = H.fire_as_replica(provider, job_id, rnd, control)
 
             t = threading.Thread(target=fire_here)
-            t.start()
-            peer.request(rnd, job_id)
+            with H.initial_admission_contention(control, hermes_home, rnd, peer.pid):
+                t.start()
+                peer.request(rnd, job_id)
 
             def both_claimed():
                 return [c for c in H.read_jsonl(control.claims) if c["round"] == rnd][1:]

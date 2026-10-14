@@ -1,7 +1,9 @@
 """Absolute-path bootstrap for historical updater takeover; no app imports yet."""
 from __future__ import annotations
 
+from contextlib import ExitStack
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -10,6 +12,7 @@ import sys
 import time
 
 _SHA = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+logger = logging.getLogger(__name__)
 
 
 def prepare(request: dict) -> tuple[Path, dict[str, str]]:
@@ -20,11 +23,8 @@ def prepare(request: dict) -> tuple[Path, dict[str, str]]:
     # tree can publish stages (and pop the panel the old shim couldn't).
     from hermes_cli.update_stage import ensure_panel, publish_stage
 
-    ensure_panel(root)
     # An older updater hands off here instead of update_completion._prepare.
     from hermes_cli.gitlock import convert_treeless_checkout_first
-    convert_treeless_checkout_first(root)
-    publish_stage("Updating Python dependencies (PM)")
     from pm import receipt
     from pm.client import ensure_tools_for_sync, sync_venv, venv_is_current
     from pm.environments import activation_environment, install_state_dir, runtime_facts_path
@@ -38,6 +38,12 @@ def prepare(request: dict) -> tuple[Path, dict[str, str]]:
     refuse_foreign_owned_venv(root)
     arm_completion(root)
     _arm_fleet_obligation(root)
+    from hermes_cli.update_takeover_pause import pause_captured_gateways
+
+    pause_captured_gateways(request)
+    ensure_panel(root)
+    convert_treeless_checkout_first(root)
+    publish_stage("Updating Python dependencies (PM)")
     correlation = request["update_id"]
     with receipt.worker_context(correlation):
         # A pre-PM installation has no required-tool facts. A current Python
@@ -154,24 +160,44 @@ def main() -> int:
     update_receipt.begin_update_receipt(previous=old_receipt, correlation_id=old_receipt.get("update_id"))
     request["update_id"] = update_receipt.current_correlation_id()
     try:
-        try:
-            python, env = prepare(request)
-            request["receipt"] = update_receipt._current.get().data
-            context.write_text(json.dumps(request), encoding="utf-8")
-        except Exception as exc:  # health: allow BLE001 -- pre-commit boundary: any preparation failure is the takeover's recorded failure
-            print(f"Update preparation failed: {exc}", file=sys.stderr, flush=True)
-            _record_failure(request, result, 1, f"historical takeover preparation failed: {exc}")
-            return 1
-        try:
-            return _run_finish_child(request, context, result, python, env)
-        except Exception as exc:  # health: allow BLE001 -- post-commit boundary: the tree moved and the tail is armed
-            _record_owed_finish(request, result, f"the update finish child could not run ({exc})")
-            return 0
+        from hermes_cli.lifecycle_coordination import cli_update_transaction
+        from hermes_constants import get_hermes_home
+
+        with ExitStack() as ownership:
+            lease = ownership.enter_context(cli_update_transaction(get_hermes_home(), Path(request["root"])))
+            return _continue_takeover(request, context, result, ownership=ownership, lease=lease)
     finally:
         lock.release()
 
 
-def _run_finish_child(request: dict, context: Path, result: Path, python: Path, env: dict) -> int:
+def _continue_takeover(request: dict, context: Path, result: Path, *, ownership: ExitStack, lease) -> int:
+    from hermes_cli import update_receipt
+
+    try:
+        python, env = prepare(request)
+        request["receipt"] = update_receipt._current.get().data
+        context.write_text(json.dumps(request), encoding="utf-8")
+    except Exception as exc:  # health: allow BLE001 -- the already-swapped tree owes preparation; report its failure
+        logger.exception("Historical takeover preparation failed")
+        print(f"Update preparation failed: {exc}", file=sys.stderr, flush=True)
+        _record_failure(request, result, 1, f"historical takeover preparation failed: {exc}")
+        return 1
+    if request.get("restart_update"):
+        # A pre-pull hook delegates an ordinary current CLI update, which
+        # acquires its own lifecycle lease. Preparation is now finished.
+        ownership.close()
+        lease = None
+    try:
+        return _run_finish_child(request, context, result, python, env,
+                                 lifecycle_fds=lease.custody_fds() if lease is not None else ())
+    except Exception as exc:  # health: allow BLE001 -- post-commit boundary: the tree moved and the tail is armed
+        logger.exception("Historical update finish child could not run")
+        _record_owed_finish(request, result, f"the update finish child could not run ({exc})")
+        return 0
+
+
+def _run_finish_child(request: dict, context: Path, result: Path, python: Path, env: dict,
+                      *, lifecycle_fds: tuple[int, ...] = ()) -> int:
     # This file is new too. Direct execution bypasses normal launch-time
     # update liveness checks while the waiting parent still holds its lock.
     command = [str(python), "-I", "-B", "-X", "utf8", str(Path(request["root"]) / "hermes_cli/update_finish.py"),
@@ -179,7 +205,8 @@ def _run_finish_child(request: dict, context: Path, result: Path, python: Path, 
     from hermes_cli.update_custody import popen_post_commit
 
     # update_finish builds the checkout: POSIX lock fd; Windows bound to the job (or leased).
-    with popen_post_commit(command, label="update finish child", cwd=request["root"], env=env) as child:
+    custody = {"pass_fds": lifecycle_fds} if lifecycle_fds else {}
+    with popen_post_commit(command, label="update finish child", cwd=request["root"], env=env, **custody) as child:
         try:
             code = child.wait()
         except BaseException:

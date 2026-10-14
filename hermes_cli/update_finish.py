@@ -8,7 +8,7 @@ import sys
 
 def finish_update(*, root, assume_yes, gateway_mode, pre_update_snapshot_id,
                   had_desktop_app_before_update, pre_update_version,
-                  plan, windows_resume, followups=None) -> None:
+                  plan, windows_resume, followups=None, no_gateway_restart=False) -> None:
     """Finish the selected checkout; never fetch, switch branches or restore a stash.
 
     Same contract as the current completion (C3): the code is committed, so a failed build,
@@ -57,6 +57,11 @@ def finish_update(*, root, assume_yes, gateway_mode, pre_update_snapshot_id,
         _write_gateway_update_exit_code(True)
     run = update_receipt._current.get()
     update_id = run.data.get("update_id") if run is not None else None
+    if no_gateway_restart:
+        update_receipt.record_skip("gateway_restart", "--no-gateway-restart: deferred, marker kept")
+        update_receipt.record_stage("restart", "skipped")
+        print("→ Gateway restart deferred (--no-gateway-restart); restart gateways separately.")
+        return
     try:
         restarted = _restart_gateway_fleet_after_update(plan, gateway_mode)
         _resume_windows_gateways_and_merge_outcome(restarted, windows_resume, gateway_mode)
@@ -144,6 +149,11 @@ def main(context: Path, result: Path) -> int:
                 except OSError as exc:  # stale dependencies still trigger the next launch's sync
                     print(f"  ⚠ Could not record the owed source-update tail: {exc}")
                 owed: list[tuple[str, str]] = []
+                # The legacy takeover stopped its authenticated gateway before
+                # PM preparation. Boot the selected generation before UI builds.
+                from hermes_cli.update_completion import _resume_paused_before_build
+
+                _resume_paused_before_build(request)
                 try:
                     build_update_products(root, desktop=desktop)
                 except (Exception, SystemExit) as exc:  # health: allow BLE001 -- committed code: owed, not failed
@@ -156,6 +166,7 @@ def main(context: Path, result: Path) -> int:
                     had_desktop_app_before_update=desktop,
                     pre_update_version=request.get("pre_update_version"),
                     plan=plan, windows_resume=token, followups=owed,
+                    no_gateway_restart=request.get("no_gateway_restart", False),
                 )
         code = 0
     except SystemExit as exc:

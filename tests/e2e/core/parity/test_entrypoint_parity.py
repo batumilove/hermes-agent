@@ -47,6 +47,7 @@ from tests.e2e.core.parity._helpers import (
     kill_tagged,
     mcp_pids,
     start_provider,
+    startup_diagnostics,
     wait_no_orphans,
 )
 
@@ -128,6 +129,7 @@ def _run_row(entrypoint: str, root: Path) -> Row:
         row.error = f"{type(exc).__name__}: {exc}"[:4000]
     finally:
         if ph is not None:
+            row.detail += "\n" + startup_diagnostics(ph)
             kill_tagged(ph)
         srv.stop()
         row.wall_s = round(time.monotonic() - started, 1)
@@ -154,6 +156,6 @@ def matrix(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Row]:
 @pytest.mark.parametrize("entrypoint", list(DRIVERS))
 def test_entrypoint_parity(entrypoint: str, matrix: dict[str, Row]) -> None:
     row = matrix[entrypoint]
-    assert row.error is None, f"{entrypoint}: turn failed before the cells could be evaluated:\n{row.error}"
+    assert row.error is None, f"{entrypoint}: turn failed before the cells could be evaluated:\n{row.error}\n{row.detail}"
     failed = sorted(k for k, ok in row.cells.items() if not ok)
     assert not failed, f"{entrypoint}: parity cells red: {failed}\n{row.detail}"

@@ -102,6 +102,7 @@ def _takeover_request(payload: dict[str, Any], argv_tail: list[str] | None) -> d
     request.setdefault("windows_resume", payload.get("windows_gateway_resume"))
     request.setdefault("assume_yes", "--yes" in (argv_tail or []))
     request.setdefault("restart_update", False)
+    request.setdefault("no_gateway_restart", "--no-gateway-restart" in (argv_tail or []))
     return request
 
 

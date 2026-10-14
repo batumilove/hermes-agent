@@ -842,6 +842,48 @@ def test_pull_requests_and_main_pushes_never_run_e2e(event_name):
     assert "tests" in run and "tests-os" in run  # the unit lanes still run
 
 
+def _windows_journey_partition(jobs):
+    node = jobs["install-update"]
+    body, ctx = node["body"], node["ctx"]
+    strategy = body["strategy"]
+    assert strategy["max-parallel"] == 2 and strategy["fail-fast"] is False
+    assert body["timeout-minutes"] == 75
+    expected = {p.relative_to(_REPO).as_posix() for p in
+                (_REPO / "tests/e2e/core/windows_update").glob("test_*.py")}
+    selected = set()
+    steps = {step.get("name"): step for step in body["steps"]}
+    run = steps["Run Windows install + update E2E"]
+    assert run["env"]["HERMES_E2E_WINDOWS_INSTALL"] == "1"
+    assert {key: run["env"][key] for key in (
+        "HERMES_TEST_WORKERS", "HERMES_TEST_FILE_TIMEOUT", "HERMES_TEST_FILE_RETRIES"
+    )} == {"HERMES_TEST_WORKERS": "2", "HERMES_TEST_FILE_TIMEOUT": "3600",
+          "HERMES_TEST_FILE_RETRIES": "0"}
+    assert steps["Checkout code"]["with"]["fetch-depth"] == 0
+    assert steps["Set up locked Python and test dependencies"]["with"]["test-environment"] == "true"
+    artifact_names = set()
+    for cell in strategy["matrix"]["include"]:
+        context = {**ctx, "matrix": cell, "runner": {"os": "Windows", "arch": "X64"},
+                   "github": {**ctx["github"], "run_attempt": 1}}
+        assert gha.render(body["runs-on"], context) == "windows-latest"
+        files = workflow_steps.selected_files(run, context, _REPO)
+        _, calls = workflow_steps._run(run, context, _REPO, receipt=True)
+        assert calls == [["pytest", next(iter(files)), "--", "-m",
+                          "platforms and integration", "-v", "--tb=short", "-rA"]]
+        assert len(files) == 1, "each native runner owns one complete journey"
+        assert not selected & files, "journey dispatched more than once"
+        selected |= files
+        crash = steps["Every crash cell ran"]
+        assert gha.condition(crash.get("if"), context) == (
+            files == {"tests/e2e/core/windows_update/test_crash_cells.py"})
+        artifact = steps["Upload transcripts, logs and receipts"]
+        name = gha.render(artifact["with"]["name"], context)
+        assert name not in artifact_names, "matrix artifacts overwrite another journey"
+        artifact_names.add(name)
+        assert gha.condition(artifact["if"], context)
+        assert gha.condition(steps["No leftover Python / Hermes processes"]["if"], context)
+    assert selected == expected, f"native journey coverage differs: {selected ^ expected}"
+
+
 def test_windows_install_update_dispatch_alone_sets_strict():
     jobs = _run_workflow(".github/workflows/windows-install-update-e2e.yml",
                          inputs={"strict_acceptance": "upd-txn"})
@@ -849,6 +891,22 @@ def test_windows_install_update_dispatch_alone_sets_strict():
                        ".github/workflows/windows-install-update-e2e.yml", "install-update",
                        "Run Windows install + update E2E") == "upd-txn"
     assert "workflow_dispatch" in _on(_yaml(".github/workflows/windows-install-update-e2e.yml"))
+    _windows_journey_partition(jobs)
+
+
+@_NATIVE_WINDOWS_TOO
+@pytest.mark.parametrize("mutation", ["missing", "duplicate"])
+def test_windows_install_update_partition_rejects_lost_or_repeated_journey(monkeypatch, mutation):
+    rel = ".github/workflows/windows-install-update-e2e.yml"
+    workflow = _mutated_yaml(monkeypatch, rel)
+    cells = workflow["jobs"]["install-update"]["strategy"]["matrix"]["include"]
+    if mutation == "missing":
+        cells.pop()
+    else:
+        cells.append(dict(cells[-1]))
+    jobs = _run_workflow(rel, inputs={"strict_acceptance": "upd-txn"})
+    with pytest.raises(AssertionError, match="coverage differs|dispatched more than once"):
+        _windows_journey_partition(jobs)
 
 
 def test_run_tests_forwards_the_strict_switch():
