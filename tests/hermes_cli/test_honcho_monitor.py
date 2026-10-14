@@ -1489,3 +1489,39 @@ def test_deriver_conclusions_uses_db_count_not_stale_log_grep(monkeypatch):
         "level IN ('inductive','deductive')" in cmd and "psql" in cmd
         for cmd, _ in ssh_calls
     )
+
+
+def test_default_monitor_state_follows_served_profile(tmp_path, monkeypatch):
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+    monkeypatch.delenv("HONCHO_MONITOR_STATE", raising=False)
+    monkeypatch.delenv("HONCHO_MONITOR_HERMES_STATE_DB", raising=False)
+    for name in ("first", "second"):
+        home = tmp_path / name
+        token = set_hermes_home_override(home)
+        try:
+            assert hm._state_path() == home / "cache" / "honcho_monitor.json"
+            assert hm._state_db_path() == home / "state.db"
+        finally:
+            reset_hermes_home_override(token)
+
+
+@pytest.mark.platforms("linux")
+def test_deriver_log_probe_uses_unique_scratch_and_cleans_it(tmp_path):
+    import os
+    import subprocess
+
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    docker = binaries / "docker"
+    docker.write_text("#!/bin/sh\nprintf 'Observation Count 1\\nObservation Count 2\\nLlm Call Duration 1800 ms\\n'\n", encoding="utf-8")
+    docker.chmod(0o755)
+    result = subprocess.run(
+        ["sh", "-c", hm._deriver_log_command()],
+        env={"PATH": f"{binaries}{os.pathsep}{os.defpath}", "TMPDIR": str(scratch)},
+        check=True, capture_output=True, text=True, timeout=5,
+    )
+    assert result.stdout.splitlines() == ["count|2", "last|Llm Call Duration 1800 ms"]
+    assert not list(scratch.iterdir())

@@ -16,7 +16,8 @@ import pytest
 
 from gateway import delivery_ledger as dl
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 
 
@@ -63,7 +64,8 @@ def _event(text="hello agent"):
 def _rows():
     with dl._connect() as conn:
         return conn.execute(
-            "SELECT obligation_id, state, content FROM delivery_obligations"
+            """SELECT obligation_id, state, content, adapter_profile
+               FROM delivery_obligations"""
         ).fetchall()
 
 
@@ -324,7 +326,6 @@ class TestFinalHandoffPathOffDefaultExecutor:
 
             def _cancel_uncommitted_final_response_handoff(self, h):
                 calls.append("cancel")
-                return None
 
             class _post_response_controller:
                 @staticmethod
@@ -376,7 +377,6 @@ class TestFinalHandoffPathOffDefaultExecutor:
 
         monkeypatch.setattr(_asyncio, "to_thread", reject_to_thread)
 
-        calls: list = []
         adapter = _Adapter()
         await _run(adapter, _event(), response=None)
         # response=None path: no handoff existed; the run must simply not

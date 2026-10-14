@@ -432,6 +432,72 @@ def _is_frozen_mapping(value: object) -> bool:
     return isinstance(value, MappingProxyType)
 
 
+def _validate_profile(name: str, profile: AgentProfile, seen_roles: set[str]) -> None:
+    if not _PROFILE_NAME_RE.fullmatch(name):
+        raise ValueError(f"invalid profile name: {name!r}")
+    if name != profile.name:
+        raise ValueError(f"registry key {name!r} != profile.name {profile.name!r}")
+    role = profile.role
+    if role not in _EXPECTED_NAMES:
+        raise ValueError(f"invalid role for {name!r}: {role!r}")
+    if role in seen_roles:
+        raise ValueError(f"duplicate role: {role!r}")
+    seen_roles.add(role)
+    if name != _EXPECTED_NAMES[role]:
+        raise ValueError(f"role {role!r} must use profile name {_EXPECTED_NAMES[role]!r}")
+    if type(profile.registry_version) is not int or profile.registry_version != _REGISTRY_VERSION:
+        raise ValueError(f"registry_version drift for {name!r}")
+    if not profile.description or len(profile.description) > 400:
+        raise ValueError(f"description out of bounds for {name!r}")
+    # Frozen-container checks: a tampered (mutable) replacement is a
+    # validation failure even if its current content matches.
+    for field in ("toolsets", "credential_scopes", "capabilities"):
+        if not _is_frozen_mapping(getattr(profile, field)):
+            raise ValueError(f"{field!r} is not a frozen mapping for {name!r}")
+        if field != "capabilities" and any(
+            v is not None for v in getattr(profile, field).values()
+        ):
+            raise ValueError(f"{field!r} must carry None values only for {name!r}")
+    _validate_profile_contents(name, profile, role)
+
+
+def _validate_profile_contents(name: str, profile: AgentProfile, role: str) -> None:
+    # Exact content checks.
+    expected_toolsets = frozenset(_expected_toolsets(role))
+    if profile.allowed_toolsets != expected_toolsets:
+        raise ValueError(
+            f"toolset mismatch for {name!r}: {sorted(profile.allowed_toolsets)} "
+            f"!= {sorted(expected_toolsets)}"
+        )
+    if profile.terminal_scope != _EXPECTED_TERMINAL_SCOPE[role]:
+        raise ValueError(f"terminal_scope mismatch for {name!r}")
+    if profile.file_scope != _EXPECTED_FILE_SCOPE[role]:
+        raise ValueError(f"file_scope mismatch for {name!r}")
+    if profile.description != _EXPECTED_DESCRIPTIONS[role]:
+        raise ValueError(f"description mismatch for {name!r}")
+    if profile.allowed_credential_scopes != _EXPECTED_CREDENTIAL_SCOPES[role]:
+        raise ValueError(f"credential scope mismatch for {name!r}")
+    for scope in profile.credential_scopes:
+        if not _CREDENTIAL_SCOPE_RE.fullmatch(scope):
+            raise ValueError(f"invalid credential scope {scope!r} in {name!r}")
+    _validate_profile_capabilities(name, profile, role)
+
+
+def _validate_profile_capabilities(name: str, profile: AgentProfile, role: str) -> None:
+    expected_caps = _EXPECTED_CAPABILITIES[role]
+    caps = dict(profile.capabilities)
+    if set(caps) != set(expected_caps):
+        raise ValueError(f"capability key mismatch for {name!r}")
+    for key, value in caps.items():
+        if type(value) is not bool:
+            raise ValueError(f"capability {key!r} is not a bool for {name!r}")
+        if value != expected_caps[key]:
+            raise ValueError(
+                f"capability {key!r}={value!r} does not match expected "
+                f"{expected_caps[key]!r} for {name!r}"
+            )
+
+
 def validate_registry() -> None:
     """Fail closed on any registry invariant violation or content drift."""
     if set(PROFILES) != set(_EXPECTED_NAMES.values()):
@@ -441,61 +507,7 @@ def validate_registry() -> None:
         )
     seen_roles: set[str] = set()
     for name, profile in PROFILES.items():
-        if not _PROFILE_NAME_RE.fullmatch(name):
-            raise ValueError(f"invalid profile name: {name!r}")
-        if name != profile.name:
-            raise ValueError(f"registry key {name!r} != profile.name {profile.name!r}")
-        role = profile.role
-        if role not in _EXPECTED_NAMES:
-            raise ValueError(f"invalid role for {name!r}: {role!r}")
-        if role in seen_roles:
-            raise ValueError(f"duplicate role: {role!r}")
-        seen_roles.add(role)
-        if name != _EXPECTED_NAMES[role]:
-            raise ValueError(f"role {role!r} must use profile name {_EXPECTED_NAMES[role]!r}")
-        if type(profile.registry_version) is not int or profile.registry_version != _REGISTRY_VERSION:
-            raise ValueError(f"registry_version drift for {name!r}")
-        if not profile.description or len(profile.description) > 400:
-            raise ValueError(f"description out of bounds for {name!r}")
-        # Frozen-container checks: a tampered (mutable) replacement is a
-        # validation failure even if its current content matches.
-        for field in ("toolsets", "credential_scopes", "capabilities"):
-            if not _is_frozen_mapping(getattr(profile, field)):
-                raise ValueError(f"{field!r} is not a frozen mapping for {name!r}")
-            if field != "capabilities" and any(
-                v is not None for v in getattr(profile, field).values()
-            ):
-                raise ValueError(f"{field!r} must carry None values only for {name!r}")
-        # Exact content checks.
-        expected_toolsets = frozenset(_expected_toolsets(role))
-        if profile.allowed_toolsets != expected_toolsets:
-            raise ValueError(
-                f"toolset mismatch for {name!r}: {sorted(profile.allowed_toolsets)} "
-                f"!= {sorted(expected_toolsets)}"
-            )
-        if profile.terminal_scope != _EXPECTED_TERMINAL_SCOPE[role]:
-            raise ValueError(f"terminal_scope mismatch for {name!r}")
-        if profile.file_scope != _EXPECTED_FILE_SCOPE[role]:
-            raise ValueError(f"file_scope mismatch for {name!r}")
-        if profile.description != _EXPECTED_DESCRIPTIONS[role]:
-            raise ValueError(f"description mismatch for {name!r}")
-        if profile.allowed_credential_scopes != _EXPECTED_CREDENTIAL_SCOPES[role]:
-            raise ValueError(f"credential scope mismatch for {name!r}")
-        for scope in profile.credential_scopes:
-            if not _CREDENTIAL_SCOPE_RE.fullmatch(scope):
-                raise ValueError(f"invalid credential scope {scope!r} in {name!r}")
-        expected_caps = _EXPECTED_CAPABILITIES[role]
-        caps = dict(profile.capabilities)
-        if set(caps) != set(expected_caps):
-            raise ValueError(f"capability key mismatch for {name!r}")
-        for key, value in caps.items():
-            if type(value) is not bool:
-                raise ValueError(f"capability {key!r} is not a bool for {name!r}")
-            if value != expected_caps[key]:
-                raise ValueError(
-                    f"capability {key!r}={value!r} does not match expected "
-                    f"{expected_caps[key]!r} for {name!r}"
-                )
+        _validate_profile(name, profile, seen_roles)
     # Lane mapping consistency.
     expected_lanes = {"planning", "research", "coding", "review", "security", "ops"}
     if set(LANE_PROFILE_NAMES) != expected_lanes:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone, UTC
 from typing import Any
 
 from gateway.lifecycle_lease import (
@@ -59,7 +59,8 @@ def _run_external_controller(args) -> int:
     )
     primary: BaseException | None = None
     try:
-        result = subprocess.run(command, check=False)
+        lifetime = max(0.0, (expires_at - datetime.now(UTC)).total_seconds())
+        result = subprocess.run(command, check=False, timeout=lifetime)
     except BaseException as exc:
         primary = exc
         raise

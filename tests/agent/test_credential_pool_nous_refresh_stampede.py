@@ -20,6 +20,7 @@ import json
 import logging
 
 import hermes_cli.auth as auth_mod
+from hermes_cli import auth_nous
 from agent.credential_pool import CredentialPool, PooledCredential
 
 from tests.hermes_cli.test_auth_nous_provider import _invoke_jwt, _setup_nous_auth
@@ -54,6 +55,7 @@ def test_forced_refresh_adopts_peer_rotation_instead_of_reposting(tmp_path, monk
         }
 
     monkeypatch.setattr(auth_mod, "_refresh_access_token", _fake_refresh_access_token)
+    monkeypatch.setattr(auth_nous, "_refresh_access_token", _fake_refresh_access_token)
 
     creds = auth_mod.resolve_nous_runtime_credentials(
         force_refresh=True, stale_access_token=failed_token
@@ -65,6 +67,71 @@ def test_forced_refresh_adopts_peer_rotation_instead_of_reposting(tmp_path, monk
     # Same call WITHOUT the hint keeps the pre-existing force semantics.
     auth_mod.resolve_nous_runtime_credentials(force_refresh=True)
     assert posts == ["rt-after-peer-rotation"]
+
+
+def test_lock_timeout_during_nous_refresh_does_not_bench_entry(monkeypatch, caplog):
+    entry = PooledCredential(
+        id="267aed",
+        provider="nous",
+        auth_type="oauth",
+        access_token=_invoke_jwt(seconds=3600),
+        refresh_token="rt",
+        label="test@nous",
+        source="device_code",
+        priority=0,
+    )
+    pool = CredentialPool.__new__(CredentialPool)
+    pool._lock = __import__("threading").RLock()
+    pool._entries = [entry]
+    pool._active_leases = {}
+    pool._current_id = None
+    pool._max_concurrent = 2
+    pool._unmatched_rotation_streak = 0
+    pool.provider = "nous"
+
+    monkeypatch.setattr(pool, "_sync_nous_entry_from_auth_store", lambda e: e)
+    monkeypatch.setattr(pool, "_persist", lambda *a, **k: None)
+
+    def _busy(*a, **k):
+        raise TimeoutError("Timed out waiting for auth store lock")
+
+    monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials", _busy)
+    monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials", _busy)
+
+    result = pool._refresh_entry_impl(entry, force=True)
+
+    assert result is entry
+    assert pool._entries[0].last_status is None, "lock contention is not a credential failure"
+
+
+def test_agent_401_refresh_passes_failed_bearer_as_stale_hint(monkeypatch):
+    """Every 401-recovery caller must hand the auth store the bearer that
+    failed — without it ``_already_rotated_by_peer`` can never fire and each
+    subagent rotates the shared grant again (the "no crash, N refreshes"
+    variant of the Sep 2 stampede).
+    """
+    from run_agent import AIAgent
+
+    agent = AIAgent.__new__(AIAgent)
+    agent.provider = "nous"
+    agent.api_mode = "chat_completions"
+    agent.api_key = "jwt-that-just-401d"
+    agent.base_url = "https://inference-api.nousresearch.com/v1"
+    agent._client_kwargs = {}
+    monkeypatch.setattr(agent, "_replace_primary_openai_client", lambda **k: True)
+
+    seen = {}
+
+    def _fake_resolve(**kwargs):
+        seen.update(kwargs)
+        return {"api_key": "fresh", "base_url": agent.base_url}
+
+    monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials", _fake_resolve)
+    monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials", _fake_resolve)
+
+    assert agent._try_refresh_nous_client_credentials(force=True) is True
+    assert seen["force_refresh"] is True
+    assert seen["stale_access_token"] == "jwt-that-just-401d"
 
 
 def test_main_pool_id_match_preserves_failed_bearer_after_peer_rotation(monkeypatch):
@@ -108,66 +175,3 @@ def test_main_pool_id_match_preserves_failed_bearer_after_peer_rotation(monkeypa
     assert refreshed is not None
     assert refreshed.id == entry.id
     assert seen["stale_access_token"] == failed_token
-
-
-def test_lock_timeout_during_nous_refresh_does_not_bench_entry(monkeypatch, caplog):
-    entry = PooledCredential(
-        id="267aed",
-        provider="nous",
-        auth_type="oauth",
-        access_token=_invoke_jwt(seconds=3600),
-        refresh_token="rt",
-        label="test@nous",
-        source="device_code",
-        priority=0,
-    )
-    pool = CredentialPool.__new__(CredentialPool)
-    pool._lock = __import__("threading").RLock()
-    pool._entries = [entry]
-    pool._active_leases = {}
-    pool._current_id = None
-    pool._max_concurrent = 2
-    pool._unmatched_rotation_streak = 0
-    pool.provider = "nous"
-
-    monkeypatch.setattr(pool, "_sync_nous_entry_from_auth_store", lambda e: e)
-    monkeypatch.setattr(pool, "_persist", lambda *a, **k: None)
-
-    def _busy(*a, **k):
-        raise TimeoutError("Timed out waiting for auth store lock")
-
-    monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials", _busy)
-
-    result = pool._refresh_entry_impl(entry, force=True)
-
-    assert result is entry
-    assert pool._entries[0].last_status is None, "lock contention is not a credential failure"
-
-
-def test_agent_401_refresh_passes_failed_bearer_as_stale_hint(monkeypatch):
-    """Every 401-recovery caller must hand the auth store the bearer that
-    failed — without it ``_already_rotated_by_peer`` can never fire and each
-    subagent rotates the shared grant again (the "no crash, N refreshes"
-    variant of the Sep 2 stampede).
-    """
-    from run_agent import AIAgent
-
-    agent = AIAgent.__new__(AIAgent)
-    agent.provider = "nous"
-    agent.api_mode = "chat_completions"
-    agent.api_key = "jwt-that-just-401d"
-    agent.base_url = "https://inference-api.nousresearch.com/v1"
-    agent._client_kwargs = {}
-    monkeypatch.setattr(agent, "_replace_primary_openai_client", lambda **k: True)
-
-    seen = {}
-
-    def _fake_resolve(**kwargs):
-        seen.update(kwargs)
-        return {"api_key": "fresh", "base_url": agent.base_url}
-
-    monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials", _fake_resolve)
-
-    assert agent._try_refresh_nous_client_credentials(force=True) is True
-    assert seen["force_refresh"] is True
-    assert seen["stale_access_token"] == "jwt-that-just-401d"

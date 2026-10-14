@@ -49,7 +49,6 @@ def check_all(
         "SELECT task_id, run_generation, state FROM kanban_launch_protocol"
     ).fetchall()
     spawns = list(spawn_log)
-    evidence = list(evidence_log)
     history = list(lifecycle_log) if lifecycle_log is not None else []
     # History supplements (not replaces) the spawn stub log: every stub
     # invocation is a real process-creation event.
@@ -102,6 +101,14 @@ def check_all(
     if quiesced and rows:
         violations.append(f"{NO_LEAKAGE}: {len(rows)} rows remain")
 
+    violations.extend(_check_lifecycle(rows, history, max_detail))
+
+    return violations
+
+
+
+def _check_lifecycle(rows, history, max_detail: int) -> list[str]:
+    violations: list[str] = []
     # 3. fail closed: a task aborted in this lifecycle must never have a
     # spawned event for the same identity.
     # Track event ORDER per identity: an abort is legitimate before a

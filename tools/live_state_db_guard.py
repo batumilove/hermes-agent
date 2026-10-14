@@ -11,11 +11,15 @@ same Hermes Python runtime and opens the database read-only.
 from __future__ import annotations
 
 import ast
+import logging
 import os
 import re
 import shlex
 from pathlib import Path
 from typing import Callable
+
+
+logger = logging.getLogger(__name__)
 
 
 _BLOCK_MESSAGE = (
@@ -25,9 +29,9 @@ _BLOCK_MESSAGE = (
 )
 _PYTHON_NAME_RE = re.compile(
     r"py(?:\.exe)?|python[23]?(?:\.\d+)*(?:\.exe)?|pypy[23]?(?:\.exe)?",
-    re.I,
+    re.IGNORECASE,
 )
-_SQLITE_NAME_RE = re.compile(r"sqlite3(?:\.exe)?", re.I)
+_SQLITE_NAME_RE = re.compile(r"sqlite3(?:\.exe)?", re.IGNORECASE)
 _SCRIPT_RUNNER_NAMES = frozenset({"bash", "sh", "dash", "zsh", "ksh"})
 
 
@@ -38,8 +42,8 @@ def gateway_is_live(hermes_home: Path) -> bool:
 
         if _is_supervised_gateway_process():
             return True
-    except Exception:
-        pass
+    except (ImportError, OSError, RuntimeError):
+        logger.debug("Supervised gateway identity check failed", exc_info=True)
 
     try:
         from gateway.status import resolve_gateway_liveness
@@ -52,14 +56,15 @@ def gateway_is_live(hermes_home: Path) -> bool:
         # gateway is down.  Maintenance remains available when every probe
         # cleanly reports down (probe_error=False).
         return liveness.running or liveness.probe_error
-    except Exception:
+    except (ImportError, OSError, ValueError, RuntimeError):
+        logger.debug("Gateway liveness check failed; refusing ad-hoc database access", exc_info=True)
         return True
 
 
 def _command_executables(command: str) -> set[str]:
     """Return executable basenames at shell command positions and in -c payloads."""
     try:
-        from tools.approval import (
+        from tools.approval_detection import (
             _command_detection_variants,
             _deobfuscate_shell_word_for_detection,
             _iter_shell_command_word_spans,
@@ -71,7 +76,7 @@ def _command_executables(command: str) -> set[str]:
                 decoded = _deobfuscate_shell_word_for_detection(word)
                 names.add(os.path.basename(decoded).lower())
         return names
-    except Exception:
+    except (ImportError, ValueError):
         # Fail narrow rather than treating prose arguments as executables.  The
         # normal command parser has its own unconditional malformed-input floor.
         return set()
@@ -123,7 +128,7 @@ def _source_references_target(source: str, target: Path, cwd: Path) -> bool:
 def _read_bounded_source(path: Path) -> str | None:
     try:
         if path.is_file() and path.stat().st_size <= 128_000:
-            return path.read_text(encoding="utf-8", errors="replace")
+            return path.read_text(encoding="utf-8-sig", errors="replace")
     except OSError:
         pass
     return None
@@ -140,101 +145,71 @@ def _local_module_path(module: str, cwd: Path) -> Path | None:
     return None
 
 
-def _referenced_sources(
-    command: str, cwd: Path, *, _depth: int = 0
-) -> list[tuple[str, str]]:
-    """Read bounded local Python/shell sources, including nested carriers."""
+def _source_from_argument(argument: str, cwd: Path) -> str | None:
+    path = Path(argument)
+    return _read_bounded_source(path if path.is_absolute() else cwd / path)
+
+
+def _interpreter_source(name: str, args: list[str], cwd: Path) -> tuple[str, str] | None:
+    if _PYTHON_NAME_RE.fullmatch(name):
+        for index, arg in enumerate(args):
+            if arg in {"-c", "-m"} and index + 1 < len(args):
+                if arg == "-c":
+                    return "python", args[index + 1]
+                module = _local_module_path(args[index + 1], cwd)
+                source = _read_bounded_source(module) if module is not None else None
+                return ("python", source) if source is not None else None
+            if not arg.startswith("-"):
+                source = _source_from_argument(arg, cwd)
+                return ("python", source) if source is not None else None
+    elif name in _SCRIPT_RUNNER_NAMES:
+        argument = next((arg for arg in args if not arg.startswith("-")), None)
+        source = _source_from_argument(argument, cwd) if argument is not None else None
+        return ("shell", source) if source is not None else None
+    return None
+
+
+def _variant_sources(variant: str, cwd: Path) -> list[tuple[str, str]]:
+    from tools.approval_detection import (
+        _deobfuscate_shell_word_for_detection, _iter_shell_command_word_spans,
+    )
+
     try:
-        from tools.approval import (
-            _command_detection_variants,
-            _deobfuscate_shell_word_for_detection,
-            _iter_shell_command_word_spans,
-        )
-        variants = _command_detection_variants(command)
-    except Exception:
-        variants = [command]
-        _iter_shell_command_word_spans = lambda _command: []
-        _deobfuscate_shell_word_for_detection = lambda word: word
-
-    sources: list[tuple[str, str]] = []
-    seen: set[tuple[str, str]] = set()
-
-    def add(kind: str, source: str) -> None:
-        key = (kind, source)
-        if key not in seen:
-            seen.add(key)
-            sources.append(key)
-
-    for variant in variants:
-        try:
-            words = shlex.split(variant, posix=os.name != "nt")
-        except ValueError:
+        words = shlex.split(variant, posix=os.name != "nt")
+    except ValueError:
+        return []
+    sources = []
+    for index, word in enumerate(words):
+        source = _interpreter_source(os.path.basename(word).lower(), words[index + 1:], cwd)
+        if source is not None:
+            sources.append(source)
+    for _start, _end, word in _iter_shell_command_word_spans(variant):
+        source = _source_from_argument(_deobfuscate_shell_word_for_detection(word), cwd)
+        if not source:
             continue
+        first_line = source.splitlines()[0].lower()
+        if not first_line.startswith("#!"):
+            continue
+        if any(name in first_line for name in _SCRIPT_RUNNER_NAMES):
+            sources.append(("shell", source))
+        elif "python" in first_line or "pypy" in first_line:
+            sources.append(("python", source))
+    return sources
 
-        for index, word in enumerate(words):
-            name = os.path.basename(word).lower()
-            args = words[index + 1 :]
-            if _PYTHON_NAME_RE.fullmatch(name):
-                for arg_index, arg in enumerate(args):
-                    if arg == "-c" and arg_index + 1 < len(args):
-                        add("python", args[arg_index + 1])
-                        break
-                    if arg == "-m" and arg_index + 1 < len(args):
-                        module_path = _local_module_path(args[arg_index + 1], cwd)
-                        if module_path is not None:
-                            source = _read_bounded_source(module_path)
-                            if source is not None:
-                                add("python", source)
-                        break
-                    if not arg.startswith("-"):
-                        path = Path(arg)
-                        if not path.is_absolute():
-                            path = cwd / path
-                        source = _read_bounded_source(path)
-                        if source is not None:
-                            add("python", source)
-                        break
-            elif name in _SCRIPT_RUNNER_NAMES:
-                for arg in args:
-                    if arg.startswith("-"):
-                        continue
-                    path = Path(arg)
-                    if not path.is_absolute():
-                        path = cwd / path
-                    source = _read_bounded_source(path)
-                    if source is not None:
-                        add("shell", source)
-                    break
 
-        # Directly executed local shebang scripts at shell command positions.
-        for _start, _end, word in _iter_shell_command_word_spans(variant):
-            decoded = _deobfuscate_shell_word_for_detection(word)
-            path = Path(decoded)
-            if not path.is_absolute():
-                path = cwd / path
-            source = _read_bounded_source(path)
-            if source is None:
-                continue
-            first_line = source.splitlines()[0].lower() if source.splitlines() else ""
-            if first_line.startswith("#!") and any(
-                name in first_line for name in _SCRIPT_RUNNER_NAMES
-            ):
-                add("shell", source)
-            elif first_line.startswith("#!") and (
-                "python" in first_line or "pypy" in first_line
-            ):
-                add("python", source)
+def _referenced_sources(command: str, cwd: Path, *, _depth: int = 0) -> list[tuple[str, str]]:
+    """Read bounded local Python/shell sources, including nested carriers."""
+    from tools.approval_detection import _command_detection_variants
 
+    sources = dict.fromkeys(
+        source for variant in _command_detection_variants(command)
+        for source in _variant_sources(variant, cwd)
+    )
     if _depth < 2:
         for kind, source in tuple(sources):
-            if kind != "shell":
-                continue
-            for nested_kind, nested_source in _referenced_sources(
-                source, cwd, _depth=_depth + 1
-            ):
-                add(nested_kind, nested_source)
-
-    return sources
+            if kind == "shell":
+                sources.update(dict.fromkeys(_referenced_sources(source, cwd, _depth=_depth + 1)))
+    return list(sources)
 
 
 def _python_source_opens_sqlite(source: str) -> bool:

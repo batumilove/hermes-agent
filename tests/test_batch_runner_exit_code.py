@@ -22,6 +22,8 @@ def _run(*args):
         [PYTHON, "batch_runner.py", *args],
         cwd=REPO_ROOT,
         text=True,
+        check=False,
+        timeout=30,
         capture_output=True,
     )
 

@@ -22,12 +22,12 @@ import re
 import shlex
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any
 
-DEFAULT_HONCHO_HOST = os.environ.get("HONCHO_DIAGNOSTIC_HOST", "ubuntu@100.67.206.76")
-DEFAULT_WORKSPACE = os.environ.get("HONCHO_DIAGNOSTIC_WORKSPACE", "hermes")
+DEFAULT_HONCHO_HOST = "ubuntu@100.67.206.76"
+DEFAULT_WORKSPACE = "hermes"
 
 # Safe destination for OpenSSH: user@host/IP/Tailscale-style hostname.
 # user and host segments may contain alphanumerics, dots, hyphens, and underscores
@@ -117,13 +117,15 @@ class HonchoQueueDiagnostic:
 
     def __init__(
         self,
-        host: str = DEFAULT_HONCHO_HOST,
-        workspace: str = DEFAULT_WORKSPACE,
+        host: str | None = None,
+        workspace: str | None = None,
         database_container: str = "honcho-database-1",
         deriver_container: str = "honcho-deriver-1",
     ):
-        self.host = _validate_ssh_host(host)
-        self.workspace = workspace
+        self.host = _validate_ssh_host(
+            host if host is not None else os.environ.get("HONCHO_DIAGNOSTIC_HOST", DEFAULT_HONCHO_HOST)
+        )
+        self.workspace = workspace if workspace is not None else os.environ.get("HONCHO_DIAGNOSTIC_WORKSPACE", DEFAULT_WORKSPACE)
         self.database_container = _validate_container_name(database_container)
         self.deriver_container = _validate_container_name(deriver_container)
 
@@ -140,8 +142,11 @@ class HonchoQueueDiagnostic:
                 self.host,
                 command,
             ],
+            check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
         if result.returncode != 0:
@@ -165,8 +170,10 @@ class HonchoQueueDiagnostic:
         """Return recent deriver log text, redirected via file to avoid Rich hangs."""
         try:
             return self._ssh(
-                f"docker logs {shlex.quote(self.deriver_container)} --since {shlex.quote(since)} > /tmp/honcho-diag.log 2>&1; "
-                "cat /tmp/honcho-diag.log",
+                "diagnostic_log=$(mktemp -t hermes-honcho-diagnostic.XXXXXX) || exit 1; "
+                "trap 'rm -f \"$diagnostic_log\"' EXIT; "
+                f"docker logs {shlex.quote(self.deriver_container)} --since {shlex.quote(since)} "
+                "> \"$diagnostic_log\" 2>&1; cat \"$diagnostic_log\"",
                 timeout=40,
             )
         except HonchoDiagnosticError:
@@ -348,7 +355,7 @@ class HonchoQueueDiagnostic:
 
     def format_report(self, enriched: list[WorkUnitDiagnostics], summary: dict[str, Any] | None = None) -> str:
         lines = [
-            f"🩺 Honcho queue diagnostics — {datetime.now(timezone.utc).strftime('%H:%M UTC')}",
+            f"🩺 Honcho queue diagnostics — {datetime.now(UTC).strftime('%H:%M UTC')}",
             f"  host={self.host} workspace={self.workspace}",
         ]
         if summary:
@@ -364,7 +371,7 @@ class HonchoQueueDiagnostic:
             unit = diag.work_unit
             age = "?"
             if unit.created_at:
-                delta = datetime.now(timezone.utc) - unit.created_at
+                delta = datetime.now(UTC) - unit.created_at
                 age = f"{delta.total_seconds() / 60:.1f}m"
             status_emoji = {"done": "✅", "pending": "⏳", "errored": "❌"}.get(unit.phase, "❓")
             lines.append(
@@ -390,7 +397,7 @@ def _parse_iso(value: str | None) -> datetime | None:
     try:
         # PostgreSQL text timestamps often look like "2026-05-27 19:40:00+00".
         return datetime.fromisoformat(value.replace(" ", "T").replace("+00", "+00:00"))
-    except Exception:
+    except (TypeError, ValueError):
         return None
 
 

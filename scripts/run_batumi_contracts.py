@@ -24,7 +24,7 @@ class ContractError(RuntimeError):
 
 def load_contracts(path: Path) -> list[dict[str, Any]]:
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw = yaml.safe_load(path.read_text(encoding="utf-8-sig"))
     except (OSError, yaml.YAMLError) as exc:
         raise ContractError(f"could not read {path}: {exc}") from exc
     if not isinstance(raw, dict) or raw.get("version") != 1:
@@ -116,14 +116,15 @@ def main(argv: list[str] | None = None) -> int:
         for selectors, runner_args in lanes:
             if not selectors:
                 continue
+            separator = pytest_args.index("--") if "--" in pytest_args else len(pytest_args)
+            forwarded = [*pytest_args[:separator], *runner_args, *pytest_args[separator:]]
             command = [
                 str(ROOT / "scripts" / "run_tests.sh"),
-                *runner_args,
                 *selectors,
                 "-q",
-                *pytest_args,
+                *forwarded,
             ]
-            result = subprocess.run(command, cwd=ROOT, env=env)
+            result = subprocess.run(command, cwd=ROOT, env=env, timeout=3600, check=False)
             if result.returncode:
                 return result.returncode
     return 0

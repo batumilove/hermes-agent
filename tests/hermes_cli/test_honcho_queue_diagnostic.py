@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import shlex
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any
 
@@ -145,8 +145,10 @@ def _psql_command_for_active_sessions(self) -> str:
 
 def _psql_command_for_container_log(self) -> str:
     return (
-        f"docker logs {shlex.quote(self.deriver_container)} --since {shlex.quote('15m')} > /tmp/honcho-diag.log 2>&1; "
-        "cat /tmp/honcho-diag.log"
+        "diagnostic_log=$(mktemp -t hermes-honcho-diagnostic.XXXXXX) || exit 1; "
+        "trap 'rm -f \"$diagnostic_log\"' EXIT; "
+        f"docker logs {shlex.quote(self.deriver_container)} --since {shlex.quote('15m')} "
+        "> \"$diagnostic_log\" 2>&1; cat \"$diagnostic_log\""
     )
 
 
@@ -226,7 +228,7 @@ def test_queue_work_unit_phase_for_pending():
 
 def test_parse_iso_handles_postgresql_text_timestamps():
     assert hqd._parse_iso("2026-05-27 19:40:00+00") == datetime(
-        2026, 5, 27, 19, 40, 0, tzinfo=timezone.utc
+        2026, 5, 27, 19, 40, 0, tzinfo=UTC
     )
 
 
@@ -283,7 +285,7 @@ def test_collect_queue_detail_parses_rows():
     assert units[0].processed is False
     assert units[0].error is None
     assert units[0].work_unit_key == "representation:sess-a:101"
-    assert units[0].created_at == datetime(2026, 5, 27, 19, 40, 0, tzinfo=timezone.utc)
+    assert units[0].created_at == datetime(2026, 5, 27, 19, 40, 0, tzinfo=UTC)
     assert units[1].work_unit_id == 2
     assert units[1].error == "JSONDecodeError"
     assert units[1].phase == "errored"
@@ -381,7 +383,7 @@ def test_enrich_work_unit_combines_sources():
         message_id=101,
         processed=False,
         error=None,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     enriched = diagnostic.enrich_work_unit(unit)
     assert enriched.message_count == 12
@@ -400,7 +402,7 @@ def test_format_report_includes_summary_and_units():
         message_id=101,
         processed=False,
         error=None,
-        created_at=datetime(2026, 5, 27, 19, 40, 0, tzinfo=timezone.utc),
+        created_at=datetime(2026, 5, 27, 19, 40, 0, tzinfo=UTC),
     )
     diag = hqd.WorkUnitDiagnostics(
         work_unit=unit,
@@ -478,7 +480,6 @@ def test_psql_command_for_counts_quotes_malicious_session_id(malicious: str) -> 
 
 @pytest.mark.parametrize("malicious", _MALICIOUS_SESSION_IDS)
 def test_psql_command_for_peers_quotes_malicious_session_id(malicious: str) -> None:
-    diagnostic = hqd.HonchoQueueDiagnostic(host="test-host", workspace="test-ws")
     # We call _psql directly to capture the command string; the FakeDiagnostic
     # override below intercepts the _ssh call instead.
     captured = _CapturingDiagnostic(host="test-host", workspace="test-ws")
@@ -499,7 +500,6 @@ def test_psql_command_uses_single_quote_wrapping_not_double_quotes():
     """shlex.quote wraps in single quotes (or returns a safe bare token); the
     old vulnerable code used unescaped double quotes.  Verify the -c argument
     is NOT wrapped in bare double quotes."""
-    diagnostic = hqd.HonchoQueueDiagnostic(host="test-host", workspace="test-ws")
     captured = _CapturingDiagnostic(host="test-host", workspace="test-ws")
     captured.collect_queue_summary()
     assert captured.command is not None
@@ -532,7 +532,7 @@ def test_shell_injected_file_is_not_created():
     )
     # If we run this through bash, the touch must NOT execute (docker will fail
     # since there's no such container, but the key is the marker file is absent).
-    subprocess.run(["bash", "-c", cmd], capture_output=True, timeout=5)
+    subprocess.run(["bash", "-c", cmd], check=False, capture_output=True, timeout=5)
     assert not os.path.exists(marker), (
         "Shell injection succeeded: marker file was created by malicious session_id"
     )
@@ -626,3 +626,42 @@ class _CapturingDiagnostic(hqd.HonchoQueueDiagnostic):
 
     def _container_log(self, since: str = "15m") -> str:
         return ""
+
+
+def test_default_deployment_settings_are_resolved_on_each_construction(monkeypatch):
+    monkeypatch.setenv("HONCHO_DIAGNOSTIC_HOST", "ubuntu@first-host")
+    monkeypatch.setenv("HONCHO_DIAGNOSTIC_WORKSPACE", "first-workspace")
+    first = hqd.HonchoQueueDiagnostic()
+    monkeypatch.setenv("HONCHO_DIAGNOSTIC_HOST", "ubuntu@second-host")
+    monkeypatch.setenv("HONCHO_DIAGNOSTIC_WORKSPACE", "second-workspace")
+    second = hqd.HonchoQueueDiagnostic()
+    assert (first.host, first.workspace) == ("ubuntu@first-host", "first-workspace")
+    assert (second.host, second.workspace) == ("ubuntu@second-host", "second-workspace")
+
+
+@pytest.mark.platforms("linux")
+def test_deriver_log_diagnostic_uses_unique_scratch_and_cleans_it(tmp_path):
+    import os
+    import subprocess
+
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    docker = binaries / "docker"
+    docker.write_text("#!/bin/sh\nprintf 'PERFORMANCE - audit-unit\\n  Llm Call Duration: 42 ms\\n'\n", encoding="utf-8")
+    docker.chmod(0o755)
+
+    class LocalDiagnostic(hqd.HonchoQueueDiagnostic):
+        def _ssh(self, command, timeout=30):
+            result = subprocess.run(
+                ["sh", "-c", command],
+                env={"PATH": f"{binaries}{os.pathsep}{os.defpath}", "TMPDIR": str(scratch)},
+                check=True, capture_output=True, text=True, timeout=5,
+            )
+            return result.stdout
+
+    assert LocalDiagnostic()._container_log().splitlines() == [
+        "PERFORMANCE - audit-unit", "  Llm Call Duration: 42 ms",
+    ]
+    assert not list(scratch.iterdir())

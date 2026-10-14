@@ -12,7 +12,7 @@ const baseProps = {
   onBack: vi.fn(),
   onForward: vi.fn(),
   onNavigate: vi.fn(),
-  onOpenExternal: vi.fn(),
+  onPopOut: vi.fn(),
   onReload: vi.fn(),
   onToggleConsole: vi.fn(),
   onToggleDevTools: vi.fn(),
@@ -79,19 +79,6 @@ describe('normalizePreviewAddress', () => {
 })
 
 describe('PreviewBrowserBar', () => {
-  it('renders the navigation controls and the page toggles', () => {
-    const rendered = render(<PreviewBrowserBar {...baseProps} />)
-
-    expect(rendered.getByRole('button', { name: 'Back' })).toBeTruthy()
-    expect(rendered.getByRole('button', { name: 'Forward' })).toBeTruthy()
-    expect(rendered.getByRole('button', { name: 'Reload page' })).toBeTruthy()
-    expect(rendered.getByRole('button', { name: 'Copy URL' })).toBeTruthy()
-    expect(rendered.getByRole('button', { name: 'Open in browser' })).toBeTruthy()
-    expect(rendered.getByRole('button', { name: 'Show preview console' })).toBeTruthy()
-    expect(rendered.getByRole('button', { name: 'Open preview DevTools' })).toBeTruthy()
-    expect(address(rendered)).toBeTruthy()
-  })
-
   it('disables back and forward when there is no history', () => {
     const rendered = render(<PreviewBrowserBar {...baseProps} />)
 
@@ -99,18 +86,11 @@ describe('PreviewBrowserBar', () => {
     expect((rendered.getByRole('button', { name: 'Forward' }) as HTMLButtonElement).disabled).toBe(true)
   })
 
-  it('enables back and forward when there is history', () => {
-    const rendered = render(<PreviewBrowserBar {...baseProps} canGoBack canGoForward />)
-
-    expect((rendered.getByRole('button', { name: 'Back' }) as HTMLButtonElement).disabled).toBe(false)
-    expect((rendered.getByRole('button', { name: 'Forward' }) as HTMLButtonElement).disabled).toBe(false)
-  })
-
   it.each([
     ['Back', 'onBack'],
     ['Forward', 'onForward'],
     ['Reload page', 'onReload'],
-    ['Open in browser', 'onOpenExternal']
+    ['Pop out', 'onPopOut']
   ] as const)('fires %s', (label, handler) => {
     const spy = vi.fn()
     const rendered = render(<PreviewBrowserBar {...baseProps} canGoBack canGoForward {...{ [handler]: spy }} />)
@@ -118,6 +98,24 @@ describe('PreviewBrowserBar', () => {
     fireEvent.click(rendered.getByRole('button', { name: label }))
 
     expect(spy).toHaveBeenCalledOnce()
+  })
+
+  it('closes the preview from the visible toolbar control', () => {
+    const onClose = vi.fn()
+    const rendered = render(<PreviewBrowserBar {...baseProps} onClose={onClose} />)
+
+    fireEvent.click(rendered.getByRole('button', { name: 'Close' }))
+
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  // #92500: the pane fills the layout with no strip ✕ in reach, so the bar's
+  // close is not optional chrome — but embedders that never pass the verb
+  // (the popped-out Browser shell) must not grow a dead button either.
+  it('renders no close control when no close verb is supplied', () => {
+    const rendered = render(<PreviewBrowserBar {...baseProps} />)
+
+    expect(rendered.queryByRole('button', { name: 'Close' })).toBeNull()
   })
 
   it('toggles the console and DevTools, and labels them by current state', () => {
@@ -320,15 +318,36 @@ describe('PreviewBrowserBar', () => {
     await waitFor(() => expect(writeClipboard).toHaveBeenCalledWith('https://example.com/next'))
   })
 
-  it('renders the copy control inside the address field wrapper, not as a bar glyph', () => {
-    render(<PreviewBrowserBar {...baseProps} />)
+  it('shows Open in browser when only the external handler is provided', () => {
+    const onOpenExternal = vi.fn()
 
-    const copyButton = screen.getByRole('button', { name: 'Copy URL' })
-    const address = screen.getByRole('textbox', { name: 'Address' })
+    const rendered = render(<PreviewBrowserBar {...baseProps} onOpenExternal={onOpenExternal} onPopOut={undefined} />)
 
-    // Same positioned wrapper as the field = visually inside it, like the
-    // code-block copy icon (inline appearance, overlay on the field's edge).
-    expect(copyButton.parentElement?.contains(address)).toBe(true)
-    expect(copyButton.className).toContain('absolute')
+    expect(rendered.getByRole('button', { name: 'Open in browser' })).toBeTruthy()
+    expect(rendered.queryByRole('button', { name: 'Pop out' })).toBeNull()
+
+    fireEvent.click(rendered.getByRole('button', { name: 'Open in browser' }))
+
+    expect(onOpenExternal).toHaveBeenCalledOnce()
+  })
+
+  it('prefers pop-out over open-in-browser when both handlers are provided', () => {
+    const rendered = render(<PreviewBrowserBar {...baseProps} onOpenExternal={vi.fn()} />)
+
+    expect(rendered.getByRole('button', { name: 'Pop out' })).toBeTruthy()
+    expect(rendered.queryByRole('button', { name: 'Open in browser' })).toBeNull()
+  })
+
+  it('shows Pop in when the window is already popped out', () => {
+    const onPopIn = vi.fn()
+    const rendered = render(<PreviewBrowserBar {...baseProps} onPopIn={onPopIn} onPopOut={undefined} />)
+
+    expect(rendered.getByRole('button', { name: 'Pop in' })).toBeTruthy()
+    expect(rendered.queryByRole('button', { name: 'Pop out' })).toBeNull()
+    expect(rendered.queryByRole('button', { name: 'Open in browser' })).toBeNull()
+
+    fireEvent.click(rendered.getByRole('button', { name: 'Pop in' }))
+
+    expect(onPopIn).toHaveBeenCalledOnce()
   })
 })

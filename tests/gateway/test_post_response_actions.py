@@ -365,7 +365,7 @@ def test_same_owner_stale_attempt_cannot_complete_or_fail_reclaimed_action(db, m
 
 
 def test_owner_liveness_unknown_fails_closed_and_pid_reuse_is_dead(monkeypatch):
-    import gateway.status as status
+    from gateway import status
 
     monkeypatch.setattr(status, "get_process_start_time", lambda _pid: None)
     monkeypatch.setattr(status, "_pid_exists", lambda _pid: (_ for _ in ()).throw(OSError()))

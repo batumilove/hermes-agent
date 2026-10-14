@@ -53,7 +53,7 @@ def run_openssl(args):
     the host's openssl rejects all look identical.
     """
     done = subprocess.run(
-        ['openssl', *args], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+        ['openssl', *args], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=30, check=False
     )
     if done.returncode != 0:
         detail = done.stderr.decode('utf-8', 'replace').strip()
@@ -220,7 +220,7 @@ def handle_request(conn):
 def handle(conn):
     try:
         handle_request(conn)
-    except Exception as error:
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         print(f'proxy request failed: {error!r}', file=sys.stderr, flush=True)
 
 

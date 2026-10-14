@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 
 import pytest
@@ -22,13 +22,12 @@ from hermes_cli.bounded_restart import (
 )
 
 
-UTC = timezone.utc
 NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 
 
 @dataclass
 class FakeLifecycleLease:
-    ops: "FakeOps"
+    ops: FakeOps
 
     def release(self):
         self.ops.events.append("lifecycle:release")
@@ -36,7 +35,7 @@ class FakeLifecycleLease:
 
 @dataclass
 class FakeDrain:
-    ops: "FakeOps"
+    ops: FakeOps
     token: str
 
     def write_request(self):
@@ -454,7 +453,7 @@ def test_execute_releases_lifecycle_lease_on_unexpected_error(tmp_path, controll
 def test_systemd_lifecycle_lease_binds_exact_candidate_provenance(
     tmp_path, controller_path, monkeypatch
 ):
-    import gateway.lifecycle_lease as lifecycle_lease
+    from gateway import lifecycle_lease
 
     manifest = load_manifest(tmp_path, controller_path)
     captured = {}

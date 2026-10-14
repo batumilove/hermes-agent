@@ -19,7 +19,7 @@ from tests.gateway.restart_test_helpers import make_restart_runner
 def runner_with_home(tmp_path, monkeypatch):
     """Create a runner with a writable HERMES_HOME."""
     monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
-    runner, adapter = make_restart_runner()
+    runner, _adapter = make_restart_runner()
     return runner, tmp_path
 
 
@@ -36,7 +36,7 @@ class TestStuckLoopDetection:
 
 
     def test_suspend_at_threshold(self, runner_with_home):
-        runner, home = runner_with_home
+        runner, _home = runner_with_home
         # Simulate 3 restarts with session:a active each time
         for _ in range(3):
             runner._increment_restart_failure_counts({"session:a"})
@@ -52,7 +52,7 @@ class TestStuckLoopDetection:
         assert mock_entry.suspended is True
 
     def test_no_suspend_below_threshold(self, runner_with_home):
-        runner, home = runner_with_home
+        runner, _home = runner_with_home
         runner._increment_restart_failure_counts({"session:a"})
         runner._increment_restart_failure_counts({"session:a"})
         # Only 2 restarts — below threshold of 3
@@ -81,7 +81,6 @@ class TestStuckLoopDetection:
             nonlocal loop_advanced
             while not entered.is_set():
                 await asyncio.sleep(0)
-            await asyncio.sleep(0.01)
             loop_advanced = True
             release.set()
 

@@ -1,3 +1,4 @@
+import argparse
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -54,7 +55,9 @@ def test_list_can_select_one_contract(capsys):
     assert capsys.readouterr().out == "cron\n"
 
 
-def test_serial_contract_uses_single_worker(tmp_path, monkeypatch):
+@pytest.mark.parametrize("worker_args", [[], ["-j", "4"], ["--jobs=4"], ["-j4"],
+                                       ["-j", "4", "--", "-k", "selected"]])
+def test_serial_contract_uses_single_worker(tmp_path, monkeypatch, worker_args):
     test_file = tmp_path / "test_ok.py"
     test_file.write_text("def test_ok(): pass\n", encoding="utf-8")
     manifest = tmp_path / "contracts.yaml"
@@ -78,6 +81,14 @@ def test_serial_contract_uses_single_worker(tmp_path, monkeypatch):
     monkeypatch.setattr("scripts.run_batumi_contracts.ROOT", Path("/"))
     monkeypatch.setattr("scripts.run_batumi_contracts.subprocess.run", run)
 
-    assert main(["--manifest", str(manifest)]) == 0
+    assert main(["--manifest", str(manifest), *worker_args]) == 0
     command = run.call_args.args[0]
-    assert command[1:3] == ["-j", "1"]
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-j", "--jobs", type=int)
+    options = command[1:]
+    if "--" in options:
+        separator = options.index("--")
+        assert options[separator + 1:] == ["-k", "selected"]
+        options = options[:separator]
+    parsed, _ = parser.parse_known_args(options)
+    assert parsed.jobs == 1, "caller worker options overrode the serial contract"

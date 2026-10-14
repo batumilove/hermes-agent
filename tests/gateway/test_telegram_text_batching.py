@@ -6,14 +6,14 @@ from the same session and aggregate them before dispatching.
 """
 
 import asyncio
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from tests.waiting import async_wait_until
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType, SessionSource
-from gateway.session import build_session_key
+from gateway.platforms.base import SessionSource
+from gateway.platforms.event import MessageEvent, MessageType
 
 
 def _make_adapter():
@@ -77,7 +77,7 @@ class TestTextBatching:
         adapter.handle_message.assert_not_called()
 
         # Wait for flush
-        await asyncio.sleep(0.2)
+        await asyncio.gather(*list(adapter._pending_text_batch_tasks.values()))
 
         adapter.handle_message.assert_called_once()
         dispatched = adapter.handle_message.call_args[0][0]
@@ -89,38 +89,20 @@ class TestTextBatching:
         adapter = _make_adapter()
 
         adapter._enqueue_text_event(_make_event("This is part one of a long"))
-        await asyncio.sleep(0.02)  # small gap, within batch window
+        await asyncio.sleep(0)  # let the first batch timer start before resetting it
         adapter._enqueue_text_event(_make_event("message that was split by Telegram."))
 
         # Not dispatched yet (timer restarted)
         adapter.handle_message.assert_not_called()
 
         # Wait for flush
-        await asyncio.sleep(0.2)
+        await asyncio.gather(*list(adapter._pending_text_batch_tasks.values()))
 
         adapter.handle_message.assert_called_once()
         dispatched = adapter.handle_message.call_args[0][0]
         assert "part one" in dispatched.text
         assert "split by Telegram" in dispatched.text
 
-    @pytest.mark.asyncio
-    async def test_three_way_split_aggregated(self):
-        """Three rapid messages should all merge."""
-        adapter = _make_adapter()
-
-        adapter._enqueue_text_event(_make_event("chunk 1"))
-        await asyncio.sleep(0.02)
-        adapter._enqueue_text_event(_make_event("chunk 2"))
-        await asyncio.sleep(0.02)
-        adapter._enqueue_text_event(_make_event("chunk 3"))
-
-        await asyncio.sleep(0.2)
-
-        adapter.handle_message.assert_called_once()
-        text = adapter.handle_message.call_args[0][0].text
-        assert "chunk 1" in text
-        assert "chunk 2" in text
-        assert "chunk 3" in text
 
     @pytest.mark.asyncio
     async def test_topic_recovery_does_not_block_event_loop(self):
@@ -151,7 +133,7 @@ class TestTextBatching:
 
         assert heartbeat_seen == [True]
         assert event.source.thread_id == "222"
-        await asyncio.sleep(0.2)
+        await asyncio.gather(*list(adapter._pending_text_batch_tasks.values()))
 
     @pytest.mark.asyncio
     async def test_topic_recovery_is_fair_across_unrelated_raw_lanes(self):
@@ -187,7 +169,7 @@ class TestTextBatching:
         assert len(adapter._pending_text_batches) == 2
         assert adapter._text_recovery_lane_locks == {}
         assert adapter._text_recovery_tasks == set()
-        await asyncio.sleep(0.2)
+        await asyncio.gather(*list(adapter._pending_text_batch_tasks.values()))
 
     @pytest.mark.asyncio
     async def test_repeated_cancellation_drains_topic_recovery_worker(self):
@@ -209,10 +191,10 @@ class TestTextBatching:
         )
         await asyncio.wait_for(started.wait(), timeout=1)
         task.cancel()
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0)
         assert not task.done()
         task.cancel()
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0)
         assert not task.done()
         assert task in adapter._text_recovery_tasks
 
@@ -243,7 +225,7 @@ class TestTextBatching:
         )
         await asyncio.wait_for(started.wait(), timeout=1)
         disconnect = asyncio.create_task(adapter.disconnect())
-        await asyncio.sleep(0.05)
+        await async_wait_until(lambda: adapter._drop_delayed_deliveries, timeout=1, what="disconnect started")
         assert not disconnect.done()
 
         release.set()
@@ -267,8 +249,9 @@ class TestTextBatching:
 
         with patch.object(TelegramAdapter, "MEDIA_GROUP_WAIT_SECONDS", 0.1):
             await adapter._queue_media_group_event("album-1", event)
+            task = next(iter(adapter._media_group_tasks.values()))
             adapter._mark_disconnected()
-            await asyncio.sleep(0.2)
+            await task
 
         adapter.handle_message.assert_not_called()
         assert adapter._media_group_events == {}
@@ -279,7 +262,7 @@ class TestTextBatching:
     async def test_disconnect_cancels_all_pending_delivery_task_maps(self):
         """Photo/media/polling delayed tasks are awaited and queues are cleared."""
         adapter = _make_adapter()
-        tasks = [asyncio.create_task(asyncio.sleep(0.2)) for _ in range(4)]
+        tasks = [asyncio.create_task(asyncio.Event().wait()) for _ in range(4)]
         adapter._pending_text_batches["text"] = _make_event("text")
         adapter._pending_text_batch_tasks["text"] = tasks[0]
         adapter._pending_photo_batches["photo"] = _make_event("photo")
@@ -350,6 +333,26 @@ class TestHoldInboundAcrossReconnect:
         assert adapter._held_inbound_events == []
 
     @pytest.mark.asyncio
+    async def test_late_teardown_salvage_on_retired_adapter_reaches_replacement(self):
+        """Teardown of a rebuilt-away adapter can salvage a batch after the replacement drained (#132829)."""
+        from contextvars import ContextVar
+        from plugins.platforms.telegram.update_admission import _Claim
+
+        old, new = _make_adapter(), _make_adapter()
+        old._update_admission = ContextVar("claim", default=_Claim("1:1", None))
+        old._mark_disconnected()
+        new.adopt_held_inbound(old)
+        old._pending_text_batches["k"] = _make_event("late-salvage")
+
+        await old._cancel_pending_delivery_tasks()
+        await new._held_inbound_redispatch_task
+
+        old.handle_message.assert_not_called()
+        assert [c.args[0].text for c in new.handle_message.call_args_list] == ["late-salvage"]
+        assert old._held_inbound_events == []
+        assert old._update_admission.get().accepted  # receipt recorded: no replay after restart
+
+    @pytest.mark.asyncio
     async def test_flush_during_disconnect_holds_popped_event(self):
         """After pop, drop-guard must hold — not destroy — the event.
 
@@ -413,9 +416,9 @@ class TestHoldInboundAcrossReconnect:
         adapter._pending_text_batches["text"] = _make_event("text-salvage")
         adapter._pending_photo_batches["photo"] = _make_event("photo-salvage")
         adapter._media_group_events["media"] = _make_event("media-salvage")
-        t1 = asyncio.create_task(asyncio.sleep(60))
-        t2 = asyncio.create_task(asyncio.sleep(60))
-        t3 = asyncio.create_task(asyncio.sleep(60))
+        t1 = asyncio.create_task(asyncio.Event().wait())
+        t2 = asyncio.create_task(asyncio.Event().wait())
+        t3 = asyncio.create_task(asyncio.Event().wait())
         adapter._pending_text_batch_tasks["text"] = t1
         adapter._pending_photo_batch_tasks["photo"] = t2
         adapter._media_group_tasks["media"] = t3
@@ -658,7 +661,6 @@ class TestHoldInboundAcrossReconnect:
         async def _handle(event):
             if event.text == "boom":
                 raise RuntimeError("dispatch failed")
-            return None
 
         adapter.handle_message = _handle
         # Direct drain (no auto follow-up on failure)

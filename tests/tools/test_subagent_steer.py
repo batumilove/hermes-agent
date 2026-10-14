@@ -165,13 +165,14 @@ class TestMissedSteerRetention:
 
         from tools.delegate_tool import delegate_task
 
-        parent = MagicMock()
+        parent = MagicMock(_credential_pool=None)
         parent._delegate_depth = 0
+        parent._session_db = None
         parent.model = "test-model"
         parent.interactive_mode = False
 
         with patch("run_agent.AIAgent") as MockAgent:
-            mock_child = MagicMock()
+            mock_child = MagicMock(_credential_pool=None)
             mock_child.model = "test-model"
             mock_child.session_prompt_tokens = 0
             mock_child.session_completion_tokens = 0
@@ -202,13 +203,14 @@ class TestMissedSteerRetention:
 
         from tools.delegate_tool import delegate_task
 
-        parent = MagicMock()
+        parent = MagicMock(_credential_pool=None)
         parent._delegate_depth = 0
+        parent._session_db = None
         parent.model = "test-model"
         parent.interactive_mode = False
 
         with patch("run_agent.AIAgent") as MockAgent:
-            mock_child = MagicMock()
+            mock_child = MagicMock(_credential_pool=None)
             mock_child.model = "test-model"
             mock_child.session_prompt_tokens = 0
             mock_child.session_completion_tokens = 0
@@ -237,7 +239,7 @@ class TestMissedSteerRetention:
         allow_steer = threading.Event()
         pending: list[str] = []
 
-        child = MagicMock()
+        child = MagicMock(_credential_pool=None)
         child._subagent_id = "sid-linearized-accept"
         child._delegate_depth = 1
         child.model = "test-model"
@@ -271,7 +273,8 @@ class TestMissedSteerRetention:
         child.run_conversation.side_effect = run_conversation
         child.steer.side_effect = steer
         child._drain_pending_steer.side_effect = drain
-        parent = MagicMock()
+        parent = MagicMock(_credential_pool=None)
+        parent._session_db = None
 
         result_box: dict = {}
         runner = threading.Thread(
@@ -316,7 +319,7 @@ class TestMissedSteerRetention:
             assert release_callback.wait(5)
 
         progress._flush = flush  # type: ignore[attr-defined]
-        child = MagicMock()
+        child = MagicMock(_credential_pool=None)
         child._subagent_id = "sid-closed-before-callback"
         child._delegate_depth = 1
         child.model = "test-model"
@@ -330,7 +333,12 @@ class TestMissedSteerRetention:
         }
 
         runner = threading.Thread(
-            target=lambda: _run_single_child(0, "late", child=child, parent_agent=MagicMock())
+            target=lambda: _run_single_child(
+                0,
+                "late",
+                child=child,
+                parent_agent=MagicMock(_session_db=None, _credential_pool=None),
+            )
         )
         runner.start()
         assert callback_entered.wait(5)
@@ -429,7 +437,7 @@ class TestSubagentSteerRPC:
             "history": [],
             "transport": owner_transport,
         }
-        child = MagicMock()
+        child = MagicMock(_credential_pool=None)
         child._subagent_id = "sid-context-owner"
         child._delegate_depth = 1
         child.model = "test-model"
@@ -469,7 +477,7 @@ class TestSubagentSteerRPC:
                 0,
                 "owner binding",
                 child=child,
-                parent_agent=MagicMock(),
+                parent_agent=MagicMock(_session_db=None, _credential_pool=None),
                 owner_transport=owner_transport,
                 owner_session_record=owner_session_record,
             )
@@ -715,12 +723,17 @@ class TestSubagentSteerRPC:
                 transport=owner_transport,
                 session_record=owner_record,
             )
-            assert envelope["result"]["status"] == "queued"
-            assert agent.steered == ["ignore serialized capabilities"]
+            # The wire contract refuses unknown keys outright, so a forged runtime artifact never
+            # reaches the handler (before contracts: silently ignored, steer still queued).
+            assert envelope["error"]["code"] == 4000
+            assert "owner_transport" in envelope["error"]["message"]
+            assert agent.steered == []
         finally:
             _unregister_subagent("sid-rpc-param-spoof")
 
-    def test_session_transport_rebinding_does_not_transfer_ownership(self):
+    def test_session_transport_rebinding_moves_ownership_to_the_live_slot(self):
+        """Authority is the owning session's CURRENT transport slot (7befa11bf25 reversed the
+        original never-transfer rule): the reattached peer steers, the displaced one cannot."""
         original_transport = self._Transport()
         rebound_transport = self._Transport()
         owner_record = {
@@ -738,7 +751,7 @@ class TestSubagentSteerRPC:
         )
         owner_record["transport"] = rebound_transport
         try:
-            for transport in (original_transport, rebound_transport):
+            for transport, expected in ((original_transport, "rejected"), (rebound_transport, "queued")):
                 envelope = self._call(
                     {
                         "session_id": "owner-session",
@@ -748,8 +761,8 @@ class TestSubagentSteerRPC:
                     transport=transport,
                     session_record=owner_record,
                 )
-                assert envelope["result"]["status"] == "rejected"
-            assert agent.steered == []
+                assert envelope["result"]["status"] == expected
+            assert agent.steered == ["rebound authority"]
         finally:
             _unregister_subagent("sid-rpc-rebound")
 

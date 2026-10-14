@@ -341,7 +341,7 @@ def test_gateway_process_fails_closed_when_state_file_is_unreadable(tmp_path, mo
 
 
 def test_terminal_tool_blocks_actual_live_target_even_with_force(tmp_path, monkeypatch):
-    import tools.terminal_tool as terminal_tool
+    from tools import terminal_tool
     from tools import process_registry
 
     home = tmp_path / ".hermes"

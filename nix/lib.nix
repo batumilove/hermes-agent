@@ -32,7 +32,7 @@
 let
   repoRoot = ./..;
 
-  npm12 = callPackage ./npm-12-0-2.nix { };
+  npm12 = callPackage ./npm-pinned.nix { };
   node_gyp_11_4_0 = callPackage ./node-gyp-11-4-0.nix { };
   nodejs_26_npm_12 = symlinkJoin {
     name = "nodejs-26-npm-12";
@@ -174,6 +174,9 @@ let
       in
       if relPath == "" then
         true
+      else if lib.hasPrefix "scripts/build/" relPath && lib.hasSuffix ".mjs" relPath then
+        # Frontend recipes belong to their product source filters, not Python.
+        false
       else if builtins.elem relPath excludedFiles then
         false
       else if builtins.elem topComponent excludedDirs then
@@ -203,12 +206,39 @@ let
     fileset = npmWorkspaceFiles;
   };
 
+  # Keep the locked security overrides during offline installation. Direct
+  # dependency specs become store paths, so their overrides must reference
+  # those imported specs rather than the original registry constraint.
+  directDependencies =
+    (rootPackageJson.dependencies or { }) // (rootPackageJson.devDependencies or { });
+  offlineOverrides = lib.mapAttrs (
+    key: value:
+    let
+      name = builtins.head (builtins.match "(@[^/]+/[^@]+|[^@]+)(@.*)?" key);
+      reference = "$" + name;
+    in
+    if builtins.hasAttr name directDependencies then
+      if builtins.isAttrs value then
+        value // lib.optionalAttrs ((value."." or null) == directDependencies.${name}) {
+          "." = reference;
+        }
+      else if value == directDependencies.${name} then
+        reference
+      else
+        value
+    else
+      value
+  ) (rootPackageJson.overrides or { });
+
   # npm dependencies for the workspace, shared by all members. importNpmLock
   # resolves each package from the lockfile's own `integrity` hashes, so the
   # lockfile is the single source of truth — no separate dependency hash to
   # keep in sync with it.
   npmDeps = importNpmLock.importNpmLock {
     npmRoot = npmDepsSrc;
+    package = rootPackageJson // lib.optionalAttrs (rootPackageJson ? overrides) {
+      overrides = offlineOverrides;
+    };
   };
 
   # Build a per-package npm source: workspace resolution files + the
@@ -280,7 +310,7 @@ let
     buildNpmPackage finalAttrs;
 in
 {
-  inherit pythonSrc nodejs;
+  inherit pythonSrc nodejs npmDeps;
   node-gyp = node_gyp_11_4_0;
 
   # Regenerate the shared root lockfile from scratch and verify all npm

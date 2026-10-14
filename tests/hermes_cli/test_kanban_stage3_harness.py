@@ -379,7 +379,7 @@ def test_f5b_flip_after_spawned_cas(harness: Harness) -> None:
     # Lifecycle: created, then aborted with terminal evidence.
     events = [e["event"] for e in harness.lifecycle_log if e["task_id"] == _task_id(71)]
     assert events == ["spawned", "aborted"]
-    aborted_ev = [e for e in harness.lifecycle_log if e["task_id"] == _task_id(71) and e["event"] == "aborted"][0]
+    aborted_ev = next(e for e in harness.lifecycle_log if e["task_id"] == _task_id(71) and e["event"] == "aborted")
     assert aborted_ev["exit_status"] == 1
     assert "policy flipped" in aborted_ev["detail"]
     # Process removed from liveness: a later tick never counts it alive.

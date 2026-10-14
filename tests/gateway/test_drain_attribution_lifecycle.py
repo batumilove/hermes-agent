@@ -14,7 +14,7 @@ class _ActiveAgent:
     def __init__(self, session_id: str = "session-active") -> None:
         self.session_id = session_id
 
-    def interrupt(self, _reason: str) -> None:
+    def interrupt(self, _reason: str, **_kwargs) -> None:
         return None
 
     def set_final_messages(self, _messages) -> None:
@@ -56,7 +56,7 @@ async def test_gateway_stop_records_clean_exit_only_after_zero_work(
 
     await GatewayRunner.stop(runner)
 
-    assert [row["phase"] for row in _phase_rows(tmp_path)] == ["clean_exit"]
+    assert [row["phase"] for row in _phase_rows(tmp_path)] == ["begin", "post_interrupt", "clean_exit"]
     assert (tmp_path / ".clean_shutdown").exists()
 
 
@@ -80,9 +80,11 @@ async def test_gateway_stop_records_interrupt_forced_forward_and_incomplete(
     rows = _phase_rows(tmp_path)
     phases = [row["phase"] for row in rows]
     assert phases == [
+        "begin",
         "interrupt_start",
         "interrupt_settled",
         "forced_forward",
+        "post_interrupt",
         "cleanup_incomplete",
     ]
     forced = rows[phases.index("forced_forward")]
@@ -92,7 +94,7 @@ async def test_gateway_stop_records_interrupt_forced_forward_and_incomplete(
 
 
 @pytest.mark.asyncio
-async def test_gateway_stop_uses_reserved_tail_for_clean_exit_after_pre_tail_exhaustion(
+async def test_gateway_stop_retains_terminal_evidence_after_pre_tail_exhaustion(
     lifecycle_runner, monkeypatch
 ):
     runner = lifecycle_runner
@@ -116,8 +118,8 @@ async def test_gateway_stop_uses_reserved_tail_for_clean_exit_after_pre_tail_exh
 
     await GatewayRunner.stop(runner)
 
-    assert phases == ["clean_exit"]
-    assert deadlines[0] > asyncio.get_running_loop().time()
+    assert phases == ["begin", "post_interrupt", "cleanup_incomplete"]
+    assert deadlines[-1] > asyncio.get_running_loop().time()
 
 
 @pytest.mark.asyncio
@@ -208,7 +210,7 @@ async def test_shutdown_watchdog_snapshot_omits_work_identifiers(
         captured["snapshot_fn"] = snapshot_fn
 
     monkeypatch.delenv("PYTEST_CURRENT_TEST")
-    monkeypatch.setattr("gateway.run.arm_shutdown_watchdog", _capture_watchdog)
+    monkeypatch.setattr("gateway.shutdown_watchdog.arm_shutdown_watchdog", _capture_watchdog)
 
     await GatewayRunner.stop(runner)
 

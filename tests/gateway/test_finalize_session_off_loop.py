@@ -5,13 +5,13 @@ observability plugin serializing a multi-day session's trace export) used to
 run inline on the event loop from three call sites:
 
   * ``GatewayRunner._finalize_shutdown_agents`` (shutdown drain)
-  * the session-expiry watcher
+  * explicit session finalization
   * the ``/new`` session-reset handler
 
 On a wedged/slow hook the whole loop froze — adapter heartbeats stopped and
 systemd SIGKILLed the process mid-shutdown. All three sites now dispatch
 through ``GatewayRunner._finalize_session_off_loop``, which runs
-``hermes_cli.lifecycle.finalize_session_async`` in the gateway executor under a
+``hermes_cli.lifecycle.finalize_session_async`` on an exit-safe daemon thread under a
 bounded ``asyncio.wait_for``.
 """
 
@@ -20,7 +20,6 @@ import threading
 import time
 
 from gateway.run import GatewayRunner
-
 
 def _make_runner():
     runner = object.__new__(GatewayRunner)
@@ -33,14 +32,14 @@ def test_finalize_off_loop_invokes_lifecycle(monkeypatch):
 
     async def _fake_finalize(**kwargs):
         calls.append(kwargs)
-        return []
+        return ["hook message", {"message": "second hook"}]
 
-    import hermes_cli.lifecycle as lifecycle
+    from hermes_cli import lifecycle
 
     monkeypatch.setattr(lifecycle, "finalize_session_async", _fake_finalize)
 
     runner = _make_runner()
-    asyncio.run(
+    messages = asyncio.run(
         runner._finalize_session_off_loop(
             session_id="s-123",
             platform="gateway",
@@ -49,6 +48,7 @@ def test_finalize_off_loop_invokes_lifecycle(monkeypatch):
         )
     )
 
+    assert messages == ["hook message", "second hook"]
     assert len(calls) == 1
     assert calls[0]["session_id"] == "s-123"
     assert calls[0]["reason"] == "shutdown"
@@ -68,7 +68,7 @@ def test_finalize_off_loop_keeps_loop_alive_and_bounds_wedged_hook(monkeypatch):
         # Simulates a multi-minute trace export.
         release.wait(timeout=30)
 
-    import hermes_cli.lifecycle as lifecycle
+    from hermes_cli import lifecycle
 
     monkeypatch.setattr(lifecycle, "finalize_session_async", _wedged_finalize)
 
@@ -80,7 +80,7 @@ def test_finalize_off_loop_keeps_loop_alive_and_bounds_wedged_hook(monkeypatch):
     async def _ticker():
         while True:
             loop_ticks.append(time.monotonic())
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0)
 
     async def _scenario():
         ticker = asyncio.ensure_future(_ticker())
@@ -102,14 +102,13 @@ def test_finalize_off_loop_keeps_loop_alive_and_bounds_wedged_hook(monkeypatch):
     # The loop stayed live while the hook was blocked off-loop.
     assert len(loop_ticks) >= 3
 
-
 def test_finalize_off_loop_swallows_hook_exceptions(monkeypatch):
     """A raising hook is contained — callers proceed with shutdown."""
 
     async def _raising_finalize(**kwargs):
         raise RuntimeError("exporter blew up")
 
-    import hermes_cli.lifecycle as lifecycle
+    from hermes_cli import lifecycle
 
     monkeypatch.setattr(lifecycle, "finalize_session_async", _raising_finalize)
 
@@ -128,13 +127,14 @@ def test_shutdown_finalize_path_uses_off_loop_dispatch(monkeypatch):
 
     async def _fake_off_loop(self, **kwargs):
         seen.append(kwargs)
+        return []
 
     monkeypatch.setattr(
         GatewayRunner, "_finalize_session_off_loop", _fake_off_loop
     )
 
-    async def _fake_cleanup(self, agent, *, context="", timeout=None):
-        return None
+    async def _fake_cleanup(self, agent, *, context="", timeout=None, session_key=None):
+        return True
 
     monkeypatch.setattr(
         GatewayRunner, "_cleanup_agent_resources_off_loop", _fake_cleanup

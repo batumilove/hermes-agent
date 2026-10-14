@@ -14,7 +14,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType, merge_pending_message_event
+from gateway.platforms.base import merge_pending_message_event
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
 from gateway.session import SessionSource, build_session_key
 
@@ -62,7 +63,8 @@ def _make_runner():
     runner._is_user_authorized = lambda _source: True
     runner.hooks = MagicMock()
     runner.hooks.emit = AsyncMock()
-    runner.session_store = MagicMock()
+    runner._init_session_store()
+    runner._init_session_db()
     runner.delivery_router = MagicMock()
     return runner
 
@@ -85,7 +87,6 @@ async def test_sentinel_placed_before_agent_setup():
     concurrent message sees the session as occupied."""
     runner = _make_runner()
     event = _make_event()
-    session_key = build_session_key(event.source)
 
     # Patch _handle_message_with_agent to capture state at entry
     sentinel_was_set = False
@@ -241,17 +242,16 @@ async def test_stop_during_sentinel_force_cleans_session():
     session_key = build_session_key(event1.source)
 
     barrier = asyncio.Event()
+    started = asyncio.Event()
 
     async def slow_inner(self_inner, ev, src, qk, generation):
+        started.set()
         await barrier.wait()
         return "ok"
 
     with patch.object(GatewayRunner, "_handle_message_with_agent", slow_inner):
         task1 = asyncio.create_task(runner._handle_message(event1))
-        for _ in range(50):
-            await asyncio.sleep(0)
-            if runner._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL:
-                break
+        await asyncio.wait_for(started.wait(), timeout=5)
 
         # Sentinel should be set
         assert runner._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL

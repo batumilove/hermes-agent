@@ -3,20 +3,18 @@
 from __future__ import annotations
 
 import contextvars
-import asyncio
 import json
-import logging
 import sqlite3
 import threading
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from datetime import datetime, timedelta, timezone, UTC
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from hermes_cli import lifecycle, plugins
-from hermes_cli.observability import relay_runtime, relay_shared_metrics
+from agent import relay_runtime
+from hermes_cli.observability import relay_shared_metrics
 from hermes_cli.plugins import PluginManager
 
 
@@ -24,6 +22,12 @@ class _Request:
     def __init__(self, headers: dict[str, Any], content: dict[str, Any]) -> None:
         self.headers = headers
         self.content = content
+
+
+class _ToolExecutionResult:
+    def __init__(self, result: Any, annotation: Any = None) -> None:
+        self.result = result
+        self.annotation = annotation
 
 
 class _Relay:
@@ -40,6 +44,7 @@ class _Relay:
             Agent="agent", Function="function", Tool="tool"
         )
         self.LLMRequest = _Request
+        self.ToolExecutionResult = _ToolExecutionResult
         self.scope = SimpleNamespace(
             push=self._scope_push,
             pop=self._scope_pop,
@@ -53,6 +58,10 @@ class _Relay:
             flush=self._flush,
             flush_async=self._flush_async,
         )
+        self.plugin = SimpleNamespace(initialize=lambda *_args, **_kwargs: SimpleNamespace(
+            report={"resolved_config": {"components": []}, "dynamic_plugins": []},
+            close=lambda: None,
+        ))
         self.get_scope_stack = self._get_scope_stack
 
     def _scope_push(self, name: str, scope_type: Any, **kwargs: Any) -> Any:
@@ -176,11 +185,13 @@ class _Relay:
     def _tool_call_end(
         self,
         handle: Any,
-        result: dict[str, Any],
+        result: _ToolExecutionResult,
         **kwargs: Any,
     ) -> None:
+        assert isinstance(result, _ToolExecutionResult)
+        payload = result.result
         start = self._tool_starts.pop(handle)
-        self.events.append(("tool.call_end", handle, result, kwargs))
+        self.events.append(("tool.call_end", handle, payload, kwargs))
         event = SimpleNamespace(
             kind="scope",
             category="tool",
@@ -192,7 +203,7 @@ class _Relay:
                 **kwargs["metadata"],
                 "otel.status_code": "OK",
             },
-            data=result,
+            data=payload,
         )
         for callback in list(self._callbacks.values()):
             callback(event)
@@ -205,11 +216,22 @@ class _Relay:
         self._callbacks.pop(name, None)
         self.events.append(("subscribers.deregister", name))
 
+    async def _flush_async(self) -> None:
+        self.events.append(("subscribers.flush_async",))
+
     def _flush(self) -> None:
         self.events.append(("subscribers.flush",))
 
-    async def _flush_async(self) -> None:
-        self.events.append(("subscribers.flush_async",))
+
+_EXPORT_WORKER = "hermes-shared-metrics-flush"
+
+
+def _join_export_workers() -> None:
+    """Wait for requested subscriber barriers before inspecting exported rows."""
+    for runtime in list(relay_shared_metrics._RUNTIMES.values()):
+        if isinstance(runtime, relay_shared_metrics._Runtime):
+            assert runtime._wait_for_task_flush(runtime._task_flush_requested, timeout=10)
+
 
 
 @pytest.fixture
@@ -335,6 +357,10 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         interrupted=False,
         turn_exit_reason="text_response(stop)",
     )
+    # The daily package is cut by the first export that runs. Let the one the task
+    # close scheduled finish before the session closes, so the package holds exactly the
+    # task's metrics instead of racing the session-summary rows.
+    _join_export_workers()
     lifecycle.finalize_session(session_id=base["session_id"])
 
     starts = [event for event in direct_runtime.events if event[0] == "llm.call"]
@@ -354,6 +380,7 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
     assert scope_starts[1][3]["input"] == {
         "entrypoint": "interactive",
         "execution_surface": "cli",
+        "platform": "none",
     }
     assert len(starts) == 1
     assert len(ends) == 1
@@ -363,10 +390,12 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
     assert tool_starts[0][2] == {}
     assert tool_ends[0][2] == {
         "approval_outcome": "approved",
+        "error_class": "none",
         "latency_bucket": "250ms_to_500ms",
         "outcome": "success",
         "retry_count_bucket": "0",
         "tool_category": "terminal",
+        "tool_name": "terminal",
     }
     assert starts[0][2] == {}
     assert starts[0][3]["model_name"] == "unknown"
@@ -378,8 +407,13 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
     assert len(active_marks) == 2
     assert all(mark[2]["data"] == {} for mark in active_marks)
     assert ends[0][2] == {
+        "call_role": "primary",
+        # The call recovered from an unclassified provider error before succeeding.
+        "error_class": "unknown",
         "model": "claude-sonnet",
+        "outcome": "success",
         "provider": "anthropic",
+        "ttft_bucket": "unknown",
     }
     serialized_events = json.dumps(direct_runtime.events)
     assert "sensitive-prompt" not in serialized_events
@@ -399,12 +433,22 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
     metrics = {metric["name"]: metric for metric in package["metrics"]}
     assert set(metrics) == {
         "hermes.client.active",
+        "hermes.install.milestone",
+        "hermes.install.snapshot",
         "hermes.model_route.count",
+        "hermes.task_cost.count",
+        "hermes.task_run.duration",
         "hermes.task_run.finished",
         "hermes.task_run.started",
+        "hermes.tool.usage.count",
         "hermes.tool_approval.count",
         "hermes.tool_call.count",
+        "hermes.tool_call.latency",
     }
+    assert metrics["hermes.tool.usage.count"]["dimensions"] == {
+        "error_class": "none", "outcome": "success", "tool_name": "terminal",
+    }
+    assert metrics["hermes.install.snapshot"]["value"] == 1
     assert metrics["hermes.client.active"] == {
         "name": "hermes.client.active",
         "type": "counter",
@@ -412,8 +456,13 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         "value": 1,
     }
     assert metrics["hermes.model_route.count"]["dimensions"] == {
+        "call_role": "primary",
+        # The call recovered from an unclassified provider error before succeeding.
+        "error_class": "unknown",
         "model": "claude-sonnet",
+        "outcome": "success",
         "provider": "anthropic",
+        "ttft_bucket": "unknown",
     }
     assert metrics["hermes.model_route.count"]["value"] == 1
     assert metrics["hermes.tool_call.count"] == {
@@ -421,12 +470,13 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         "type": "counter",
         "dimensions": {
             "approval_outcome": "approved",
-            "latency_bucket": "250ms_to_500ms",
             "outcome": "success",
-            "retry_count_bucket": "0",
             "tool_category": "terminal",
         },
         "value": 1,
+    }
+    assert metrics["hermes.tool_call.latency"]["dimensions"] == {
+        "latency_bucket": "250ms_to_500ms", "retry_count_bucket": "0", "tool_category": "terminal",
     }
     assert metrics["hermes.tool_approval.count"] == {
         "name": "hermes.tool_approval.count",
@@ -443,11 +493,21 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         "dimensions": {
             "entrypoint": "interactive",
             "execution_surface": "cli",
+            "platform": "none",
         },
         "value": 1,
     }
-    terminal = metrics["hermes.task_run.finished"]["dimensions"]
-    assert terminal["duration_bucket"] in {
+    assert metrics["hermes.task_run.finished"]["dimensions"] == {
+        "end_reason": "completed",
+        "entrypoint": "interactive",
+        "execution_surface": "cli",
+        "failure_class": "none",
+        "outcome": "success",
+        "platform": "none",
+        "termination": "none",
+    }
+    duration = metrics["hermes.task_run.duration"]["dimensions"]
+    assert duration["duration_bucket"] in {
         "lt_1s",
         "1s_to_5s",
         "5s_to_30s",
@@ -455,18 +515,12 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         "2m_to_10m",
         "gte_10m",
     }
-    assert {
-        key: value for key, value in terminal.items() if key != "duration_bucket"
-    } == {
-        "end_reason": "completed",
-        "entrypoint": "interactive",
-        "execution_surface": "cli",
-        "model_call_count_bucket": "1",
-        "outcome": "success",
-        "retry_count_bucket": "1",
-        "termination": "none",
-        "tool_call_count_bucket": "1",
+    assert {key: value for key, value in duration.items() if key != "duration_bucket"} == {
+        "execution_surface": "cli", "outcome": "success", "retry_count_bucket": "1",
     }
+    # Per-task call counts ride on the task cost row now.
+    assert metrics["hermes.task_cost.count"]["dimensions"]["api_calls_bucket"] == "1"
+    assert metrics["hermes.task_cost.count"]["dimensions"]["tool_calls_bucket"] == "1"
 
 
 def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
@@ -545,6 +599,8 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
         turn_exit_reason="text_response(stop)",
     )
     lifecycle.finalize_session(session_id=success["session_id"])
+    # The daily package forms after the first session; later sessions land in the next one.
+    _join_export_workers()
 
     failed = base(2)
     lifecycle.invoke_hook("on_session_start", **failed)
@@ -617,9 +673,10 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
 
     from hermes_cli.observability.shared_metrics import SharedMetricsStore
 
+    _join_export_workers()
     root = tmp_path / "hermes-home" / "telemetry" / "shared_metrics"
     store = SharedMetricsStore(root / "metrics.sqlite3", root / "outbox")
-    tomorrow = datetime.now(timezone.utc) + timedelta(days=1)
+    tomorrow = datetime.now(UTC) + timedelta(days=1)
     monkeypatch.setattr(
         "hermes_cli.observability.shared_metrics._utc_now",
         lambda: tomorrow,
@@ -634,13 +691,34 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
     assert by_metric["hermes.client.active"][0]["value"] == 1
     assert len(by_metric["hermes.task_run.started"]) == 1
     assert by_metric["hermes.task_run.started"][0]["value"] == 3
-    assert len(by_metric["hermes.model_route.count"]) == 1
-    model_counter = by_metric["hermes.model_route.count"][0]
-    assert model_counter["dimensions"] == {
-        "model": model_canary,
-        "provider": "custom",
+    # v3: one route row per terminal outcome; an unclassified failed call reports `unknown`.
+    route_by_outcome = {
+        counter["dimensions"]["outcome"]: counter
+        for counter in by_metric["hermes.model_route.count"]
     }
-    assert model_counter["value"] == 3
+    assert set(route_by_outcome) == {"success", "failed", "cancelled"}
+    for outcome, error_class in (
+        # The success call recovered from an unclassified error; the failed one never did.
+        ("success", "unknown"), ("failed", "unknown"), ("cancelled", "none")
+    ):
+        assert route_by_outcome[outcome]["dimensions"] == {
+            "call_role": "primary",
+            "error_class": error_class,
+            # A custom endpoint's model id is user-named: it never leaves the machine.
+            "model": "custom",
+            "outcome": outcome,
+            "provider": "custom",
+            "ttft_bucket": route_by_outcome[outcome]["dimensions"]["ttft_bucket"],
+        }
+        assert route_by_outcome[outcome]["value"] == 1
+    assert {
+        (c["dimensions"]["tool_name"], c["dimensions"]["outcome"], c["dimensions"]["error_class"])
+        for c in by_metric["hermes.tool.usage.count"]
+    } == {
+        ("terminal", "success", "none"),
+        ("read_file", "failed", "unknown"),
+        ("browser_navigate", "cancelled", "interrupted"),
+    }
     assert {
         counter["dimensions"]["outcome"]
         for counter in by_metric["hermes.tool_call.count"]
@@ -651,24 +729,26 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
     }
     assert tool_by_outcome["success"] == {
         "approval_outcome": "approved",
-        "latency_bucket": "100ms_to_250ms",
         "outcome": "success",
-        "retry_count_bucket": "0",
         "tool_category": "terminal",
     }
     assert tool_by_outcome["failed"] == {
         "approval_outcome": "not_required",
-        "latency_bucket": "500ms_to_1s",
         "outcome": "failed",
-        "retry_count_bucket": "unknown",
         "tool_category": "file",
     }
     assert tool_by_outcome["cancelled"] == {
         "approval_outcome": "not_required",
-        "latency_bucket": "gte_30s",
         "outcome": "cancelled",
-        "retry_count_bucket": "unknown",
         "tool_category": "browser",
+    }
+    assert {
+        tuple(counter["dimensions"][f] for f in ("tool_category", "latency_bucket", "retry_count_bucket"))
+        for counter in by_metric["hermes.tool_call.latency"]
+    } == {
+        ("terminal", "100ms_to_250ms", "0"),
+        ("file", "500ms_to_1s", "unknown"),
+        ("browser", "gte_30s", "unknown"),
     }
     assert len(by_metric["hermes.tool_approval.count"]) == 1
     approval_counter = by_metric["hermes.tool_approval.count"][0]
@@ -683,11 +763,17 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
         for counter in by_metric["hermes.task_run.finished"]
     }
     assert set(terminal_by_outcome) == {"success", "failed", "cancelled"}
-    assert terminal_by_outcome["success"]["dimensions"]["retry_count_bucket"] == "1"
-    assert terminal_by_outcome["success"]["dimensions"]["tool_call_count_bucket"] == "1"
+    duration_by_outcome = {
+        counter["dimensions"]["outcome"]: counter["dimensions"]
+        for counter in by_metric["hermes.task_run.duration"]
+    }
+    assert set(duration_by_outcome) == {"success", "failed", "cancelled"}
+    assert duration_by_outcome["success"]["retry_count_bucket"] == "1"
     assert terminal_by_outcome["failed"]["dimensions"]["end_reason"] == (
         "system_aborted"
     )
+    assert terminal_by_outcome["failed"]["dimensions"]["failure_class"] == "other"
+    assert terminal_by_outcome["success"]["dimensions"]["failure_class"] == "none"
     assert terminal_by_outcome["cancelled"]["dimensions"]["termination"] == (
         "user_cancelled"
     )
@@ -707,7 +793,7 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
         json.loads(package.read_text(encoding="utf-8")) for package in packages
     ]
     for package in package_payloads:
-        assert package["schema_version"] == "hermes.shared_metrics.v2"
+        assert package["schema_version"] == "hermes.shared_metrics.v4"
         for metric in package["metrics"]:
             key = (metric["name"], tuple(sorted(metric["dimensions"].items())))
             package_values[key] = package_values.get(key, 0) + metric["value"]
@@ -717,8 +803,8 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
         "snapshot": snapshot,
         "packages": package_payloads,
     })
-    assert model_canary in serialized_analytics
     for canary in (
+        model_canary,
         prompt_canary,
         response_canary,
         tool_canary,
@@ -740,6 +826,8 @@ def test_real_binding_correlates_plugin_approval_denial_to_tool_metric(
 ):
     from hermes_cli.observability.shared_metrics import SharedMetricsStore
     from tools import approval
+    from tools import approval_prompt
+    from tools import approval_context
 
     assert real_binding_runtime._native is not None
     base = {
@@ -760,9 +848,12 @@ def test_real_binding_correlates_plugin_approval_denial_to_tool_metric(
     monkeypatch.setattr(approval, "is_current_session_yolo_enabled", lambda: False)
     monkeypatch.setattr(approval, "is_approved", lambda *args: False)
     monkeypatch.setattr(approval, "get_current_session_key", lambda: "session-key")
+    monkeypatch.setattr(approval_context, "get_current_session_key", lambda: "session-key")
     monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
     monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+    monkeypatch.setattr(approval_context, "_is_gateway_approval_context", lambda: False)
     monkeypatch.setattr(approval, "prompt_dangerous_approval", lambda *args, **kwargs: "deny")
+    monkeypatch.setattr(approval_prompt, "prompt_dangerous_approval", lambda *args, **kwargs: "deny")
 
     lifecycle.invoke_hook("on_session_start", **base)
     lifecycle.invoke_hook("pre_llm_call", **base, messages=["sensitive-prompt"])
@@ -798,6 +889,7 @@ def test_real_binding_correlates_plugin_approval_denial_to_tool_metric(
     )
     lifecycle.finalize_session(session_id=base["session_id"])
 
+    _join_export_workers()
     root = tmp_path / "hermes-home" / "telemetry" / "shared_metrics"
     store = SharedMetricsStore(root / "metrics.sqlite3", root / "outbox")
     snapshot = store.counter_snapshot()
@@ -809,11 +901,12 @@ def test_real_binding_correlates_plugin_approval_denial_to_tool_metric(
     assert len(tool_metrics) == 1
     assert tool_metrics[0]["dimensions"] == {
         "approval_outcome": "denied",
-        "latency_bucket": "lt_100ms",
         "outcome": "blocked",
-        "retry_count_bucket": "unknown",
         "tool_category": "file",
     }
+    assert [
+        counter["dimensions"] for counter in snapshot if counter["metric_name"] == "hermes.tool_call.latency"
+    ] == [{"latency_bucket": "lt_100ms", "retry_count_bucket": "unknown", "tool_category": "file"}]
     approval_metrics = [
         counter
         for counter in snapshot
@@ -876,6 +969,7 @@ def test_real_binding_aggregates_tool_and_approval_timeouts(
     )
     lifecycle.finalize_session(session_id=base["session_id"])
 
+    _join_export_workers()
     root = tmp_path / "hermes-home" / "telemetry" / "shared_metrics"
     snapshot = SharedMetricsStore(
         root / "metrics.sqlite3",
@@ -888,11 +982,12 @@ def test_real_binding_aggregates_tool_and_approval_timeouts(
     ]
     assert tool_metric["dimensions"] == {
         "approval_outcome": "timed_out",
-        "latency_bucket": "gte_30s",
         "outcome": "timed_out",
-        "retry_count_bucket": "unknown",
         "tool_category": "terminal",
     }
+    assert [
+        counter["dimensions"] for counter in snapshot if counter["metric_name"] == "hermes.tool_call.latency"
+    ] == [{"latency_bucket": "gte_30s", "retry_count_bucket": "unknown", "tool_category": "terminal"}]
     [approval_metric] = [
         counter
         for counter in snapshot
@@ -944,7 +1039,7 @@ def test_execution_adapters_do_not_create_relay_host_without_a_consumer(
 
     assert result is tool_result
     assert observed_args is tool_args
-    assert relay_runtime.get_host(create=False) is None
+    assert relay_runtime.HOST_REGISTRY.for_profile(create=False) is None
     assert imports == []
 
 
@@ -963,7 +1058,7 @@ def test_core_runtime_is_fail_open_without_a_published_binding(monkeypatch, capl
     monkeypatch.setattr(relay_runtime.importlib, "import_module", missing_relay)
 
     assert relay_runtime.get_runtime() is None
-    host = relay_runtime.get_host()
+    host = relay_runtime.HOST_REGISTRY.for_profile()
     assert isinstance(host, relay_runtime.NoopRelayRuntime)
     assert host.profile_key == relay_runtime.current_profile_key()
     assert "nemo_relay" in host.reason
@@ -972,7 +1067,6 @@ def test_core_runtime_is_fail_open_without_a_published_binding(monkeypatch, capl
         tool_name="terminal",
         args={"command": "true"},
     ) == {"command": "true"}
-    assert not relay_runtime.emit_mark("hermes.probe", session_id="s1")
     assert "Hermes Relay runtime initialization failed" in caplog.text
     relay_runtime._reset_for_tests()
 
@@ -1242,6 +1336,8 @@ def test_disabling_shared_metrics_stops_collection_and_shutdown_export(
     store = SharedMetricsStore(root / "metrics.sqlite3", root / "outbox")
     assert [row["metric_name"] for row in store.counter_snapshot()] == [
         "hermes.client.active",
+        "hermes.install.milestone",
+        "hermes.install.snapshot",
         "hermes.task_run.started"
     ]
     assert list((root / "outbox").glob("*.json")) == []
@@ -1280,115 +1376,6 @@ def test_sync_session_runner_releases_lock_before_callback(direct_runtime):
 
     assert result == session.handle
     assert contender.is_alive() is False
-
-
-@pytest.mark.asyncio
-async def test_async_session_close_uses_async_subscriber_barrier(direct_runtime):
-    from agent import relay_runtime as core_relay_runtime
-
-    runtime = core_relay_runtime.get_runtime()
-    assert runtime is not None
-    runtime.ensure_session({"session_id": "async-close"})
-
-    await runtime.close_session_async({"session_id": "async-close"})
-
-    assert runtime.get_session("async-close") is None
-    assert ("subscribers.flush_async",) in direct_runtime.events
-    assert ("subscribers.flush",) not in direct_runtime.events
-
-
-@pytest.mark.asyncio
-async def test_async_lifecycle_finalize_uses_async_shared_metrics_barrier(
-    direct_runtime,
-    monkeypatch,
-):
-    from agent import relay_runtime as core_relay_runtime
-
-    runtime = relay_shared_metrics._get_runtime()
-    assert runtime is not None
-    runtime.ensure_session({"session_id": "async-lifecycle-finalize"})
-
-    async def finalize_core(**_kwargs):
-        return None
-
-    monkeypatch.setattr(
-        core_relay_runtime.SESSION_COORDINATOR,
-        "finalize_conversation_async",
-        finalize_core,
-    )
-    direct_runtime.events.clear()
-
-    await lifecycle.finalize_session_async(
-        session_id="async-lifecycle-finalize",
-        platform="gateway",
-    )
-
-    assert runtime._sessions.get("async-lifecycle-finalize") is None
-    assert ("subscribers.flush_async",) in direct_runtime.events
-    assert ("subscribers.flush",) not in direct_runtime.events
-
-
-def test_real_binding_overlapping_turns_close_out_of_order_without_orphans(
-    real_binding_runtime,
-    caplog,
-):
-    coordinator = relay_runtime.SESSION_COORDINATOR
-    profile_key = relay_runtime.current_profile_key()
-    lease_a = coordinator.acquire_conversation(
-        profile_key=profile_key,
-        session_id="overlapping-session",
-        platform="gateway",
-    )
-    lease_b = coordinator.acquire_conversation(
-        profile_key=profile_key,
-        session_id="overlapping-session",
-        platform="gateway",
-    )
-    assert lease_a.session is lease_b.session
-
-    turn_a = coordinator.begin_turn(lease_a, turn_id="turn-a", task_id="task-a")
-    turn_b = coordinator.begin_turn(lease_b, turn_id="turn-b", task_id="task-b")
-
-    coordinator.end_turn(turn_a, outcome="success")
-    coordinator.end_turn(turn_b, outcome="success")
-    coordinator.release_conversation(lease_a)
-    coordinator.release_conversation(lease_b)
-    coordinator.finalize_conversation(
-        profile_key=profile_key,
-        session_id="overlapping-session",
-    )
-
-    runtime = relay_runtime.get_runtime(create=False)
-    assert runtime is not None
-    assert runtime.get_session("overlapping-session") is None
-    assert "scope handle is not at the top of the stack" not in caplog.text
-    assert "Hermes Relay turn finalization failed" not in caplog.text
-    assert "closed with errors" not in caplog.text
-
-def test_direct_runtime_fake_enforces_lifo_scope_contract(direct_runtime):
-    runtime = relay_runtime.get_runtime()
-    assert runtime is not None
-    session = runtime.ensure_session({"session_id": "lifo-contract"})
-    assert session is not None
-
-    first = runtime.run_in_session(
-        session,
-        direct_runtime.scope.push,
-        "first",
-        direct_runtime.ScopeType.Function,
-    )
-    second = runtime.run_in_session(
-        session,
-        direct_runtime.scope.push,
-        "second",
-        direct_runtime.ScopeType.Function,
-    )
-
-    with pytest.raises(RuntimeError, match="not at the top"):
-        runtime.run_in_session(session, direct_runtime.scope.pop, first)
-
-    runtime.run_in_session(session, direct_runtime.scope.pop, second)
-    runtime.run_in_session(session, direct_runtime.scope.pop, first)
 
 
 
@@ -1475,471 +1462,16 @@ def test_real_binding_drains_orphaned_scope_before_session_pop(
     assert failure is None, failure
 
 
-def test_concurrent_turn_skips_relay_before_scope_stack_can_interleave(
-    direct_runtime,
-    caplog,
-):
-    from agent import relay_llm
 
-    coordinator = relay_runtime.SESSION_COORDINATOR
-    profile_key = relay_runtime.current_profile_key()
-    runtime = relay_runtime.get_runtime()
-    assert runtime is not None
-    runtime.retain_managed_execution("test.overlapping-logical-calls")
-    lease_a = coordinator.acquire_conversation(
-        profile_key=profile_key,
-        session_id="logical-session",
-        platform="gateway",
-    )
-    lease_b = coordinator.acquire_conversation(
-        profile_key=profile_key,
-        session_id="logical-session",
-        platform="gateway",
-    )
-    context_a = contextvars.Context()
-    context_b = contextvars.Context()
-    turn_a = context_a.run(
-        coordinator.begin_turn,
-        lease_a,
-        turn_id="turn-a",
-        task_id="task-a",
-    )
-    turn_b = context_b.run(
-        coordinator.begin_turn,
-        lease_b,
-        turn_id="turn-b",
-        task_id="task-b",
-    )
-    assert lease_a.session is not None
-    assert lease_b.session is lease_a.session
 
-    logical_a = context_a.run(
-        relay_llm._logical_parent,
-        runtime,
-        lease_a.session,
-        turn_a.handle,
-        {"api_request_id": "request-a"},
-    )
-    logical_b = context_b.run(
-        relay_llm._logical_parent,
-        runtime,
-        lease_b.session,
-        turn_b.handle,
-        {"api_request_id": "request-b"},
-    )
-    assert logical_a is not None
-    assert logical_b is not None
 
-    context_a.run(relay_llm._complete_logical, logical_a, outcome="success")
-    context_b.run(relay_llm._complete_logical, logical_b, outcome="success")
-    context_a.run(coordinator.end_turn, turn_a, outcome="success")
-    context_b.run(coordinator.end_turn, turn_b, outcome="success")
-    coordinator.release_conversation(lease_a)
-    coordinator.release_conversation(lease_b)
-    coordinator.finalize_conversation(
-        profile_key=profile_key,
-        session_id="logical-session",
-    )
-    runtime.release_managed_execution("test.overlapping-logical-calls")
 
-    assert turn_a.logical_llm_calls == {}
-    assert turn_b.logical_llm_calls == {}
-    assert "scope handle is not at the top of the stack" not in caplog.text
-    assert "finalization failed" not in caplog.text
-    assert "closed with errors" not in caplog.text
 
 
-@pytest.mark.asyncio
-async def test_real_binding_parallel_physical_calls_use_isolated_scope_stacks(
-    real_binding_runtime,
-    caplog,
-):
-    from agent import relay_llm
 
-    coordinator = relay_runtime.SESSION_COORDINATOR
-    profile_key = relay_runtime.current_profile_key()
-    runtime = relay_runtime.get_runtime()
-    assert runtime is not None
-    runtime.retain_managed_execution("test.parallel-physical-calls")
-    lease_a = coordinator.acquire_conversation(
-        profile_key=profile_key,
-        session_id="physical-session",
-        platform="gateway",
-    )
-    lease_b = coordinator.acquire_conversation(
-        profile_key=profile_key,
-        session_id="physical-session",
-        platform="gateway",
-    )
-    context_a = contextvars.Context()
-    context_b = contextvars.Context()
-    turn_a = context_a.run(
-        coordinator.begin_turn,
-        lease_a,
-        turn_id="turn-a",
-        task_id="task-a",
-    )
-    turn_b = context_b.run(
-        coordinator.begin_turn,
-        lease_b,
-        turn_id="turn-b",
-        task_id="task-b",
-    )
-    both_started = asyncio.Event()
-    release_a = asyncio.Event()
-    release_b = asyncio.Event()
-    started = 0
 
-    async def execute(request_id, release):
-        async def provider(_request):
-            nonlocal started
-            started += 1
-            if started == 2:
-                both_started.set()
-            await both_started.wait()
-            await release.wait()
-            return {"content": "ok"}
 
-        return await relay_llm.execute_async(
-            {"model": "test-model", "messages": []},
-            provider,
-            session_id="physical-session",
-            name="test-provider",
-            model_name="test-model",
-            metadata={"api_request_id": request_id},
-        )
 
-    task_a = context_a.run(
-        asyncio.create_task,
-        execute("request-a", release_a),
-    )
-    task_b = context_b.run(
-        asyncio.create_task,
-        execute("request-b", release_b),
-    )
-    await asyncio.wait_for(both_started.wait(), timeout=2)
-    release_a.set()
-    result_a = await asyncio.wait_for(task_a, timeout=2)
-    assert task_b.done() is False
-    release_b.set()
-    result_b = await asyncio.wait_for(task_b, timeout=2)
-    results = [result_a, result_b]
-
-    context_a.run(coordinator.end_turn, turn_a, outcome="success")
-    context_b.run(coordinator.end_turn, turn_b, outcome="success")
-    coordinator.release_conversation(lease_a)
-    coordinator.release_conversation(lease_b)
-    await coordinator.finalize_conversation_async(
-        profile_key=profile_key,
-        session_id="physical-session",
-    )
-    runtime.release_managed_execution("test.parallel-physical-calls")
-
-    assert results == [{"content": "ok"}, {"content": "ok"}]
-    assert "scope handle is not at the top of the stack" not in caplog.text
-    assert "finalization failed" not in caplog.text
-    assert "closed with errors" not in caplog.text
-
-
-def test_task_finish_moves_subscriber_barrier_off_turn_thread(direct_runtime):
-    runtime = relay_shared_metrics._get_runtime()
-    assert runtime is not None
-    event = {
-        "session_id": "task-finish-defers-flush",
-        "task_id": "task",
-        "platform": "gateway",
-    }
-    assert runtime.start_task(event) is not None
-    direct_runtime.events.clear()
-    entered = threading.Event()
-    release = threading.Event()
-
-    def blocking_flush() -> None:
-        entered.set()
-        assert release.wait(5)
-
-    direct_runtime.subscribers.flush = blocking_flush
-
-    runtime.finish_task({**event, "completed": True})
-
-    assert entered.wait(1)
-    release.set()
-    assert runtime._wait_for_task_flush(runtime._task_flush_requested)
-
-
-def test_task_flush_worker_stops_when_runtime_deactivates(direct_runtime):
-    runtime = relay_shared_metrics._get_runtime()
-    assert runtime is not None
-    event = {
-        "session_id": "task-flush-worker-stop",
-        "task_id": "task",
-        "platform": "gateway",
-    }
-    assert runtime.start_task(event) is not None
-
-    runtime.finish_task({**event, "completed": True})
-    assert runtime._wait_for_task_flush(runtime._task_flush_requested)
-    worker = runtime._task_flush_worker
-    assert worker is not None and worker.is_alive()
-
-    runtime.deactivate()
-
-    assert not worker.is_alive()
-
-
-def test_shutdown_does_not_overlap_a_stuck_task_flush(
-    direct_runtime,
-    monkeypatch,
-):
-    runtime = relay_shared_metrics._get_runtime()
-    assert runtime is not None
-    event = {
-        "session_id": "task-flush-shutdown",
-        "task_id": "task",
-        "platform": "gateway",
-    }
-    assert runtime.start_task(event) is not None
-    entered = threading.Event()
-    release = threading.Event()
-    active = 0
-    max_active = 0
-    lock = threading.Lock()
-
-    def blocking_flush() -> None:
-        nonlocal active, max_active
-        with lock:
-            active += 1
-            max_active = max(max_active, active)
-        entered.set()
-        try:
-            assert release.wait(5)
-        finally:
-            with lock:
-                active -= 1
-
-    direct_runtime.subscribers.flush = blocking_flush
-    monkeypatch.setattr(
-        runtime,
-        "_stop_task_flush_worker",
-        lambda timeout=5.0: type(runtime)._stop_task_flush_worker(runtime, timeout=0.05),
-    )
-    runtime.finish_task({**event, "completed": True})
-    assert entered.wait(1)
-
-    shutdown = threading.Thread(target=runtime.shutdown)
-    shutdown.start()
-    shutdown.join(0.5)
-
-    assert not shutdown.is_alive()
-    assert max_active == 1
-    assert not any(event[0] == "subscribers.deregister" for event in direct_runtime.events)
-    release.set()
-    worker = runtime._task_flush_worker
-    assert worker is not None
-    worker.join(5)
-    assert not worker.is_alive()
-    assert max_active == 1
-
-
-
-def test_deactivate_does_not_deregister_during_a_stuck_task_flush(
-    direct_runtime,
-    monkeypatch,
-):
-    runtime = relay_shared_metrics._get_runtime()
-    assert runtime is not None
-    event = {
-        "session_id": "task-flush-deactivate",
-        "task_id": "task",
-        "platform": "gateway",
-    }
-    assert runtime.start_task(event) is not None
-    entered = threading.Event()
-    release = threading.Event()
-
-    def blocking_flush() -> None:
-        entered.set()
-        assert release.wait(5)
-
-    direct_runtime.subscribers.flush = blocking_flush
-    monkeypatch.setattr(
-        runtime,
-        "_stop_task_flush_worker",
-        lambda timeout=5.0: type(runtime)._stop_task_flush_worker(runtime, timeout=0.05),
-    )
-    runtime.finish_task({**event, "completed": True})
-    assert entered.wait(1)
-
-    runtime.deactivate()
-
-    assert not any(event[0] == "subscribers.deregister" for event in direct_runtime.events)
-    release.set()
-    worker = runtime._task_flush_worker
-    assert worker is not None
-    worker.join(5)
-    assert not worker.is_alive()
-
-
-
-def test_late_metric_hook_is_quiet_when_core_relay_session_is_closing(
-    direct_runtime,
-    caplog,
-):
-    runtime = relay_shared_metrics._get_runtime()
-    assert runtime is not None
-    event = {
-        "session_id": "closing-core-session",
-        "task_id": "task",
-        "platform": "gateway",
-    }
-    assert runtime.start_task(event) is not None
-    session = runtime._session(event)
-    assert session is not None
-    with session.relay_session.lock:
-        session.relay_session.closing = True
-
-    with caplog.at_level(logging.WARNING):
-        runtime._emit_client_active(session)
-
-    assert "Hermes Relay session is closing" not in caplog.text
-
-
-
-def test_late_metric_hook_serializes_with_core_session_close(
-    direct_runtime,
-    monkeypatch,
-):
-    runtime = relay_shared_metrics._get_runtime()
-    assert runtime is not None
-    event = {
-        "session_id": "closing-core-session-race",
-        "task_id": "task",
-        "platform": "gateway",
-    }
-    assert runtime.start_task(event) is not None
-    session = runtime._session(event)
-    assert session is not None
-    about_to_run = threading.Event()
-    closer_finished = threading.Event()
-    original_run = runtime.host.run_in_session
-
-    def delayed_run(*args, **kwargs):
-        about_to_run.set()
-        closer_finished.wait(0.2)
-        return original_run(*args, **kwargs)
-
-    monkeypatch.setattr(runtime.host, "run_in_session", delayed_run)
-
-    def close_core_session() -> None:
-        assert about_to_run.wait(1)
-        with session.relay_session.lock:
-            session.relay_session.closing = True
-        closer_finished.set()
-
-    closer = threading.Thread(target=close_core_session)
-    closer.start()
-    runtime._emit_client_active(session)
-    closer.join(1)
-
-    assert not closer.is_alive()
-
-
-
-def test_runtime_replacement_waits_for_stuck_deactivation(
-    direct_runtime,
-    monkeypatch,
-):
-    runtime = relay_shared_metrics._get_runtime()
-    assert runtime is not None
-    profile_key = relay_runtime.current_profile_key()
-    replacement_host = object()
-    monkeypatch.setattr(runtime, "deactivate", lambda: False)
-
-    replacement = relay_shared_metrics._get_runtime(host=replacement_host)
-
-    assert replacement is None
-    assert relay_shared_metrics._RUNTIMES[profile_key] is runtime
-
-
-
-def test_real_binding_overlapping_metrics_tasks_close_out_of_order(
-    real_binding_runtime,
-    caplog,
-):
-    runtime = relay_shared_metrics._get_runtime()
-    assert runtime is not None
-    event_a = {
-        "session_id": "metrics-session",
-        "task_id": "task-a",
-        "turn_id": "turn-a",
-        "platform": "gateway",
-    }
-    event_b = {
-        "session_id": "metrics-session",
-        "task_id": "task-b",
-        "turn_id": "turn-b",
-        "platform": "gateway",
-    }
-
-    task_a = runtime.start_task(event_a)
-    task_b = runtime.start_task(event_b)
-    assert task_a is not None
-    assert task_b is not None
-
-    runtime.finish_task({**event_a, "completed": True})
-    runtime.finish_task({**event_b, "completed": True})
-    runtime.close_session({"session_id": "metrics-session"})
-    relay_runtime.SESSION_COORDINATOR.finalize_conversation(
-        profile_key=relay_runtime.current_profile_key(),
-        session_id="metrics-session",
-    )
-
-    assert "scope handle is not at the top of the stack" not in caplog.text
-    assert "finalization failed" not in caplog.text
-    assert "closed with errors" not in caplog.text
-
-
-def test_real_binding_overlapping_metrics_model_calls_close_out_of_order(
-    real_binding_runtime,
-    caplog,
-):
-    runtime = relay_shared_metrics._get_runtime()
-    assert runtime is not None
-    task_event = {
-        "session_id": "metrics-model-session",
-        "task_id": "task",
-        "turn_id": "turn",
-        "platform": "gateway",
-    }
-    call_a = {
-        **task_event,
-        "api_request_id": "request-a",
-        "provider": "custom",
-        "model": "model-a",
-    }
-    call_b = {
-        **task_event,
-        "api_request_id": "request-b",
-        "provider": "custom",
-        "model": "model-b",
-    }
-
-    assert runtime.start_task(task_event) is not None
-    runtime.start_model_call(call_a)
-    runtime.start_model_call(call_b)
-    runtime.end_model_call(call_a)
-    runtime.end_model_call(call_b)
-    runtime.finish_task({**task_event, "completed": True})
-    runtime.close_session({"session_id": "metrics-model-session"})
-    relay_runtime.SESSION_COORDINATOR.finalize_conversation(
-        profile_key=relay_runtime.current_profile_key(),
-        session_id="metrics-model-session",
-    )
-
-    assert "scope handle is not at the top of the stack" not in caplog.text
-    assert "model call close failed" not in caplog.text
-    assert "task close failed" not in caplog.text
-    assert "closed with errors" not in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -1971,6 +1503,7 @@ def test_subagent_agent_boundary_closes_its_own_scope(
         _parent_session_id="parent",
         _session_db=None,
         _conversation_root_id=lambda: "parent",
+        _release_idle_turn_client=lambda result: None,
     )
 
     if terminal == "return":
@@ -2071,6 +1604,7 @@ def test_terminal_model_error_retains_the_failed_route(direct_runtime):
         "api_request_error",
         **base,
         retryable=False,
+        reason="auth",
         error={"message": "sensitive-error"},
     )
     assert not [event for event in direct_runtime.events if event[0] == "llm.call_end"]
@@ -2086,8 +1620,12 @@ def test_terminal_model_error_retains_the_failed_route(direct_runtime):
 
     [end] = [event for event in direct_runtime.events if event[0] == "llm.call_end"]
     assert end[2] == {
+        "call_role": "primary",
+        "error_class": "auth",
         "model": "claude-sonnet",
+        "outcome": "failed",
         "provider": "anthropic",
+        "ttft_bucket": "unknown",
     }
 
 
@@ -2108,6 +1646,7 @@ def test_nonretryable_provider_error_can_recover_within_one_logical_call(
         **base,
         retry_count=0,
         retryable=False,
+        reason="model_not_found",
     )
     fallback = {
         **base,
@@ -2125,9 +1664,14 @@ def test_nonretryable_provider_error_can_recover_within_one_logical_call(
     [end] = [event for event in direct_runtime.events if event[0] == "llm.call_end"]
     [start] = [event for event in direct_runtime.events if event[0] == "llm.call"]
     assert start[3]["model_name"] == "unknown"
+    # The recovered call keeps the error it recovered from.
     assert end[2] == {
+        "call_role": "primary",
+        "error_class": "model_not_found",
         "model": "gpt-5",
+        "outcome": "success",
         "provider": "openai-api",
+        "ttft_bucket": "unknown",
     }
 
 
@@ -2522,10 +2066,12 @@ def test_pending_tool_is_closed_and_counted_when_task_is_interrupted(direct_runt
     ]
     assert tool_end[2] == {
         "approval_outcome": "not_required",
+        "error_class": "interrupted",
         "latency_bucket": tool_end[2]["latency_bucket"],
         "outcome": "cancelled",
         "retry_count_bucket": "unknown",
         "tool_category": "terminal",
+        "tool_name": "terminal",
     }
     [task_end] = [
         event
@@ -2774,8 +2320,9 @@ def test_task_retry_count_survives_provider_fallback_ordinal_reset(direct_runtim
     [model_end] = [
         event for event in direct_runtime.events if event[0] == "llm.call_end"
     ]
-    assert model_end[2] == {
+    assert {k: model_end[2][k] for k in ("model", "outcome", "provider")} == {
         "model": "gpt-5",
+        "outcome": "success",
         "provider": "openai",
     }
     [task_end] = [
@@ -2789,7 +2336,7 @@ def test_task_retry_count_survives_provider_fallback_ordinal_reset(direct_runtim
 def test_failed_flush_keeps_daily_export_open_for_later_task(
     direct_runtime, tmp_path, monkeypatch, caplog
 ):
-    current_time = datetime(2026, 7, 28, 9, tzinfo=timezone.utc)
+    current_time = datetime(2026, 7, 28, 9, tzinfo=UTC)
     monkeypatch.setattr(
         "hermes_cli.observability.shared_metrics._utc_now",
         lambda: current_time,
@@ -2823,12 +2370,9 @@ def test_failed_flush_keeps_daily_export_open_for_later_task(
             interrupted=False,
             turn_exit_reason="text_response(stop)",
         )
+        _join_export_workers()
 
     finish_desktop_task("t1")
-
-    runtime = relay_shared_metrics._get_runtime()
-    assert runtime is not None
-    assert runtime._wait_for_task_flush(runtime._task_flush_requested)
 
     root = tmp_path / "hermes-home" / "telemetry" / "shared_metrics"
     assert list((root / "outbox").glob("*.json")) == []
@@ -2840,8 +2384,6 @@ def test_failed_flush_keeps_daily_export_open_for_later_task(
 
     finish_desktop_task("t2")
 
-    assert runtime._wait_for_task_flush(runtime._task_flush_requested)
-
     [package_path] = list((root / "outbox").glob("*.json"))
     package = json.loads(package_path.read_text(encoding="utf-8"))
     metrics = {metric["name"]: metric for metric in package["metrics"]}
@@ -2849,6 +2391,75 @@ def test_failed_flush_keeps_daily_export_open_for_later_task(
     assert metrics["hermes.task_run.finished"]["value"] == 2
     assert flush_attempts == 2
     assert "Hermes shared-metrics task flush failed" in caplog.text
+
+
+def _finish_desktop_task(session_id: str, task_id: str) -> None:
+    hook = dict(session_id=session_id, task_id=task_id, platform="desktop")
+    lifecycle.invoke_hook("pre_llm_call", **hook)
+    lifecycle.invoke_hook(
+        "on_session_end", **hook,
+        completed=True, failed=False, interrupted=False,
+        turn_exit_reason="text_response(stop)",
+    )
+
+
+@pytest.fixture
+def parked_flush(direct_runtime, monkeypatch):
+    """A flush that blocks like the real barrier does while another session's tool runs."""
+    monkeypatch.setattr(
+        "hermes_cli.observability.shared_metrics._utc_now",
+        lambda: datetime(2026, 7, 28, 9, tzinfo=UTC),
+    )
+    state = SimpleNamespace(attempts=0, entered=threading.Event(), release=threading.Event())
+
+    def parked() -> None:
+        state.attempts += 1
+        state.entered.set()
+        state.release.wait(3)
+
+    direct_runtime.subscribers.flush = parked
+    yield state
+    state.release.set()
+    _join_export_workers()
+
+
+def test_task_ends_do_not_wait_on_the_process_wide_flush_barrier(parked_flush, tmp_path):
+    _finish_desktop_task("s1", "t1")
+
+    # The turn thread is back while the barrier is still parked, so nothing is exported yet.
+    assert parked_flush.entered.wait(3)
+    outbox = tmp_path / "hermes-home" / "telemetry" / "shared_metrics" / "outbox"
+    assert list(outbox.glob("*.json")) == []
+
+    # Task ends behind the parked barrier coalesce into one more pass, not one each.
+    for task_id in ("t2", "t3", "t4"):
+        _finish_desktop_task("s1", task_id)
+    parked_flush.release.set()
+    _join_export_workers()
+    assert parked_flush.attempts == 2
+    assert len(list(outbox.glob("*.json"))) == 1
+
+
+def test_background_flush_runs_under_the_finishing_turns_profile(
+    direct_runtime, tmp_path, monkeypatch
+):
+    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    seen: list[Any] = []
+    monkeypatch.setattr(
+        relay_shared_metrics._Runtime,
+        "_export",
+        lambda self: seen.append(get_hermes_home()),
+    )
+    profile_home = tmp_path / "other-profile"
+    token = set_hermes_home_override(profile_home)
+    try:
+        _finish_desktop_task("s1", "t1")
+        _join_export_workers()
+    finally:
+        reset_hermes_home_override(token)
+
+    assert seen == [profile_home]
 
 
 def test_skill_lifecycle_flows_through_relay_to_a_privacy_safe_package(
@@ -3018,3 +2629,303 @@ def test_skill_lifecycle_does_not_fallback_across_an_explicit_session(
         for event in direct_runtime.events
         if event[0] == "scope.event" and event[1] == "hermes.skill.lifecycle"
     ] == []
+
+
+def test_real_binding_concurrent_task_close_skips_pop_under_sibling_scope(
+    real_binding_runtime, caplog,
+):
+    """Two concurrent turns in one session open two task scopes on the same physical
+    stack; finishing the LOWER one first must not raise "scope handle is not at the top
+    of the stack" (#115471) nor pop the sibling's live scope. The orphan is reclaimed by
+    the session-close drain, so both scopes are gone after the session ends."""
+    event = {"session_id": "shared-session", "task_id": "task-A", "turn_id": "turn-A", "platform": "cli"}
+    lifecycle.invoke_hook("on_session_start", **event)
+    relay_shared_metrics.start_task_run(session_id="shared-session", task_id="task-A", platform="cli")
+    relay_shared_metrics.start_task_run(session_id="shared-session", task_id="task-B", platform="cli")
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    session = runtime._session(event)
+    task_b_handle = session.tasks["task-B"].handle
+
+    with caplog.at_level("WARNING"):
+        relay_shared_metrics.finish_task_run(
+            session_id="shared-session", task_id="task-A", platform="cli", result={"ok": True},
+        )
+
+    assert not [r for r in caplog.records if "task close failed" in r.getMessage()], caplog.text
+    # Task B's live scope is still the top of its context's stack: the sibling was not popped through.
+    top = runtime._run_in_task(session.tasks["task-B"], relay_runtime._current_top, runtime.relay)
+    assert relay_runtime._same_handle(top, task_b_handle)
+
+    relay_shared_metrics.finish_task_run(
+        session_id="shared-session", task_id="task-B", platform="cli", result={"ok": True},
+    )
+    lifecycle.invoke_hook("on_session_end", **event)
+    assert "task close failed" not in caplog.text
+
+
+def _stored_counters(tmp_path) -> dict[str, list[dict[str, Any]]]:
+    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+
+    root = tmp_path / "hermes-home" / "telemetry" / "shared_metrics"
+    by_metric: dict[str, list[dict[str, Any]]] = {}
+    for counter in SharedMetricsStore(root / "metrics.sqlite3", root / "outbox").counter_snapshot():
+        by_metric.setdefault(counter["metric_name"], []).append(counter["dimensions"])
+    return by_metric
+
+
+def test_v3_failure_dimensions_never_export_third_party_identifiers(direct_runtime, tmp_path):
+    """Plugin tool names, exception class names, plugin platforms and raw exit reasons collapse
+    to closed classes, while Hermes's own vocabularies pass through."""
+    base = {
+        "session_id": "s1", "task_id": "t1", "api_request_id": "r1", "platform": "telegram",
+        "provider": "anthropic", "model": "claude-sonnet",
+    }
+    lifecycle.invoke_hook("pre_llm_call", **base)
+    lifecycle.invoke_hook("pre_api_request", **base)
+    lifecycle.invoke_hook("api_request_error", **base, retryable=True, reason="rate_limit")
+    for call_id, tool, error_type in (
+        ("c1", "acme_private_tool", "AcmePrivateError"), ("c2", "terminal", "tool_timeout"),
+    ):
+        lifecycle.invoke_hook("pre_tool_call", **base, tool_call_id=call_id, tool_name=tool)
+        lifecycle.invoke_hook(
+            "post_tool_call", **base, tool_call_id=call_id, tool_name=tool, status="error",
+            error_type=error_type, duration_ms=10,
+        )
+    relay_shared_metrics.finish_task_run(
+        session_id="s1", task_id="t1", platform="telegram",
+        result={"failed": True, "failure_reason": "rate_limit",
+                "turn_exit_reason": "acme private exit reason"},
+    )
+    lifecycle.finalize_session(session_id="s1")
+
+    counters = _stored_counters(tmp_path)
+    assert "acme" not in json.dumps(counters).lower()
+    assert {(d["tool_name"], d["error_class"]) for d in counters["hermes.tool.usage.count"]} == {
+        ("plugin", "exception"), ("terminal", "timeout"),
+    }
+    [route] = counters["hermes.model_route.count"]
+    assert (route["outcome"], route["error_class"]) == ("failed", "rate_limit")
+    [finished] = counters["hermes.task_run.finished"]
+    assert (finished["platform"], finished["failure_class"]) == ("telegram", "rate_limit")
+
+
+def test_install_snapshot_is_daily_and_carries_only_bucketed_counts(
+    direct_runtime, tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(
+        "hermes_cli.config.read_raw_config_readonly",
+        lambda: {
+            "telemetry": {"shared_metrics": {"enabled": True}},
+            "memory": {"provider": "acme-private-memory"},
+            "mcp_servers": {"acme-private-server": {"command": "x"}, "off": {"enabled": False}},
+            "plugins": {"enabled": ["acme-private-plugin", "b", "c"]},
+        },
+    )
+    for task_id in ("t1", "t2"):
+        event = {"session_id": task_id, "task_id": task_id, "platform": "cli"}
+        lifecycle.invoke_hook("pre_llm_call", **event)
+        relay_shared_metrics.finish_task_run(**event, result={"completed": True})
+        lifecycle.finalize_session(session_id=task_id)
+    # A new runtime has no in-process throttle; only the store's 24h latch can hold it back.
+    relay_shared_metrics._reset_for_tests()
+    event = {"session_id": "t3", "task_id": "t3", "platform": "cli"}
+    lifecycle.invoke_hook("pre_llm_call", **event)
+    lifecycle.finalize_session(session_id="t3")
+
+    [snapshot] = _stored_counters(tmp_path)["hermes.install.snapshot"]
+    assert snapshot == {
+        "cron_job_count_bucket": "0", "display_language": "en", "install_age_bucket": snapshot["install_age_bucket"],
+        "main_provider": "none", "mcp_server_count_bucket": "1", "memory_provider": "plugin",
+        "messaging_platform_count_bucket": "0", "plugin_count_bucket": "3_to_5",
+        "profile_count_bucket": snapshot["profile_count_bucket"], "skill_count_bucket": "0",
+        "terminal_backend": "local", "local_model_provider_used": "no",
+        **{k: snapshot[k] for k in ("behind_bucket", "gpu_class", "ram_bucket", "release_channel", "version_age_bucket")},
+    }
+
+
+def _stored_values(tmp_path, metric: str) -> list[tuple[dict[str, Any], int]]:
+    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+
+    root = tmp_path / "hermes-home" / "telemetry" / "shared_metrics"
+    return [
+        (counter["dimensions"], counter["value"])
+        for counter in SharedMetricsStore(root / "metrics.sqlite3", root / "outbox").counter_snapshot()
+        if counter["metric_name"] == metric
+    ]
+
+
+def test_sessions_summarize_on_close_and_milestones_latch_once_per_install(direct_runtime, tmp_path):
+    """Each closed session yields one bucketed summary; delegated children do not; an install
+    milestone is recorded the first time only, however many sessions reach it."""
+    for session_id, turns in (("s1", 3), ("s2", 1)):
+        for turn in range(turns):
+            task = f"{session_id}-t{turn}"
+            lifecycle.invoke_hook("pre_llm_call", session_id=session_id, task_id=task, platform="cli")
+            relay_shared_metrics.finish_task_run(
+                session_id=session_id, task_id=task, platform="cli", result={"completed": True},
+            )
+        lifecycle.finalize_session(session_id=session_id)
+
+    sessions = _stored_values(tmp_path, "hermes.session.count")
+    assert sorted((d["turn_count_bucket"], d["last_outcome"], v) for d, v in sessions) == [
+        ("1", "success", 1), ("3_to_5", "success", 1),
+    ]
+    milestones = {d["milestone"]: v for d, v in _stored_values(tmp_path, "hermes.install.milestone")}
+    assert milestones["first_task_started"] == 1
+    assert milestones["first_task_success"] == 1
+
+
+def test_user_named_providers_and_models_never_reach_counters(direct_runtime, tmp_path):
+    """A custom endpoint's name (``custom:<key>``), its model id and loopback-server models read
+    ``custom``; shipped providers and their public model ids stay readable."""
+    from hermes_cli.observability import shared_metrics_events as events
+    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+
+    events.record_setup_completed(surface="cli", provider="custom:acme-secret-llm")
+    events.record_model_switch(from_provider="custom:acme-secret-llm", to_provider="lmstudio", surface="cli")
+    events.record_fallback(from_provider="acme-unknown", to_provider="openrouter", reason="rate_limit")
+    runtime = relay_shared_metrics._get_runtime(retry_failed=True)
+    for provider, model in (("custom:acme-secret-llm", "acme-internal"), ("lmstudio", "bob-finetune"),
+                            ("openrouter", "c:/users/bob/model.gguf"), ("openrouter", "anthropic/claude-sonnet")):
+        runtime.record_auxiliary_tokens({
+            "usage": {"input_tokens": 5}, "aux_task": "compression", "provider": provider, "model": model,
+        })
+    runtime.relay.subscribers.flush()
+
+    root = tmp_path / "hermes-home" / "telemetry" / "shared_metrics"
+    stored = json.dumps(SharedMetricsStore(root / "metrics.sqlite3", root / "outbox").counter_snapshot())
+    assert not any(leak in stored for leak in ("acme", "bob", "users"))
+    tokens = {(d["provider"], d["model"]) for d, _ in _stored_values(tmp_path, "hermes.model_tokens.sum")}
+    assert tokens == {("custom", "custom"), ("lmstudio", "custom"), ("openrouter", "custom"),
+                      ("openrouter", "anthropic/claude-sonnet")}
+
+
+def test_milestone_install_age_is_the_subscriber_profile_not_the_relay_thread(tmp_path, monkeypatch):
+    """Under multiplex the Relay thread carries no profile binding: a milestone reached in
+    profile B must carry B's install age, not the launch profile's."""
+    import sqlite3 as _sqlite3
+    import time
+
+    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+    from hermes_cli.observability.shared_metrics_subscriber import SharedMetricsSubscriber
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    launch, other = tmp_path / "A", tmp_path / "B"
+    for home in (launch, other):
+        home.mkdir()
+    with _sqlite3.connect(other / "state.db") as con:
+        con.execute("CREATE TABLE sessions (id TEXT, started_at REAL)")
+        con.execute("INSERT INTO sessions VALUES ('s1', ?)", (time.time() - 120 * 86400,))
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    token = set_hermes_home_override(str(other))
+    try:
+        subscriber = SharedMetricsSubscriber(SharedMetricsStore(), "1.0")
+    finally:
+        reset_hermes_home_override(token)
+    subscriber._record_milestones("hermes.setup.completed", {"provider": "nous", "surface": "cli"})
+    ages = [c["dimensions"]["install_age_bucket"] for c in subscriber.store.counter_snapshot()
+            if c["metric_name"] == "hermes.install.milestone"]
+    assert ages == ["gte_90d"]
+
+
+def test_token_usage_is_summed_per_model_and_auxiliary_task(direct_runtime, tmp_path):
+    base = {"session_id": "s1", "task_id": "t1", "provider": "anthropic", "model": "claude-sonnet"}
+    for request_id in ("r1", "r2"):
+        lifecycle.invoke_hook("pre_api_request", **base, api_request_id=request_id)
+        lifecycle.invoke_hook(
+            "post_api_request", **base, api_request_id=request_id,
+            usage={"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 40},
+        )
+    for aux_task in ("compression", "acme-private-task"):
+        lifecycle.invoke_hook(
+            "post_auxiliary_call", aux_task=aux_task, provider="openrouter", model="small/model",
+            usage={"input_tokens": 7, "output_tokens": 3},
+        )
+    relay_shared_metrics.finish_task_run(
+        session_id="s1", task_id="t1", platform="cli", result={"completed": True},
+    )
+    lifecycle.finalize_session(session_id="s1")
+
+    sums = {
+        (d["call_role"], d["aux_task"], d["token_type"]): v
+        for d, v in _stored_values(tmp_path, "hermes.model_tokens.sum")
+    }
+    assert sums == {
+        ("primary", "none", "input"): 200, ("primary", "none", "output"): 20,
+        ("primary", "none", "cache_read"): 80,
+        ("auxiliary", "compression", "input"): 7, ("auxiliary", "compression", "output"): 3,
+        ("auxiliary", "other", "input"): 7, ("auxiliary", "other", "output"): 3,
+    }
+
+
+def test_recovered_rows_report_saved_only_once_the_store_holds_them(real_binding_runtime, monkeypatch):
+    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+
+    row = ("hermes.process.exit", {"crash_class": "none", "exit_kind": "killed", "process_kind": "gateway"})
+    real_store_write = SharedMetricsStore.record_counter
+
+    def locked(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(SharedMetricsStore, "record_counter", locked)
+    assert relay_shared_metrics.record_process_marks_saved([row]) == 0
+    monkeypatch.setattr(SharedMetricsStore, "record_counter", real_store_write)
+    assert relay_shared_metrics.record_process_marks_saved([row]) == 1
+    saved = [(r["metric_name"], r["dimensions"], r["value"]) for r in SharedMetricsStore().counter_snapshot()]
+    assert saved == [("hermes.process.exit", row[1], 1)]
+
+
+def _cli_turn(session_id: str, parent_session_id: str = "") -> None:
+    hook = dict(session_id=session_id, task_id=f"{session_id}-t", platform="cli")
+    lifecycle.invoke_hook("pre_llm_call", **hook, parent_session_id=parent_session_id)
+    relay_shared_metrics.finish_task_run(**hook, result={"completed": True})
+
+
+def test_finite_cli_runs_report_their_own_entrypoint(direct_runtime, tmp_path, monkeypatch):
+    """`hermes -z` / `chat -q` / `-Q` runs (HERMES_SINGLE_QUERY_SESSION) report `one_shot`, a
+    dispatcher-spawned one (kanban worker, A2A forward) `background`; the REPL stays `interactive`,
+    and a delegated child or a non-CLI surface keeps its own entrypoint inside a finite run."""
+    monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+    _cli_turn("repl")
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+    _cli_turn("oneshot")
+    _cli_turn("child", parent_session_id="oneshot")
+    _finish_desktop_task("desktop", "desktop-t")
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "kanban")
+    _cli_turn("kanban")
+    for session_id in ("repl", "oneshot", "child", "desktop", "kanban"):
+        lifecycle.finalize_session(session_id=session_id)
+    _join_export_workers()
+
+    started = sorted((d["entrypoint"], d["execution_surface"], v)
+                     for d, v in _stored_values(tmp_path, "hermes.task_run.started"))
+    assert started == [
+        ("background", "cli", 1), ("delegated", "cli", 1), ("interactive", "cli", 1),
+        ("interactive", "desktop", 1), ("one_shot", "cli", 1),
+    ]
+    finished = {d["entrypoint"] for d, _ in _stored_values(tmp_path, "hermes.task_run.finished")}
+    assert finished == {"background", "delegated", "interactive", "one_shot"}
+    # Delegated children are not sessions of their own.
+    sessions = sorted((d["entrypoint"], d["execution_surface"], d["turn_count_bucket"])
+                      for d, _ in _stored_values(tmp_path, "hermes.session.count"))
+    assert sessions == [
+        ("background", "cli", "1"), ("interactive", "cli", "1"), ("interactive", "desktop", "1"),
+        ("one_shot", "cli", "1"),
+    ]
+
+
+def test_oneshot_hard_exit_cleanup_records_the_session_summary(direct_runtime, tmp_path, monkeypatch):
+    """`hermes -z` leaves through os._exit, past the atexit hook that closes the metrics session; its
+    pre-exit cleanup must write the run's session.count itself."""
+    from hermes_cli import main as hermes_main
+
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+    monkeypatch.setattr(hermes_main, "_oneshot_cleanup_done", False)
+    _cli_turn("z-run")
+    hermes_main._cleanup_oneshot_runtime()
+    _join_export_workers()
+
+    sessions = _stored_values(tmp_path, "hermes.session.count")
+    assert [(d["entrypoint"], d["turn_count_bucket"], v) for d, v in sessions] == [("one_shot", "1", 1)]

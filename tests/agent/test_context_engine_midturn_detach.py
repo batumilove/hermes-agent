@@ -40,7 +40,7 @@ class _MockHandler(BaseHTTPRequestHandler):
     captured_requests: list = []
     response_queue: list = []
 
-    def do_POST(self):  # noqa: N802 (http.server API)
+    def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         req = json.loads(self.rfile.read(length).decode())
         type(self).captured_requests.append(req)
@@ -146,32 +146,14 @@ def test_turn_completes_when_engine_detached_mid_turn(agent_env):
     handler.response_queue.append(_tc_resp("execute_code", '{"code": "print(1)"}'))
     handler.response_queue.append(_text_resp("second"))
 
-    # Simulate gateway cache eviction: the engine detaches itself from the
-    # agent while the turn is still in flight.  Production eviction nulls
-    # agent.context_compressor under _context_engine_shutdown_lock between
-    # the first provider response and the second API request.  The
-    # pre-API compression gate at conversation_loop.py:2726-2732 is the
-    # crash site: it reads _compressor = agent.context_compressor and then
-    # calls _compressor.should_compress(request_pressure_tokens).
-    #
-    # The update_from_response hook fires too late in this mock turn, so we
-    # instead wrap note_request_rough_estimate — called via getattr at
-    # conversation_loop.py:2646-2650 on every loop iteration, *before* the
-    # compressor read at :2686.  Detaching on the second call reproduces the
-    # second-request gate crash exactly.
+    # Streaming mocks omit usage; this response hook runs after the first
+    # provider call and before assembly of the next request.
     engine = agent.context_compressor
-    original_note = engine.note_request_rough_estimate
-    _call_count = {"n": 0}
-    detached = {"done": False}
-
-    def _evicting_note(tokens):
-        original_note(tokens)
-        _call_count["n"] += 1
-        if _call_count["n"] == 2 and not detached["done"]:
-            detached["done"] = True
-            agent.context_compressor = None
-
-    engine.note_request_rough_estimate = _evicting_note
+    original_note = engine.note_usage_less_response
+    def completed():
+        original_note()
+        agent._shutdown_owned_context_engine()
+    engine.note_usage_less_response = completed
 
     result = agent.run_conversation(
         "hello",
