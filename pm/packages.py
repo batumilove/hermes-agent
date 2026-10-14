@@ -249,6 +249,10 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
 
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         super().stage(store, staged, version, target)
+        from pm.python_bootstrap import prepare_python_bootstrap
+
+        bootstrap_root = staged / self.prefix_rel if target == "linux-arm64-bionic" else staged
+        prepare_python_bootstrap(bootstrap_root)
         binary = self.binary(staged, target)
         if binary is not None and sys.platform == "darwin":
             from hermes_cli.macos_signing import sign_managed_python
@@ -261,6 +265,13 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
         # old bundle-time drop did) makes doctor's re-hash mismatch.
         if target == "win32-arm64":
             (staged / "vcruntime140_1.dll").unlink(missing_ok=True)
+
+    def verify(self, entry: Path, target: str) -> str:
+        from pm.python_bootstrap import python_bootstrap_problem
+
+        bootstrap_root = entry / self.prefix_rel if target == "linux-arm64-bionic" else entry
+        return super().verify(entry, target) or python_bootstrap_problem(
+            bootstrap_root, require_distlib=target != "linux-arm64-bionic")
 
     def fetch_url(self, version: str, target: str) -> str:
         if target == "linux-arm64-bionic":
@@ -522,6 +533,17 @@ class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
         # lockfile is written rather than selecting glibc bytes on musl.
         return node_latest_versions()
 
+    def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
+        from pm.node_npm_layout import strip_node_npm
+
+        super().stage(store, staged, version, target)
+        strip_node_npm(staged, target)
+
+    def verify(self, entry: Path, target: str) -> str:
+        from pm.node_npm_layout import verify_node_npm
+
+        return super().verify(entry, target) or verify_node_npm(entry, target)
+
     def repair_staged_verification(self, entry: Path, target: str, reason: str) -> tuple[str, str]:
         """Repair the host library needed by official Linux Node, then re-probe.
 
@@ -594,8 +616,8 @@ class Npm(BinaryPackage):
     url = "https://registry.npmjs.org/npm/-/npm-{version}.tgz"
 
     def fetch_urls(self, version: str, target: str) -> list[str]:
-        from pm.npm_security_overlay import OVERLAY_URL
-        return [self.fetch_url(version, target), OVERLAY_URL]
+        from pm.npm_security_overlay import OVERLAY_URL, UNDICI_OVERLAY_URL
+        return [self.fetch_url(version, target), OVERLAY_URL, UNDICI_OVERLAY_URL]
 
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         from pm.npm_security_overlay import apply_overlay
@@ -606,11 +628,12 @@ class Npm(BinaryPackage):
         return super().verify(entry, target) or verify_overlay(entry, target)
 
     def unpack(self, archive: Path, staged: Path, target: str) -> None:
-        """npm installs itself using the node it extends: a plain unpack
-        resolves the cli from dirname(process.execPath) and finds node's
-        bundled npm instead. --offline pins the bytes to the verified
-        tarball; --ignore-scripts + a sanitized env keep user npm/node
-        config out of the staging."""
+        """npm bootstraps from its verified archive using the separately pinned Node.
+
+        Self-install creates the native launchers; --offline and --ignore-scripts
+        keep the staged bytes tied to the selected artifact without lifecycle code.
+        Bionic retains its explicit non-executing extraction and shell wrappers.
+        """
         from pm.npm_security_overlay import unpack_overlay
         if unpack_overlay(archive, staged):
             return
@@ -650,38 +673,9 @@ class Npm(BinaryPackage):
         node_bin = node.binary(store.entry(node_fact["entry"]), target)
         if node_bin is None or not node_bin.is_file():
             raise InstallError(self.name, "node's entry is missing its binary")
-        win = target.startswith("win32")
-        bundled_cli = (
-            node_bin.parent / "node_modules" / "npm" / "bin" / "npm-cli.js"
-            if win
-            else node_bin.parent.parent / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js"
-        )
-        if not bundled_cli.is_file():
-            raise InstallError(self.name, "node's entry is missing its bundled npm-cli.js")
+        from pm.node_npm_layout import install_selected_npm
 
-        staged.mkdir(parents=True, exist_ok=True)
-        # npm caches the tarball it installs. The archive's directory is the
-        # store's download entry, which must hold only the archive: a cache
-        # there turns its removal into a tree delete that fails on Windows
-        # while Defender still holds the fresh copy (WinError 145). Cleanup
-        # of this throwaway cache must never fail the install.
-        with tempfile.TemporaryDirectory(prefix="hermes-npm-cache-", ignore_cleanup_errors=True) as cache:
-            proc = subprocess.run(
-                [
-                    native(node_bin), native(bundled_cli), "install", "--global",
-                    "--prefix", native(staged), "--offline", "--ignore-scripts",
-                    "--no-audit", "--no-fund", native(archive),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=900,
-                env=npm_env(Path(cache)),
-                check=False,
-            )
-        if proc.returncode != 0:
-            raise InstallError(
-                self.name, f"self-install exited {proc.returncode}: {proc.stderr[-400:]}"
-            )
+        install_selected_npm(archive, staged, node_bin)
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
         latest = npm_dist_tags("npm").get("latest")

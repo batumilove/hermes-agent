@@ -34,6 +34,7 @@ def test_staged_repair_installs_libatomic_then_reprobes(tmp_path, monkeypatch):
 
     monkeypatch.setattr("pm.libatomic.try_install_libatomic", install)
     package = Nodejs()
+    package.stage(None, tmp_path, "26.7.0", "linux-x64")
     first = package.verify(tmp_path, "linux-x64")
     repaired = package.repair_staged_verification(tmp_path, "linux-x64", first)
 

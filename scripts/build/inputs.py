@@ -50,6 +50,7 @@ class AgentInputs:
     command_dir: Path | None = None
     resources: dict[str, Path] = field(default_factory=dict)
     frontends: dict[str, Path] = field(default_factory=dict)
+    metadata_version: str | None = None
     ref: str | None = None
     stamp: Path | None = None
     features: Path | None = None
@@ -69,7 +70,14 @@ class AgentInputs:
             values[key] = {name: Path(path) for name, path in values.get(key, {}).items()}
         return cls(**values)
 
+    def _validate_metadata(self) -> None:
+        if self.metadata_version is not None:
+            from scripts.build.image_identity import validate_metadata_version
+            validate_metadata_version(self.metadata_version)
+            if self.placement == "references":
+                raise ValueError("referenced wheel metadata cannot be overridden")
     def validate(self, out: Path) -> None:
+        self._validate_metadata()
         if not re.fullmatch(r"(?:(?:linux|darwin|win32)-(?:x64|arm64)|linux-(?:x64|arm64)-musl|linux-arm64-bionic)", self.target):
             raise ValueError(f"unsupported target: {self.target}")
         if self.placement not in ("contained", "fixed", "references"):

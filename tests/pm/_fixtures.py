@@ -35,14 +35,23 @@ def _wheel(directory: Path, name: str, version: str = "1.0", requirements=()) ->
     return wheel
 
 
+def host_distlib() -> Path:
+    """The actual pinned interpreter's launcher supplier, before or after sanitation."""
+    base = Path(sys.base_prefix)
+    sites = [base / "Lib" / "site-packages", *base.glob("lib/python*/site-packages")]
+    candidates = [candidate for site in sites
+                  for candidate in (site / "distlib", site / "pip" / "_vendor" / "distlib")]
+    return next(candidate for candidate in candidates if (candidate / "scripts.py").is_file())
+
+
 def stage_host_python(python: Path) -> Path:
     """Place a runnable copy of the test host's interpreter at ``python`` (``<root>/bin/python…``).
 
     CI's test interpreter is a relocatable python-build-standalone whose prefix is wherever the
     binary sits, so a bare copy cannot find its stdlib (``No module named 'encodings'``). Copy the
     host's stdlib beside it (a real copy, not a link: payload guards refuse links that escape the
-    tree); site-packages and the test suite stay out. Production's package stage ships the whole
-    distribution.
+    tree); application site-packages and the test suite stay out. Preserve the actual
+    launcher supplier and apply PM's bootstrap policy before callers record facts/digests.
     """
     python.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(Path(sys._base_executable).resolve(), python)
@@ -52,6 +61,13 @@ def stage_host_python(python: Path) -> Path:
         shutil.copytree(stdlib, python.parent.parent / "lib" / stdlib.name,
                         ignore=shutil.ignore_patterns("site-packages", "test", "__pycache__", "idlelib", "tkinter"),
                         symlinks=True)
+    if stdlib is not None:
+        supplier = python.parent.parent / "lib" / stdlib.name / "site-packages" / "distlib"
+        if not supplier.exists():
+            shutil.copytree(host_distlib(), supplier, ignore=shutil.ignore_patterns("__pycache__"))
+    from pm.python_bootstrap import prepare_python_bootstrap
+
+    prepare_python_bootstrap(python.parent.parent)
     return python
 
 

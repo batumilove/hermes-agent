@@ -427,3 +427,38 @@ branch so later imports can verify their provenance. Source installs then use
 fork's default source channel also resolves to `batumi/live`. Container installs
 pull and recreate from the tested immutable image digest with the existing data
 mount. Use the separate staging/soak and production promotion workflow for rollout.
+
+## Image acceptance repair after ci6
+
+PR #387 landed the accepted ci6 tree at
+`a562062c3c29354bab5cb04ac4fa583a7128173b`. The source-SHA image was uploaded,
+but its fixable HIGH/CRITICAL Trivy gate rejected thirteen HIGH library findings;
+candidate promotion and staging deployment did not run. All seven earlier source
+refs remain immutable. `codex/reconcile-upstream-6e7b83-ci7` is an ordinary
+repair descendant of the accepted merge and retains its ci6 import proof.
+
+The application locks already resolve patched packages. The additional copies
+were in Node's redundant npm bundle, the independently selected npm's Undici,
+and pip's vendored libraries in the managed interpreter. PM now removes the
+redundant installer payloads before recording store digests. Its selected npm
+bootstraps from its own verified tarball, offline with lifecycle scripts disabled;
+a third hash-pinned artifact supplies Undici 6.29.0 to the shared npm/Nix overlay.
+The interpreter retains the archive's licensed distlib 0.4.2 as a standalone
+launcher supplier. PM continues to create unseeded environments through its
+pinned UV; managed Python no longer supplies pip or ensurepip bootstrap wheels.
+Native Windows launcher and install/update acceptance is required for this tree.
+
+The image's `hermes-agent` finding also matched placeholder metadata `0.0.0`.
+The published DNS-rebinding repair is present in the accepted upstream ancestry,
+and the existing WebSocket Host/Origin regressions pass. Image publication must
+prepare an install stamp while Git is available: authenticate the pinned release
+object and accepted import, derive a PEP 440 source version, and bind it to the
+actual source SHA. The shared assembler accepts that image-only metadata override
+and removes stale metadata for its own distribution. Source manifests, dependency
+selection, and global release allocation retain their existing semantics.
+
+The application publication caller pins the companion image-identity workflow
+repair by immutable ops commit. Deployment and promotion callers retain their
+previous tooling pins. The scanner severity, fixable filter, and candidate gate
+remain enforced. Local tests and source checks do not accept a rebuilt image:
+the new source needs fresh full CI and the actual image scan before deployment.
