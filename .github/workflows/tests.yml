@@ -286,6 +286,12 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Verify fork import and select immutable source for upgrade rehearsal
+        # Only proof-bearing fork reviews switch to the authenticated source.
+        # The application tree is exact; linear-review publication is not the
+        # target of this release-to-source fast-forward rehearsal.
+        run: python3 scripts/ci/prepare_upgrade_source.py --github-env "$GITHUB_ENV"
+
       - name: Set up Node
         # `hermes update` builds the web UI / TUI workspaces.
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # 7.0.0

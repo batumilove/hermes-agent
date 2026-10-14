@@ -144,7 +144,7 @@ class TestGenerate:
         assert provider.generate("a cat")["success"] is True
         (request,) = codex_backend["requests"]
         assert str(request.url) == "https://chatgpt.com/backend-api/codex/images/generations"
-        assert request.headers["originator"] == "hermes-agent"
+        assert request.headers["originator"] == "codex_cli_rs"
 
     def test_profile_scope_routes_each_request_without_borrowing_process_override(
         self, provider, codex_backend, monkeypatch,

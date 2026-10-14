@@ -22,7 +22,7 @@ from tools.delegate_tool import delegate_task
 
 
 def _make_mock_parent(depth=0):
-    parent = MagicMock()
+    parent = MagicMock(_credential_pool=None)
     parent.base_url = "https://openrouter.ai/api/v1"
     parent.api_key = "test-key"
     parent.provider = "openrouter"
@@ -47,7 +47,7 @@ def _make_mock_parent(depth=0):
 
 
 def _make_mock_child(cost=0.1234567, cost_status="estimated"):
-    child = MagicMock()
+    child = MagicMock(_credential_pool=None)
     child.run_conversation.return_value = {
         "final_response": "done",
         "completed": True,

@@ -91,17 +91,22 @@ def store(tmp_path):
             for _ in range(count):
                 add(f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}")
 
-        yield add, bulk, lambda: sqlite3.connect(str(tmp_path / "state.db"))
+        yield add, bulk, lambda: sqlite3.connect(str(tmp_path / "state.db")), db.set_session_read
 
 
-def test_layout_inference_survives_every_derived_id_shape(store, tmp_path) -> None:
+@pytest.mark.parametrize("read_watermark", [False, True], ids=["ambiguous-defaults", "read-discriminant"])
+def test_layout_inference_survives_every_derived_id_shape(store, tmp_path, read_watermark: bool) -> None:
     """Each derived shape, present as a parent id, must leave inference intact."""
-    add, bulk, connect = store
+    add, bulk, connect, set_read = store
     bulk(20)
     for index, parent in enumerate(DERIVED_IDS):
         add(parent, source="cron" if parent.startswith("cron_") else "cli")
         add(f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_kid{index:03d}",
             parent_session_id=parent)
+    if read_watermark:
+        # A genuine watermark distinguishes the current REAL column from
+        # TEXT tool_names in the older append-auto_archived physical layout.
+        assert set_read(DERIVED_IDS[0])
     conn = connect()
     try:
         columns, rows = _sessions_rows(conn)
@@ -110,4 +115,24 @@ def test_layout_inference_survives_every_derived_id_shape(store, tmp_path) -> No
     report = _map_as_salvage(tmp_path, columns, rows)
     assert report["mapped"]["sessions"] == len(rows)
     assert report["unrecognized_layout_rows"] == 0
-    assert report["inferred_layouts"]["sessions"][str(len(columns))] == columns
+    expected_layout = columns.copy()
+    if not read_watermark:
+        # All-zero/NULL suffix cells fit both fresh CREATE and an older
+        # store's appended auto_archived column. IDs cannot prove that order.
+        for name in ("auto_archived", "pinned", "hidden", "last_read_at", "tool_names"):
+            expected_layout[columns.index(name)] = None
+        assert report["ambiguous_layout_rows"] == len(rows)
+        assert report["ambiguous_layout_positions"] == {
+            "sessions": {str(len(columns)): [columns.index(name) for name in ("auto_archived", "pinned", "hidden")]}
+        }
+    else:
+        assert report["ambiguous_layout_rows"] == 0
+    assert report["inferred_layouts"]["sessions"][str(len(columns))] == expected_layout
+    identity_columns = ("id", "source", "model", "cwd", "parent_session_id")
+    indices = [columns.index(name) for name in identity_columns]
+    expected_rows = sorted(tuple(row[index] for index in indices) for row in rows)
+    with sqlite3.connect(str(tmp_path / "mapped.db")) as recovered:
+        actual_rows = recovered.execute(
+            "SELECT id,source,model,cwd,parent_session_id FROM sessions ORDER BY id"
+        ).fetchall()
+    assert actual_rows == expected_rows

@@ -500,19 +500,14 @@ class TestGatewayRedeliverySweep:
 
         adapter.send = send
         runner = self._runner(adapter)
-        row = {
-            "obligation_id": "ob-1",
-            "platform": "slack",
-            "chat_id": "C1",
-            "thread_id": None,
-            "content": "answer",
-            "needs_marker": False,
-            "attempts": 1,
-        }
+        _record(content="answer", thread_id=None)
+        _orphan("ob-1")
+        row = dl.sweep_recoverable()[0]
+        original_mark_attempting = dl.mark_attempting
 
         def mark_attempting(oid, attempts):
             order.append(f"attempting:{oid}:{attempts}")
-            return True
+            return original_mark_attempting(oid, attempts)
 
         monkeypatch.setattr(dl, "mark_attempting", mark_attempting)
 

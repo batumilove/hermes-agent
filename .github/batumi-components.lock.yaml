@@ -20,7 +20,7 @@ components:
 - id: hermes-skills
   repository: batumilove/hermes-skills
   url: https://github.com/batumilove/hermes-skills.git
-  commit: 55c351c18a6f18833129b0e0bb9045065cea9d53
+  commit: 8474d463f4fcd2608f5deeb0ad0a26f731ceb36c
   kind: skills
   plugins: []
 - id: hermes-ops

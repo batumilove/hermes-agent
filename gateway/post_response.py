@@ -573,9 +573,9 @@ class PostResponseWorker:
                 raise RuntimeError("post-response topic binding was not persisted")
 
     def _apply_finalize_turn(self, action: PostResponseAction, payload: dict[str, Any]) -> None:
-        # Claim SQL keeps this action behind a delivered receipt;
+        # Claim SQL requires delivery or explicit permanent-target abandonment;
         # retain the defensive check for manually injected/corrupt rows.
-        if not self.store._db.is_final_delivery_delivered(action.obligation_id):
+        if not self.store._db.is_final_delivery_finalizable(action.obligation_id):
             raise RuntimeError("finalize_turn claimed before delivery receipt")
         runner = self.runner
         if runner is None:

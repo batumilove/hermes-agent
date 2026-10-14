@@ -7,7 +7,7 @@ registry.npmjs.org are unreachable. Every command runs in a private network name
 is a plain-HTTP server bridged onto the namespace's loopback (what users configure), the proxy
 is the only other egress and refuses (and logs) every public index. The mirror holds a small set
 pre-fetched at fixture time and verified against the pins: the PM runtime's locked wheels
-(``pm/uv.lock``) and the npm tarball PM provisions.
+(``pm/uv.lock``) and all locked npm provisioning archives, including its security overlay.
 
 Classes: an update that ships a PM runtime change restages it with ``uv sync --locked`` against
 the committed lock while pip's mirror is bridged into uv (#124418, #123943, #122112), and PM's
@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -78,16 +79,25 @@ def test_pip_mirror_update_restages_pm_runtime_through_the_mirror(inst):
 
 def test_npm_registry_mirror_serves_pm_npm_download(inst):
     """``~/.npmrc`` names the mirror; the npm tool's store entry is missing, so
-    `hermes pm install npm` has to fetch its pinned tarball: from the mirror, never from
-    registry.npmjs.org."""
+    `hermes pm install npm` has to fetch every pinned archive, including its security
+    overlay: from the mirror, never from registry.npmjs.org."""
     tool = S.installed_tool(inst, "npm")
     version = tool["version"]
     tarball = f"npm-{version}.tgz"
-    blob = S.prefetch(f"https://registry.npmjs.org/npm/-/{tarball}", tool["artifacts"][0],
-                      inst.root / "npm-mirror" / tarball)
+    from pm.lock import Lockfile
+    from pm.npm_security_overlay import verify_overlay
+
+    artifacts = Lockfile(inst.sb.checkout / "pm" / "lock.json").artifacts("npm", tool["target"])
+    assert [a["sha256"] for a in artifacts] == tool["artifacts"], "installed npm artifact pins differ from its lock"
+    routes: dict = {}
+    for artifact in artifacts:
+        url = urlsplit(artifact["url"])
+        assert url.scheme == "https" and url.netloc == "registry.npmjs.org", "npm mirror fixture requires registry artifacts"
+        blob = S.prefetch(artifact["url"], artifact["sha256"], inst.root / "npm-mirror" / url.path.rsplit("/", 1)[1])
+        routes[url.path] = blob.read_bytes()
+    artifact_paths = set(routes)
     packument = json.dumps({"name": "npm", "dist-tags": {"latest": version}, "versions": {version: {
         "name": "npm", "version": version, "dist": {"tarball": f"MIRROR/npm/-/{tarball}"}}}})
-    routes: dict = {f"/npm/-/{tarball}": blob.read_bytes()}
     mirror = N.HttpSite(N.static_app(routes))
     routes["/npm"] = packument.replace("MIRROR", mirror.url).encode()
     npmrc = inst.sb.home / ".npmrc"
@@ -103,8 +113,11 @@ def test_npm_registry_mirror_serves_pm_npm_download(inst):
             assert not public and r.rc == 0, (
                 f"npm provisioning with a registry mirror failed or reached the public registry {public}\n"
                 + r.report(inst))
-            assert (inst.sb.hermes_home / "tools" / tool["entry"]).is_dir(), "npm was not re-provisioned\n" + r.report(inst)
-            assert any(h.path.endswith(tarball) and h.status == 200 for h in mirror.hits), (
-                "the tarball was not served by the mirror\n" + r.report(inst))
+            entry = inst.sb.hermes_home / "tools" / tool["entry"]
+            assert entry.is_dir(), "npm was not re-provisioned\n" + r.report(inst)
+            assert not verify_overlay(entry, tool["target"]), "npm security overlay was not accepted\n" + r.report(inst)
+            served = {h.path for h in mirror.hits if h.status == 200}
+            assert artifact_paths <= served, (
+                f"locked npm artifacts were not served by the mirror: {artifact_paths - served}\n" + r.report(inst))
     finally:
         npmrc.unlink()

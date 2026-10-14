@@ -173,6 +173,18 @@ def retry_not_before(updated_at: Any, last_error: Any, attempts: Any) -> Optiona
     return _failed_stamp(updated_at) + _RETRY_BACKOFF_SECONDS[spent]
 
 
+def _receipt_retry_deadline(conn, obligation_id, updated_at, error, attempts):
+    """Durable handoffs count the initial send; legacy rows count recovery sends."""
+    has_actions = conn.execute("SELECT 1 FROM sqlite_master WHERE name='gateway_post_response_actions'").fetchone()
+    counted_initial = has_actions and conn.execute(
+        "SELECT 1 FROM gateway_post_response_actions WHERE obligation_id=? LIMIT 1", (obligation_id,),
+    ).fetchone()
+    due = retry_not_before(updated_at, error, attempts)
+    if counted_initial and due is not None:
+        return retry_not_before(updated_at, error, max(0, attempts - 1))
+    return due
+
+
 def _db_path():
     # Launch home, not get_hermes_home(): a multiplexed gateway records a served profile's replies
     # under that profile's home override, but the boot sweep reads from the launch context, so both
@@ -181,11 +193,19 @@ def _db_path():
     return get_process_hermes_home() / "state.db"
 
 
-def _connect(*, timeout: float = _DEFAULT_SQLITE_TIMEOUT_SECONDS) -> sqlite3.Connection:
+def _connect(*, timeout: float = _DEFAULT_SQLITE_TIMEOUT_SECONDS, db_path=None) -> sqlite3.Connection:
     from hermes_cli.sqlite_util import open_db
-    return open_db(_db_path(), db_label="state.db (delivery_ledger)",
+    if db_path is not None:
+        from pathlib import Path
+        from hermes_constants import assert_named_profile_home_live
+        path = Path(db_path)
+        assert_named_profile_home_live(path)
+        if path.parent.parent.name == "profiles" and any(
+                entry.is_symlink() for entry in (path, path.parent, path.parent.parent)):
+            raise OSError("Scoped delivery database has a symlinked profile path")
+    return open_db(db_path if db_path is not None else _db_path(), db_label="state.db (delivery_ledger)",
                    busy_timeout_ms=int(max(0.0, timeout) * 1000),
-                   row_factory=None, initialize=_initialize_schema)
+                   row_factory=None, initialize=_initialize_schema, create=db_path is None)
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
@@ -211,9 +231,9 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
         add_column_if_missing(conn, "delivery_obligations", "adapter_profile", "adapter_profile TEXT")
 
 
-def _transaction(*, timeout: float = _DEFAULT_SQLITE_TIMEOUT_SECONDS):
+def _transaction(*, timeout: float = _DEFAULT_SQLITE_TIMEOUT_SECONDS, db_path=None):
     from hermes_cli.sqlite_util import transaction
-    return transaction(_connect(timeout=timeout))
+    return transaction(_connect(timeout=timeout, db_path=db_path))
 
 
 def _start_time(pid: int) -> Optional[int]:
@@ -317,7 +337,7 @@ def record_crash_left_reply(*, obligation_id: str, session_key: str, platform: s
 
 
 def mark_attempting(
-    obligation_id: str, expected_attempts: Optional[int] = None
+    obligation_id: str, expected_attempts: Optional[int] = None, *, db_path=None
 ) -> bool:
     """Persist the pre-send ambiguity boundary.
 
@@ -326,9 +346,9 @@ def mark_attempting(
     perform the network send.
     """
     if expected_attempts is None:
-        return _update_state(obligation_id, "attempting")
+        return _update_state(obligation_id, "attempting", db_path=db_path)
     pid, started = _owner_stamp()
-    with _hot_path_transaction() as conn:
+    with _hot_path_transaction(db_path=db_path) as conn:
         cursor = conn.execute(
             """UPDATE delivery_obligations
                SET state=?, updated_at=?, last_error=?
@@ -348,15 +368,16 @@ def mark_attempting(
     return cursor.rowcount == 1
 
 
-def mark_delivered(obligation_id: str) -> None:
-    _update_state(obligation_id, "delivered")
+def mark_delivered(obligation_id: str, *, db_path=None, expected_attempts=None) -> bool:
+    return _update_state(obligation_id, "delivered", db_path=db_path, expected_attempts=expected_attempts)
 
 
-def mark_failed(obligation_id: str, error: str = "") -> None:
-    _update_state(obligation_id, "failed", error=error)
+def mark_failed(obligation_id: str, error: str = "", *, db_path=None, expected_attempts=None) -> bool:
+    state = "abandoned" if db_path is not None and error in {"chat not found", "bot blocked"} else "failed"
+    return _update_state(obligation_id, state, error=error, db_path=db_path, expected_attempts=expected_attempts)
 
 
-def release_runtime_claim(obligation_id: str, error: str = "") -> bool:
+def release_runtime_claim(obligation_id: str, error: str = "", *, db_path=None) -> bool:
     """Return an unsent runtime claim to ``failed`` without spending an attempt.
 
     Runtime recovery claims before clearing ``resume_pending`` so two reconnect paths cannot send the
@@ -365,7 +386,7 @@ def release_runtime_claim(obligation_id: str, error: str = "") -> bool:
     pid, started = _owner_stamp()
     if started is None:
         return False
-    with _DB_LOCK, _transaction() as conn:
+    with _DB_LOCK, _transaction(db_path=db_path) as conn:
         cursor = conn.execute(
             """UPDATE delivery_obligations
                SET state='failed', attempts=CASE
@@ -377,13 +398,17 @@ def release_runtime_claim(obligation_id: str, error: str = "") -> bool:
     return bool(cursor.rowcount)
 
 
-def _update_state(obligation_id: str, state: str, error: str = "") -> bool:
-    with _hot_path_transaction() as conn:
+def _update_state(obligation_id: str, state: str, error: str = "", *,
+                  db_path=None, expected_attempts=None) -> bool:
+    with _hot_path_transaction(db_path=db_path) as conn:
+        guard, params = "", (state, time.time(), error[:500] if error else None, obligation_id)
+        if expected_attempts is not None:
+            pid, started = _owner_stamp()
+            guard = " AND state='attempting' AND owner_pid=? AND owner_started_at IS ? AND attempts=?"
+            params += (pid, started, expected_attempts)
         cursor = conn.execute(
-            """UPDATE delivery_obligations
-               SET state=?, updated_at=?, last_error=?
-               WHERE obligation_id=?""",
-            (state, time.time(), error[:500] if error else None, obligation_id),
+            "UPDATE delivery_obligations SET state=?, updated_at=?, last_error=? WHERE obligation_id=?" + guard,
+            params,
         )
     return cursor.rowcount == 1
 
@@ -405,7 +430,7 @@ def _claimed_row(oid, session_key, platform, chat_id, thread_id, content, attemp
 
 
 def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Optional[set] = None,
-                      deliverable_targets: Optional[set] = None) -> list[dict[str, Any]]:
+                      deliverable_targets: Optional[set] = None, db_path=None) -> list[dict[str, Any]]:
     """Claim undelivered rows owned by dead processes; return them for redelivery.
 
     Claiming atomically re-stamps the owner to THIS process, moves the row to 'attempting' and increments
@@ -426,7 +451,7 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
     because the runtime sweep matches profiles exactly and could otherwise never claim it."""
     now, (pid, started) = now if now is not None else time.time(), _owner_stamp()
     claimed: list[dict[str, Any]] = []
-    with _DB_LOCK, _transaction() as conn:
+    with _DB_LOCK, _transaction(db_path=db_path) as conn:
         rows = conn.execute(
             """SELECT obligation_id, session_key, platform, chat_id, thread_id,
                       content, state, attempts, created_at,
@@ -463,7 +488,8 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
                         "profile": adapter_profile or "default", "attempts": attempts,
                         "adopted": True, "not_before": flood_not_before(updated_at, last_error),
                         "_prior_state": state, "_prior_owner_pid": owner_pid,
-                        "_prior_owner_started_at": owner_started_at})
+                        "_prior_owner_started_at": owner_started_at,
+                        "_prior_last_error": last_error, "_prior_updated_at": updated_at})
                 continue
             # Every claim starts a send, so the row leaves 'pending'/'failed' for 'attempting' in the same
             # CAS: a boot killed inside the redelivery then leaves proof the platform may have it (next boot
@@ -483,12 +509,16 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
                                             adapter_profile or "default",
                                             needs_marker=True, flood=flood_row))
                 claimed[-1].update(_prior_state=state, _prior_owner_pid=owner_pid,
-                                   _prior_owner_started_at=owner_started_at)
+                                   _prior_owner_started_at=owner_started_at,
+                                   _prior_last_error=last_error, _prior_updated_at=updated_at)
+    if db_path is not None:
+        for row in claimed:
+            row["db_path"] = db_path
     return claimed
 
 
 def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
-                             profile: Optional[str] = None) -> list[dict[str, Any]]:
+                             profile: Optional[str] = None, db_path=None) -> list[dict[str, Any]]:
     """Claim this process's failed rows that are due for another send, for one adapter.
 
     ``profile`` scopes multiplexed gateways to the bot identity that owned the failed send (``None`` =
@@ -504,7 +534,7 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
         return []        # reuse; runtime replay is optional, so fail closed (startup recovery remains).
     expected_profile = "default" if not profile or profile == "default" else str(profile)
     claimed: list[dict[str, Any]] = []
-    with _DB_LOCK, _transaction() as conn:
+    with _DB_LOCK, _transaction(db_path=db_path) as conn:
         rows = conn.execute(
             """SELECT obligation_id, session_key, platform, chat_id, thread_id,
                       content, attempts, created_at, owner_pid,
@@ -516,7 +546,7 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
             # Exact process-start matching prevents PID reuse from stealing work.
             if adapter_profile != expected_profile or owner_pid != pid or owner_started_at != started:
                 continue
-            due = retry_not_before(updated_at, last_error, attempts)
+            due = _receipt_retry_deadline(conn, oid, updated_at, last_error, attempts)
             if due is None:
                 continue
             owner_guard = (now, oid, owner_pid, owner_started_at)
@@ -543,10 +573,15 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
                 claimed.append(_claimed_row(oid, session_key, row_platform, chat_id, thread_id, content,
                                             attempts, adapter_profile, needs_marker=True, runtime=True,
                                             flood=is_flood_error(last_error), last_error=last_error))
+                claimed[-1].update(_prior_state="failed", _prior_owner_pid=owner_pid,
+                                   _prior_owner_started_at=owner_started_at,
+                                   _prior_updated_at=updated_at, _prior_last_error=last_error)
+                if db_path is not None:
+                    claimed[-1]["db_path"] = db_path
     return claimed
 
 
-def pending_retries(now: Optional[float] = None) -> list[dict[str, Any]]:
+def pending_retries(now: Optional[float] = None, *, db_path=None) -> list[dict[str, Any]]:
     """This process's failed rows that still await redelivery, one entry per adapter identity with the
     earliest deadline (``not_before``). The runner arms one redelivery timer per entry, so a row adopted
     at boot, skipped because its wait had not passed, or rejected again is never stranded. Rows past the
@@ -554,18 +589,19 @@ def pending_retries(now: Optional[float] = None) -> list[dict[str, Any]]:
     now, (pid, started) = now if now is not None else time.time(), _owner_stamp()
     if started is None:
         return []
-    with _DB_LOCK, _transaction() as conn:
+    with _DB_LOCK, _transaction(db_path=db_path) as conn:
         rows = conn.execute(
-            """SELECT platform, adapter_profile, updated_at, last_error, attempts, created_at
+            """SELECT obligation_id, platform, adapter_profile, updated_at, last_error, attempts, created_at
                FROM delivery_obligations
                WHERE state='failed' AND owner_pid IS ? AND owner_started_at IS ?""", (pid, started)).fetchall()
+        deadlines = {r[0]: _receipt_retry_deadline(conn, r[0], r[3], r[4], r[5]) for r in rows}
     earliest: dict[tuple, float] = {}
-    for platform, adapter_profile, updated_at, last_error, attempts, created_at in rows:
+    for oid, platform, adapter_profile, updated_at, last_error, attempts, created_at in rows:
         # Reconnect-only rows (a claim released because the adapter was gone) are re-claimed by the
         # reconnect sweep; a timer would claim and release them every tick until the adapter is back.
         if is_reconnect_only(last_error):
             continue
-        due = retry_not_before(updated_at, last_error, attempts)
+        due = deadlines[oid]
         if due is None or attempts >= MAX_ATTEMPTS or (now - created_at) > STALE_AFTER_SECONDS:
             continue
         key = (platform, adapter_profile or "default")
@@ -609,19 +645,38 @@ def ledger_enabled(config: Optional[dict[str, Any]] = None) -> bool:
 
 
 @contextmanager
-def _hot_path_transaction() -> Iterator[sqlite3.Connection]:
+def _hot_path_transaction(*, db_path=None) -> Iterator[sqlite3.Connection]:
     deadline = time.monotonic() + _HOT_PATH_SQLITE_TIMEOUT_SECONDS
     if not _DB_LOCK.acquire(timeout=_HOT_PATH_SQLITE_TIMEOUT_SECONDS):
         raise sqlite3.OperationalError("delivery ledger lock busy")
     try:
         remaining = max(0.0, deadline - time.monotonic())
-        with _transaction(timeout=remaining) as conn:
+        with _transaction(timeout=remaining, db_path=db_path) as conn:
             yield conn
     finally:
         _DB_LOCK.release()
 
 
-def release_recoverable_claims(rows: list[dict[str, Any]]) -> int:
+def release_recoverable_claims(rows: list[dict[str, Any]], *, db_path=None) -> int:
+    """Roll back exact claims in the database that granted each one."""
+    groups: dict[Any, list] = {}
+    for row in rows:
+        groups.setdefault(db_path if db_path is not None else row.get("db_path"), []).append(row)
+    released, first_error = 0, None
+    for path, group in groups.items():
+        try:
+            released += _release_recoverable_claims_in_db(group, db_path=path)
+        except (OSError, sqlite3.Error) as exc:
+            # One unavailable store must not strand claims in other stores.
+            # Report failure after trying all groups; never count it as success.
+            if first_error is None:
+                first_error = exc
+    if first_error is not None:
+        raise first_error
+    return released
+
+
+def _release_recoverable_claims_in_db(rows: list[dict[str, Any]], *, db_path=None) -> int:
     """Roll back this process's unconsumed startup recovery claims.
 
     Compare-and-update guards prevent a stale cancellation path from
@@ -631,12 +686,12 @@ def release_recoverable_claims(rows: list[dict[str, Any]]) -> int:
         return 0
     pid, started = _owner_stamp()
     released = 0
-    with _hot_path_transaction() as conn:
+    with _hot_path_transaction(db_path=db_path) as conn:
         for row in rows:
             cursor = conn.execute(
                 """UPDATE delivery_obligations
                    SET state=?, owner_pid=?, owner_started_at=?,
-                       attempts=attempts-?, updated_at=?
+                       attempts=attempts-?, updated_at=?, last_error=?
                    WHERE obligation_id=? AND owner_pid=?
                      AND owner_started_at IS ? AND attempts=?
                      AND state IN ('pending', 'attempting', 'failed')""",
@@ -645,7 +700,8 @@ def release_recoverable_claims(rows: list[dict[str, Any]]) -> int:
                     row.get("_prior_owner_pid"),
                     row.get("_prior_owner_started_at"),
                     0 if row.get("adopted") else 1,
-                    time.time(),
+                    row.get("_prior_updated_at", time.time()),
+                    row.get("_prior_last_error", row.get("last_error")),
                     row["obligation_id"],
                     pid,
                     started,

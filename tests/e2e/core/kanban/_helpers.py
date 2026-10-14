@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from tests.e2e.core._policy_skills import provision_policy_skills
 REPO = Path(__file__).resolve().parents[4]
 PY = sys.executable
 
@@ -81,6 +82,7 @@ class Board:
             encoding="utf-8",
         )
         (self.hermes_home / ".env").write_text("OPENAI_API_KEY=sk-fake-e2e\n", encoding="utf-8")
+        provision_policy_skills(self.hermes_home)
         # Workers run with cwd=<task workspace>; the wrapper pins THIS checkout on the path.
         self.hermes_bin = self.root / "hermes-bin"
         self.hermes_bin.write_text(

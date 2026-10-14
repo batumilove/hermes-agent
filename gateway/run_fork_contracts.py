@@ -479,11 +479,11 @@ class GatewayForkContractsMixin:
             return
 
         try:
-            import shutil
             import subprocess
+            from hermes_platform.resolver import locate_command
 
-            systemd_run = shutil.which("systemd-run")
-            systemctl = shutil.which("systemctl")
+            systemd_run = next(iter(locate_command("systemd-run").command), None)
+            systemctl = next(iter(locate_command("systemctl").command), None)
             if not systemd_run or not systemctl:
                 return
 
@@ -744,6 +744,9 @@ class GatewayForkContractsMixin:
             adapter_profile = getattr(adapter, "_owner_profile", None)
             if not isinstance(adapter_profile, str) or not adapter_profile.strip():
                 adapter_profile = transport_profile_of(source) or "default"
+            handoff.delivery_platform = str(getattr(source.platform, "value", source.platform))
+            handoff.delivery_adapter_profile = adapter_profile
+            handoff.delivery_adapter_ref = adapter
             db.create_final_delivery_and_barrier(
                 obligation_id=obligation_id,
                 session_key=handoff.session_key,
@@ -824,7 +827,8 @@ class GatewayForkContractsMixin:
                     return False
             return bool(
                 db.settle_final_delivery(
-                    handoff.obligation_id, delivered=delivered, error=error
+                    handoff.obligation_id, delivered=delivered, error=error,
+                    operational_error=error, expected_attempts=1,
                 )
             )
         finally:

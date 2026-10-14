@@ -26,6 +26,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from tests.e2e.core._policy_skills import provision_policy_skills
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
 
@@ -54,6 +55,7 @@ def configure(sb: I.Sandbox, base_url: str, extra: str = "", env_extra: str = ""
     version = int(ver.stdout.strip().splitlines()[-1])
     (sb.hermes_home / "config.yaml").write_text(I.provider_config(base_url, version, extra), encoding="utf-8")
     (sb.hermes_home / ".env").write_text(f"OPENAI_API_KEY={I.FAKE_KEY}\n{env_extra}", encoding="utf-8")
+    provision_policy_skills(sb.hermes_home)
 
 
 def state_dir(sb: I.Sandbox) -> Path:

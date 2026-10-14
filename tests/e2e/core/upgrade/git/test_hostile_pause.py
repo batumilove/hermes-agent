@@ -56,6 +56,7 @@ import hermes_yaml as yaml
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade.git import _git_world as G
 from tests.e2e.core.upgrade import _install_helpers as I
+from tests.e2e.core.upgrade import _lifecycle_fixture as L
 from tests.e2e.core.upgrade.handoff._nshost import NamespaceHost
 
 pytestmark = G.PYTESTMARK
@@ -158,7 +159,7 @@ def _namespace(w: G.World) -> Iterator[NamespaceHost]:
     try:
         yield host
     finally:
-        leaked = host.close()
+        leaked = L.close_namespace(w.sb, host, lambda: w.update("--no-gateway-restart"))
         (w.sb.hermes_home / "gateway.pid").unlink(missing_ok=True)  # names a pid of the dead namespace
         assert not leaked, f"processes outlived the sandbox: {leaked}"
 
@@ -384,6 +385,7 @@ def test_sigkill_mid_stop_next_launch_restores_exactly_the_set(w):
                                      + _read(w.sb.root / "update-e.log")[-6000:]) from None
             time.sleep(1.0)  # inside the socket call now (its timeout is seconds, the drain minutes)
             rec_at_kill = _record(w)
+            L.remember_update_lease(w.sb, host)
             killed = _kill_born_after(host, procs0, keep={gw_pid})
         finally:
             with contextlib.suppress(AssertionError):  # a gateway already gone must not mask the real failure
@@ -392,6 +394,8 @@ def test_sigkill_mid_stop_next_launch_restores_exactly_the_set(w):
         # The queued request may still drain it: let that settle before the next launch judges.
         with contextlib.suppress(AssertionError):
             H.wait_for(lambda: not host.alive(gw_pid), timeout=120, interval=1.0, what="the old gateway to drain")
+        L.recover_exact_orphan(w.sb, host.fixture_update_lease,
+                               lambda: _ns_cli(host, w, "update", "--yes", "--branch", "main"))
         status = _ns_cli(host, w, "status", timeout=600)
         served = None
         with contextlib.suppress(AssertionError):
@@ -431,10 +435,13 @@ def test_sigkill_after_commit_before_restart_next_launch_restarts_on_new_code(w)
             H.wait_for(_held_after_commit, timeout=1200, interval=0.5, what="the committed update in its deps sync")
             gw_alive_at_kill = host.alive(gw_pid)
             rec_at_kill = _record(w)
+            L.remember_update_lease(w.sb, host)
             killed = _kill_born_after(host, procs0, keep={gw_pid})
         finally:
             toggle.unlink(missing_ok=True)
             started.unlink(missing_ok=True)
+        L.recover_exact_orphan(w.sb, host.fixture_update_lease,
+                               lambda: _ns_cli(host, w, "update", "--yes", "--branch", "main"))
         status = _ns_cli(host, w, "status", timeout=900)
         served = None
         with contextlib.suppress(AssertionError):

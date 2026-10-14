@@ -5,11 +5,20 @@ import asyncio
 import logging
 from agent.async_utils import run_sync_in_detached_daemon_thread
 from gateway.config import Platform
+from gateway.delivery_failure import delivery_failure_token
+from gateway.run_delivery_recovery import GatewayDurableDeliveryRecoveryMixin
 
 logger = logging.getLogger("gateway.run")
 
 
-class GatewayRecoveryMixin:
+async def _receipt_ledger_call(runner, row, operation, *args, **kwargs):
+    """Carry the exact receipt database through every claim/send checkpoint."""
+    if row.get("db_path") is not None:
+        kwargs["db_path"] = row["db_path"]
+    return await runner._run_delivery_ledger_sync(operation, *args, **kwargs)
+
+
+class GatewayRecoveryMixin(GatewayDurableDeliveryRecoveryMixin):
     async def _claim_pending_obligations(self) -> list:
         """Claim recoverable delivery-ledger rows and clear their
         ``resume_pending`` flags. Pure DB work — no network sends.
@@ -56,10 +65,7 @@ class GatewayRecoveryMixin:
             # A plain cancellable await loses that result if cancellation lands
             # after SQLite commit but before the await resumes.
             _sweep_future = asyncio.ensure_future(
-                run_sync_in_detached_daemon_thread(
-                    sweep_recoverable, None, deliverable_platforms=_deliverable,
-                    deliverable_targets=targets
-                )
+                self._sweep_delivery_databases(_deliverable, targets)
             )
             claimed = await asyncio.shield(_sweep_future)
 
@@ -97,7 +103,7 @@ class GatewayRecoveryMixin:
             if claimed and _release_claims is not None:
                 try:
                     await asyncio.shield(
-                        run_sync_in_detached_daemon_thread(_release_claims, claimed)
+                        self._rollback_delivery_claims(claimed)
                     )
                 except Exception:
                     logger.error(
@@ -131,6 +137,7 @@ class GatewayRecoveryMixin:
             logger.debug("delivery ledger import failed", exc_info=True)
             return 0
 
+        db_paths = {row.get("db_path") for row in claimed}
         redelivered = 0
         # ``claimed`` is also the caller's rollback set.  A row leaves it only
         # once the durable state says a network send is about to begin.
@@ -154,7 +161,7 @@ class GatewayRecoveryMixin:
                 # owned by a still-live process.
                 try:
                     last_error = row.get("last_error")
-                    await run_sync_in_detached_daemon_thread(
+                    await _receipt_ledger_call(self, row,
                         release_runtime_claim, row["obligation_id"],
                         last_error if is_flood_error(last_error) else "send_path_degraded",
                     )
@@ -174,7 +181,7 @@ class GatewayRecoveryMixin:
             )
 
             try:
-                transitioned = await run_sync_in_detached_daemon_thread(
+                transitioned = await _receipt_ledger_call(self, row,
                     mark_attempting, row["obligation_id"], row["attempts"]
                 )
             except Exception:
@@ -184,7 +191,7 @@ class GatewayRecoveryMixin:
                     exc_info=True,
                 )
                 try:
-                    await run_sync_in_detached_daemon_thread(
+                    await _receipt_ledger_call(self, row,
                         release_recoverable_claims, [row]
                     )
                     claimed.remove(row)
@@ -219,9 +226,11 @@ class GatewayRecoveryMixin:
                 result = None
             try:
                 if result is not None and getattr(result, "success", False):
-                    await run_sync_in_detached_daemon_thread(
-                        mark_delivered, row["obligation_id"]
+                    settled = await _receipt_ledger_call(self, row,
+                        mark_delivered, row["obligation_id"], expected_attempts=row["attempts"],
                     )
+                    if settled is False:
+                        continue
                     # The post-response worker may be sleeping after it
                     # correctly observed this receipt as failed.  Delivery is
                     # the transition that releases finalize_turn, so wake it
@@ -237,16 +246,20 @@ class GatewayRecoveryMixin:
                         row["obligation_id"], row["attempts"],
                     )
                 else:
-                    await run_sync_in_detached_daemon_thread(
+                    await _receipt_ledger_call(self, row,
                         mark_failed,
                         row["obligation_id"],
-                        str(getattr(result, "error", "") or "send failed"),
+                        (delivery_failure_token(result) if row.get("db_path") is not None
+                         else str(getattr(result, "error", "") or "send failed")),
+                        expected_attempts=row["attempts"],
                     )
             except Exception:
                 logger.debug("delivery ledger update failed", exc_info=True)
         from gateway.run_shutdown import _log_suppressed
         with _log_suppressed(logging.DEBUG, "arming flood redelivery timers failed", exc_info=True):
-            await self._arm_flood_timers_for_waiting_rows()
+            for db_path in db_paths:
+                await self._arm_flood_timers_for_waiting_rows(
+                    **({"db_path": db_path} if db_path is not None else {}))
         return redelivered
 
     async def _redeliver_pending_obligations(self) -> int:
@@ -318,11 +331,7 @@ class GatewayRecoveryMixin:
                 await self._redeliver_claimed_obligations(claimed)
             except asyncio.CancelledError:
                 if claimed:
-                    from gateway.delivery_ledger import release_recoverable_claims
-
-                    await run_sync_in_detached_daemon_thread(
-                        release_recoverable_claims, claimed
-                    )
+                    await self._rollback_delivery_claims(claimed)
                 raise
             finally:
                 # Shutdown may cancel this worker while its claim awaits.

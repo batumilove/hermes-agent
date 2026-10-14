@@ -141,7 +141,18 @@ def test_explicit_empty_chain_survives_real_profile_config_loader(tmp_path, monk
     assert mock_agent.call_args.kwargs["fallback_model"] is None
 
 
-def test_pinned_review_does_not_borrow_general_worker_chain(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("constructor_error", "expected_error"),
+    [
+        (RuntimeError("constructor reached"), "constructor reached"),
+        (RuntimeError(), r"Child construction failed \(RuntimeError\)"),
+        (ValueError(), r"Child construction failed \(ValueError\)"),
+    ],
+    ids=["descriptive-runtime-error", "empty-runtime-error", "empty-value-error"],
+)
+def test_pinned_review_does_not_borrow_general_worker_chain(
+    tmp_path, monkeypatch, constructor_error, expected_error,
+):
     """The public /review route owns its fallback policy as well as its model."""
     import hermes_yaml as yaml
 
@@ -173,17 +184,14 @@ def test_pinned_review_does_not_borrow_general_worker_chain(tmp_path, monkeypatc
     parent.session_id = "review-80479-parent"
     captured = {}
 
-    class ReachedConstructor(RuntimeError):
-        pass
-
     def capture(**kwargs):
         captured.update(kwargs)
-        raise ReachedConstructor()
+        raise constructor_error
 
     token = set_hermes_home_override(tmp_path)
     try:
         with patch("run_agent.AIAgent", side_effect=capture):
-            with pytest.raises(ReachedConstructor):
+            with pytest.raises(ValueError, match=expected_error):
                 start_review(
                     parent,
                     [{"role": "user", "content": "Check the last result"}],

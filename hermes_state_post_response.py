@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import sqlite3
 import time
@@ -13,6 +14,8 @@ from typing import Any, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger("hermes_state")
 T = TypeVar("T")
+_FINALIZABLE_DELIVERY = """(d.state='delivered' OR
+    (d.state='abandoned' AND d.last_error IN ('chat not found','bot blocked')))"""
 
 
 @dataclass(frozen=True)
@@ -351,26 +354,49 @@ class SessionPostResponseMixin:
             self._execute_write(_do, operation="mark_final_delivery_attempting")
         )
 
+    def post_response_finalization_ready(self, session_key: str, session_lineage: str) -> bool:
+        """Whether every unfinished barrier has a terminal delivery outcome."""
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                """SELECT 1 FROM gateway_post_response_actions AS a
+                   JOIN delivery_obligations AS d ON d.obligation_id=a.obligation_id
+                   WHERE (a.session_key_hash=? OR a.session_lineage_hash=?)
+                     AND a.state != 'done' AND NOT """ + _FINALIZABLE_DELIVERY + " LIMIT 1",
+                (self._post_response_hash(session_key), self._post_response_hash(session_lineage)),
+            ).fetchone()
+        return row is None
+
     def settle_final_delivery(
-        self, obligation_id: str, *, delivered: bool, error: str = ""
+        self, obligation_id: str, *, delivered: bool, error: str = "",
+        operational_error: Optional[str] = None, expected_attempts: Optional[int] = None,
     ) -> bool:
         """Record final platform delivery outcome on this SessionDB receipt."""
+        token = "sha256:" + hashlib.sha256(str(error or "").encode("utf-8", "replace")).hexdigest()
+        if operational_error in {"send_path_degraded", "chat not found", "bot blocked"}:
+            token = operational_error
+        elif str(operational_error or "").startswith("flood_control:"):
+            try:
+                delay = float(operational_error.split(":", 1)[1])
+            except (ValueError, TypeError):
+                delay = math.nan
+            if math.isfinite(delay) and 0 < delay <= 900:
+                token = f"flood_control:{delay:g}"
+        terminal_state = "abandoned" if token in {"chat not found", "bot blocked"} else "failed"
+        owner_pid, owner_started_at = self._post_response_owner_stamp()
 
         def _do(conn):
+            guard = "" if expected_attempts is None else " AND attempts=?"
+            params = (
+                "delivered" if delivered else terminal_state, time.time(),
+                None if delivered else token, str(obligation_id), owner_pid, owner_started_at,
+            )
+            if expected_attempts is not None:
+                params += (expected_attempts,)
             cursor = conn.execute(
                 """UPDATE delivery_obligations SET state=?, updated_at=?, last_error=?
-                   WHERE obligation_id=? AND state='attempting'""",
-                (
-                    "delivered" if delivered else "failed",
-                    time.time(),
-                    None
-                    if delivered
-                    else "sha256:"
-                    + hashlib.sha256(
-                        str(error or "").encode("utf-8", "replace")
-                    ).hexdigest(),
-                    str(obligation_id),
-                ),
+                   WHERE obligation_id=? AND state='attempting'
+                     AND owner_pid IS ? AND owner_started_at IS ?""" + guard,
+                params,
             )
             return cursor.rowcount == 1
 
@@ -392,6 +418,14 @@ class SessionPostResponseMixin:
                 (str(obligation_id),),
             ).fetchone()
         return row is not None and row["state"] == "delivered"
+
+    def is_final_delivery_finalizable(self, obligation_id: str) -> bool:
+        """Delivered, or explicitly refused by a permanently unavailable target."""
+        with self._read_ctx() as conn:
+            return conn.execute(
+                "SELECT 1 FROM delivery_obligations AS d WHERE obligation_id=? AND "
+                + _FINALIZABLE_DELIVERY, (str(obligation_id),),
+            ).fetchone() is not None
 
     def list_ready_post_response_actions(
         self, *, limit: int = 20, now: Optional[float] = None
@@ -423,15 +457,15 @@ class SessionPostResponseMixin:
                        WHERE earlier.obligation_id = a.obligation_id
                          AND earlier.ordinal < a.ordinal AND earlier.state != 'done'
                    )
-                     -- The receipt must be positively delivered before the
-                     -- finalizer clears the active-turn admission barrier.
+                     -- Delivery must finish, or a definitive dead target must be
+                     -- abandoned, before finalization releases the admission barrier.
                      -- Failed/attempting/pending receipts remain eligible for
                      -- ledger recovery, while earlier non-final actions can
                      -- still drain in ordinal order.
                      AND (a.action_kind != 'finalize_turn' OR EXISTS (
                           SELECT 1 FROM delivery_obligations AS d
                           WHERE d.obligation_id=a.obligation_id
-                            AND d.state = 'delivered'
+                            AND """ + _FINALIZABLE_DELIVERY + """
                      ))
                      AND (a.state = 'running'
                           OR (a.state IN ('pending', 'failed')
@@ -525,7 +559,7 @@ class SessionPostResponseMixin:
                      AND (a.action_kind != 'finalize_turn' OR EXISTS (
                           SELECT 1 FROM delivery_obligations AS d
                           WHERE d.obligation_id=a.obligation_id
-                            AND d.state = 'delivered'
+                            AND """ + _FINALIZABLE_DELIVERY + """
                      ))
                      AND (a.state = 'running'
                           OR (a.state IN ('pending', 'failed')
