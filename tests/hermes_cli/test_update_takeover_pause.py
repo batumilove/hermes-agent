@@ -19,8 +19,9 @@ OLD_SHA = "a" * 40
 
 
 @pytest.fixture
-def gateway(tmp_path, monkeypatch):
+def gateway(tmp_path, monkeypatch, request):
     """A real process serves the historical one-request control protocol."""
+    drain_timeout = getattr(request, "param", 2)
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -43,7 +44,7 @@ def gateway(tmp_path, monkeypatch):
             def drain():
                 (home/'pause-request').write_text('accepted')
                 loop.call_soon_threadsafe(lambda: loop.call_later(0.1, done.set))
-                return {{'pid':os.getpid(), 'pausing':True, 'drain_timeout':2}}
+                return {{'pid':os.getpid(), 'pausing':True, 'drain_timeout':json.loads({json.dumps(drain_timeout)!r})}}
             server = GatewayControlServer(home, verb_handlers={{'identify':identify, 'pause-for-update':drain}})
             assert await server.start()
             print('ready', flush=True)
@@ -69,6 +70,7 @@ def gateway(tmp_path, monkeypatch):
 
 @pytest.mark.platforms("linux")
 @pytest.mark.live_system_guard_bypass
+@pytest.mark.parametrize("gateway", [0, 2], indirect=True)
 def test_pause_proves_exit_and_retains_replayable_restart_debt(gateway):
     child, home, request = gateway
     token = pause.pause_captured_gateways(request)
@@ -81,6 +83,19 @@ def test_pause_proves_exit_and_retains_replayable_restart_debt(gateway):
     assert saved["unmapped"][0]["takeover_args"] == ["gateway", "run", "--port", "8123"]
     assert saved["identities"][str(child.pid)].startswith("ct:")
     assert token is request["windows_resume"]
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.live_system_guard_bypass
+@pytest.mark.parametrize("gateway", [-1, float("inf"), float("nan"), 3601, None, False], indirect=True)
+def test_invalid_native_pause_budget_retains_debt(gateway):
+    child, home, request = gateway
+    with pytest.raises(pause.TakeoverPauseBlocked, match="pause"):
+        pause.pause_captured_gateways(request)
+    assert (home / "pause-request").exists()
+    saved = records.read()["token"]
+    assert saved["resume_needed"]
+    assert saved["stop_requested"] == saved["stop_sent"] == [str(child.pid)]
 
 
 @pytest.mark.platforms("linux")
@@ -146,9 +161,15 @@ def test_mixed_home_set_stops_neither_actual_gateway(gateway):
 @pytest.mark.live_system_guard_bypass
 def test_cancelled_wait_keeps_exact_pre_stop_custody(gateway, monkeypatch):
     child, home, request = gateway
-    def interrupt(_seconds):
-        raise KeyboardInterrupt
-    monkeypatch.setattr(pause.time, "sleep", interrupt)
+    query = pause._query
+    def interrupt_after_ack(home, pid, verb):
+        reply = query(home, pid, verb)
+        if verb == "pause-for-update":
+            raise KeyboardInterrupt
+        return reply
+    # Cancel only after the native stop ACK, never during the record mutex's
+    # own retry wait (all modules share the same time module).
+    monkeypatch.setattr(pause, "_query", interrupt_after_ack)
     with pytest.raises(KeyboardInterrupt):
         pause.pause_captured_gateways(request)
     assert (home / "pause-request").exists()

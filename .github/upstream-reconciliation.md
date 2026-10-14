@@ -6,8 +6,9 @@ This candidate reconciles `batumi/live` at
 `codex/reconcile-upstream-6e7b83` as the initial immutable source branch. CI
 follow-ups use separate immutable sources `codex/reconcile-upstream-6e7b83-ci`,
 `codex/reconcile-upstream-6e7b83-ci2`, `codex/reconcile-upstream-6e7b83-ci3`,
-`codex/reconcile-upstream-6e7b83-ci4`, and `codex/reconcile-upstream-6e7b83-ci5`; the linear review branch is
-`codex/update-fork-6e7b83`. Retain all six source branches after publication.
+`codex/reconcile-upstream-6e7b83-ci4`, `codex/reconcile-upstream-6e7b83-ci5`, and
+`codex/reconcile-upstream-6e7b83-ci6`; the linear review branch is
+`codex/update-fork-6e7b83`. Retain all seven source branches after publication.
 The current provenance record identifies the exact accepted source tree.
 Runtime deployment is a separate step.
 
@@ -375,6 +376,36 @@ identity fail closed with the already-swapped update still
 unfinished; normal modern supervised updates retain their existing path. This
 cannot prevent the immutable old updater's initial Git-swap-to-takeover window,
 and does not claim universal mixed-generation or supervised upgrade acceptance.
+
+The full dispatch on review `6b9e4594` and source `baa37433` completed with
+58 successful jobs, six failures including the aggregate, and seven skips.
+All ten native Windows install/update journey jobs passed their actual test
+steps, closing the predecessor's capacity gap for that head. Retained contracts
+passed 1,831 parallel and 171 serial tests, including all five Docker cases
+blocked locally. Core E2E passed 819 tests with zero failures, including cron
+contention and all eight entrypoint-parity cases. PM bundles passed macOS ARM64
+and both Windows targets; macOS x64 failed Chromium download DNS before
+compilation. A retry after completion was rejected as a disabled workflow.
+
+The `-ci6` source corrects three fixture mismatches without changing their
+production contracts: the non-checkout branch removes its genuine temporary
+Git directory, Chronos mocks the current execution keyword API while checking
+exact force/manual provenance, and the sliced PM takeover fixture includes
+actual gateway coordination modules and genuine Git provenance. Interrupted
+Git-tail fixtures prove ordinary startup remains blocked by orphaned lifecycle
+ownership, then reconcile only their exact killed controller before checking
+the original moved-tree completion obligations.
+
+Historical takeover accepts the release's valid zero-second chat-interruption
+budget. Authentication, finite bounds, durable stop debt, actual incarnation
+exit and the existing ten-second completion tail remain required. Historical
+restart debt additionally requires an actual selected store Python and current
+PM generation before replay, including when its baseline already names the
+target Git HEAD. Missing or unknown currency keeps that debt outstanding;
+generic developer, Nix and modern pre-swap recovery retain their existing
+semantics. Full historical handoff and Git journeys still require fresh
+acceptance on this successor; the earlier Windows and contract results do not
+accept its new tree.
 
 The local digest-pinned OSV query was blocked by this environment's network
 policy. The repaired predecessor's hosted scan reported no issues across all

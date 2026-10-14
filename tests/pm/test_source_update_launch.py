@@ -207,7 +207,7 @@ def test_source_publication_leaves_external_install_launchers_alone(source_launc
         json.dumps({"updateMechanism": "external", "distribution": "nix"}), encoding="utf-8",
     )
     if not checkout:
-        (root / ".git").rmdir()
+        shutil.rmtree(root / ".git")
     launcher = root / ".hermes" / "bin" / "hermes"
     launcher.parent.mkdir(parents=True)
     launcher.write_text("externally owned launcher\n", encoding="utf-8")

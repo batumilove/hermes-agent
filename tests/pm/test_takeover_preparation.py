@@ -22,6 +22,11 @@ def test_fresh_takeover_prepares_generation_and_runs_selected_python(tmp_path):
     root.mkdir()
     for name in ("pm", "hermes_cli"):
         shutil.copytree(source / name, root / name, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    # Real stdlib takeover coordination/control dependencies, without booting
+    # the gateway application or supplying a substitute lifecycle lease.
+    (root / "gateway").mkdir()
+    for name in ("__init__.py", "lifecycle_lease.py", "control_socket.py"):
+        shutil.copy2(source / "gateway" / name, root / "gateway" / name)
     for name in ("hermes_constants.py", "hermes_yaml.py", "utils.py", "hermes_bootstrap.py"):
         shutil.copy2(source / name, root / name)
     home, store, wheels = (tmp_path / name for name in ("home", "tools", "wheels"))
@@ -34,7 +39,6 @@ def test_fresh_takeover_prepares_generation_and_runs_selected_python(tmp_path):
         '[tool.hermes.extras-platforms]\nmatrix="sys_platform == \'no-such-platform\'"\n'
         '[tool.uv]\npackage=false\nno-index=true\n'
         f'find-links=[{json.dumps(wheels.as_posix())}]\n', encoding="utf-8")
-    (root / ".git").mkdir()
     (root / "install-stamp.json").write_text('{"updateMechanism":"self"}', encoding="utf-8")
     uv = shutil.which("uv")
     assert uv
@@ -74,9 +78,22 @@ def test_fresh_takeover_prepares_generation_and_runs_selected_python(tmp_path):
         "sys.path.insert(0,request['root'])\n"
         "from pm.environments import activate_dependencies\n"
         "activate_dependencies(Path(request['root']))\nimport takeover_dep\n"
+        "from gateway.lifecycle_lease import inspect_lifecycle_lease\n"
+        "lease=inspect_lifecycle_lease(home=Path(request['home']))\n"
+        "assert lease['status']=='active'\n"
+        "assert lease['metadata']['purpose']=='deployment'\n"
         "assert request['pm_receipt']['update_id']==request['update_id']\n"
-        "Path(sys.argv[2]).write_text(json.dumps({'python':sys.executable,'dep':takeover_dep.__file__}))\n",
+        "Path(sys.argv[2]).write_text(json.dumps({'python':sys.executable,'dep':takeover_dep.__file__,"
+        "'lease':lease['metadata']['provenance']}))\n",
         encoding="utf-8")
+    # The production lifecycle transaction binds HEAD and tree. A directory
+    # named .git cannot provide that source identity to the actual coordinator.
+    subprocess.run(["git", "init", "-q", str(root)], env=env, check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(root), "add", "pm", "hermes_cli", "gateway", "pyproject.toml", "uv.lock"],
+                   env=env, check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=fixture", "-c",
+                    "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false",
+                    "commit", "-qm", "selected takeover source"], env=env, check=True, capture_output=True)
     context, result = tmp_path / "context.json", tmp_path / "result.json"
     context.write_text(json.dumps({"root": str(root), "home": str(home)}), encoding="utf-8")
     completed = subprocess.run([sys.executable, "-I", "-S", "-B", str(root / "hermes_cli/_update_takeover.py"), str(context), str(result)],
@@ -85,6 +102,10 @@ def test_fresh_takeover_prepares_generation_and_runs_selected_python(tmp_path):
     output = json.loads(result.read_text())
     assert Path(output['python']).is_relative_to(store)
     assert Path(output['dep']).is_relative_to(home / "installs")
+    head = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], env=env,
+                          text=True, capture_output=True, check=True).stdout.strip()
+    assert output['lease']['source_head'] == head
+    assert not (home / ".lifecycle_transaction_lease.json").exists()
     assert (root / ".hermes/bin/hermes").is_file()
     assert not (root / "venv").exists()
     assert Facts(store / "facts.json").get("dmgbuild") is None
@@ -112,6 +133,7 @@ def test_fresh_takeover_prepares_generation_and_runs_selected_python(tmp_path):
     remaining_generations = {path.resolve() for path in generations.iterdir() if path.is_dir()}
     assert first_generations.isdisjoint(remaining_generations)
     assert not (facts.parent / ".repair-incomplete").exists()
+    assert not (home / ".lifecycle_transaction_lease.json").exists()
 
     # A child which dies before acknowledging receipt ownership must not
     # leave the parent reporting success from its pre-handoff receipt.
@@ -123,6 +145,7 @@ def test_fresh_takeover_prepares_generation_and_runs_selected_python(tmp_path):
     assert json.loads(result.read_text())["receipt_handled"]
     crash_receipt = json.loads((home / "logs/update_receipts/latest.json").read_text())
     assert crash_receipt["exit_code"] == 7 and crash_receipt["outcome"] == "failed"
+    assert not (home / ".lifecycle_transaction_lease.json").exists()
 
     # A failed preparation must not delegate to application completion or
     # replace the working generation, and must leave a truthful receipt.
@@ -138,3 +161,4 @@ def test_fresh_takeover_prepares_generation_and_runs_selected_python(tmp_path):
     assert failure["receipt_handled"] is True
     latest = json.loads((home / "logs/update_receipts/latest.json").read_text())
     assert latest["outcome"] == "failed"
+    assert not (home / ".lifecycle_transaction_lease.json").exists()

@@ -127,6 +127,7 @@ contracts:
   - tests/hermes_cli/test_update_pause_lifecycle.py
   - tests/hermes_cli/test_update_takeover_custody.py
   - tests/hermes_cli/test_update_takeover_pause.py
+  - tests/hermes_cli/test_update_takeover_recovery.py
   - tests/hermes_cli/test_old_updater_takeover.py
   - tests/hermes_cli/test_venv_sync_lifecycle.py
   - tests/hermes_cli/test_cmd_update.py

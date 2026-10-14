@@ -381,10 +381,44 @@ def tree_is_whole(token: dict, root: Path | None = None) -> tuple[bool, str]:
             torn = _half_written(root, changes, at_head) or _landed_torn(root, head, changes, landed)
             if torn:
                 return False, f"the checkout has {len(torn)} file(s) git left half-written (e.g. {torn[0]})"
-            if at_head:
+            if at_head and not _takeover_runtime_owed(token):
                 return True, ""
+    if _takeover_runtime_owed(token):
+        return _takeover_runtime_ready(token, root)
     if _deps_hold_resume(root):
         return False, "dependencies are not current for the updated code yet"
+    return True, ""
+
+
+def _takeover_runtime_owed(token: dict) -> bool:
+    """Post-swap historical entries replay through PM, never their old interpreter."""
+    return token.get("platform") == "posix" and any(
+        "takeover_args" in entry for entry in token.get("unmapped") or [])
+
+
+def _takeover_runtime_ready(token: dict, root: Path) -> tuple[bool, str]:
+    """A same-HEAD historical pause was recorded after Git moved, before PM prepared.
+
+    Its baseline certifies source bytes, not a prepared runtime. Unlike ordinary
+    developer/Nix or pre-swap debt, caller-Python fallback cannot safely replay it.
+    The probe is read-only; missing or unknown preparation leaves the debt owed.
+    """
+    for entry in token.get("unmapped") or []:
+        if "takeover_args" not in entry:
+            continue
+        args = entry["takeover_args"]
+        if not isinstance(args, list) or not args or any(not isinstance(arg, str) for arg in args):
+            return False, "historical takeover replay arguments are invalid"
+    try:
+        import pm
+        from hermes_cli._launchers import resolve_store_python
+
+        if resolve_store_python(root) is None:
+            return False, "historical takeover has no selected store Python yet"
+        if not pm.venv_is_current(project_root=root):
+            return False, "historical takeover dependencies are not current yet"
+    except (ImportError, OSError, RuntimeError, ValueError, TypeError, AttributeError) as exc:
+        return False, f"historical takeover runtime readiness is unknown: {type(exc).__name__}: {exc}"
     return True, ""
 
 
