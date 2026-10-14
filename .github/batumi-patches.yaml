@@ -68,6 +68,7 @@ patches:
   - tests/pm/_fixtures.py
   - tests/pm/test_update_request_reuse.py
   - tests/scripts/test_image_identity.py
+  - tests/scripts/test_termux_build_wheels.py
   - scripts/install.sh
   - scripts/install.ps1
   tests:

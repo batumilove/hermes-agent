@@ -30,6 +30,7 @@ contracts:
   - tests/pm/test_npm_self_install.py
   - tests/pm/test_python_bootstrap.py
   - tests/scripts/test_image_identity.py
+  - tests/scripts/test_termux_build_wheels.py
 - id: feishu-webhook-authentication
   rationale: Preserve authenticated callback delivery while keeping invalid requests out of delivery quota
     and bounding callback parsing and anomaly state.

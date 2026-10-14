@@ -462,3 +462,16 @@ repair by immutable ops commit. Deployment and promotion callers retain their
 previous tooling pins. The scanner severity, fixable filter, and candidate gate
 remain enforced. Local tests and source checks do not accept a rebuilt image:
 the new source needs fresh full CI and the actual image scan before deployment.
+
+The immutable ci7 candidate `78007da94bff89f3b38cf82d6751677a001e70fa`
+passed hosted running-stack image validation, Nix, and prebuilt TUI checks. Its
+native Termux contract job found one remaining test prerequisite: the wheelhouse
+fixture created a pip-seeded stdlib venv. The managed interpreter now deliberately
+has no ensurepip wheels. `codex/reconcile-upstream-6e7b83-ci8` retains the ci7
+source ref and prepares that disposable build environment through PM from a
+manifest and frozen lock declaring the same mature pip 26.2.1 wheel and its
+verified SHA-256. It still builds the exact Git
+revision and installs the resulting wheel offline after removing its source URL.
+The production Termux wheel builder continues to use the container's own native
+Python/pip; only its isolated test prerequisite changes. The successor still needs
+fresh hosted checks and rebuilt-image scanner acceptance.
