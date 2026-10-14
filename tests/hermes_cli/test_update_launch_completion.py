@@ -46,12 +46,19 @@ def completion_tail(monkeypatch):
     return spawned
 
 
+def _commit_source(root):
+    # Launch completion now binds lifecycle ownership to the actual source tree.
+    for args in (("init", "-q"), ("config", "user.email", "test@example.invalid"),
+                 ("config", "user.name", "test"), ("add", "-A"), ("commit", "-qm", "source")):
+        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, timeout=30)
+
+
 def _self_checkout(tmp_path, monkeypatch):
     root = tmp_path / "checkout"
     root.mkdir()
-    (root / ".git").mkdir()
     (root / "pyproject.toml").write_text("[project]\nname='example'\n")
     (root / "install-stamp.json").write_text(json.dumps({"updateMechanism": "self"}))
+    _commit_source(root)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
@@ -254,10 +261,10 @@ def test_first_launch_syncs_without_marker_then_uses_completion_fact(tmp_path, m
 
     root = tmp_path / "checkout"
     root.mkdir()
-    (root / ".git").mkdir()
     (root / "pyproject.toml").write_text("[project]\nname='example'\n")
     (root / "uv.lock").write_text("lock\n")
     (root / "install-stamp.json").write_text(json.dumps({"updateMechanism": "self"}))
+    _commit_source(root)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
@@ -310,8 +317,8 @@ def test_non_self_or_pm_launch_cannot_trigger_update(tmp_path, monkeypatch, owne
     import pm
     root = tmp_path / "checkout"
     root.mkdir()
-    (root / ".git").mkdir()
     (root / "pyproject.toml").write_text("[project]\n")
+    _commit_source(root)
     if owner:
         (root / "install-stamp.json").write_text(json.dumps({"updateMechanism": owner}))
     monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
@@ -325,9 +332,9 @@ def test_failed_launch_keeps_previous_completion_and_retries(tmp_path, monkeypat
     import pm
     root = tmp_path / "checkout"
     root.mkdir()
-    (root / ".git").mkdir()
     (root / "pyproject.toml").write_text("[project]\n")
     (root / "install-stamp.json").write_text(json.dumps({"updateMechanism": "self"}))
+    _commit_source(root)
     monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
@@ -358,14 +365,30 @@ def test_blessed_legacy_install_is_adopted_before_sync(tmp_path, monkeypatch, co
     monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
     root = home / "hermes-agent"
     root.mkdir(parents=True)
-    (root / ".git").mkdir()
     (root / "pyproject.toml").write_text("[project]\n")
+    _commit_source(root)
     monkeypatch.setattr(pm, "venv_is_current", lambda **kw: False)
     calls = []
-    monkeypatch.setattr(pm, "sync_venv", lambda *args, **kw: calls.append(args))
+
+    def sync(*args, **kwargs):
+        # A genuine Git checkout has full adoption provenance; the 'adoption'
+        # source label belongs only to the unidentifiable-Git fallback.
+        adopted = json.loads((root / "install-stamp.json").read_text())
+        assert adopted["updateMechanism"] == "self" and adopted["adoptedAt"]
+        assert adopted["source"] == "git"
+        assert adopted["commit"] == subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=root, text=True, timeout=30,
+        ).strip()
+        calls.append(args)
+
+    monkeypatch.setattr(pm, "sync_venv", sync)
     monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
     assert venv_sync.prepare_launch(root, []) == Path(sys.executable)
-    assert json.loads((root / "install-stamp.json").read_text())["source"] == "adoption"
+    stamp = json.loads((root / "install-stamp.json").read_text())
+    assert stamp["source"] == "git"
+    assert stamp["commit"] == subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=root, text=True, timeout=30,
+    ).strip()
     assert calls == [(["all"],)]
 
 
@@ -385,9 +408,9 @@ def test_live_old_update_blocks_launch_sync(tmp_path, monkeypatch):
     import pm
     root = tmp_path / "checkout"
     root.mkdir()
-    (root / ".git").mkdir()
     (root / "pyproject.toml").write_text("[project]\n")
     (root / "install-stamp.json").write_text(json.dumps({"updateMechanism": "self"}))
+    _commit_source(root)
     marker = root / ".update-incomplete"
     marker.write_text(f"pid={os.getpid()}\n")
     monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)

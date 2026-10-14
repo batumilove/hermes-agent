@@ -57,7 +57,6 @@ def source_launch(tmp_path, monkeypatch, isolated_python):
 
     root = tmp_path / "source with spaces"
     root.mkdir()
-    (root / ".git").mkdir()
     (root / "install-stamp.json").write_text(
         json.dumps({"updateMechanism": "self"}), encoding="utf-8",
     )
@@ -76,6 +75,10 @@ def source_launch(tmp_path, monkeypatch, isolated_python):
         '[tool.uv]\npackage = false\nno-index = true\noffline = true\n', encoding="utf-8",
     )
     pm.lock_project(root, offline=True, explicit=True)
+    # The launch-time lifecycle lease must bind real Git source provenance.
+    for args in (("init", "-q"), ("config", "user.email", "test@example.invalid"),
+                 ("config", "user.name", "test"), ("add", "-A"), ("commit", "-qm", "source")):
+        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, timeout=30)
 
     # Acquisition uses the real host interpreter; publish its installed fact
     # through PM too. Unrecorded store bytes are deliberately not launchable.

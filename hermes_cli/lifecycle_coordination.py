@@ -132,7 +132,7 @@ def cli_update_transaction(home: Path, repo_root: Path):
                 "Warning: lifecycle coordination is unavailable on this platform; "
                 "continuing with the existing update lock only.", file=sys.stderr,
             )
-        yield
+        yield lease
     except BaseException as exc:
         primary = exc
         raise

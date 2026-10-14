@@ -1,4 +1,4 @@
-"""Unchanged real-process helpers shared by the native Windows commit_outcome cases."""
+"""Real-process helpers shared by the native Windows commit_outcome cases."""
 
 from __future__ import annotations
 
@@ -140,10 +140,16 @@ def _handoff(
     return proc.returncode, out, argv, result, home
 
 
-_TIMED_CHECKOUT_HOLDER = """
-import msvcrt, os, sys, time
+_CHECKOUT_HOLDER_UNTIL_RELEASE = """
+import msvcrt, os, sys, threading
+from pathlib import Path
 fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT | os.O_BINARY, 0o644)
 os.lseek(fd, 1 << 20, os.SEEK_SET)
 msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)   # hermes_cli/update_lock.py::_try_lock's byte
-time.sleep(float(sys.argv[2]))
+release = Path(sys.argv[2])
+Path(str(release) + '.ready').write_text('1', encoding='utf-8')
+poll = threading.Event()
+while not release.exists():
+    poll.wait(0.05)
+os.close(fd)
 """

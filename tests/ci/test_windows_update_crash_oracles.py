@@ -18,18 +18,23 @@ from _pytest.mark.expression import Expression
 
 import tests.e2e.core.windows_update.test_crash_cells as crash
 from hermes_cli import update_lock
+from tests.ci import _gha_expr as gha
 
 _REPO = Path(__file__).resolve().parents[2]
 _SUITE = "tests/e2e/core/windows_update"
 
 
-def _workflow_selection() -> str:
-    """The ``-m`` expression the Windows install + update E2E workflow runs its suite with."""
+def _workflow_selection(path: str) -> str:
+    """Render the native journey's real matrix row and marker selection."""
     yaml = pytest.importorskip("hermes_yaml")
     wf = yaml.safe_load((_REPO / ".github/workflows/windows-install-update-e2e.yml").read_text(encoding="utf-8-sig"))
-    step = next(s for s in wf["jobs"]["install-update"]["steps"] if s.get("name") == "Run Windows install + update E2E")
-    argv = shlex.split(step["run"].replace("\\\n", " "))
-    assert f"{_SUITE}/" in argv, f"the workflow no longer runs {_SUITE}/: {argv}"
+    job = wf["jobs"]["install-update"]
+    rows = [row for row in job["strategy"]["matrix"]["include"] if row.get("journey") == Path(path).stem]
+    assert len(rows) == 1, f"{path}: missing or duplicate native journey row"
+    step = next(s for s in job["steps"] if s.get("name") == "Run Windows install + update E2E")
+    argv = shlex.split(gha.render(step["run"], {"matrix": rows[0]}).replace("\\\n", " "))
+    assert f"{_SUITE}/{path}" in argv, f"the workflow no longer runs {path}: {argv}"
+    assert (_REPO / _SUITE / path).is_file(), f"invalid native journey: {path}"
     return argv[argv.index("-m") + 1]
 
 
@@ -37,7 +42,7 @@ def _workflow_selection() -> str:
 # tests run, so a dropped platforms("windows") marker would silently run zero cells.
 @pytest.mark.parametrize("path", sorted(p.name for p in (_REPO / _SUITE).glob("test_*.py")))
 def test_windows_update_workflow_selects_every_test_of_the_suite(path):
-    selection = Expression.compile(_workflow_selection())
+    selection = Expression.compile(_workflow_selection(path))
     module = importlib.import_module(f"{_SUITE.replace('/', '.')}.{Path(path).stem}")
     tests = [fn for name, fn in inspect.getmembers(module, inspect.isfunction) if name.startswith("test")]
     assert tests, f"{path}: no module-level test functions to select"
@@ -236,7 +241,7 @@ def test_workflow_requires_the_crash_journey_manifest(tmp_path, monkeypatch):
     names = [s.get("name") for s in steps]
     run, check = steps[names.index("Run Windows install + update E2E")], steps[names.index("Every crash cell ran")]
     assert names.index("Every crash cell ran") > names.index("Run Windows install + update E2E")
-    workflow_steps.required(check, {"inputs": {}})  # neither disabled nor advisory
+    workflow_steps.required(check, {"inputs": {}, "matrix": {"journey": "test_crash_cells"}})
     assert check["env"]["HERMES_E2E_ARTIFACTS"] == run["env"]["HERMES_E2E_ARTIFACTS"]
     assert f"'{crash.CELLS_RAN_MANIFEST}'" in check["run"] and "throw" in check["run"]
 

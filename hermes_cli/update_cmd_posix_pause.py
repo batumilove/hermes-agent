@@ -525,10 +525,17 @@ def _relaunch_bare(entry: dict) -> int:
     logs = Path(entry["home"]) / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     env = _replay_env(entry["home"])
+    argv = list(entry["argv"])
+    if entry.get("takeover_args") is not None:
+        # A historical interpreter/venv is not the selected PM generation.
+        # Keep its authenticated run flags, using the published runtime.
+        from hermes_cli._launchers import runtime_command
+
+        argv = runtime_command(Path(__file__).resolve().parents[1], entry["takeover_args"])
     for leaked in ("INVOCATION_ID", "JOURNAL_STREAM", "HERMES_UPDATE_PAUSED", "_HERMES_GATEWAY"):
         env.pop(leaked, None)
     with open(logs / "gateway-update-resume.log", "ab") as log:
-        proc = subprocess.Popen(list(entry["argv"]), env=env, stdin=subprocess.DEVNULL, stdout=log,
+        proc = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL, stdout=log,
                                 stderr=subprocess.STDOUT, start_new_session=True, close_fds=True)
     deadline = time.monotonic() + _READY_TIMEOUT_S
     while time.monotonic() < deadline:

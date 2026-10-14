@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from gateway.lifecycle_lease import inspect_lifecycle_lease
 from hermes_cli import update_pause_record as pause_record
 from datetime import UTC
 
@@ -210,20 +211,51 @@ _RECOVER = """
 
 
 @pytest.mark.live_system_guard_bypass
-def test_a_launch_killed_mid_recovery_leaves_the_set_to_the_next_launch(tmp_path):
+def test_a_launch_killed_mid_recovery_leaves_the_set_to_the_next_launch(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _orphan(tmp_path, {"default": 4242})
     env = {"HERMES_HOME": str(tmp_path)}
     first = _child(_RECOVER, "hang", env=env)
     try:
         assert first.stdout.readline().strip() == "resume ['default']"
+        owned = inspect_lifecycle_lease(home=tmp_path)
+        assert owned["status"] == "active" and owned["metadata"]["pid"] == first.pid
     finally:
         first.send_signal(signal.SIGKILL)  # windows-footgun: ok — taskkill / console close mid-resume
         first.wait(timeout=10)
+    orphan = inspect_lifecycle_lease(home=tmp_path)
+    assert orphan["status"] == "orphaned" and orphan["metadata"] == owned["metadata"]
+    assert orphan["metadata_sha256"] == owned["metadata_sha256"]
+    [(_path, debt)] = pause_record.orphans()
     second = _child(_RECOVER, "ok", env=env)
     out, _ = second.communicate(timeout=60)
-    assert out.splitlines()[:1] == ["resume ['default']"], out
+    assert out.strip() == "done", "ambiguous lifecycle ownership must not restart gateways"
+    assert inspect_lifecycle_lease(home=tmp_path) == orphan
+    [(_deferred, after)] = pause_record.orphans()
+    assert after["token"] == debt["token"] and after["claimer"] == pause_record.UNOWNED
+
+    def operator(*args):
+        child = _child("from hermes_cli.main import main; main()", "-p", "default",
+                       "lifecycle-lease", *args, "--json", env=env)
+        output, _ = child.communicate(timeout=60)
+        assert child.returncode == 0, output
+        return json.loads(output)
+
+    assert operator("inspect") == orphan
+    confirmed = operator(
+        "reconcile", "--expected-metadata-sha256", orphan["metadata_sha256"],
+        "--expected-owner-token", orphan["metadata"]["owner_token"],
+        "--expected-purpose", orphan["metadata"]["purpose"],
+    )
+    assert confirmed["status"] == "reconciled" and confirmed["metadata_sha256"] == orphan["metadata_sha256"]
+    assert inspect_lifecycle_lease(home=tmp_path)["status"] == "absent"
+    [(_deferred, after)] = pause_record.orphans()
+    assert after["token"] == debt["token"], "operator recovery must not consume paused gateway debt"
     third = _child(_RECOVER, "ok", env=env)
     out, _ = third.communicate(timeout=60)
+    assert out.splitlines()[:1] == ["resume ['default']"], out
+    fourth = _child(_RECOVER, "ok", env=env)
+    out, _ = fourth.communicate(timeout=60)
     assert out.strip() == "done", f"a resumed set was resumed again: {out}"
 
 

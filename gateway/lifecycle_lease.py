@@ -357,6 +357,12 @@ class LifecycleLease:
     def metadata_path(self) -> Path:
         return self.home / _METADATA_NAME
 
+    def custody_fds(self) -> tuple[int, ...]:
+        """Keep this acquired POSIX lease held by a trusted mutation child."""
+        if self._released or self._handle.closed or _read_metadata(self.metadata_path) != self._metadata:
+            raise LifecycleLeaseBlocked("lifecycle custody ownership changed")
+        return (self._handle.fileno(),) if fcntl is not None else ()
+
     def release(self) -> None:
         if self._released:
             return

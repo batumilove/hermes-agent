@@ -65,6 +65,7 @@ def _historical_context() -> tuple[dict, list[dict], Any]:
     found = {}
     resumes = []
     restart_update = None
+    no_gateway_restart = "--no-gateway-restart" in sys.argv
     frame = sys._getframe(1)
     try:
         while frame is not None:
@@ -77,6 +78,9 @@ def _historical_context() -> tuple[dict, list[dict], Any]:
             for name in names:
                 if name not in found and name in frame.f_locals:
                     found[name] = frame.f_locals[name]
+            if _is_historical_update_frame(frame):
+                options = frame.f_locals.get("opts") or frame.f_locals.get("args")
+                no_gateway_restart = bool(getattr(options, "no_gateway_restart", no_gateway_restart))
             token = frame.f_locals.get("_windows_gateway_resume")
             if isinstance(token, dict) and not any(token is item for item in resumes):
                 resumes.append(token)
@@ -95,6 +99,7 @@ def _historical_context() -> tuple[dict, list[dict], Any]:
         plan = receipt.get("plan") if isinstance(receipt, dict) else None
     return {
         "restart_update": restart_update is True,
+        "no_gateway_restart": no_gateway_restart,
         # Some old updaters reach this hook before checking Desktop at all.
         "desktop": found.get("had_desktop_app_before_update"),
         "pre_update_snapshot_id": found.get("pre_update_snapshot_id"),

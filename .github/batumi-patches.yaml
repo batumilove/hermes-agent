@@ -158,6 +158,7 @@ patches:
     cost on this public repository. Bound per-file concurrency to standard runner capacity while retaining
     all test selectors and deadlines.
   paths:
+  - tests/ci/test_windows_update_crash_oracles.py
   - .github/workflows/ci.yaml
   - .github/workflows/docker.yml
   - .github/workflows/nix.yml
@@ -206,6 +207,7 @@ patches:
   - tests/scripts/desktop_update/windows_process_support.py
   - tests/scripts/desktop_update/windows_python_handoff_support.py
   tests:
+  - scripts/run_tests.sh tests/ci/test_update_ci_routing.py tests/ci/test_windows_update_crash_oracles.py
   - python3 -c "import pathlib, yaml; [yaml.safe_load(p.read_text()) for p in pathlib.Path('.github/workflows').glob('*.yml')]"
   - python3 scripts/check_fork_delta.py
   - scripts/run_tests.sh tests/scripts/desktop_update/test_desktop_update_windows_python_handoff.py tests/scripts/desktop_update/test_desktop_update_windows_python_idle_watchdog.py
@@ -234,6 +236,7 @@ patches:
     and retirement condition. Verify immutable import provenance before selecting an upstream comparison
     for blob and critical-pattern gates; later PRs retain their target-branch gates.
   paths:
+  - scripts/ci/classify_changes.py
   - .github/batumi-patches.yaml
   - .github/batumi-contracts.yaml
   - .github/batumi-components.lock.yaml
@@ -327,6 +330,25 @@ patches:
     on contention, orphaned or tampered metadata, symlinks, and controller crashes while preserving explicit
     operator reconciliation and non-POSIX behavior.
   paths:
+  - tests/hermes_cli/test_update_pause_record.py
+  - tests/hermes_cli/test_update_pause_lifecycle.py
+  - tests/hermes_cli/test_update_finish.py
+  - tests/hermes_cli/test_update_takeover_custody.py
+  - hermes_cli/update_pause_record.py
+  - hermes_cli/_old_updater.py
+  - hermes_cli/_update_takeover.py
+  - hermes_cli/update_cmd_posix_pause.py
+  - hermes_cli/update_finish.py
+  - hermes_cli/update_handoff.py
+  - hermes_cli/update_takeover_pause.py
+  - tests/hermes_cli/test_old_updater_takeover.py
+  - tests/hermes_cli/test_update_takeover_pause.py
+  - hermes_cli/venv_sync.py
+  - tests/hermes_cli/test_venv_sync_lifecycle.py
+  - tests/hermes_cli/test_update_launch_completion.py
+  - tests/hermes_cli/test_borrowed_home_launch.py
+  - tests/pm/test_source_update_launch.py
+  - tests/e2e/core/upgrade/handoff/_nshost.py
   - gateway/lifecycle_lease.py
   - hermes_cli/lifecycle_coordination.py
   - hermes_cli/lifecycle_lease_cmd.py
@@ -353,6 +375,11 @@ patches:
   - tests/e2e/core/upgrade/git/test_hostile_post.py
   - tests/e2e/core/upgrade/test_lifecycle_fixture.py
   tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_update_finish.py
+  - scripts/run_tests.sh tests/hermes_cli/test_update_pause_lifecycle.py tests/hermes_cli/test_update_pause_record.py tests/hermes_cli/test_update_pause_recovery_stdout.py
+  - scripts/run_tests.sh tests/hermes_cli/test_update_takeover_custody.py
+  - scripts/run_tests.sh tests/hermes_cli/test_old_updater_takeover.py tests/hermes_cli/test_update_takeover_pause.py
+  - scripts/run_tests.sh tests/hermes_cli/test_venv_sync_lifecycle.py tests/hermes_cli/test_update_launch_completion.py tests/hermes_cli/test_borrowed_home_launch.py tests/pm/test_source_update_launch.py
   - scripts/run_tests.sh tests/gateway/test_lifecycle_lease.py tests/gateway/test_lifecycle_lease_operator.py
     tests/hermes_cli/test_bounded_restart_controller.py tests/hermes_cli/test_cmd_update.py tests/hermes_cli/test_gateway_restart_lifecycle_lease.py
     tests/hermes_cli/test_lifecycle_controller_crash.py tests/hermes_cli/test_lifecycle_coordination.py
@@ -372,6 +399,11 @@ patches:
     handling; desktop preview, HUD, and focus-chord compatibility; plus the associated regression coverage
     and stale test/documentation cleanup.'
   paths:
+  - hermes_cli/plugins_loader.py
+  - tests/hermes_cli/test_plugins_module_eviction.py
+  - tests/e2e/core/parity/_helpers.py
+  - tests/e2e/core/parity/_drive_cli.py
+  - tests/e2e/core/parity/test_entrypoint_parity.py
   - agent/lsp/client.py
   - apps/desktop/src/app/chat/composer/focus-chord.test.ts
   - apps/desktop/src/app/chat/right-rail/preview-browser-bar.test.tsx
@@ -393,6 +425,8 @@ patches:
   - tests/e2e/conftest.py
   - tests/tools/test_mcp_dispatch_recovery.py
   tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_plugins_module_eviction.py
+  - scripts/run_tests.sh tests/e2e/core/parity/test_entrypoint_parity.py
   - scripts/run_tests.sh tests/tools/test_mcp_stability.py tests/tools/test_mcp_tool.py tests/tools/test_local_setsid_descendant_sweep.py
   - cd apps/desktop && npm run typecheck && npm run lint && npm run test:ui
   retirement: Remove when upstream includes equivalent fixes and regression coverage for every listed
@@ -881,6 +915,7 @@ patches:
     misleading repeat budgets on one-shot schedules at create/update boundaries with matching model-tool
     guidance.
   paths:
+  - tests/cron/test_external_fire_rejection_audit.py
   - agent/monitoring/cron_health.py
   - agent/monitoring/events.py
   - cron/executions.py
@@ -910,6 +945,7 @@ patches:
   - tests/cron/test_cron_emfile_stall.py
   - cron/jobs_fire_claims.py
   tests:
+  - scripts/run_tests.sh tests/cron/test_external_fire_rejection_audit.py
   - scripts/run_tests.sh tests/cron/test_claim_job_for_fire.py tests/cron/test_execution_ledger.py tests/cron/test_jobs.py
     tests/cron/test_parallel_pool.py tests/cron/test_scheduler_provider.py tests/cron/test_terminal_job_rearm.py
     tests/monitoring/test_cron_health_export.py tests/plugins/test_chronos_cron.py tests/tools/test_cronjob_run_immediate.py
@@ -1204,6 +1240,8 @@ patches:
     for the full owned transaction, and run a sealed one-restart bounded-handoff transaction whose occupancy
     and post-replacement acceptance are proven through PID-bound live status.
   paths:
+  - tests/e2e/core/delivery/_cron_clock.py
+  - tests/e2e/core/delivery/test_cron_virtual_clock_soak.py
   - cron/scheduler.py
   - cron/scheduler_provider.py
   - gateway/drain_control.py
@@ -1220,6 +1258,7 @@ patches:
   - tests/hermes_cli/test_web_gateway_drain_ownership.py
   - gateway/run_control_socket.py
   tests:
+  - scripts/run_tests.sh tests/e2e/core/delivery/test_cron_virtual_clock_soak.py
   - scripts/run_tests.sh tests/gateway/test_external_drain_control.py tests/gateway/test_restart_drain.py
     tests/gateway/test_gateway_shutdown.py tests/gateway/test_status.py
   - scripts/run_tests.sh tests/hermes_cli/test_bounded_restart_controller.py

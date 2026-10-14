@@ -308,6 +308,7 @@ _DESKTOP_BUILD_ENTRY_POINTS = (
 )
 # What the entry points import, outside the update_* family and the pipeline above.
 _UPDATE_DEPENDENCIES = (
+    "hermes_cli/lifecycle_coordination.py",  # owning launch completion and pause recovery
     "hermes_cli/_subprocess_compat.py",  # update git env, process-tree kill, PM git exposure
     "hermes_cli/local_runtime/processes.py",  # bounded probes' spawn_server/job custody
     "agent/deadline.py",  # bounded probes' process-tree timeout cleanup

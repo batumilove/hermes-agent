@@ -11,6 +11,7 @@ import pytest
 
 from gateway.lifecycle_lease import inspect_lifecycle_lease, reconcile_lifecycle_lease
 from hermes_cli.lifecycle_coordination import acquire_cli_lifecycle_transaction
+from tests.e2e.core.dashboard import _reaper
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _lifecycle_fixture as L
 from tests.e2e.core.upgrade.handoff._nshost import NamespaceHost
@@ -49,7 +50,11 @@ def _retry_transaction(sb: _Endpoint, forbidden: Path) -> subprocess.CompletedPr
     return sb.run([sb.python, "-c", code])
 
 
-def test_fixture_recovers_only_its_real_namespace_controller_with_sticky_profile(tmp_path):
+@pytest.mark.parametrize("without_bwrap", [False, True], ids=["detected-sandbox", "without-bwrap"])
+def test_fixture_recovers_only_its_real_namespace_controller_with_sticky_profile(tmp_path, monkeypatch, without_bwrap):
+    if without_bwrap:
+        # Exercise the real Linux fallback used by CI when optional bwrap is unavailable.
+        monkeypatch.setattr(H, "BWRAP_OK", False)
     sb = _Endpoint(tmp_path, H.isolated_env(tmp_path, pythonpath=H.WORKTREE))
     for args in [("create", "fixture-sticky", "--no-alias"), ("use", "fixture-sticky")]:
         result = sb.run([sb.python, "-m", "hermes_cli.main", "profile", *args])
@@ -74,7 +79,16 @@ def test_fixture_recovers_only_its_real_namespace_controller_with_sticky_profile
         assert L.inspect(sb) == direct
         observed = L.remember_update_lease(sb, host)
         assert observed["metadata"]["pid"] in {p["pid"] for p in host.procs()}
+        if without_bwrap:
+            # The fallback exposes the actual host PID, so require collection
+            # of this exact process as well as an empty live-process census.
+            pid = observed["metadata"]["pid"]
+            before = _reaper.stat(pid)
+            assert before is not None
         assert L.close_namespace(sb, host, lambda: _retry_transaction(sb, forbidden)) == []
+        if without_bwrap:
+            after = _reaper.stat(pid)
+            assert after is None or after[19] != before[19], "owned controller remains a zombie"
         assert inspect_lifecycle_lease(home=sb.hermes_home)["status"] == "absent"
         assert not forbidden.exists()
     finally:

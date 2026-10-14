@@ -5,9 +5,9 @@ This candidate reconciles `batumi/live` at
 `6e7b83a2f1c093e992a8d838ed77ea320fbd8e51`. It is prepared on
 `codex/reconcile-upstream-6e7b83` as the initial immutable source branch. CI
 follow-ups use separate immutable sources `codex/reconcile-upstream-6e7b83-ci`,
-`codex/reconcile-upstream-6e7b83-ci2`, `codex/reconcile-upstream-6e7b83-ci3`, and
-`codex/reconcile-upstream-6e7b83-ci4`; the linear review branch is
-`codex/update-fork-6e7b83`. Retain all five source branches after publication.
+`codex/reconcile-upstream-6e7b83-ci2`, `codex/reconcile-upstream-6e7b83-ci3`,
+`codex/reconcile-upstream-6e7b83-ci4`, and `codex/reconcile-upstream-6e7b83-ci5`; the linear review branch is
+`codex/update-fork-6e7b83`. Retain all six source branches after publication.
 The current provenance record identifies the exact accepted source tree.
 Runtime deployment is a separate step.
 
@@ -303,6 +303,78 @@ for a deeply nested malformed list: it still blocks the input but reports a
 different error and exit code. Authentic source bytes are retained. Fixture
 acceptance checks the real valid/invalid manifest CLI behavior separately;
 it does not claim the external self-test passed.
+
+The next full dispatch, on review `db2551c7` and immutable source `a1daf073`,
+passed all four native PM bundles, seven Linux partitions, both macOS lanes,
+Windows ARM64, native Windows gateway E2E, JS and desktop checks, and the
+seven-scope dependency scan. A Linux partition failed during a bootstrap DNS
+lookup before testing. The graph also exposed additional contract, Windows
+custody, PM exclusion, historical handoff/Git recovery, cron contention and
+plugin-parity failures. Those results require a successor and fresh full CI;
+passing predecessor jobs do not accept new source bytes.
+
+The `-ci5` source fences owning lazy update completion with the common lifecycle
+lease before PM/source mutations. Exact `lifecycle-lease inspect` and `reconcile`
+commands remain reachable without completing the pending update. Ordinary
+mutation under an orphan remains blocked. Namespace fixture cleanup now tracks
+actual PID births and descendants even without the optional namespace backend,
+and collects their exits rather than accepting surviving zombies. Native
+Windows finish custody uses a ready/release handshake around the unchanged
+handoff phase, instead of a fixture lock that expires during cold startup.
+
+Cron contention rendezvous occurs before exclusive maintenance admission and
+retries only a witnessed admission refusal. Actual claim decisions, twelve
+rounds, both real contenders, deliveries and terminal audit rows remain checked.
+Rejected manual/external attempts again produce upstream's failed audit record
+without mutating the winning slot or creating a scheduled occurrence.
+
+Plugin reload eviction snapshots the process module registry before filtering
+the exact plugin namespace. A genuine concurrent import reproduced the lost
+plugin with `dictionary changed size during iteration`; the regression now
+preserves unrelated modules while evicting the package and its submodules.
+The eight-entrypoint parity matrix retains every hook and context assertion
+and includes bounded isolated startup diagnostics. The original hosted one-shot
+failure did not retain a traceback, so its exact cause remains unbound until
+fresh successor acceptance.
+
+The native Windows install/update dispatch reached its unchanged 75-minute job
+limit after eight journey files completed with 32 passes, one known expected
+failure and no failures; two files remained unfinished. Measured completed
+worker time alone consumed 69 minutes with two workers. The ten whole journey
+files now run as separate native jobs, at most two concurrently. Each keeps
+the 75-minute job, 1,500-second stage and 3,600-second file limits, configured
+two workers, zero retries and every original case/cold-store assertion. Matrix
+coverage is complete and disjoint; crash manifest checks stay with the crash
+journey. All ten require fresh native successor acceptance.
+
+The contract runner applies mandatory serial-worker options after forwarded
+caller options. CI's `-j 4` previously overrode the declared `serial: true`
+contract and ran its update files concurrently. Caller-selected concurrency
+remains effective for the parallel lane; serial files now use one worker,
+with selectors and deadlines unchanged.
+
+Paused-gateway startup recovery also takes the common lease before restarting
+or retiring debt. Operator inspection/reconciliation leaves both pause and
+lease records untouched until the explicit action. A finish child inherits
+only its acquired kernel lease descriptor: parent death leaves that lease busy
+until the last child closes it, then leaves metadata for exact operator
+reconciliation. The delegated modern-update branch releases preparation
+ownership first so its own CLI can acquire the lease. Existing modern fleet
+recovery keeps its caller-profile lease plus checkout custody. A restart
+controller using another profile's lease does not take that checkout lock;
+exclusion against those other-home controllers remains a preexisting limit.
+This successor does not claim an all-profile lease or change modern fleet
+recovery into a foreign-home refusal.
+
+Historical POSIX takeover pauses authenticated, captured manual Linux gateways
+in the launch profile home before dependency preparation and records restart
+debt before sending the old control protocol request. Selected-runtime finish
+resumes them before slow UI builds. Original no-restart intent is retained.
+Captured other profile homes, unsupported supervisors, platforms or changed
+identity fail closed with the already-swapped update still
+unfinished; normal modern supervised updates retain their existing path. This
+cannot prevent the immutable old updater's initial Git-swap-to-takeover window,
+and does not claim universal mixed-generation or supervised upgrade acceptance.
 
 The local digest-pinned OSV query was blocked by this environment's network
 policy. The repaired predecessor's hosted scan reported no issues across all

@@ -52,9 +52,12 @@ def _checkout(tmp_path, monkeypatch, *, parent: Path | None = None) -> Path:
     monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
     root = (parent or tmp_path / ".hermes") / "hermes-agent"
     root.mkdir(parents=True)
-    (root / ".git").mkdir()
     (root / "pyproject.toml").write_text("[project]\nname='example'\n", encoding="utf-8")
     (root / "install-stamp.json").write_text(json.dumps({"updateMechanism": "self", "commit": "abc"}), encoding="utf-8")
+    # The owner's completion transaction binds real committed source provenance.
+    for args in (("init", "-q"), ("config", "user.email", "test@example.invalid"),
+                 ("config", "user.name", "test"), ("add", "-A"), ("commit", "-qm", "source")):
+        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, timeout=30)
     return root
 
 

@@ -575,6 +575,12 @@ def test_a_finish_child_that_cannot_start_after_the_commit_is_owed_not_failed(tm
                         lambda code=None, reason="": saved.append(code) or real_finalize(code, reason))
     root = tmp_path / "root"
     root.mkdir()
+    # The source-changing worker now owns the same provenance-bound lifecycle
+    # lease as an ordinary update; a real Git identity is its premise.
+    subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=fixture", "-c",
+                    "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false",
+                    "commit", "--allow-empty", "-qm", "selected source"], check=True, capture_output=True)
     context, result = tmp_path / "context.json", tmp_path / "result.json"
     context.write_text(json.dumps({"root": str(root), "gateway_mode": True, "receipt": {}}), encoding="utf-8")
     monkeypatch.setattr(sys, "argv", ["_update_takeover", str(context), str(result)])

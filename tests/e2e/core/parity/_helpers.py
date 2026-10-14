@@ -197,13 +197,19 @@ def build_parity_home(root: Path, base_url: str, *, grandchild: bool = True,
     )
     (plugin_dir / "__init__.py").write_text(
         "import json\n"
+        "def _startup(phase):\n"
+        f"    with open({str(markers / 'plugin_startup.log')!r}, 'a') as fh:\n"
+        "        fh.write(json.dumps({'phase': phase}) + '\\n')\n"
+        "_startup('module_import')\n"
         "def register(ctx):\n"
+        "    _startup('register_enter')\n"
         "    def _pre_llm_call(**kwargs):\n"
         f"        with open({str(markers / 'plugin_hook.log')!r}, 'a') as fh:\n"
         "            fh.write(json.dumps({'platform': kwargs.get('platform'),\n"
         "                                 'session_id': kwargs.get('session_id')}) + '\\n')\n"
         f"        return {{'context': {c['plugin_hook']!r}}}\n"
-        "    ctx.register_hook('pre_llm_call', _pre_llm_call)\n",
+        "    ctx.register_hook('pre_llm_call', _pre_llm_call)\n"
+        "    _startup('hook_registration_returned')\n",
         encoding="utf-8",
     )
 
@@ -300,6 +306,22 @@ def _read_jsonl(path: Path) -> list[dict]:
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def startup_diagnostics(ph: ParityHome) -> str:
+    """Bounded isolated startup receipts, including when the turn fails before observation."""
+    paths = [ph.markers / "plugin_startup.log",
+             ph.hermes_home / "logs/errors.log", ph.hermes_home / "logs/agent.log"]
+    parts = []
+    for path in paths:
+        if not path.exists():
+            continue
+        with path.open("rb") as receipt:
+            receipt.seek(0, os.SEEK_END)
+            receipt.seek(max(0, receipt.tell() - 1500))
+            tail = receipt.read().decode("utf-8", errors="replace")
+        parts.append(f"  {path.name} tail:\n{tail}")
+    return "\n".join(parts)
 
 
 def collect_observation(entrypoint: str, ph: ParityHome, srv: FakeLLMServer,

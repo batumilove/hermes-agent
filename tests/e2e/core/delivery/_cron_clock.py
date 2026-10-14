@@ -23,14 +23,15 @@ files, so two processes can share one ``HERMES_HOME`` and one can be SIGKILLed m
 tickers never contend for a FIRE: the tick lock admits one per instant and the winner advances
 ``next_run_at`` before it releases. Fire-claim contention is the external-provider path
 (``CronScheduler.fire_due``, "exactly one of N replicas runs a job"): ``ReplicaHost`` runs a
-replica in a second process, and ``install_claim_barrier`` parks each replica's
-``claim_job_for_fire`` until every replica of the round is inside it, so the store CAS, not
-timing, decides every fire.
+replica in a second process. Requests rendezvous before maintenance admission;
+``install_claim_barrier`` records each real store CAS outcome without blocking
+its admission lock. The winner is held while the losing request reaches CAS.
 """
 
 from __future__ import annotations
 
 import contextvars
+from contextlib import contextmanager
 import datetime as _dt
 import json
 import os
@@ -492,19 +493,18 @@ def replica_scheduler():
     return ReplicaScheduler()
 
 
-def install_claim_barrier(control: Control, setattr_fn=setattr, parties: int = 2) -> None:
-    """Wrap ``cron.jobs.claim_job_for_fire`` (``claim_fire`` imports it at call time): each call
-    waits until ``parties`` replicas have entered the claim for the current round, then runs the
-    REAL claim and logs who won. It only delays, never changes a decision."""
+def install_claim_barrier(control: Control, setattr_fn=setattr) -> None:
+    """Record each REAL claim decision after the fire-boundary rendezvous.
+
+    The maintenance-admission lock serializes claim and registration, so a
+    rendezvous inside this callback would prevent the other replica entering.
+    """
     from cron import jobs
 
     real = jobs.claim_job_for_fire
 
     def claim(job_id, **kwargs):
         rnd = _CLAIM_ROUND[0]
-        (control.replica / f"arrived-{rnd}-{os.getpid()}").touch()
-        wait_until(lambda: len(list(control.replica.glob(f"arrived-{rnd}-*"))) >= parties,
-                   f"{parties} replicas inside the fire claim of round {rnd}")
         result = real(job_id, **kwargs)
         _append_jsonl(control.claims, {"round": rnd, "pid": os.getpid(), "job_id": job_id,
                                        "won": bool(result)})
@@ -513,9 +513,46 @@ def install_claim_barrier(control: Control, setattr_fn=setattr, parties: int = 2
     setattr_fn(jobs, "claim_job_for_fire", claim)
 
 
-def fire_as_replica(provider, job_id: str, rnd: int) -> bool:
+def fire_as_replica(provider, job_id: str, rnd: int, control: Control) -> bool:
     _CLAIM_ROUND[0] = rnd
-    return provider.fire_due(job_id)
+    deadline = _real_time.monotonic() + DEADLINE_SECONDS
+    (control.replica / f"arrived-{rnd}-{os.getpid()}").touch()
+    wait_until(lambda: len(list(control.replica.glob(f"arrived-{rnd}-*"))) == 2,
+               f"both replicas at the fire boundary of round {rnd}")
+
+    def attempt():
+        won = provider.fire_due(job_id)
+        claimed = [row for row in read_jsonl(control.claims)
+                   if row["round"] == rnd and row["pid"] == os.getpid()]
+        # Only an admission refusal has no claim record. Model a transport's
+        # retry of that refusal; never retry an actual rejected CAS decision.
+        if claimed:
+            return (won,)
+        assert won is False, "fire accepted without an actual store claim"
+        _append_jsonl(control.replica / "admission.jsonl", {"round": rnd, "pid": os.getpid()})
+        return None
+
+    return wait_until(attempt, f"replica admission and claim outcome of round {rnd}",
+                      timeout=max(0, deadline - _real_time.monotonic()))[0]
+
+
+@contextmanager
+def initial_admission_contention(control: Control, home: Path, rnd: int, peer_pid: int):
+    """Prove both real requests retry a transient maintenance reservation."""
+    if rnd != 1:
+        yield
+        return
+    from gateway import drain_control
+
+    lock = drain_control._acquire_activation_lock(home)
+    try:
+        yield
+        wait_until(lambda: {row["pid"] for row in read_jsonl(control.replica / "admission.jsonl")
+                            if row["round"] == rnd} == {os.getpid(), peer_pid},
+                   "both real replicas refused by the maintenance reservation")
+        assert not [row for row in read_jsonl(control.claims) if row["round"] == rnd]
+    finally:
+        drain_control._release_activation_lock(lock)
 
 
 class ReplicaHost:
@@ -585,7 +622,7 @@ def _replica_main(control: Control) -> None:
             if (control.replica / "stop").exists() or _real_time.monotonic() >= deadline:
                 return
             _real_time.sleep(POLL_SECONDS)
-        won = fire_as_replica(provider, json.loads(req.read_text(encoding="utf-8"))["job_id"], rnd)
+        won = fire_as_replica(provider, json.loads(req.read_text(encoding="utf-8"))["job_id"], rnd, control)
         _atomic_write(control.replica / f"res-{rnd}.json", json.dumps({"won": won}))
 
 

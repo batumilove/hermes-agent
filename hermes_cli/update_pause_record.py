@@ -47,7 +47,7 @@ import sys
 import threading
 import time
 import uuid
-from contextlib import contextmanager, redirect_stdout, suppress
+from contextlib import ExitStack, contextmanager, redirect_stdout, suppress
 from pathlib import Path
 
 RECORD_STEM = ".hermes-update-paused-gateways"
@@ -916,17 +916,38 @@ def _has_work(token: dict) -> bool:
                 or token.get("services") or token.get("posix_units") or token.get("cold_start_if_installed") or token.get("cold_start_profiles"))
 
 
+def _defer_claim(claim_path: Path, body: dict) -> None:
+    """Keep exact restart debt unowned without recording an attempted relaunch."""
+    with suppress(OSError), _mutex():
+        _atomic_write(claim_path, {**(read(claim_path) or body), "claimer": UNOWNED})
+
+
 def _resume_claimed(claim_path: Path, body: dict) -> None:
     """Resume under the checkout lock, so no update mutates the tree between the gate and the
     verified start; an update that took the checkout after our claim gets the set back untouched."""
     from hermes_cli.update_lock import UpdateLock
     fence = UpdateLock()
     if not fence.acquire_checkout(install_root()):
-        with suppress(OSError), _mutex():
-            _atomic_write(claim_path, {**(read(claim_path) or body), "claimer": UNOWNED})
+        _defer_claim(claim_path, body)
         return
     try:
-        _resume_fenced(claim_path, body)
+        from hermes_constants import get_hermes_home
+        from hermes_cli.lifecycle_coordination import cli_update_transaction
+
+        # Same order as the updater: checkout custody, then profile ownership.
+        # Direct update-finish resumes already run under the updater's lease;
+        # only this independent startup recovery needs a fresh common lease.
+        with ExitStack() as ownership:
+            try:
+                ownership.enter_context(cli_update_transaction(home=get_hermes_home(), repo_root=install_root()))
+            except BaseException as exc:
+                # An entry failure or cancellation owns no resume attempt. Do
+                # not pin restart debt to a still-running chat/serve process.
+                _defer_claim(claim_path, body)
+                if isinstance(exc, SystemExit) and exc.code == 2:
+                    return
+                raise
+            _resume_fenced(claim_path, body)
     finally:
         fence.release()
 
@@ -1025,7 +1046,8 @@ def recover(argv: list[str] | None = None) -> None:
     """Start-of-run recovery: resume every orphaned pause. Never raises."""
     from hermes_cli._parser import command_argv
     command = command_argv(list(sys.argv[1:] if argv is None else argv))
-    if command[:1] == ["update"] or command[:2] == ["gateway", "run"]:
+    if (command[:1] == ["update"] or command[:2] == ["gateway", "run"]
+            or command[:2] in (["lifecycle-lease", "inspect"], ["lifecycle-lease", "reconcile"])):
         return  # the update adopts it itself; a booting gateway must not block on its siblings
     try:
         retire_redundant()
