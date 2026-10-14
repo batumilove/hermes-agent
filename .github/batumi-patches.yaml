@@ -360,6 +360,7 @@ patches:
   - tests/hermes_cli/test_update_finish.py
   - tests/hermes_cli/test_update_takeover_custody.py
   - tests/hermes_cli/test_update_lock_protocol.py
+  - tests-js/update-ui.test.mjs
   - hermes_cli/update_pause_record.py
   - hermes_cli/_old_updater.py
   - hermes_cli/_update_takeover.py

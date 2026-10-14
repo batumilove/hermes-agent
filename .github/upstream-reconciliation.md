@@ -505,3 +505,6 @@ The lock-probe concurrency fixture now ends after its required acquisition
 sample completes rather than imposing a four-second throughput floor. It still
 requires more than 50 real acquire/release attempts, zero refusals, and a live
 concurrent prober, with bounded failure and shutdown guards.
+The staged-Git desktop integration case receives an explicit 30-second test
+timeout for its real Git and Python subprocesses. Its source SHA, isolated Git
+configuration, staged-main, foreign-checkout, and launcher assertions are unchanged.
