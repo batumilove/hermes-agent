@@ -41,7 +41,12 @@ def test_doctor_write_probe_never_touches_a_store_a_live_writer_holds(monkeypatc
     state_db = tmp_path / "state.db"
     sqlite3.connect(state_db).execute("CREATE TABLE sessions (id TEXT)").connection.close()
     probed: list = []
-    monkeypatch.setattr(hermes_state_repair, "_db_opens_cleanly", lambda path: probed.append(path))
+
+    def probe(path, *, full_integrity):
+        assert full_integrity is False
+        probed.append(path)
+
+    monkeypatch.setattr(hermes_state_repair, "_db_opens_cleanly", probe)
 
     monkeypatch.setattr(hermes_state_holders, "live_writer_holds_db", lambda *_a, **_k: True)
     assert doctor_state._write_health_reason(state_db, should_fix=False) is None

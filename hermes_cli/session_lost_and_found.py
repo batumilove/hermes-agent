@@ -357,8 +357,10 @@ def _type_conflicts(value: Any, declared: str) -> bool:
     Stricter than SQLite affinity on purpose: SQLite would happily keep a
     non-numeric string in an INTEGER column, but Hermes never writes one, so
     text sitting where a counter is declared means the layout is wrong. A
-    TEXT column always yields ``str`` (numbers are coerced on write), a REAL
-    column always yields ``float``, an INTEGER column yields ``int``.
+    TEXT column always yields ``str`` (numbers are coerced on write), an
+    INTEGER column yields ``int``. REAL columns may store integral values
+    as integer records to save disk space; SQL reads restore float affinity,
+    but schema-less page recovery exposes the stored integer instead.
     """
 
     if value is None:
@@ -367,7 +369,7 @@ def _type_conflicts(value: Any, declared: str) -> bool:
     if "CHAR" in affinity or "CLOB" in affinity or "TEXT" in affinity:
         return not isinstance(value, str)
     if "REAL" in affinity or "FLOA" in affinity or "DOUB" in affinity:
-        return not isinstance(value, float)
+        return not isinstance(value, (int, float))
     if "INT" in affinity:
         return not isinstance(value, int)
     return False
@@ -534,6 +536,20 @@ class LayoutEvidence:
             self.rows_by_width.setdefault(len(cells), []).append(cells)
 
 
+def _compatible_widths(
+    survivors: dict[int, list[tuple[str, ...]]],
+) -> dict[int, list[tuple[str, ...]]]:
+    """Short records share an unchanged physical prefix with newer records."""
+    widest = survivors[max(survivors)]
+    if not widest:
+        return survivors
+    result = {}
+    for width, candidates in survivors.items():
+        prefixes = {layout[:width] for layout in widest}
+        result[width] = [layout for layout in candidates if layout in prefixes]
+    return result
+
+
 def infer_physical_layouts(evidence: LayoutEvidence, dest_types: dict[str, str]) -> dict[int, list[Optional[str]]]:
     """Infer which source column each record position holds, per field count.
 
@@ -600,6 +616,10 @@ def infer_physical_layouts(evidence: LayoutEvidence, dest_types: dict[str, str])
         if bucket is not None and layout not in bucket:
             bucket.append(layout)
 
+    # ADD COLUMN never changes an existing physical prefix. Short records
+    # left by upgrades must therefore match a prefix of the same store's
+    # longest surviving layout, not an independently plausible other branch.
+    survivors_by_width = _compatible_widths(survivors_by_width)
     result: dict[int, list[Optional[str]]] = {}
     for width, survivors in survivors_by_width.items():
         if not survivors:
@@ -685,12 +705,28 @@ def _copy_direct_tables(lf_conn: sqlite3.Connection, dest: sqlite3.Connection) -
     return copied
 
 
+def _record_layout_ambiguity(
+    report: dict[str, Any], kind: str, layout: Optional[Sequence[Optional[str]]], cells: tuple[Any, ...],
+) -> None:
+    """Report populated cells whose column identity could not be recovered."""
+    if layout is None:
+        return
+    ambiguous = [index for index, (name, value) in enumerate(zip(layout, cells))
+                 if name is None and value is not None]
+    if not ambiguous:
+        return
+    report["ambiguous_layout_rows"] += 1
+    widths = report["ambiguous_layout_positions"].setdefault(kind, {})
+    widths[str(len(cells))] = sorted(set(widths.get(str(len(cells)), [])) | set(ambiguous))
+
+
 def map_lost_and_found_rows(lf_conn: sqlite3.Connection, dest: sqlite3.Connection) -> dict[str, Any]:
     """Best-effort mapping of a .recover output DB into a fresh SessionDB."""
     report: dict[str, Any] = {
         "direct_table_rows": {}, "mapped": {"sessions": 0, "messages": 0, "session_model_usage": 0},
         "legacy_minimal_sessions": 0, "mapped_by_layout": 0, "unrecognized_layout_rows": 0,
         "unrecognized_layout_widths": {}, "inferred_layouts": {},
+        "ambiguous_layout_rows": 0, "ambiguous_layout_positions": {},
         "unmapped_rows": 0, "insert_conflicts": 0, "lost_and_found_tables": [],
     }
     with _immediate_transaction(dest):
@@ -750,6 +786,7 @@ def map_lost_and_found_rows(lf_conn: sqlite3.Connection, dest: sqlite3.Connectio
             columns, defaults = targets[kind]
             layout = layouts[kind].get(len(cells))
             legacy_minimal = kind == "sessions" and nfield == SESSIONS_LEGACY_MINIMAL_NFIELD
+            _record_layout_ambiguity(report, kind, layout, cells)
             if layout is None and not legacy_minimal:
                 report["unrecognized_layout_rows"] += 1
                 widths = report["unrecognized_layout_widths"].setdefault(kind, [])

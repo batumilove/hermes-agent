@@ -9,9 +9,14 @@ not reset anything.
 from __future__ import annotations
 
 import json
+import threading
 from unittest.mock import patch
 
 import pytest
+
+from tests.agent.test_relay_llm import relay_turn as _relay_turn
+
+relay_turn = _relay_turn
 
 SESSION_ID = "compaction-atof-session"
 SECRET = "TOPSECRET_TRANSCRIPT_TEXT"
@@ -71,13 +76,14 @@ def _chat_response(_request):
     }
 
 
-def _llm(messages, request_id):
+def _llm(messages, request_id, *, role="primary", defer=False):
     from agent import relay_llm
 
     relay_llm.execute(
         {"model": "test/main-model", "messages": messages}, _chat_response, name=LLM_NAME,
         model_name="test/main-model", session_id=SESSION_ID,
-        metadata={"api_mode": "chat_completions", "api_request_id": request_id},
+        metadata={"api_mode": "chat_completions", "api_request_id": request_id, "call_role": role},
+        defer_logical_completion=defer,
     )
 
 
@@ -107,7 +113,7 @@ mode = "overwrite"
     return config
 
 
-def _run_turn_with_compaction(tmp_path, monkeypatch, summary):
+def _run_turn_with_compaction(tmp_path, monkeypatch, summary, *, exercise_overlap=None, main_role="primary"):
     """One Relay turn: two LLM calls, one compression attempt, one more LLM call. Returns ATOF events
     and the message count of the last request."""
     relay = pytest.importorskip("nemo_relay")
@@ -139,12 +145,14 @@ def _run_turn_with_compaction(tmp_path, monkeypatch, summary):
         lease = coordinator.acquire_conversation(profile_key=profile_key, session_id=SESSION_ID, platform="cli")
         turn = coordinator.begin_turn(lease, turn_id="turn-1", task_id="task-1")
         try:
-            _llm(transcript[:-2], "r1")
-            _llm(transcript, "r2")
+            if exercise_overlap is not None:
+                exercise_overlap(coordinator, turn)
+            _llm(transcript[:-2], "r1", role=main_role)
+            _llm(transcript, "r2", role=main_role)
             with patch.object(compressor, "_generate_summary", return_value=None if summary is ABORT else summary):
                 compressed, _ = compress_context(agent, transcript, "system prompt", approx_tokens=80_000)
             last_request = compressed + [{"role": "user", "content": "next question"}]
-            _llm(last_request, "r3")
+            _llm(last_request, "r3", role=main_role)
         finally:
             coordinator.end_turn(turn, outcome="success")
             coordinator.finalize_conversation(profile_key=profile_key, session_id=SESSION_ID)
@@ -176,8 +184,9 @@ def _compaction_marks(events):
 @pytest.mark.parametrize(
     ("summary", "method"), [("SANITIZED SUMMARY", "llm_summary"), (None, "deterministic_fallback")],
 )
-def test_committed_compaction_mark_resets_freshness_for_the_next_llm_start(tmp_path, monkeypatch, summary, method):
-    events, last_request_len = _run_turn_with_compaction(tmp_path, monkeypatch, summary)
+@pytest.mark.parametrize("main_role", ["primary", "delegated", "fallback"])
+def test_committed_compaction_mark_resets_freshness_for_the_next_llm_start(tmp_path, monkeypatch, summary, method, main_role):
+    events, last_request_len = _run_turn_with_compaction(tmp_path, monkeypatch, summary, main_role=main_role)
 
     [mark] = _compaction_marks(events)
     assert mark["name"] == "compaction"
@@ -193,11 +202,123 @@ def test_committed_compaction_mark_resets_freshness_for_the_next_llm_start(tmp_p
     assert after == last_request_len  # fresh again after the compaction mark: full history
 
 
-def test_failed_attempt_is_an_attempt_mark_and_leaves_freshness_alone(tmp_path, monkeypatch):
-    events, last_request_len = _run_turn_with_compaction(tmp_path, monkeypatch, ABORT)
+@pytest.mark.parametrize("main_role", ["primary", "delegated", "fallback"])
+def test_failed_attempt_is_an_attempt_mark_and_leaves_freshness_alone(tmp_path, monkeypatch, main_role):
+    events, last_request_len = _run_turn_with_compaction(tmp_path, monkeypatch, ABORT, main_role=main_role)
 
     [mark] = _compaction_marks(events)
     assert mark["name"] == "compaction.attempt"
     assert (mark["data"]["outcome"], mark["data"]["failure_class"]) == ("failed", "summary_generation_aborted")
     *_, after = _llm_start_message_counts(events)
     assert after < last_request_len
+
+
+def test_native_freshness_isolated_between_overlapping_calls_roles_and_turns(tmp_path, monkeypatch):
+    from agent import relay_llm
+
+    def overlap(coordinator, turn):
+        transcript = _transcript()
+        _llm(transcript, "overlap-a", defer=True)
+        _llm(transcript, "overlap-b", defer=True)
+        _llm(transcript, "auxiliary", role="auxiliary:summary")
+        relay_llm.complete_logical_call("overlap-a", outcome="success")
+        # A completed stack can be reused while B still owns its independent stack.
+        _llm(transcript, "reuse-a")
+        relay_llm.complete_logical_call("overlap-b", outcome="success")
+        second = coordinator.begin_turn(turn.lease, turn_id="turn-2", task_id="task-2")
+        try:
+            _llm(transcript, "other-turn")
+        finally:
+            coordinator.end_turn(second, outcome="success")
+
+    events, last_len = _run_turn_with_compaction(tmp_path, monkeypatch, "SUMMARY", exercise_overlap=overlap)
+    first, parallel, auxiliary, reused, other_turn, resumed, before_mark, after_mark = _llm_start_message_counts(events)
+    full = len(_transcript())
+    assert first == parallel == auxiliary == other_turn == full
+    assert reused < full and resumed < full - 2 and before_mark < full
+    assert after_mark == last_len
+    starts = [e for e in events if e.get("name") == LLM_NAME and e.get("scope_category") == "start"]
+    assert starts[0]["parent_uuid"] != starts[1]["parent_uuid"]
+    assert starts[0]["parent_uuid"] != starts[3]["parent_uuid"]
+
+
+def test_compaction_refresh_survives_an_unmarked_overlapping_call_finishing_first(tmp_path, monkeypatch):
+    from agent import relay_compaction, relay_llm
+
+    def overlap(coordinator, turn):
+        transcript = _transcript()
+        _llm(transcript, "marked-a", defer=True)
+        _llm(transcript, "unmarked-b", defer=True)
+        assert relay_compaction.emit_compaction_mark(SESSION_ID, "compaction", {"outcome": "committed"})
+        # B must not replace the refreshed A stack merely because it finishes first.
+        relay_llm.complete_logical_call("unmarked-b", outcome="success")
+        relay_llm.complete_logical_call("marked-a", outcome="success")
+        _llm(transcript, "after-overlapping-rewrite")
+        _llm(transcript, "after-consumed-refresh")
+
+    events, last_len = _run_turn_with_compaction(tmp_path, monkeypatch, "SUMMARY", exercise_overlap=overlap)
+    first, second, refreshed, stale, resumed, before_mark, after_mark = _llm_start_message_counts(events)
+    full = len(_transcript())
+    assert first == second == refreshed == full
+    assert stale < full and resumed < full - 2 and before_mark < full
+    assert after_mark == last_len
+    assert len(_compaction_marks(events)) == 2
+
+
+def test_native_mark_worker_finishes_after_timeout_and_turn_close_without_touching_sibling(relay_turn, monkeypatch):
+    from agent import relay_compaction, relay_llm, relay_runtime
+    from hermes_constants import get_hermes_home, get_hermes_home_override, reset_hermes_home_override, set_hermes_home_override
+
+    relay, turn = relay_turn
+    coordinator, lease = relay_runtime.SESSION_COORDINATOR, turn.lease
+    relay_llm.execute(
+        {"model": "test/main-model", "messages": _transcript()}, _chat_response,
+        name=LLM_NAME, model_name="test/main-model", session_id=lease.session_id,
+        metadata={"api_mode": "chat_completions", "api_request_id": "before-timeout"},
+    )
+    started, release, finished = threading.Event(), threading.Event(), threading.Event()
+    errors, profiles, parents = [], [], []
+    original = relay.scope.event
+
+    def delayed_event(name, **kwargs):
+        profiles.append(get_hermes_home_override())
+        started.set()
+        release.wait()
+        try:
+            profiles.append(get_hermes_home_override())
+            original(name, **kwargs)
+            parents.append(kwargs["handle"])
+        except Exception as exc:
+            errors.append(exc)
+            raise
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(relay.scope, "event", delayed_event)
+    monkeypatch.setattr(relay_compaction, "_stalled", False)
+    home = str(get_hermes_home())
+    token = set_hermes_home_override(home)
+    sibling = None
+    try:
+        with monkeypatch.context() as timeout_patch:
+            timeout_patch.setattr(relay_runtime, "SCOPE_OP_TIMEOUT", 2.0)
+            with pytest.raises(TimeoutError, match="Relay scope operation exceeded"):
+                relay_compaction.emit_compaction_mark(lease.session_id, "compaction", {"outcome": "committed"})
+        assert started.wait(2)
+        sibling = coordinator.begin_turn(lease, turn_id="live-sibling", task_id="task-sibling")
+        coordinator.end_turn(turn, outcome="success")
+        assert not turn.idle_logical_llm_contexts
+        release.set()
+        assert finished.wait(2)
+        assert errors == []
+        assert profiles == [home, home]
+        assert parents == [turn.handle]
+        top = lease.host.run_in_session(lease.session, relay_runtime._current_top, relay, scope_context=sibling.context)
+        assert relay_runtime._same_handle(top, sibling.handle)
+        assert relay_runtime.active_turn() is sibling
+    finally:
+        release.set()
+        assert finished.wait(2)
+        if sibling is not None:
+            coordinator.end_turn(sibling, outcome="success")
+        reset_hermes_home_override(token)

@@ -9,6 +9,7 @@ healthy handle. ``normal`` is the control.
 """
 import sqlite3
 import threading
+from contextlib import contextmanager
 import pytest
 from hermes_state import SessionDB
 
@@ -40,8 +41,18 @@ def test_clean_close_never_causes_false_sticky_loss(tmp_path, monkeypatch, entry
 
         def __exit__(self, *args):
             lock.release()
-            if is_writer() and entry == "error_branch" and calls == 1:
-                second.set()
+
+        @contextmanager
+        def hold(self, operation, holder_kind):
+            if is_writer():
+                progress.set()
+            try:
+                with lock.hold(operation, holder_kind) as diagnostics:
+                    yield diagnostics
+            finally:
+                if is_writer() and entry == "error_branch" and calls == 1:
+                    second.set()
+                    assert closed.wait(10), "closer never reached physical close"
 
     def observed_guard():
         nonlocal calls

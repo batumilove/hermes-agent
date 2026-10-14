@@ -1,5 +1,14 @@
 version: 1
 contracts:
+- id: recovered-state-and-native-freshness
+  rationale: Preserve routed test isolation, explicit DB pins, historical fork recovery layouts,
+    ordered recovery obligations, native Relay freshness after compaction, and overlapping logical-call isolation.
+  tests:
+  - tests/hermes_state/test_default_db_profile_fixture.py
+  - tests/hermes_cli/test_session_recovery_post_response.py
+  - tests/hermes_cli/test_session_recovery_fork_layouts.py
+  - tests/agent/test_relay_compaction_atof.py
+  - tests/agent/test_relay_scope_isolation.py
 - id: verified-import-and-dependency-scan
   rationale: Preserve exact import provenance, later PR gates, complete registry dependency scans,
     and bounded JWT verification without breaking key rotation.

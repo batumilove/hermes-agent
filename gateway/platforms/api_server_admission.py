@@ -105,12 +105,15 @@ async def _acquire_turn_admission(adapter: APIServerAdapter) -> Optional[object]
 
 
 
-def _admit_api_agent_request(handler):
+def _admit_api_agent_request(handler=None, *, run_permission=None):
     """Own visible pending work and bounded FIFO admission before handler awaits."""
+    if handler is None:
+        return lambda callback: _admit_api_agent_request(callback, run_permission=run_permission)
     @wraps(handler)
     async def _wrapped(self, request, *args, **kwargs):
         from gateway.platforms.api_server import _openai_error
-        auth_err = self._check_auth(request)
+        auth_err = (self._check_run_auth(request, permission=run_permission)
+                    if run_permission else self._check_auth(request))
         if auth_err:
             return auth_err
         draining = self._draining_response()

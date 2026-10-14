@@ -52,6 +52,10 @@ def _make_phase_runner(monkeypatch, events):
 def _make_ctx():
     ctx = GatewayShutdownMixin._StopContext(deferred_count=lambda: 0)
     ctx.started_at = time.monotonic()
+    # This phase consumes the aggregate budget established by _stop_impl.
+    ctx.shutdown_deadline = asyncio.get_running_loop().time() + 5.0
+    ctx.teardown_deadline = ctx.shutdown_deadline
+    ctx.cleanup_deadline = ctx.teardown_deadline
     return ctx
 
 

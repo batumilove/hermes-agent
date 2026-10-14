@@ -721,8 +721,15 @@ def _logical_parent(
             handle = turn.logical_llm_calls.get(request_id)
             if handle is None:
                 call_role = str((metadata or {}).get("call_role") or "primary")
-                scope_context = contextvars.Context()
+                # A native stack owns LLM-history freshness. Reuse a finished
+                # stack for sequential calls, while overlapping calls receive
+                # independent stacks and cannot mutate each other's scopes.
+                context_role = "primary" if call_role in {"primary", "delegated", "fallback"} else call_role
+                scope_context = turn.idle_logical_llm_contexts.pop(context_role, None)
+                if scope_context is None:
+                    scope_context = contextvars.Context()
                 turn.logical_llm_contexts[request_id] = scope_context
+                turn.logical_llm_roles[request_id] = context_role
                 handle = turn.logical_llm_calls[request_id] = runtime.run_in_session(
                     session, runtime.relay.scope.push, relay_runtime.LOGICAL_LLM_SCOPE,
                     runtime.relay.ScopeType.Function, handle=parent, input={},
@@ -782,7 +789,16 @@ def _complete_logical(
         with turn.logical_llm_lock:
             if turn.logical_llm_calls.get(request_id) is handle:
                 del turn.logical_llm_calls[request_id]
-                turn.logical_llm_contexts.pop(request_id, None)
+                _release_logical_context(turn, request_id, reusable=popped is not False)
+
+
+def _release_logical_context(turn: relay_runtime.RelayTurnContext, request_id: str, *, reusable: bool) -> None:
+    context = turn.logical_llm_contexts.pop(request_id, None)
+    role = turn.logical_llm_roles.pop(request_id, "primary")
+    reusable = reusable and request_id not in turn.non_reusable_logical_llm_calls
+    turn.non_reusable_logical_llm_calls.discard(request_id)
+    if reusable and context is not None:
+        turn.idle_logical_llm_contexts.setdefault(role, context)
 
 
 def _is_cancellation(error: BaseException) -> bool:

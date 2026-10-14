@@ -16,6 +16,7 @@ patches:
   - tests/plugins/platforms/feishu/test_webhook_security.py
   - website/docs/user-guide/messaging/feishu.md
   - website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/messaging/feishu.md
+  - tests/gateway/_plugin_adapter_loader.py
   tests:
   - scripts/run_tests.sh tests/plugins/platforms/feishu/test_webhook_security.py
   retirement: Remove when official upstream provides equivalent callback authentication, quota ordering,
@@ -171,6 +172,25 @@ patches:
   - .github/workflows/windows-install-update-e2e.yml
   - .github/workflows/windows-venv-e2e.yml
   - .github/workflows/windows-bundle-sdk.yml
+  - tests/scripts/desktop_update/windows_commit_outcome_support.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_commit_outcome.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_commit_receipt.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_finish_custody.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_watchdog.py
+  - tests/scripts/desktop_update/windows_handoff_lineage_support.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_handoff_lineage.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_handoff_started_at.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_launcher_rule.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_handoff_run.py
+  - tests/scripts/desktop_update/windows_marker_support.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_marker.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_system_marker.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_marker_metadata.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_marker_format.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_marker_bridge.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_desktop_exit.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_ui_profile.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_marker_custody.py
   tests:
   - python3 -c "import pathlib, yaml; [yaml.safe_load(p.read_text()) for p in pathlib.Path('.github/workflows').glob('*.yml')]"
   - python3 scripts/check_fork_delta.py
@@ -250,6 +270,7 @@ patches:
   - hermes_cli/plugin_cli_registration.py
   - ruff.toml
   - .github/upstream-reconciliation.md
+  - tests/ci/test_update_ci_routing.py
   tests:
   - scripts/run_tests.sh tests/scripts/test_check_fork_delta.py tests/scripts/test_ci_workflow.py tests/scripts/test_install_batumi_components.py
     tests/scripts/test_upstream_sync_workflow.py
@@ -437,6 +458,8 @@ patches:
   - cron/scheduler_prompt.py
   - cron/scheduler_worktree.py
   - tests/cron/test_worktree_maintenance_isolation.py
+  - tests/hermes_cli/test_worktree_pushed_tier.py
+  - website/docs/user-guide/features/cron.md
   tests:
   - scripts/run_tests.sh tests/cron/test_cron_context_from.py
   - python -m py_compile cron/scheduler.py tests/cron/test_cron_context_from.py
@@ -452,6 +475,7 @@ patches:
   - gateway/platforms/api_server.py
   - tests/gateway/test_api_server_active_work_drain.py
   - gateway/platforms/api_server_admission.py
+  - tests/gateway/test_api_server_runs.py
   tests:
   - scripts/run_tests.sh tests/gateway/test_api_server_active_work_drain.py
   - python -m py_compile gateway/platforms/api_server.py
@@ -532,6 +556,7 @@ patches:
   - tools/delegate_tool_dispatch.py
   - tests/tools/test_delegate_ownership_setup.py
   - tests/tools/delegate_fixtures.py
+  - tests/hermes_cli/test_cli_interrupt_subagent.py
   tests:
   - scripts/run_tests.sh tests/agent/test_credential_pool_lease_refresh_reselect.py tests/agent/test_subagent_lifecycle.py
     tests/tools/test_delegate_subagent_timeout_diagnostic.py tests/tools/test_delegate.py tests/tools/test_zombie_process_cleanup.py
@@ -563,12 +588,15 @@ patches:
     guards. Keep upstream profile-routing tests hermetic by declaring their served profile set rather
     than depending on operator profiles inherited from the test host.
   paths:
+  - tests/conftest.py
+  - tests/hermes_state/test_default_db_profile_fixture.py
   - tests/hermes_home_isolation_probe.py
   - tests/test_log_isolation.py
   - tests/gateway/test_multiplex_busy_input_mode.py
   - tests/gateway/test_multiplex_primary_token_scope.py
   tests:
   - scripts/run_tests.sh tests/test_log_isolation.py
+  - scripts/run_tests.sh tests/hermes_state/test_default_db_profile_fixture.py
   - scripts/run_tests.sh tests/gateway/test_multiplex_busy_input_mode.py
   - scripts/run_tests.sh tests/cron
   retirement: Remove when upstream always isolates inherited HERMES_HOME before test collection with equivalent
@@ -609,6 +637,7 @@ patches:
   - tests/test_session_db_write_latency_logging.py
   - hermes_state_checkpoint.py
   - hermes_state_wal.py
+  - tests/hermes_state/test_deleted_wal_generation_guard.py
   tests:
   - scripts/run_tests.sh tests/test_wal_checkpoint_no_writer_lock.py tests/hermes_state/test_wal_checkpoint_strategy.py
     tests/test_session_db_write_latency_logging.py
@@ -638,6 +667,7 @@ patches:
   - agent/agent_init_state.py
   - tests/agent/test_context_engine_usage_teardown.py
   - gateway/run_turn_runner_cache.py
+  - tests/gateway/test_internal_event_pin_wiring.py
   tests:
   - scripts/run_tests.sh tests/agent/test_context_engine_lifecycle.py tests/agent/test_memory_async_sync.py
     tests/gateway/test_agent_cache.py
@@ -672,6 +702,8 @@ patches:
   - hermes_state.py
   - tests/test_session_db_write_latency_logging.py
   - hermes_state_write.py
+  - tests/hermes_state/test_compression_lease_refresh_before_publish.py
+  - tests/hermes_state/test_clean_close_residual_poison.py
   tests:
   - scripts/run_tests.sh tests/test_session_db_write_latency_logging.py tests/hermes_state/test_write_lock_patience.py
   retirement: Remove when upstream provides equivalent privacy-bounded phase timing and lock-owner attribution
@@ -687,6 +719,7 @@ patches:
   - hermes_cli/doctor_state.py
   - hermes_state_repair.py
   - tests/hermes_cli/test_doctor_bounded_state.py
+  - tests/hermes_cli/test_observational_sessiondb_modes.py
   tests:
   - scripts/run_tests.sh tests/hermes_cli/test_doctor.py
   - scripts/run_tests.sh tests/hermes_state/test_hermes_state.py
@@ -709,6 +742,7 @@ patches:
   - gateway/session_lifecycle.py
   - gateway/session_retained.py
   - hermes_state_retained.py
+  - tests/gateway/test_switch_session_keeps_model_override.py
   tests:
   - scripts/run_tests.sh tests/test_gateway_routing_reconcile.py tests/gateway/test_routing_save_fast_path.py
   - scripts/run_tests.sh tests/test_session_db_write_latency_logging.py tests/hermes_state/test_hermes_state.py
@@ -765,6 +799,9 @@ patches:
   - tests/agent/test_relay_llm.py
   - tests/hermes_cli/test_relay_shared_metrics_async.py
   - tests/tools/test_zombie_process_cleanup.py
+  - agent/relay_compaction.py
+  - tests/agent/test_relay_compaction.py
+  - tests/agent/test_relay_compaction_atof.py
   tests:
   - scripts/run_tests.sh tests/hermes_cli/test_relay_shared_metrics_runtime.py tests/hermes_cli/test_relay_shared_metrics.py
     tests/agent/test_relay_llm.py tests/agent/test_relay_tools.py tests/agent/test_auxiliary_relay.py
@@ -904,7 +941,7 @@ patches:
   kind: core
   rationale: Require current-turn execution evidence before preserving fresh external side-effect claims
     in final responses, compute trusted verdicts before framework decoration, and preserve their tool
-    identity across restart and resume while leaving descriptive parity headings unchanged.
+    identity across restart, resume, and historical fork database recovery while leaving descriptive parity headings unchanged.
   paths:
   - agent/side_effect_evidence.py
   - agent/tool_executor.py
@@ -922,11 +959,16 @@ patches:
   - hermes_state_identity.py
   - hermes_state_messages.py
   - tests/hermes_state/test_side_effect_evidence_roundtrip.py
+  - hermes_cli/session_schema_history.py
+  - tests/hermes_cli/test_session_schema_history.py
+  - hermes_cli/session_lost_and_found.py
+  - tests/hermes_cli/test_session_recovery_fork_layouts.py
   tests:
   - scripts/run_tests.sh tests/agent/test_side_effect_evidence_reconciliation.py tests/agent/transports/test_chat_completions.py
     tests/run_agent/test_tool_executor_contextvar_propagation.py tests/agent/test_sequential_tool_timeout.py
     tests/agent/test_tool_call_incremental_persistence.py tests/agent/test_tool_call_guardrail_runtime.py
     tests/agent/test_tool_batch_segmentation.py tests/hermes_state/test_hermes_state.py
+  - scripts/run_tests.sh tests/hermes_cli/test_session_schema_history.py tests/hermes_cli/test_session_recovery_fork_layouts.py
   retirement: Remove when upstream provides equivalent fail-closed current-turn side-effect evidence validation,
     trusted pre-decoration verdict persistence, and resume-safe tool identity.
 - id: provider-fallback-lifecycle
@@ -1043,6 +1085,7 @@ patches:
   - tests/gateway/test_telegram_terminal_close_regression.py
   - tests/gateway/test_telegram_fallback_pool_release.py
   - tests/gateway/test_telegram_network_fallback_transport.py
+  - tests/gateway/test_telegram_closewait_limits.py
   tests:
   - scripts/run_tests.sh tests/gateway/test_telegram_fallback_pool_release_71593.py tests/gateway/test_telegram_network.py
     tests/gateway/test_telegram_request_phase_real_socket.py
@@ -1080,6 +1123,13 @@ patches:
   - gateway/post_response_transcript.py
   - gateway/run_adapters.py
   - gateway/run_turn_recovery.py
+  - tests/gateway/test_base_warning_owner_scope.py
+  - tests/gateway/test_gateway_silence_tokens.py
+  - tests/gateway/test_post_gateway_admission.py
+  - tests/gateway/test_reaped_session_recovery.py
+  - tests/gateway/test_session_race_guard.py
+  - tests/gateway/test_cleanup_off_loop.py
+  - tests/gateway/test_hygiene_deferred_work_drain.py
   tests:
   - scripts/run_tests.sh tests/gateway/test_delivery_ledger.py tests/gateway/test_delivery_ledger_fd_leak.py
     tests/gateway/test_delivery_ledger_producer.py tests/gateway/test_gateway_shutdown.py tests/gateway/test_restart_drain.py
@@ -1176,6 +1226,7 @@ patches:
   - gateway/run.py
   - tests/gateway/test_reply_to_injection.py
   - gateway/run_inbound_reply.py
+  - tests/agent/test_split_turn_compaction.py
   tests:
   - scripts/run_tests.sh tests/gateway/test_reply_to_injection.py tests/gateway/test_telegram_reply_quote.py
     tests/gateway/test_queue_command.py
@@ -1285,6 +1336,11 @@ patches:
   - gateway/shutdown_residual_children.py
   - tests/gateway/test_shutdown_residual_lifecycle.py
   - gateway/run_shutdown_session_end.py
+  - tests/agent/test_interrupt_issuer_attribution.py
+  - tests/gateway/test_shutdown_executor_quiesce.py
+  - tests/gateway/test_shutdown_kill_off_loop.py
+  - tests/gateway/test_shutdown_flush_recovery.py
+  - website/docs/developer-guide/gateway-monitoring.md
   tests:
   - scripts/run_tests.sh tests/gateway/test_drain_attribution.py tests/gateway/test_drain_attribution_lifecycle.py
     tests/gateway/test_gateway_shutdown.py tests/gateway/test_shutdown_forensics.py tests/gateway/test_shutdown_watchdog.py
@@ -1467,6 +1523,12 @@ patches:
   - tests/e2e/test_platform_commands.py
   - gateway/run_inbound_finalization.py
   - tests/gateway/test_post_response_media_identity.py
+  - hermes_cli/session_recovery.py
+  - tests/hermes_cli/test_session_recovery.py
+  - tests/hermes_cli/test_session_recovery_post_response.py
+  - tests/conformance/persistence/test_cell5_delivery_outbox_exactly_once.py
+  - tests/hermes_state/test_purge_profile_state.py
+  - tests/hermes_state/test_rekey_profile_state.py
   tests:
   - scripts/run_tests.sh tests/gateway/test_post_response_actions.py tests/gateway/test_post_response_delivery.py
   - scripts/run_tests.sh tests/gateway/test_42039_duplicate_user_message.py tests/gateway/test_first_turn_session_meta_rebaseline.py

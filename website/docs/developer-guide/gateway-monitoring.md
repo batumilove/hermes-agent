@@ -47,6 +47,13 @@ and `background_work` for total live work per instance; use
 
 ## Enabling
 
+The optional provider telemetry plugin writes a Prometheus text file. Set
+`provider_telemetry.metrics_file` to a custom `.prom` file path; an empty value
+uses `state/prometheus/hermes_provider_telemetry.prom` under the active
+profile's Hermes home. The path must name a regular file, rather than a
+directory. Configure your collector to read that file when the plugin is
+enabled.
+
 ```yaml
 # config.yaml
 monitoring:

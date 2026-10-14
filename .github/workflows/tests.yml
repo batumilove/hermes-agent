@@ -33,16 +33,16 @@ concurrency:
 
 jobs:
   test:
-    # Two standard-runner slices bound per-file concurrency to their four cores.
-    # run_tests_parallel.py partitions from the checkout alone, so both slices
-    # agree on the split without a planning job.
-    name: Run tests (${{ matrix.slice }}/2)
+    # Eight standard-runner slices keep the full suite inside its existing 30m
+    # budget at four workers per runner. The checkout alone determines each
+    # slice, so independent duration caches cannot lose or duplicate files.
+    name: Run tests (${{ matrix.slice }}/8)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        slice: [1, 2]
+        slice: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - name: Checkout code
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
@@ -104,7 +104,7 @@ jobs:
         run: |
           scripts/run_tests.sh
         env:
-          HERMES_TEST_SLICE: ${{ matrix.slice }}/2
+          HERMES_TEST_SLICE: ${{ matrix.slice }}/8
           HERMES_TEST_WORKERS: 4
           HERMES_TEST_FILE_TIMEOUT: 600
           # Ensure tests don't accidentally call real APIs

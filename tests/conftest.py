@@ -347,14 +347,10 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
     # guard for in-process code under test.
     monkeypatch.delenv("HERMES_STATE_DB_GUARD_BYPASS", raising=False)
 
-    # 3b. hermes_state computes ``DEFAULT_DB_PATH = get_hermes_home() / "state.db"``
-    #     at import time. When the module is first imported at collection (any
-    #     test file with a top-level ``from hermes_state import ...``) that
-    #     happens BEFORE this fixture ever runs, so every argless
-    #     ``SessionDB()`` in every test opens the developer's REAL state.db —
-    #     reading real sessions into assertions and writing test rows into the
-    #     real profile. Re-pin the constant to this test's home. (Several test
-    #     files already do this locally; this makes it an invariant.)
+    # 3b. Rebind both import-time DB constants to the isolated home. Changing
+    #     only DEFAULT_DB_PATH turns this fixture into an explicit absolute pin,
+    #     defeating call-time profile routing. Later test-specific DEFAULT pins
+    #     still differ from the import baseline and retain their intended effect.
     # 3c. Multi-profile hosting is a process-global latch (``set_multiplex_active`` and the
     #     launch-env snapshot flip once and stay). A test that routes one RPC/request to a named
     #     profile would otherwise leave every later test in the file fail-closed (unscoped
@@ -375,6 +371,9 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
     if hermes_state_mod is not None and hasattr(hermes_state_mod, "DEFAULT_DB_PATH"):
         monkeypatch.setattr(
             hermes_state_mod, "DEFAULT_DB_PATH", fake_hermes_home / "state.db"
+        )
+        monkeypatch.setattr(
+            hermes_state_mod, "_IMPORT_DEFAULT_DB_PATH", fake_hermes_home / "state.db"
         )
 
     # 4. Deterministic locale / timezone / hashseed. CI runs in UTC with

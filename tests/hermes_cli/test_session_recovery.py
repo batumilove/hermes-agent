@@ -760,15 +760,19 @@ def test_recovery_regenerates_rather_than_copies_derived_fts_meta(tmp_path: Path
 
 
 def test_recovery_without_delivery_ledger_is_not_lossy(tmp_path: Path) -> None:
-    """CLI-only stores never created the lazy table; that is not data loss."""
+    """Older CLI-only stores lacked receipts; their empty canonical destination is not loss."""
 
     source = tmp_path / "state.db"
     output = tmp_path / "recovered.db"
     _make_source(source)
 
+    # Older CLI-only stores predate the canonical delivery table.
+    with sqlite3.connect(source) as legacy:
+        legacy.execute("DROP TABLE delivery_obligations")
+
     report = recover_session_database(source, output, work_dir=tmp_path)
     assert report["copy"]["delivery_obligations"]["status"] == "missing"
-    assert "delivery_obligations" not in report["verification"]["table_counts"]
+    assert report["verification"]["table_counts"]["delivery_obligations"] == 0
     assert report["complete"] is True
     assert report["verified"] is True
 
@@ -842,6 +846,8 @@ def test_lost_and_found_direct_copy_creates_lazy_delivery_ledger(tmp_path: Path)
     lf_conn = sqlite3.connect(str(recovered_source), isolation_level=None)
     dest = sqlite3.connect(str(output), isolation_level=None)
     try:
+        # A recovered legacy image can lack a table current SessionDB creates.
+        dest.execute("DROP TABLE delivery_obligations")
         assert not dest.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='delivery_obligations'"
         ).fetchall()

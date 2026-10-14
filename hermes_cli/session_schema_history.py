@@ -15,7 +15,11 @@ source of truth for that: the declared order of every table as first shipped
 declaration (``events``). Replaying the events reproduces every historical
 declared order, and every physical layout a real store can have is some
 prefix chain over those snapshots (created at snapshot ``i``, then each later
-upgrade appending the columns it had not seen yet).
+upgrade appending the columns it had not seen yet). Retained forks can also
+start from a verified ``physical_seeds`` declaration at their divergence
+point, or upgrade an existing pre-divergence store to that declaration.
+Subsequent upgrades follow the same append rule, without rewriting the
+official declaration history.
 
 ``tests/hermes_cli/test_session_schema_history.py`` asserts the replay ends
 at the current ``SCHEMA_SQL``. When that test fails you added or moved a
@@ -41,6 +45,11 @@ class _TableHistory:
     # is what the ordering test checks, so an event appended out of order
     # (or inserted mid-list "to keep dates sorted") fails loudly.
     events: tuple[tuple[str, tuple[Edit, ...]], ...]
+    # (provenance, last shared snapshot index, exact fork declaration).
+    # Both CREATE and pre-divergence ALTER ADD stores can adopt it. A fork
+    # origin must not replay earlier official snapshots: doing so would
+    # append obsolete columns the fork never shipped.
+    physical_seeds: tuple[tuple[str, int, tuple[str, ...]], ...] = ()
 
 
 def _apply(columns: list[str], edits: Sequence[Edit]) -> None:
@@ -89,7 +98,9 @@ def reachable_physical_layouts(
     snapshots = declared_snapshots(table)
     seen: dict[tuple[str, ...], int] = {}
     frontier: list[tuple[tuple[str, ...], int]] = []
-    for index, snapshot in enumerate(snapshots):
+    origins = list(enumerate(snapshots))
+    origins.extend((index, layout) for _, index, layout in SCHEMA_HISTORY[table].physical_seeds)
+    for index, snapshot in origins:
         if snapshot in seen:
             continue
         if accept is not None and not accept(snapshot, 0):
@@ -101,8 +112,13 @@ def reachable_physical_layouts(
         next_frontier: list[tuple[tuple[str, ...], int]] = []
         for layout, index in frontier:
             have = set(layout)
-            for later in range(index + 1, len(snapshots)):
-                added = tuple(c for c in snapshots[later] if c not in have)
+            successors = [(later, snapshots[later]) for later in range(index + 1, len(snapshots))]
+            successors.extend(
+                (anchor, declaration) for _, anchor, declaration in SCHEMA_HISTORY[table].physical_seeds
+                if index <= anchor
+            )
+            for later, declaration in successors:
+                added = tuple(c for c in declaration if c not in have)
                 if not added:
                     continue
                 candidate = layout + added
@@ -246,6 +262,25 @@ SCHEMA_HISTORY: dict[str, _TableHistory] = {
             ('+', 'tool_call_uids', 'absorbed_message_uids'),
             ('+', 'tool_call_uid', 'tool_call_uids'),
         )),
+        ('17 2026-09-09T15:14Z c1cafdc744', (
+            ('+', '_side_effect_evidence_succeeded', 'effect_disposition'),
+        )),
+        ),
+        physical_seeds=(
+            # Fork 2c31abf2bcb4a6fa0abc868f707ec09a053cb1f0 declared
+            # evidence before timestamp, before adopting official events
+            # 14-16. Existing pre-divergence stores instead append missing
+            # fork fields (including evidence) to their prior physical order.
+            # Both paths subsequently append the seven newer columns.
+            ('fork 2c31abf2bcb4a6fa0abc868f707ec09a053cb1f0', 13, (
+                'id', 'session_id', 'role', 'content', 'tool_call_id',
+                'tool_calls', 'tool_name', 'effect_disposition',
+                '_side_effect_evidence_succeeded', 'timestamp', 'token_count',
+                'finish_reason', 'reasoning', 'reasoning_content',
+                'reasoning_details', 'codex_reasoning_items', 'codex_message_items',
+                'platform_message_id', 'observed', 'active', 'compacted',
+                'api_content', 'display_kind', 'display_metadata',
+            )),
         ),
     ),
     "session_model_usage": _TableHistory(

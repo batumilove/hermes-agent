@@ -1022,6 +1022,9 @@ class RelayTurnContext:
     handle: Any = None
     context: contextvars.Context | None = field(default=None, repr=False)
     logical_llm_contexts: dict[str, contextvars.Context] = field(default_factory=dict, repr=False)
+    logical_llm_roles: dict[str, str] = field(default_factory=dict, repr=False)
+    idle_logical_llm_contexts: dict[str, contextvars.Context] = field(default_factory=dict, repr=False)
+    non_reusable_logical_llm_calls: set[str] = field(default_factory=set, repr=False)
     logical_llm_calls: dict[str, Any] = field(default_factory=dict, repr=False)
     logical_llm_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
     finalize_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
@@ -1221,6 +1224,7 @@ class RelaySessionCoordinator:
                             {"child_session_id": lease.session_id},
                         )
                 finally:
+                    turn.idle_logical_llm_contexts.clear()
                     self._unregister_active_turn(turn)
                     self._reset_turn_context(turn)
                 self._consume_deferred_close(lease)
@@ -1309,6 +1313,8 @@ class RelaySessionCoordinator:
             )
             if failure is None:
                 turn.logical_llm_contexts.pop(_request_id, None)
+                turn.logical_llm_roles.pop(_request_id, None)
+                turn.non_reusable_logical_llm_calls.discard(_request_id)
                 logical_calls.pop()
                 continue
             with turn.logical_llm_lock:
