@@ -38,7 +38,10 @@ real git failure, and then judges the next real launch from the files the update
 from __future__ import annotations
 
 import json
+import hashlib
+import shlex
 import shutil
+import signal
 import subprocess
 from pathlib import Path
 
@@ -46,6 +49,7 @@ import pytest
 
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
+from tests.e2e.core.upgrade import _lifecycle_fixture as L
 from tests.e2e.core.upgrade.pm import _pm as P
 from tests.e2e.core.upgrade.test_upgrade_path import _RETRY_PREFIX
 from tests.fakes.fake_llm_provider import FakeLLMServer
@@ -121,21 +125,56 @@ def _artifacts(sb) -> list[str]:
     return sorted(p.name for p in sb.checkout.iterdir() if p.name.endswith(ARTIFACT_SUFFIXES))
 
 
+def _kill_owned_updater(world) -> str:
+    """Capture this shim's real controller and complete lease before sending SIGKILL."""
+    root, sb = world["root"], world["sb"]
+    pid = shlex.quote(str(root / "killed-tail-owner.pid"))
+    snapshot = shlex.quote(str(root / "killed-tail-owner.json"))
+    metadata = shlex.quote(str(sb.hermes_home / ".lifecycle_transaction_lease.json"))
+    return f'printf "%s\\n" "$PPID" > {pid} && cp {metadata} {snapshot} && kill -KILL "$PPID"'
+
+
+def _recover_killed_tail(world, source_head: str) -> None:
+    """Require exact operator recovery while proving ordinary launch preserves owed work."""
+    sb, root = world["sb"], world["root"]
+    captured = (root / "killed-tail-owner.json").read_bytes()
+    expected = L.inspect(sb)
+    assert expected["metadata"] == json.loads(captured)
+    assert expected["metadata_sha256"] == hashlib.sha256(captured).hexdigest()
+    assert expected["metadata"]["pid"] == int((root / "killed-tail-owner.pid").read_text(encoding="utf-8-sig"))
+    assert expected["metadata"]["provenance"]["source_head"] == source_head
+    stamp = sb.checkout / "install-stamp.json"
+    selected = P.selected_generation(sb)
+    records = {path: path.read_bytes() for path in (stamp, P.pending_marker(sb))}
+    head = _head(sb)
+
+    def blocked_launch():
+        blocked = _launch(sb, "blocked launch before exact orphan recovery")
+        assert P.selected_generation(sb) == selected and _head(sb) == head, P.diagnostics(sb, blocked)
+        assert {path: path.read_bytes() for path in records} == records, P.diagnostics(sb, blocked)
+        return blocked
+
+    L.recover_exact_orphan(sb, expected, blocked_launch)
+
+
 def test_kill_after_tree_moved_still_owes_the_tail(world):
     sb = world["sb"]
     pre = _head(sb)
     assert _stamp_commit(sb) == pre and not P.pending_marker(sb).exists(), "harness: install not settled"
     target = _release(world, {"e2e_hostile_release.py": "RELEASE = 1\n"})
     # git completes the fast-forward, then the updater dies before it can spawn the completion child.
-    _hostile_git(world, 'case " $* " in *" merge --ff-only "*) "$REAL" "$@"; rc=$?; kill -KILL $PPID; exit $rc;; esac')
+    _hostile_git(world, 'case " $* " in *" merge --ff-only "*) "$REAL" "$@"; rc=$?; '
+                        + _kill_owned_updater(world) + '; exit $rc;; esac')
     killed = _update(sb)
     _hostile_git(world, "")
     assert _head(sb) == target, "harness: the kill did not land after the tree moved\n" + I.describe(killed)
+    assert killed.returncode in (-signal.SIGKILL, 128 + signal.SIGKILL), I.describe(killed)
     owed = P.pending_marker(sb).exists()
 
-    launch = _launch(sb, "first launch after a kill past the swap")
     assert owed, ("the tree moved to the release but no source-completion tail was owed: the kill "
-                  "before the completion child lost it\n" + P.diagnostics(sb, killed, launch))
+                  "before the completion child lost it\n" + P.diagnostics(sb, killed))
+    _recover_killed_tail(world, pre)
+    launch = _launch(sb, "first launch after a kill past the swap")
     assert not P.pending_marker(sb).exists() and _stamp_commit(sb) == target, (
         "the next launch did not finish the owed tail for the moved tree\n" + P.diagnostics(sb, killed, launch))
 
@@ -294,7 +333,7 @@ def test_failed_upstream_sync_after_origin_pull_keeps_the_tail_owed(world):
                         f'case " $* " in *" merge --ff-only "*"{up} "*) "$REAL" "$@"; rc=$?; '
                         f'[ $rc != 0 ] && touch "{flag}"; exit $rc;; esac\n'
                         f'if [ -e "{flag}" ]; then case " $* " in *" rev-parse --abbrev-ref HEAD "*) '
-                        'kill -KILL $PPID; exit 137;; esac; fi')
+                        + _kill_owned_updater(world) + '; exit 137;; esac; fi')
     locked = sb.checkout / "zzz_e2e_fork"
     locked.chmod(0o555)
     try:
@@ -304,10 +343,12 @@ def test_failed_upstream_sync_after_origin_pull_keeps_the_tail_owed(world):
         _hostile_git(world, "")
     assert flag.exists() and killed.returncode != 0 and _head(sb) == moved and not _tracked_dirty(sb), (
         "harness: the upstream ff did not fail after the origin pull moved the tree\n" + I.describe(killed))
+    assert killed.returncode in (-signal.SIGKILL, 128 + signal.SIGKILL), I.describe(killed)
     owed = P.pending_marker(sb).exists()
-    launch = _launch(sb, "first launch after a failed upstream sync")
     assert owed, ("the origin pull moved the tree but the failed upstream ff disarmed its owed tail\n"
-                  + P.diagnostics(sb, killed, launch))
+                  + P.diagnostics(sb, killed))
+    _recover_killed_tail(world, first)
+    launch = _launch(sb, "first launch after a failed upstream sync")
     assert _stamp_commit(sb) == moved and not P.pending_marker(sb).exists(), (
         "the next launch did not finish the tail for the moved tree\n" + P.diagnostics(sb, killed, launch))
 
@@ -447,3 +488,53 @@ def test_git_killed_inside_the_rollback_reset_is_finished_by_the_next_launch(wor
         f"lock {lock.exists()}, tracked changes {_tracked_dirty(sb)!r})\n" + P.diagnostics(sb, killed, launch))
     assert not (sb.checkout / "e2e_rollback_reset_extra.py").exists()
     assert not (sb.checkout / ".git" / "hermes-update-pull").exists()
+
+
+def test_killed_tail_fixture_binds_real_controller_and_preserves_pending_records(tmp_path, monkeypatch):
+    """Native helper proof with inert PM records, without claiming a fresh managed install."""
+    import sys
+
+    from tests.e2e.core.upgrade.test_lifecycle_fixture import _Endpoint
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    stamp = checkout / "install-stamp.json"
+    stamp.write_text('{"commit":"owed-fixture"}\n', encoding="utf-8")
+    for args in (("init", "-q"), ("config", "user.email", "test@example.invalid"),
+                 ("config", "user.name", "test"), ("add", "-A"), ("commit", "-qm", "source")):
+        subprocess.run(["git", *args], cwd=checkout, check=True, capture_output=True, timeout=30)
+    sb = _Endpoint(tmp_path, H.isolated_env(tmp_path, pythonpath=H.WORKTREE), checkout=checkout)
+    local = {"sb": sb, "root": tmp_path}
+    state = P.state_dir(sb)
+    venv = state / "environments" / "selected" / "venv"
+    venv.mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("include-system-site-packages = false\n", encoding="utf-8")
+    facts = state / "facts.json"
+    facts.write_text(json.dumps({"packages": {"venv": {"environment": str(venv)}}}), encoding="utf-8")
+    P.arm_pending_tail(sb)
+    source_head = _head(sb)
+    code = (
+        "from pathlib import Path\nimport subprocess\n"
+        "from hermes_cli.lifecycle_coordination import acquire_cli_lifecycle_transaction\n"
+        f"lease = acquire_cli_lifecycle_transaction(home=Path({str(sb.hermes_home)!r}), "
+        f"repo_root=Path({str(checkout)!r}), purpose='deployment', operation='fixture-update')\n"
+        f"subprocess.run(['bash', '-c', {_kill_owned_updater(local)!r}], check=True)\n"
+    )
+    killed = sb.run([sys.executable, "-c", code])
+    assert killed.returncode in (-signal.SIGKILL, 128 + signal.SIGKILL), I.describe(killed)
+    before = {path: path.read_bytes() for path in (facts, stamp, P.pending_marker(sb))}
+    forbidden = tmp_path / "forbidden-mutation"
+
+    def launch(_sb, _marker):
+        program = (
+            "from pathlib import Path\n"
+            "from hermes_cli.lifecycle_coordination import cli_update_transaction\n"
+            f"with cli_update_transaction(Path({str(sb.hermes_home)!r}), Path({str(checkout)!r})):\n"
+            f"    Path({str(forbidden)!r}).write_text('must remain blocked')\n"
+        )
+        return sb.run([sys.executable, "-c", program])
+
+    monkeypatch.setattr(__import__(__name__, fromlist=["_launch"]), "_launch", launch)
+    _recover_killed_tail(local, source_head)
+    assert L.inspect(sb)["status"] == "absent" and not forbidden.exists()
+    assert {path: path.read_bytes() for path in before} == before

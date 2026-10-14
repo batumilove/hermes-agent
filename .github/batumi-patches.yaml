@@ -348,6 +348,8 @@ patches:
   - tests/hermes_cli/test_update_launch_completion.py
   - tests/hermes_cli/test_borrowed_home_launch.py
   - tests/pm/test_source_update_launch.py
+  - tests/pm/test_takeover_preparation.py
+  - tests/hermes_cli/test_update_takeover_recovery.py
   - tests/e2e/core/upgrade/handoff/_nshost.py
   - gateway/lifecycle_lease.py
   - hermes_cli/lifecycle_coordination.py
@@ -372,6 +374,7 @@ patches:
   - tests/e2e/core/upgrade/pm/test_interrupted_update.py
   - tests/e2e/core/upgrade/_lifecycle_fixture.py
   - tests/e2e/core/upgrade/git/test_hostile_pause.py
+  - tests/e2e/core/upgrade/git/test_hostile_commit.py
   - tests/e2e/core/upgrade/git/test_hostile_post.py
   - tests/e2e/core/upgrade/test_lifecycle_fixture.py
   tests:
@@ -379,7 +382,8 @@ patches:
   - scripts/run_tests.sh tests/hermes_cli/test_update_pause_lifecycle.py tests/hermes_cli/test_update_pause_record.py tests/hermes_cli/test_update_pause_recovery_stdout.py
   - scripts/run_tests.sh tests/hermes_cli/test_update_takeover_custody.py
   - scripts/run_tests.sh tests/hermes_cli/test_old_updater_takeover.py tests/hermes_cli/test_update_takeover_pause.py
-  - scripts/run_tests.sh tests/hermes_cli/test_venv_sync_lifecycle.py tests/hermes_cli/test_update_launch_completion.py tests/hermes_cli/test_borrowed_home_launch.py tests/pm/test_source_update_launch.py
+  - scripts/run_tests.sh tests/hermes_cli/test_update_takeover_recovery.py tests/e2e/core/upgrade/git/test_hostile_commit.py
+  - scripts/run_tests.sh tests/hermes_cli/test_venv_sync_lifecycle.py tests/hermes_cli/test_update_launch_completion.py tests/hermes_cli/test_borrowed_home_launch.py tests/pm/test_source_update_launch.py tests/pm/test_takeover_preparation.py
   - scripts/run_tests.sh tests/gateway/test_lifecycle_lease.py tests/gateway/test_lifecycle_lease_operator.py
     tests/hermes_cli/test_bounded_restart_controller.py tests/hermes_cli/test_cmd_update.py tests/hermes_cli/test_gateway_restart_lifecycle_lease.py
     tests/hermes_cli/test_lifecycle_controller_crash.py tests/hermes_cli/test_lifecycle_coordination.py

@@ -227,21 +227,31 @@ def test_fire_due_rearms_after_claimed_job_failure(chronos, monkeypatch, tmp_pat
     assert [provision["job_id"] for provision in fake.provisions] == ["j1"]
 
 
-def test_fire_due_forwards_manual_force_to_claim(chronos, monkeypatch):
-    """A manual force fire must reach the store claim as force=True."""
-    prov, _fake = chronos
-    seen = []
+@pytest.mark.parametrize("fire_kwargs,claim_kwargs,origin", [
+    ({"force": True}, {"force": True}, "external"),
+    ({"manual": True}, {"manual": True}, "manual"),
+    ({"force": True, "manual": True}, {"force": True, "manual": True}, "manual"),
+])
+def test_fire_due_forwards_manual_force_to_claim(chronos, monkeypatch, fire_kwargs, claim_kwargs, origin):
+    """Force/manual flags reach the store; rejected attempts retain their origin."""
+    prov, fake = chronos
+    seen, created, finished = [], [], []
     monkeypatch.setattr(
         "cron.jobs.claim_job_for_fire",
         lambda jid, **kw: seen.append(kw) or False,
     )
     monkeypatch.setattr(
         "cron.executions.create_execution",
-        lambda jid, source: {"id": "exec-1"},
+        lambda jid, **kw: created.append((jid, kw)) or {"id": "exec-1"},
     )
+    monkeypatch.setattr("cron.executions.finish_execution",
+                        lambda eid, **kw: finished.append((eid, kw)))
 
-    assert prov.fire_due("j1", force=True) is False
-    assert seen == [{"return_job": True, "force": True}]
+    assert prov.fire_due("j1", **fire_kwargs) is False
+    assert seen == [{"return_job": True, **claim_kwargs}]
+    assert created == [("j1", {"source": prov.name, "trigger_origin": origin})]
+    assert finished == [("exec-1", {"success": False, "error": "Fire claim was not acquired"})]
+    assert fake.provisions == []
 
 
 def test_fire_due_no_rearm_when_job_gone(chronos, monkeypatch):

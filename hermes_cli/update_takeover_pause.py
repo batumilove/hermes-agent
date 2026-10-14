@@ -147,9 +147,12 @@ def pause_captured_gateways(request: dict) -> dict | None:
             raise TakeoverPauseBlocked("gateway changed before the drain request")
         update_pause_record.mark_stop_sent(token, pid)
         ack = _query(Path(entry["home"]), pid, "pause-for-update")
-        budget = float(ack.get("drain_timeout", 0))
+        raw_budget = ack.get("drain_timeout")
+        if isinstance(raw_budget, bool) or not isinstance(raw_budget, (int, float)):
+            raise TakeoverPauseBlocked("gateway did not acknowledge a numeric pause budget")
+        budget = float(raw_budget)
         if (ack.get("pid") != pid or not (ack.get("pausing") or ack.get("already_stopping"))
-                or not math.isfinite(budget) or not 0 < budget <= 3600):
+                or not math.isfinite(budget) or not 0 <= budget <= 3600):
             raise TakeoverPauseBlocked("gateway did not acknowledge a bounded pause")
         deadline = time.monotonic() + budget + 10
         while update_lock.incarnation_live(pid, entry["identity"]) is not False:
