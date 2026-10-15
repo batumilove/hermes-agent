@@ -508,3 +508,13 @@ concurrent prober, with bounded failure and shutdown guards.
 The staged-Git desktop integration case receives an explicit 30-second test
 timeout for its real Git and Python subprocesses. Its source SHA, isolated Git
 configuration, staged-main, foreign-checkout, and launcher assertions are unchanged.
+
+Full manual CI on immutable ci9 commit
+`4fc72862e582e26ab9a7bd89bc8d516e920356e1` passed the upgrade and
+handoff lanes and the previously interrupted TUI check. Desktop UI reported
+10,816 passing cases but failed on a delayed Radix close-focus event after
+component cleanup. The ci10 fixture waits for its actual close-focus callback
+before allowing JSDOM teardown, retaining the model-selection and search
+assertions. Event errors remain fatal; no test skip, global event substitution,
+or timeout increase is used. Fresh successor CI and image scanner acceptance
+remain required.

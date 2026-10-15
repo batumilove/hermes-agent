@@ -41,6 +41,7 @@ const GOOGLE_PROVIDER = {
 }
 
 const MOCK_PROVIDERS = [DEEPSEEK_PROVIDER, GOOGLE_PROVIDER, MOA_PROVIDER]
+const pendingCloseAutoFocus: Promise<void>[] = []
 
 beforeEach(() => {
   $activeSessionId.set('runtime-1')
@@ -51,13 +52,25 @@ beforeEach(() => {
   getGlobalModelOptions.mockResolvedValue({ providers: MOCK_PROVIDERS })
 })
 
-afterEach(() => {
+async function cleanupPanels() {
   cleanup()
+  // Radix dispatches close autofocus on a detached node in the next task.
+  // Keep this jsdom realm alive until every rendered menu has finished it.
+  await Promise.all(pendingCloseAutoFocus.splice(0))
+}
+
+afterEach(async () => {
+  await cleanupPanels()
   vi.clearAllMocks()
 })
 
 function renderPanel(onSelectModel = vi.fn(), onFollowDefaultModel?: () => void) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  let onCloseAutoFocus!: () => void
+
+  const closed = new Promise<void>(resolve => {
+    onCloseAutoFocus = resolve
+  })
 
   const requestGateway = vi.fn(async (method: string) => {
     if (method === 'model.options') {
@@ -70,7 +83,7 @@ function renderPanel(onSelectModel = vi.fn(), onFollowDefaultModel?: () => void)
   const content = render(
     <QueryClientProvider client={client}>
       <DropdownMenu open>
-        <DropdownMenuContent>
+        <DropdownMenuContent onCloseAutoFocus={onCloseAutoFocus}>
           <ModelMenuPanel
             onFollowDefaultModel={onFollowDefaultModel}
             onSelectModel={onSelectModel}
@@ -81,8 +94,25 @@ function renderPanel(onSelectModel = vi.fn(), onFollowDefaultModel?: () => void)
     </QueryClientProvider>
   )
 
+  pendingCloseAutoFocus.push(closed)
+
   return { onSelectModel, content }
 }
+
+it('finishes the detached menu focus scope before fixture cleanup returns', async () => {
+  const { content } = renderPanel()
+
+  await content.findByText('DeepSeek')
+  const menu = content.getByRole('menu')
+  const onCloseAutoFocus = vi.fn()
+
+  menu.addEventListener('focusScope.autoFocusOnUnmount', onCloseAutoFocus, { once: true })
+  await cleanupPanels()
+
+  expect(menu.isConnected).toBe(false)
+  expect(onCloseAutoFocus).toHaveBeenCalledTimes(1)
+  expect(onCloseAutoFocus.mock.calls[0][0]).toBeInstanceOf(menu.ownerDocument.defaultView!.CustomEvent)
+})
 
 describe('ModelMenuPanel MoA presets', () => {
   it('selecting a MoA preset switches PERSISTENTLY via onSelectModel (not the one-shot dispatch)', async () => {

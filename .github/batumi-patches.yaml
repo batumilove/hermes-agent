@@ -443,6 +443,7 @@ patches:
   - apps/desktop/src/app/hud/resize-handle.test.ts
   - apps/desktop/src/app/hud/resize-handle.ts
   - apps/desktop/src/app/session/hooks/use-session-actions.test.tsx
+  - apps/desktop/src/app/shell/model-menu-panel.test.tsx
   - apps/desktop/src/lib/keybinds/chords.ts
   - tests/tools/test_local_setsid_descendant_sweep.py
   - tests/tools/test_mcp_stability.py
