@@ -1087,11 +1087,11 @@ def dispatch_async_delegation_batch(
         if running >= max_async_children:
             return {
                 "status": "rejected",
+                "reason": "capacity",
                 "error": (
                     f"Async delegation capacity reached ({max_async_children} "
-                    f"running). Wait for one to finish (its result will re-enter "
-                    f"the chat), or raise delegation.max_concurrent_children in "
-                    f"config.yaml to allow more concurrent background units."
+                    f"running). Wait for accepted work to finish; this request "
+                    f"was not started or queued."
                 ),
             }
         _records[delegation_id] = record

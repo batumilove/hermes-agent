@@ -909,7 +909,7 @@ def _get_max_async_children() -> int:
     synchronous batch's parallelism and how many background delegation units
     may run at once. When at capacity, a new async dispatch is REJECTED (not
     queued) so a runaway model can't pile up unbounded background work; the
-    caller falls back to running the work synchronously.
+    caller returns a busy response without executing the rejected work.
 
     A leftover ``max_async_children`` in config.yaml is ignored (the config
     migration removes it, folding a raised value into
@@ -4475,8 +4475,8 @@ def delegate_task(
         # agent after their turn/process ends. This includes stateless HTTP
         # requests (#10760) and one-shot Kanban workers (#63169). Fall back to
         # SYNCHRONOUS execution so the result returns in this same turn instead
-        # of handing out a handle with no durable consumer. Mirrors the
-        # pool-at-capacity inline fallback below.
+        # of handing out a handle with no durable consumer. This is separate
+        # from capacity rejection, which must never execute work inline.
         try:
             from gateway.session_context import async_delivery_supported
             _async_ok = async_delivery_supported()
@@ -4689,24 +4689,37 @@ def delegate_task(
                 )
             return json.dumps(payload, ensure_ascii=False)
 
-        # Pool at capacity / schedule failure — children are still attached
-        # (we detach above only on the parent list, but the async unit was
-        # never accepted, so re-attaching isn't needed: we just run inline).
-        logger.info(
-            "delegate_task: async pool at capacity (%s); running the whole "
-            "batch synchronously instead.",
-            dispatch.get("error", "rejected"),
-        )
-        _cap_result = _execute_and_aggregate()
-        if isinstance(_cap_result, dict):
-            _cap_result["note"] = (
-                "The background delegation pool was at capacity "
-                "(delegation.max_concurrent_children), so the subagent(s) ran "
-                "SYNCHRONOUSLY and the result is included above. Raise "
-                "delegation.max_concurrent_children in config.yaml to allow "
-                "more concurrent background delegations."
-            )
-        return json.dumps(_cap_result, ensure_ascii=False)
+        # Admission failed: no worker owns these built children. Never run
+        # inline here: an outer tool timeout would leave untracked work alive
+        # and invite a duplicate dispatch. Accepted units retain their owners.
+        for _, _, child in children:
+            _retire_child_without_owner(child, parent_agent)
+        rejected = [
+            {"task_index": i, "status": "rejected", "error": dispatch.get("error")}
+            for i in range(n_tasks)
+        ]
+        for writer, entry in zip(live_writers, rejected):
+            try:
+                if writer is not None:
+                    writer.finalize(entry)
+            except Exception:
+                logger.debug("Rejected transcript finalize failed", exc_info=True)
+        update_manifest_statuses(live_deleg_id, rejected)
+        return json.dumps({
+            "status": "busy" if dispatch.get("reason") == "capacity" else "rejected",
+            "mode": "background",
+            "accepted": False,
+            "count": 0,
+            "error": dispatch.get("error", "Async admission rejected"),
+            "control_hint": (
+                "No requested work was started or queued. Use delegate_task(action='list') "
+                "to inspect existing child handles; keep accepted delegation_id and "
+                "subagent_ids for reconciliation. Wait for accepted work to finish before "
+                "retrying this rejected request. A timeout is not cancellation: do not "
+                "redispatch work whose ownership is uncertain. Stopped or superseded "
+                "work requires renewed authorization, not automatic retry."
+            ),
+        }, ensure_ascii=False)
 
     # ----- Synchronous path -----
     return json.dumps(_execute_and_aggregate(), ensure_ascii=False)
