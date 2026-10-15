@@ -1,8 +1,9 @@
 """Rehearse fork upgrades on the exact reviewed application tree's real source ancestry.
 
 Linear import reviews retain their normal checkout in every other CI job. This
-upgrade-only routing authenticates the import before selecting its immutable
-source, so the real release-to-source fast-forward never invents Git ancestry.
+upgrade-only routing authenticates the import and release baseline. Exact import
+mirrors select their immutable source; ordinary descendants retain their current
+application changes while rehearsing upgrades from the same verified release.
 """
 from __future__ import annotations
 
@@ -57,9 +58,6 @@ def prepare_upgrade_source(
     if _fetch_official(repo, upstream, base) != base:
         raise provenance.ProvenanceError("canonical upstream did not provide the recorded base object")
     provenance.resolve_v2(repo, base, review, proof=proof)
-    # Ordinary descendants retain their current application changes and normal baseline.
-    if provenance.projected_tree(repo, review) != proof["import_tree"]:
-        return None
     if _fetch_official(repo, upstream, f"refs/tags/{release.tag}") != release.tag_object:
         raise provenance.ProvenanceError("canonical upgrade release tag differs from its pinned object")
     if provenance.git(repo, "rev-parse", "FETCH_HEAD^{commit}") != release.commit:
@@ -67,9 +65,13 @@ def prepare_upgrade_source(
     source = proof["source_head"]
     if not provenance.is_ancestor(repo, release.commit, base) or not provenance.is_ancestor(repo, release.commit, source):
         raise provenance.ProvenanceError("upgrade release is not an ancestor of trusted upstream and source")
-    provenance.git(repo, "checkout", "--detach", source)
+    checkout = review
+    if provenance.projected_tree(repo, review) == proof["import_tree"]:
+        provenance.git(repo, "checkout", "--detach", source)
+        checkout = source
     return {"review_head": review, "source_head": source, "import_tree": proof["import_tree"],
-            "upstream_base": base, "release_tag": release.tag, "release_commit": release.commit}
+            "upstream_base": base, "release_tag": release.tag, "release_commit": release.commit,
+            "checkout_head": checkout}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -86,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
     if receipt is not None:
         with args.github_env.open("a", encoding="utf-8") as output:
             output.write(f"HERMES_E2E_UPGRADE_BASE={receipt['release_commit']}\n")
-        print("Application-tree upgrade rehearsal on authenticated source ancestry:")
+        print("Upgrade rehearsal with authenticated release baseline:")
         print(json.dumps(receipt, sort_keys=True))
     return 0
 

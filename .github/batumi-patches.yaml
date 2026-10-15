@@ -28,7 +28,10 @@ patches:
     in the pinned runtime base, replace vulnerable bundled npm and uv components, restrict reusable test
     workflow permissions, cover every tracked dependency lockfile in OSV, and reject equivalent unapproved
     global npm install syntax in CI and Docker dependency installs. PM pins and verifies a reviewed brace-expansion
-    overlay before publishing npm; Nix consumes the same artifacts and verifier.
+    and Undici overlays before publishing npm; Nix consumes the same artifacts and verifier. PM
+    removes Node's redundant npm bundle and Python's unused pip/bootstrap payload before recording
+    store digests, while preserving distlib launcher generation. Image metadata derives its version
+    from authenticated release/import provenance rather than the development placeholder.
   paths:
   - .github/workflows/deploy-site.yml
   - .github/workflows/docs-site-checks.yml
@@ -39,6 +42,7 @@ patches:
   - .github/workflows/osv-scanner.yml
   - .github/workflows/docker-lint.yml
   - Dockerfile
+  - .github/workflows/deploy-compose.yml
   - tests/scripts/test_js_tests_workflow.py
   - tests/scripts/test_osv_scanner_workflow.py
   - scripts/ci/osv_scan_inputs.py
@@ -46,10 +50,29 @@ patches:
   - tests/tools/test_dockerfile_vulnerability_floors.py
   - pm/packages.py
   - pm/npm_security_overlay.py
+  - pm/node_npm_layout.py
+  - pm/python_bootstrap.py
   - pm/lock.json
+  - docker/build_agent.py
+  - scripts/build/agent.py
+  - scripts/build/inputs.py
+  - scripts/build/image_identity.py
+  - scripts/build/mint_launchers.py
   - nix/npm-pinned.nix
   - nix/pm-packages.nix
   - tests/pm/test_npm_security_overlay.py
+  - tests/pm/test_npm_self_install.py
+  - tests/pm/test_node_npm_layout.py
+  - tests/pm/test_python_bootstrap.py
+  - tests/pm/test_cold_runtime_e2e.py
+  - tests/pm/test_activation_setup.py
+  - tests/pm/test_startup_recovery.py
+  - tests/pm/test_node_libatomic_install_boundary.py
+  - tests/pm/_fixtures.py
+  - tests/pm/test_update_request_reuse.py
+  - tests/scripts/test_image_identity.py
+  - tests/scripts/test_termux_build_wheels.py
+  - tests/scripts/test_fresh_source_install.py
   - scripts/install.sh
   - scripts/install.ps1
   tests:
@@ -58,6 +81,8 @@ patches:
   - npm run check --workspace apps/desktop
   - scripts/run_tests.sh tests/scripts/test_js_tests_workflow.py tests/scripts/test_osv_scanner_workflow.py
     tests/tools/test_dockerfile_vulnerability_floors.py
+  - scripts/run_tests.sh tests/pm/test_node_npm_layout.py tests/pm/test_npm_security_overlay.py
+    tests/pm/test_npm_self_install.py tests/pm/test_python_bootstrap.py tests/scripts/test_image_identity.py
   retirement: Remove when upstream pins equivalent npm and Debian build inputs, restricts reusable workflow
     permissions, and scans every tracked dependency lockfile with matching lifecycle and release-age protections.
 - id: browserslist-ghsa-73wf-remediation
@@ -334,6 +359,8 @@ patches:
   - tests/hermes_cli/test_update_pause_lifecycle.py
   - tests/hermes_cli/test_update_finish.py
   - tests/hermes_cli/test_update_takeover_custody.py
+  - tests/hermes_cli/test_update_lock_protocol.py
+  - tests-js/update-ui.test.mjs
   - hermes_cli/update_pause_record.py
   - hermes_cli/_old_updater.py
   - hermes_cli/_update_takeover.py
@@ -416,6 +443,7 @@ patches:
   - apps/desktop/src/app/hud/resize-handle.test.ts
   - apps/desktop/src/app/hud/resize-handle.ts
   - apps/desktop/src/app/session/hooks/use-session-actions.test.tsx
+  - apps/desktop/src/app/shell/model-menu-panel.test.tsx
   - apps/desktop/src/lib/keybinds/chords.ts
   - tests/tools/test_local_setsid_descendant_sweep.py
   - tests/tools/test_mcp_stability.py

@@ -8,10 +8,10 @@ _get_launcher needs (it picks a 32/64-bit, -arm-suffixed launcher stub by
 the MINTING interpreter's platform; cross-arch minting with a mismatched
 host python produces launchers that cannot run).
 
-distlib availability: the payload python ships pip (python-build-standalone
-includes it), and pip vendors distlib at pip._vendor.distlib — so the mint
-works with NO extra dependency. A top-level distlib install is preferred
-when present. (Self-contained .\_pth interpreters were REJECTED as an
+distlib availability: PM preserves the pinned interpreter archive's distlib
+as a standalone module before removing the unused pip bootstrap payload.
+Older payloads retain the pip._vendor.distlib fallback. No extra dependency
+is acquired while minting. (Self-contained .\_pth interpreters were REJECTED as an
 alternative approach: they break uv venv materialization.)
 
 Layout facts arrive via environment from scripts/build/launchers.py:

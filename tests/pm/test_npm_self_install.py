@@ -8,6 +8,8 @@ that failed on Windows while Defender held the fresh tarball copy
 from __future__ import annotations
 
 import subprocess
+import io
+import tarfile
 from pathlib import Path
 
 import pm.install
@@ -20,10 +22,6 @@ def _fake_node(store: Store, target: str) -> None:
     node_bin = get_package("node").binary(store.entry("node-1"), target)
     node_bin.parent.mkdir(parents=True, exist_ok=True)
     node_bin.write_bytes(b"node")
-    cli_root = node_bin.parent if target.startswith("win32") else node_bin.parent.parent / "lib"
-    cli = cli_root / "node_modules" / "npm" / "bin" / "npm-cli.js"
-    cli.parent.mkdir(parents=True)
-    cli.write_text("", encoding="utf-8")
 
 
 def test_npm_self_install_leaves_download_entry_holding_only_the_archive(tmp_path, monkeypatch):
@@ -37,6 +35,7 @@ def test_npm_self_install_leaves_download_entry_holding_only_the_archive(tmp_pat
     caches: list[Path] = []
 
     def fake_npm(cmd, **kwargs):
+        assert Path(cmd[1]).read_text(encoding="utf-8") == "selected npm CLI"
         # Stand in for npm: cacache writes the installed tarball into the cache.
         cache = Path(kwargs["env"]["npm_config_cache"])
         content = cache / "_cacache" / "content-v2" / "sha512" / "b8" / "85"
@@ -50,7 +49,12 @@ def test_npm_self_install_leaves_download_entry_holding_only_the_archive(tmp_pat
     entry = store.entry("fetch-" + "a" * 64)
     entry.mkdir(parents=True)
     archive = entry / "npm-1.0.0.tgz"
-    archive.write_bytes(b"archive")
+    with tarfile.open(archive, "w:gz") as packed:
+        for name, payload in {"package/package.json": b'{"name":"npm","version":"1.0.0"}',
+                              "package/bin/npm-cli.js": b"selected npm CLI"}.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(payload)
+            packed.addfile(member, io.BytesIO(payload))
     staged = tmp_path / "scratch" / "tree"
 
     get_package("npm").unpack(archive, staged, target)

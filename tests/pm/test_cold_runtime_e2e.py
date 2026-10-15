@@ -22,6 +22,8 @@ import tomllib
 
 import pytest
 
+from tests.pm._fixtures import host_distlib
+
 # Spawns children with a home it builds itself; the parent's must stay real.
 pytestmark = pytest.mark.real_machine_home
 
@@ -159,6 +161,8 @@ def test_cold_cli_builds_own_runtime_discovers_plugins_and_repairs_app(tmp_path,
                 # the host's prefix: ship the host's stdlib the way the real archive does.
                 tar.add(stdlib, arcname=f"python/lib/{stdlib.name}",
                         filter=lambda info: None if any(part in info.name.split("/") for part in ("site-packages", "test", "__pycache__")) else info)
+                tar.add(host_distlib(), arcname=f"python/lib/{stdlib.name}/site-packages/distlib",
+                        filter=lambda info: None if "__pycache__" in info.name.split("/") else info)
         version = _run([str(files[0][0]), "--version"], cwd=tmp_path,
                        env=env).stdout.split()[1]
         rows[package.name] = {

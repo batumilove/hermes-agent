@@ -15,12 +15,14 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
+import hashlib
 
 import pytest
 
 from pm.lock import Lockfile
 from pm.store import current_target
-from tests.pm._fixtures import _wheel, make_tar, served
+from tests.pm._fixtures import _wheel, make_tar, served, stage_host_python
 
 
 pytestmark = pytest.mark.platforms("posix")
@@ -141,7 +143,8 @@ def test_activation_real_setup_pm_lifecycle(tmp_path, served):
         f"exec {shlex.quote(uv)} --offline \"$@\"\n"
     )
     _, uv_digest = make_tar(docroot, "uv.tar.gz", {"uv-fixture/uv": uv_script})
-    python_script = f'#!{bash}\nexec {shlex.quote(interpreter)} "$@"\n'
+    python_payload = tmp_path / "python-artifact"
+    stage_host_python(python_payload / "bin/python3")
     lock = Lockfile(core / "pm" / "lock.json")
     # Replace shipped pins, not PM implementations or its package registry.
     lock.path.unlink()
@@ -151,10 +154,11 @@ def test_activation_real_setup_pm_lifecycle(tmp_path, served):
 
     def pin_python(revision):
         filename = f"python-{revision}.tar.gz"
-        _, digest = make_tar(docroot, filename, {
-            "python/bin/python3": python_script,
-            "python/revision": revision,
-        })
+        (python_payload / "revision").write_text(revision, encoding="utf-8")
+        archive = docroot / filename
+        with tarfile.open(archive, "w:gz") as payload:
+            payload.add(python_payload, arcname="python")
+        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
         lock.set_pin("python", version, {target: {"url": f"{base_url}/{filename}", "sha256": digest}})
         lock.save()
         return digest

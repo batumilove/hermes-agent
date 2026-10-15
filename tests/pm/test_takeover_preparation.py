@@ -12,7 +12,7 @@ import pytest
 
 from pm.lock import Facts, Lockfile
 from pm.store import current_target, tree_digest
-from tests.pm._fixtures import _wheel
+from tests.pm._fixtures import _wheel, stage_host_python
 
 
 @pytest.mark.platforms("linux")
@@ -60,8 +60,10 @@ def test_fresh_takeover_prepares_generation_and_runs_selected_python(tmp_path):
         entry = store / name
         binary = entry / rel
         binary.parent.mkdir(parents=True, exist_ok=True)
-        binary.symlink_to(Path(executable).resolve())
-        if name == "uv":
+        if name == "python":
+            stage_host_python(binary)
+        else:
+            binary.symlink_to(Path(executable).resolve())
             (entry / "uvx").symlink_to(Path(uv).resolve().with_name("uvx"))
         lock.set_pin(name, "fixture", {})
         Facts(store / "facts.json").record(name, "fixture", name, {"PATH": [str(binary.parent)]}, store,

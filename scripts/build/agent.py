@@ -40,7 +40,7 @@ def plant_surfaces(repo: Path, frontends: dict[str, Path]) -> None:
         _copy(frontends["web"], repo / "hermes_cli/web_dist", replace=True)
 
 
-def write_metadata(project_path: Path, repo: Path) -> None:
+def write_metadata(project_path: Path, repo: Path, *, version: str | None = None) -> None:
     """Source-layout installs have no wheel; preserve PEP 621 dependency metadata.
 
     This attaches the project's static declarations, not installed-environment
@@ -49,10 +49,22 @@ def write_metadata(project_path: Path, repo: Path) -> None:
     project = tomllib.loads(project_path.read_text(encoding="utf-8-sig"))["project"]
     if project.get("dynamic"):
         raise ValueError("agent assembly requires static project metadata")
+    overridden = version is not None
+    if overridden:
+        from scripts.build.image_identity import validate_metadata_version
+        version = validate_metadata_version(version)
+    else:
+        version = project["version"]
     dist = re.sub(r"[-_.]+", "_", project["name"])
-    info = repo / f"{dist}-{project['version']}.dist-info"
+    info = repo / f"{dist}-{version}.dist-info"
+    for stale in repo.glob(f"{dist}-*.dist-info") if overridden else ():
+        if stale != info:
+            if stale.is_symlink():
+                stale.unlink()
+            else:
+                shutil.rmtree(stale)
     info.mkdir(parents=True, exist_ok=True)
-    lines = ["Metadata-Version: 2.3", f"Name: {project['name']}", f"Version: {project['version']}"]
+    lines = ["Metadata-Version: 2.3", f"Name: {project['name']}", f"Version: {version}"]
     for key, header in (("description", "Summary"), ("requires-python", "Requires-Python")):
         if key in project:
             lines.append(f"{header}: {project[key]}")
@@ -94,7 +106,7 @@ def assemble(inputs: AgentInputs, out: Path) -> dict:
         for name, source in inputs.resources.items():
             _copy(source, repo / name, replace=True)
         plant_surfaces(repo, inputs.frontends)
-        write_metadata(inputs.project, repo)
+        write_metadata(inputs.project, repo, version=inputs.metadata_version)
         # Arbitrary scripts run with the prepared environment's Python too
         # (Docker's config migration, plugins), not only generated launchers.
         if not inputs.site_packages.resolve().is_relative_to(out):

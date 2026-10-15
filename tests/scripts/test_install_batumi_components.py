@@ -4,6 +4,7 @@ import subprocess
 import hashlib
 import importlib
 import json
+import re
 import shutil
 import types
 from dataclasses import replace
@@ -47,7 +48,7 @@ def test_component_lock_pins_every_external_repository() -> None:
     assert all(len(component.commit) == 40 for component in components)
 
 
-def test_operational_workflows_use_the_locked_ops_commit() -> None:
+def test_operational_workflows_pin_image_inputs_and_locked_deployment() -> None:
     components = load_components(LOCK)
     ops_sha = next(
         component.commit
@@ -64,16 +65,19 @@ def test_operational_workflows_use_the_locked_ops_commit() -> None:
         / "staging-telegram-socket-diagnostics.yml",
     ]
     for workflow in workflows:
-        text = workflow.read_text(encoding="utf-8")
-        refs = [
-            line.rsplit("@", 1)[1].strip()
-            for line in text.splitlines()
-            if "uses: batumilove/hermes-ops/" in line
-        ]
-        assert refs
-        assert set(refs) == {ops_sha}
-        if workflow.name in {"deploy-compose.yml", "promote-compose.yml"}:
-            assert f"ops_sha: {ops_sha}" in text
+        jobs = yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]
+        calls = {name: job for name, job in jobs.items()
+                 if job.get("uses", "").startswith("batumilove/hermes-ops/")}
+        assert calls
+        for name, job in calls.items():
+            reusable, sha = job["uses"].rsplit("@", 1)
+            assert re.fullmatch(r"[0-9a-f]{40}", sha)
+            if workflow.name == "deploy-compose.yml" and name == "publish":
+                assert reusable == "batumilove/hermes-ops/.github/workflows/build-image.yml"
+            else:
+                assert sha == ops_sha
+            if workflow.name in {"deploy-compose.yml", "promote-compose.yml"}:
+                assert job["with"]["ops_sha"] == sha
 
 
 def test_manual_promotion_requires_exact_digest_for_rollback() -> None:

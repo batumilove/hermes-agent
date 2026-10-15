@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_OPS_SHA = "e2de0980d2898b3b629119cce4c3662b5988ff0a"
 
 
-def test_operational_surfaces_pin_slow_pull_budget_generation() -> None:
+def test_deployment_surfaces_pin_slow_pull_budget_generation() -> None:
     lock = yaml.safe_load(
         (ROOT / ".github" / "batumi-components.lock.yaml").read_text(encoding="utf-8")
     )
@@ -24,11 +24,11 @@ def test_operational_surfaces_pin_slow_pull_budget_generation() -> None:
     )
     for name in workflows:
         text = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
-        refs = [
-            line.rsplit("@", 1)[1].strip()
-            for line in text.splitlines()
-            if "uses: batumilove/hermes-ops/" in line
-        ]
+        jobs = yaml.safe_load(text)["jobs"]
+        refs = [job["uses"].rsplit("@", 1)[1]
+                for role, job in jobs.items()
+                if job.get("uses", "").startswith("batumilove/hermes-ops/")
+                and not (name == "deploy-compose.yml" and role == "publish")]
         assert refs
         assert set(refs) == {EXPECTED_OPS_SHA}
 

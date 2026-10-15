@@ -4,12 +4,20 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import venv
 from pathlib import Path
 
 import pytest
 
 from scripts.termux import build_wheels as builder
+from pm import build_environment
+
+
+_PIP_URL = (
+    "https://files.pythonhosted.org/packages/f3/6e/"
+    "1736e5b4ae2b778ef2f81c47d797de9f891d4d8acb047a24ca37a60294dd/"
+    "pip-26.2.1-py3-none-any.whl"
+)
+_PIP_SHA256 = "71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e"
 
 
 @pytest.mark.parametrize("bom", [b"", b"\xef\xbb\xbf"])
@@ -69,10 +77,27 @@ def test_source_pin_survives_resolution_build_and_offline_install(tmp_path):
     wheels = tmp_path / "wheels"
     wheels.mkdir()
     build_env = tmp_path / "build-env"
-    venv.EnvBuilder(with_pip=True).create(build_env)
-    python = build_env / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    subprocess.run([str(python), "-m", "pip", "install", "pip==26.2.1"],
-                   check=True, capture_output=True)
+    tooling = tmp_path / "build-tooling"
+    tooling.mkdir()
+    (tooling / "pyproject.toml").write_text(
+        '[project]\nname = "termux-wheel-builder"\nversion = "0"\n'
+        f'requires-python = ">=3.11"\ndependencies = ["pip @ {_PIP_URL}"]\n'
+        '[tool.uv]\npackage = false\n',
+        encoding="utf-8")
+    (tooling / "uv.lock").write_text(
+        'version = 1\nrevision = 3\nrequires-python = ">=3.11"\n\n'
+        '[[package]]\nname = "pip"\nversion = "26.2.1"\n'
+        f'source = {{ url = "{_PIP_URL}" }}\n'
+        'wheels = [\n'
+        f'    {{ url = "{_PIP_URL}", hash = "sha256:{_PIP_SHA256}" }},\n'
+        ']\n\n'
+        '[[package]]\nname = "termux-wheel-builder"\nversion = "0"\n'
+        'source = { virtual = "." }\ndependencies = [\n    { name = "pip" },\n]\n\n'
+        '[package.metadata]\n'
+        f'requires-dist = [{{ name = "pip", url = "{_PIP_URL}" }}]\n',
+        encoding="utf-8")
+    python = build_environment(source=tooling, out=build_env, python=Path(sys.executable),
+                               no_install_project=True, frozen=True, explicit=True, timeout=180)
     builder.build_wheels(list(specs), specs, wheels, python=str(python))
     assert len(list(wheels.glob("hermes_source_fixture-8.0.0-*.whl"))) == 1
     # Remove the original source URL to rule out a Git fallback.

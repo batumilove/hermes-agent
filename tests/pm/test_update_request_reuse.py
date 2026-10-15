@@ -204,15 +204,16 @@ def test_pinning_hashes_new_npm_url_once_and_keeps_existing_rows(upstream, tmp_p
     filename, digest = make_tar(tmp_path, "npm.tgz", {"package/package.json": '{"version":"2.0.0"}'})
     RangeHandler.payloads[artifact_path] = (tmp_path / filename).read_bytes()
     old = {"url": package.fetch_url("1.0.0", ALL_TARGETS[0]), "sha256": "a" * 64}
-    # npm upgrades retain the separately pinned security overlay URL and hash.
-    overlay = {"url": package.fetch_urls(version, ALL_TARGETS[0])[1], "sha256": "b" * 64}
-    prior = [old, overlay]
+    # npm upgrades retain every separately pinned security overlay URL and hash.
+    overlays = [{"url": url, "sha256": hashlib.sha256(url.encode()).hexdigest()}
+                for url in package.fetch_urls(version, ALL_TARGETS[0])[1:]]
+    prior = [old, *overlays]
     current = {"any": prior, "unresolved-target": old}
     decision = update.Resolved("npm", "1.0.0", "semver", version,
                                per_target=dict.fromkeys(ALL_TARGETS, version))
     pinned = cli._pin_artifacts(package, decision, current)
     assert current == {"any": prior, "unresolved-target": old}
-    assert pinned == {**current, **{key: [{"url": artifact_url, "sha256": digest}, overlay] for key in ALL_TARGETS}}
+    assert pinned == {**current, **{key: [{"url": artifact_url, "sha256": digest}, *overlays] for key in ALL_TARGETS}}
     assert Counter(path for path, _ in calls) == {artifact_path: 1}
 
     # Existing pins need no download; a separate pin invocation must not retain new hashes.
@@ -228,5 +229,5 @@ def test_pinning_hashes_new_npm_url_once_and_keeps_existing_rows(upstream, tmp_p
     calls.clear()
     repinned = cli._pin_artifacts(package, decision, current)
     assert repinned[ALL_TARGETS[-1]][0]["sha256"] == hashlib.sha256(replacement).hexdigest()
-    assert repinned[ALL_TARGETS[-1]][1] == overlay
+    assert repinned[ALL_TARGETS[-1]][1:] == overlays
     assert Counter(path for path, _ in calls) == {artifact_path: 1}

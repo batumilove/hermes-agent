@@ -20,7 +20,7 @@ from pm.lock import Facts, Lockfile
 from pm.plugin_inputs import Members
 from pm.runtime import runtime_environment
 from pm.store import current_target, tree_digest
-from tests.pm._fixtures import _wheel
+from tests.pm._fixtures import _wheel, stage_host_python
 
 @pytest.fixture(autouse=True)
 def isolated_machine_home(tmp_path, monkeypatch):
@@ -118,8 +118,7 @@ def test_bootstrap_repairs_before_dependency_activation(tmp_path, monkeypatch, m
     if os.name != "nt":
         # A system Python's prefix can be /usr: never hash that entire tree.
         python_entry = tools / "python"
-        (python_entry / "bin").mkdir(parents=True)
-        (python_entry / "bin/python3").symlink_to(Path(sys._base_executable).resolve())
+        stage_host_python(python_entry / "bin/python3")
     from pm.registry import get_package
 
     target = current_target()

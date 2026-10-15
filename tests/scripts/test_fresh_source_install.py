@@ -18,7 +18,7 @@ import tomllib
 import pytest
 
 from pm.store import current_target
-from tests.pm._fixtures import _wheel, served as served  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+from tests.pm._fixtures import _wheel, host_distlib, served as served  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -39,6 +39,9 @@ def test_current_installer_publishes_real_dependencies_and_warm_path(tmp_path, s
     (bootstrap / "bin").mkdir(parents=True)
     shutil.copytree(sysconfig.get_path("stdlib"), bootstrap / f"lib/python{minor}",
                     ignore=shutil.ignore_patterns("site-packages", "__pycache__"))
+    # Include the authentic launcher supplier before the fixture archive is hashed.
+    shutil.copytree(host_distlib(), bootstrap / f"lib/python{minor}/site-packages/distlib",
+                    ignore=shutil.ignore_patterns("__pycache__"))
     for path in bootstrap.rglob("*"):
         path.chmod(0o755 if path.is_dir() else 0o644)
     shutil.copy2(python, bootstrap / f"bin/python{minor}")

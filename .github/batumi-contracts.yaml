@@ -25,6 +25,20 @@ contracts:
   - tests/scripts/test_osv_scanner_workflow.py
   - tests/plugins/test_chronos_security_compatibility.py
   - tests/scripts/test_upgrade_source_checkout.py
+  - tests/pm/test_node_npm_layout.py
+  - tests/pm/test_npm_security_overlay.py
+  - tests/pm/test_npm_self_install.py
+  - tests/pm/test_python_bootstrap.py
+  - tests/pm/test_cold_runtime_e2e.py
+  - tests/pm/test_activation_setup.py
+  - tests/pm/test_startup_recovery.py
+  - tests/pm/test_source_update_launch.py
+  - tests/pm/test_takeover_preparation.py
+  - tests/scripts/test_image_identity.py
+  - tests/scripts/test_termux_build_wheels.py
+  - tests/scripts/test_fresh_source_install.py
+  - tests/test_hermes_ops_pull_budget_pin.py
+  - tests/hermes_cli/test_update_lock_protocol.py
 - id: feishu-webhook-authentication
   rationale: Preserve authenticated callback delivery while keeping invalid requests out of delivery quota
     and bounding callback parsing and anomaly state.

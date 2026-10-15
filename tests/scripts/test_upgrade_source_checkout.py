@@ -89,7 +89,13 @@ def test_verified_review_routes_to_exact_source_and_cli_publishes_release_overri
     assert env_file.read_text(encoding="utf-8") == f"HERMES_E2E_UPGRADE_BASE={world['baseline'].commit}\n"
 
 
-def test_review_only_clone_fetches_missing_authentic_source_and_release(world, tmp_path):
+@pytest.mark.parametrize("later_descendant", [False, True])
+def test_review_only_clone_fetches_missing_authentic_source_and_release(world, tmp_path, later_descendant):
+    if later_descendant:
+        (world["repo"] / "app.txt").write_text("ordinary feature\n", encoding="utf-8")
+        candidate = commit(world["repo"], "ordinary descendant")
+    else:
+        candidate = world["review"]
     clone = tmp_path / "review-only"
     git(world["repo"], "clone", "--no-tags", "--single-branch", "--branch", "review",
         world["repo"].as_uri(), str(clone))
@@ -97,8 +103,11 @@ def test_review_only_clone_fetches_missing_authentic_source_and_release(world, t
                              cwd=clone, capture_output=True, timeout=20, check=False)
     assert missing.returncode != 0
     receipt = upgrade.prepare_upgrade_source(clone, upgrade.FORK, upstream=world["official"].as_uri(), release=world["baseline"])
-    assert receipt["review_head"] == world["review"] and receipt["source_head"] == world["source"]
-    assert provenance.is_ancestor(clone, world["baseline"].commit, "HEAD")
+    assert receipt["review_head"] == candidate and receipt["source_head"] == world["source"]
+    expected = candidate if later_descendant else world["source"]
+    assert receipt["checkout_head"] == git(clone, "rev-parse", "HEAD") == expected
+    assert provenance.is_ancestor(clone, world["baseline"].commit, world["source"])
+    assert git(clone, "branch", "--show-current") == ("review" if later_descendant else "")
     assert git(clone, "rev-parse", "--is-shallow-repository") == "false"
 
 
@@ -138,23 +147,72 @@ def test_invalid_binding_fails_without_changing_checkout(world, mutation, later_
     assert git(repo, "rev-parse", "HEAD") == before
 
 
-def test_valid_later_descendant_keeps_current_code_and_does_not_override_baseline(world):
+@pytest.mark.parametrize("detached", [False, True])
+def test_valid_later_descendant_keeps_current_code_and_publishes_verified_baseline(world, tmp_path, monkeypatch, detached):
     repo = world["repo"]
     (repo / "app.txt").write_text("new ordinary fork feature\n", encoding="utf-8")
     later = commit(repo, "ordinary descendant")
-    assert prepare(world) is None
+    if detached:
+        git(repo, "checkout", "--detach", later)
+    branch = git(repo, "branch", "--show-current")
+    env_file = tmp_path / "github-env"
+    monkeypatch.setattr(upgrade, "prepare_upgrade_source", partial(
+        upgrade.prepare_upgrade_source, upstream=world["official"].as_uri(), release=world["baseline"],
+    ))
+    assert upgrade.main(["--repo", str(repo), "--repository", upgrade.FORK, "--github-env", str(env_file)]) == 0
     assert git(repo, "rev-parse", "HEAD") == later
+    assert git(repo, "branch", "--show-current") == branch
     assert (repo / "app.txt").read_text(encoding="utf-8") == "new ordinary fork feature\n"
     assert provenance.projected_tree(repo, later) != world["proof"]["import_tree"]
+    assert env_file.read_text(encoding="utf-8") == f"HERMES_E2E_UPGRADE_BASE={world['baseline'].commit}\n"
+    assert git(repo, "describe", "--tags", "--abbrev=0", "HEAD~1") == "v2026.4.16"
 
 
-def test_replaced_canonical_release_tag_is_rejected_before_checkout(world):
+@pytest.mark.parametrize("later_descendant", [False, True])
+def test_replaced_canonical_release_tag_is_rejected_before_checkout(world, later_descendant):
+    if later_descendant:
+        (world["repo"] / "app.txt").write_text("ordinary feature\n", encoding="utf-8")
+        commit(world["repo"], "ordinary descendant")
+    before = git(world["repo"], "rev-parse", "HEAD")
     official = world["official"]
     git(official, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
         "tag", "-fam", "replaced release", world["baseline"].tag, world["base"])
     with pytest.raises(provenance.ProvenanceError, match="pinned object"):
         prepare(world)
-    assert git(world["repo"], "rev-parse", "HEAD") == world["review"]
+    assert git(world["repo"], "rev-parse", "HEAD") == before
+
+
+@pytest.mark.parametrize("later_descendant", [False, True])
+@pytest.mark.parametrize("invalid", ["commit", "ancestry"])
+def test_release_commit_and_ancestry_are_authenticated_before_env_publication(world, tmp_path, monkeypatch,
+                                                                            later_descendant, invalid):
+    repo = world["repo"]
+    if later_descendant:
+        (repo / "app.txt").write_text("ordinary feature\n", encoding="utf-8")
+        commit(repo, "ordinary descendant")
+    before = git(repo, "rev-parse", "HEAD")
+    branch = git(repo, "branch", "--show-current")
+    pinned = world["baseline"]
+    if invalid == "commit":
+        pinned = upgrade.Release(pinned.tag, pinned.tag_object, world["base"])
+    else:
+        # Authentic exact tag and commit, but on a separate canonical branch.
+        official = world["official"]
+        tree = git(official, "rev-parse", f"{world['base']}^{{tree}}")
+        separate = git(official, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                       "commit-tree", tree, "-m", "unrelated release")
+        git(official, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+            "tag", "-am", "unrelated release", "unrelated-release", separate)
+        pinned = upgrade.Release("unrelated-release", git(official, "rev-parse", "unrelated-release"), separate)
+    monkeypatch.setattr(upgrade, "prepare_upgrade_source", partial(
+        upgrade.prepare_upgrade_source, upstream=world["official"].as_uri(), release=pinned,
+    ))
+    env_file = tmp_path / "github-env"
+    env_file.write_text("EXISTING=value\n", encoding="utf-8")
+    assert upgrade.main(["--repo", str(repo), "--repository", upgrade.FORK, "--github-env", str(env_file)]) == 1
+    assert env_file.read_text(encoding="utf-8") == "EXISTING=value\n"
+    assert git(repo, "rev-parse", "HEAD") == before
+    assert git(repo, "branch", "--show-current") == branch
 
 
 def test_real_fast_forward_distinguishes_source_rehearsal_and_linear_fork_publication(world):
