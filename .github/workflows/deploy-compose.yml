@@ -30,7 +30,7 @@ jobs:
 
   deploy-staging:
     needs: publish
-    if: vars.HERMES_STAGING_DEPLOY_ENABLED == 'true'
+    if: github.ref_name == 'batumi/live' && vars.HERMES_STAGING_DEPLOY_ENABLED == 'true'
     permissions:
       contents: read
     uses: batumilove/hermes-ops/.github/workflows/compose-deploy.yml@e2de0980d2898b3b629119cce4c3662b5988ff0a

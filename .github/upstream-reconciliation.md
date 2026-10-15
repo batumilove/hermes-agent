@@ -518,3 +518,17 @@ before allowing JSDOM teardown, retaining the model-selection and search
 assertions. Event errors remain fatal; no test skip, global event substitution,
 or timeout increase is used. Fresh successor CI and image scanner acceptance
 remain required.
+
+Full manual ci10 CI on `405445ebcfad1792df90bde680cfb4ad7d0d9d5c`
+passed JS/TS, all ten Windows install/update E2E lanes and all six upgrade
+shards. Two Windows Git-trampoline unit cases failed; the owner waived further
+Windows investigation for this update. This does not make the CI aggregate green.
+Image publication uses the existing exact-source `shadow / shadow` gate, not
+that aggregate. Candidate builds still enforce provenance and the fixable
+HIGH/CRITICAL Trivy scan. Staging deployment now additionally requires the
+`batumi/live` ref so a manual `rebuild/batumi-live` candidate build cannot deploy
+to staging even when the staging enable variable is set.
+The candidate ref retains its historical security-layer refresh commit
+`f5333d3d2eb0ca8fd0198cb097ba03fe99dd848d` through a merge; its Dockerfile
+and regression changes are already present in the reconciled source, so their
+current implementations are retained when resolving the historical conflicts.
