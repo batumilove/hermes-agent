@@ -376,11 +376,11 @@ _BACKGROUND_NOTES = {
 
 def _dispatched_payload(batch: _Batch, units: list[tuple[_Batch, str]]) -> dict:
     """Model-facing handle for an accepted background call: one entry per async unit."""
-    goals = [t["goal"] for t in batch.task_list]
+    goals = [t["goal"] for _, t, _ in batch.children]
     n = len(goals)
     payload = {
         "status": "dispatched", "mode": "background", "count": n,
-        "delegation_id": batch.live_deleg_id or units[0][1], "goals": goals,
+        "delegation_id": units[0][1] if len(units) == 1 else batch.live_deleg_id or units[0][1], "goals": goals,
         "note": _BACKGROUND_NOTES["one"] if n == 1 else _BACKGROUND_NOTES["many"].format(n=n, k=len(units)),
     }
     if len(units) > 1:
@@ -392,8 +392,11 @@ def _dispatched_payload(batch: _Batch, units: list[tuple[_Batch, str]]) -> dict:
     if any(isinstance(s, str) and s for s in sids):
         payload["subagent_ids"] = sids
         payload["control_hint"] = _BACKGROUND_NOTES["control_hint"]
-    if batch.live_paths:
-        payload["live_transcripts"] = list(batch.live_paths)
+    paths = [str(batch.live_writers[i].path) for i, _, _ in batch.children
+             if i < len(batch.live_writers) and batch.live_writers[i] is not None
+             and batch.live_writers[i].path is not None]
+    if paths:
+        payload["live_transcripts"] = paths
         payload["live_transcripts_hint"] = _BACKGROUND_NOTES["live_transcripts_hint"]
     return payload
 
@@ -451,6 +454,7 @@ def _reject_unowned_children(batch: _Batch, dispatch: dict) -> list[dict]:
             if i < len(batch.live_writers) and batch.live_writers[i] is not None:
                 batch.live_writers[i].finalize(entry)
     update_manifest_statuses(batch.live_deleg_id, rejected, home=batch.live_home)
+    finish_delegation_unit(batch.task_list, rejected, background=True)
     return rejected
 
 _REJECTION_HINT = (
@@ -487,7 +491,7 @@ def _dispatch_background(batch: _Batch) -> str:
         unit_id = batch.live_deleg_id if len(units) == 1 else (f"{batch.live_deleg_id}-{k + 1}" if batch.live_deleg_id else None)
         unit.unit_id = unit_id = unit_id or _new_delegation_id()  # fixed before the runner can start
         # The worker can start before admission returns. Detach only this unit:
-        # unsubmitted units must still receive parent stops while a fallback runs.
+        # unsubmitted units must still receive parent stops during admission.
         for _, _, child in unit.children:
             _detach_child(parent_agent, child)
         dispatch = _dispatch_unit(unit, unit_id, slot_key, routing)
