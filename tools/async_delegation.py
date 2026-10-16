@@ -789,7 +789,7 @@ def _dispatch_admitted(
     with _records_lock:
         active_slots = {r.get("slot_key") or r["delegation_id"] for r in _records.values() if r.get("status") in _ACTIVE_STATES}
         if record["slot_key"] not in active_slots and len(active_slots) >= max_async_children:
-            return {"status": "rejected", "error": capacity_error}
+            return {"status": "rejected", "reason": "capacity", "error": capacity_error}
         _records[delegation_id] = record
         live_units = sum(1 for r in _records.values() if r.get("status") in _LIVE_STATES)
     _persist_dispatch(record)

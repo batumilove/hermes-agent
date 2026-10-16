@@ -5,6 +5,22 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: delegation-capacity-rejection-accounting
+  kind: core
+  rationale: Preserve bounded delegation capacity admission, interruption cleanup, and stable grouped
+    rejection identities with terminal live-log accounting when no child worker is launched.
+  paths:
+  - tests/tools/test_delegate_capacity_busy.py
+  - tests/tools/test_delegate_capacity_interrupt.py
+  - tests/tools/test_delegate_grouped_rejection.py
+  - tools/async_delegation.py
+  - tools/delegate_tool_config.py
+  - tools/delegation_live_log.py
+  tests:
+  - scripts/run_tests.sh tests/tools/test_delegate_capacity_busy.py tests/tools/test_delegate_capacity_interrupt.py
+    tests/tools/test_delegate_grouped_rejection.py
+  retirement: Remove when official upstream provides equivalent bounded capacity admission, interrupt
+    cleanup, stable grouped rejection identities, and terminal accounting without launching child workers.
 - id: feishu-webhook-authentication-quota
   kind: extension
   rationale: Authenticate Feishu callbacks before charging delivery quota, require a verified token for
@@ -286,6 +302,7 @@ patches:
   - contributors/emails/aleman@batumi.works
   - contributors/emails/audit@batumi.works
   - contributors/emails/hermes@local
+  - contributors/emails/hermes@localhost
   - contributors/emails/repo-builder@batumi.works
   - contributors/emails/repo-ops-glm-5-1@hermes.local
   - scripts/check_fork_delta.py
