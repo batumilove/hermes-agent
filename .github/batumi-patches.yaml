@@ -492,6 +492,7 @@ patches:
     Preserve canonical upstream test placement and assertions while extracting large suites into topical
     files to meet the size ratchet.
   paths:
+  - tui_gateway/contracts/sessions.py
   - agent/agent_init.py
   - apps/bootstrap-installer/src/routes/progress.tsx
   - apps/desktop/src/plugins/hermes-bots/tests/session-workspace.test.mjs
