@@ -127,3 +127,24 @@ class TestGitTrampolineSelfHeal:
         assert candidates[1] == (
             profile_home / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
         )
+
+
+
+@pytest.mark.parametrize("arch", ["ucrt64", "mingw64", "clangarm64"])
+def test_locate_real_git_supports_install_layouts(monkeypatch, arch):
+    from pathlib import Path
+    from hermes_cli import update_cmd_git
+
+    candidate = Path(r"C:\Program Files") / "Git" / arch / "libexec" / "git-core" / "git.exe"
+    # Supply filesystem/probe boundaries without pretending to run Windows.
+    monkeypatch.setattr(Path, "exists", lambda path: path == candidate)
+    monkeypatch.setattr(update_cmd_git, "_portable_git_candidates", lambda: [])
+    probed = []
+
+    def probe(argv):
+        probed.append(argv)
+        return False
+
+    monkeypatch.setattr(update_cmd_git, "_probe_fork_bomb", probe)
+    assert update_cmd_git._locate_real_git() == candidate
+    assert probed == [[str(candidate)]]
