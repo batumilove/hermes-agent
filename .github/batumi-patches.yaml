@@ -475,8 +475,10 @@ patches:
   rationale: 'Correct defects found during exact-head review of the imported upstream reconciliation:
     MCP stdio child liveness, reconnect-cycle state, suspect connection health checks, and watchdog coroutine
     handling; desktop preview, HUD, and focus-chord compatibility; plus the associated regression coverage
-    and stale test/documentation cleanup.'
+    and stale test/documentation cleanup. Support the Git for Windows UCRT64 recovery layout.'
   paths:
+  - hermes_cli/update_cmd_git.py
+  - tests/hermes_cli/test_cmd_update.py
   - hermes_cli/plugins_loader.py
   - tests/hermes_cli/test_plugins_module_eviction.py
   - tests/e2e/core/parity/_helpers.py
