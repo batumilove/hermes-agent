@@ -118,6 +118,12 @@ def _get_hermes_site_packages(env: dict) -> list[Path]:
                               else Path(sys.prefix) / "lib" / pyver / "site-packages")
         local._hermes_site_packages = list(result)
     result = list(local._hermes_site_packages)
+    # Read the producer's process-local activation history, not generation-shaped
+    # paths from the environment or a scan of all installed dependency trees.
+    from pm import environments
+    for activated in environments._activated_site_packages:
+        if not any(_same_path(activated, existing) for existing in result):
+            result.append(activated)
 
     runtime_venv = _validated_runtime_venv(env)
     if runtime_venv is not None:
