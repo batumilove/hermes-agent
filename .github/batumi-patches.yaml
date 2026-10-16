@@ -302,6 +302,7 @@ patches:
   - contributors/emails/aleman@batumi.works
   - contributors/emails/audit@batumi.works
   - contributors/emails/hermes@local
+  - contributors/emails/hermes@localhost
   - contributors/emails/repo-builder@batumi.works
   - contributors/emails/repo-ops-glm-5-1@hermes.local
   - scripts/check_fork_delta.py
