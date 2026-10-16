@@ -678,7 +678,11 @@ async def _drive_flow(provider, responder):
     while True:
         await asyncio.sleep(0)
         try:
-            out = await gen.asend(responder(out))
+            response = responder(out)
+            # Preserve the real request contract inspected by MCP 2.2's
+            # same-origin redirect guard; the response body remains synthetic.
+            response.request = out
+            out = await gen.asend(response)
         except StopAsyncIteration:
             return
 
