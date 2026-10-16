@@ -16,6 +16,10 @@ from pathlib import Path
 
 from hermes_constants import get_default_hermes_root, project_venv_dir
 
+# Process-local provenance: only successful dependency activations may append.
+# Selection facts can advance while this process still leases/imports an older tree.
+_activated_site_packages: tuple[Path, ...] = ()
+
 
 def install_key(project_root: Path) -> str:
     canonical = str(Path(project_root).resolve())
@@ -452,6 +456,21 @@ def activate_dependencies(project_root: Path) -> None:
     A process with no extension selection keeps its original launch contract.
     Already-running processes are never switched after a dependency install.
     """
+    releases = []
+    try:
+        selected = _activate_dependencies(project_root, releases)
+        if selected is None:
+            return
+        global _activated_site_packages
+        _activated_site_packages = tuple(dict.fromkeys((*_activated_site_packages, selected.resolve())))
+        releases.clear()  # Successful producers retain their atexit-managed leases.
+    finally:
+        for release in reversed(releases):
+            release()
+
+
+def _activate_dependencies(project_root: Path, releases: list) -> Path | None:
+    """Activate once; caller releases acquired leases unless activation completes."""
     import sys
 
     state = install_state_dir(project_root)
@@ -467,11 +486,13 @@ def activate_dependencies(project_root: Path) -> None:
             if environment is None:
                 return _require_own_dependencies(project_root)
             release = lease_generation(environment)
+            releases.append(release)
             # Without the lock, an installer may commit a new generation between the
             # read and the lease, leaving the leased one unselected and collectable.
             while not held and (current := committed_venv(project_root)) not in (None, environment):
-                release()
+                releases.pop()()
                 environment, release = current, lease_generation(current)
+                releases.append(release)
             selected = site_packages(environment)
             if not selected.is_dir() and not runtime_facts_path(project_root).is_file():
                 return
@@ -510,6 +531,7 @@ def activate_dependencies(project_root: Path) -> None:
     prefix = [str(path) for path in directories if path.is_dir()]
     if prefix:
         os.environ["PATH"] = os.pathsep.join([*prefix, os.environ.get("PATH", "")])
+    return selected
 
 
 def activation_environment(project_root: Path) -> dict[str, str]:
