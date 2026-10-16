@@ -138,7 +138,7 @@ def test_locate_real_git_supports_install_layouts(monkeypatch, arch):
     candidate = Path(r"C:\Program Files") / "Git" / arch / "libexec" / "git-core" / "git.exe"
     # Supply filesystem/probe boundaries without pretending to run Windows.
     monkeypatch.setattr(Path, "exists", lambda path: path == candidate)
-    monkeypatch.setattr(update_cmd_git, "_portable_git_candidates", lambda: [])
+    monkeypatch.setattr(update_cmd_git, "_portable_git_candidates", list)
     probed = []
 
     def probe(argv):
