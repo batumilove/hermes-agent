@@ -188,6 +188,8 @@ def _fake_response(status, url, body):
     """A minimal stand-in for the httpx.Response the SDK feeds our bridge."""
     resp = MagicMock()
     resp.status_code = status
+    # These fixtures are non-redirect responses; MCP checks this explicitly.
+    resp.next_request = None
     resp.request = SimpleNamespace(url=url)
 
     async def _aread():

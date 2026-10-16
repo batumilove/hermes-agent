@@ -154,7 +154,7 @@ patches:
     addressed by the September 2026 repository-wide lockfile remediation, while preserving an exact Electron
     runtime/build pin and a production-only Nix node-gyp dependency closure. October scanning updates
     exact desktop/docs floors and uses a hash-verified licensed braces derivative for the unpatched nesting
-    advisory.
+    advisory. Pin MCP 2.2.0 to close GHSA-84m7-p3x7-pcfv session resource exhaustion.
   paths:
   - .npmrc
   - apps/desktop/package.json
@@ -173,6 +173,7 @@ patches:
   - tests/test_npm_security_policy.py
   - tests/plugins/test_chronos_security_compatibility.py
   - tests/tools/test_lazy_deps.py
+  - tests/tools/test_mcp_oauth_manager.py
   - tools/lazy_deps.py
   - ui-tui/package.json
   - uv.lock
