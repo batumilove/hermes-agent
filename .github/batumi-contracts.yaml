@@ -1,5 +1,14 @@
 version: 1
 contracts:
+- id: producer-generation-pythonpath-isolation
+  rationale: Preserve exact producer-owned child-path filtering across dependency reselection and
+    failed-activation lease cleanup without releasing earlier successful leases.
+  tests:
+  - tests/pm/test_producer_generation.py
+  - tests/pm/test_lease_reselection.py
+  - tests/pm/test_runtime_selection.py
+  - tests/tools/test_build_subprocess_env.py
+  - tests/tools/test_hermes_subprocess_env.py
 - id: recovered-state-and-native-freshness
   rationale: Preserve routed test isolation, explicit DB pins, historical fork recovery layouts, ordered
     recovery obligations, native Relay freshness after compaction, and overlapping logical-call isolation.
