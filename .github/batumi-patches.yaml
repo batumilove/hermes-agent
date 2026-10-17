@@ -481,6 +481,7 @@ patches:
   - tests/hermes_cli/test_cmd_update.py
   - hermes_cli/plugins_loader.py
   - tests/hermes_cli/test_plugins_module_eviction.py
+  - tests/plugins/model_providers/test_commandcode_profile.py
   - tests/e2e/core/parity/_helpers.py
   - tests/e2e/core/parity/_drive_cli.py
   - tests/e2e/core/parity/test_entrypoint_parity.py
