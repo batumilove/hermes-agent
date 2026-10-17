@@ -8,8 +8,8 @@ from pathlib import Path
 import zipfile
 
 FIXTURE = Path(__file__).resolve().parents[3] / "tests/fixtures/kanban_policy_skills"
-_SOURCE_SHA256 = "16183d2924939a033aa661de47e86eb7789fe9509bd70f941d991c5a6b750c2c"
-_ARCHIVE_SHA256 = "0a2059fb4cd70eb4763364c0cb30a5f11e164a5d00ab9314c2f74dee0152dc3d"
+_SOURCE_SHA256 = "297f731d78cf5b2626548be134572b83d7eb8569625315471d5acb00064266a5"
+_ARCHIVE_SHA256 = "b2db455885fc264bc9e751099a502680895c66c048de3dcbec36749d882b674f"
 
 
 def _verified_members(fixture: Path) -> dict[str, bytes]:

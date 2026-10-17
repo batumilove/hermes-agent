@@ -118,6 +118,9 @@ Every former god file is a **facade** (public entry points + the names other pac
 
 ## Rules that apply everywhere
 
+- **Updates must use the included updater.** Follow
+  `website/docs/getting-started/updating.md` § Mandatory update path; custom controllers
+  are not ordinary-update prerequisites.
 - **No defensive clutter:** no wrappers or `try/except: pass` around code that cannot fail, no flags
   nobody sets, no dead code wired in without E2E proof. Comments keep the WHY, cut the WHAT.
 - **Never infer process identity from argv substrings;** use
