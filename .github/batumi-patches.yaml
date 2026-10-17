@@ -5,6 +5,17 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: telegram-private-reply-anchor-retry
+  kind: extension
+  rationale: Retry rejected private message threads with the existing reply anchor, preserving the
+    binding and refusing delivery when that anchor is also rejected.
+  paths:
+  - plugins/platforms/telegram/adapter.py
+  - plugins/platforms/telegram/adapter_thread_retry.py
+  - tests/gateway/test_telegram_thread_fallback.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_telegram_thread_fallback.py
+  retirement: Remove when upstream preserves private reply anchors across missing-thread retries.
 - id: included-updater-operational-policy
   kind: operations
   rationale: Require the installation's included updater for application updates and remove
@@ -65,6 +76,22 @@ patches:
   - python scripts/check_fork_delta.py
   retirement: Remove after the data-only catalog follow-up is merged and the catalog matches
     the accepted upstream baseline; the shared-daemon migration can retire this split record.
+- id: producer-generation-pythonpath-isolation
+  kind: extension
+  rationale: Keep successfully activated producer generations out of unrelated Python children after
+    dependency selection advances, and release newly acquired leases when activation fails without
+    discarding earlier successful producer ownership.
+  paths:
+  - pm/environments.py
+  - tools/environments/local_pythonpath.py
+  - tests/pm/test_producer_generation.py
+  - website/docs/reference/package-management.md
+  tests:
+  - scripts/run_tests.sh tests/pm/test_producer_generation.py tests/pm/test_lease_reselection.py
+    tests/pm/test_runtime_selection.py tests/tools/test_build_subprocess_env.py
+    tests/tools/test_hermes_subprocess_env.py
+  retirement: Remove when upstream preserves successful producer-generation provenance, cleans failed
+    activation leases, and passes the same child-path and lease regressions.
 - id: feishu-webhook-authentication-quota
   kind: extension
   rationale: Authenticate Feishu callbacks before charging delivery quota, require a verified token for
@@ -1398,20 +1425,19 @@ patches:
     tests/tools/test_tool_output_limits.py tests/tools/test_interrupt.py
   retirement: Remove when upstream provides equivalent aggregate warning, parallel cap accounting, and
     bounded synthesis-only convergence contracts.
-- id: gateway-reply-context-clipping-clarity
+- id: gateway-full-reply-context
   kind: core
-  rationale: Preserve bounded reply-context injection while marking excerpts that were clipped, so a mid-report
-    preview cannot be mistaken for a truncated original delivery.
+  rationale: Preserve complete resolved reply context while respecting adapter-selected partial quotes.
   paths:
   - gateway/run.py
   - tests/gateway/test_reply_to_injection.py
+  - tests/gateway/test_telegram_reply_quote.py
   - gateway/run_inbound_reply.py
   - tests/agent/test_split_turn_compaction.py
   tests:
   - scripts/run_tests.sh tests/gateway/test_reply_to_injection.py tests/gateway/test_telegram_reply_quote.py
     tests/gateway/test_queue_command.py
-  retirement: Remove when upstream marks clipped reply-context excerpts within an equivalent bounded context
-    budget.
+  retirement: Remove when upstream preserves complete resolved reply context and native partial quotes.
 - id: gateway-startup-readiness
   kind: core
   rationale: Publish PID-bound starting or draining status immediately after runtime ownership so external

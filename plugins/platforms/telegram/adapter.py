@@ -3543,20 +3543,14 @@ class TelegramAdapter(TelegramTextRecoveryMixin, TelegramHeldInboundMixin, BaseP
             except _NetErr as send_err:
                 # BadRequest subclasses NetworkError in PTB but is permanent; handle specific cases.
                 if _BadReq and isinstance(send_err, _BadReq):
-                    if self._is_thread_not_found_error(send_err) and effective_thread_id is not None:
-                        if private_dm_topic_send or (metadata and metadata.get("telegram_dm_topic_created_for_send")):
-                            return SendResult(success=False, error=str(send_err), retryable=False)
-                        # One-off "thread not found" flakes recover on immediate retry: same thread_id once.
-                        if not retried_thread_not_found:
-                            retried_thread_not_found = True
-                            logger.warning("[%s] Thread %s not found, retrying once with same thread_id", self.name, effective_thread_id)
-                            continue
-                        # Thread is genuinely gone: retry without it and prune the stale binding.
-                        logger.warning("[%s] Thread %s not found, retrying without message_thread_id", self.name, effective_thread_id)
-                        self._prune_stale_dm_topic_binding(chat_id, effective_thread_id, metadata=metadata)
-                        used_thread_fallback = True
-                        effective_thread_id = None
-                        thread_kwargs = {"message_thread_id": None}
+                    if self._is_thread_not_found_error(send_err):
+                        from plugins.platforms.telegram.adapter_thread_retry import retry_missing_thread
+                        route = retry_missing_thread(
+                            self, send_err, chat_id, reply_to_id, metadata, private_dm_topic_send,
+                            effective_thread_id, thread_kwargs, used_thread_fallback, retried_thread_not_found)
+                        if isinstance(route, SendResult):
+                            return route
+                        effective_thread_id, thread_kwargs, used_thread_fallback, retried_thread_not_found = route
                         continue
                     if "message to be replied not found" in str(send_err).lower() and reply_to_id is not None:
                         safe_send_error = _redact_telegram_error_text(send_err)
@@ -4157,30 +4151,9 @@ class TelegramAdapter(TelegramTextRecoveryMixin, TelegramHeldInboundMixin, BaseP
         return SendResult(success=False, error="draft_rejected")
 
     async def _send_message_with_thread_fallback(self, **kwargs):
-        """Send a control-style message (approval prompts, pickers), retrying once without
-        message_thread_id on 'Message thread not found' (stale thread_id); ``send`` has its own.
-
-        Used for control-style sends (approval prompts, model picker, update prompts) that can carry a stale
-        thread_id from a DM reply chain. The streaming send loop has its own equivalent (PR #3390) at the
-        body of ``send``; this helper applies the same retry pattern to the non-streaming control paths.
-        """
-        if not self._bot:
-            raise RuntimeError("Not connected")
-        message_thread_id = kwargs.get("message_thread_id")
-        try:
-            return await _await_with_thread_deadline(
-                self._bot.send_message(**kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
-        except Exception as send_err:
-            if (message_thread_id is not None and self._is_bad_request_error(send_err) and self._is_thread_not_found_error(send_err)):
-                logger.warning(
-                    "[%s] Thread %s not found for control message, retrying without message_thread_id", self.name, message_thread_id)
-                # Same prune as the streaming send path; control sends carry no gateway metadata.
-                self._prune_stale_dm_topic_binding(kwargs.get("chat_id"), message_thread_id)
-                retry_kwargs = dict(kwargs)
-                retry_kwargs.pop("message_thread_id", None)
-                return await _await_with_thread_deadline(
-                    self._bot.send_message(**retry_kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
-            raise
+        """Retry control sends without a rejected thread id, preserving viable private anchors."""
+        from plugins.platforms.telegram.adapter_thread_retry import send_control_with_thread_fallback
+        return await send_control_with_thread_fallback(self, **kwargs)
 
     async def _send_control_message(
         self, chat_id: str, text: str, *, parse_mode: Any, thread_id: Optional[str], metadata: Optional[dict[str, Any]],
