@@ -5,6 +5,52 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: upstream-catalog-admission-split
+  kind: operations
+  rationale: Retain the previously accepted catalog while upstream code is reviewed separately.
+    The deferred upstream entries land in a data-only follow-up PR under the unchanged
+    catalog admission gate, without mixing entry pins and executable validation code.
+  paths:
+  - plugin-catalog/account-pool.yaml
+  - plugin-catalog/agent-janitor.yaml
+  - plugin-catalog/alans-way-computer.yaml
+  - plugin-catalog/alans-way.yaml
+  - plugin-catalog/anatomy-museum.yaml
+  - plugin-catalog/author-feed.yaml
+  - plugin-catalog/aux-ledger.yaml
+  - plugin-catalog/birkin-mnemosyne.yaml
+  - plugin-catalog/gmail.yaml
+  - plugin-catalog/hermes-aac.yaml
+  - plugin-catalog/hermes-activity.yaml
+  - plugin-catalog/hermes-agent-mixer.yaml
+  - plugin-catalog/hermes-insight.yaml
+  - plugin-catalog/hermes-lang-ko.yaml
+  - plugin-catalog/hermes-lang-pt-br.yaml
+  - plugin-catalog/huddo.yaml
+  - plugin-catalog/jp-egov-law.yaml
+  - plugin-catalog/kiwi.yaml
+  - plugin-catalog/kumiho-memory.yaml
+  - plugin-catalog/lightningai-rate-limit.yaml
+  - plugin-catalog/lightningai.yaml
+  - plugin-catalog/model-router.yaml
+  - plugin-catalog/nexus.yaml
+  - plugin-catalog/nvidia-app.yaml
+  - plugin-catalog/nvidia-broadcast.yaml
+  - plugin-catalog/openinvest.yaml
+  - plugin-catalog/plan-mode.yaml
+  - plugin-catalog/qdrant-memory.yaml
+  - plugin-catalog/secure-env-ingress.yaml
+  - plugin-catalog/showly.yaml
+  - plugin-catalog/speechify.yaml
+  - plugin-catalog/switchbot-control.yaml
+  - plugin-catalog/teamorouter.yaml
+  - plugin-catalog/telegram-client.yaml
+  - plugin-catalog/tinyfish.yaml
+  - plugin-catalog/wait-ledger.yaml
+  tests:
+  - python scripts/check_fork_delta.py
+  retirement: Remove after the data-only catalog follow-up is merged and the catalog matches
+    the accepted upstream baseline; the shared-daemon migration can retire this split record.
 - id: feishu-webhook-authentication-quota
   kind: extension
   rationale: Authenticate Feishu callbacks before charging delivery quota, require a verified token for
@@ -108,7 +154,7 @@ patches:
     addressed by the September 2026 repository-wide lockfile remediation, while preserving an exact Electron
     runtime/build pin and a production-only Nix node-gyp dependency closure. October scanning updates
     exact desktop/docs floors and uses a hash-verified licensed braces derivative for the unpatched nesting
-    advisory.
+    advisory. Pin MCP 2.2.0 to close GHSA-84m7-p3x7-pcfv session resource exhaustion.
   paths:
   - .npmrc
   - apps/desktop/package.json
@@ -127,6 +173,7 @@ patches:
   - tests/test_npm_security_policy.py
   - tests/plugins/test_chronos_security_compatibility.py
   - tests/tools/test_lazy_deps.py
+  - tests/tools/test_mcp_oauth_manager.py
   - tools/lazy_deps.py
   - ui-tui/package.json
   - uv.lock
@@ -428,8 +475,10 @@ patches:
   rationale: 'Correct defects found during exact-head review of the imported upstream reconciliation:
     MCP stdio child liveness, reconnect-cycle state, suspect connection health checks, and watchdog coroutine
     handling; desktop preview, HUD, and focus-chord compatibility; plus the associated regression coverage
-    and stale test/documentation cleanup.'
+    and stale test/documentation cleanup. Support the Git for Windows UCRT64 recovery layout.'
   paths:
+  - hermes_cli/update_cmd_git.py
+  - tests/hermes_cli/test_cmd_update.py
   - hermes_cli/plugins_loader.py
   - tests/hermes_cli/test_plugins_module_eviction.py
   - tests/e2e/core/parity/_helpers.py
@@ -492,6 +541,7 @@ patches:
     Preserve canonical upstream test placement and assertions while extracting large suites into topical
     files to meet the size ratchet.
   paths:
+  - tui_gateway/contracts/sessions.py
   - agent/agent_init.py
   - apps/bootstrap-installer/src/routes/progress.tsx
   - apps/desktop/src/plugins/hermes-bots/tests/session-workspace.test.mjs
