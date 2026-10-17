@@ -8,6 +8,37 @@ description: "How to update Hermes Agent to the latest version or uninstall it"
 
 ## Updating
 
+### Mandatory update path
+
+Hermes application updates must use the updater included with the installation:
+`hermes update` for supported source installations, the built-in Desktop update
+flow for bundles, or the owning package/image manager listed below. Do not replace
+this path with a manual live Git reset, file overlay, exported-release switch or
+bespoke deployment controller. Prepare and test fork changes in an isolated
+checkout, then deliver the intended revision through the configured update feed.
+
+Before execution, verify the installed updater's help/source, installation type,
+target feed, local changes, affected profiles/services and backup/recovery path.
+An explicit user request to update the identified installation can authorize its
+documented restart; reuse that authorization within scope. Ask only for missing
+scope or additional effects, such as updating a wider shared-source fleet.
+`--yes` is not authorization, and a no-restart option does not make changing a
+running checkout safe. Let the updater own its source, dependency and restart
+sequence; do not wrap it in a competing lifecycle controller.
+
+Older operational skills may require sealed activation bundles, external
+controllers or a fixed 180-second drain. Those are specialized legacy workflows,
+not prerequisites for normal updates. Preserve enforced lifecycle guards, locks,
+leases and explicit user constraints. If the installed updater cannot meet those
+constraints, report the concrete incompatibility rather than bypassing them.
+
+An exported release without supported update metadata is not automatically a
+managed source installation. Prepare a separately scoped migration to a supported
+installation; do not fabricate Git metadata or build another controller to hide
+the incompatibility. After an update, verify its receipt and warnings, the loaded
+runtime identity, service health and the changed behavior. The updater's recovery
+coverage is version-specific; do not promise complete automatic rollback.
+
 Choose the update method for the installation that is running:
 
 | Installation | Update method |

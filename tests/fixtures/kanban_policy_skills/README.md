@@ -1,7 +1,7 @@
 # Authentic worker policy fixture
 
 `skills.zip` contains the complete two skill directories from
-[`batumilove/hermes-skills` at `8474d463f4fcd2608f5deeb0ad0a26f731ceb36c`](https://github.com/batumilove/hermes-skills/tree/8474d463f4fcd2608f5deeb0ad0a26f731ceb36c):
+[`batumilove/hermes-skills` at `9da856dcda82dc353af53f91e3ed0b49932fc476`](https://github.com/batumilove/hermes-skills/tree/9da856dcda82dc353af53f91e3ed0b49932fc476):
 
 - `devops/kanban-worker`
 - `software-development/restart-window-bundling`

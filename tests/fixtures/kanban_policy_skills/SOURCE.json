@@ -1,12 +1,12 @@
 {
-  "archive_sha256": "0a2059fb4cd70eb4763364c0cb30a5f11e164a5d00ab9314c2f74dee0152dc3d",
-  "commit": "8474d463f4fcd2608f5deeb0ad0a26f731ceb36c",
+  "archive_sha256": "b2db455885fc264bc9e751099a502680895c66c048de3dcbec36749d882b674f",
+  "commit": "9da856dcda82dc353af53f91e3ed0b49932fc476",
   "declared_license": "MIT (preserved SKILL.md frontmatter)",
   "files": {
     "devops/kanban-worker/SKILL.md": {
-      "bytes": 35449,
-      "git_blob": "782c6c86fd01c8cb9b83e3e9533bebd368a9fc68",
-      "sha256": "310b6756bfc5ad31e563942e1585a052ac8984debadf0d1676ac00ede4dee06a"
+      "bytes": 36736,
+      "git_blob": "f36f7658b11dce6075b8b4edbb5619d54327099e",
+      "sha256": "913bb19a56f1a272a98af554593067e62aa8f428ce9736918fd2291434492ff2"
     },
     "devops/kanban-worker/references/controller-bound-exact-sha-pr-publication.md": {
       "bytes": 2999,
@@ -44,14 +44,14 @@
       "sha256": "d349be7c5da97386d25c9683c4bcd7b0c45d1d4851013a77116a74c5f9163956"
     },
     "software-development/restart-window-bundling/SKILL.md": {
-      "bytes": 11371,
-      "git_blob": "5147d88dfe7eda8f3c8936c81ff2f5a5a541004d",
-      "sha256": "edc880b3181dde6ae791d4bfcc902540abba3418e3ec082ea7e1b25a5ac6b77b"
+      "bytes": 6269,
+      "git_blob": "b65d69c0abdb886ed2797bffeff5521d46d2de16",
+      "sha256": "3cc94c8c8fcbb1c0b6647cdcc09a1c16ddd0e2339b964b893acbd1b4e2f4ff86"
     },
     "software-development/restart-window-bundling/references/astra-remediation-acceptance.md": {
-      "bytes": 6594,
-      "git_blob": "4516b62873ed076a988b67f166059319eebc7042",
-      "sha256": "b1cb063b2f7f36ed3a6f9ff4b930ee00a875e98d9e294ee6f8c83d103f228ccc"
+      "bytes": 7098,
+      "git_blob": "f4a2a880871a585543ed8fdb5a59fa8d6496607a",
+      "sha256": "41a18774f649bc6919f7cba14fc9dbdd71b569836488305d3dc5dd1da9f49632"
     },
     "software-development/restart-window-bundling/scripts/test_validate_bundle.py": {
       "bytes": 20864,
@@ -74,5 +74,5 @@
     "devops/kanban-worker",
     "software-development/restart-window-bundling"
   ],
-  "tree": "7ee9c33f939a91d78f39d1c4244b59c8a8039c81"
+  "tree": "615a599c29a6b696ca1a31b5d9a9ba1739c62f21"
 }

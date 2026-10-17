@@ -5,6 +5,20 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: included-updater-operational-policy
+  kind: operations
+  rationale: Require the installation's included updater for application updates and remove
+    custom activation controllers as an ordinary update prerequisite while preserving runtime
+    identity, authorization and enforced lifecycle controls.
+  paths:
+  - AGENTS.md
+  - website/docs/getting-started/updating.md
+  - skills/autonomous-ai-agents/hermes-agent/SKILL.md
+  - website/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md
+  tests:
+  - python3 scripts/check
+  retirement: Remove when upstream instructions require equivalent supported updater routing
+    and no longer permit operational skills to impose custom deployment controllers by default.
 - id: upstream-catalog-admission-split
   kind: operations
   rationale: Retain the previously accepted catalog while upstream code is reviewed separately.
@@ -1780,8 +1794,8 @@ patches:
 - id: kanban-mandatory-restart-policy-skills
   kind: operations
   rationale: Force-load the Kanban worker lifecycle and restart-window policy skills in every dispatcher-owned
-    worker so restart-impact classification, immutable bundle queueing, and built/queued/sealed/activated/observed
-    reporting do not depend on mutable assignee-profile skill inventories.
+    worker so runtime-impact classification, included-updater routing and source/runtime reporting
+    are available without relying on per-task skill selection.
   paths:
   - cli.py
   - hermes_cli/kanban_db.py

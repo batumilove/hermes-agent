@@ -50,7 +50,7 @@ def test_authenticated_policies_reach_the_real_required_preload(monkeypatch, tmp
         relative = path.relative_to(home / "skills").as_posix()
         assert hashlib.sha256(viewed["content"].encode("utf-8")).hexdigest() == source["files"][relative]["sha256"]
     assert "Coding/review completion does not authorize intake pause" in cli.system_prompt
-    assert "This skill governs classification and packaging" in cli.system_prompt
+    assert "This is mandatory, not a preference." in cli.system_prompt
 
 
 def test_missing_installed_policy_still_blocks_the_real_worker_gate(monkeypatch, tmp_path):

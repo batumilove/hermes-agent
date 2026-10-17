@@ -32,6 +32,15 @@ What makes Hermes different:
 
 ## Scope & Verification
 
+**Application updates must use the included updater:** `hermes update` for a
+supported source install, the built-in Desktop update flow or owning package
+manager for packaged installs. Verify the installed command's semantics, target
+feed and affected services; let it perform its documented restart within existing
+user authorization. Do not require a bespoke controller or sealed activation
+bundle, manually switch a live release, or bypass lifecycle guards. Unsupported
+exported releases need a supported migration. See the official
+[update guide](https://hermes-agent.nousresearch.com/docs/getting-started/updating/).
+
 This skill is a concise operating guide, not the complete source of truth for every Hermes feature. If a Hermes feature, command, or setting is not mentioned here or in a reference, do not treat that absence as evidence that it does not exist. Check the live repository and official docs before giving a negative answer.
 
 Good verification targets, cheapest first:
