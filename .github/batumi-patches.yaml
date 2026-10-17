@@ -1431,6 +1431,7 @@ patches:
   paths:
   - gateway/run.py
   - tests/gateway/test_reply_to_injection.py
+  - tests/gateway/test_telegram_reply_quote.py
   - gateway/run_inbound_reply.py
   - tests/agent/test_split_turn_compaction.py
   tests:
