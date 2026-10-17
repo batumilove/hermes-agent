@@ -10,12 +10,9 @@ def _prepend_inbound_reply_context(event: MessageEvent, source: SessionSource, m
     if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
         # Always inject the reply-to pointer even when the quoted text is already in history:
         # it's disambiguation (*which* prior message), not deduplication.
-        # Adapters retain the full native quote. Budget the prompt excerpt and
-        # explicitly disclose omitted context so it is not treated as complete.
+        # Preserve the complete adapter-resolved context, including native partial quotes.
+        # Clipping can hide the later list item or code the user is referencing.
         reply_text = event.reply_to_text
-        if len(reply_text) > 500:
-            marker = "… [reply excerpt clipped; original message may be longer]"
-            reply_text = reply_text[:500 - len(marker)] + marker
         _who = " your previous message" if getattr(event, "reply_to_is_own_message", False) else ""
         message_text = f'[Replying to{_who}: "{reply_text}"]\n\n{message_text}'
 
