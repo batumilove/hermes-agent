@@ -14,6 +14,7 @@ patches:
   - AGENTS.md
   - website/docs/getting-started/updating.md
   - skills/autonomous-ai-agents/hermes-agent/SKILL.md
+  - website/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md
   tests:
   - python3 scripts/check
   retirement: Remove when upstream instructions require equivalent supported updater routing
