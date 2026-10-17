@@ -327,9 +327,7 @@ def test_reply_pointer_does_not_count_toward_the_request_size(
         if gateway_kwargs.get("discord_id"):
             from gateway.run_inbound import discord_triggering_note
             request = f"{discord_triggering_note(gateway_kwargs['discord_id'])}\n\n{request}"
-        assert len(request) > _ACTIVE_TASK_MAX_CHARS
-    else:
-        assert len(request) < _ACTIVE_TASK_MAX_CHARS
+    assert len(request) > _ACTIVE_TASK_MAX_CHARS
     assert _authored_request_text(request) == _ACTIVE_REQUEST
     # Past the cap the deterministic snapshot must drop the quote, not elide the request away.
     snapshot = ContextCompressor._latest_user_task_snapshot([{"role": "user", "content": request}])
