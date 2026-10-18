@@ -1277,8 +1277,9 @@ patches:
   - scripts/honcho_monitor.py
   - tests/hermes_cli/test_honcho_monitor.py
   - tests/hermes_cli/test_honcho_queue_diagnostic.py
+  - tests/hermes_cli/test_honcho_monitor_routes.py
   tests:
-  - scripts/run_tests.sh tests/hermes_cli/test_honcho_monitor.py tests/hermes_cli/test_honcho_queue_diagnostic.py
+  - scripts/run_tests.sh tests/hermes_cli/test_honcho_monitor.py tests/hermes_cli/test_honcho_queue_diagnostic.py tests/hermes_cli/test_honcho_monitor_routes.py
   retirement: Remove when the live watchdog and diagnostics migrate to a durable operations package that
     no longer imports these modules.
 - id: cron-ephemeral-telegram-topics

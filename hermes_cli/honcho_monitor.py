@@ -507,6 +507,8 @@ def _embedding_alerts(snapshot: HonchoSnapshot, alerts: list[str]) -> None:
 
 def _spark_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None, alerts: list[str]) -> None:
     spark = snapshot.spark_goat
+    if spark.get("skipped"):
+        return
     if not spark.get("ok"):
         alerts.append("spark-goat chat failed")
     elif spark.get("thinking"):
@@ -785,7 +787,10 @@ def format_report(snapshot: dict[str, Any] | HonchoSnapshot, previous_state: dic
         spark_icon = "🟠"
     else:
         spark_icon = "🟢"
-    lines.append(f"{spark_icon} spark-goat chat: {_fmt_s(spark_latency)}{spark_tag}{spark_detail}")
+    if spark.get("skipped"):
+        lines.append("⚪ spark-goat chat: not routed (skipped)")
+    else:
+        lines.append(f"{spark_icon} spark-goat chat: {_fmt_s(spark_latency)}{spark_tag}{spark_detail}")
 
     deriver = snapshot.deriver
     if deriver:
@@ -1182,16 +1187,23 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
     # aeon-ultimate model known to be hosted on spark-goat.
     spark_model = select_spark_model(pipeline)
 
-    spark_ok, spark_data, spark_dt = curl_post_json(
-        f"{os.environ.get('HONCHO_MONITOR_SPARK_CHAT_BASE', SPARK_CHAT_BASE)}/v1/chat/completions",
-        {
-            "model": spark_model,
-            "messages": [{"role": "user", "content": "hi"}],
-            "max_tokens": 20,
-            "chat_template_kwargs": {"enable_thinking": False},
-        },
-        timeout=30,
+    # Retired endpoints are not health dependencies unless a stage routes there.
+    spark_skipped = not any(
+        is_spark_goat_chat_url(stage.get("base_url")) for stage in pipeline.values()
     )
+    if spark_skipped:
+        spark_ok, spark_data, spark_dt = False, {}, 0.0
+    else:
+        spark_ok, spark_data, spark_dt = curl_post_json(
+            f"{os.environ.get('HONCHO_MONITOR_SPARK_CHAT_BASE', SPARK_CHAT_BASE)}/v1/chat/completions",
+            {
+                "model": spark_model,
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 20,
+                "chat_template_kwargs": {"enable_thinking": False},
+            },
+            timeout=30,
+        )
     thinking = False
     spark_http_ok = spark_ok
     spark_model_ok = False
@@ -1257,6 +1269,7 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
             "model": spark_model,
             "http_ok": spark_http_ok,
             "model_ok": spark_model_ok,
+            "skipped": spark_skipped,
         },
         deriver={
             "runs_15m": runs_15m,
