@@ -798,7 +798,6 @@ patches:
   - agent/client_lifecycle.py
   - agent/turn_facade.py
   - hermes_state_titles.py
-  - gateway/run_turn_response.py
   tests:
   - scripts/run_tests.sh tests/hermes_state/test_session_db_read_path_split.py tests/agent/test_request_client_reuse.py
     tests/agent/test_turn_finalizer_cleanup_guard.py
@@ -1310,7 +1309,6 @@ patches:
   - plugins/platforms/telegram/text_recovery.py
   - gateway/post_response_transcript.py
   - gateway/run_adapters.py
-  - gateway/run_turn_recovery.py
   - tests/gateway/test_base_warning_owner_scope.py
   - tests/gateway/test_gateway_silence_tokens.py
   - tests/gateway/test_post_gateway_admission.py
@@ -1369,7 +1367,6 @@ patches:
   - tests/hermes_cli/test_web_server.py
   - hermes_cli/web_routers/actions.py
   - tests/hermes_cli/test_web_gateway_drain_ownership.py
-  - gateway/run_control_socket.py
   tests:
   - scripts/run_tests.sh tests/e2e/core/delivery/test_cron_virtual_clock_soak.py
   - scripts/run_tests.sh tests/gateway/test_external_drain_control.py tests/gateway/test_restart_drain.py
@@ -1815,7 +1812,8 @@ patches:
   paths:
   - cli.py
   - hermes_cli/kanban_db.py
-  - tests/hermes_cli/test_cli_preloaded_skills.py
+  - tests/gateway/test_session_kanban_required_skills.py
+  - gateway/session_kanban.py
   - tests/hermes_cli/test_kanban_core_functionality.py
   - hermes_cli/kanban_db_dispatch.py
   - tests/hermes_cli/test_kanban_dispatch_races.py
@@ -1830,7 +1828,7 @@ patches:
   - tests/e2e/core/upgrade/pm/_pm.py
   - tests/e2e/core/test_policy_skill_fixtures.py
   tests:
-  - scripts/run_tests.sh tests/hermes_cli/test_cli_preloaded_skills.py tests/hermes_cli/test_kanban_core_functionality.py::test_default_spawn_force_loads_worker_policy_skills
+  - scripts/run_tests.sh tests/gateway/test_session_kanban_required_skills.py tests/hermes_cli/test_kanban_core_functionality.py
     tests/hermes_cli/test_kanban_worker_spawn_toolsets.py tests/hermes_cli/test_kanban_worker_session_source.py
   - scripts/run_tests.sh tests/e2e/core/test_policy_skill_fixtures.py
   retirement: Remove when upstream force-loads equivalent lifecycle and restart-window policy for every
@@ -1847,3 +1845,32 @@ patches:
   tests:
   - scripts/run_tests.sh tests/gateway/test_telegram_network_reconnect.py tests/gateway/test_shutdown_aggregate_budget_contract.py
   retirement: Remove when upstream tests tolerate parallel-runner scheduling delay equivalently.
+
+- id: shared-daemon-fork-contract-port
+  kind: compatibility
+  rationale: Preserve fork delivery, cache cleanup, claim fencing and bounded shutdown contracts in the shared daemon owners.
+  paths:
+  - gateway/run_bootstrap.py
+  - tests/gateway/test_daemon_cache_boundary.py
+  - gateway/run_turn_hygiene.py
+  - gateway/run_turn_persistence.py
+  - gateway/session_execution.py
+  - tests/gateway/fixtures/kanban_owner_probe.py
+  - tests/gateway/test_managed_turn_shutdown_drain.py
+  - tests/gateway/test_session_kanban.py
+  - tests/gateway/test_shutdown_runtime_ownership.py
+  - gateway/run_runtime_init.py
+  - gateway/session_authority.py
+  - hermes_cli/kanban_worker_scope.py
+  - hermes_state_runtime.py
+  - tests/gateway/test_daemon_external_drain.py
+  - tests/gateway/test_runtime_worker_shutdown.py
+  - tests/gateway/test_shutdown_settle_leash.py
+  - tests/hermes_state/test_runtime_worker_operations.py
+  - gateway/session_ingress.py
+  - gateway/session_settlement_recovery.py
+  - tests/gateway/test_daemon_handoff_completion.py
+  - tests/gateway/fixtures/shared_authority_peer.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_agent_cache.py tests/gateway/test_shutdown_runtime_ownership.py tests/gateway/test_managed_turn_shutdown_drain.py tests/gateway/test_session_kanban.py
+  retirement: Remove after upstream provides equivalent retained cleanup ownership, mandatory worker policy and bounded shutdown contracts.

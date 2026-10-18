@@ -94,6 +94,9 @@ class FinalDeliveryState:
                     delivered=delivered, error=None if delivered else error)
                 if settled is False:
                     return  # A stale producer cannot schedule or finalize a newer claim.
+                # A queued authority turn may proceed only after the delivery transition
+                # is durable; preparing a receipt alone still leaves its barrier unready.
+                handoff.delivery_settled = delivered
                 controller = getattr(handoff.runner, "_post_response_controller", None)
                 if controller is not None:
                     controller.wake()

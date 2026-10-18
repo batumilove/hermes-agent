@@ -257,11 +257,13 @@ class GatewayAgentCacheMixin:
         # ordinary drift and still evicts.
         return getattr(agent, "_nous_model_switch", None) == (config_model, agent.model)
 
-    def _fallback_baseline_model(self, session_key: str, source: Optional[SessionSource], agent: Any) -> str:
+    def _fallback_baseline_model(self, session_key: str, source: Optional[SessionSource], agent: Any,
+                                 *, policy_model: Optional[str] = None) -> str:
         """The model *agent* was built to run, for the post-turn fallback check: what
-        ``_resolve_session_agent_runtime`` chose (session /model, then channel_overrides on the chat,
-        thread or parent, then the global model), canonicalized as ``AIAgent.__init__`` did on the
-        agent's PRIMARY route. The route a fallback moved it to would make that fallback look primary."""
+        ``_resolve_session_agent_runtime`` chose (session /model, then a LOCAL session's frozen launch
+        policy model, then channel_overrides on the chat, thread or parent, then the global model),
+        canonicalized as ``AIAgent.__init__`` did on the agent's PRIMARY route. The route a fallback
+        moved it to would make that fallback look primary."""
         from gateway.run import _resolve_gateway_model
         primary = getattr(agent, "_primary_runtime", None) or {}
         provider = primary.get("provider", getattr(agent, "provider", "")) or ""
@@ -269,6 +271,8 @@ class GatewayAgentCacheMixin:
         override = self._session_model_override(session_key) or {}
         if override.get("model") and override.get("provider") in (None, "", provider):
             model = override["model"]
+        elif policy_model:
+            model = policy_model
         elif source is not None:
             model = self._resolve_model_for_channel(
                 source.platform, str(source.chat_id) if source.chat_id else "",
@@ -438,11 +442,13 @@ class GatewayAgentCacheMixin:
                 clear(session_key)
             except Exception as e:
                 logger.debug("Failed to clear %s state for session boundary %s: %s", what, session_key, e)
-        # The persisted /yolo copy dies with the in-memory one, or the next turn's restore revives it.
+        # The persisted /yolo copy dies with the in-memory one, or the next turn's restore revives it. None, not
+        # False: the next conversation follows its launch policy again (seeded once per boundary), and a
+        # toggle-less chat stays off.
         store = getattr(self, "session_store", None)
         if store is not None:
             try:
-                store.set_session_yolo(session_key, False)
+                store.set_session_yolo(session_key, None)
             except Exception:
                 # Never fails the boundary itself, but a surviving ON would come back after a restart.
                 logger.warning("Failed to clear persisted yolo for session boundary %s", session_key, exc_info=True)
@@ -813,7 +819,7 @@ class GatewayAgentCacheMixin:
         )
         return hashlib.sha256(repr(key_tuple).encode("utf-8")).hexdigest()
 
-    def _evict_cached_agent(self, session_key: str) -> None:
+    def _evict_cached_agent(self, session_key: str, *, commit_memory: bool = False) -> None:
         """Remove a cached agent (/new, /model, ...) and soft-release its LLM client pool (AIAgent
         holds reference cycles; without it RSS grows across /new). Soft = frees clients and child
         subagents but PRESERVES terminal sandbox / browser / bg processes since the session may
@@ -841,14 +847,14 @@ class GatewayAgentCacheMixin:
             with _lock:
                 candidate = _first_agent(self._agent_cache.get(session_key))
                 if candidate is not None and candidate is not _AGENT_PENDING_SENTINEL:
-                    self._retain_failed_evicted_agent_cleanup(candidate, session_key)
+                    self._retain_failed_evicted_agent_cleanup(candidate, session_key, boundary=commit_memory)
                 evicted = self._agent_cache.pop(session_key, None)
         else:
             _cache = getattr(self, "_agent_cache", None)
             if _cache is not None:
                 candidate = _first_agent(_cache.get(session_key))
                 if candidate is not None and candidate is not _AGENT_PENDING_SENTINEL:
-                    self._retain_failed_evicted_agent_cleanup(candidate, session_key)
+                    self._retain_failed_evicted_agent_cleanup(candidate, session_key, boundary=commit_memory)
                 evicted = _cache.pop(session_key, None)
         agent = _first_agent(evicted)
         if agent is None or agent is _AGENT_PENDING_SENTINEL:
@@ -859,6 +865,10 @@ class GatewayAgentCacheMixin:
             self._defer_evicted_agent_release(agent, session_key)
             return
         self._schedule_evicted_agent_soft_release(agent, session_key)
+    def _evict_cached_agent_at_boundary(self, session_key: str) -> None:
+        """Reset and compress end the conversation the provider was tracking, so the old agent's
+        transcript is committed (``on_session_end``) before its clients go; a plain evict is not."""
+        self._evict_cached_agent(session_key, commit_memory=True)
 
     def _spawn_release_thread(self, target, args: tuple, name: str, *, inline_fallback: bool,
                               session_key: Optional[str] = None) -> None:
@@ -905,9 +915,10 @@ class GatewayAgentCacheMixin:
         with scope:
             return target(*args)
 
-    def _commit_memory_before_soft_evict(self, agent: Any, key: str) -> bool:
+    def _commit_memory_before_soft_evict(self, agent: Any, key: str, boundary: bool = False) -> bool:
         """Commit the live transcript before resource-only eviction of a durable session."""
-        should_commit, messages = self._soft_evict_memory_commit_plan(agent, key)
+        should_commit, messages = (self._soft_evict_memory_commit_plan(agent, key, boundary=True) if boundary
+                                       else self._soft_evict_memory_commit_plan(agent, key))
         if not should_commit or not hasattr(agent, "commit_memory_session"):
             return False
         try:
@@ -921,6 +932,11 @@ class GatewayAgentCacheMixin:
         """Atomically commit provider memory, retire workers, then release clients."""
         import inspect
 
+        registry, lock = self._failed_evicted_agent_cleanup_state()
+        with lock:
+            entry = registry.get(id(agent))
+            boundary = bool(entry and len(entry) > 2 and entry[2])
+        boundary_messages = getattr(agent, "_session_messages", None)
         memory_release = getattr(
             agent, "release_memory_provider_for_cache_evict", None
         )
@@ -933,7 +949,8 @@ class GatewayAgentCacheMixin:
             except (TypeError, ValueError):
                 logger.debug("Memory release signature is unavailable", exc_info=True)
         if supports_atomic_commit:
-            should_commit, messages = self._soft_evict_memory_commit_plan(agent, key)
+            should_commit, messages = (self._soft_evict_memory_commit_plan(agent, key, boundary=True) if boundary
+                                       else self._soft_evict_memory_commit_plan(agent, key))
             success = self._release_evicted_agent_soft(
                 agent,
                 commit=should_commit,
@@ -941,9 +958,15 @@ class GatewayAgentCacheMixin:
             )
         else:
             # Compatibility for pre-candidate/fake agents.
-            self._commit_memory_before_soft_evict(agent, key)
+            if boundary:
+                self._commit_memory_before_soft_evict(agent, key, boundary=True)
+            else:
+                self._commit_memory_before_soft_evict(agent, key)
             success = self._release_evicted_agent_soft(agent)
         if success:
+            if boundary and supports_atomic_commit:
+                from run_agent import _notify_context_engine_session_end
+                _notify_context_engine_session_end(agent, boundary_messages)
             self._complete_evicted_agent_cleanup(agent)
         return success
 
