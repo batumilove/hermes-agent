@@ -34,7 +34,10 @@ def _claimed_frame(tmp_path, monkeypatch, *, expired=False, goal_mode=False):
                        ("HERMES_KANBAN_RUN_ID", "999"), ("HERMES_KANBAN_CLAIM_LOCK", "foreign")):
         monkeypatch.setenv(key, value)
     monkeypatch.setattr(rec, "RECOVERY_DELAYS_SECONDS", (0.0,))
-    monkeypatch.setattr("agent.skill_commands.build_preloaded_skills_prompt", lambda *a, **k: ("", [], []))
+    from hermes_cli.kanban_worker_policy import KANBAN_MANDATORY_WORKER_SKILLS
+    from tests.e2e.core._policy_skills import provision_policy_skills
+
+    provision_policy_skills(tmp_path)
     kb.init_db()
     path = kb.kanban_db_path()
     with connect_closing(path) as conn:
@@ -48,7 +51,7 @@ def _claimed_frame(tmp_path, monkeypatch, *, expired=False, goal_mode=False):
                 conn.execute("UPDATE tasks SET claim_expires = 1 WHERE id = ?", (task_id,))
                 conn.execute("UPDATE task_runs SET claim_expires = 1 WHERE id = ?", (task.current_run_id,))
     context = {"db": str(path), "task_id": task_id, "run_id": task.current_run_id, "claim_lock": task.claim_lock,
-               "skills": [], "context": "", "goal_mode": goal_mode, "goal_text": "g", "goal_max_turns": 2}
+               "skills": list(KANBAN_MANDATORY_WORKER_SKILLS), "context": "", "goal_mode": goal_mode, "goal_text": "g", "goal_max_turns": 2}
     return path, context, {"text": "work", "policy": {"kanban_json": json.dumps(context)}}
 
 

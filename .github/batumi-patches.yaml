@@ -1851,6 +1851,9 @@ patches:
   kind: compatibility
   rationale: Preserve fork delivery, cache cleanup, claim fencing and bounded shutdown contracts in the shared daemon owners.
   paths:
+  - tests/gateway/test_reset_tip_unknown_barrier.py
+  - tests/gateway/test_session_kanban_turn_recovery.py
+  - tests/agent/test_kanban_turn_recovery.py
   - gateway/run_bootstrap.py
   - tests/gateway/test_daemon_cache_boundary.py
   - gateway/run_turn_hygiene.py

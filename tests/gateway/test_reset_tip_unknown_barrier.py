@@ -60,6 +60,6 @@ async def test_legacy_resume_skips_a_reset_tip_whose_admission_is_unknown(tmp_pa
         entry = _entry(resume_pending=True, resume_reason='restart_interrupted', last_resume_marked_at=datetime.now())
         runner.session_store._entries = {entry.session_key: entry}
         adapter.handle_message = AsyncMock()
-        assert runner._schedule_resume_pending_sessions() == 0
+        assert await runner._schedule_resume_pending_sessions() == 0
         await asyncio.sleep(0)
         adapter.handle_message.assert_not_called()
