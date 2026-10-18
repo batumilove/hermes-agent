@@ -1878,6 +1878,9 @@ patches:
   kind: compatibility
   rationale: Preserve fork delivery, cache cleanup, claim fencing and bounded shutdown contracts in the shared daemon owners.
   paths:
+  - tests/gateway/fixtures/native_reply_crash_daemon.py
+  - tests/hermes_cli/test_gateway_chat_native.py
+  - tests/e2e/core/windows/test_prompt_paths.py
   - tests/hermes_cli/test_plugin_uninstall_windows_live.py
   - tests/gateway/test_reset_tip_unknown_barrier.py
   - tests/gateway/test_session_kanban_turn_recovery.py

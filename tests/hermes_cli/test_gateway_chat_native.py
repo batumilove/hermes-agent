@@ -124,6 +124,8 @@ finally:
 
             launch("--cli", "chat")
             first = until("Welcome to Hermes Agent")
+            # The banner precedes prompt_toolkit startup; wait for its rendered prompt.
+            until("❯")
             type_line("WS_SHARED")
             fresh = until("LOCAL_ACK_WS_SHARED")
             type_line("/title")
