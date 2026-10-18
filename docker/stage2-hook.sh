@@ -285,6 +285,14 @@ if [ -d "$HERMES_HOME/cron" ] && tree_has_non_hermes_owner "$HERMES_HOME/cron"; 
     chown_hermes_tree "$HERMES_HOME/cron"
 fi
 
+# PM install state is mutable too: a root-context maintenance command can
+# leave a private .install.lock or generation metadata unreadable to hermes.
+# Heal it even when HERMES_HOME is already owned correctly (warm boot),
+# retaining modes and the same symlink guards as profiles/ and cron/.
+if [ -d "$HERMES_HOME/installs" ] && tree_has_non_hermes_owner "$HERMES_HOME/installs"; then
+    chown_hermes_tree "$HERMES_HOME/installs"
+fi
+
 # Always ensure logs/gateways is hermes-owned (#45258). Formerly healed by
 # restartable gateway log/run chown — removed due to symlink TOCTOU
 # (CWE-59/367). The targeted data-volume chown above only runs when the
