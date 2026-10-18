@@ -338,6 +338,7 @@ patches:
     and retirement condition. Verify immutable import provenance before selecting an upstream comparison
     for blob and critical-pattern gates; later PRs retain their target-branch gates.
   paths:
+  - contributors/emails/batumilove@users.noreply.github.com
   - scripts/ci/classify_changes.py
   - .github/batumi-patches.yaml
   - .github/batumi-contracts.yaml
