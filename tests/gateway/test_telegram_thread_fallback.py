@@ -1,18 +1,15 @@
 """Tests for Telegram topic/thread routing fallbacks.
 
-Supergroup forum topics route with ``message_thread_id``. Hermes-created
-private DM topic lanes are different: live Telegram testing showed they only
-stay in the expected lane when sends include both the private topic
-``message_thread_id`` and a ``reply_to_message_id`` anchor to the triggering
-user message. If either anchor is unavailable or rejected, the adapter must
-avoid retrying with a partial topic route that can render outside the lane.
+Supergroup forum topics route with ``message_thread_id``. Private DM topics
+initially carry both the thread id and a reply anchor. A rejected thread id
+permits one anchor-only retry; a rejected anchor must never leak to root.
 """
 
 import sys
 import socket
 import types
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -724,3 +721,124 @@ async def test_thread_fallback_only_fires_once():
     # The key point: the message was delivered despite the invalid thread
 
 
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("length", [20, 5000])
+@pytest.mark.parametrize("rich", [False, True])
+@pytest.mark.parametrize("native_hint", [False, True])
+async def test_private_topic_rejected_thread_retries_with_anchor_only(length, rich, native_hint):
+    adapter = _make_adapter()
+    calls = []
+    rich_calls = []
+    adapter._prune_stale_dm_topic_binding = Mock()
+
+    async def send_message(**kwargs):
+        calls.append(dict(kwargs))
+        if kwargs.get("message_thread_id") is not None:
+            raise FakeBadRequest("Message thread not found")
+        return SimpleNamespace(message_id=100 + len(calls))
+
+    async def do_api_request(endpoint, *, api_kwargs):
+        rich_calls.append((endpoint, api_kwargs))
+        raise FakeBadRequest("Message thread not found")
+
+    adapter._bot = SimpleNamespace(send_message=send_message)
+    if rich:
+        adapter._bot.do_api_request = do_api_request
+    result = await adapter.send(
+        chat_id="123", content=("- [x] " if rich else "") + "A" * length, reply_to="462",
+        metadata={"thread_id": "20197", "telegram_dm_topic_reply_fallback": True,
+                  "telegram_reply_to_message_id": "462", "notify": True,
+                  **({"direct_messages_topic_id": "20197"} if native_hint else {})},
+    )
+    assert result.success is True
+    assert len(calls) == ((4 if rich else 3) if length == 5000 else 2)
+    assert calls[0]["message_thread_id"] == 20197
+    assert all(call["reply_to_message_id"] == 462 for call in calls)
+    assert all(call.get("message_thread_id") is None for call in calls[1:])
+    assert all("direct_messages_topic_id" not in call for call in calls)
+    assert result.raw_response["thread_fallback"] is True
+    adapter._prune_stale_dm_topic_binding.assert_not_called()
+    if rich:
+        assert len(rich_calls) == 1
+        assert rich_calls[0][0] == "sendRichMessage"
+        assert rich_calls[0][1]["reply_parameters"] == {"message_id": 462}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fallback_error", ["Message to be replied not found", "Message thread not found"])
+async def test_private_topic_anchor_only_retry_rejection_never_sends_root(fallback_error):
+    adapter = _make_adapter()
+    calls = []
+
+    async def send_message(**kwargs):
+        calls.append(dict(kwargs))
+        raise FakeBadRequest("Message thread not found" if len(calls) == 1 else fallback_error)
+
+    adapter._bot = SimpleNamespace(send_message=send_message)
+    result = await adapter.send(
+        chat_id="123", content="reply", reply_to="462",
+        metadata={"thread_id": "20197", "telegram_dm_topic_reply_fallback": True},
+    )
+    assert result.success is False
+    assert result.retryable is False
+    assert len(calls) == 2
+    assert calls[0]["message_thread_id"] == 20197
+    assert calls[1].get("message_thread_id") is None
+    assert all(call["reply_to_message_id"] == 462 for call in calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("anchor", [None, "0", "-1"])
+async def test_private_topic_rejected_thread_without_valid_anchor_never_retries(anchor):
+    adapter = _make_adapter()
+    adapter._bot = SimpleNamespace(send_message=AsyncMock(side_effect=FakeBadRequest("Message thread not found")))
+    result = await adapter.send(
+        chat_id="123", content="reply", reply_to=anchor,
+        metadata={"thread_id": "20197", "telegram_dm_topic_reply_fallback": True},
+    )
+    assert result.success is False
+    assert result.retryable is False
+    assert adapter._bot.send_message.call_count == (0 if anchor is None else 1)
+
+
+@pytest.mark.asyncio
+async def test_native_direct_topic_rejection_keeps_native_routing():
+    adapter = _make_adapter()
+    adapter._bot = SimpleNamespace(send_message=AsyncMock(side_effect=FakeBadRequest("Message thread not found")))
+    result = await adapter.send(
+        chat_id="123", content="native topic", reply_to="462",
+        metadata={"direct_messages_topic_id": "20197"},
+    )
+    assert result.success is False
+    assert adapter._bot.send_message.call_count == 1
+    assert adapter._bot.send_message.call_args.kwargs["direct_messages_topic_id"] == 20197
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chat_id, anchor, native_topic, should_prune", [
+    (123, 462, None, False),
+    (-100123, 462, None, True),
+    (123, None, None, True),
+    (123, 462, 20197, True),
+])
+async def test_control_thread_retry_preserves_only_private_reply_anchored_binding(chat_id, anchor, native_topic, should_prune):
+    adapter = _make_adapter()
+    adapter._prune_stale_dm_topic_binding = Mock()
+    adapter._bot = SimpleNamespace(send_message=AsyncMock(side_effect=[
+        FakeBadRequest("Message thread not found"), SimpleNamespace(message_id=42),
+    ]))
+    kwargs = {"chat_id": chat_id, "text": "control", "message_thread_id": 20197,
+              "reply_to_message_id": anchor}
+    if native_topic is not None:
+        kwargs["direct_messages_topic_id"] = native_topic
+    await adapter._send_message_with_thread_fallback(**kwargs)
+    assert adapter._bot.send_message.call_count == 2
+    retry = adapter._bot.send_message.call_args.kwargs
+    assert "message_thread_id" not in retry
+    assert retry["reply_to_message_id"] == anchor
+    if should_prune:
+        adapter._prune_stale_dm_topic_binding.assert_called_once_with(chat_id, 20197)
+    else:
+        adapter._prune_stale_dm_topic_binding.assert_not_called()
