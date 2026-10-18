@@ -4343,7 +4343,7 @@ class BasePlatformAdapter(ABC):
         if handoff is not None:
             # The durable receipt now owns recovery; the finalization barrier fences
             # the next turn. Keep its token until the worker's exact-token action runs.
-            if getattr(handoff, "obligation_id", None):
+            if getattr(handoff, "delivery_settled", False):
                 getattr(event, "_gateway_marker_released", asyncio.Event()).set()
             return
         if getattr(event, "_turn_marker_handoff", False) and getattr(event, "_gateway_active_turn_token", None) and self.gateway_runner is not None:

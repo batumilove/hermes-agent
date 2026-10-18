@@ -27,14 +27,15 @@ def test_completion_projects_handoff_to_plain_wire_text():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('receipt', [None, 'durable-receipt'])
-async def test_only_durable_handoff_releases_fifo_marker_wait(receipt):
+@pytest.mark.parametrize('settled', [False, True])
+async def test_only_settled_handoff_releases_fifo_marker_wait(settled):
     from gateway.platforms.base import BasePlatformAdapter
     response = handoff()
-    response.obligation_id = receipt
+    response.obligation_id = "durable-receipt"
+    response.delivery_settled = settled
     released = asyncio.Event()
     event = SimpleNamespace(_gateway_post_response_handoff=response,
                             _gateway_marker_released=released, _gateway_active_turn_token='owned')
     await BasePlatformAdapter._release_turn_marker(SimpleNamespace(), event)
-    assert released.is_set() == bool(receipt)
+    assert released.is_set() == settled
     assert event._gateway_active_turn_token == 'owned'
