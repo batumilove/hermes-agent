@@ -22,7 +22,7 @@ def ownership_runner():
         pytest.skip("run as a non-root runtime user to verify EACCES")
     sudo = shutil.which("sudo")
     if not sudo or subprocess.run(
-        [sudo, "-n", "true"], capture_output=True, timeout=10
+        [sudo, "-n", "true"], capture_output=True, timeout=10, check=False
     ).returncode:
         pytest.skip("real ownership test requires passwordless sudo")
     text = HOOK.read_text()
