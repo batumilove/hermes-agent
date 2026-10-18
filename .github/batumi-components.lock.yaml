@@ -26,7 +26,7 @@ components:
 - id: hermes-ops
   repository: batumilove/hermes-ops
   url: https://github.com/batumilove/hermes-ops.git
-  commit: e2de0980d2898b3b629119cce4c3662b5988ff0a
+  commit: 3c1cd919a029fe69a9521f9f5edd2614e25271a7
   kind: operations
   plugins: []
 - id: honcho
