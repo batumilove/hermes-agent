@@ -5,6 +5,20 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: stage2-install-state-ownership
+  kind: compatibility
+  rationale: Repair root-owned installation state during container startup so the non-root
+    runtime user can acquire installation locks, without widening modes, following symlinks,
+    or changing unrelated host files. Real cross-UID tests require a non-root Linux runner
+    with passwordless sudo; skipped runs are not ownership acceptance evidence.
+  paths:
+  - docker/stage2-hook.sh
+  - tests/tools/test_stage2_hook_install_ownership.py
+  tests:
+  - bash -n docker/stage2-hook.sh
+  - scripts/run_tests.sh tests/tools/test_stage2_hook_install_ownership.py
+  retirement: Remove when upstream stage2 repairs installation-state ownership with equivalent
+    mode-preserving, symlink-safe behavior and real cross-UID regression coverage.
 - id: telegram-private-reply-anchor-retry
   kind: extension
   rationale: Retry rejected private message threads with the existing reply anchor, preserving the
