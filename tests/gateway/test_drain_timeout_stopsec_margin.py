@@ -144,7 +144,8 @@ async def test_gateway_stop_interrupts_before_systemd_timeout_stopsec(monkeypatc
 
     running_agent.interrupt.assert_called_once_with(
         "Gateway shutting down", tool_reason="gateway shutdown")
-    remove_pid.assert_called_once()
-    release_lock.assert_called_once()
+    # Bootstrap releases identity after the daemon writer drain.
+    remove_pid.assert_not_called()
+    release_lock.assert_not_called()
     assert elapsed < 5.0
     assert runner._shutdown_event.is_set() is True

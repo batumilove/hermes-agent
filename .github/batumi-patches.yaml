@@ -1861,6 +1861,8 @@ patches:
   - tests/gateway/test_session_kanban.py
   - tests/gateway/test_shutdown_runtime_ownership.py
   - gateway/run_runtime_init.py
+  - gateway/run_runtime.py
+  - tests/gateway/fixtures/kanban_recovery_probe.py
   - gateway/session_authority.py
   - hermes_cli/kanban_worker_scope.py
   - hermes_state_runtime.py

@@ -33,6 +33,8 @@ def main():
     mode = os.environ['KANBAN_RECOVERY_MODE']
     owner = home / 'profiles/assigned' if mode == 'cross_profile' else home
     owner.mkdir(parents=True, exist_ok=True)
+    from tests.e2e.core._policy_skills import provision_policy_skills
+    provision_policy_skills(owner)
     os.environ['HERMES_KANBAN_HOME'] = str(home / 'shared')
     board_path = home / 'custom.sqlite' if mode == 'custom' else home / 'shared/kanban/boards/owned/kanban.db'
     os.environ['HERMES_KANBAN_DB'] = str(board_path)
