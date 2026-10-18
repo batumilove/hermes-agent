@@ -1270,15 +1270,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
-            finalization_reply = await self._post_response_gate(event, source, is_internal)
-            if finalization_reply:
-                return finalization_reply
-            await self._persist_active_agents_async()
-            # Fail-open plugin consume inside the claimed slot (#129958); once per message.
-            if not is_internal:
-                _consumed, _consumer_reply = await self._hm_post_admission_consume(event, source, _quick_key)
-                if _consumed:
-                    return _consumer_reply
+            consumed, reply = await self._claimed_turn_gate(event, source, is_internal, _quick_key)
+            if consumed:
+                return reply
             try:
                 _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
             except TurnLeaseTimeoutError as exc:
@@ -1306,7 +1300,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
             # recovery pass. A turn the adapter delivers hands its marker to that lifecycle, which
             # clears it only once the reply is in the delivery ledger (else a kill in between
             # left neither marker nor ledger row and the persisted reply was never sent).
-            if not getattr(event, "_turn_marker_handoff", False) and not getattr(event, "_gateway_post_response_handoff", None):
+            if not self._turn_marker_handed_off(event):
                 await self._clear_durable_active_turn(event)
             # Release only this turn's generation. Eviction may immediately admit a replacement
             # through the cold path; an unconditional release here would then clear the replacement
@@ -1505,7 +1499,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
             message_text = f"{context_note}\n\n{message_text}"
         return message_text
 
-    from gateway.run_inbound_finalization import _post_response_gate, _external_drain_rejects
+    from gateway.run_inbound_finalization import _post_response_gate, _external_drain_rejects, _turn_marker_handed_off, _claimed_turn_gate
     from gateway.run_inbound_reply import _prepend_inbound_reply_context
     _prepend_inbound_reply_context = staticmethod(_prepend_inbound_reply_context)
 

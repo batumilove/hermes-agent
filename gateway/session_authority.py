@@ -135,8 +135,18 @@ class SessionAuthority:
                 and source.user_id != actor.subject and 'session:operator' not in actor.capabilities):
             raise RuntimeStoreError('permission_denied')
 
+    def _admission_closed(self):
+        return bool(self.runner._draining or self.retiring
+                    or getattr(self.runner, '_external_drain_active', False))
+
+    def resume_after_external_drain(self):
+        """Revisit committed queues after reversible maintenance releases admission."""
+        if not self._admission_closed():
+            for session_id in tuple(self.sessions):
+                self._schedule(SessionRef(self.profile_id, session_id))
+
     def _require_admission_open(self):
-        if self.runner._draining or self.retiring:
+        if self._admission_closed():
             raise RuntimeStoreError('runtime_draining')
 
     def _admission_gate(self, authorize=None):
@@ -845,7 +855,7 @@ class SessionAuthority:
     def _drain_stopping(self, ref, live):
         """A drain about to wait (storage retry, classic slot) exits instead when the runtime drains,
         the profile retires or the live entry was replaced; committed rows stay queued."""
-        if self.runner._draining or self.retiring or self.sessions.get(ref.session_id) is not live:
+        if self._admission_closed() or self.sessions.get(ref.session_id) is not live:
             self._pause(ref, 'runtime_draining')
             return True
         return False
@@ -1026,7 +1036,7 @@ class SessionAuthority:
         if waiter is None or waiter.done():
             return
         waiter.set_result(response)
-        if released is not None and not (self.runner._draining or self.retiring):
+        if released is not None and not (self._admission_closed()):
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(released.wait(), _MARKER_RELEASE_WAIT_S)
 

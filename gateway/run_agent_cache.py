@@ -958,7 +958,10 @@ class GatewayAgentCacheMixin:
             )
         else:
             # Compatibility for pre-candidate/fake agents.
-            self._commit_memory_before_soft_evict(agent, key)
+            if boundary:
+                self._commit_memory_before_soft_evict(agent, key, boundary=True)
+            else:
+                self._commit_memory_before_soft_evict(agent, key)
             success = self._release_evicted_agent_soft(agent)
         if success:
             if boundary and supports_atomic_commit:

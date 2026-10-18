@@ -743,6 +743,9 @@ class GatewayShutdownMixin(GatewayShutdownBudgetMixin, GatewaySessionEndMixin):
             "External drain RELEASED (.drain_request.json removed) — "
             "re-accepting new turns; gateway_state -> %s.", self._serving_state(),
         )
+        from gateway.session_authorities import all_authorities
+        for authority in all_authorities(self):
+            authority.resume_after_external_drain()
         await self._update_runtime_status_async(self._serving_state())
 
     async def _drain_control_watcher(self, interval: float = 1.0) -> None:

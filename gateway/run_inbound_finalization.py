@@ -42,3 +42,16 @@ async def _post_response_gate(self, event, source, is_internal):
 def _external_drain_rejects(self, event, is_internal):
     return bool(self._external_drain_active and (
         not is_internal or (event.metadata or {}).get("drain_admission") == "new_agent_turn"))
+
+def _turn_marker_handed_off(self, event):
+    return bool(getattr(event, "_turn_marker_handoff", False)
+                or getattr(event, "_gateway_post_response_handoff", None))
+
+async def _claimed_turn_gate(self, event, source, is_internal, session_key):
+    reply = await self._post_response_gate(event, source, is_internal)
+    if reply:
+        return True, reply
+    await self._persist_active_agents_async()
+    if not is_internal:
+        return await self._hm_post_admission_consume(event, source, session_key)
+    return False, None

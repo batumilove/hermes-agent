@@ -199,19 +199,6 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
 
 
 
-    async def _hmwa_stop_typing_for_turn(self, event, source):
-        """Stop the typing indicator (never raises). Slack AI status is scoped to a thread/
-        workspace, so preserve the routing metadata used by the response delivery path."""
-        with suppress(Exception):
-            _typing_adapter = self._delivery_adapter_for(source)
-            _kind = type(_typing_adapter)
-            if _typing_adapter and callable(getattr(_kind, "_stop_typing_with_metadata", None)):
-                await _typing_adapter._stop_typing_with_metadata(source.chat_id, self._event_thread_metadata(event, source))
-            elif _typing_adapter and callable(getattr(_kind, "stop_typing", None)):
-                await _typing_adapter.stop_typing(source.chat_id)
-
-
-
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -337,23 +324,9 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 event, source, session_entry, session_key, run_generation,
                 agent_result, agent_messages, response, _footer_line, _intentional_silence,
             )
-            if deferred_actions is not None and delivered_response:
-                from gateway.post_response import FinalResponseHandoff
-                from gateway.run import _should_clear_resume_pending_after_turn
-                handoff = FinalResponseHandoff(
-                    delivered_response, runner=self, session_key=session_key,
-                    session_lineage=session_entry.session_id, expected_session_id=session_entry.session_id,
-                    new_session_id=agent_result.get("session_id"),
-                    active_turn_token=getattr(event, "_gateway_active_turn_token", None),
-                    last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
-                    touch_activity=not bool(getattr(event, "internal", False)), append_final_text=False,
-                    clear_resume_pending=_should_clear_resume_pending_after_turn(agent_result),
-                    gateway_actions=deferred_actions, source_data=source.to_dict())
-                event._gateway_post_response_handoff = handoff
-                event._gateway_post_response_voice_reply = self._should_send_voice_reply(
-                    event, response, agent_messages, already_sent=False)
-                return handoff
-            return delivered_response
+            return self._hmwa_final_response_handoff(
+                event, source, session_entry, session_key, agent_result, agent_messages,
+                response, delivered_response, deferred_actions)
 
         except Exception as e:
             return await self._hmwa_agent_error_reply(e, event, source, session_entry, session_key, prepared)

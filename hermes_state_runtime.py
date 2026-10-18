@@ -554,7 +554,8 @@ _MESSAGE_FIELDS = frozenset({
     'role', 'content', 'tool_name', 'tool_calls', 'tool_call_id', 'token_count',
     'finish_reason', 'reasoning', 'reasoning_content', 'reasoning_details',
     'codex_reasoning_items', 'codex_message_items', 'platform_message_id', 'message_id',
-    'observed', 'effect_disposition', '_compressed_summary', 'timestamp', 'api_content',
+    'observed', 'effect_disposition', '_side_effect_evidence_succeeded',
+    '_compressed_summary', 'timestamp', 'api_content',
     'display_kind', 'display_metadata', '_row_id', '_canonical_content', DB_ROW_SNAPSHOT, CANONICAL_ROW,
     # Main's durable message identity (message_uid / merge witness / tool-call uids) and the alternation
     # repair's row counts ride every persisted dict; the owner's insert and coverage read them.

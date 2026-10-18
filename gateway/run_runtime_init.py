@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger("gateway.run")  # log-record parity with gateway/run.py
 
@@ -235,3 +237,62 @@ class GatewayRuntimeInitMixin:
         self._scale_to_zero_cooldown_until: float = 0.0
         self._scale_to_zero_no_suspend_logged: bool = False
         self._scale_to_zero_direct_platform_logged: bool = False
+
+    def _open_session_db_for_active_scope(self, raise_on_error: bool = False) -> Any:
+        """AsyncSessionDB for the active profile scope, resolved per access (not in ``__init__``) since
+        ``SessionDB()`` reads the context-local HERMES_HOME; one handle cached per path. Construction
+        failure enters bounded backoff; ``raise_on_error=True`` (priming) propagates it.
+
+        Same per-path cache as ``SessionStore._open_session_db_for_active_scope`` (#88532): ``SessionDB()``
+        resolves ``_default_db_path()`` at call time through the context-local HERMES_HOME override
+        installed by ``_profile_runtime_scope``, so resolving per access — instead of once in ``__init__`` —
+        is what lets /resume, /title, /history and session search on a multiplexed gateway read the *serving
+        profile's* store rather than the root one.
+        One ``AsyncSessionDB`` is cached per resolved path, so the wrapper identity is stable per profile
+        (callers compare and stash it) and two profiles never share a handle. A construction failure enters
+        bounded backoff; one caller retries after the deadline while concurrent callers continue to see the
+        unavailable fallback. ``raise_on_error=True`` (construction-time priming) propagates the failure
+        after recording that recoverable state so ``__init__`` can record ``_session_db_init_error`` for the
+        #88235 broadcast.
+        """
+        from hermes_state import AsyncSessionDB, _default_db_path
+        from hermes_state_registry import acquire
+        from gateway.session_db_recovery import RecoverableHandleCache
+        path = Path(_default_db_path())
+        cache = getattr(self, "_session_db_handle_cache", None)
+        if cache is None:
+            # Test runners built with object.__new__ skip __init__.
+            cache = RecoverableHandleCache(
+                handles=self._session_db_handles, lock=self._session_db_handles_lock)
+            self._session_db_handle_cache = cache
+
+        def _open():
+            # Borrow the SessionStore's handle (same path) so state.db doesn't get two writers/pools.
+            # The store owns/sweeps it at shutdown; this cache holds only the async wrapper (close_all).
+            # Both caches resolve the SAME ``_default_db_path()``, so the process was holding two writer
+            # connections and two read pools against one state.db — the fd budget doubled for nothing, and
+            # doubled again per profile on a multiplexed gateway (#98573). A borrowed wrapper goes stale only
+            # when the registry tears its generation down (profile unserve/delete); both caches then drop
+            # the dead handle and reopen through the registry. While the store's own open is failing there
+            # is nothing to borrow, so nothing is cached here either.
+            store = getattr(self, "session_store", None)
+            borrowed = getattr(store, "_db", None) if store is not None else None
+            if borrowed is not None:
+                wrapper = AsyncSessionDB(borrowed)
+                # close_all_session_db_handles() must not close what the store owns (its sweep runs first).
+                wrapper.__dict__["_hermes_borrowed_handle"] = True
+                return wrapper
+            if store is not None:
+                # Store handle unavailable: opening our own would resurrect the duplicate borrowed away.
+                raise RuntimeError("SessionStore SQLite handle unavailable")
+            try:
+                return AsyncSessionDB(acquire())
+            except Exception as exc:
+                logger.warning("SQLite session store not available: %s", exc)
+                raise
+
+        def _recovered() -> None:
+            self._session_db_init_error = None
+            logger.info("SQLite session store recovered")
+
+        return cache.get(path, _open, raise_on_error=raise_on_error, on_recovered=_recovered)

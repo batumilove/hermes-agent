@@ -127,7 +127,9 @@ def main():
                     assert [s[0] for s in launched.spawned] == [tid], launched
                     task = kb.get_task(conn, tid)
                     params = dict(task_id=tid, board='owned', run_id=task.current_run_id, claim_lock=task.claim_lock)
-                    assert peer.blocked.wait(55), 'model never reached'
+                    assert peer.blocked.wait(55), 'model never reached\n' + '\n'.join(
+                        str(p.relative_to(home)) + ':\n' + p.read_text(errors='replace')[-5000:]
+                        for p in home.rglob('*.log'))
                     active = kb.get_task(conn, tid)
                     receipt.update(client_pid=clients[0].pid, stored_pid=active.worker_pid, run_id=task.current_run_id)
                     if peer.mode == 'timeout':

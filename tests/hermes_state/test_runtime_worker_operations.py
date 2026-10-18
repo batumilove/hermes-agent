@@ -25,7 +25,8 @@ def test_structured_worker_receipts_are_atomic_and_scoped(tmp_path):
             {'role': 'user', 'content': [{'type': 'text', 'text': 'hello\ud800'}], 'api_content': 'wire'},
             {'role': 'assistant', 'content': None, 'reasoning': 'private reason',
              'tool_calls': [{'id': 'call1', 'type': 'function', 'function': {'name': 'terminal', 'arguments': '{}'}}]},
-            {'role': 'tool', 'content': 'tool-marker', 'tool_call_id': 'call1', 'tool_name': 'terminal'},
+            {'role': 'tool', 'content': 'tool-marker', 'tool_call_id': 'call1', 'tool_name': 'terminal',
+             '_side_effect_evidence_succeeded': True},
         ]
         payload = {'messages': messages, 'turn_lease_holder': 'worker-lease'}
         receipt = apply(2, 'transcript.append', payload)
@@ -43,6 +44,7 @@ def test_structured_worker_receipts_are_atomic_and_scoped(tmp_path):
         assert stored[1]['reasoning'] == 'private reason'
         assert stored[2]['tool_call_id'] == 'call1'
         assert stored[2]['content'] == 'tool-marker'
+        assert stored[2]['_side_effect_evidence_succeeded'] == 1
         with pytest.raises(RuntimeStoreError, match='invalid_params'):
             apply(3, 'SQL', {'sql': 'DELETE FROM messages'})
         assert apply(3, 'turn.renew', {'holder': 'worker-lease', 'ttl_seconds': 300})['value']

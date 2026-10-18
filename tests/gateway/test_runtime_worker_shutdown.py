@@ -18,7 +18,9 @@ async def test_managed_claims_participate_in_zero_and_nonzero_drain(tmp_path):
     live = SimpleNamespace(task=task, route='route', event_stream=SimpleNamespace(execution={'execution_generation': 2}))
     authority = SimpleNamespace(sessions={'s': live}, _managed_workers={
         's': SimpleNamespace(control=lambda frame: stopped.append(frame), closed=threading.Event())})
-    runner = SimpleNamespace(session_authority=authority, _running_agents={},
+    from tests.gateway.restart_test_helpers import make_restart_runner
+    runner, _adapter = make_restart_runner()
+    runner.__dict__.update(session_authority=authority, _running_agents={},
         _running_agent_count=lambda: 0, _active_cron_job_count=lambda: 0, _active_api_run_count=lambda: 0,
         _active_deferred_agent_worker_count=lambda: 0, _snapshot_running_agents=dict,
         _update_runtime_status=lambda *a: None)
@@ -99,7 +101,9 @@ async def test_whole_runtime_settle_logs_late_work_and_finishes_shutdown(monkeyp
     authority = SimpleNamespace(sessions={'s': live}, _managed_workers={}, pending_stops={}, adopted={}, profile_id='p',
                                 _turn_workers={1: (SimpleNamespace(worker_done=wedged), [agent])})
     revoked, stopped = [], []
-    runner = SimpleNamespace(session_authority=authority, _running_agents={},
+    from tests.gateway.restart_test_helpers import make_restart_runner
+    runner, _adapter = make_restart_runner()
+    runner.__dict__.update(session_authority=authority, _running_agents={},
                              session_ticket_store=SimpleNamespace(revoke=lambda: revoked.append(True)),
                              session_api=SimpleNamespace())
     authority.runner = runner

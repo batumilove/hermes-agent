@@ -54,7 +54,6 @@ class GatewayTurnPersistenceMixin:
         logging, resume-pending clear, empty-response normalization, and identity-guarded
         post-compression session_id propagation. Returns
         ``(response, _intentional_silence, agent_messages)``."""
-        from gateway.run_turn import _unexpected_silence_reply
         from gateway.run import (
             _is_gateway_hidden_reasoning_incomplete_turn, _normalize_empty_agent_response,
             _sanitize_gateway_final_response, _should_clear_resume_pending_after_turn,
@@ -601,3 +600,34 @@ class GatewayTurnPersistenceMixin:
             _quick_key or "?", run_generation,
         )
         self._pop_post_delivery_callback(self._delivery_adapter_for(source), _quick_key, run_generation)
+
+    def _hmwa_final_response_handoff(self, event, source, session_entry, session_key,
+            agent_result, agent_messages, response, delivered_response, deferred_actions):
+        if deferred_actions is not None and delivered_response:
+            from gateway.post_response import FinalResponseHandoff
+            from gateway.run import _should_clear_resume_pending_after_turn
+            handoff = FinalResponseHandoff(
+                delivered_response, runner=self, session_key=session_key,
+                session_lineage=session_entry.session_id, expected_session_id=session_entry.session_id,
+                new_session_id=agent_result.get("session_id"),
+                active_turn_token=getattr(event, "_gateway_active_turn_token", None),
+                last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
+                touch_activity=not bool(getattr(event, "internal", False)), append_final_text=False,
+                clear_resume_pending=_should_clear_resume_pending_after_turn(agent_result),
+                gateway_actions=deferred_actions, source_data=source.to_dict())
+            event._gateway_post_response_handoff = handoff
+            event._gateway_post_response_voice_reply = self._should_send_voice_reply(
+                event, response, agent_messages, already_sent=False)
+            return handoff
+        return delivered_response
+
+    async def _hmwa_stop_typing_for_turn(self, event, source):
+        """Stop the typing indicator (never raises). Slack AI status is scoped to a thread/
+        workspace, so preserve the routing metadata used by the response delivery path."""
+        with suppress(Exception):
+            _typing_adapter = self._delivery_adapter_for(source)
+            _kind = type(_typing_adapter)
+            if _typing_adapter and callable(getattr(_kind, "_stop_typing_with_metadata", None)):
+                await _typing_adapter._stop_typing_with_metadata(source.chat_id, self._event_thread_metadata(event, source))
+            elif _typing_adapter and callable(getattr(_kind, "stop_typing", None)):
+                await _typing_adapter.stop_typing(source.chat_id)

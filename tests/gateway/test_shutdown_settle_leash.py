@@ -14,15 +14,15 @@ import pytest
 
 import gateway.run as gw_mod
 from gateway import run_shutdown
-from tests.gateway.test_shutdown_executor_quiesce import _FakeGateway
+from tests.gateway.test_shutdown_executor_quiesce import _make_gateway
 
 
 @pytest.mark.asyncio
 async def test_stop_settles_within_the_leash_and_keeps_state_db_open_for_a_live_turn(monkeypatch):
     events = []
-    gw = _FakeGateway(events)
+    gw = _make_gateway(events)
     # A 12 s watchdog leash: the settle may spend at most what is left of it minus the tail reserve.
-    monkeypatch.setattr(run_shutdown, "resolve_shutdown_watchdog_delay", lambda drain, **_k: 12.0)
+    monkeypatch.setattr(gw_mod, "resolve_shutdown_watchdog_delay", lambda drain, **_k: 12.0)
     never = asyncio.Event()
     turn = asyncio.create_task(never.wait())  # an executing turn that ignores its Stop
     live = SimpleNamespace(task=turn, route="r", event_stream=SimpleNamespace(execution={"execution_generation": 1}))
