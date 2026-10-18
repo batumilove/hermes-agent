@@ -3548,6 +3548,8 @@ def _wait_for_external_cron_worker_body(
     A gateway replacement may kill this waiter; it does not kill the scoped
     worker or change its ledger ownership.
     """
+    import sqlite3
+
     def _is_terminal() -> bool:
         current = get_execution(execution_id)
         return bool(current and current.get("status") in _TERMINAL_STATES)
@@ -3556,11 +3558,27 @@ def _wait_for_external_cron_worker_body(
     # the correct wakeup.  Each ledger read opens a connection and re-runs
     # schema init; polling it at 50ms for an hours-long agent run is ~72k
     # opens/hour of pure contention with the worker's own writes.
+    monitor_read_failed = False
     while True:
         try:
             returncode = process.wait(timeout=1.0)
         except subprocess.TimeoutExpired:
-            if not _is_terminal():
+            # A failed observation cannot revoke the adopted worker's claim.
+            # Stop optional early-terminal reads after the first storage error;
+            # keep waiting for process exit under the worker's existing budgets.
+            # The mandatory exit read below still surfaces storage failures.
+            if monitor_read_failed:
+                continue
+            try:
+                terminal = _is_terminal()
+            except (OSError, sqlite3.Error):
+                logger.warning(
+                    "Cron worker %s ledger monitoring failed; waiting for worker exit",
+                    execution_id, exc_info=True,
+                )
+                monitor_read_failed = True
+                continue
+            if not terminal:
                 continue
             # Recovery can win between the timeout and this ledger read. If
             # the worker has since exited, consume its diagnostics below before
