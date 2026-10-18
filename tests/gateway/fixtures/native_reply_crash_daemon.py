@@ -8,16 +8,16 @@ import runpy
 import signal
 
 from gateway import session_results
-from gateway.platforms.base import BasePlatformAdapter
+from gateway.post_response_delivery import FinalDeliveryState
 
-record = BasePlatformAdapter._record_delivery_obligation
+prepare = FinalDeliveryState.prepare
 finish = session_results.finish_result
 
 
-async def die_before_ledger(self, event, session_key, text_content, *args, **kwargs):
+async def die_before_ledger(self, event, text_content, *args, **kwargs):
     if 'KILL_BEFORE_LEDGER' in text_content:
         os.kill(os.getpid(), signal.SIGKILL)
-    return await record(self, event, session_key, text_content, *args, **kwargs)
+    return await prepare(self, event, text_content, *args, **kwargs)
 
 
 def die_before_commit(db, *, row, **kwargs):
@@ -26,6 +26,6 @@ def die_before_commit(db, *, row, **kwargs):
     return finish(db, row=row, **kwargs)
 
 
-BasePlatformAdapter._record_delivery_obligation = die_before_ledger
+FinalDeliveryState.prepare = die_before_ledger
 session_results.finish_result = die_before_commit
 runpy.run_module('gateway.run', run_name='__main__')

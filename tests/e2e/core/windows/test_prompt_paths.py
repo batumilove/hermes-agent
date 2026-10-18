@@ -60,7 +60,16 @@ def test_subdirectory_hint_reaches_model(spelling: str, tmp_path: Path) -> None:
         (home.project / "backend" / "src" / "main.py").write_text("print('hi')\n", encoding="utf-8")
         (home.project / "backend" / "AGENTS.md").write_text(f"# Backend\n\n{canary}\n", encoding="utf-8")
         res = hermes(home, "chat", "-q", "Run the backend entry point.", "-Q")
-        assert res.returncode == 0, res.tail()
+        if res.returncode != 0:
+            # The CLI's concise connection error omits the detached owner's traceback.
+            # Preserve that evidence before the fixture tears down this isolated home.
+            logs = home.hermes_home / "logs"
+            diagnostic = "\n".join(
+                f"--{path.name}--\n{path.read_text(encoding='utf-8', errors='replace')[-12000:]}"
+                for path in (logs / "gateway-stdio.log", logs / "gateway.log",
+                             home.hermes_home / "gateway_state.json") if path.is_file())
+            pytest.fail(res.tail() + "\n" + diagnostic)
+
         results = tool_results(srv)
     assert len(results) == 1, f"expected one terminal result on the wire, got {results}"
     with known_gate(KNOWN, spelling, raises=KnownBugSymptom):
