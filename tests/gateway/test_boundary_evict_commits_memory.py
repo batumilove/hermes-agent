@@ -69,13 +69,14 @@ def test_evicts_with_nothing_to_notify_only_release(monkeypatch):
     assert calls == [('release', None)]
 
 
-def test_plain_evict_still_skips_the_commit(monkeypatch):
-    """``/model`` and rewind keep the conversation open; only the clients are recycled."""
+def test_plain_evict_flushes_provider_memory_before_release(monkeypatch):
+    """The retained fork flushes provider memory before discarding its agent;
+    engine-only resource eviction still keeps the conversation open."""
     runner = _runner(monkeypatch)
     calls = []
     runner._agent_cache['route'] = (_agent(calls), 'sig')
     runner._evict_cached_agent('route')
-    assert calls == [('release', None)]
+    assert calls == [('commit', [{'role': 'user', 'content': 'hi'}]), ('release', None)]
 
 
 @pytest.mark.asyncio

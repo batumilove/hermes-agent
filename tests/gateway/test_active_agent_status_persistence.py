@@ -94,10 +94,9 @@ def test_runtime_lock_release_waits_for_short_status_commit(tmp_path, monkeypatc
     from gateway import status, status_sequence
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    lock_path = tmp_path / "gateway.lock"
-    lock_path.write_text("\n")
-    handle = open(lock_path, "a+", encoding="utf-8")
-    monkeypatch.setattr(status, "_gateway_lock_handle", handle)
+    from gateway.runtime_ownership import process_ownership
+    process_ownership.reserve([tmp_path])
+    assert process_ownership.owns(tmp_path)
 
     write_entered = threading.Event()
     allow_write = threading.Event()
@@ -137,23 +136,22 @@ def test_runtime_lock_release_waits_for_short_status_commit(tmp_path, monkeypatc
         writer.start()
         assert write_entered.wait(timeout=2)
         assert status.release_gateway_runtime_lock(timeout=0.0) is False
-        assert status._gateway_lock_handle is handle
+        assert process_ownership.owns(tmp_path)
         flush_entered.clear()
         releaser.start()
         assert flush_entered.wait(timeout=2)
         assert not release_finished.is_set()
-        assert status._gateway_lock_handle is handle
+        assert process_ownership.owns(tmp_path)
         allow_write.set()
         writer.join(timeout=2)
         releaser.join(timeout=2)
         assert release_finished.is_set()
-        assert status._gateway_lock_handle is None
+        assert not process_ownership.owns(tmp_path)
         assert not writer.is_alive()
         assert json.loads((tmp_path / "gateway_state.json").read_text())["active_agents"] == 1
     finally:
         allow_write.set()
-        if not handle.closed:
-            handle.close()
+        process_ownership.release(tmp_path)
 
 
 def test_runtime_lock_release_timeout_cannot_wedge_forced_exit(tmp_path, monkeypatch):
@@ -161,10 +159,9 @@ def test_runtime_lock_release_timeout_cannot_wedge_forced_exit(tmp_path, monkeyp
     from gateway import status, status_sequence
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    lock_path = tmp_path / "gateway.lock"
-    lock_path.write_text("\n")
-    handle = open(lock_path, "a+", encoding="utf-8")
-    monkeypatch.setattr(status, "_gateway_lock_handle", handle)
+    from gateway.runtime_ownership import process_ownership
+    process_ownership.reserve([tmp_path])
+    assert process_ownership.owns(tmp_path)
 
     holder_ready = threading.Event()
     release_holder = threading.Event()
@@ -182,10 +179,9 @@ def test_runtime_lock_release_timeout_cannot_wedge_forced_exit(tmp_path, monkeyp
     try:
         assert status.release_gateway_runtime_lock(timeout=0.05) is False
         assert time.monotonic() - started < 2
-        assert status._gateway_lock_handle is handle
+        assert process_ownership.owns(tmp_path)
     finally:
         release_holder.set()
         holder.join(timeout=2)
         status.release_gateway_runtime_lock(timeout=1.0)
-        if not handle.closed:
-            handle.close()
+        process_ownership.release(tmp_path)
