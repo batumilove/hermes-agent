@@ -261,11 +261,6 @@ _SYNC_FALLBACK_NOTES = {
         "finite chat using -Q, --oneshot, or non-TTY stdio, `hermes -z`, a cron job, a Kanban "
         "worker, or a stateless HTTP endpoint). The subagent(s) ran SYNCHRONOUSLY and the result is included above."
     ),
-    "at_capacity": (
-        "The background delegation pool was at capacity (delegation.max_concurrent_children), so the subagent(s) ran "
-        "SYNCHRONOUSLY and the result is included above. Raise "
-        "delegation.max_concurrent_children in config.yaml to allow more concurrent background delegations."
-    ),
 }
 
 def _run_sync_with_note(batch: _Batch, reason: str) -> str:
@@ -292,7 +287,7 @@ def _resolve_async_wake_sid(origin_wake_sid: str, origin_session_history_deliver
         # Finite sessions cannot route a detached subagent result back to the agent after their turn/process
         # ends. This includes stateless HTTP requests (#10760) and one-shot Kanban workers (#63169). Fall
         # back to SYNCHRONOUS execution so the result returns in this same turn instead of handing out a
-        # handle with no durable consumer. Mirrors the pool-at-capacity inline fallback below.
+        # handle with no durable consumer. Capacity rejection never falls back inline.
         from gateway.session_context import async_delivery_supported
         if async_delivery_supported():
             return ""
@@ -381,11 +376,11 @@ _BACKGROUND_NOTES = {
 
 def _dispatched_payload(batch: _Batch, units: list[tuple[_Batch, str]]) -> dict:
     """Model-facing handle for an accepted background call: one entry per async unit."""
-    goals = [t["goal"] for t in batch.task_list]
+    goals = [t["goal"] for _, t, _ in batch.children]
     n = len(goals)
     payload = {
         "status": "dispatched", "mode": "background", "count": n,
-        "delegation_id": batch.live_deleg_id or units[0][1], "goals": goals,
+        "delegation_id": units[0][1] if len(units) == 1 else batch.live_deleg_id or units[0][1], "goals": goals,
         "note": _BACKGROUND_NOTES["one"] if n == 1 else _BACKGROUND_NOTES["many"].format(n=n, k=len(units)),
     }
     if len(units) > 1:
@@ -397,8 +392,11 @@ def _dispatched_payload(batch: _Batch, units: list[tuple[_Batch, str]]) -> dict:
     if any(isinstance(s, str) and s for s in sids):
         payload["subagent_ids"] = sids
         payload["control_hint"] = _BACKGROUND_NOTES["control_hint"]
-    if batch.live_paths:
-        payload["live_transcripts"] = list(batch.live_paths)
+    paths = [str(batch.live_writers[i].path) for i, _, _ in batch.children
+             if i < len(batch.live_writers) and batch.live_writers[i] is not None
+             and batch.live_writers[i].path is not None]
+    if paths:
+        payload["live_transcripts"] = paths
         payload["live_transcripts_hint"] = _BACKGROUND_NOTES["live_transcripts_hint"]
     return payload
 
@@ -443,17 +441,33 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
         progress_fn=lambda: _batch_progress_token(child_agents), **routing,
     )
 
-def _restore_parent_cancellation(unit: _Batch) -> None:
-    """Rejected children stay owned by the parent: re-attach them (``_attach_child`` replays a stop that
-    arrived while async admission had them detached)."""
-    for _, _, child in unit.children:
-        _attach_child(unit.parent_agent, child)
+def _reject_unowned_children(batch: _Batch, dispatch: dict) -> list[dict]:
+    """Retire only children with no accepted worker; never execute rejected work inline."""
+    from tools.delegate_tool_lifecycle import _retire_child_without_owner
+    from tools.delegation_live_log import update_manifest_statuses
+    rejected = []
+    for i, _, child in batch.children:
+        _retire_child_without_owner(child, batch.parent_agent)
+        entry = {"task_index": i, "status": "rejected", "error": dispatch.get("error")}
+        rejected.append(entry)
+        with _quiet("Rejected transcript finalize failed"):
+            if i < len(batch.live_writers) and batch.live_writers[i] is not None:
+                batch.live_writers[i].finalize(entry)
+    update_manifest_statuses(batch.live_deleg_id, rejected, home=batch.live_home)
+    finish_delegation_unit(batch.task_list, rejected, background=True)
+    return rejected
+
+_REJECTION_HINT = (
+    "No rejected work was started or queued. Use delegate_task(action='list') to inspect existing child handles; "
+    "keep accepted delegation_id and subagent_ids for reconciliation. Wait for accepted work to finish before "
+    "retrying rejected tasks. A timeout is not cancellation: do not redispatch work whose ownership is uncertain. "
+    "Stopped or superseded work requires renewed authorization, not automatic retry."
+)
 
 def _dispatch_background(batch: _Batch) -> str:
     """Dispatch the call as independent async units (see ``_units_of``) and return the tool result JSON. Every unit
     of one call shares ONE pool slot (``slot_key``), so grouping never changes capacity accounting. Falls back to
-    running synchronously (with an explanatory ``note``) when the session cannot receive detached completions or the
-    async pool is at capacity."""
+    running synchronously only when the session cannot receive detached completions. Rejected units never run inline."""
     from tools.delegate_tool import _get_max_async_children
     wake_sid = _resolve_async_wake_sid(batch.origin_wake_sid, batch.origin_session_history_delivery)
     if wake_sid is None:
@@ -469,7 +483,7 @@ def _dispatch_background(batch: _Batch) -> str:
 
     units = _units_of(batch)
     dispatched: list[tuple[_Batch, str]] = []
-    inline_results: list[dict] = []
+    rejected_results: list[dict] = []
     slot_key: Optional[str] = None
     for k, unit in enumerate(units):
         # One unit keeps the live-transcript directory's id so the returned delegation_id matches
@@ -477,7 +491,7 @@ def _dispatch_background(batch: _Batch) -> str:
         unit_id = batch.live_deleg_id if len(units) == 1 else (f"{batch.live_deleg_id}-{k + 1}" if batch.live_deleg_id else None)
         unit.unit_id = unit_id = unit_id or _new_delegation_id()  # fixed before the runner can start
         # The worker can start before admission returns. Detach only this unit:
-        # unsubmitted units must still receive parent stops while a fallback runs.
+        # unsubmitted units must still receive parent stops during admission.
         for _, _, child in unit.children:
             _detach_child(parent_agent, child)
         dispatch = _dispatch_unit(unit, unit_id, slot_key, routing)
@@ -485,20 +499,21 @@ def _dispatch_background(batch: _Batch) -> str:
             slot_key = slot_key or dispatch["delegation_id"]
             dispatched.append((unit, dispatch["delegation_id"]))
             continue
-        _restore_parent_cancellation(unit)
         if not dispatched:
-            logger.info(
-                "delegate_task: async pool at capacity (%s); running the whole batch synchronously instead.",
-                dispatch.get("error", "rejected"),
-            )
-            return _run_sync_with_note(batch, "at_capacity")
-        # Later units of an admitted call share its slot and cannot be capacity-rejected; a scheduler failure runs
-        # the unit inline so no task is silently dropped.
-        logger.warning("delegate_task: unit %d/%d not accepted (%s); running it inline.", k + 1, len(units), dispatch.get("error"))
-        inline_results.extend(_execute_and_aggregate(unit)["results"])
-    payload = _dispatched_payload(batch, dispatched)
-    if inline_results:
-        payload["inline_results"] = inline_results
+            rejected = _reject_unowned_children(batch, dispatch)
+            return json.dumps({
+                "status": "busy" if dispatch.get("reason") == "capacity" else "rejected",
+                "mode": "background", "accepted": False, "count": 0,
+                "error": dispatch.get("error", "Async admission rejected"),
+                "rejected_results": rejected, "control_hint": _REJECTION_HINT,
+            }, ensure_ascii=False)
+        rejected_results.extend(_reject_unowned_children(unit, dispatch))
+    accepted_children = [child for unit, _ in dispatched for child in unit.children]
+    payload = _dispatched_payload(replace(batch, children=accepted_children), dispatched)
+    if rejected_results:
+        payload["count"] = len(accepted_children)
+        payload["rejected_results"] = rejected_results
+        payload["control_hint"] = _REJECTION_HINT
     return json.dumps(payload, ensure_ascii=False)
 
 def _run_batch(batch: _Batch, background: bool) -> str:

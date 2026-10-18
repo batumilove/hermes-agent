@@ -1,4 +1,4 @@
-"""A rejected background batch retains synchronous cancellation ownership."""
+"""Rejected units never execute; accepted units retain registry cancellation ownership."""
 
 from __future__ import annotations
 
@@ -126,7 +126,7 @@ def registry_state(tmp_path, monkeypatch):
 @pytest.mark.parametrize("rejection", ["capacity", "schedule_failure", "partial_schedule_failure"])
 @pytest.mark.parametrize("stop_timing", ["running", "during_admission"])
 @pytest.mark.parametrize("stop_kind", ["soft", "hard"])
-def test_rejected_background_child_stops_with_parent(
+def test_rejected_background_child_never_runs_with_parent_stop(
     registry_state, monkeypatch, tmp_path, rejection, stop_timing, stop_kind,
 ):
     parent, child = _Parent(), _ControlledChild()
@@ -220,33 +220,35 @@ def test_rejected_background_child_stops_with_parent(
         if stop_timing == "during_admission":
             request_stop(stop_message)
         continue_admission.set()
-        assert child.started.wait(5)
+        result = outcome.result(timeout=5)
         if stop_timing == "running":
             request_stop(stop_message)
-
-        assert child.stop_received.wait(5), "fallback lost parent cancellation ownership"
-        assert child.unwinding.wait(5)
-        assert child.observed_interrupt == (stop_message, stop_kind == "hard")
-        if background_child is not None:
-            assert not background_child.stop_received.is_set()
-            assert pending_child.stop_received.is_set(), "unsubmitted unit lost parent cancellation ownership"
-            assert not pending_child.started.is_set()
-        assert not outcome.done(), "dispatch returned while its child still owned resources"
-        assert child.close_count == 0
-        child.allow_finish.set()
-        result = outcome.result(timeout=5)
+        assert not child.started.is_set(), "rejected work executed inline"
+        assert not child.finished.is_set()
+        assert child.close_count == 1
+        assert child.closed.is_set()
+        assert "inline_results" not in result
+        assert result["rejected_results"][0]["status"] == "rejected"
         if background_child is None:
-            assert "SYNCHRONOUSLY" in result["note"]
-            assert result["results"][0]["status"] == "interrupted"
+            assert result["status"] == ("busy" if rejection == "capacity" else "rejected")
+            assert result["accepted"] is False
+            assert result["count"] == 0
         else:
             assert result["status"] == "dispatched"
-            assert result["inline_results"][0]["status"] == "interrupted"
+            assert result["count"] == 2
+            assert {u["delegation_id"] for u in result["units"]} == set(accepted_ids)
             assert not background_child.stop_received.is_set()
-            assert pending_child.unwinding.wait(5)
-            assert pending_child.observed_interrupt == (stop_message, stop_kind == "hard")
-        assert child.finished.is_set()
-        assert child.close_count == 1
-        assert not child.closed_while_running
+            assert background_child.close_count == 0
+            assert pending_child.started.wait(5)
+            if stop_timing == "during_admission":
+                assert pending_child.unwinding.wait(5)
+                assert pending_child.observed_interrupt == (stop_message, stop_kind == "hard")
+            else:
+                assert not pending_child.stop_received.is_set()
+            assert async_delegation.interrupt_for_session(parent_session_id=parent.session_id) == 2
+            assert background_child.unwinding.wait(5)
+            assert background_child.observed_interrupt[1] is True
+            assert background_child.close_count == 0
         assert parent._active_children == []
     finally:
         continue_admission.set()

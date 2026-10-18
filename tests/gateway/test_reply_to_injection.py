@@ -61,8 +61,8 @@ async def test_reply_prefix_injected_when_text_absent_from_history():
 
 
 @pytest.mark.asyncio
-async def test_telegram_long_reply_uses_explicit_budget_without_mutating_source():
-    """The fork prompt budget must disclose clipping while retaining the full native source."""
+async def test_telegram_long_reply_preserves_all_items_without_mutating_source():
+    """The prompt retains every replied-to list item without mutating source or history."""
     from gateway.platforms.event import MessageType
     from tests.gateway.test_telegram_reply_quote import _make_adapter, _make_message
 
@@ -82,9 +82,7 @@ async def test_telegram_long_reply_uses_explicit_budget_without_mutating_source(
     )
     assert result is not None
     excerpt = result.split('[Replying to: "', 1)[1].split('"]\n\n', 1)[0]
-    assert len(excerpt) == 500
-    assert excerpt.endswith("… [reply excerpt clipped; original message may be longer]")
-    assert quoted.startswith(excerpt.split("… [reply excerpt clipped", 1)[0])
+    assert excerpt == quoted
     assert event.reply_to_text == quoted
     assert result.endswith("Review all five companies.")
     assert history == [{"role": "user", "content": "Previous request"}]
@@ -109,7 +107,7 @@ async def test_quoted_reply_references_stay_literal_while_typed_ones_expand(tmp_
     quoted_ref = MessageEvent(text="what does this say?", source=source, reply_to_message_id="7", reply_to_text=quoted)
     result = await runner._prepare_inbound_message_text(event=quoted_ref, source=source, history=[])
     assert f"see @file:{payload.name} for details" in result
-    assert "… [reply excerpt clipped; original message may be longer]" in result
+    assert quoted in result
     assert quoted_ref.reply_to_text == quoted
     assert "LOCAL-FILE-MARKER" not in result
 
@@ -159,11 +157,13 @@ async def test_reply_prefix_still_injected_when_text_in_history():
 
 
 @pytest.mark.asyncio
-async def test_long_reply_prefix_marks_clipped_excerpt_within_500_character_cap():
+@pytest.mark.parametrize("own_message", [False, True])
+@pytest.mark.parametrize("length", [499, 500, 501, 4000])
+async def test_long_reply_prefix_preserves_complete_resolved_text(own_message, length):
     runner = _make_runner()
     source = _source()
-    quoted = "A" * 501
-    marker = "… [reply excerpt clipped; original message may be longer]"
+    tail = '\n- Later list item\n```python\nprint("tail preserved")\n```'
+    quoted = "A" * (length - len(tail)) + tail
     event = MessageEvent(
         text="Investigate",
         source=source,
@@ -171,17 +171,14 @@ async def test_long_reply_prefix_marks_clipped_excerpt_within_500_character_cap(
         reply_to_text=quoted,
     )
 
+    event.reply_to_is_own_message = own_message
     result = await runner._prepare_inbound_message_text(
         event=event,
         source=source,
         history=[],
     )
 
-    assert result is not None
-    prefix, message = result.split("\n\n", 1)
-    excerpt = prefix.removeprefix('[Replying to: "').removesuffix('"]')
-    assert len(excerpt) == 500
-    assert excerpt.endswith(marker)
-    assert message == "Investigate"
+    label = "Replying to your previous message" if own_message else "Replying to"
+    assert result == f'[{label}: "{quoted}"]\n\nInvestigate'
 
 

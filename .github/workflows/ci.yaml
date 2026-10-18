@@ -451,7 +451,14 @@ jobs:
         with:
           test-environment: 'true'
           extras: '["messaging", "acp", "mcp", "cron"]'
+      # Keep the cold image build outside the runner's five-minute per-file
+      # deadline; the Docker fixture consumes this exact prebuilt image.
+      - name: Build image for retained Docker contracts
+        timeout-minutes: 20
+        run: docker build -t hermes-fork-contracts:test .
       - name: Run retained behavioral contracts
+        env:
+          HERMES_TEST_IMAGE: hermes-fork-contracts:test
         run: python scripts/run_batumi_contracts.py -j 4
 
   osv-scanner:
