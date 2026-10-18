@@ -8,6 +8,7 @@ import signal
 import threading
 from types import SimpleNamespace
 from typing import Optional
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -72,6 +73,16 @@ def _patch_gateway_run(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: None)
     monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
     monkeypatch.setattr("gateway.run.os.getpid", lambda: 12345)
+    # Signal/exit policy is the subject here; real daemon startup and identity
+    # release are exercised by the bootstrap lifecycle tests.
+    from gateway import run_runtime, run_bootstrap
+    for name in ("initialize_gateway_runtime", "start_gateway_runtime_api", "drain_gateway_runtime"):
+        monkeypatch.setattr(run_runtime, name, AsyncMock())
+    monkeypatch.setattr(run_runtime, "publish_gateway_runtime_ready", lambda runner: None)
+    monkeypatch.setattr(run_runtime, "wait_gateway_runtime", lambda runner: runner.wait_for_shutdown())
+    monkeypatch.setattr(run_bootstrap, "_start_gateway_start_control_socket", AsyncMock(return_value=AsyncMock()))
+    monkeypatch.setattr(gateway_run, "_refresh_host_gateway_record", lambda runner: None)
+    monkeypatch.setattr("gateway.run_api.warm_gateway_dashboard", lambda runner: None)
     idle_thread = SimpleNamespace(is_alive=lambda: False)
     monkeypatch.setattr(
         "gateway.run._start_gateway_start_cron_and_housekeeping",
