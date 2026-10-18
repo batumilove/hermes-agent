@@ -3559,25 +3559,31 @@ def _wait_for_external_cron_worker_body(
     # schema init; polling it at 50ms for an hours-long agent run is ~72k
     # opens/hour of pure contention with the worker's own writes.
     monitor_read_failed = False
+    next_monitor_read = 0.0
     while True:
         try:
             returncode = process.wait(timeout=1.0)
         except subprocess.TimeoutExpired:
             # A failed observation cannot revoke the adopted worker's claim.
-            # Stop optional early-terminal reads after the first storage error;
-            # keep waiting for process exit under the worker's existing budgets.
-            # The mandatory exit read below still surfaces storage failures.
-            if monitor_read_failed:
+            # Retry optional observation at most once per five seconds after a
+            # storage failure: recovery may terminalize a still-live worker.
+            # Process exit always performs its mandatory read without backoff.
+            if time.monotonic() < next_monitor_read:
                 continue
             try:
                 terminal = _is_terminal()
-            except (OSError, sqlite3.Error):
-                logger.warning(
-                    "Cron worker %s ledger monitoring failed; waiting for worker exit",
-                    execution_id, exc_info=True,
-                )
+            except (OSError, sqlite3.OperationalError):
+                # API/programming, integrity and other database defects propagate.
+                if not monitor_read_failed:
+                    logger.warning(
+                        "Cron worker %s ledger monitoring failed; retrying with backoff",
+                        execution_id, exc_info=True,
+                    )
                 monitor_read_failed = True
+                next_monitor_read = time.monotonic() + 5.0
                 continue
+            monitor_read_failed = False
+            next_monitor_read = 0.0
             if not terminal:
                 continue
             # Recovery can win between the timeout and this ledger read. If

@@ -79,7 +79,7 @@ def test_monitor_read_failure_keeps_cancellation_visible(monkeypatch):
     assert read.call_count == 1
 
 
-def test_monitor_read_failure_does_not_retry_ledger_until_exit(monkeypatch):
+def test_monitor_read_failure_backs_off_before_retry(monkeypatch):
     from cron import scheduler
 
     process = Mock()
