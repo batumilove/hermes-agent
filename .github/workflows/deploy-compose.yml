@@ -33,11 +33,11 @@ jobs:
     if: github.ref_name == 'batumi/live' && vars.HERMES_STAGING_DEPLOY_ENABLED == 'true'
     permissions:
       contents: read
-    uses: batumilove/hermes-ops/.github/workflows/compose-deploy.yml@e2de0980d2898b3b629119cce4c3662b5988ff0a
+    uses: batumilove/hermes-ops/.github/workflows/compose-deploy.yml@3c1cd919a029fe69a9521f9f5edd2614e25271a7
     with:
       environment: batumi-staging
       operation: deploy
       image_digest: ${{ needs.publish.outputs.digest }}
       source_sha: ${{ needs.publish.outputs.source_sha }}
-      ops_sha: e2de0980d2898b3b629119cce4c3662b5988ff0a
+      ops_sha: 3c1cd919a029fe69a9521f9f5edd2614e25271a7
     secrets: inherit
