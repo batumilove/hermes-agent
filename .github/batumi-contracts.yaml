@@ -176,3 +176,5 @@ contracts:
   - tests/gateway/test_session_kanban.py
   - tests/gateway/test_shutdown_runtime_ownership.py
   - tests/hermes_state/test_runtime_worker_operations.py
+  - tests/gateway/test_daemon_handoff_completion.py
+  - tests/gateway/test_session_authority.py

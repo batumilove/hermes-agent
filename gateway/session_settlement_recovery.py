@@ -39,8 +39,11 @@ async def recover_failed_settlement(authority, row):
 def completion_payload(row, settled, response, captured):
     # ``status`` is the message.complete contract's TurnStatus: the Desktop
     # extends a Stopped bubble to the persisted partial only on 'interrupted'.
+    # Delivery handoffs are str subclasses carrying process-local owners. The wire
+    # receives plain text; the native waiter retains the original handoff.
+    wire_response = str(response) if isinstance(response, str) else response
     complete = {
-        'text': response, 'content': response, 'admission_id': row['admission_id'],
+        'text': wire_response, 'content': wire_response, 'admission_id': row['admission_id'],
         'outcome': 'cancelled' if settled['outcome'] == 'interrupted' else settled['outcome'],
         'status': {'completed': 'complete', 'interrupted': 'interrupted'}.get(
             settled['outcome'], 'error')}

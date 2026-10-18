@@ -266,6 +266,8 @@ if __name__ == "__main__":
         asyncio.run(probe())
     except BaseException:
         traceback.print_exc()
+        for log in Path(os.environ["HERMES_HOME"]).rglob("*.log"):
+            print(str(log), log.read_text(errors="replace")[-12000:], file=sys.stderr)
         status = 1
     finally:
         peer.shutdown()

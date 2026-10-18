@@ -1309,7 +1309,6 @@ patches:
   - plugins/platforms/telegram/text_recovery.py
   - gateway/post_response_transcript.py
   - gateway/run_adapters.py
-  - gateway/run_turn_recovery.py
   - tests/gateway/test_base_warning_owner_scope.py
   - tests/gateway/test_gateway_silence_tokens.py
   - tests/gateway/test_post_gateway_admission.py
@@ -1868,6 +1867,10 @@ patches:
   - tests/gateway/test_runtime_worker_shutdown.py
   - tests/gateway/test_shutdown_settle_leash.py
   - tests/hermes_state/test_runtime_worker_operations.py
+  - gateway/session_ingress.py
+  - gateway/session_settlement_recovery.py
+  - tests/gateway/test_daemon_handoff_completion.py
+  - tests/gateway/fixtures/shared_authority_peer.py
   tests:
   - scripts/run_tests.sh tests/gateway/test_agent_cache.py tests/gateway/test_shutdown_runtime_ownership.py tests/gateway/test_managed_turn_shutdown_drain.py tests/gateway/test_session_kanban.py
   retirement: Remove after upstream provides equivalent retained cleanup ownership, mandatory worker policy and bounded shutdown contracts.

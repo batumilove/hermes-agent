@@ -11,6 +11,9 @@ Fork contracts follow those owners:
 
 - `run_turn_hygiene.py` and `run_turn_persistence.py` retain compression route
   compare-and-set, cancellation ownership and post-delivery transcript actions.
+- Native session delivery uses the same durable preparation/settlement path as
+  platform delivery. Completion events publish plain text, retaining process-local
+  handoff ownership only for the native sender.
 - `session_execution.py` and `run_agent_cache.py` retain evicted-agent cleanup.
   A session boundary retains its memory/context-engine obligations across retries.
 - `run_shutdown_budget.py` settles managed workers before closing shared stores.
@@ -25,7 +28,8 @@ Fork contracts follow those owners:
 - `run_bootstrap.py` serves live control status alongside the upstream authenticated
   session/ticket protocol. Writable runner initialization lives in `run_runtime_init.py`.
   Obsolete `run_control_socket.py` and `run_turn_response.py` copies are removed;
-  tests exercise the actual bootstrap and persistence owners.
+  tests exercise the actual bootstrap and persistence owners. The obsolete
+  `run_turn_recovery.py` copy and duplicated cache lookup helpers are also removed.
 
 Run the canonical `scripts/run_tests.sh` with an isolated home/runtime. Regression
 coverage includes real Kanban daemon/worker lifecycle cases, managed shutdown,

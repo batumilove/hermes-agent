@@ -148,6 +148,8 @@ async def deliver_resolved(authority, admission_id, *, owed):
 
 
 async def _release_turn_marker(authority, event):
+    if getattr(event, '_gateway_post_response_handoff', None) is not None:
+        return  # Durable finalization owns the exact token, including uncertain delivery.
     if getattr(event, '_gateway_active_turn_token', None):
         await authority.runner._clear_durable_active_turn(event)
 
@@ -342,17 +344,26 @@ async def deliver_settled(authority, admission_id):
 
 async def deliver_response(adapter, event, session_key, response):
     from gateway.platforms.base import _thread_metadata_for_event, _mark_notify_metadata
-    text, ttl = adapter._unwrap_ephemeral(response)
-    if not text:
-        return
-    extracted = await adapter._extract_response_content(text, event, session_key, is_ephemeral_response=ttl > 0)
-    metadata = _mark_notify_metadata(_thread_metadata_for_event(event))
-    results = []
-    if extracted.text_content:
-        await adapter._send_final_text(event, session_key, extracted.text_content,
-                                       metadata, ttl > 0, ttl, results.append)
-    await adapter._deliver_attachments(event, extracted, metadata, anything_sent=bool(results),
-                                       record_delivery=results.append)
+    from gateway.post_response_delivery import FinalDeliveryState
+    delivery = FinalDeliveryState()
+    delivery.bind(response, event)
+    try:
+        text, ttl = adapter._unwrap_ephemeral(response)
+        if not text:
+            delivery.suppressed = True
+            return
+        extracted = await adapter._extract_response_content(text, event, session_key, is_ephemeral_response=ttl > 0)
+        if not await delivery.prepare(event, extracted.text_content, extracted, [], None):
+            return
+        metadata = _mark_notify_metadata(_thread_metadata_for_event(event))
+        if extracted.text_content:
+            await adapter._send_final_text(event, session_key, extracted.text_content,
+                                           metadata, ttl > 0, ttl, delivery.observe)
+        await adapter._deliver_attachments(event, extracted, metadata, anything_sent=bool(delivery.outcomes),
+                                           record_delivery=delivery.observe)
+    finally:
+        await delivery.finish()
+        await adapter._release_turn_marker(event)
 
 
 async def dispatch_shared_busy(adapter, event, session_key):
