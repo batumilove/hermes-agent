@@ -28,6 +28,7 @@ from gateway.restart import (
     effective_stop_drain_timeout, effective_stop_watchdog_delay, resolve_cron_drain_budget
 )
 from gateway.run_common import _UNSET
+from gateway.run_runtime import managed_turn_count, stop_managed_turns
 from gateway.run_shutdown_session_end import GatewaySessionEndMixin
 from gateway.run_shutdown_budget import GatewayShutdownBudgetMixin
 from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
@@ -201,6 +202,7 @@ class GatewayShutdownMixin(GatewayShutdownBudgetMixin, GatewaySessionEndMixin):
         """All agent work the gateway must expose and drain as one total."""
         return (
             self._running_agent_count()
+            + managed_turn_count(self)
             + self._active_cron_job_count()
             + self._active_api_run_count()
             + self._active_deferred_agent_worker_count()
@@ -813,9 +815,9 @@ class GatewayShutdownMixin(GatewayShutdownBudgetMixin, GatewaySessionEndMixin):
 
     # Drain / interrupt
     def _drain_work_counts(self) -> tuple:
-        """``(agents, cron, api, deferred)`` — the four sources the drain waits on."""
+        """``(agents, cron, api, deferred)`` the drain waits on; a managed-worker turn is a chat turn."""
         return (
-            self._running_agent_count(), self._active_cron_job_count(),
+            self._running_agent_count() + managed_turn_count(self), self._active_cron_job_count(),
             self._active_api_run_count(),
             self._active_deferred_agent_worker_count() + self._active_delegation_count(),
         )
@@ -863,7 +865,7 @@ class GatewayShutdownMixin(GatewayShutdownBudgetMixin, GatewaySessionEndMixin):
         _cron0, _api0, _deferred0 = last_counts[1:]
         await _record_phase("drain_start")
         await _maybe_update_status(force=True)
-        if not self._running_agents and not (_cron0 or _api0 or _deferred0):
+        if not self._running_agents and not any(last_counts):
             return snapshot, False
         # Cron and api_server runs ride the cron floor: a chat turn is announced+resumable, but a killed
         # cron run is a permanent failure and a killed /v1 run fails a caller blocked on its result.
@@ -1526,6 +1528,7 @@ class GatewayShutdownMixin(GatewayShutdownBudgetMixin, GatewaySessionEndMixin):
         """
         non_cron = (
             self._running_agent_count()
+            + managed_turn_count(self)
             + self._active_api_run_count()
             + self._active_deferred_agent_worker_count()
         )
@@ -1539,7 +1542,7 @@ class GatewayShutdownMixin(GatewayShutdownBudgetMixin, GatewaySessionEndMixin):
         (``hermes update``, ``hermes gateway status``) can name it instead of printing a bare count.
 
         ``kind`` ∈ ``chat`` (session turn), ``cron`` (job id + external worker pid when the run was
-        handed to a restart-safe scope), ``api`` / ``deferred`` (count only — those sources expose
+        handed to a restart-safe scope), ``managed`` / ``api`` / ``deferred`` (count only — those sources expose
         no identity). Best-effort: a source that can't be read is omitted, never raises.
         """
         from gateway.run import _AGENT_PENDING_SENTINEL
@@ -1569,7 +1572,8 @@ class GatewayShutdownMixin(GatewayShutdownBudgetMixin, GatewaySessionEndMixin):
                               "pid": job["worker_pid"] or os.getpid(), "external": bool(job["worker_pid"]),
                               "wedged": job["job_id"] in wedged,
                               "restart_safe": bool(job.get("restart_safe"))})
-        for kind, count in (("api", self._active_api_run_count()), ("deferred", self._active_deferred_agent_worker_count())):
+        for kind, count in (("managed", managed_turn_count(self)), ("api", self._active_api_run_count()),
+                            ("deferred", self._active_deferred_agent_worker_count())):
             units.extend({"kind": kind, "pid": os.getpid()} for _ in range(count))
         return units
 
@@ -1798,6 +1802,8 @@ class GatewayShutdownMixin(GatewayShutdownBudgetMixin, GatewaySessionEndMixin):
         self._running = False
         self._clear_plugin_message_injector()
         self._draining = True
+        from gateway.run_runtime import drain_gateway_runtime
+        await drain_gateway_runtime(self)
         self._mark_api_runs_shutdown_requested()
         # getattr-guards: shutdown-path test doubles may lack the room worker / systemd watchdog.
         stop_room_worker = getattr(self, "_stop_hosted_room_worker", None)
@@ -1910,7 +1916,7 @@ class GatewayShutdownMixin(GatewayShutdownBudgetMixin, GatewaySessionEndMixin):
         logger.info("Shutdown phase: allowing %.1fs for interrupted agents to unwind", interrupt_grace_timeout)
 
         def _work_live() -> bool:
-            return bool(self._running_agents or self._active_api_run_count() or ctx.deferred_count())
+            return bool(self._running_agents or managed_turn_count(self) or self._active_api_run_count() or ctx.deferred_count())
 
         # Wait on API-server work too, or an API turn's tool subprocesses are killed before it unwinds.
         while _work_live() and loop.time() < interrupt_deadline:
@@ -2041,10 +2047,12 @@ class GatewayShutdownMixin(GatewayShutdownBudgetMixin, GatewaySessionEndMixin):
         )
 
     async def _stop_persist_exit_state(self, ctx: GatewayShutdownMixin._StopContext) -> None:
-        """PID/lock release, clean-shutdown marker, restart markers, terminal runtime status."""
+        """Clean-shutdown marker, restart markers, terminal runtime status; process bootstrap
+        releases PID/lock ownership after the writer drain."""
         from gateway.run import _hermes_home, _planned_restart_notification_path, _shutdown_gateway_health_export
         from utils import atomic_json_write
-        from gateway.status import remove_pid_file, release_gateway_runtime_lock
+        if getattr(self, "_startup_cleanup_only", False):  # start never ran: keep startup_failed + crash markers
+            return _shutdown_gateway_health_export(self)
         from gateway.shutdown_residual_children import capture_residual_children
         from functools import partial
         remaining = self._shutdown_remaining(ctx.shutdown_deadline)
@@ -2054,18 +2062,14 @@ class GatewayShutdownMixin(GatewayShutdownBudgetMixin, GatewaySessionEndMixin):
                         deadline_remaining=remaining),
                 timeout=min(0.05, remaining), context="residual child evidence",
             )
-        remove_pid_file()
-        release_gateway_runtime_lock(timeout=0.0)
         # Clean-shutdown marker skips crash-turn recovery next boot; a timed-out drain left
         # half-finished sessions, so no marker — the next startup recovers their turn markers.
         if not ctx.timed_out and not ctx.budget_exhausted:
             with suppress(Exception):
                 (_hermes_home / ".clean_shutdown").touch()
         else:
-            logger.info(
-                "Skipping .clean_shutdown marker — drain timed out with "
-                "interrupted agents; next startup will recover their interrupted turns."
-            )
+            logger.info("Skipping .clean_shutdown marker — drain timed out with interrupted agents; "
+                        "next startup will recover their interrupted turns.")
         # Stuck-loop counter: sessions active across 3 consecutive restarts are auto-suspended next boot.
         if ctx.active_agents:
             self._increment_restart_failure_counts(set(ctx.active_agents.keys()))
