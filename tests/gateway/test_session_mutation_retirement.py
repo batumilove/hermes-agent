@@ -78,6 +78,7 @@ def test_route_retirement_rolls_back_with_receipt_and_rejects_stale_mirror(tmp_p
         rt.mutate_runtime_session(db, **args)
         assert not db.load_gateway_routing_entries(scope=store._routing_scope())
         db.save_gateway_routing_entry(entry.session_key, serialized, scope=store._routing_scope())
+        assert not db.load_gateway_routing_entries(scope=store._routing_scope())
         db.replace_gateway_routing_entries({entry.session_key: serialized}, scope=store._routing_scope())
         assert not db.load_gateway_routing_entries(scope=store._routing_scope())
         # The pre-commit mirror remains on disk as in a crash before publication.

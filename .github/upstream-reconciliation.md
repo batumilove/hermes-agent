@@ -25,6 +25,8 @@ Fork contracts follow those owners:
   refuses the task before model work. Dispatcher claim/run fencing remains intact.
 - `hermes_state_runtime.py` carries the fork's durable side-effect evidence marker
   through the closed worker persistence protocol, including compaction handoffs.
+- `hermes_state_retained.py` preserves the daemon retirement fence in optimized
+  routing reconciliation, so stale mirrors cannot restore deleted session routes.
 - `run_runtime.py` gives an in-flight profile database open a bounded startup
   window before parking it; durable-delivery discovery can open the same cache
   concurrently. Profile/path validation remains mandatory after the open settles.
