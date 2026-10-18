@@ -39,6 +39,16 @@ the incompatibility. After an update, verify its receipt and warnings, the loade
 runtime identity, service health and the changed behavior. The updater's recovery
 coverage is version-specific; do not promise complete automatic rollback.
 
+### Migrating an exported release
+
+An exported directory without supported update metadata needs a one-time migration before ordinary source updates. Prepare the intended revision with the included installer in a separate source, home and runtime. Verify imports and changed behavior there, then use the included package manager to prepare dependencies for the production home. Do not copy or hand-edit dependency facts between homes.
+
+Review the service binding as a whole: launcher, secret wrapper, profile home, runtime, dependency selection and bundled plugins. The included gateway restart may regenerate the base systemd unit, so preserve both that unit and its drop-ins. Save configuration and consistent data backups; restoring source alone does not reverse data migrations.
+
+Within the authorized migration scope, account for autoheal and queued recovery jobs, apply the reviewed service changes, and use the included restart path. Verify the new process identity, heartbeat, current-process adapter readiness and unchanged neighboring services before restoring recovery timers. Report shutdown timeouts separately from startup health. Preserve enforced guards, locks and leases.
+
+After migration, verify the configured fork feed/channel and use the installation's included `hermes update`. Do not assume a pinned or detached checkout follows the desired branch automatically. This migration is not a replacement update controller.
+
 Choose the update method for the installation that is running:
 
 | Installation | Update method |
