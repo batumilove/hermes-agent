@@ -65,6 +65,22 @@ patches:
   - python scripts/check_fork_delta.py
   retirement: Remove after the data-only catalog follow-up is merged and the catalog matches
     the accepted upstream baseline; the shared-daemon migration can retire this split record.
+- id: producer-generation-pythonpath-isolation
+  kind: extension
+  rationale: Keep successfully activated producer generations out of unrelated Python children after
+    dependency selection advances, and release newly acquired leases when activation fails without
+    discarding earlier successful producer ownership.
+  paths:
+  - pm/environments.py
+  - tools/environments/local_pythonpath.py
+  - tests/pm/test_producer_generation.py
+  - website/docs/reference/package-management.md
+  tests:
+  - scripts/run_tests.sh tests/pm/test_producer_generation.py tests/pm/test_lease_reselection.py
+    tests/pm/test_runtime_selection.py tests/tools/test_build_subprocess_env.py
+    tests/tools/test_hermes_subprocess_env.py
+  retirement: Remove when upstream preserves successful producer-generation provenance, cleans failed
+    activation leases, and passes the same child-path and lease regressions.
 - id: feishu-webhook-authentication-quota
   kind: extension
   rationale: Authenticate Feishu callbacks before charging delivery quota, require a verified token for
