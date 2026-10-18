@@ -132,6 +132,35 @@ hash, an interrupted transfer restarts instead of mixing different versions.
 The small `.locks/` files remain after completion so waiting processes use
 the same lock.
 
+### Diagnosing Python child-process isolation
+
+The selected generation and a running process's loaded generation can differ.
+When diagnosing native-extension import failures in a Python child, inspect the
+producer's actual interpreter, source root and active generation leases as well
+as the current selection. A Python child using a different interpreter version
+can fail if it inherits incompatible packages through `PYTHONPATH`.
+
+When validating a repair for this case, retain producer generation A while
+selecting generation B in isolated dependency state, then exercise the actual
+terminal child path with both interpreters. Set explicit scratch dependency-state
+overrides before importing or activating the runtime; a temporary `HERMES_HOME`
+alone is not proof that all dependency state is isolated. Do not change live
+selection to manufacture the test.
+
+The filtering contract should remove exact producer-owned entries while
+preserving user paths, empty components, descendants and unactivated generations.
+Verify successful activation history and failed-activation lease cleanup
+separately. Those checks do not establish transactional rollback of every
+`sys.path` or environment mutation after a late exception. Check the installed
+implementation and its tests before claiming this contract is satisfied.
+
+For externally managed installations, use the installation owner's admission
+procedure. A preserved base install stamp does not identify modified source, and
+moving a checkout can change its install key and launcher/dependency bindings.
+Record reviewed source, admitted artifact, installed files, loaded runtime and
+observed behavior separately; do not edit facts or verification digests to make
+an unadmitted tree pass validation.
+
 ## Optional Python dependencies and plugins
 
 A built-in feature requests a project extra through `pm.ensure_import`.
