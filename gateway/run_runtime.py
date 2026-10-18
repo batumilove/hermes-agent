@@ -42,7 +42,13 @@ async def _build_profile_authority(runner, name, home, *, register):
     # Each home's store resolves through the runner's scope-following handle cache, exactly
     # the handle every later scoped read of that profile uses (one writer per state.db).
     with _profile_runtime_scope(home, hydrate_secrets=False):
-        db = getattr(runner._session_db, '_db', runner._session_db)
+        # The durable-delivery worker can be opening this same profile through
+        # the single-flight handle cache. None means unavailable *or opening*;
+        # give that bounded startup work time to settle before parking a home.
+        async with asyncio.timeout(5):
+            while (wrapper := runner._session_db) is None:
+                await asyncio.sleep(0.01)
+        db = getattr(wrapper, "_db", wrapper)
         if db is None or (await asyncio.to_thread(Path(db.db_path).resolve)).parent != home:
             raise RuntimeError(f'session authority database does not belong to the reserved profile {home}')
         registry.add(home, None, name=name)

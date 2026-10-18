@@ -11,7 +11,7 @@ resets the manager so a later ``_get_db()`` reopens fresh rather than reusing
 a closed handle.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from acp_adapter.session import SessionManager
 
@@ -71,14 +71,12 @@ class TestSessionManagerClose:
         injected.close.assert_not_called()
 
 
-class TestAcpEntryTeardownClosesSessionManager:
-    """The SessionManager.close() contract is only real if the ACP entry
-    point actually calls it on teardown — otherwise the writable handle is
-    still left to GC/process exit (P0-C §2e #21, wiring requirement)."""
+class TestAcpEntryTeardownClosesViewer:
+    """ACP teardown closes its viewer; canonical sessions belong to the daemon."""
 
-    def test_main_closes_session_manager_on_normal_exit(self, monkeypatch):
+    def test_main_closes_viewer_on_normal_exit(self, monkeypatch):
         """``acp.run_agent`` returning (stdin EOF / client disconnect) must
-        close the SessionManager in the ``finally`` block."""
+        close the viewer in the ``finally`` block."""
         from unittest.mock import patch
 
         from acp_adapter import entry
@@ -88,16 +86,18 @@ class TestAcpEntryTeardownClosesSessionManager:
 
         monkeypatch.setenv("HERMES_ACP_SKIP_CONFIGURED_MCP", "1")
         agent = MagicMock()
+        agent.aclose = AsyncMock()
         with patch.object(entry, "_setup_logging"), \
              patch.object(entry, "_load_env"), \
              patch("acp.run_agent", new=_fake_run_agent), \
              patch("acp_adapter.server.HermesACPAgent", return_value=agent):
             entry.main([])
 
-        agent.session_manager.close.assert_called_once()
+        agent.aclose.assert_awaited_once()
+        agent.session_manager.close.assert_not_called()
 
-    def test_main_closes_session_manager_on_crash(self, monkeypatch):
-        """A crashing agent must still close the SessionManager — the finally
+    def test_main_closes_viewer_on_crash(self, monkeypatch):
+        """A crashing agent must still close the viewer — the finally
         block runs before ``sys.exit(1)`` propagates."""
         from unittest.mock import patch
 
@@ -110,6 +110,7 @@ class TestAcpEntryTeardownClosesSessionManager:
 
         monkeypatch.setenv("HERMES_ACP_SKIP_CONFIGURED_MCP", "1")
         agent = MagicMock()
+        agent.aclose = AsyncMock()
         with patch.object(entry, "_setup_logging"), \
              patch.object(entry, "_load_env"), \
              patch("acp.run_agent", new=_fake_run_agent), \
@@ -117,4 +118,5 @@ class TestAcpEntryTeardownClosesSessionManager:
              pytest.raises(SystemExit):
             entry.main([])
 
-        agent.session_manager.close.assert_called_once()
+        agent.aclose.assert_awaited_once()
+        agent.session_manager.close.assert_not_called()

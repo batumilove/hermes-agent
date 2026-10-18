@@ -25,6 +25,9 @@ Fork contracts follow those owners:
   refuses the task before model work. Dispatcher claim/run fencing remains intact.
 - `hermes_state_runtime.py` carries the fork's durable side-effect evidence marker
   through the closed worker persistence protocol, including compaction handoffs.
+- `run_runtime.py` gives an in-flight profile database open a bounded startup
+  window before parking it; durable-delivery discovery can open the same cache
+  concurrently. Profile/path validation remains mandatory after the open settles.
 - `run_bootstrap.py` serves live control status alongside the upstream authenticated
   session/ticket protocol. Writable runner initialization lives in `run_runtime_init.py`.
   Obsolete `run_control_socket.py` and `run_turn_response.py` copies are removed;
