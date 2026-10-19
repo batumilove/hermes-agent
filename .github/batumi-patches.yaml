@@ -1786,6 +1786,8 @@ patches:
   - tests/state/test_session_git_metadata_generation.py
   - hermes_state_post_response.py
   - gateway/post_response_delivery.py
+  - hermes_cli/auth_zai_kimi.py
+  - tests/hermes_cli/test_zai_configured_endpoint.py
   - gateway/control_socket.py
   - tests/gateway/test_control_socket_peer_security.py
   - tests/hermes_cli/test_gitlock.py
