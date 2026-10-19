@@ -3548,19 +3548,18 @@ def _wait_for_external_cron_worker_body(
     A gateway replacement may kill this waiter; it does not kill the scoped
     worker or change its ledger ownership.
     """
-    def _is_terminal() -> bool:
-        current = get_execution(execution_id)
-        return bool(current and current.get("status") in _TERMINAL_STATES)
+    from cron.scheduler_detached_worker import WorkerLedgerMonitor
 
     # The worker commits its terminal row before its process exits, so exit is
     # the correct wakeup.  Each ledger read opens a connection and re-runs
     # schema init; polling it at 50ms for an hours-long agent run is ~72k
     # opens/hour of pure contention with the worker's own writes.
+    monitor = WorkerLedgerMonitor(execution_id)
     while True:
         try:
             returncode = process.wait(timeout=1.0)
         except subprocess.TimeoutExpired:
-            if not _is_terminal():
+            if not monitor.is_terminal():
                 continue
             # Recovery can win between the timeout and this ledger read. If
             # the worker has since exited, consume its diagnostics below before
