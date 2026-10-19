@@ -137,3 +137,34 @@ def test_long_home_prefers_the_private_runtime_dir(tmp_path, monkeypatch):
         assert resolve_server_socket_path(home)[0].parent.parent != runtime
     finally:
         runtime.rmdir()
+
+
+def test_pointer_is_complete_when_first_visible(tmp_path, monkeypatch):
+    import asyncio
+    from gateway.control_socket import GatewayControlServer
+    from hermes_cli.gateway_runtime_discovery import _socket_path
+
+    home = tmp_path / ("p" * 90) / ".hermes"
+    home.mkdir(parents=True, mode=0o700)
+    pointer = home / "gateway.sock.path"
+    fdopen = os.fdopen
+    observed = []
+
+    def before_write(fd, *args, **kwargs):
+        stream = fdopen(fd, *args, **kwargs)
+        if args and args[0] == "w":
+            observed.append(pointer.read_bytes() if pointer.exists() else None)
+        return stream
+
+    monkeypatch.setattr(os, "fdopen", before_write)
+
+    async def run():
+        server = GatewayControlServer(home)
+        assert await server.start()
+        try:
+            assert observed and all(value is None for value in observed)
+            assert _socket_path(home).name == "control.sock"
+        finally:
+            await server.stop()
+
+    asyncio.run(run())

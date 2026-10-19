@@ -42,7 +42,8 @@ jobs:
     # slice, so independent duration caches cannot lose or duplicate files.
     name: Run tests (${{ matrix.slice }}/8)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The 331-file process suite exceeded 30 minutes with three bounded workers.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:

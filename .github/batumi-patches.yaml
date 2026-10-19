@@ -5,6 +5,17 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: lcm-native-snapshot-provenance
+  kind: core
+  rationale: Preserve the context engine's native admission provenance while compression
+    runs against a deep-copied snapshot, retaining no-hook compatibility and scope cleanup.
+  paths:
+  - agent/compression_facade.py
+  - tests/agent/test_lcm_snapshot_scope.py
+  tests:
+  - scripts/run_tests.sh tests/agent/test_lcm_snapshot_scope.py tests/agent/test_compression_commit_fence_race.py
+  retirement: Remove when upstream preserves equivalent native snapshot admission provenance,
+    original no-op message identity, no-hook compatibility and exception cleanup.
 - id: cron-live-worker-monitor-recovery
   kind: core
   rationale: Preserve an adopted live worker's claim when optional ledger observation fails
@@ -1775,6 +1786,10 @@ patches:
   - tests/state/test_session_git_metadata_generation.py
   - hermes_state_post_response.py
   - gateway/post_response_delivery.py
+  - hermes_cli/auth_zai_kimi.py
+  - tests/hermes_cli/test_zai_configured_endpoint.py
+  - gateway/control_socket.py
+  - tests/gateway/test_control_socket_peer_security.py
   - tests/hermes_cli/test_gitlock.py
   - gateway/session_retained.py
   - tests/hermes_state/test_post_response_adapter_owner.py
