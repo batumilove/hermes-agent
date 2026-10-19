@@ -143,9 +143,11 @@ def _run_under_progress_timeout(
         # on timeout/cancel); durable SessionDB mutation is already gated behind the commit fence inside
         # compress_context.
         snapshot = copy.deepcopy(messages)
-        result_msgs, result_prompt = run(
-            fence, target_messages=snapshot, same_turn_fallback_recovery=same_turn_fallback_recovery
-        )
+        snapshot_scope = getattr(getattr(agent, "context_compressor", None), "native_snapshot_scope", None)
+        with snapshot_scope(messages, snapshot) if callable(snapshot_scope) else contextlib.nullcontext():
+            result_msgs, result_prompt = run(
+                fence, target_messages=snapshot, same_turn_fallback_recovery=same_turn_fallback_recovery
+            )
         return (messages if result_msgs is snapshot else result_msgs), result_prompt
 
     # The stall-fallback retry is the same recovery attempt as the stalled primary, but the cancelled primary
