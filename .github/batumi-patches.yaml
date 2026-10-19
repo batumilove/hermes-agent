@@ -5,6 +5,40 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: cron-live-worker-monitor-recovery
+  kind: core
+  rationale: Preserve an adopted live worker's claim when optional ledger observation fails
+    with OSError or SQLite OperationalError; retry after five monotonic seconds so recovery
+    remains observable. Programming and interface defects propagate, and the mandatory
+    process-exit ledger read remains error-visible. Integration tests require Linux process
+    and SQLite support, pytest-asyncio, psutil, and the checkout's test dependencies;
+    run with a disposable HOME and HERMES_HOME, never the live scheduler store.
+  paths:
+  - cron/scheduler.py
+  - cron/scheduler_detached_worker.py
+  - tests/cron/test_worker_monitor_read_failure.py
+  - tests/cron/test_worker_monitor_recovery.py
+  - tests/cron/test_worker_monitor_integration.py
+  tests:
+  - scripts/run_tests.sh tests/cron/test_worker_monitor_read_failure.py tests/cron/test_worker_monitor_recovery.py tests/cron/test_worker_monitor_integration.py
+  - scripts/run_tests.sh tests/cron/test_scheduler.py tests/cron/test_execution_ledger.py tests/cron/test_restart_safe_worker.py
+  retirement: Remove when upstream preserves live-worker ownership across optional storage
+    read failures with bounded retry, still-live recovery reaping, propagated programming
+    defects and error-visible mandatory exit reads, with equivalent integration coverage.
+- id: stage2-install-state-ownership
+  kind: compatibility
+  rationale: Repair root-owned installation state during container startup so the non-root
+    runtime user can acquire installation locks, without widening modes, following symlinks,
+    or changing unrelated host files. Real cross-UID tests require a non-root Linux runner
+    with passwordless sudo; skipped runs are not ownership acceptance evidence.
+  paths:
+  - docker/stage2-hook.sh
+  - tests/tools/test_stage2_hook_install_ownership.py
+  tests:
+  - bash -n docker/stage2-hook.sh
+  - scripts/run_tests.sh tests/tools/test_stage2_hook_install_ownership.py
+  retirement: Remove when upstream stage2 repairs installation-state ownership with equivalent
+    mode-preserving, symlink-safe behavior and real cross-UID regression coverage.
 - id: telegram-private-reply-anchor-retry
   kind: extension
   rationale: Retry rejected private message threads with the existing reply anchor, preserving the

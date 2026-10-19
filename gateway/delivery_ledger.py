@@ -292,6 +292,9 @@ def compute_obligation_id(session_key: str, message_ref: str, content: str) -> s
 def record_obligation(*, obligation_id: str, session_key: str, platform: str, chat_id: str,
                       thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None) -> None:
     """Record a final response as owed to the platform (state='pending')."""
+    from agent.redact import redact_sensitive_text
+
+    content = redact_sensitive_text(content)
     now, (pid, started) = time.time(), _owner_stamp()
     with _hot_path_transaction() as conn:
         conn.execute(
@@ -321,6 +324,9 @@ def record_crash_left_reply(*, obligation_id: str, session_key: str, platform: s
     claims it, and 'attempting', because a streamed reply may already be on screen: it is
     redelivered once, with the recovered marker. A no-op when the same reply was already ledgered
     since *since* (the turn start), and idempotent across boots that die before their sweep."""
+    from agent.redact import redact_sensitive_text
+
+    content = redact_sensitive_text(content)
     now = time.time()
     with _DB_LOCK, _transaction() as conn:
         conn.execute(
