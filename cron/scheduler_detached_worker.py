@@ -53,6 +53,38 @@ def defer_teardown_to_running_worker(
     return True
 
 
+class WorkerLedgerMonitor:
+    """Optional live-worker observation; never use for the mandatory exit read."""
+
+    def __init__(self, execution_id: str) -> None:
+        self.execution_id = execution_id
+        self.read_failed = False
+        self.next_read = 0.0
+
+    def is_terminal(self) -> bool:
+        import sqlite3
+        from cron import scheduler
+
+        if scheduler.time.monotonic() < self.next_read:
+            return False
+        try:
+            current = scheduler.get_execution(self.execution_id)
+        except (OSError, sqlite3.OperationalError):
+            # Failed observation cannot revoke a live claim. API/programming,
+            # integrity and other database defects still propagate.
+            if not self.read_failed:
+                scheduler.logger.warning(
+                    "Cron worker %s ledger monitoring failed; retrying with backoff",
+                    self.execution_id, exc_info=True,
+                )
+            self.read_failed = True
+            self.next_read = scheduler.time.monotonic() + 5.0
+            return False
+        self.read_failed = False
+        self.next_read = 0.0
+        return bool(current and current.get("status") in scheduler._TERMINAL_STATES)
+
+
 def reap_terminal_worker_in_background(process: subprocess.Popen) -> None:
     """Keep the reap contract when the waiter returns before the worker exits.
 
