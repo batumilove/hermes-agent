@@ -216,12 +216,17 @@ class GatewayControlServer:
         info = bind_path.lstat()
         self._file_identities[bind_path] = (info.st_dev, info.st_ino)
         if pointer_file is not None:
-            fd = os.open(pointer_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-            # O_CREAT's mode only applies to a NEW file; an older gateway's leftover pointer is 0644
-            # and clients refuse it, so restarting must heal the mode.
-            os.fchmod(fd, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as pointer:
-                pointer.write(str(bind_path))
+            if pointer_file.is_symlink():
+                raise PermissionError("control pointer cannot be a symlink")
+            # Publish only complete, private metadata. Creating/truncating the
+            # visible pointer first lets concurrent discovery read an empty path.
+            fd, temporary = tempfile.mkstemp(prefix=".gateway-pointer-", dir=pointer_file.parent)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as pointer:
+                    pointer.write(str(bind_path))
+                os.replace(temporary, pointer_file)
+            finally:
+                Path(temporary).unlink(missing_ok=True)  # health: allow ASYNC240 -- Keep atomic pointer publication and ownership capture in one cancellation-free startup section.
             self._pointer_file = pointer_file
         for path in filter(None, (self._bind_path, self._pointer_file)):
             info = path.lstat()
