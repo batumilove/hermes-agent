@@ -3,6 +3,7 @@ import asyncio
 import faulthandler
 import os
 import sys
+import threading
 
 import pytest
 
@@ -11,7 +12,7 @@ import pytest
 def _dump_every_thread_on_hang(request):
     """This file once hit CI's 600 s per-file SIGKILL in its third test, which leaves no stack at all.
 
-    The file takes ~5 s idle and ~17 s at load average 500, so a module still running at 240 s is
+    The file takes ~5 s idle and ~17 s at load average 500, so a module still running at 120 s is
     a hang: print every thread's stack and exit, so the log names what start_gateway blocked on.
     Module scope covers each test's event-loop teardown too.
     """
@@ -19,11 +20,21 @@ def _dump_every_thread_on_hang(request):
     capman = request.config.pluginmanager.getplugin("capturemanager")
     with capman.global_and_fixture_disabled():
         real_stderr = os.dup(sys.stderr.fileno())
-    faulthandler.dump_traceback_later(240, exit=True, file=real_stderr)
+    finished = threading.Event()
+
+    def diagnose_hang():
+        # Gateway shutdown owns faulthandler's process-wide timer and cancels it.
+        if not finished.wait(120):
+            faulthandler.dump_traceback(file=real_stderr, all_threads=True)
+            os._exit(1)
+
+    watchdog = threading.Thread(target=diagnose_hang, daemon=True)
+    watchdog.start()
     try:
         yield
     finally:
-        faulthandler.cancel_dump_traceback_later()
+        finished.set()
+        watchdog.join(timeout=2)
         os.close(real_stderr)
 
 
