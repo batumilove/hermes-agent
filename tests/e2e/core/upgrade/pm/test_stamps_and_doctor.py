@@ -13,8 +13,8 @@ is not the installer's. Then:
 * real drift is caught and healed: a user uninstalls fastapi (the ``web`` extra the dashboard
   imports) from the selected environment. ``hermes doctor`` must say so, and ``hermes pm repair``
   must bring the dashboard's import back;
-* a dependency update that cannot resolve after the tree moved is an owed follow-up (contract C3,
-  A6): ``hermes update`` exits 0 but says loudly that the dependencies are not installed yet, the
+* a mandatory dependency update that cannot resolve after the tree moved exits nonzero and
+  records partial completion, while saying loudly that dependencies are not installed yet. The
   receipt names the ``dependencies`` follow-up, the source-update tail stays armed for the next
   launch, and the previous generation stays selected and working.
 """
@@ -151,9 +151,9 @@ def test_pm_repair_heals_the_drift(drifted):
         f"`hermes pm repair` exited 0 but the dashboard still cannot import: {imports}\n" + P.diagnostics(sb, rp))
 
 
-def test_failed_dependency_update_is_an_owed_followup(updated):
+def test_failed_dependency_update_reports_partial_completion(updated):
     """A release whose uv.lock uv rejects, synced after the tree moved: the code is committed, so
-    the update exits 0 (A6) but must say loudly that the dependencies are not installed yet, the
+    the update exits nonzero and must say loudly that dependencies are not installed yet, the
     receipt must name the owed follow-up, the tail must stay armed, and the install must keep
     running on the generation it had."""
     sb = updated["sb"]
@@ -163,13 +163,15 @@ def test_failed_dependency_update_is_an_owed_followup(updated):
     target = I.publish_commit(origin, scratch, "release: e2e broken lockfile", {"uv.lock": lock})
     up = P.update(sb)
     receipt = json.loads(P.ok(sb.cli("pm", "status")).stdout)
-    assert up.returncode == 0, (
-        "`hermes update` failed although the code committed; a dependency sync after the tree moved "
-        "is an owed follow-up (A6)\n" + P.diagnostics(sb, up))
+    assert up.returncode == 1, (
+        "mandatory dependency failure must report partial completion, not success\n"
+        + P.diagnostics(sb, up))
     assert I.git("rev-parse", "HEAD", cwd=sb.checkout) == target, "the code update did not land\n" + P.diagnostics(sb, up)
     assert re.search(r"⚠ Update follow-up 'dependencies' did not finish: .*dependencies not installed yet",
                      up.stdout + up.stderr), "the owed dependency sync is not reported loudly\n" + P.diagnostics(sb, up)
-    assert receipt.get("outcome") == "success" and "dependencies" in [
+    assert receipt.get("outcome") == "partial" and receipt.get("exit_code") == 1, (
+        f"the receipt did not preserve mandatory dependency failure: {receipt}")
+    assert "dependencies" in [
         f.get("step") for f in receipt.get("followups") or []], (
         f"the receipt does not name the owed dependency sync: {receipt}\n" + P.diagnostics(sb, up))
     assert P.pending_marker(sb).exists(), "the owed source-update tail is not armed for the next launch"
