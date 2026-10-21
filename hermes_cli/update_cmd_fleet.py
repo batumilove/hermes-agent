@@ -33,7 +33,7 @@ _FRESH_RESTART_SUPERVISORS = frozenset({"systemd", "launchd", "service", "s6"})
 
 _SYSTEMD_SCOPES = (("user", ["systemctl", "--user"]), ("system", ["systemctl"]))
 _LIST_GATEWAY_UNITS = [
-    "list-units", "hermes-gateway*", "hermes-serve*", "hermes-dashboard*",
+    "list-units", "hermes-gateway*", "hermes-*-gateway.service", "hermes-serve*", "hermes-dashboard*",
     "--plain", "--no-legend", "--no-pager",
 ]
 
@@ -722,15 +722,15 @@ def _systemd_unit_owned_by_update(scope_cmd: list, svc_name: str) -> bool:
 
 
 def _scoped_manual_gateway_pids(pids, *, keep=(), quiet: bool = False) -> list[int]:
-    """*pids* whose live home this update owns (plus *keep*, PIDs already mapped to this
-    install's profile PID files); every other gateway process is named and left running."""
+    """PIDs whose current home belongs to this update; PID-file hints grant no exemption."""
     from hermes_cli.update_fleet_scope import describe_skipped_runtime, partition_gateway_pids_by_scope
-    keep = set(keep)
-    owned, foreign = partition_gateway_pids_by_scope([pid for pid in pids if pid not in keep])
+    # PID files are discovery hints, not current process-birth/home ownership.
+    # Revalidate even hints immediately before lifecycle dispatch.
+    owned, foreign = partition_gateway_pids_by_scope(pids)
     if not quiet:
         for pid, home in foreign:
             print(describe_skipped_runtime("gateway process", f"PID {pid}", home))
-    return [pid for pid in pids if pid in keep or pid in owned]
+    return [pid for pid in pids if pid in owned]
 
 
 def _is_hermes_gateway_unit(unit: str) -> bool:
@@ -741,6 +741,7 @@ def _is_hermes_gateway_unit(unit: str) -> bool:
         # cannot enter the restart path. See #83595.
         unit == "hermes-gateway.service"
         or unit.startswith("hermes-gateway-")
+        or (unit.startswith("hermes-") and unit.endswith("-gateway.service"))
         or unit == "hermes-serve.service"
         or unit.startswith("hermes-serve-")
         # #125297: ``hermes-dashboard*`` units are systemd-supervised dashboard backends — the

@@ -304,7 +304,15 @@ def _settle_after_commit(request: dict, result_path: Path, step: str, reason: st
                                        if step == "dependencies" else "the next launch or `hermes update` retries it")
         if not _record_owed_user_action(request):
             print(_owed_user_action(request))  # the completion child that would print it never ran
-        update_receipt.finalize_pending_update_receipt(0, f"{step} owed after the code was updated")
+        if step == "dependencies":
+            # Code already moved, but mandatory PM preparation did not complete.
+            # Keep recovery armed without presenting an unusable install as success.
+            current = update_receipt._current.get()
+            if current is not None:
+                current.data["exit_code"] = 1
+            update_receipt.finalize_update_receipt("partial", stop_reason="mandatory dependency preparation failed after the code was updated")
+        else:
+            update_receipt.finalize_pending_update_receipt(0, f"{step} owed after the code was updated")
         receipt = _read_terminal_receipt(request)
     code = 0 if receipt is not None and receipt.get("outcome") == "success" else 1
     if code == 0:
@@ -346,6 +354,13 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
             ensure_tools_for_sync()
             # An update never fails because of a plugin: misfits are disabled and reported.
             pm.sync_venv(explicit=True, project_root=root, evict_incompatible_plugins=True)
+            sync = receipt.last_for_update(update_id)
+            if isinstance(sync, dict) and (
+                sync.get("outcome") not in ("ok", "success")
+                or sync.get("exit_code") not in (0, None)
+            ):
+                raise RuntimeError("mandatory PM sync did not succeed "
+                                   f"(outcome={sync.get('outcome')}, exit_code={sync.get('exit_code')})")
             collect_superseded_generations(root)
         finally:
             request["pm_receipt"] = receipt.last_for_update(update_id)
