@@ -8,6 +8,12 @@ import pytest
 from tests.hermes_cli.test_update_target_identity import git, update_tree
 
 
+@pytest.fixture
+def conflict_update_tree(request):
+    """Alias so the test's parameter does not shadow the fixture-registration import (F811)."""
+    return request.getfixturevalue("update_tree")
+
+
 def test_profile_before_gateway_unit_is_discovered():
     from hermes_cli.update_cmd_fleet import _for_each_systemd_gateway_unit
     seen = []
@@ -17,9 +23,9 @@ def test_profile_before_gateway_unit_is_discovered():
     assert seen == ['hermes-pa-gateway']
 
 
-def test_real_conflict_index_and_worktree_survive_native_update(update_tree):
+def test_real_conflict_index_and_worktree_survive_native_update(conflict_update_tree):
     from hermes_cli import main
-    t = update_tree
+    t = conflict_update_tree
     git(t.clone, 'checkout', '-q', 'main')
     git(t.clone, 'checkout', '-qb', 'conflicting')
     (t.clone / 'content.txt').write_text('local conflict\n')
@@ -27,7 +33,7 @@ def test_real_conflict_index_and_worktree_survive_native_update(update_tree):
     git(t.clone, 'checkout', '-q', 'main')
     git(t.clone, 'fetch', 'origin', 'main')
     git(t.clone, 'merge', '--ff-only', 'origin/main')
-    result = subprocess.run(['git', 'merge', 'conflicting'], cwd=t.clone, capture_output=True)
+    result = subprocess.run(['git', 'merge', 'conflicting'], cwd=t.clone, capture_output=True, check=False)
     assert result.returncode != 0
     before_index = (t.clone / '.git' / 'index').read_bytes()
     before_file = (t.clone / 'content.txt').read_bytes()
