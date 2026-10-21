@@ -689,6 +689,16 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
                     receipt.data["pm_refusal"] = sync["refusal"]
         except Exception as exc:  # pragma: no cover — embedding is additive
             logger.debug("pm sync-section embed skipped: %s", exc)
+        # Mandatory PM failure cannot coexist with terminal success. Evaluate after
+        # embedding so both the archive and command-boundary status carry the verdict.
+        if receipt.data.get("outcome") == "success" and (
+            receipt.data.get("pm_sync_outcome") not in (None, "ok", "success")
+            or receipt.data.get("pm_exit_code") not in (0, None)
+        ):
+            receipt.data["outcome"] = "partial"
+            receipt.data["exit_code"] = 1
+            receipt.data["stop_reason"] = "mandatory PM preparation failed; dependency recovery remains required"
+        adopt_terminal_receipt(receipt.data)
         directory = _receipt_dir()
         directory.mkdir(parents=True, exist_ok=True)
         # Unique name: stamp+pid collides for nested/concurrent receipts in
