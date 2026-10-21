@@ -14,6 +14,7 @@ patches:
   - hermes_cli/update_cmd_fleet.py
   - hermes_cli/update_cmd_stash.py
   - tests/hermes_cli/test_update_scope_custody_enforcement.py
+  - tests/hermes_cli/test_update_pause_service_rollback.py
   tests:
   - scripts/run_tests.sh tests/hermes_cli/test_update_scope_custody_enforcement.py tests/hermes_cli/test_update_autostash.py tests/hermes_cli/test_update_fleet_home_scope.py
   retirement: Remove when upstream enforces verified fleet ownership and preserves unresolved conflict stages.
@@ -26,6 +27,7 @@ patches:
   - hermes_cli/update_source_preflight.py
   - tests/hermes_cli/test_update_source_preflight.py
   - tests/hermes_cli/test_update_narrow_candidate.py
+  - tests/hermes_cli/test_update_completion_routing.py
   tests:
   - scripts/run_tests.sh tests/hermes_cli/test_update_source_preflight.py tests/hermes_cli/test_update_inventory.py tests/hermes_cli/test_update_target_identity.py
   retirement: Remove when upstream provides equivalent source admission and explicit inventory ownership evidence.
@@ -38,6 +40,8 @@ patches:
   - hermes_cli/update_receipt.py
   - tests/hermes_cli/test_update_completion_process.py
   - tests/hermes_cli/test_update_receipt_pm_embed.py
+  - tests/hermes_cli/test_update_zip_completion.py
+  - tests/hermes_cli/test_update_post_commit_safety.py
   tests:
   - scripts/run_tests.sh tests/hermes_cli/test_update_completion_process.py tests/hermes_cli/test_update_receipt_pm_embed.py
   retirement: Remove when upstream propagates mandatory PM failure as nonzero partial completion,
