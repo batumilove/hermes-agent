@@ -27,6 +27,7 @@ patches:
   - pm/vendor/rebuild_browser_harness.py
   - pm/vendor/browser_harness-0.1.13+hermes.1-py3-none-any.whl
   - tests/pm/test_workspace.py
+  - tests/test_packaging_metadata.py
   tests:
   - scripts/run_tests.sh tests/pm/test_workspace.py tests/tools/test_browser_use_harness.py
   retirement: Remove certifi exception after 2026-10-23T02:24:16Z and vendored wheel
