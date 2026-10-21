@@ -1494,6 +1494,7 @@ patches:
   - tests/gateway/test_telegram_reply_quote.py
   - gateway/run_inbound_reply.py
   - tests/agent/test_split_turn_compaction.py
+  - website/docs/user-guide/messaging/telegram.md
   tests:
   - scripts/run_tests.sh tests/gateway/test_reply_to_injection.py tests/gateway/test_telegram_reply_quote.py
     tests/gateway/test_queue_command.py
