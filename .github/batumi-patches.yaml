@@ -68,6 +68,7 @@ patches:
   - hermes_cli/update_receipt.py
   - tests/hermes_cli/test_update_completion_process.py
   - tests/hermes_cli/test_update_receipt_pm_embed.py
+  - tests/e2e/core/upgrade/pm/test_stamps_and_doctor.py
   - tests/hermes_cli/test_update_zip_completion.py
   - tests/hermes_cli/test_update_post_commit_safety.py
   tests:
