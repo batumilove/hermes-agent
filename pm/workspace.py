@@ -154,7 +154,7 @@ def _without_release_age(text: str) -> str:
     """
     import re
 
-    return re.sub(r"(?m)^exclude-newer\s*=.*\n", "", text)
+    return re.sub(r"(?m)^exclude-newer(?:-package)?\s*=.*\n", "", text)
 
 
 def _is_member_candidate(plugin_dir: Path) -> bool:

@@ -40,7 +40,7 @@ dependencies = [
   # user picks that backend. Smaller `dependencies` = smaller blast
   # radius for the next supply-chain attack.
   "openai==2.24.0; python_version >= '3.14'",
-  "certifi==2026.5.20; python_version >= '3.14'",
+  "certifi==2026.10.19; python_version >= '3.14'",
   # TLS trust comes from the OS certificate store (agent/ssl_verify.py), so
   # a corporate/internal root installed on the machine just works. certifi
   # above stays a direct pin because httpx/requests/openai each depend on
@@ -130,10 +130,10 @@ dependencies = [
   # so browser tool discovery doesn't fail on lean installs.
   "websockets==15.0.1; python_version >= '3.14'",
   # Engine of the default browser_exec tool (the `browser-use` CLI is a thin
-  # wrapper over it). Pure Python, and its pins match Pillow/websockets above,
+  # wrapper over it). The vendored metadata patch permits security-fixed Pillow;
   # so it rides in the main venv and every install, Desktop bundle included,
   # ships it without a separate tool environment.
-  "browser-harness==0.1.13; python_version >= '3.14'",
+  "browser-harness==0.1.13+hermes.1; python_version >= '3.14'",
   # .gitignore-aware file matching for desktop build stamp.
   "pathspec==1.1.1; python_version >= '3.14'",
   "fastapi>=0.104.0,<1; python_version >= '3.14'",
@@ -172,7 +172,7 @@ dependencies = [
   # libs required for the codecs we use, so it's safe to ship in the base
   # install rather than gating it behind an extra + a mid-session lazy install
   # (which deadlocked the CLI under prompt_toolkit — see #40490).
-  "Pillow==12.3.0; python_version >= '3.14'",
+  "Pillow==13.0.0; python_version >= '3.14'",
   # HEIF/HEIC/AVIF decode for the vision tools. iPhone photos and screenshots
   # are HEIC (frequently mislabeled .jpg by upload pipelines); Pillow has no
   # built-in HEIF codec, so without this the vision resolver rejects them as
@@ -642,8 +642,14 @@ override-dependencies = [
 # check), never on users' machines: PM installs from this vetted lock and drops the
 # cutoff from what it generates (pm/workspace.py::_trust_core_lock), because many
 # package mirrors publish no upload times and uv rejects a file it cannot date
-# (#135589). Exact pins follow the same 3-day rule; there are no exemptions.
+# (#135589). Exact pins follow the same 3-day rule except the approved, bounded
+# certifi security remediation below; remove it after 2026-10-23T02:24:16Z.
 exclude-newer = "3 days"
+# User-approved 2026-10-21: GHSA-6q48-6c7w-9gw2; cutoff admits only this release.
+exclude-newer-package = { certifi = "2026-10-20T02:24:16Z" }
+
+[tool.uv.sources]
+browser-harness = { path = "pm/vendor/browser_harness-0.1.13+hermes.1-py3-none-any.whl" }
 
 [tool.setuptools]
 # Root single-file modules are derived by setup.py at build time from the
@@ -697,7 +703,7 @@ plugins = ["**/plugin.yaml", "**/plugin.yml"]
 # pm/lock.json is the runtime pin table (uv/python/tool versions + sha256s).
 # Without it a sealed wheel installs the pm package but has no pins to
 # realize — the pm store would be empty.
-pm = ["lock.json", "artifact-mirror.json", "pyproject.toml", "uv.lock"]
+pm = ["lock.json", "artifact-mirror.json", "pyproject.toml", "uv.lock", "vendor/*.whl", "vendor/*.md"]
 # Bot Desktop starts Xvnc + Xfce through a shell launcher and seeds the wallpaper; both are read
 # via Path(__file__).parent in tools/bot_desktop/runtime.py and vanish from sealed wheels otherwise.
 tools = ["bot_desktop/launcher.sh", "bot_desktop/wallpaper.png"]

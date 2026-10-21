@@ -5,6 +5,32 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: october-security-dependency-remediation
+  kind: core
+  rationale: Pin patched image, TLS trust, redirect, sanitizer and development-server
+    dependencies without suppressing dependency validation. A reproducible metadata-only
+    browser-harness wheel admits patched Pillow; the user-approved certifi release-age
+    exception is bounded to its security release and expires for removal on October 23.
+  paths:
+  - pyproject.toml
+  - uv.lock
+  - package.json
+  - package-lock.json
+  - website/package.json
+  - website/package-lock.json
+  - apps/bootstrap-installer/package.json
+  - apps/desktop/package.json
+  - web/package.json
+  - pm/AGENTS.md
+  - pm/workspace.py
+  - pm/vendor/README.md
+  - pm/vendor/rebuild_browser_harness.py
+  - pm/vendor/browser_harness-0.1.13+hermes.1-py3-none-any.whl
+  - tests/pm/test_workspace.py
+  tests:
+  - scripts/run_tests.sh tests/pm/test_workspace.py tests/tools/test_browser_use_harness.py
+  retirement: Remove certifi exception after 2026-10-23T02:24:16Z and vendored wheel
+    when upstream browser-harness permits patched Pillow; retain security floors.
 - id: lcm-native-snapshot-provenance
   kind: core
   rationale: Preserve the context engine's native admission provenance while compression
