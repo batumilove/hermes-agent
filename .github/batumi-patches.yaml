@@ -32,6 +32,47 @@ patches:
   - scripts/run_tests.sh tests/pm/test_workspace.py tests/tools/test_browser_use_harness.py
   retirement: Remove certifi exception after 2026-10-23T02:24:16Z and vendored wheel
     when upstream browser-harness permits patched Pillow; retain security floors.
+- id: native-updater-scope-custody-enforcement
+  kind: core
+  rationale: Require verified runtime homes even for PID-file hints and user units; discover
+    profile-before-gateway units and preserve unmerged index custody rather than reset it.
+  paths:
+  - hermes_cli/update_fleet_scope.py
+  - hermes_cli/update_cmd_fleet.py
+  - hermes_cli/update_cmd_stash.py
+  - tests/hermes_cli/test_update_scope_custody_enforcement.py
+  - tests/hermes_cli/test_update_pause_service_rollback.py
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_update_scope_custody_enforcement.py tests/hermes_cli/test_update_autostash.py tests/hermes_cli/test_update_fleet_home_scope.py
+  retirement: Remove when upstream enforces verified fleet ownership and preserves unresolved conflict stages.
+- id: native-updater-source-admission
+  kind: core
+  rationale: Check fixed storage headroom before checkout housekeeping; preserve selected
+    no-op SHA and refuse unavailable/mismatched HEAD without changing ordinary fork merge semantics.
+  paths:
+  - hermes_cli/update_cmd.py
+  - hermes_cli/update_source_preflight.py
+  - tests/hermes_cli/test_update_source_preflight.py
+  - tests/hermes_cli/test_update_narrow_candidate.py
+  - tests/hermes_cli/test_update_completion_routing.py
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_update_source_preflight.py tests/hermes_cli/test_update_inventory.py tests/hermes_cli/test_update_target_identity.py
+  retirement: Remove when upstream provides equivalent source admission and explicit inventory ownership evidence.
+- id: native-updater-mandatory-pm-failure
+  kind: core
+  rationale: Propagate mandatory dependency preparation failures through the native updater's
+    correlated receipt and completion status; do not activate or collect generations after PM failure.
+  paths:
+  - hermes_cli/update_completion.py
+  - hermes_cli/update_receipt.py
+  - tests/hermes_cli/test_update_completion_process.py
+  - tests/hermes_cli/test_update_receipt_pm_embed.py
+  - tests/hermes_cli/test_update_zip_completion.py
+  - tests/hermes_cli/test_update_post_commit_safety.py
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_update_completion_process.py tests/hermes_cli/test_update_receipt_pm_embed.py
+  retirement: Remove when upstream propagates mandatory PM failure as nonzero partial completion,
+    preserves correlated failure receipts and blocks prepared activation after failed PM results.
 - id: lcm-native-snapshot-provenance
   kind: core
   rationale: Preserve the context engine's native admission provenance while compression

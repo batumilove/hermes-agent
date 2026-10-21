@@ -30,6 +30,11 @@ def test_the_pause_record_survives_exactly_when_the_service_rollback_failed(monk
     monkeypatch.setattr(gateway, "find_gateway_pids", lambda all_profiles=False: [])
     monkeypatch.setattr(gateway, "find_profile_gateway_processes", lambda strict=False: [])
     monkeypatch.setattr(gateway, "find_windows_gateway_services", lambda profile_processes=(): [service])
+    # The pause test's subject is pause/rollback/record semantics; custody filtering of
+    # undiscovered PIDs is covered by test_update_scope_custody_enforcement.py. The simulated
+    # service PID (this process) is not a real gateway home, so stub the ownership re-check.
+    monkeypatch.setattr(update_cmd_windows, "_owned_gateway_pids",
+                        lambda pids, **_: list(dict.fromkeys(pids)))
     monkeypatch.setattr(update_cmd_windows, "_stop_windows_gateways", lambda *a, **k: {})
     monkeypatch.setattr(update_cmd_windows, "_record_attested_cold_start_profiles", lambda *a: None)
 

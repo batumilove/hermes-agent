@@ -1751,7 +1751,14 @@ def _finish_already_up_to_date(
     if completion_request is not None:
         # Same code, same host obligation: an SHA-less arm would REPLACE the standing record
         # (and its restarted proof), so a sibling profile's no-op update re-kills the multiplexer.
-        completion_request["expected_sha"] = _capture_head_sha(git_cmd, _m().PROJECT_ROOT) or ""
+        observed = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
+        pinned = completion_request.get("expected_sha")
+        if not observed or (pinned and observed != pinned):
+            print("✗ Cannot verify the selected no-op checkout. No completion was applied.")
+            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+            _record_stop("head_moved" if observed else "head_unresolved")
+            sys.exit(1)
+        completion_request["expected_sha"] = pinned or observed
         completion_request["completion_message"] = (
             "✓ Already up to date!" if _plan.upstream_checked
             else "✓ Up to date with your fork (official repo not checked).")
@@ -1811,6 +1818,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print(f"✗ Cannot update while a Git {git_operation} is in progress in {root}.")
         print(f"  Finish it or run `git {git_operation} --abort`, then re-run `hermes update`.")
         _record_stop("git_in_progress", without_receipt="failed")  # before the receipt opens: a metrics row only
+        sys.exit(1)
+
+    # Capacity guard only, not transaction preparation or restore-size proof.
+    from hermes_cli.update_source_preflight import storage_refusal
+    if reason := storage_refusal([_m().PROJECT_ROOT, get_hermes_home()]):
+        _record_stop("storage_preflight_refused")
+        print(f"✗ {reason}")
         sys.exit(1)
 
     # Self-heal abandoned .git/*.lock files (a crashed fetch) and aborted-transfer pack temps
