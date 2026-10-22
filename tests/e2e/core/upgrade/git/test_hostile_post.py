@@ -1,4 +1,4 @@
-"""Once ``hermes update`` has committed the new code, the update never fails (contract C3).
+"""Post-commit update receipts distinguish optional follow-ups from mandatory PM failure.
 
 One real HEAD install (``_git_world``: the real ``scripts/install.sh`` over real smart HTTP, every
 command in a ``bwrap`` sandbox) is shared by the cells. Each cell publishes a hostile upstream
@@ -26,7 +26,7 @@ release and breaks something that runs AFTER the checkout moved, for real:
     pm's own sync receipts stay where pm writes them and ``hermes pm status`` there still shows them.
 (e) the dependency sync fails after the tree moved (contract amendment A6): the release's
     ``pm.client.ensure_tools_for_sync`` raises while ``$HOME/.e2e-break-deps-sync`` exists; it runs in
-    the completion bootstrap from the NEW tree, after the checkout moved. Exit 0, a ``dependencies``
+    the completion bootstrap from the NEW tree, after the checkout moved. Exit 1, a partial receipt, a ``dependencies``
     follow-up, the tail obligation armed; the next update completes it.
 (f) Ctrl-C after the commit point: SIGINT (what a terminal's Ctrl-C delivers to the foreground
     ``hermes update``; the completion child runs in its own session) while the slow web build runs.
@@ -564,7 +564,7 @@ def test_sticky_profile_update_logs_and_receipts_land_in_the_root_home(w):
         w.sb.cli("profile", "use", "default", timeout=300)
 
 
-def test_dependency_sync_failure_after_commit_is_a_followup_not_a_failed_update(w):
+def test_dependency_sync_failure_after_commit_reports_partial_completion(w):
     w.reset_clean()
     _clear_toggles(w)
     target = _publish_deps_fault_release(w, "e")
@@ -579,10 +579,10 @@ def test_dependency_sync_failure_after_commit_is_a_followup_not_a_failed_update(
 
     assert w.head() == target, f"premise: the release never committed, so this is no post-commit cell:\n{diag}"
     assert DEPS_FAULT_TEXT in out, f"premise: the hostile dependency sync never ran:\n{diag}"
-    assert cp.returncode == 0, f"the code committed, yet a failed dependency sync failed `hermes update`:\n{diag}"
+    assert cp.returncode == 1, f"mandatory dependency failure did not report partial completion:\n{diag}"
     assert any(DEPS_OWED in line for line in _warn_lines(out)), \
         f"no ⚠ line says the dependencies are not installed yet:\n{diag}"
-    assert rec.get("outcome") == "success", f"receipt outcome is not success after the commit:\n{diag}"
+    assert rec.get("outcome") == "partial" and rec.get("exit_code") == 1, f"receipt lost mandatory PM failure:\n{diag}"
     assert "dependencies" in _followup_steps(rec), f"receipt followups do not name `dependencies`:\n{diag}"
     assert _pending_markers(w), f"the failed dependency sync disarmed the source-completion obligation:\n{diag}"
 
