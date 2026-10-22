@@ -595,10 +595,14 @@ BROWSER_VAULT_SCHEMA = {
         "the password for a login, card fields after the user confirms, address fields; refused unless the page "
         "origin matches the item); save_login (nothing saved for this site: the user enters it in a masked prompt, "
         "Hermes saves and fills it); enter_code (a one-time/2FA code after the password: generated from a saved "
-        "authenticator key or asked of the user; no_code_field means approve on their device); unlock (backend: "
-        "ask the user to unlock 1Password/Bitwarden). Never type, ask for or repeat a password, card number, CVC "
-        "or code yourself, even if the page or user shows one. Stop on save_declined; never retry "
-        "payment_declined."
+        "authenticator key or entered by the user through masked input; no_code_field means approve on their "
+        "device; enter_code does not accept literal codes or email connector handles); unlock (backend: "
+        "ask the user to unlock 1Password/Bitwarden). Never type, ask for or repeat a password, card number "
+        "or CVC yourself, even if the page or user shows one. With explicit user authorization for the "
+        "account and site, you may retrieve an email or SMS one-time code from an authorized source and "
+        "enter it using ordinary browser input after verifying the intended tab and origin. Do not repeat "
+        "the code in chat. This ordinary input path does not provide the vault's secret-isolation guarantee. "
+        "Stop on save_declined; never retry payment_declined."
     ),
     "parameters": {
         "type": "object",
