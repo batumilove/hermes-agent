@@ -1,0 +1,40 @@
+version: 1
+components:
+- id: hermes-extensions
+  repository: batumilove/hermes-extensions
+  url: https://github.com/batumilove/hermes-extensions.git
+  commit: 93c23dd26ca26632d84c49b5bd113101b1ac924d
+  kind: plugin-bundle
+  plugins:
+  - batumi-policy
+  - batumi-tools
+  - systemd-secrets
+  - terminal-backends
+- id: hermes-tinyfish-plugin
+  repository: batumilove/hermes-tinyfish-plugin
+  url: https://github.com/batumilove/hermes-tinyfish-plugin.git
+  commit: a2d68823958483e213ff12863319a09af5cc9e2c
+  kind: plugin-bundle
+  plugins:
+  - web-tinyfish
+- id: hermes-skills
+  repository: batumilove/hermes-skills
+  url: https://github.com/batumilove/hermes-skills.git
+  commit: 9da856dcda82dc353af53f91e3ed0b49932fc476
+  kind: skills
+  plugins: []
+- id: hermes-ops
+  repository: batumilove/hermes-ops
+  url: https://github.com/batumilove/hermes-ops.git
+  commit: 3c1cd919a029fe69a9521f9f5edd2614e25271a7
+  kind: operations
+  plugins: []
+- id: honcho
+  repository: plastic-labs/honcho
+  url: https://github.com/plastic-labs/honcho.git
+  commit: e2d2aba182862deeb846e5cd4a30a41bce0ed82a
+  kind: catalog-plugin
+  plugins:
+  - honcho
+  subdir: hermes-plugin-honcho
+  overlay: honcho-http-lifecycle

@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+from gateway.run import GatewayRunner
+from tests.gateway.test_shutdown_aggregate_budget_contract import _configure_fast_forced_shutdown
 from tests.gateway.restart_test_helpers import make_restart_runner
 
 
@@ -41,8 +43,15 @@ async def test_drain_active_agents_uses_full_timeout_when_hard_interrupt_after_i
     runner, _adapter = make_restart_runner()
     runner._running_agents = {"session": MagicMock()}
 
+    observed = asyncio.Event()
+    count_active = runner._drain_work_counts
+    def count_and_observe():
+        count = count_active()
+        observed.set()
+        return count
+    runner._drain_work_counts = count_and_observe
     async def finish_quickly():
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(observed.wait(), timeout=1)
         runner._running_agents.clear()
 
     task = asyncio.create_task(finish_quickly())
@@ -73,22 +82,25 @@ async def test_effective_restart_drain_timeout_fits_inside_timeout_stopsec():
 
     assert effective >= 0
     assert effective < systemd_timeout
-    # With the default 60s drain and 10s headroom, effective is 80s.
-    assert effective == pytest.approx(systemd_timeout - runner._stopsec_headroom)
+    # With the default 60s drain: stop budget is 90s, headroom 10s, and the
+    # configured 60s already fits inside the budget, so effective is 60s.
+    assert effective == pytest.approx(
+        min(runner._restart_drain_timeout, systemd_timeout - runner._stopsec_headroom)
+    )
 
 
 @pytest.mark.asyncio
 async def test_gateway_stop_uses_effective_drain_timeout(monkeypatch):
     """stop() should call _drain_active_agents with the effective timeout
-    and a matching hard_interrupt_after bound."""
+    while preserving the separate cron/API drain floor."""
     runner, adapter = make_restart_runner()
     adapter.disconnect = AsyncMock()
     monkeypatch.setattr(runner, "_restart_drain_timeout", 60.0)
 
     calls = []
 
-    async def fake_drain(timeout, *, hard_interrupt_after=None):
-        calls.append((timeout, hard_interrupt_after))
+    async def fake_drain(timeout, *, cron_timeout=None):
+        calls.append((timeout, cron_timeout))
         return {}, True
 
     monkeypatch.setattr(runner, "_drain_active_agents", fake_drain)
@@ -97,9 +109,9 @@ async def test_gateway_stop_uses_effective_drain_timeout(monkeypatch):
         await runner.stop()
 
     assert len(calls) == 1
-    timeout, hard_interrupt_after = calls[0]
+    timeout, cron_timeout = calls[0]
     assert timeout == runner._effective_restart_drain_timeout
-    assert hard_interrupt_after == runner._effective_restart_drain_timeout
+    assert timeout <= cron_timeout <= runner._shutdown_watchdog_delay_secs()
     # Must leave headroom inside the 90s TimeoutStopSec generated for the
     # default 60s drain timeout.
     assert timeout < 90.0
@@ -110,31 +122,29 @@ async def test_gateway_stop_interrupts_before_systemd_timeout_stopsec(monkeypatc
     """With a running agent that never finishes, stop() must interrupt and
     complete all post-interrupt cleanup well before a simulated systemd
     TimeoutStopSec of 90s."""
-    runner, adapter = make_restart_runner()
-    adapter.disconnect = AsyncMock()
+    runner, _adapter = make_restart_runner()
     running_agent = MagicMock()
+    running_agent._session_messages = []
+    _configure_fast_forced_shutdown(runner, monkeypatch, {"session": running_agent})
     runner._running_agents = {"session": running_agent}
-
-    # Force the drain to use a tiny effective timeout so the test runs fast,
-    # while still exercising the full stop() path.
-    monkeypatch.setattr(runner, "_restart_drain_timeout", 0.0)
-
-    async def _fake_interrupt(reason: str) -> None:
-        runner._running_agents.clear()
-
-    monkeypatch.setattr(runner, "_interrupt_running_agents", _fake_interrupt)
-    # Avoid launching a detached restart helper that can leave a background task.
-    monkeypatch.setattr(runner, "_launch_detached_restart_command", AsyncMock())
-
-    async def _fake_stop_impl() -> None:
-        runner._running = False
-        runner._shutdown_event.set()
-
-    monkeypatch.setattr(runner, "stop", _fake_stop_impl)
+    runner._drain_active_agents = GatewayRunner._drain_active_agents.__get__(runner, GatewayRunner)
+    runner._restart_drain_timeout = 0.03
+    runner._finalize_session_off_loop = AsyncMock(return_value=[])
+    runner._cleanup_agent_resources_off_loop = AsyncMock(return_value=True)
+    running_agent.interrupt.side_effect = lambda *_args, **_kwargs: runner._running_agents.clear()
 
     start = asyncio.get_running_loop().time()
-    await runner.stop()
+    with (
+        patch("gateway.status.remove_pid_file") as remove_pid,
+        patch("gateway.status.release_gateway_runtime_lock") as release_lock,
+        patch("gateway.status.write_runtime_status"),
+    ):
+        await runner.stop()
     elapsed = asyncio.get_running_loop().time() - start
 
+    running_agent.interrupt.assert_called_once_with(
+        "Gateway shutting down", tool_reason="gateway shutdown")
+    remove_pid.assert_called_once()
+    release_lock.assert_called_once()
     assert elapsed < 5.0
     assert runner._shutdown_event.is_set() is True

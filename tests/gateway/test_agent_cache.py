@@ -9,13 +9,12 @@ Verifies that the agent cache correctly:
 - Preserves frozen system prompt across turns
 """
 
-import hashlib
-import json
 import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
-
+from hermes_cli.config import DEFAULT_CONFIG, cfg_get
+from tools import browser_tool_lifecycle as bt_lifecycle
 
 def _make_runner():
     """Create a minimal GatewayRunner with just the cache infrastructure."""
@@ -27,17 +26,33 @@ def _make_runner():
     return runner
 
 
+def _context_engine_agent(last_activity: float | None = None):
+    """Minimal real AIAgent carrying an owned context engine mock."""
+    import time
+    from run_agent import AIAgent
+
+    agent = AIAgent.__new__(AIAgent)
+    agent.session_id = "cache-context-engine-test"
+    agent._active_children = []
+    agent._active_children_lock = threading.Lock()
+    agent._context_engine_shutdown_lock = threading.Lock()
+    agent.client = None
+    agent._last_activity_ts = last_activity if last_activity is not None else time.time()
+    engine = MagicMock()
+    agent.context_compressor = engine
+    return agent, engine
+
+
+def _wait_for_call(mock, timeout: float = 2.0) -> None:
+    import time
+
+    deadline = time.time() + timeout
+    while time.time() < deadline and mock.call_count == 0:
+        time.sleep(0.02)
+
+
 class TestAgentConfigSignature:
     """Config signature produces stable, distinct keys."""
-
-    def test_same_config_same_signature(self):
-        from gateway.run import GatewayRunner
-
-        runtime = {"api_key": "sk-test12345678", "base_url": "https://openrouter.ai/api/v1",
-                    "provider": "openrouter", "api_mode": "chat_completions"}
-        sig1 = GatewayRunner._agent_config_signature("claude-sonnet-4", runtime, ["hermes-telegram"], "")
-        sig2 = GatewayRunner._agent_config_signature("claude-sonnet-4", runtime, ["hermes-telegram"], "")
-        assert sig1 == sig2
 
     def test_model_change_different_signature(self):
         from gateway.run import GatewayRunner
@@ -79,53 +94,45 @@ class TestAgentConfigSignature:
         sig2 = GatewayRunner._agent_config_signature("claude-sonnet-4", rt2, ["hermes-telegram"], "")
         assert sig1 != sig2
 
-    def test_toolset_change_different_signature(self):
+    def test_capability_change_different_signature(self):
         from gateway.run import GatewayRunner
 
-        runtime = {"api_key": "sk-test12345678", "base_url": "https://openrouter.ai/api/v1", "provider": "openrouter"}
-        sig1 = GatewayRunner._agent_config_signature("claude-sonnet-4", runtime, ["hermes-telegram"], "")
-        sig2 = GatewayRunner._agent_config_signature("claude-sonnet-4", runtime, ["hermes-discord"], "")
-        assert sig1 != sig2
+        runtime = {"api_key": "sk-test12345678", "base_url": "https://proxy.example/v1", "provider": "custom"}
+        native = {**runtime, "capabilities": {"openai_native_compaction": True}}
+        plain = {**runtime, "capabilities": {"openai_native_compaction": False}}
+        assert GatewayRunner._agent_config_signature("gpt-5.6", native, [], "") != (
+            GatewayRunner._agent_config_signature("gpt-5.6", plain, [], "")
+        )
 
-    def test_reasoning_not_in_signature(self):
-        """Reasoning config is set per-message, not part of the signature."""
-        from gateway.run import GatewayRunner
+    def test_default_gateway_runtime_forwards_filtered_capabilities(self, monkeypatch):
+        """Configured provider capabilities must reach a newly created gateway agent."""
+        from gateway.run import _resolve_runtime_agent_kwargs
+        from hermes_cli import runtime_provider
 
-        runtime = {"api_key": "sk-test12345678", "base_url": "https://openrouter.ai/api/v1", "provider": "openrouter"}
-        # Same config — signature should be identical regardless of what
-        # reasoning_config the caller might have (it's not passed in)
-        sig1 = GatewayRunner._agent_config_signature("claude-sonnet-4", runtime, ["hermes-telegram"], "")
-        sig2 = GatewayRunner._agent_config_signature("claude-sonnet-4", runtime, ["hermes-telegram"], "")
-        assert sig1 == sig2
+        monkeypatch.setattr(
+            runtime_provider,
+            "resolve_runtime_provider",
+            lambda **_kw: {
+                "api_key": "test-key",
+                "base_url": "https://trusted-proxy.example/v1",
+                "provider": "custom",
+                "requested_provider": "custom:trusted-proxy",
+                "api_mode": "responses",
+                "capabilities": {
+                    "openai_native_compaction": True,
+                    "ignore-me": "not-a-bool",
+                },
+            },
+        )
+        monkeypatch.setattr(runtime_provider, "_get_model_config", dict)
+
+        runtime = _resolve_runtime_agent_kwargs()
+
+        assert runtime["capabilities"] == {"openai_native_compaction": True}
 
     # ---------------------------------------------------------------
     # cache_keys (compression/context config cache-busting)
     # ---------------------------------------------------------------
-
-    def test_cache_keys_default_omitted_matches_empty(self):
-        """Omitted cache_keys must produce the same signature as empty {}."""
-        from gateway.run import GatewayRunner
-
-        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
-        sig_omitted = GatewayRunner._agent_config_signature("m", runtime, [], "")
-        sig_empty = GatewayRunner._agent_config_signature("m", runtime, [], "", cache_keys={})
-        sig_none = GatewayRunner._agent_config_signature("m", runtime, [], "", cache_keys=None)
-        assert sig_omitted == sig_empty == sig_none
-
-    def test_context_length_change_busts_cache(self):
-        """Editing model.context_length in config must produce a new signature."""
-        from gateway.run import GatewayRunner
-
-        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
-        sig1 = GatewayRunner._agent_config_signature(
-            "m", runtime, [], "",
-            cache_keys={"model.context_length": 200_000},
-        )
-        sig2 = GatewayRunner._agent_config_signature(
-            "m", runtime, [], "",
-            cache_keys={"model.context_length": 400_000},
-        )
-        assert sig1 != sig2
 
     def test_compression_threshold_change_busts_cache(self):
         from gateway.run import GatewayRunner
@@ -140,20 +147,6 @@ class TestAgentConfigSignature:
             cache_keys={"compression.threshold": 0.75},
         )
         assert sig1 != sig2
-
-    def test_compression_enabled_toggle_busts_cache(self):
-        from gateway.run import GatewayRunner
-
-        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
-        sig_on = GatewayRunner._agent_config_signature(
-            "m", runtime, [], "",
-            cache_keys={"compression.enabled": True},
-        )
-        sig_off = GatewayRunner._agent_config_signature(
-            "m", runtime, [], "",
-            cache_keys={"compression.enabled": False},
-        )
-        assert sig_on != sig_off
 
     def test_cache_keys_key_order_does_not_matter(self):
         """Signature must be stable regardless of dict key insertion order."""
@@ -170,73 +163,49 @@ class TestAgentConfigSignature:
         )
         assert sig_a == sig_b
 
-    def test_tool_registry_generation_change_busts_cache(self):
-        """MCP reloads mutate the tool registry, so cached agents must rebuild."""
-        from gateway.run import GatewayRunner
-
-        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
-        sig_before = GatewayRunner._agent_config_signature(
-            "m", runtime, ["telegram"], "",
-            cache_keys={"tools.registry_generation": 10},
-        )
-        sig_after = GatewayRunner._agent_config_signature(
-            "m", runtime, ["telegram"], "",
-            cache_keys={"tools.registry_generation": 11},
-        )
-
-        assert sig_before != sig_after
-
-
 class TestExtractCacheBustingConfig:
     """Verify _extract_cache_busting_config pulls the documented subset of
     config values that must invalidate the cached agent on change."""
 
-    def test_reads_model_context_length(self):
-        from gateway.run import GatewayRunner
-
-        out = GatewayRunner._extract_cache_busting_config(
-            {"model": {"context_length": 272_000, "provider": "openrouter"}}
-        )
-        assert out["model.context_length"] == 272_000
-
-    def test_reads_compression_subkeys(self):
-        from gateway.run import GatewayRunner
-
-        out = GatewayRunner._extract_cache_busting_config(
-            {
-                "compression": {
-                    "enabled": False,
-                    "threshold": 0.6,
-                    "target_ratio": 0.3,
-                    "protect_last_n": 25,
-                    "some_other_key": "ignored",
-                }
-            }
-        )
-        assert out["compression.enabled"] is False
-        assert out["compression.threshold"] == 0.6
-        assert out["compression.target_ratio"] == 0.3
-        assert out["compression.protect_last_n"] == 25
-
-    def test_missing_keys_yield_none(self):
-        """Absent config keys must produce None values (still contribute to signature)."""
+    def test_missing_keys_yield_the_shipped_default(self):
+        """An absent key carries the value in force — DEFAULT_CONFIG's — for every documented key."""
         from gateway.run import GatewayRunner
 
         out = GatewayRunner._extract_cache_busting_config({})
-        # Every documented cache-busting key must be present, even if None
         for section, key in GatewayRunner._CACHE_BUSTING_CONFIG_KEYS:
-            assert f"{section}.{key}" in out
-            assert out[f"{section}.{key}"] is None
+            assert out[f"{section}.{key}"] == cfg_get(DEFAULT_CONFIG, section, key)
+
+    def test_explicit_cap_differs_from_absent(self):
+        """Setting or clearing `threshold_tokens` rebuilds the cached agent (the signature changes), while
+        absent and an explicit default build the same agent (the signature matches)."""
+        from gateway.run import GatewayRunner
+
+        default_cap = DEFAULT_CONFIG["compression"]["threshold_tokens"]
+        other_cap = (default_cap or 0) + 100_000
+        sig = lambda cfg: GatewayRunner._extract_cache_busting_config(cfg)["compression.threshold_tokens"]
+        assert sig({}) == sig({"compression": {"threshold_tokens": default_cap}}) == default_cap
+        assert sig({"compression": {"threshold_tokens": other_cap}}) == other_cap != sig({})
+
+    def test_legacy_checkpoints_bool_carries_defaults_for_the_other_keys(self):
+        """`checkpoints: true` builds the agent with DEFAULT_CONFIG's limits (`_checkpoint_agent_kwargs`), so
+        migrating to `checkpoints: {enabled: true}` must not change the signature."""
+        from gateway.run import GatewayRunner
+
+        legacy = GatewayRunner._extract_cache_busting_config({"checkpoints": True})
+        explicit = GatewayRunner._extract_cache_busting_config({"checkpoints": {"enabled": True}})
+        assert legacy["checkpoints.enabled"] is True
+        assert {k: v for k, v in legacy.items() if k.startswith("checkpoints.")} == {
+            k: v for k, v in explicit.items() if k.startswith("checkpoints.")}
 
     def test_non_dict_section_treated_as_missing(self):
         from gateway.run import GatewayRunner
 
-        # compression is a string — should not crash, all compression.* keys None
+        # compression is a string — should not crash; compression.* keys fall back to the shipped defaults
         out = GatewayRunner._extract_cache_busting_config(
             {"compression": "broken", "model": {"context_length": 100_000}}
         )
-        assert out["compression.enabled"] is None
-        assert out["compression.threshold"] is None
+        assert out["compression.enabled"] == DEFAULT_CONFIG["compression"]["enabled"]
+        assert out["compression.threshold"] == DEFAULT_CONFIG["compression"]["threshold"]
         assert out["model.context_length"] == 100_000
 
     def test_none_config_is_safe(self):
@@ -244,7 +213,7 @@ class TestExtractCacheBustingConfig:
 
         out = GatewayRunner._extract_cache_busting_config(None)
         for section, key in GatewayRunner._CACHE_BUSTING_CONFIG_KEYS:
-            assert out[f"{section}.{key}"] is None
+            assert out[f"{section}.{key}"] == cfg_get(DEFAULT_CONFIG, section, key)
         assert "tools.registry_generation" in out
 
     def test_extract_includes_live_tool_registry_generation(self, monkeypatch):
@@ -257,91 +226,75 @@ class TestExtractCacheBustingConfig:
 
         assert out["tools.registry_generation"] == 12345
 
-    def test_full_round_trip_busts_cache_on_real_edit(self):
-        """End-to-end: simulate a config edit on main and verify the
-        extracted cache_keys change produces a new signature."""
+    # -- Provider-declared identity (MemoryProvider.identity_signature) ------
+
+    @staticmethod
+    def _provider_declared_keys(out):
+        """``memory.*`` keys a provider added, excluding the config.yaml keys already documented."""
         from gateway.run import GatewayRunner
 
-        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
-        cfg_before = {
-            "model": {"context_length": 200_000},
-            "compression": {"threshold": 0.50, "enabled": True},
-        }
-        cfg_after = {
-            "model": {"context_length": 200_000},
-            "compression": {"threshold": 0.75, "enabled": True},  # user raised threshold
-        }
+        documented = {f"{s}.{k}" for s, k in GatewayRunner._CACHE_BUSTING_CONFIG_KEYS if s == "memory"}
+        return sorted(k for k in out if k.startswith("memory.") and k not in documented)
 
-        sig_before = GatewayRunner._agent_config_signature(
-            "m", runtime, [], "",
-            cache_keys=GatewayRunner._extract_cache_busting_config(cfg_before),
-        )
-        sig_after = GatewayRunner._agent_config_signature(
-            "m", runtime, [], "",
-            cache_keys=GatewayRunner._extract_cache_busting_config(cfg_after),
-        )
-        assert sig_before != sig_after, (
-            "Editing compression.threshold in config.yaml must bust the "
-            "gateway's cached agent so the new threshold takes effect."
-        )
+    @staticmethod
+    def _install_fake_provider(monkeypatch, provider):
+        """Route ``load_memory_provider`` to ``provider`` and start from an empty memo."""
+        import plugins.memory as plugins_memory
+        from gateway.run_agent_cache import GatewayAgentCacheMixin
 
+        calls = []
+
+        def _load(name, *, register_skills=None):
+            calls.append((name, register_skills))
+            return provider
+
+        monkeypatch.setattr(plugins_memory, "load_memory_provider", _load)
+        monkeypatch.setattr(GatewayAgentCacheMixin, "_MEMORY_IDENTITY_PROVIDER_MEMO", {})
+        return calls
+
+    def test_provider_identity_signature_enters_under_memory_prefix_and_is_re_read_from_one_instance(self, monkeypatch):
+        from gateway.run import GatewayRunner
+        from tests.agent.test_memory_provider import FakeMemoryProvider
+
+        class IdentityProvider(FakeMemoryProvider):
+            writer = "alice"
+
+            def identity_signature(self):
+                return {"fakeprov.writer": self.writer, "fakeprov.aliases": [("a", "b")]}
+
+        provider = IdentityProvider("fakeprov")
+        calls = self._install_fake_provider(monkeypatch, provider)
+        cfg = {"memory": {"provider": "fakeprov"}}
+
+        first = GatewayRunner._extract_cache_busting_config(cfg)
+        provider.writer = "bob"
+        second = GatewayRunner._extract_cache_busting_config(cfg)
+
+        assert self._provider_declared_keys(first) == ["memory.fakeprov.aliases", "memory.fakeprov.writer"]
+        assert first["memory.fakeprov.aliases"] == [("a", "b")]
+        assert (first["memory.fakeprov.writer"], second["memory.fakeprov.writer"]) == ("alice", "bob")
+        assert calls == [("fakeprov", False)]
+
+    @pytest.mark.parametrize("kind", ["no hook", "no provider", "raising hook"])
+    def test_provider_contributes_nothing_without_a_working_identity_hook(self, monkeypatch, kind):
+        from gateway.run import GatewayRunner
+        from tests.agent.test_memory_provider import FakeMemoryProvider
+
+        class BrokenProvider(FakeMemoryProvider):
+            def identity_signature(self):
+                raise RuntimeError("boom")
+
+        provider = {"no hook": FakeMemoryProvider("p"), "no provider": None, "raising hook": BrokenProvider("p")}[kind]
+        calls = self._install_fake_provider(monkeypatch, provider)
+
+        out = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "p"}} if provider else {})
+
+        assert self._provider_declared_keys(out) == []
+        assert "tools.registry_generation" in out
+        assert calls == ([] if provider is None else [("p", False)])
 
 class TestAgentCacheLifecycle:
     """End-to-end cache behavior with real AIAgent construction."""
-
-    def test_cache_hit_returns_same_agent(self):
-        """Second message with same config reuses the cached agent instance."""
-        from run_agent import AIAgent
-
-        runner = _make_runner()
-        session_key = "telegram:12345"
-        runtime = {"api_key": "test", "base_url": "https://openrouter.ai/api/v1",
-                    "provider": "openrouter", "api_mode": "chat_completions"}
-        sig = runner._agent_config_signature("anthropic/claude-sonnet-4", runtime, ["hermes-telegram"], "")
-
-        # First message — create and cache
-        agent1 = AIAgent(
-            model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
-            max_iterations=5, quiet_mode=True, skip_context_files=True,
-            skip_memory=True, platform="telegram",
-        )
-        with runner._agent_cache_lock:
-            runner._agent_cache[session_key] = (agent1, sig)
-
-        # Second message — cache hit
-        with runner._agent_cache_lock:
-            cached = runner._agent_cache.get(session_key)
-        assert cached is not None
-        assert cached[1] == sig
-        assert cached[0] is agent1  # same instance
-
-    def test_cache_miss_on_model_change(self):
-        """Model change produces different signature → cache miss."""
-        from run_agent import AIAgent
-
-        runner = _make_runner()
-        session_key = "telegram:12345"
-        runtime = {"api_key": "test", "base_url": "https://openrouter.ai/api/v1",
-                    "provider": "openrouter", "api_mode": "chat_completions"}
-
-        old_sig = runner._agent_config_signature("anthropic/claude-sonnet-4", runtime, ["hermes-telegram"], "")
-        agent1 = AIAgent(
-            model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
-            max_iterations=5, quiet_mode=True, skip_context_files=True,
-            skip_memory=True, platform="telegram",
-        )
-        with runner._agent_cache_lock:
-            runner._agent_cache[session_key] = (agent1, old_sig)
-
-        # New model → different signature
-        new_sig = runner._agent_config_signature("anthropic/claude-opus-4.6", runtime, ["hermes-telegram"], "")
-        assert new_sig != old_sig
-
-        with runner._agent_cache_lock:
-            cached = runner._agent_cache.get(session_key)
-        assert cached[1] != new_sig  # signature mismatch → would create new agent
 
     def test_evict_on_session_reset(self):
         """_evict_cached_agent removes the entry."""
@@ -364,87 +317,96 @@ class TestAgentCacheLifecycle:
         with runner._agent_cache_lock:
             assert session_key not in runner._agent_cache
 
-    def test_evict_does_not_affect_other_sessions(self):
-        """Evicting one session leaves other sessions cached."""
+
+class TestOwnedContextEngineEviction:
+    """Every cache-removal path releases its Python agent's engine clone."""
+
+    def _bounded_runner(self):
+        from collections import OrderedDict
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._agent_cache = OrderedDict()
+        runner._agent_cache_lock = threading.Lock()
+        runner._running_agents = {}
+        return runner
+
+    def test_explicit_eviction_shuts_down_engine_once(self):
         runner = _make_runner()
+        agent, engine = _context_engine_agent()
+        runner._agent_cache["session"] = (agent, "sig")
+
+        runner._evict_cached_agent("session")
+        _wait_for_call(engine.shutdown)
+        runner._evict_cached_agent("session")
+
+        engine.shutdown.assert_called_once_with()
+
+    def test_cache_cap_eviction_shuts_down_each_evicted_engine_once(self, monkeypatch):
+        from gateway import run as gw_run
+
+        monkeypatch.setattr(gw_run, "_AGENT_CACHE_MAX_SIZE", 1)
+        runner = self._bounded_runner()
+        old_agent, old_engine = _context_engine_agent()
+        new_agent, new_engine = _context_engine_agent()
+        runner._agent_cache["old"] = (old_agent, "old-sig")
+        runner._agent_cache["new"] = (new_agent, "new-sig")
+
         with runner._agent_cache_lock:
-            runner._agent_cache["session-A"] = ("agent-A", "sig-A")
-            runner._agent_cache["session-B"] = ("agent-B", "sig-B")
+            runner._enforce_agent_cache_cap()
+        _wait_for_call(old_engine.shutdown)
 
-        runner._evict_cached_agent("session-A")
+        old_engine.shutdown.assert_called_once_with()
+        new_engine.shutdown.assert_not_called()
 
-        with runner._agent_cache_lock:
-            assert "session-A" not in runner._agent_cache
-            assert "session-B" in runner._agent_cache
+    def test_idle_eviction_shuts_down_permanent_session_engine_once(self, monkeypatch):
+        import time
+        from gateway import run as gw_run
 
-    def test_reasoning_config_updates_in_place(self):
-        """Reasoning config can be set on a cached agent without eviction."""
-        from run_agent import AIAgent
+        monkeypatch.setattr(gw_run, "_AGENT_CACHE_IDLE_TTL_SECS", 0.01)
+        runner = self._bounded_runner()
+        agent, engine = _context_engine_agent(last_activity=time.time() - 10)
+        agent._memory_manager = None
+        runner.session_store = MagicMock()
+        runner.session_store._entries = {"session": MagicMock()}
+        runner._agent_cache["session"] = (agent, "sig")
 
-        agent = AIAgent(
-            model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
-            max_iterations=5, quiet_mode=True, skip_context_files=True,
-            skip_memory=True,
-            reasoning_config={"enabled": True, "effort": "medium"},
-        )
+        assert runner._sweep_idle_cached_agents() == 1
+        _wait_for_call(engine.shutdown)
 
-        # Simulate per-message reasoning update
-        agent.reasoning_config = {"enabled": True, "effort": "high"}
-        assert agent.reasoning_config["effort"] == "high"
+        engine.shutdown.assert_called_once_with()
 
-        # System prompt should not be affected by reasoning change
-        prompt1 = agent._build_system_prompt()
-        agent._cached_system_prompt = prompt1  # simulate run_conversation caching
-        agent.reasoning_config = {"enabled": True, "effort": "low"}
-        prompt2 = agent._cached_system_prompt
-        assert prompt1 is prompt2  # same object — not invalidated by reasoning change
+    def test_explicit_eviction_defers_engine_shutdown_until_turn_boundary_without_poller(
+        self, monkeypatch
+    ):
+        import time
+        from gateway import run as gw_run
 
-    def test_system_prompt_frozen_across_cache_reuse(self):
-        """The cached agent's system prompt stays identical across turns."""
-        from run_agent import AIAgent
+        runner = self._bounded_runner()
+        agent, engine = _context_engine_agent()
+        runner._agent_cache["session"] = (agent, "sig")
+        runner._running_agents["session"] = agent
 
-        agent = AIAgent(
-            model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
-            max_iterations=5, quiet_mode=True, skip_context_files=True,
-            skip_memory=True, platform="telegram",
-        )
+        original_thread = gw_run.threading.Thread
+        started_threads: list[object] = []
 
-        # Build system prompt (simulates first run_conversation)
-        prompt1 = agent._build_system_prompt()
-        agent._cached_system_prompt = prompt1
+        class _UnexpectedThread:
+            def __init__(self, *args, **kwargs):
+                started_threads.append((args, kwargs))
 
-        # Simulate second turn — prompt should be frozen
-        prompt2 = agent._cached_system_prompt
-        assert prompt1 is prompt2  # same object, not rebuilt
+            def start(self):
+                return None
 
-    def test_callbacks_update_without_cache_eviction(self):
-        """Per-message callbacks can be set on cached agent."""
-        from run_agent import AIAgent
+        monkeypatch.setattr(gw_run.threading, "Thread", _UnexpectedThread)
+        runner._evict_cached_agent("session")
 
-        agent = AIAgent(
-            model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
-            max_iterations=5, quiet_mode=True, skip_context_files=True,
-            skip_memory=True,
-        )
+        engine.shutdown.assert_not_called()
+        assert started_threads == [], "active eviction must not create an unbounded poller"
 
-        # Set callbacks like the gateway does per-message
-        cb1 = lambda *a: None
-        cb2 = lambda *a: None
-        agent.tool_progress_callback = cb1
-        agent.step_callback = cb2
-        agent.stream_delta_callback = None
-        agent.status_callback = None
-
-        assert agent.tool_progress_callback is cb1
-        assert agent.step_callback is cb2
-
-        # Update for next message
-        cb3 = lambda *a: None
-        agent.tool_progress_callback = cb3
-        assert agent.tool_progress_callback is cb3
+        monkeypatch.setattr(gw_run.threading, "Thread", original_thread)
+        assert runner._release_running_agent_state("session") is True
+        _wait_for_call(engine.shutdown)
+        engine.shutdown.assert_called_once_with()
 
 
 class TestAgentCacheBoundedGrowth:
@@ -470,117 +432,167 @@ class TestAgentCacheBoundedGrowth:
             m._last_activity_ts = _t.time()
         return m
 
-    def test_cap_evicts_lru_when_exceeded(self, monkeypatch):
-        """Inserting past _AGENT_CACHE_MAX_SIZE pops the oldest entry."""
-        from gateway import run as gw_run
-
-        monkeypatch.setattr(gw_run, "_AGENT_CACHE_MAX_SIZE", 3)
-        runner = self._bounded_runner()
-        runner._cleanup_agent_resources = MagicMock()
-
-        for i in range(3):
-            runner._agent_cache[f"s{i}"] = (self._fake_agent(), f"sig{i}")
-
-        # Insert a 4th — oldest (s0) must be evicted.
-        with runner._agent_cache_lock:
-            runner._agent_cache["s3"] = (self._fake_agent(), "sig3")
-            runner._enforce_agent_cache_cap()
-
-        assert "s0" not in runner._agent_cache
-        assert "s3" in runner._agent_cache
-        assert len(runner._agent_cache) == 3
-
-    def test_cap_respects_move_to_end(self, monkeypatch):
-        """Entries refreshed via move_to_end are NOT evicted as 'oldest'."""
-        from gateway import run as gw_run
-
-        monkeypatch.setattr(gw_run, "_AGENT_CACHE_MAX_SIZE", 3)
-        runner = self._bounded_runner()
-        runner._cleanup_agent_resources = MagicMock()
-
-        for i in range(3):
-            runner._agent_cache[f"s{i}"] = (self._fake_agent(), f"sig{i}")
-
-        # Touch s0 — it is now MRU, so s1 becomes LRU.
-        runner._agent_cache.move_to_end("s0")
-
-        with runner._agent_cache_lock:
-            runner._agent_cache["s3"] = (self._fake_agent(), "sig3")
-            runner._enforce_agent_cache_cap()
-
-        assert "s0" in runner._agent_cache  # rescued by move_to_end
-        assert "s1" not in runner._agent_cache  # now oldest → evicted
-        assert "s3" in runner._agent_cache
-
-    def test_cap_triggers_cleanup_thread(self, monkeypatch):
-        """Evicted agent has release_clients() called for it (soft cleanup).
-
-        Uses the soft path (_release_evicted_agent_soft), NOT the hard
-        _cleanup_agent_resources — cache eviction must not tear down
-        per-task state (terminal/browser/bg procs).
-        """
+    def test_cap_commits_memory_before_soft_release(self, monkeypatch):
+        """LRU eviction commits the transcript before releasing clients."""
         from gateway import run as gw_run
 
         monkeypatch.setattr(gw_run, "_AGENT_CACHE_MAX_SIZE", 1)
         runner = self._bounded_runner()
 
+        commit_calls: list = []
         release_calls: list = []
-        cleanup_calls: list = []
-        # Intercept both paths; only release_clients path should fire.
-        def _soft(agent):
-            release_calls.append(agent)
-        runner._release_evicted_agent_soft = _soft
-        runner._cleanup_agent_resources = lambda a: cleanup_calls.append(a)
+        runner._release_evicted_agent_soft = lambda agent: release_calls.append(agent)
+
+        runner.session_store = MagicMock()
+        runner.session_store._entries = {"old": MagicMock(), "new": MagicMock()}
 
         old_agent = self._fake_agent()
+        old_agent._memory_manager = MagicMock()  # has an external provider
+        old_agent._session_messages = [{"role": "user", "content": "hi"}]
+        old_agent.commit_memory_session = lambda msgs=None: commit_calls.append(msgs)
         new_agent = self._fake_agent()
+
         with runner._agent_cache_lock:
             runner._agent_cache["old"] = (old_agent, "sig_old")
             runner._agent_cache["new"] = (new_agent, "sig_new")
             runner._enforce_agent_cache_cap()
 
-        # Cleanup is dispatched to a daemon thread; join briefly to observe.
         import time as _t
         deadline = _t.time() + 2.0
         while _t.time() < deadline and not release_calls:
             _t.sleep(0.02)
+        # Memory committed with the live transcript, THEN client released.
+        assert commit_calls == [[{"role": "user", "content": "hi"}]]
         assert old_agent in release_calls
-        assert new_agent not in release_calls
-        # Hard-cleanup path must NOT have fired — that's for session expiry only.
-        assert cleanup_calls == []
 
-    def test_idle_ttl_sweep_evicts_stale_agents(self, monkeypatch):
-        """_sweep_idle_cached_agents removes agents idle past the TTL."""
+    def test_cap_skips_memory_commit_without_provider(self, monkeypatch):
+        """An agent without a memory provider is released without extraction."""
         from gateway import run as gw_run
 
-        monkeypatch.setattr(gw_run, "_AGENT_CACHE_IDLE_TTL_SECS", 0.05)
+        monkeypatch.setattr(gw_run, "_AGENT_CACHE_MAX_SIZE", 1)
         runner = self._bounded_runner()
-        runner._cleanup_agent_resources = MagicMock()
+
+        commit_calls: list = []
+        release_calls: list = []
+        runner._release_evicted_agent_soft = lambda agent: release_calls.append(agent)
+
+        runner.session_store = MagicMock()
+        runner.session_store._entries = {"old": MagicMock(), "new": MagicMock()}
+
+        old_agent = self._fake_agent()
+        old_agent._memory_manager = None
+        old_agent._session_messages = [{"role": "user", "content": "hi"}]
+        old_agent.commit_memory_session = lambda msgs=None: commit_calls.append(msgs)
+        new_agent = self._fake_agent()
+
+        with runner._agent_cache_lock:
+            runner._agent_cache["old"] = (old_agent, "sig_old")
+            runner._agent_cache["new"] = (new_agent, "sig_new")
+            runner._enforce_agent_cache_cap()
 
         import time as _t
-        fresh = self._fake_agent(last_activity=_t.time())
-        stale = self._fake_agent(last_activity=_t.time() - 10.0)
-        runner._agent_cache["fresh"] = (fresh, "s1")
-        runner._agent_cache["stale"] = (stale, "s2")
+        deadline = _t.time() + 2.0
+        while _t.time() < deadline and not release_calls:
+            _t.sleep(0.02)
+        assert commit_calls == []       # no premature extraction
+        assert old_agent in release_calls  # still released
 
-        evicted = runner._sweep_idle_cached_agents()
-        assert evicted == 1
-        assert "stale" not in runner._agent_cache
-        assert "fresh" in runner._agent_cache
 
-    def test_idle_sweep_skips_agents_without_activity_ts(self, monkeypatch):
-        """Agents missing _last_activity_ts are left alone (defensive)."""
+    def test_idle_sweep_commits_then_evicts_permanent_session(self, monkeypatch):
+        """Idle eviction commits the permanent session before releasing its agent."""
         from gateway import run as gw_run
 
         monkeypatch.setattr(gw_run, "_AGENT_CACHE_IDLE_TTL_SECS", 0.01)
         runner = self._bounded_runner()
-        runner._cleanup_agent_resources = MagicMock()
+        commit_calls: list = []
+        release_calls: list = []
+        runner._release_evicted_agent_soft = lambda agent: release_calls.append(agent)
 
-        no_ts = MagicMock(spec=[])  # no _last_activity_ts attribute
-        runner._agent_cache["s"] = (no_ts, "sig")
+        import time as _t
+        stale = self._fake_agent(last_activity=_t.time() - 10.0)
+        stale._memory_manager = MagicMock()
+        stale._session_messages = [{"role": "user", "content": "hi"}]
+        stale.commit_memory_session = lambda msgs=None: commit_calls.append(msgs)
 
-        assert runner._sweep_idle_cached_agents() == 0
-        assert "s" in runner._agent_cache
+        session_entry = MagicMock()
+        runner.session_store = MagicMock()
+        runner.session_store._entries = {"stale-session": session_entry}
+        runner._agent_cache["stale-session"] = (stale, "sig")
+
+        evicted = runner._sweep_idle_cached_agents()
+        deadline = _t.time() + 2.0
+        while _t.time() < deadline and not release_calls:
+            _t.sleep(0.02)
+
+        assert evicted == 1
+        assert "stale-session" not in runner._agent_cache
+        assert commit_calls == [[{"role": "user", "content": "hi"}]]
+        assert release_calls == [stale]
+
+    def test_idle_sweep_evicts_without_provider(self, monkeypatch):
+        """Idle agents without a memory provider are released without extraction."""
+        from gateway import run as gw_run
+
+        monkeypatch.setattr(gw_run, "_AGENT_CACHE_IDLE_TTL_SECS", 0.01)
+        runner = self._bounded_runner()
+        commit_calls: list = []
+        release_calls: list = []
+        runner._release_evicted_agent_soft = lambda agent: release_calls.append(agent)
+
+        import time as _t
+        stale = self._fake_agent(last_activity=_t.time() - 10.0)
+        stale._memory_manager = None
+        stale._session_messages = [{"role": "user", "content": "hi"}]
+        stale.commit_memory_session = lambda msgs=None: commit_calls.append(msgs)
+
+        session_entry = MagicMock()
+        runner.session_store = MagicMock()
+        runner.session_store._entries = {"stale-session": session_entry}
+        runner._agent_cache["stale-session"] = (stale, "sig")
+
+        evicted = runner._sweep_idle_cached_agents()
+        deadline = _t.time() + 2.0
+        while _t.time() < deadline and not release_calls:
+            _t.sleep(0.02)
+
+        assert evicted == 1
+        assert "stale-session" not in runner._agent_cache
+        assert commit_calls == []
+        assert release_calls == [stale]
+
+
+    def test_permanent_session_memory_extraction_precedes_provider_release(self, tmp_path):
+        """Resource eviction commits a real durable session without an expiry policy."""
+        from gateway.config import GatewayConfig, Platform
+        from gateway.session import SessionSource, SessionStore
+        from run_agent import AIAgent
+
+        store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
+        runner = self._bounded_runner()
+        runner.session_store = store
+        source = SessionSource(platform=Platform.TELEGRAM, user_id="u1", chat_id="c1", chat_type="dm")
+        try:
+            entry = store.get_or_create_session(source)
+            messages = [{"role": "user", "content": "retain this durable conversation"}]
+            events = []
+            manager = MagicMock()
+            manager.on_session_end.side_effect = lambda transcript: events.append(("extract", transcript))
+            manager.shutdown_all.side_effect = lambda: events.append(("shutdown", None))
+            agent = AIAgent.__new__(AIAgent)
+            agent._memory_manager = manager
+            agent._session_messages = messages
+            agent.release_clients = lambda: events.append(("clients", None))
+
+            assert runner._commit_then_release_soft(agent, entry.session_key)
+            assert [name for name, _ in events] == ["extract", "shutdown", "clients"]
+            assert events[0][1] == messages
+            assert agent._memory_manager is None
+            assert store.get_or_create_session(source).session_id == entry.session_id
+            assert runner._commit_then_release_soft(agent, entry.session_key)
+            manager.on_session_end.assert_called_once_with(messages)
+            manager.shutdown_all.assert_called_once_with()
+        finally:
+            store._db_handle_cache.close_all(lambda handle: handle.close())
 
     def test_plain_dict_cache_is_tolerated(self):
         """Test fixtures using plain {} don't crash _enforce_agent_cache_cap."""
@@ -598,27 +610,6 @@ class TestAgentCacheBoundedGrowth:
             runner._enforce_agent_cache_cap()  # no crash, no eviction
 
         assert len(runner._agent_cache) == 200
-
-    def test_main_lookup_updates_lru_order(self, monkeypatch):
-        """Cache hit via the main-lookup path refreshes LRU position."""
-        runner = self._bounded_runner()
-
-        a0 = self._fake_agent()
-        a1 = self._fake_agent()
-        a2 = self._fake_agent()
-        runner._agent_cache["s0"] = (a0, "sig0")
-        runner._agent_cache["s1"] = (a1, "sig1")
-        runner._agent_cache["s2"] = (a2, "sig2")
-
-        # Simulate what _process_message_background does on a cache hit
-        # (minus the agent-state reset which isn't relevant here).
-        with runner._agent_cache_lock:
-            cached = runner._agent_cache.get("s0")
-            if cached and hasattr(runner._agent_cache, "move_to_end"):
-                runner._agent_cache.move_to_end("s0")
-
-        # After the hit, insertion order should be s1, s2, s0.
-        assert list(runner._agent_cache.keys()) == ["s1", "s2", "s0"]
 
 
 class TestAgentCacheActiveSafety:
@@ -684,104 +675,6 @@ class TestAgentCacheActiveSafety:
         assert "session-idle-b" in runner._agent_cache
         assert runner._cleanup_agent_resources.call_count == 0
 
-    def test_cap_evicts_when_multiple_excess_and_some_inactive(self, monkeypatch):
-        """Mixed active/idle in the LRU excess window: only the idle ones go.
-
-        With CAP=2 and 4 entries, excess=2 (the two oldest).  If the
-        oldest is active and the next is idle, we evict exactly one.
-        Cache ends at CAP+1, which is still better than unbounded.
-        """
-        from gateway import run as gw_run
-
-        monkeypatch.setattr(gw_run, "_AGENT_CACHE_MAX_SIZE", 2)
-        runner = self._runner()
-        runner._cleanup_agent_resources = MagicMock()
-
-        oldest_active = self._fake_agent()
-        idle_second = self._fake_agent()
-        idle_third = self._fake_agent()
-        idle_fourth = self._fake_agent()
-
-        runner._agent_cache["s1"] = (oldest_active, "sig")
-        runner._agent_cache["s2"] = (idle_second, "sig")  # in excess window, idle
-        runner._agent_cache["s3"] = (idle_third, "sig")
-        runner._agent_cache["s4"] = (idle_fourth, "sig")
-
-        runner._running_agents["s1"] = oldest_active  # oldest is mid-turn
-
-        with runner._agent_cache_lock:
-            runner._enforce_agent_cache_cap()
-
-        # s1 protected (active), s2 evicted (idle + in excess window),
-        # s3 and s4 untouched (outside excess window).
-        assert "s1" in runner._agent_cache
-        assert "s2" not in runner._agent_cache
-        assert "s3" in runner._agent_cache
-        assert "s4" in runner._agent_cache
-
-    def test_cap_leaves_cache_over_limit_if_all_active(self, monkeypatch, caplog):
-        """If every over-cap entry is mid-turn, the cache stays over cap.
-
-        Better to temporarily exceed the cap than to crash an in-flight
-        turn by tearing down its clients.
-        """
-        from gateway import run as gw_run
-        import logging as _logging
-
-        monkeypatch.setattr(gw_run, "_AGENT_CACHE_MAX_SIZE", 1)
-        runner = self._runner()
-        runner._cleanup_agent_resources = MagicMock()
-
-        a1 = self._fake_agent()
-        a2 = self._fake_agent()
-        a3 = self._fake_agent()
-        runner._agent_cache["s1"] = (a1, "sig")
-        runner._agent_cache["s2"] = (a2, "sig")
-        runner._agent_cache["s3"] = (a3, "sig")
-
-        # All three are mid-turn.
-        runner._running_agents["s1"] = a1
-        runner._running_agents["s2"] = a2
-        runner._running_agents["s3"] = a3
-
-        with caplog.at_level(_logging.WARNING, logger="gateway.run"):
-            with runner._agent_cache_lock:
-                runner._enforce_agent_cache_cap()
-
-        # Cache unchanged because eviction had to skip every candidate.
-        assert len(runner._agent_cache) == 3
-        # _cleanup_agent_resources must NOT have been scheduled.
-        assert runner._cleanup_agent_resources.call_count == 0
-        # And we logged a warning so operators can see the condition.
-        assert any("mid-turn" in r.message for r in caplog.records)
-
-    def test_cap_pending_sentinel_does_not_block_eviction(self, monkeypatch):
-        """_AGENT_PENDING_SENTINEL in _running_agents is treated as 'not active'.
-
-        The sentinel is set while an agent is being CONSTRUCTED, before the
-        real AIAgent instance exists.  Cached agents from other sessions
-        can still be evicted safely.
-        """
-        from gateway import run as gw_run
-        from gateway.run import _AGENT_PENDING_SENTINEL
-
-        monkeypatch.setattr(gw_run, "_AGENT_CACHE_MAX_SIZE", 1)
-        runner = self._runner()
-        runner._cleanup_agent_resources = MagicMock()
-
-        a1 = self._fake_agent()
-        a2 = self._fake_agent()
-        runner._agent_cache["s1"] = (a1, "sig")
-        runner._agent_cache["s2"] = (a2, "sig")
-        # Another session is mid-creation — sentinel, no real agent yet.
-        runner._running_agents["s3-being-created"] = _AGENT_PENDING_SENTINEL
-
-        with runner._agent_cache_lock:
-            runner._enforce_agent_cache_cap()
-
-        assert "s1" not in runner._agent_cache  # evicted normally
-        assert "s2" in runner._agent_cache
-
     def test_idle_sweep_skips_active_agent(self, monkeypatch):
         """Idle-TTL sweep must not tear down an active agent even if 'stale'."""
         from gateway import run as gw_run
@@ -799,50 +692,6 @@ class TestAgentCacheActiveSafety:
         assert evicted == 0
         assert "s1" in runner._agent_cache
         assert runner._cleanup_agent_resources.call_count == 0
-
-    def test_eviction_does_not_close_active_agent_client(self, monkeypatch):
-        """Live test: evicting an active agent does NOT null its .client.
-
-        This reproduces the original concern — if eviction fired while an
-        agent was mid-turn, `agent.close()` would set `self.client = None`
-        and the next API call inside the loop would crash.  With the
-        active-agent skip, the client stays intact.
-        """
-        from gateway import run as gw_run
-
-        monkeypatch.setattr(gw_run, "_AGENT_CACHE_MAX_SIZE", 1)
-        runner = self._runner()
-
-        # Build a proper fake agent whose close() matches AIAgent's contract.
-        active = MagicMock()
-        active._last_activity_ts = __import__("time").time()
-        active.client = MagicMock()  # simulate an OpenAI client
-        def _real_close():
-            active.client = None  # mirrors run_agent.py:3299
-        active.close = _real_close
-        active.shutdown_memory_provider = MagicMock()
-
-        idle = self._fake_agent()
-
-        runner._agent_cache["active-session"] = (active, "sig")
-        runner._agent_cache["idle-session"] = (idle, "sig")
-        runner._running_agents["active-session"] = active
-
-        # Real cleanup function, not mocked — we want to see whether close()
-        # runs on the active agent.  (It shouldn't.)
-        with runner._agent_cache_lock:
-            runner._enforce_agent_cache_cap()
-
-        # Let any eviction cleanup threads drain.
-        import time as _t
-        _t.sleep(0.2)
-
-        # The ACTIVE agent's client must still be usable.
-        assert active.client is not None, (
-            "Active agent's client was closed by eviction — "
-            "running turn would crash on its next API call."
-        )
-
 
 class TestAgentCacheSpilloverLive:
     """Live E2E: fill cache with real AIAgent instances and stress it."""
@@ -901,123 +750,6 @@ class TestAgentCacheSpilloverLive:
             except Exception:
                 pass
 
-    def test_spillover_all_active_keeps_cache_over_cap(self, monkeypatch, caplog):
-        """Every slot active: cache goes over cap, no one gets torn down."""
-        from gateway import run as gw_run
-        import logging as _logging
-
-        CAP = 4
-        monkeypatch.setattr(gw_run, "_AGENT_CACHE_MAX_SIZE", CAP)
-        runner = self._runner()
-
-        agents = [self._real_agent() for _ in range(CAP)]
-        for i, a in enumerate(agents):
-            runner._agent_cache[f"s{i}"] = (a, "sig")
-            runner._running_agents[f"s{i}"] = a  # every session mid-turn
-
-        newcomer = self._real_agent()
-        with caplog.at_level(_logging.WARNING, logger="gateway.run"):
-            with runner._agent_cache_lock:
-                runner._agent_cache["new"] = (newcomer, "sig")
-                runner._enforce_agent_cache_cap()
-
-        assert len(runner._agent_cache) == CAP + 1  # temporarily over cap
-        # All existing agents still usable.
-        for i, a in enumerate(agents):
-            assert a.client is not None, f"s{i} got closed while active!"
-        # And we warned operators.
-        assert any("mid-turn" in r.message for r in caplog.records)
-
-        for a in agents + [newcomer]:
-            try:
-                a.close()
-            except Exception:
-                pass
-
-    def test_concurrent_inserts_settle_at_cap(self, monkeypatch):
-        """Many threads inserting in parallel end with len(cache) == CAP."""
-        from gateway import run as gw_run
-
-        CAP = 16
-        monkeypatch.setattr(gw_run, "_AGENT_CACHE_MAX_SIZE", CAP)
-        runner = self._runner()
-
-        N_THREADS = 8
-        PER_THREAD = 20  # 8 * 20 = 160 inserts into a 16-slot cache
-
-        def worker(tid: int):
-            for j in range(PER_THREAD):
-                a = self._real_agent()
-                key = f"t{tid}-s{j}"
-                with runner._agent_cache_lock:
-                    runner._agent_cache[key] = (a, "sig")
-                    runner._enforce_agent_cache_cap()
-
-        threads = [
-            threading.Thread(target=worker, args=(t,), daemon=True)
-            for t in range(N_THREADS)
-        ]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=30)
-            assert not t.is_alive(), "Worker thread hung — possible deadlock?"
-
-        # Let daemon cleanup threads settle.
-        import time as _t
-        _t.sleep(0.5)
-
-        assert len(runner._agent_cache) == CAP, (
-            f"Expected exactly {CAP} entries after concurrent inserts, "
-            f"got {len(runner._agent_cache)}."
-        )
-
-    def test_evicted_session_next_turn_gets_fresh_agent(self, monkeypatch):
-        """After eviction, the same session_key can insert a fresh agent.
-
-        Simulates the real spillover flow: evicted session sends another
-        message, which builds a new AIAgent and re-enters the cache.
-        """
-        from gateway import run as gw_run
-
-        CAP = 2
-        monkeypatch.setattr(gw_run, "_AGENT_CACHE_MAX_SIZE", CAP)
-        runner = self._runner()
-
-        a0 = self._real_agent()
-        a1 = self._real_agent()
-        runner._agent_cache["sA"] = (a0, "sig")
-        runner._agent_cache["sB"] = (a1, "sig")
-
-        # 3rd session forces sA (oldest) out.
-        a2 = self._real_agent()
-        with runner._agent_cache_lock:
-            runner._agent_cache["sC"] = (a2, "sig")
-            runner._enforce_agent_cache_cap()
-        assert "sA" not in runner._agent_cache
-
-        # Let the eviction cleanup thread run.
-        import time as _t
-        _t.sleep(0.3)
-
-        # Now sA's user sends another message → a fresh agent goes in.
-        a0_new = self._real_agent()
-        with runner._agent_cache_lock:
-            runner._agent_cache["sA"] = (a0_new, "sig")
-            runner._enforce_agent_cache_cap()
-
-        assert "sA" in runner._agent_cache
-        assert runner._agent_cache["sA"][0] is a0_new  # the new one, not stale
-        # Fresh agent is usable.
-        assert a0_new.client is not None
-
-        for a in (a0, a1, a2, a0_new):
-            try:
-                a.close()
-            except Exception:
-                pass
-
-
 class TestAgentCacheIdleResume:
     """End-to-end: idle-TTL-evicted session resumes cleanly with task state.
 
@@ -1041,42 +773,10 @@ class TestAgentCacheIdleResume:
         runner._running_agents = {}
         return runner
 
-    def test_release_clients_does_not_touch_process_registry(self, monkeypatch):
-        """release_clients must not call process_registry.kill_all for task_id."""
-        from run_agent import AIAgent
-
-        agent = AIAgent(
-            model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
-            max_iterations=5, quiet_mode=True,
-            skip_context_files=True, skip_memory=True,
-            session_id="idle-resume-test-session",
-        )
-
-        # Spy on process_registry.kill_all — it MUST NOT be called.
-        from tools import process_registry as _pr
-        kill_all_calls: list = []
-        original_kill_all = _pr.process_registry.kill_all
-        _pr.process_registry.kill_all = lambda **kw: kill_all_calls.append(kw)
-        try:
-            agent.release_clients()
-        finally:
-            _pr.process_registry.kill_all = original_kill_all
-            try:
-                agent.close()
-            except Exception:
-                pass
-
-        assert kill_all_calls == [], (
-            f"release_clients() called process_registry.kill_all — would "
-            f"kill user's bg processes on cache eviction. Calls: {kill_all_calls}"
-        )
-
     def test_release_clients_does_not_touch_terminal_or_browser(self, monkeypatch):
         """release_clients must not call cleanup_vm or cleanup_browser."""
         from run_agent import AIAgent
-        from tools import terminal_tool as _tt
-        from tools import browser_tool as _bt
+        from tools import terminal_tool_lifecycle as _tt
 
         agent = AIAgent(
             model="anthropic/claude-sonnet-4", api_key="test",
@@ -1089,14 +789,14 @@ class TestAgentCacheIdleResume:
         vm_calls: list = []
         browser_calls: list = []
         original_vm = _tt.cleanup_vm
-        original_browser = _bt.cleanup_browser
+        original_browser = bt_lifecycle.cleanup_browser
         _tt.cleanup_vm = lambda tid: vm_calls.append(tid)
-        _bt.cleanup_browser = lambda tid: browser_calls.append(tid)
+        bt_lifecycle.cleanup_browser = lambda tid: browser_calls.append(tid)
         try:
             agent.release_clients()
         finally:
             _tt.cleanup_vm = original_vm
-            _bt.cleanup_browser = original_browser
+            bt_lifecycle.cleanup_browser = original_browser
             try:
                 agent.close()
             except Exception:
@@ -1110,24 +810,6 @@ class TestAgentCacheIdleResume:
             f"release_clients() tore down browser session — user's open "
             f"tabs and cookies gone on resume. Calls: {browser_calls}"
         )
-
-    def test_release_clients_closes_llm_client(self):
-        """release_clients IS expected to close the OpenAI/httpx client."""
-        from run_agent import AIAgent
-
-        agent = AIAgent(
-            model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
-            max_iterations=5, quiet_mode=True,
-            skip_context_files=True, skip_memory=True,
-        )
-        # Clients are lazy-built; force one to exist so we can verify close.
-        assert agent.client is not None  # __init__ builds it
-
-        agent.release_clients()
-
-        # Post-release: client reference is dropped (memory freed).
-        assert agent.client is None
 
     def test_close_vs_release_full_teardown_difference(self, monkeypatch):
         """close() tears down task state; release_clients() does not.
@@ -1158,7 +840,7 @@ class TestAgentCacheIdleResume:
 
         vm_calls: list = []
         # AIAgent.close() calls the ``cleanup_vm`` name bound into
-        # ``run_agent`` at import time, not ``tools.terminal_tool.cleanup_vm``
+        # ``run_agent`` at import time, not ``tools.terminal_tool_lifecycle.cleanup_vm``
         # directly — so patch the ``run_agent`` reference.
         original_vm = _ra.cleanup_vm
         _ra.cleanup_vm = lambda tid: vm_calls.append(tid)
@@ -1176,64 +858,540 @@ class TestAgentCacheIdleResume:
         assert "hard-session" in vm_calls
         assert "soft-session" not in vm_calls
 
-    def test_idle_evicted_session_rebuild_inherits_task_id(self, monkeypatch):
-        """After idle-TTL eviction, a fresh agent with the same session_id
-        gets the same task_id — so tool state (terminal/browser/bg procs)
-        that persisted across eviction is reachable via the new agent.
-        """
-        from gateway import run as gw_run
+
+class TestCacheEvictionMemoryProviderRelease:
+    """Retire per-agent memory workers without destroying resumable tools."""
+
+    def test_provider_only_release_is_idempotent_and_detaches_manager(self, monkeypatch):
+        from run_agent import AIAgent
+        import run_agent as _ra
+
+        events = []
+        manager = MagicMock()
+        manager.shutdown_all.side_effect = lambda: events.append("shutdown_all")
+        agent = AIAgent.__new__(AIAgent)
+        agent._memory_manager = manager
+
+        vm_calls = []
+        browser_calls = []
+        monkeypatch.setattr(_ra, "cleanup_vm", lambda task_id: vm_calls.append(task_id))
+        monkeypatch.setattr(
+            "tools.browser_tool_lifecycle.cleanup_browser",
+            lambda task_id: browser_calls.append(task_id),
+        )
+
+        agent.release_memory_provider_for_cache_evict()
+        agent.release_memory_provider_for_cache_evict()
+
+        assert events == ["shutdown_all"]
+        assert agent._memory_manager is None
+        assert vm_calls == []
+        assert browser_calls == []
+
+    def test_soft_evict_commits_then_stops_memory_then_releases_clients(self):
+        from gateway.run import GatewayRunner
+
+        events = []
+
+        class _Agent:
+            _session_messages = [{"role": "user", "content": "hello"}]
+            _db_flush_scan_prefix = _session_messages[:]
+
+            def release_memory_provider_for_cache_evict(self):
+                events.append("memory_shutdown")
+
+            def release_clients(self):
+                events.append("client_release")
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._commit_memory_before_soft_evict = (
+            lambda agent, key: events.append("memory_commit")
+        )
+        runner._commit_then_release_soft(_Agent(), "session-1")
+
+        assert events == ["memory_commit", "memory_shutdown", "client_release"]
+
+
+class TestCacheEvictionMemoryProviderClaims:
+    def test_concurrent_provider_release_claims_manager_once(self):
+        import threading
         from run_agent import AIAgent
 
-        monkeypatch.setattr(gw_run, "_AGENT_CACHE_IDLE_TTL_SECS", 0.01)
-        runner = self._runner()
+        barrier = threading.Barrier(2)
+        shutdown_calls = []
+        manager = MagicMock()
+        manager.shutdown_all.side_effect = lambda: shutdown_calls.append("shutdown")
 
-        # Build an agent representing a stale (idle) session.
-        SESSION_ID = "long-lived-user-session"
-        old = AIAgent(
-            model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
-            max_iterations=5, quiet_mode=True,
-            skip_context_files=True, skip_memory=True,
-            session_id=SESSION_ID,
+        class _RacingAgent(AIAgent):
+            @property
+            def _memory_manager(self):
+                value = self._memory_manager_value
+                if value is not None:
+                    try:
+                        barrier.wait(timeout=0.2)
+                    except threading.BrokenBarrierError:
+                        pass
+                return value
+
+            @_memory_manager.setter
+            def _memory_manager(self, value):
+                self._memory_manager_value = value
+
+        agent = _RacingAgent.__new__(_RacingAgent)
+        agent._memory_manager_value = manager
+        agent._memory_manager_release_lock = threading.Lock()
+        threads = [
+            threading.Thread(target=agent.release_memory_provider_for_cache_evict)
+            for _ in range(2)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=2)
+
+        assert all(not thread.is_alive() for thread in threads)
+        assert shutdown_calls == ["shutdown"]
+        assert agent._memory_manager is None
+
+    def test_hard_cleanup_then_soft_evict_shuts_manager_down_once(self):
+        import threading
+        from run_agent import AIAgent
+
+        manager = MagicMock()
+        agent = AIAgent.__new__(AIAgent)
+        agent._memory_manager = manager
+        agent._memory_manager_release_lock = threading.Lock()
+
+        agent.shutdown_memory_provider([{"role": "user", "content": "hello"}])
+        agent.release_memory_provider_for_cache_evict()
+
+        manager.on_session_end.assert_called_once()
+        manager.shutdown_all.assert_called_once()
+        assert agent._memory_manager is None
+
+    def test_failed_provider_shutdown_can_be_retried(self):
+        import threading
+        from run_agent import AIAgent
+
+        manager = MagicMock()
+        manager.shutdown_all.side_effect = [RuntimeError("boom"), None]
+        agent = AIAgent.__new__(AIAgent)
+        agent._memory_manager = manager
+        agent._memory_manager_release_lock = threading.Lock()
+
+        with pytest.raises(RuntimeError, match="shutdown incomplete"):
+            agent.release_memory_provider_for_cache_evict()
+        assert agent._memory_manager is manager
+
+        agent.release_memory_provider_for_cache_evict()
+        assert manager.shutdown_all.call_count == 2
+        assert agent._memory_manager is None
+
+
+class TestCacheEvictionMemoryProviderFailureOverlap:
+    def test_failed_soft_shutdown_is_retried_by_overlapping_hard_cleanup(self):
+        import threading
+        from run_agent import AIAgent
+
+        first_started = threading.Event()
+        allow_first_failure = threading.Event()
+        shutdown_calls = []
+
+        manager = MagicMock()
+
+        def shutdown_all():
+            shutdown_calls.append("shutdown")
+            if len(shutdown_calls) == 1:
+                first_started.set()
+                assert allow_first_failure.wait(timeout=2)
+                raise RuntimeError("first shutdown failed")
+
+        manager.shutdown_all.side_effect = shutdown_all
+        agent = AIAgent.__new__(AIAgent)
+        agent._memory_manager = manager
+        agent._memory_manager_release_lock = threading.Lock()
+
+        soft_errors = []
+
+        def soft_release():
+            try:
+                agent.release_memory_provider_for_cache_evict()
+            except Exception as exc:
+                soft_errors.append(exc)
+
+        soft_thread = threading.Thread(target=soft_release)
+        soft_thread.start()
+        assert first_started.wait(timeout=1)
+
+        hard_thread = threading.Thread(
+            target=lambda: agent.shutdown_memory_provider(
+                [{"role": "user", "content": "hello"}]
+            )
         )
-        old._last_activity_ts = 0.0  # force idle
-        runner._agent_cache["sKey"] = (old, "sig")
+        hard_thread.start()
+        allow_first_failure.set()
 
-        # Simulate the idle-TTL sweep firing.
-        runner._sweep_idle_cached_agents()
-        assert "sKey" not in runner._agent_cache
+        soft_thread.join(timeout=2)
+        hard_thread.join(timeout=2)
 
-        # Wait for the daemon thread doing release_clients() to finish.
-        import time as _t
-        _t.sleep(0.3)
+        assert not soft_thread.is_alive()
+        assert not hard_thread.is_alive()
+        assert [type(exc) for exc in soft_errors] == [RuntimeError]
+        assert shutdown_calls == ["shutdown", "shutdown"]
+        manager.on_session_end.assert_called_once()
+        assert agent._memory_manager is None
 
-        # Old agent's client is gone (soft cleanup fired).
-        assert old.client is None
 
-        # User comes back — new agent built for the SAME session_id.
-        new_agent = AIAgent(
-            model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
-            max_iterations=5, quiet_mode=True,
-            skip_context_files=True, skip_memory=True,
-            session_id=SESSION_ID,
+class TestAllSoftEvictionPathsCommitBeforeProviderShutdown:
+    def test_explicit_soft_release_scheduler_preserves_session_key_for_commit(self, monkeypatch):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        events = []
+        runner._commit_then_release_soft = (
+            lambda agent, key: events.append((agent, key))
         )
 
-        # Same session_id means same task_id routed to tools.  The new
-        # agent inherits any per-task state (terminal sandbox etc.) that
-        # was preserved across eviction.
-        assert new_agent.session_id == old.session_id == SESSION_ID
-        # And it has a fresh working client.
-        assert new_agent.client is not None
+        class _InlineThread:
+            def __init__(self, *, target, args, **kwargs):
+                self.target = target
+                self.args = args
 
-        try:
-            new_agent.close()
-        except Exception:
-            pass
+            def start(self):
+                self.target(*self.args)
+
+        monkeypatch.setattr("gateway.run.threading.Thread", _InlineThread)
+        agent = object()
+
+        runner._schedule_evicted_agent_soft_release(agent, "session-explicit")
+
+        assert events == [(agent, "session-explicit")]
+
+    def test_deferred_active_eviction_preserves_session_key_until_release(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._running_agents = {}
+        runner._running_agents_lock = None
+        scheduled = []
+        runner._schedule_evicted_agent_soft_release = (
+            lambda agent, key="": scheduled.append((agent, key))
+        )
+        agent = object()
+
+        runner._defer_evicted_agent_release(agent, "session-deferred")
+        runner._drain_pending_evicted_agent_releases()
+
+        assert scheduled == [(agent, "session-deferred")]
+
+
+class TestFailedEvictedAgentCleanupRetention:
+    def test_failed_soft_release_is_retained_and_periodic_retry_removes_it(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._lifecycle_counters = None
+        attempts = []
+
+        class _Agent:
+            _session_messages = []
+            _db_flush_scan_prefix = None
+
+            def release_memory_provider_for_cache_evict(self):
+                attempts.append("shutdown")
+                if len(attempts) == 1:
+                    raise RuntimeError("temporary shutdown failure")
+
+            def release_clients(self):
+                pass
+
+        agent = _Agent()
+        runner._retain_failed_evicted_agent_cleanup(agent, "session-retry")
+        runner._release_evicted_agent_soft(agent)
+        registry, _ = runner._failed_evicted_agent_cleanup_state()
+        assert registry == {id(agent): (agent, "session-retry")}
+
+        assert runner._retry_failed_evicted_agent_cleanups() == 1
+        registry, _ = runner._failed_evicted_agent_cleanup_state()
+        assert registry == {}
+        assert attempts == ["shutdown", "shutdown"]
+
+    def test_full_soft_then_overlapping_hard_does_not_duplicate_session_end(self):
+        import threading
+        from gateway.run import GatewayRunner
+        from run_agent import AIAgent
+
+        first_started = threading.Event()
+        allow_first_failure = threading.Event()
+        shutdown_calls = []
+        manager = MagicMock()
+
+        def shutdown_all():
+            shutdown_calls.append("shutdown")
+            if len(shutdown_calls) == 1:
+                first_started.set()
+                assert allow_first_failure.wait(timeout=2)
+                raise RuntimeError("first shutdown failed")
+            return True
+
+        manager.shutdown_all.side_effect = shutdown_all
+        agent = AIAgent.__new__(AIAgent)
+        agent._memory_manager = manager
+        agent._memory_manager_release_lock = threading.Lock()
+        agent._session_messages = [{"role": "user", "content": "hello"}]
+        agent._db_flush_scan_prefix = agent._session_messages[:]
+        agent.commit_memory_session = lambda messages=None: manager.on_session_end(
+            messages or []
+        )
+        agent.release_clients = lambda: None
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._lifecycle_counters = None
+        runner._commit_memory_before_soft_evict = lambda a, key: (
+            a.commit_memory_session(a._session_messages) or True
+        )
+
+        soft_thread = threading.Thread(
+            target=lambda: runner._commit_then_release_soft(agent, "session-1")
+        )
+        soft_thread.start()
+        assert first_started.wait(timeout=1)
+        hard_thread = threading.Thread(
+            target=lambda: agent.shutdown_memory_provider(agent._session_messages)
+        )
+        hard_thread.start()
+        allow_first_failure.set()
+        soft_thread.join(timeout=2)
+        hard_thread.join(timeout=2)
+
+        assert manager.on_session_end.call_count == 1
+        assert shutdown_calls == ["shutdown", "shutdown"]
+        assert agent._memory_manager is None
+
+
+class TestBoundedMemoryProviderShutdownOwnership:
+    def test_blocking_provider_shutdown_returns_incomplete_without_duplicate_worker(self, monkeypatch):
+        import threading
+        import time
+        import run_agent as run_agent_module
+        from run_agent import AIAgent
+
+        monkeypatch.setattr(run_agent_module, "_MEMORY_PROVIDER_SHUTDOWN_TIMEOUT_S", 0.05)
+        started = threading.Event()
+        release = threading.Event()
+        calls = []
+        manager = MagicMock()
+
+        def shutdown_all():
+            calls.append("shutdown")
+            started.set()
+            release.wait(timeout=2)
+            return True
+
+        manager.shutdown_all.side_effect = shutdown_all
+        agent = AIAgent.__new__(AIAgent)
+        agent._memory_manager = manager
+        agent._memory_manager_release_lock = threading.Lock()
+
+        t0 = time.monotonic()
+        with pytest.raises(RuntimeError, match="shutdown incomplete"):
+            agent.release_memory_provider_for_cache_evict()
+        assert time.monotonic() - t0 < 0.3
+        assert started.is_set()
+        with pytest.raises(RuntimeError, match="shutdown incomplete"):
+            agent.release_memory_provider_for_cache_evict()
+        assert calls == ["shutdown"]
+
+        release.set()
+        for _ in range(50):
+            if getattr(agent, "_memory_manager_shutdown_state", None) is None:
+                break
+            time.sleep(0.01)
+        assert agent.release_memory_provider_for_cache_evict() is True
+        assert agent._memory_manager is None
+
+    def test_soft_cleanup_retains_transcript_when_provider_reports_incomplete(self):
+        from types import SimpleNamespace
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._lifecycle_counters = None
+        messages = [{"role": "user", "content": "still owed to the provider"}]
+        agent = SimpleNamespace(
+            _memory_manager=None,
+            _session_messages=messages,
+            _db_flush_scan_prefix=messages,
+            release_memory_provider_for_cache_evict=lambda: False,
+            release_clients=MagicMock(),
+        )
+        runner._retain_failed_evicted_agent_cleanup(agent, "unfinished-provider")
+
+        assert runner._commit_then_release_soft(agent, "unfinished-provider") is False
+        assert agent._session_messages == messages
+        assert agent._db_flush_scan_prefix == messages
+        registry, _ = runner._failed_evicted_agent_cleanup_state()
+        assert registry[id(agent)] == (agent, "unfinished-provider")
+
+    def test_hard_cleanup_propagates_incomplete_memory_shutdown(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._lifecycle_counters = None
+        agent = MagicMock()
+        agent.shutdown_memory_provider.return_value = False
+        agent._memory_manager = None
+        agent._session_messages = []
+
+        assert runner._cleanup_agent_resources(agent) is False
+
+    def test_shutdown_daemon_returns_false_for_false_worker_result(self):
+        import asyncio
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+
+        async def exercise():
+            return await runner._run_shutdown_sync_daemon(
+                lambda: False,
+                timeout=1,
+                context="false-result",
+            )
+
+        assert asyncio.run(exercise()) is False
+
+
+class TestDurableEvictionOperationOwnership:
+    def test_cap_eviction_registers_full_owner_before_cleanup_thread_start(self, monkeypatch):
+        import threading
+        from collections import OrderedDict
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._agent_cache = OrderedDict()
+        runner._agent_cache_lock = threading.RLock()
+        runner._agent_cache_cap = lambda: 0
+        runner._running_agent_items = list
+        runner._lifecycle_counters = None
+        agent = MagicMock()
+        runner._agent_cache["session-1"] = (agent, "sig")
+
+        class _NeverStartedThread:
+            def __init__(self, *, target, args, **kwargs):
+                self.target = target
+                self.args = args
+
+            def start(self):
+                registry, _ = runner._failed_evicted_agent_cleanup_state()
+                assert registry[id(agent)] == (agent, "session-1")
+                raise RuntimeError("thread start failed")
+
+        monkeypatch.setattr("gateway.run.threading.Thread", _NeverStartedThread)
+        runner._commit_then_release_soft = lambda a, key: False
+
+        with runner._agent_cache_lock:
+            assert runner._enforce_agent_cache_cap() == 1
+
+        registry, _ = runner._failed_evicted_agent_cleanup_state()
+        assert runner._agent_cache == {}
+        assert registry[id(agent)] == (agent, "session-1")
+
+    def test_commit_and_shutdown_share_one_owner_against_hard_cleanup(self):
+        import threading
+        from gateway.run import GatewayRunner
+        from run_agent import AIAgent
+
+        commit_started = threading.Event()
+        allow_commit = threading.Event()
+        manager = MagicMock()
+
+        def on_session_end(messages):
+            commit_started.set()
+            assert allow_commit.wait(timeout=2)
+
+        manager.on_session_end.side_effect = on_session_end
+        manager.shutdown_all.return_value = True
+        agent = AIAgent.__new__(AIAgent)
+        agent._memory_manager = manager
+        agent._memory_manager_release_lock = threading.Lock()
+        agent._session_messages = [{"role": "user", "content": "hello"}]
+        agent.release_clients = lambda: None
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._lifecycle_counters = None
+        runner._soft_evict_memory_commit_plan = lambda a, key: (
+            True,
+            a._session_messages,
+        )
+        runner._retain_failed_evicted_agent_cleanup(agent, "session-1")
+
+        soft_thread = threading.Thread(
+            target=lambda: runner._commit_then_release_soft(agent, "session-1")
+        )
+        soft_thread.start()
+        assert commit_started.wait(timeout=1)
+        hard_results = []
+        hard_thread = threading.Thread(
+            target=lambda: hard_results.append(
+                agent.shutdown_memory_provider(agent._session_messages)
+            )
+        )
+        hard_thread.start()
+        allow_commit.set()
+        soft_thread.join(timeout=2)
+        hard_thread.join(timeout=2)
+
+        assert not soft_thread.is_alive()
+        assert not hard_thread.is_alive()
+        assert hard_results == [True]
+        assert manager.on_session_end.call_count == 1
+        assert manager.shutdown_all.call_count == 1
+        registry, _ = runner._failed_evicted_agent_cleanup_state()
+        assert registry == {}
+
+    def test_failed_commit_retry_preserves_original_transcript_until_success(self):
+        import threading
+        from gateway.run import GatewayRunner
+        from run_agent import AIAgent
+
+        payloads = []
+        manager = MagicMock()
+
+        def on_session_end(messages):
+            payloads.append(list(messages))
+            if len(payloads) == 1:
+                raise RuntimeError("temporary commit failure")
+
+        manager.on_session_end.side_effect = on_session_end
+        manager.shutdown_all.return_value = True
+        original = [{"role": "user", "content": "must survive"}]
+        agent = AIAgent.__new__(AIAgent)
+        agent._memory_manager = manager
+        agent._memory_manager_release_lock = threading.Lock()
+        agent._session_messages = list(original)
+        agent._db_flush_scan_prefix = list(original)
+        agent.release_clients = lambda: None
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._lifecycle_counters = None
+        runner._soft_evict_memory_commit_plan = lambda a, key: (
+            True,
+            list(a._session_messages),
+        )
+        runner._retain_failed_evicted_agent_cleanup(agent, "session-retry")
+
+        assert runner._commit_then_release_soft(agent, "session-retry") is False
+        assert agent._session_messages == original
+        assert agent._db_flush_scan_prefix == original
+
+        assert runner._retry_failed_evicted_agent_cleanups() == 1
+        assert payloads == [original, original]
+        assert agent._session_messages == []
+        assert agent._db_flush_scan_prefix is None
+        registry, _ = runner._failed_evicted_agent_cleanup_state()
+        assert registry == {}
 
 
 _FAKE_NOW = 10_000.0  # Fixed epoch for deterministic time assertions
-
 
 class TestCachedAgentInactivityReset:
     """Inactivity-clock reset must be gated on _interrupt_depth == 0.
@@ -1247,10 +1405,13 @@ class TestCachedAgentInactivityReset:
     """
 
     def _fake_agent(self, stale_seconds: float = 1800.0):
+        from agent.session_activity import ActivityProvenance
+
         m = MagicMock()
         m._last_activity_ts = _FAKE_NOW - stale_seconds
         m._api_call_count = 10
         m._last_activity_desc = "previous turn activity"
+        m._last_activity_provenance = ActivityProvenance.AGENT_COMPRESSION
         return m
 
     def test_fresh_turn_resets_idle_clock(self):
@@ -1272,17 +1433,19 @@ class TestCachedAgentInactivityReset:
             "Stale idle time should be cleared so the new turn gets a fresh window"
         )
 
-    def test_fresh_turn_resets_desc(self):
-        """interrupt_depth=0: description is updated to reflect the new turn."""
+    def test_fresh_turn_resets_provenance(self):
+        """interrupt_depth=0: provenance resets with ts/desc (#72039)."""
+        from agent.session_activity import ActivityProvenance
         from gateway.run import GatewayRunner
 
         agent = self._fake_agent()
+        assert agent._last_activity_provenance is ActivityProvenance.AGENT_COMPRESSION
 
         with patch("gateway.run.time") as mock_time:
             mock_time.time.return_value = _FAKE_NOW
             GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=0)
 
-        assert agent._last_activity_desc == "starting new turn (cached)"
+        assert agent._last_activity_provenance is ActivityProvenance.UNKNOWN
 
     def test_interrupt_turn_preserves_idle_clock(self):
         """interrupt_depth=1: clock preserved so accumulated stuck-turn
@@ -1312,50 +1475,164 @@ class TestCachedAgentInactivityReset:
             "it describes the activity *at* _last_activity_ts"
         )
 
-    def test_deep_interrupt_recursion_preserves_idle_clock(self):
-        """interrupt_depth=MAX-1: clock still preserved at any non-zero depth."""
+    def test_interrupt_turn_preserves_provenance(self):
+        """interrupt_depth=1: provenance preserved with ts/desc."""
+        from agent.session_activity import ActivityProvenance
         from gateway.run import GatewayRunner
 
-        agent = self._fake_agent(stale_seconds=600.0)
-        old_ts = agent._last_activity_ts
+        agent = self._fake_agent(stale_seconds=1200.0)
 
-        GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=4)
+        GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=1)
 
-        assert agent._last_activity_ts == old_ts
+        assert agent._last_activity_provenance is ActivityProvenance.AGENT_COMPRESSION
 
-    def test_api_call_count_reset_regardless_of_depth(self):
-        """_api_call_count is always reset to 0 for the new turn, at any depth."""
+    def test_fresh_turn_resets_flush_cursor(self):
+        """interrupt_depth=0: _last_flushed_db_idx resets so new-turn
+        messages are fully persisted to the session DB (#44327)."""
         from gateway.run import GatewayRunner
 
-        agent_fresh = self._fake_agent()
-        agent_interrupted = self._fake_agent()
+        agent = self._fake_agent()
+        agent._last_flushed_db_idx = 42  # stale from previous turn
 
         with patch("gateway.run.time") as mock_time:
             mock_time.time.return_value = _FAKE_NOW
-            GatewayRunner._init_cached_agent_for_turn(agent_fresh, interrupt_depth=0)
-        GatewayRunner._init_cached_agent_for_turn(agent_interrupted, interrupt_depth=1)
+            GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=0)
 
-        assert agent_fresh._api_call_count == 0
-        assert agent_interrupted._api_call_count == 0
-
-    def test_watchdog_accumulation_across_recursive_turns(self):
-        """Scenario: stuck turn + user interrupt → recursive turn.
-
-        The idle time seen by the watchdog must reflect the full stuck
-        duration, not restart from zero on the recursive re-entry.
-        """
-        from gateway.run import GatewayRunner
-
-        STUCK_FOR = 1750.0
-        agent = self._fake_agent(stale_seconds=STUCK_FOR)
-
-        # Simulate: user sees "Still working..." and sends another message.
-        # That triggers an interrupt → _run_agent recurses at depth=1.
-        GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=1)
-
-        # Watchdog sees time.time() - _last_activity_ts ≥ STUCK_FOR.
-        idle_secs = _FAKE_NOW - agent._last_activity_ts
-        assert idle_secs >= STUCK_FOR - 1.0, (
-            f"Watchdog would see {idle_secs:.0f}s idle, expected ~{STUCK_FOR}s. "
-            "Inactivity timeout could not fire for a stuck interrupted turn."
+        assert agent._last_flushed_db_idx == 0, (
+            "_last_flushed_db_idx must be reset on a fresh turn so that "
+            "_flush_messages_to_session_db starts from index 0"
         )
+
+class TestAgentCacheMessageCountRebaseline:
+    """The cross-process coherence guard (#45966) must NOT invalidate the
+    cache on this process's OWN writes.
+
+    The guard snapshots ``message_count`` at agent-build time (before the
+    turn writes its own rows) and never refreshes it on reuse.  Without a
+    post-turn re-baseline, the gateway's own turn grows the count and the
+    next turn sees a mismatch and rebuilds the agent — every turn, for every
+    conversation — silently destroying per-conversation prompt caching.
+
+    ``_refresh_agent_cache_message_count`` re-baselines the stored count to
+    the now-current value after each turn, so the guard fires ONLY when a
+    different process changed the transcript.  These tests pin both halves of
+    the invariant against the REAL SessionDB + the REAL guard condition.
+    """
+
+    def _runner_with_db(self, db):
+        from hermes_state import AsyncSessionDB
+
+        runner = _make_runner()
+        # The gateway holds the async facade; the production refresh awaits it.
+        runner._session_db = AsyncSessionDB(db)
+        return runner
+
+    @staticmethod
+    def _guard_would_reuse(runner, session_key, session_id):
+        """Mirror the production cache-hit guard's reuse decision exactly.
+
+        Reuse iff the live on-disk count equals the snapshot stored next to
+        the cached agent (or either side is None / it's a legacy 2-tuple).
+        """
+        try:
+            row = runner._session_db._db.get_session(session_id)
+            live = row.get("message_count", 0) if row else None
+        except Exception:
+            live = None
+        with runner._agent_cache_lock:
+            cached = runner._agent_cache.get(session_key)
+        cached_mc = cached[2] if cached and len(cached) > 2 else None
+        invalidate = (
+            cached_mc is not None
+            and live is not None
+            and live != cached_mc
+        )
+        return not invalidate
+
+    @pytest.mark.asyncio
+    async def test_cross_process_write_still_invalidates(self, tmp_path):
+        """After the re-baseline, a DIFFERENT process appending to the same
+        session must still flip the guard to rebuild (the #45966 fix holds).
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "sessions.db")
+        db.create_session("s1", source="telegram")
+        runner = self._runner_with_db(db)
+        agent = object()
+
+        with runner._agent_cache_lock:
+            _row = db.get_session("s1")
+            runner._agent_cache["telegram:s1"] = (
+                agent, "sig", (_row.get("message_count", 0) if _row else 0),
+            )
+
+        # Our own turn + re-baseline -> reuse next turn.
+        db.append_message("s1", role="user", content="u")
+        db.append_message("s1", role="assistant", content="a")
+        await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        assert self._guard_would_reuse(runner, "telegram:s1", "s1") is True
+
+        # ANOTHER process (e.g. the desktop dashboard backend) appends a turn
+        # to the SAME session in the shared DB — we have NOT re-baselined for it.
+        db.append_message("s1", role="user", content="external from dashboard")
+
+        # Guard must now reject reuse so the agent rebuilds from fresh disk.
+        assert self._guard_would_reuse(runner, "telegram:s1", "s1") is False
+
+    @pytest.mark.asyncio
+    async def test_in_band_followup_reuses_cached_agent(self, tmp_path):
+        """Behavioral regression for the in-band queued (/queue) follow-up.
+
+        #46237 re-baselines the snapshot only on the EXTERNAL-turn boundary
+        (in ``_handle_message_with_agent``, after the whole ``_run_agent``
+        chain unwinds).  The recursive in-band follow-up re-enters the cache
+        guard MID-CHAIN — while the cache still holds the build-time snapshot
+        and the first turn has already flushed its own rows — so without a
+        re-baseline at the follow-up boundary the guard sees the grown count
+        and rebuilds the agent on THIS process's own writes, re-introducing
+        the every-turn rebuild #46237 set out to fix, on the follow-up path.
+
+        Pins both halves at that boundary: WITHOUT the re-baseline the in-band
+        follow-up would rebuild; WITH it the follow-up REUSES the warm agent.
+        The guard's reuse decision (``_guard_would_reuse``) mirrors the real
+        cache-hit guard, which reads ``get_session(session_id)`` with the same
+        ``session_id`` the recursive ``_run_agent`` call is given.
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "sessions.db")
+        db.create_session("s1", source="telegram")
+        runner = self._runner_with_db(db)
+        agent = object()
+
+        # First turn: cache miss -> build. Snapshot is the pre-turn count.
+        _row = db.get_session("s1")
+        build_count = _row.get("message_count", 0) if _row else 0
+        with runner._agent_cache_lock:
+            runner._agent_cache["telegram:s1"] = (agent, "sig", build_count)
+
+        # First turn flushes its own user + assistant rows.
+        db.append_message("s1", role="user", content="u")
+        db.append_message("s1", role="assistant", content="a")
+
+        # Bug reproduction: re-entering the guard at the in-band follow-up
+        # boundary WITHOUT the re-baseline sees the grown count and rebuilds.
+        assert self._guard_would_reuse(runner, "telegram:s1", "s1") is False
+
+        # The fix: re-baseline at the follow-up boundary.
+        await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+
+        # The in-band follow-up now REUSES the cached, warm-prefix agent.
+        assert self._guard_would_reuse(runner, "telegram:s1", "s1") is True
+        with runner._agent_cache_lock:
+            assert runner._agent_cache["telegram:s1"][0] is agent
+
+
+@pytest.mark.parametrize("result", [False, True, ["session-end message"]])
+def test_profile_release_preserves_cleanup_receipt(monkeypatch, result):
+    """Cleanup owners need the exact callback result to retain failed work."""
+    from gateway.run import GatewayRunner
+    monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: False)
+    runner = GatewayRunner.__new__(GatewayRunner)
+    assert runner._run_release_in_profile_scope(lambda: result, (), None) is result

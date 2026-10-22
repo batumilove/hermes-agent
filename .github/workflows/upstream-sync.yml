@@ -1,0 +1,203 @@
+name: Prepare daily upstream batch
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-sync-batumi-live
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare reviewed upstream merge
+    if: github.repository == 'batumilove/hermes-agent'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out trusted fork controller
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: batumi/live
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Configure repo-scoped deploy key
+        env:
+          DEPLOY_KEY: ${{ secrets.UPSTREAM_SYNC_DEPLOY_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_KEY"
+          key_file="$RUNNER_TEMP/upstream-sync-key"
+          known_hosts="$RUNNER_TEMP/github-known-hosts"
+          printf '%s\n' "$DEPLOY_KEY" > "$key_file"
+          chmod 0600 "$key_file"
+          gh api meta --jq '.ssh_keys[]' | sed 's/^/github.com /' > "$known_hosts"
+          chmod 0600 "$known_hosts"
+          echo "GIT_SSH_COMMAND=ssh -i $key_file -o IdentitiesOnly=yes -o UserKnownHostsFile=$known_hosts -o StrictHostKeyChecking=yes" >> "$GITHUB_ENV"
+          git remote set-url origin git@github.com:batumilove/hermes-agent.git
+
+      - name: Prepare a linear review batch without executing incoming code
+        id: plan
+        env:
+          # App/PAT-created PRs emit CI events; GITHUB_TOKEN-created PRs do not.
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_PR_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
+          scratch=$(mktemp -d "$RUNNER_TEMP/upstream-sync.XXXXXXXX")
+          trap 'rm -rf "$scratch"' EXIT
+          git config core.hooksPath "$scratch/disabled-hooks"
+          git config core.fsmonitor false
+          git config commit.gpgsign false
+          proof_path=.github/upstream-sync-provenance.json
+          base_path=.github/upstream-base
+          fail() { echo "::error::$1" >&2; exit 1; }
+          valid_sha() { [[ "$1" =~ ^[0-9a-f]{40}$ ]]; }
+          [ -n "${GH_TOKEN:-}" ] || fail "Configure repo-scoped UPSTREAM_SYNC_PR_TOKEN before running daily sync."
+          project_tree() {
+            GIT_INDEX_FILE="$scratch/project.index" git read-tree "$1"
+            GIT_INDEX_FILE="$scratch/project.index" git update-index --force-remove -- "$proof_path"
+            GIT_INDEX_FILE="$scratch/project.index" git write-tree
+          }
+
+          # shellcheck disable=SC2016
+          open_prs=$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" --state open --limit 100 \
+            --json headRefName \
+            --jq '[.[] | select(.headRefName | startswith("sync/upstream-batch-"))] | length')
+          if [ "$open_prs" != "0" ]; then
+            echo "::notice::An upstream batch PR is already open."
+            echo "has_update=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          live=$(git rev-parse HEAD)
+          baseline=$(git show "$live:$base_path")
+          valid_sha "$live" && valid_sha "$baseline" || fail "Invalid live or upstream base SHA."
+          git remote add upstream https://github.com/NousResearch/hermes-agent.git
+          git fetch --no-tags upstream main
+          upstream_sha=$(git rev-parse upstream/main)
+          valid_sha "$upstream_sha" || fail "Invalid fetched upstream SHA."
+          git cat-file -e "$baseline^{commit}"
+          git merge-base --is-ancestor "$baseline" "$upstream_sha" || fail "Upstream no longer descends from the accepted base."
+
+          # The current live tree is trusted only after proving the recorded import.
+          if ! git merge-base --is-ancestor "$baseline" "$live"; then
+            git show "$live:$proof_path" > "$scratch/proof.json" || fail "Missing upstream import provenance."
+            jq -e --arg base "$baseline" '
+              type == "object" and
+              (keys | sort) == (["version","upstream_base","source_head","import_tree","fetch_depth"] | sort) and
+              .version == 2 and .upstream_base == $base and
+              (.source_head | type == "string" and test("^[0-9a-f]{40}$")) and
+              (.import_tree | type == "string" and test("^[0-9a-f]{40}$")) and
+              (.fetch_depth | type == "number" and floor == . and . >= 1 and . <= 1024)
+            ' "$scratch/proof.json" > /dev/null || fail "Invalid v2 upstream import provenance."
+            source=$(jq -r '.source_head' "$scratch/proof.json")
+            import_tree=$(jq -r '.import_tree' "$scratch/proof.json")
+            depth=$(jq -r '.fetch_depth' "$scratch/proof.json")
+            if ! git cat-file -e "$source^{commit}" 2>/dev/null; then
+              fetch_args=(--filter=blob:none --no-tags)
+              if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+                fetch_args+=(--depth="$depth")
+              fi
+              git fetch "${fetch_args[@]}" origin "$source"
+            fi
+            git merge-base --is-ancestor "$baseline" "$source" || fail "Recorded source omits the accepted upstream base."
+            [ "$(git show "$source:$base_path")" = "$baseline" ] || fail "Recorded source contains a different upstream base."
+            [ "$(project_tree "$source")" = "$import_tree" ] || fail "Recorded source tree differs from import_tree."
+            git rev-list "$live" > "$scratch/live-history"
+            accepted=false
+            while IFS= read -r ancestor; do
+              if [ "$(project_tree "$ancestor")" = "$import_tree" ]; then
+                accepted=true
+                break
+              fi
+            done < "$scratch/live-history"
+            [ "$accepted" = true ] || fail "No live ancestor contains the exact projected import tree."
+          fi
+
+          if [ "$baseline" = "$upstream_sha" ]; then
+            echo "::notice::batumi/live already contains the recorded upstream head."
+            echo "has_update=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          branch="sync/upstream-batch-${upstream_sha:0:12}-${live:0:12}"
+          source_branch="sync/upstream-source-${upstream_sha:0:12}-${live:0:12}"
+          remote_refs=$(git ls-remote --heads origin "$branch" "$source_branch")
+          [ -z "$remote_refs" ] || fail "An immutable batch or source branch already exists."
+          git config user.name "hermes-upstream-sync[bot]"
+          git config user.email "189313529+batumilove@users.noreply.github.com"
+
+          # Object-only preparation: no incoming checkout, hooks, build or scripts.
+          live_tree=$(git rev-parse "$live^{tree}")
+          ancestry=$(git commit-tree "$live_tree" -p "$live" -p "$baseline" \
+            -m "sync(upstream): record verified import ancestry")
+          if ! merge_output=$(git merge-tree --write-tree "$ancestry" "$upstream_sha"); then
+            fail "Upstream batch conflicts; reconcile it in a dedicated workspace."
+          fi
+          merged_tree=${merge_output%%$'\n'*}
+          valid_sha "$merged_tree" || fail "Invalid merge tree."
+          GIT_INDEX_FILE="$scratch/source.index" git read-tree "$merged_tree"
+          base_blob=$(printf '%s\n' "$upstream_sha" | git hash-object -w --stdin)
+          GIT_INDEX_FILE="$scratch/source.index" git update-index --add --cacheinfo "100644,$base_blob,$base_path"
+          GIT_INDEX_FILE="$scratch/source.index" git update-index --force-remove -- "$proof_path"
+          source_tree=$(GIT_INDEX_FILE="$scratch/source.index" git write-tree)
+          source_head=$(git commit-tree "$source_tree" -p "$ancestry" -p "$upstream_sha" \
+            -m "sync(upstream): merge ${upstream_sha:0:12} source batch")
+          [ "$(project_tree "$source_head")" = "$source_tree" ] || fail "Source tree unexpectedly contains provenance."
+
+          # The PR history is linear. Its import bytes exactly match immutable S.
+          import_commit=$(git commit-tree "$source_tree" -p "$live" \
+            -m "sync(upstream): import reviewed ${upstream_sha:0:12} tree")
+          jq -n --arg base "$upstream_sha" --arg source "$source_head" --arg tree "$source_tree" \
+            '{version:2,upstream_base:$base,source_head:$source,import_tree:$tree,fetch_depth:8}' \
+            > "$scratch/new-proof.json"
+          proof_blob=$(git hash-object -w "$scratch/new-proof.json")
+          GIT_INDEX_FILE="$scratch/source.index" git update-index --add --cacheinfo "100644,$proof_blob,$proof_path"
+          review_tree=$(GIT_INDEX_FILE="$scratch/source.index" git write-tree)
+          review_head=$(git commit-tree "$review_tree" -p "$import_commit" \
+            -m "sync(upstream): record projected-tree provenance")
+          [ "$(project_tree "$review_head")" = "$source_tree" ] || fail "Review tree changes bytes outside provenance."
+
+          remote_live=$(git ls-remote origin refs/heads/batumi/live)
+          [ "${remote_live%%$'\t'*}" = "$live" ] || fail "batumi/live advanced during preparation; retry on the new live head."
+          # Empty leases are create-only CAS, including a race after preflight.
+          # Atomic publication never leaves a lone source if review is rejected.
+          git push --atomic \
+            --force-with-lease="refs/heads/$source_branch:" \
+            --force-with-lease="refs/heads/$branch:" \
+            origin "$source_head:refs/heads/$source_branch" "$review_head:refs/heads/$branch"
+          # shellcheck disable=SC2016
+          {
+            printf 'Imported the official upstream batch into a linear review history.\n\n'
+            printf -- '- Previous upstream base: `%s`\n' "$baseline"
+            printf -- '- New upstream base: `%s`\n' "$upstream_sha"
+            printf -- '- Immutable source: `%s` (`%s`)\n' "$source_head" "$source_branch"
+            printf -- '- Exact projected import tree: `%s`\n\n' "$source_tree"
+            printf 'The controller used Git objects only and executed no incoming scripts. This draft requires All required checks pass and human review; squash/rebase preserves the projected-tree proof. Keep the source branch reachable for provenance validation.\n'
+          } > "$scratch/body.md"
+          pr_url=$(gh pr create \
+            --repo "$GITHUB_REPOSITORY" --base batumi/live --head "$branch" --draft \
+            --title "sync(upstream): daily batch ${upstream_sha:0:12}" \
+            --body-file "$scratch/body.md")
+          echo "Created $pr_url"
+          echo "has_update=true" >> "$GITHUB_OUTPUT"
+
+      - name: Remove deploy key material
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          key_file="$RUNNER_TEMP/upstream-sync-key"
+          if [ -f "$key_file" ]; then
+            shred -u "$key_file"
+          fi

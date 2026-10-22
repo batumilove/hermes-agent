@@ -1,0 +1,67 @@
+"""Native Windows marker behavior, isolated within the existing per-file deadline."""
+
+from __future__ import annotations
+
+from pathlib import Path
+import subprocess
+import time
+import pytest
+from tests.scripts.desktop_update.windows_marker_support import MARKER
+from tests.scripts.desktop_update.windows_marker_support import _creation_time
+from tests.scripts.desktop_update.windows_marker_support import _dead_pid
+from tests.scripts.desktop_update.windows_marker_support import _run
+
+pytest_plugins = ["tests.scripts.desktop_update.windows_marker_support"]
+
+
+@pytest.mark.platforms("windows")
+def test_claim_is_the_first_action_and_writes_a_v2_body(tmp_path: Path) -> None:
+    pid, code, out = _run(tmp_path, "-SelfTestMarker", "-NoMarkerCleanup")
+    assert code == 0, out
+    lines = (tmp_path / MARKER).read_bytes().decode().split("\n")
+    assert lines[0] == str(pid)
+    assert lines[2].startswith("ct:") and len(lines[2].split(".")[-1]) == 3, lines
+    log = (
+        (tmp_path / "logs/desktop-update-handoff.log")
+        .read_text(encoding="utf-8-sig")
+        .splitlines()
+    )
+    # Nothing (UI, Add-Type'd console helpers, probes) logs before the claim.
+    assert "claimed update marker" in log[0], log
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("ct_matches", [True, False])
+def test_live_foreign_owner_refuses_and_reused_pid_is_reclaimed(
+    tmp_path: Path,
+    sleeper: subprocess.Popen,
+    ct_matches: bool,
+) -> None:
+    ct = (
+        _creation_time(sleeper.pid) if ct_matches else "1000.000"
+    )  # wrong ct = pid reuse
+    body = f"{sleeper.pid}\n{int(time.time())}\nct:{ct}\n".encode()
+    (tmp_path / MARKER).write_bytes(body)
+    pid, code, out = _run(tmp_path, "-SelfTestMarker", "-NoMarkerCleanup")
+    if ct_matches:
+        assert code == 2, out
+        assert (tmp_path / MARKER).read_bytes() == body
+        # A refused run changed nothing and owns no result (A4): the other update reports.
+        assert not (tmp_path / ".hermes-update-result.json").exists()
+    else:
+        assert code == 0, out
+        lines = (tmp_path / MARKER).read_bytes().decode().split("\n")
+        assert lines[0] == str(pid) and lines[2].startswith("ct:"), lines
+
+
+@pytest.mark.platforms("windows")
+def test_dead_owner_marker_is_reclaimed_and_released(tmp_path: Path) -> None:
+    (tmp_path / MARKER).write_bytes(
+        f"{_dead_pid()}\n{int(time.time())}\nct:5.000\n".encode()
+    )
+    pid, code, out = _run(tmp_path, "-SelfTestMarker")
+    assert code == 0, out
+    assert not (tmp_path / MARKER).exists()
+    log = (tmp_path / "logs/desktop-update-handoff.log").read_text(encoding="utf-8-sig")
+    assert f"claimed update marker (pid {pid})" in log
+    assert "removed update marker (owned)" in log
