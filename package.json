@@ -62,7 +62,7 @@
     "js-yaml@^4": "4.3.2",
     "undici@^6": "6.29.0",
     "undici@^7": "7.30.0",
-    "postcss": "8.5.23",
+    "postcss": "8.5.27",
     "tar": "7.5.22",
     "axios@^1": "1.20.0",
     "fast-uri@^3": "3.1.8",
@@ -76,10 +76,10 @@
     "katex": "0.18.2",
     "postcss-selector-parser": "7.1.6",
     "yaml": "2.9.1",
-    "vitest": "4.1.11",
-    "@vitest/mocker": "4.1.11",
+    "vitest": "4.1.12",
+    "@vitest/mocker": "4.1.12",
     "follow-redirects": "1.16.1",
-    "sanitize-html": "2.18.0",
+    "sanitize-html": "2.18.1",
     "vite": "8.2.4"
   },
   "engines": {
@@ -95,7 +95,7 @@
     "fsevents@2.3.3": true,
     "get-windows@9.3.0": true,
     "lefthook@2.1.14": true,
-    "electron@41.10.7": true
+    "electron@42.11.3": true
   },
   "dependencies": {
     "js-yaml": "4.3.2",

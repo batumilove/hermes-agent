@@ -14,6 +14,7 @@ patches:
   paths:
   - pyproject.toml
   - uv.lock
+  - .npmrc
   - package.json
   - package-lock.json
   - website/package.json
