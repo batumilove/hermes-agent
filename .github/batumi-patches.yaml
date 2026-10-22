@@ -300,6 +300,8 @@ patches:
     exact desktop/docs floors and uses a hash-verified licensed braces derivative for the unpatched nesting
     advisory. Pin MCP 2.2.0 to close GHSA-84m7-p3x7-pcfv session resource exhaustion.
   paths:
+  - pm/AGENTS.md
+  - tests/test_packaging_metadata.py
   - apps/bootstrap-installer/package.json
   - .npmrc
   - apps/desktop/package.json
