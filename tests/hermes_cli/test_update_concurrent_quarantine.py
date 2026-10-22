@@ -115,6 +115,14 @@ def test_pause_stops_launcher_after_worker_drain(
     profile_home.mkdir(parents=True)
     # The PID file records the WORKER (even-numbered parent 400 is its launcher).
     worker_pid, launcher_pid = 500, 400
+    # A PID file is only a hint; the fixture must also prove the live home.
+    from hermes_cli import update_fleet_scope
+
+    monkeypatch.setattr(update_fleet_scope, "update_scope_homes", lambda: {profile_home.resolve()})
+    monkeypatch.setattr(
+        update_fleet_scope, "gateway_pid_home",
+        lambda pid: str(profile_home) if pid == worker_pid else None,
+    )
     profile_proc = SimpleNamespace(
         profile="default", path=profile_home, pid=worker_pid
     )

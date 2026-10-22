@@ -14,6 +14,7 @@ patches:
   - hermes_cli/update_cmd_fleet.py
   - hermes_cli/update_cmd_stash.py
   - tests/hermes_cli/test_update_scope_custody_enforcement.py
+  - tests/hermes_cli/test_update_concurrent_quarantine.py
   - tests/hermes_cli/test_update_pause_service_rollback.py
   tests:
   - scripts/run_tests.sh tests/hermes_cli/test_update_scope_custody_enforcement.py tests/hermes_cli/test_update_autostash.py tests/hermes_cli/test_update_fleet_home_scope.py
