@@ -307,6 +307,7 @@ patches:
   - apps/desktop/package.json
   - nix/lib.nix
   - nix/checks.nix
+  - nix/python.nix
   - nix/node-gyp-11-4-0-package-lock.json
   - nix/node-gyp-11-4-0.nix
   - nix/tests/node-gyp-production.mjs
