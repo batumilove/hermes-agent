@@ -2210,6 +2210,41 @@ class TestRunConversation:
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
 
+    def test_post_turn_hook_receives_owning_context_engine(self, agent):
+        from hermes_cli.plugins import PluginManager
+
+        self._setup_agent(agent)
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Final answer", finish_reason="stop"
+        )
+        engine = agent.context_compressor
+        received = []
+        legacy = []
+        manager = PluginManager()
+
+        def on_turn(*, context_compressor, **kwargs):
+            received.append((context_compressor, kwargs))
+
+        def old_hook(session_id, user_message, assistant_response,
+                     conversation_history, model, platform):
+            legacy.append((session_id, assistant_response))
+
+        manager._hooks["post_llm_call"] = [on_turn, old_hook]
+        with (
+            patch("hermes_cli.plugins.get_plugin_manager", return_value=manager),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert len(received) == 1
+        assert received[0][0] is engine
+        assert received[0][1]["session_id"] == agent.session_id
+        assert received[0][1]["assistant_response"] == "Final answer"
+        assert legacy == [(agent.session_id, "Final answer")]
+
     def test_tool_calls_then_stop(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
