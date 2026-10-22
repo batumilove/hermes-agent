@@ -36,6 +36,7 @@ from __future__ import annotations
 import importlib
 import importlib.metadata
 import importlib.util
+import inspect
 import logging
 import os
 import sys
@@ -1073,7 +1074,26 @@ class PluginManager:
         results: List[Any] = []
         for cb in callbacks:
             try:
-                ret = cb(**kwargs)
+                # Hooks gain fields over time. Preserve callbacks that name
+                # only the fields they consume, while forwarding everything
+                # to callbacks that explicitly accept **kwargs.
+                callback_kwargs = kwargs
+                try:
+                    parameters = inspect.signature(cb).parameters
+                except (TypeError, ValueError):
+                    parameters = None
+                if parameters is not None and not any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD
+                    for p in parameters.values()
+                ):
+                    callback_kwargs = {
+                        key: value for key, value in kwargs.items()
+                        if key in parameters and parameters[key].kind in (
+                            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                            inspect.Parameter.KEYWORD_ONLY,
+                        )
+                    }
+                ret = cb(**callback_kwargs)
                 if ret is not None:
                     results.append(ret)
             except Exception as exc:

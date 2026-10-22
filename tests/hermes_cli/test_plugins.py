@@ -1191,3 +1191,36 @@ class TestPluginDispatchTool:
             result = ctx.dispatch_tool("fake", {})
 
         assert '"error"' in result
+
+
+def test_hook_new_fields_preserve_narrow_callbacks_and_kwargs():
+    manager = PluginManager()
+    engine = object()
+    calls = []
+
+    def narrow(*, session_id):
+        calls.append(session_id)
+        return "legacy"
+
+    def extensible(**kwargs):
+        assert kwargs["context_compressor"] is engine
+        return "extended"
+
+    manager._hooks["post_llm_call"] = [narrow, extensible]
+    assert manager.invoke_hook(
+        "post_llm_call", session_id="session", context_compressor=engine
+    ) == ["legacy", "extended"]
+    assert calls == ["session"]
+
+
+def test_hook_type_error_is_not_retried():
+    manager = PluginManager()
+    calls = []
+
+    def broken(**kwargs):
+        calls.append(kwargs)
+        raise TypeError("inside callback")
+
+    manager._hooks["post_llm_call"] = [broken]
+    assert manager.invoke_hook("post_llm_call", context_compressor=object()) == []
+    assert len(calls) == 1

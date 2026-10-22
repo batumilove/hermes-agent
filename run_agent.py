@@ -13469,6 +13469,7 @@ class AIAgent:
                 from hermes_cli.plugins import invoke_hook as _invoke_hook
                 _invoke_hook(
                     "post_llm_call",
+                    context_compressor=getattr(self, "context_compressor", None),
                     session_id=self.session_id,
                     user_message=original_user_message,
                     assistant_response=final_response,
