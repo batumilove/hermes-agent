@@ -76,9 +76,10 @@
     "katex": "0.18.2",
     "postcss-selector-parser": "7.1.6",
     "yaml": "2.9.1",
-    "vitest": "4.1.11",
-    "@vitest/mocker": "4.1.11",
-    "follow-redirects": "1.16.1"
+    "vitest": "4.1.12",
+    "@vitest/mocker": "4.1.12",
+    "follow-redirects": "1.16.1",
+    "sanitize-html": "2.18.1"
   },
   "engines": {
     "node": "^22.22.0 || ^24.11.0 || >=26.0.0",
