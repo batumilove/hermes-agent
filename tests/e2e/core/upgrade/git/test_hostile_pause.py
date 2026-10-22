@@ -22,7 +22,7 @@ and the durable pause record ``update_pause_record`` keeps in the root hermes ho
     new commit.
 (g) the dependency sync fails after the commit (contract amendment A6): the release's dependency
     preparation raises while a toggle exists and changes ``uv.lock``'s bytes (the dependency stamp),
-    so the venv is stale at the new HEAD. The update exits 0 with a ``dependencies`` follow-up and
+    so the venv is stale at the new HEAD. The update exits 1 with a ``dependencies`` follow-up and
     the paused gateway stays stopped (the tree gate holds it: it would boot new code on stale
     dependencies). A ``hermes gateway run`` launched then (the replayed argv) syncs the owed
     dependencies in its own launch before serving; the next ``hermes`` launch adopts that gateway
@@ -486,7 +486,7 @@ def _deps_failure_cell(w: G.World, toggle: Path) -> None:
         diag = _diag(w, host, cp, before=before, gateways_after_update=held)
         assert w.head() == target, f"premise: the release never committed:\n{diag}"
         assert DEPS_OWED in out, f"premise: the dependency sync did not fail after the commit:\n{diag}"
-        assert cp.returncode == 0, f"A6: a dependency failure after the commit failed the update:\n{diag}"
+        assert cp.returncode == 1, f"mandatory dependency failure did not report partial completion:\n{diag}"
         assert PAUSED in out, f"premise: the gateway was not paused:\n{diag}"
         assert not held, f"a paused gateway was started on the new code with stale dependencies:\n{diag}"
         assert any((r.get("token") or {}).get("resume_needed") for r in rec_after_update), \
