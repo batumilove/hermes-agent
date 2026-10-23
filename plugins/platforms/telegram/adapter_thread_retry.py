@@ -16,6 +16,8 @@ def retry_missing_thread(
     from plugins.platforms.telegram.adapter import SendResult, _redact_telegram_error_text, logger
 
     refusal = SendResult(success=False, error=_redact_telegram_error_text(error), retryable=False)
+    if (metadata or {}).get("strict_topic"):
+        return refusal
     if private_dm_topic_send and used_thread_fallback:
         return refusal
     if effective_thread_id is None:
