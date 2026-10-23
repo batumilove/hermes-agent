@@ -27,3 +27,21 @@ may move a transitive core package within core's declared ranges
 (`tests/pm/test_workspace_build_inputs.py::test_plugin_can_move_compatible_transitive_but_not_exact_requirement`).
 Plugin `python_dependencies` follow the plugin's own policy. Teknium's rulings: "plugins dont have to abide by our 14 day rule … Only hermes'
 dependencies themselves have to"; dates are checked by us, not users; pinned deps need >3 days.
+
+## Temporary browser-harness compatibility package
+
+This migration branch uses `browser-harness==0.1.13+hermes.1` from the wheel in
+`pm/vendor`, with a `tool.uv.sources` path mapping. Its Python code is unchanged;
+the metadata permits Pillow 13.0.0. See `pm/vendor/README.md` for the reproducible
+build and artifact hashes. Keep the manifest, lock and packaged wheel consistent.
+Replace it when a compatible published release contains the fix, then run
+`hermes pm lock`, sync an isolated environment with PM, and validate browser/image
+integration plus the dependency gate. Retire the wheel and source mapping together.
+
+For any separately approved temporary Git source, preserve its full commit SHA
+and reassess required build backends in `nix/python.nix`. This wheel does not use
+the browser-harness Git-source setuptools override. PM installation alone does
+not prove the Nix build passes; validate the actual flake check after source changes.
+
+The certifi cooldown exception has expired and is removed from the manifest and
+lock. Source publication and passing CI are not runtime activation.
