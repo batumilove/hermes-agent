@@ -25,6 +25,7 @@ patches:
   - hermes_cli/update_cmd_fleet.py
   - hermes_cli/update_cmd_stash.py
   - tests/hermes_cli/test_update_scope_custody_enforcement.py
+  - tests/hermes_cli/test_update_concurrent_quarantine.py
   - tests/hermes_cli/test_update_pause_service_rollback.py
   tests:
   - scripts/run_tests.sh tests/hermes_cli/test_update_scope_custody_enforcement.py tests/hermes_cli/test_update_autostash.py tests/hermes_cli/test_update_fleet_home_scope.py
@@ -310,10 +311,14 @@ patches:
     exact desktop/docs floors and uses a hash-verified licensed braces derivative for the unpatched nesting
     advisory. Pin MCP 2.2.0 to close GHSA-84m7-p3x7-pcfv session resource exhaustion.
   paths:
+  - pm/AGENTS.md
+  - tests/test_packaging_metadata.py
+  - apps/bootstrap-installer/package.json
   - .npmrc
   - apps/desktop/package.json
   - nix/lib.nix
   - nix/checks.nix
+  - nix/python.nix
   - nix/node-gyp-11-4-0-package-lock.json
   - nix/node-gyp-11-4-0.nix
   - nix/tests/node-gyp-production.mjs
