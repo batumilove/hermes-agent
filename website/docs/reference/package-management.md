@@ -484,6 +484,32 @@ For JS dependencies, update the owning package manifest and lock. Do not edit
 PM facts or generated workspaces, and do not install packages directly into a
 selected generation.
 
+### Temporary Git-source dependencies and Nix
+
+When a compatible security fix is available only as an upstream commit, a temporary
+source pin must name the full 40-character SHA. Record the upstream fix, why the
+published package cannot resolve the patched dependency, and the release condition
+for removing the pin. Inspect the source change and validate both the dependency's
+tests and the affected Hermes integration. Keep release-age exceptions separate
+and scoped; neither an audit failure nor a cooldown exception grants approval to
+change the dependency source.
+
+Use `hermes pm lock` and isolated PM activation for preparation. Verify the generated
+lock's source and versions, rather than treating a successful resolve as proof of
+compatibility. Replace the pin with a compatible published release through the same
+lock-and-validation workflow.
+
+Nix builds are a separate packaging check. A Git dependency can declare its backend
+in `pyproject.toml` while the lock does not supply that backend to uv2nix. In that case,
+follow the existing `buildSystemOverrides` pattern in `nix/python.nix` and supply the
+backend with `resolveBuildSystem`. A successful ordinary PM installation does not
+prove that a sandboxed Nix build has the required build inputs. Validate with the
+actual Nix flake check, and reassess temporary build overrides when retiring a pin.
+
+Report source publication, dependency preparation, and runtime activation separately.
+Passing tests or a vulnerability scan does not establish that a running service has
+loaded the fixed dependency.
+
 ### Test and editor environments
 
 `source ./activate` (or `. .\activate.ps1` in PowerShell) and both direct
