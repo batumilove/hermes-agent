@@ -1,6 +1,7 @@
 """Capacity admission only; not dependency or fleet transaction preparation."""
 from __future__ import annotations
 import os
+import shutil
 from pathlib import Path
 
 
@@ -11,11 +12,12 @@ def storage_refusal(paths, *, required_bytes=512 * 1024 * 1024, required_inodes=
         while not parent.exists():
             parent = parent.parent
         try:
-            stat = os.statvfs(parent)
+            free_bytes = shutil.disk_usage(parent).free
+            stat = os.statvfs(parent) if hasattr(os, "statvfs") else None
         except OSError as exc:
             return f"cannot inspect update storage {parent}: {exc}"
-        if stat.f_bavail * stat.f_frsize < required_bytes:
+        if free_bytes < required_bytes:
             return f"insufficient free space for update at {parent} (need {required_bytes} bytes)"
-        if stat.f_files and stat.f_favail < required_inodes:
+        if stat is not None and stat.f_files and stat.f_favail < required_inodes:
             return f"insufficient free inodes for update at {parent} (need {required_inodes})"
     return None
