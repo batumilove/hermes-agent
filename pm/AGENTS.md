@@ -32,3 +32,19 @@ Fork exception: the user explicitly approved skipping cooldown on October 22 for
 certifi 2026.10.19 security fix. Its package-specific cutoff is fixed at
 2026-10-22T00:00:00Z; no other Python dependency is exempt. Remove that exception
 after the release meets the normal three-day floor.
+
+
+## Temporary browser-harness source pin
+
+The fork temporarily pins browser-use/browser-harness#931 at
+`338dea2fb8cbf84204e5cd782c80d9aa71f446d4` to permit Pillow 13.0.0. The user
+approved this unreleased source explicitly. Keep the full SHA in the manifest and
+lock; replace it when a compatible published release contains the fix, then run
+`hermes pm lock`, sync an isolated environment with PM, and validate browser/image
+integration plus the dependency gate. Reassess the Nix setuptools override in
+`nix/python.nix` when replacing the Git source; do not remove a still-required
+build input. PM installation alone does not prove the Nix build passes.
+
+The certifi cutoff exception above is separate from this source-pin approval.
+Remove that exception once its release satisfies the normal age policy and verify
+manifest/lock agreement. Source publication and passing CI are not runtime activation.
