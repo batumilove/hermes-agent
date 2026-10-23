@@ -474,6 +474,8 @@ class GatewayForkContractsMixin:
         gateway as soon as this PID exits, while the unit keeps its normal
         backoff for real crash loops.
         """
+        if getattr(self, "_pause_for_update", False):
+            return
         from gateway.run import logger, os, shlex, sys
         if sys.platform != "linux" or not os.environ.get("INVOCATION_ID"):
             return

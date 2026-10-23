@@ -129,7 +129,7 @@ def test_a_killed_updates_record_owes_only_what_it_stopped(tmp_path, kind, asked
 @pytest.mark.platforms("posix")
 @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes through a read-only dir")
 @pytest.mark.parametrize("prior", [{}, {"pause_id": "adopted-1", "resume_needed": True}], ids=["fresh", "adopted"])
-def test_a_record_that_cannot_be_written_leaves_the_update_unpaused_and_ungated(tmp_path, monkeypatch, prior):
+def test_a_record_that_cannot_be_written_refuses_update_without_stopping(tmp_path, monkeypatch, prior):
     """No durable record, no stop. This attempt must leave nothing that arms the checkout's tree
     gate (its required record write would then refuse the update), and an adopted obligation must
     survive exactly as it was."""
@@ -147,7 +147,7 @@ def test_a_record_that_cannot_be_written_leaves_the_update_unpaused_and_ungated(
     before = json.loads(json.dumps(token))
     home.chmod(0o500)
     try:
-        assert m._pause(token) is None
+        assert "source update refused" in m._pause(token)
     finally:
         home.chmod(0o700)
         gateway.kill()
