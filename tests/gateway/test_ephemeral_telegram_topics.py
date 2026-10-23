@@ -16,7 +16,7 @@ from tests.gateway.test_dm_topics import _make_adapter
 
 def test_cron_topic_generation_is_config_only_and_private_chat_scoped():
     config = {"cron": {"telegram_new_thread_per_output": True}}
-    private = {"platform": "telegram", "chat_id": "722341991", "thread_id": "old"}
+    private = {"platform": "telegram", "chat_id": "722341991"}
 
     adjusted = _maybe_assign_fresh_telegram_cron_thread(
         {"id": "abcdef123456", "name": "Nightly report"},
@@ -182,7 +182,7 @@ def test_scheduler_marks_only_generated_named_topic_as_ephemeral():
                 "origin": {
                     "platform": "telegram",
                     "chat_id": "722341991",
-                    "thread_id": "104564",
+                    "thread_id": None,
                 },
             },
             "hello",
@@ -195,5 +195,6 @@ def test_scheduler_marks_only_generated_named_topic_as_ephemeral():
     assert route_metadata == {
         "job_id": "job1",
         "_telegram_ephemeral_dm_topic": True,
+        "strict_topic": True,
         "notify": True,
     }
