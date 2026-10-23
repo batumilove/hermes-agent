@@ -32,11 +32,11 @@ def read_native_manifest(path: Path) -> dict:
     return data
 
 
-def manifest_version_error(manifest: dict, name: str) -> str | None:
+def manifest_version_error(manifest: dict, name: str, *, allow_hermes_sitout: bool = False) -> str | None:
     from hermes_cli.plugins_manifest import SUPPORTED_MANIFEST_VERSION, requires_hermes_error
 
     reason = requires_hermes_error(manifest)
-    if reason:
+    if reason and not allow_hermes_sitout:
         return f"Plugin '{name}' {reason}"
     version = manifest.get("manifest_version")
     if version is None:
