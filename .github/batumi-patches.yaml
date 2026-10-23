@@ -1977,3 +1977,14 @@ patches:
   tests:
   - scripts/run_tests.sh tests/gateway/test_telegram_network_reconnect.py tests/gateway/test_shutdown_aggregate_budget_contract.py
   retirement: Remove when upstream tests tolerate parallel-runner scheduling delay equivalently.
+- id: browser-vault-authorized-otp-instructions
+  kind: operations
+  rationale: Allow explicitly user-authorized email and SMS one-time code entry on the verified
+    account/site tab while retaining password and payment protections. Document that ordinary
+    browser input does not provide vault secret isolation; handlers and schemas are unchanged.
+  paths:
+  - tools/browser_vault_tool.py
+  - contributors/emails/codex-agent@example.invalid
+  tests:
+  - scripts/run_tests.sh tests/tools/test_browser_vault.py
+  retirement: Remove when upstream documents equivalent authorized OTP input and secret-isolation boundaries.
