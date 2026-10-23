@@ -425,14 +425,14 @@ acp = ["agent-client-protocol==0.9.0"]
 # pm (stt.mistral / tts.mistral) at first use — deliberately
 # NOT re-added to [all] so a future quarantined release can't break fresh
 # installs (see [all] policy comment below).
-mistral = ["mistralai==2.4.8"]
+mistral = ["mistralai==2.10.1"]
 # OTLP gateway monitoring export (optional). Provides the OpenTelemetry SDK +
 # OTLP/HTTP exporter for monitoring.gateway_health_export. Lazy-installed via
 # PM on first use; never a core dependency and deliberately
 # NOT in [all].
 otlp = [
-  "opentelemetry-sdk==1.39.1",
-  "opentelemetry-exporter-otlp-proto-http==1.39.1",
+  "opentelemetry-sdk==1.45.1",
+  "opentelemetry-exporter-otlp-proto-http==1.45.1",
 ]
 bedrock = ["boto3==1.42.89"]
 vertex = ["google-auth==2.55.1"]
@@ -642,11 +642,8 @@ override-dependencies = [
 # check), never on users' machines: PM installs from this vetted lock and drops the
 # cutoff from what it generates (pm/workspace.py::_trust_core_lock), because many
 # package mirrors publish no upload times and uv rejects a file it cannot date
-# (#135589). Exact pins follow the same 3-day rule except the approved, bounded
-# certifi security remediation below; remove it after 2026-10-23T02:24:16Z.
+# (#135589). Exact pins follow the same three-day rule.
 exclude-newer = "3 days"
-# User-approved 2026-10-21: GHSA-6q48-6c7w-9gw2; cutoff admits only this release.
-exclude-newer-package = { certifi = "2026-10-20T02:24:16Z" }
 
 [tool.uv.sources]
 browser-harness = { path = "pm/vendor/browser_harness-0.1.13+hermes.1-py3-none-any.whl" }

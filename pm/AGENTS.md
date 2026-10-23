@@ -19,9 +19,7 @@ isolated tool environments. Callers receive an interpreter or tool path, not uv.
 Nix's declarative uv2nix builds and unrelated user projects remain independently owned.
 
 The `[tool.uv] exclude-newer = "3 days"` release-age check covers **Hermes's own dependencies
-only**, exact pins included. The sole temporary exception is certifi 2026.10.19
-(GHSA-6q48-6c7w-9gw2), explicitly approved by the user on 2026-10-21, bounded to
-2026-10-20T02:24:16Z; remove it after 2026-10-23T02:24:16Z. No other package exemptions apply, and it runs when Hermes LOCKS
+only**, exact pins included, and it runs when Hermes LOCKS
 (`hermes pm lock`, CI's lock check), never on users' machines: every generated workspace drops the
 cutoff (`pm/workspace.py::_without_release_age`), so a mirror without upload times cannot break an
 install (#135589). Plugin resolution is unchanged by this: core's exact pins stay put, and a plugin
