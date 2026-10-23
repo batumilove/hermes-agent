@@ -22,6 +22,14 @@ def test_scheduler_marks_topic_strict(monkeypatch):
     assert media.get('strict_topic') is True
 
 
+def test_scheduler_new_topic_preference_cannot_replace_explicit_topic():
+    from cron.scheduler_topics import _maybe_assign_fresh_telegram_cron_thread
+    target = {'platform': 'telegram', 'chat_id': '407304892', 'thread_id': '333907'}
+    result = _maybe_assign_fresh_telegram_cron_thread({'id': 'synthetic'}, target,
+        {'cron': {'telegram_new_thread_per_output': True}})
+    assert result == target
+
+
 def test_live_thread_rejection_never_discards_strict_topic():
     adapter = NS(name='test', _prune_stale_dm_topic_binding=lambda *a, **k: pytest.fail('pruned'))
     result = retry_missing_thread(adapter, ValueError('Message thread not found'), '-100123', None,
