@@ -122,8 +122,10 @@ def _discover_systemd() -> list[dict]:
     """Active ``hermes-gateway*`` units of this install, one per live MainPID."""
     from hermes_cli.gateway import _ensure_user_systemd_env, supports_systemd_services
     from hermes_cli.update_cmd_fleet import (
-        _for_each_systemd_gateway_unit, _systemd_gateway_unit_listings, _systemd_unit_owned_by_update,
-        _unit_main_pid,
+        _for_each_systemd_gateway_unit, _systemd_gateway_unit_listings, _unit_main_pid,
+    )
+    from hermes_cli.update_fleet_scope import (
+        describe_skipped_runtime, home_in_update_scope, systemd_unit_hermes_home,
     )
     if not supports_systemd_services():
         return []
@@ -146,7 +148,14 @@ def _discover_systemd() -> list[dict]:
             pid = _unit_main_pid(scope_cmd, name)
             if pid <= 0:
                 raise PauseRefused(f"could not identify active gateway unit {name}")
-            if pid in seen_pids or not _systemd_unit_owned_by_update(scope_cmd, name):
+            # Post-update restart may leave unknown units alone; pre-mutation pause cannot.
+            home = systemd_unit_hermes_home(scope_cmd, name)
+            if home is None:
+                raise PauseRefused(f"could not establish ownership of active gateway unit {name}")
+            if not home_in_update_scope(home):
+                print(describe_skipped_runtime("systemd unit", name, home))
+                continue
+            if pid in seen_pids:
                 continue
             seen_pids.add(pid)  # a legacy per-profile unit sharing the multiplexer's PID is one process
             units.append({"kind": "systemd", "scope": scope, "unit": name, "pid": pid,
