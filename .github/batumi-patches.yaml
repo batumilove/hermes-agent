@@ -7,10 +7,12 @@ upstream:
 patches:
 - id: desktop-update-process-diagnostics
   kind: core
-  rationale: Retain exact process and worker-resource evidence for desktop update teardown failures.
+  rationale: Identify private-install Electron processes by executable custody when argv/environment are rewritten; retain teardown diagnostics.
   paths:
   - apps/desktop/e2e/update/harness.ts
   - apps/desktop/e2e/update/app-update.spec.ts
+  - apps/desktop/e2e/update/install-processes.ts
+  - apps/desktop/e2e/update/install-processes.unit.test.ts
   tests:
   - npm run typecheck --workspace apps/desktop
   retirement: Remove diagnostics once the repeated Linux desktop relaunch and teardown failures are resolved.

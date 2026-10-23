@@ -22,6 +22,7 @@ import { _electron, type ElectronApplication, expect, type Page } from '@playwri
 import { type CoreSandbox, type ProcInfo, providerConfigYaml, sandboxProcesses } from '../core/harness'
 import { type ScriptedProvider, startScriptedProvider } from '../core/provider'
 
+import { packagedMainProcesses, packagedProcesses } from './install-processes'
 import { gatedOn, KNOWN } from './gates'
 import { type GithubEdge, startGithubEdge } from './github-edge'
 
@@ -258,7 +259,12 @@ export async function launchInstalledApp(facts: InstallFacts, env: Record<string
 // ─── Observation ───────────────────────────────────────────────────────
 
 export function installProcesses(facts: InstallFacts): ProcInfo[] {
-  return sandboxProcesses({ hermesHome: facts.hermesHome } as CoreSandbox)
+  const processes = sandboxProcesses({ hermesHome: facts.hermesHome } as CoreSandbox)
+  // Electron may rewrite its argv/environment memory; the private release path
+  // still proves custody of the app and its helpers after an updater relaunch.
+  const packaged = fs.existsSync(releaseDir(facts)) ? packagedProcesses(releaseDir(facts)) : []
+
+  return [...new Map([...processes, ...packaged].map(proc => [proc.pid, proc])).values()]
 }
 
 /** Diagnose orphaned packaged processes even when their environment is unreadable. */
@@ -301,11 +307,7 @@ function exeOf(pid: number): string {
 
 /** Live Desktop main processes of this install (the packaged exe, not its zygote/renderer/gpu children). */
 export function desktopMainProcesses(facts: InstallFacts): ProcInfo[] {
-  const exe = fs.realpathSync(path.dirname(packagedExe(facts)))
-
-  return installProcesses(facts).filter(
-    proc => exeOf(proc.pid).startsWith(exe + path.sep) && !/--type=/.test(proc.cmdline)
-  )
+  return packagedMainProcesses(packagedExe(facts))
 }
 
 /** The `hermes serve` backend(s) of this install (children of the backend excluded). */
@@ -393,7 +395,7 @@ export function diagnostics(facts: InstallFacts, extra = ''): string {
   return parts.filter(Boolean).join('\n')
 }
 
-/** SIGKILL every process that carries this install's HERMES_HOME (end of every spec). */
+/** SIGKILL every process owned by this private install (end of every spec). */
 export function killInstallProcesses(facts: InstallFacts | null): void {
   if (!facts) {
     return
