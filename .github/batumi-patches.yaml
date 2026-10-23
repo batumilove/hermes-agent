@@ -2008,3 +2008,13 @@ patches:
   tests:
   - nix build .#checks.x86_64-linux.managed-guard
   retirement: Remove when upstream's managed guard check drains command output under pipefail.
+- id: ci-aggregate-bounded-context
+  kind: operations
+  rationale: Pass every dependency result and detector lane selection to the required gate without
+    review report bodies, which can exceed the runner's per-environment-value launch limit.
+  paths:
+  - .github/workflows/ci.yaml
+  - tests/ci/test_gate_workflow_context.py
+  tests:
+  - scripts/run_tests.sh tests/ci/test_gate_workflow_context.py tests/ci/test_required_results.py
+  retirement: Remove when upstream bounds aggregate gate context while retaining every required result.
