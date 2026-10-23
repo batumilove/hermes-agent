@@ -1354,7 +1354,6 @@ def _resolve_target_transport(
             )
         pconfig = config.platforms.get(platform)
         runtime_adapter = None
-
     if transport is not None and (transport.is_relay or pconfig is None):
         # Relay transport carries the RELAY adapter's config (enablement already checked): the
         # logical platform is deliberately NOT natively enabled. A live NATIVE adapter with no
@@ -1366,8 +1365,6 @@ def _resolve_target_transport(
     elif not pconfig or not pconfig.enabled:
         return None, f"platform '{platform_name}' not configured/enabled"
     return (transport, pconfig, runtime_adapter, target_adapters), None
-
-
 def _inchannel_surface_supported(runtime_adapter, platform_name: str) -> bool:
     """D6 probe: can this adapter deliver a continuable in_channel brief on ``platform_name``?
     Per-platform check first (one RelayAdapter fronts N platforms; the scalar attr only carries
@@ -1380,8 +1377,6 @@ def _inchannel_surface_supported(runtime_adapter, platform_name: str) -> bool:
         except Exception:
             return False
     return bool(getattr(runtime_adapter, "supports_inchannel_continuable", False))
-
-
 def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]:
     """Compute ``(route_thread_id, route_metadata, media_metadata)`` for a live send, ONCE so text
     and media agree. ``telegram:<positive_chat_id>:<numeric_thread_id>`` is ambiguous (private

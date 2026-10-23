@@ -3501,7 +3501,6 @@ class TelegramAdapter(TelegramTextRecoveryMixin, TelegramHeldInboundMixin, BaseP
         except (ImportError, AttributeError):
             _TimedOut = None  # type: ignore[assignment,misc]
         return _NetErr, _BadReq, _TimedOut
-
     async def _send_chunk_markdown_or_plain(self, chunk: str, send_kwargs: dict[str, Any]):
         """MarkdownV2 first; on a parse/markdown rejection resend as stripped plain text."""
         try:
@@ -3515,7 +3514,6 @@ class TelegramAdapter(TelegramTextRecoveryMixin, TelegramHeldInboundMixin, BaseP
                     self._bot.send_message(text=_strip_mdv2(chunk), parse_mode=None, **send_kwargs),
                     timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
             raise
-
     async def _send_chunk_with_retries(
         self, chat_id: str, chunk: str, index: int, reply_to: Optional[str], metadata: Optional[dict[str, Any]],
         thread_id: Optional[str], used_thread_fallback: bool, error_types: tuple):
