@@ -33,15 +33,27 @@ def _metadata_records(data: bytes | None) -> dict:
 
 
 def candidate_members(extra_dirs=(), **selection):
+    extra_dirs = tuple(Path(path) for path in extra_dirs)
+    selected = enabled_plugin_dirs(**selection)
+    existing = {path.resolve() for path in enabled_plugin_dirs()}
+    requested = {path.resolve() for path in extra_dirs}
+    members = _compatible_members(selected, existing=existing, requested=requested)
+    for directory in extra_dirs:
+        directory = Path(directory)
+        validate_manifest(directory)
+        if directory not in members and _is_member_candidate(directory):
+            members.append(directory)
+    return members
+
+
+def _compatible_members(selected, *, existing, requested=()):
+    """Validate all declarations; only preserved identities may sit out."""
     import sys
 
     from hermes_cli.plugins_manifest import requires_hermes_error
     from pm.plugin_declarations import manifest_version_error, read_python_declaration
 
-    extra_dirs = tuple(Path(path) for path in extra_dirs)
-    selected = enabled_plugin_dirs(**selection)
-    existing = {path.resolve() for path in enabled_plugin_dirs()}
-    requested = {path.resolve() for path in extra_dirs}
+    requested = set(requested)
     members = []
     for source in selected:
         declaration = read_python_declaration(source)
@@ -57,11 +69,6 @@ def candidate_members(extra_dirs=(), **selection):
             continue
         if declaration.is_member:
             members.append(source)
-    for directory in extra_dirs:
-        directory = Path(directory)
-        validate_manifest(directory)
-        if directory not in members and _is_member_candidate(directory):
-            members.append(directory)
     return members
 
 
@@ -156,9 +163,12 @@ class StagedPlugin:
         self.members = {}
         if self.active:
             sources[self.target.resolve()] = self.staged
-            for source in sources.values():
-                validate_manifest(source)
-            self.members = {identity: source for identity, source in sources.items() if _is_member_candidate(source)}
+            # New code always clears the strict gate above. Only unchanged,
+            # already-selected siblings may sit out like a selection admission.
+            preserved = {path.resolve() for path in enabled_plugin_dirs()} - {self.target.resolve()}
+            members = set(_compatible_members(sources.values(), existing=preserved,
+                                               requested={self.staged}))
+            self.members = {identity: source for identity, source in sources.items() if source in members}
 
     def publish(self, project: Path) -> None:
         import os
