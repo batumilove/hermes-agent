@@ -32,6 +32,8 @@ import {
   git,
   handoffLog,
   launchInstalledApp,
+  logInstallProcessDiagnostics,
+  isAlive,
   nonGatewayProcesses,
   openAbout,
   publishUpstream,
@@ -114,7 +116,13 @@ test('clicking Update now moves the backend to the new commit, relaunches the ap
       ).toBe('')
 
       // Hand the machine back to Playwright: quit the relaunched app the way the OS asks it to.
+      logInstallProcessDiagnostics(facts, `before SIGTERM to selected relaunch pid ${relaunched.pid}`)
       process.kill(relaunched.pid, 'SIGTERM')
+      await expect.poll(() => isAlive(relaunched.pid), {
+        timeout: 60_000,
+        message: `selected relaunched process ${relaunched.pid} exits after SIGTERM`
+      }).toBe(false)
+      logInstallProcessDiagnostics(facts, 'after selected relaunch exited')
       await expect
         .poll(() => nonGatewayProcesses(facts).map(p => `${p.pid} ${p.cmdline.slice(0, 160)}`), {
           timeout: 60_000,
