@@ -38,9 +38,8 @@ def test_live_thread_rejection_never_discards_strict_topic():
 
 
 def test_live_media_strict_topic_rejects_anchor_fallback():
-    from telegram.error import BadRequest
     assert not TelegramAdapter._should_retry_without_dm_topic_reply_anchor(
-        BadRequest('Message thread not found'),
+        ValueError('Message thread not found'),
         {'strict_topic': True, 'telegram_dm_topic_reply_fallback': True, 'direct_messages_topic_id': '333907'}, None)
 
 
