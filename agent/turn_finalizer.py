@@ -478,6 +478,7 @@ def _apply_output_hooks(
     if not getattr(agent, "_persist_disabled", False):
         _invoke_hook_safely(
             "post_llm_call", logger,
+            context_compressor=getattr(agent, "context_compressor", None),
             session_id=agent.session_id,
             task_id=effective_task_id,
             turn_id=turn_id,
