@@ -5,6 +5,17 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: post-turn-owning-context-engine
+  kind: core
+  rationale: Pass the agent-owned context engine to post-turn persistence hooks so
+    consumers do not replay persisted history through another registered engine.
+  paths:
+  - agent/turn_finalizer.py
+  - tests/agent/test_post_turn_engine_handoff.py
+  tests:
+  - scripts/run_tests.sh tests/agent/test_post_turn_engine_handoff.py
+  retirement: Remove when upstream passes the owning context engine to post_llm_call
+    while preserving the detached-agent publication guard.
 - id: native-updater-scope-custody-enforcement
   kind: core
   rationale: Require verified runtime homes even for PID-file hints and user units; discover
