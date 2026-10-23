@@ -5,6 +5,27 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: cron-strict-topic-recovery
+  kind: core
+  rationale: Preserve explicitly scheduled Telegram destinations through durable reconnect
+    and startup recovery without changing ordinary interactive fallback. Tests use synthetic
+    send boundaries and disposable HERMES_HOME; require messaging and cron test dependencies.
+  paths:
+  - cron/scheduler_delivery.py
+  - cron/scheduler_topics.py
+  - cron/scheduler_reconnect.py
+  - gateway/delivery_ledger.py
+  - gateway/run_startup_recovery.py
+  - plugins/platforms/telegram/adapter.py
+  - plugins/platforms/telegram/adapter_thread_retry.py
+  - tools/send_message_senders.py
+  - tools/send_message_tool.py
+  - tests/cron/test_strict_topic_delivery.py
+  - tests/cron/test_strict_topic_recovery.py
+  tests:
+  - scripts/run_tests.sh tests/cron/test_strict_topic_delivery.py tests/cron/test_strict_topic_recovery.py tests/gateway/test_delivery_ledger.py
+  retirement: Remove when upstream preserves strict scheduled topic routing across all
+    live, standalone and durable replay paths with equivalent behavioral coverage.
 - id: native-updater-scope-custody-enforcement
   kind: core
   rationale: Require verified runtime homes even for PID-file hints and user units; discover

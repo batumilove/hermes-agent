@@ -176,9 +176,10 @@ class GatewayRecoveryMixin(GatewayDurableDeliveryRecoveryMixin):
             content = row["content"]
             if row.get("needs_marker"):
                 content = row.get("marker", RECOVERED_MARKER) + content
-            metadata = (
-                {"thread_id": row["thread_id"]} if row.get("thread_id") else None
-            )
+            metadata = dict(row.get("routing_metadata") or {})
+            if row.get("thread_id"):
+                metadata["thread_id"] = row["thread_id"]
+            metadata = metadata or None
 
             try:
                 transitioned = await _receipt_ledger_call(self, row,

@@ -1166,23 +1166,8 @@ class TelegramAdapter(TelegramTextRecoveryMixin, TelegramHeldInboundMixin, BaseP
     @classmethod
     def _should_retry_without_dm_topic_reply_anchor(
         cls, error: Exception, metadata: Optional[dict[str, Any]], reply_to_message_id: Optional[int]) -> bool:
-        """True when a DM-topic send should be retried with routing stripped: (1) stale anchor — reply
-        target deleted; (2) anchor-less synthetic send whose ``direct_messages_topic_id`` Bot API rejects.
-
-        2. The synthetic-event case (added when #27937 introduced ``direct_messages_topic_id`` fallback for
-        sends without an anchor): if Bot API rejects the topic id itself with any BadRequest that mentions
-        topic/thread routing, we retry without routing rather than dropping the message.
-        """
-        if (metadata or {}).get("strict_topic") or not cls._dm_topic_fallback(metadata) or not cls._is_bad_request_error(error):
-            return False
-        err_lower = str(error).lower()
-        if reply_to_message_id is not None and "message to be replied not found" in err_lower:
-            return True
-        if not metadata.get("direct_messages_topic_id"):  # topic id rejected → plain DM send
-            return False
-        topic_markers = (
-            "direct_messages_topic", "message thread not found", "thread not found", "topic_closed", "topic_deleted", "topic not found")
-        return any(marker in err_lower for marker in topic_markers)
+        from plugins.platforms.telegram.adapter_thread_retry import should_retry_without_dm_topic_reply_anchor
+        return should_retry_without_dm_topic_reply_anchor(cls, error, metadata, reply_to_message_id)
 
     async def _send_with_dm_topic_reply_anchor_retry(
         self, send_fn: Any, send_kwargs: dict[str, Any], metadata: Optional[dict[str, Any]],

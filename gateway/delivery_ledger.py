@@ -229,6 +229,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     )
     if "adapter_profile" not in {row[1] for row in conn.execute("PRAGMA table_info(delivery_obligations)")}:
         add_column_if_missing(conn, "delivery_obligations", "adapter_profile", "adapter_profile TEXT")
+    add_column_if_missing(conn, "delivery_obligations", "routing_metadata", "routing_metadata TEXT")
 
 
 def _transaction(*, timeout: float = _DEFAULT_SQLITE_TIMEOUT_SECONDS, db_path=None):
@@ -290,7 +291,8 @@ def compute_obligation_id(session_key: str, message_ref: str, content: str) -> s
 
 
 def record_obligation(*, obligation_id: str, session_key: str, platform: str, chat_id: str,
-                      thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None) -> None:
+                      thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None,
+                      routing_metadata: Optional[dict[str, Any]] = None) -> None:
     """Record a final response as owed to the platform (state='pending')."""
     now, (pid, started) = time.time(), _owner_stamp()
     with _hot_path_transaction() as conn:
@@ -309,6 +311,8 @@ def record_obligation(*, obligation_id: str, session_key: str, platform: str, ch
                  adapter_profile=excluded.adapter_profile, last_error=NULL""",
             (obligation_id, session_key, platform, str(chat_id), str(thread_id) if thread_id else None,
              content, now, now, pid, started, str(adapter_profile).strip() if adapter_profile else "default"))
+        conn.execute("UPDATE delivery_obligations SET routing_metadata=? WHERE obligation_id=?",
+                     (json.dumps(routing_metadata or {}), obligation_id))
         # Same transaction, same connection: the cron ledgers prune this way too
         # (cron/delivery_queue._prune_terminal_unlocked, cron/executions._prune_unlocked).
         _prune_unlocked(conn, now)
@@ -455,12 +459,12 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
         rows = conn.execute(
             """SELECT obligation_id, session_key, platform, chat_id, thread_id,
                       content, state, attempts, created_at,
-                      owner_pid, owner_started_at, adapter_profile, last_error, updated_at
+                      owner_pid, owner_started_at, adapter_profile, last_error, updated_at, routing_metadata
                FROM delivery_obligations
                WHERE state IN ('pending', 'attempting', 'failed')"""
         ).fetchall()
         for (oid, session_key, platform, chat_id, thread_id, content, state, attempts, created_at,
-             owner_pid, owner_started_at, adapter_profile, last_error, updated_at) in rows:
+             owner_pid, owner_started_at, adapter_profile, last_error, updated_at, routing_metadata) in rows:
             if _owner_alive(owner_pid, owner_started_at):
                 continue  # a live gateway still owns this row
             if attempts >= MAX_ATTEMPTS or (now - created_at) > STALE_AFTER_SECONDS:  # exhausted -> abandoned
@@ -508,6 +512,7 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
                 claimed.append(_claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts,
                                             adapter_profile or "default",
                                             needs_marker=True, flood=flood_row))
+                claimed[-1]['routing_metadata'] = json.loads(routing_metadata or '{}')
                 claimed[-1].update(_prior_state=state, _prior_owner_pid=owner_pid,
                                    _prior_owner_started_at=owner_started_at,
                                    _prior_last_error=last_error, _prior_updated_at=updated_at)
@@ -538,11 +543,11 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
         rows = conn.execute(
             """SELECT obligation_id, session_key, platform, chat_id, thread_id,
                       content, attempts, created_at, owner_pid,
-                      owner_started_at, last_error, adapter_profile, updated_at
+                      owner_started_at, last_error, adapter_profile, updated_at, routing_metadata
                FROM delivery_obligations
                WHERE state='failed' AND platform=?""", (platform,)).fetchall()
         for (oid, session_key, row_platform, chat_id, thread_id, content, attempts, created_at,
-             owner_pid, owner_started_at, last_error, adapter_profile, updated_at) in rows:
+             owner_pid, owner_started_at, last_error, adapter_profile, updated_at, routing_metadata) in rows:
             # Exact process-start matching prevents PID reuse from stealing work.
             if adapter_profile != expected_profile or owner_pid != pid or owner_started_at != started:
                 continue
@@ -573,6 +578,7 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
                 claimed.append(_claimed_row(oid, session_key, row_platform, chat_id, thread_id, content,
                                             attempts, adapter_profile, needs_marker=True, runtime=True,
                                             flood=is_flood_error(last_error), last_error=last_error))
+                claimed[-1]['routing_metadata'] = json.loads(routing_metadata or '{}')
                 claimed[-1].update(_prior_state="failed", _prior_owner_pid=owner_pid,
                                    _prior_owner_started_at=owner_started_at,
                                    _prior_updated_at=updated_at, _prior_last_error=last_error)
