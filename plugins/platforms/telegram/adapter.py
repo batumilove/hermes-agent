@@ -3544,6 +3544,8 @@ class TelegramAdapter(TelegramTextRecoveryMixin, TelegramHeldInboundMixin, BaseP
                 # BadRequest subclasses NetworkError in PTB but is permanent; handle specific cases.
                 if _BadReq and isinstance(send_err, _BadReq):
                     if self._is_thread_not_found_error(send_err):
+                        if effective_thread_id is not None and metadata and metadata.get("cron_strict_topic"):
+                            return SendResult(success=False, error=str(send_err), retryable=False)
                         from plugins.platforms.telegram.adapter_thread_retry import retry_missing_thread
                         route = retry_missing_thread(
                             self, send_err, chat_id, reply_to_id, metadata, private_dm_topic_send,
