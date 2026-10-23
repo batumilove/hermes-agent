@@ -5,6 +5,15 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: desktop-update-process-diagnostics
+  kind: core
+  rationale: Retain exact process and worker-resource evidence for desktop update teardown failures.
+  paths:
+  - apps/desktop/e2e/update/harness.ts
+  - apps/desktop/e2e/update/app-update.spec.ts
+  tests:
+  - npm run typecheck --workspace apps/desktop
+  retirement: Remove diagnostics once the repeated Linux desktop relaunch and teardown failures are resolved.
 - id: october-security-dependency-remediation
   kind: core
   rationale: Pin patched image, TLS trust, redirect, sanitizer and development-server

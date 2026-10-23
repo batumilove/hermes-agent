@@ -131,9 +131,11 @@ export async function startInstallSession(): Promise<InstallSession> {
     edge,
     env,
     close: async () => {
+      logInstallProcessDiagnostics(facts, 'before cleanup')
       killInstallProcesses(facts)
       await provider.close()
       await edge.close()
+      logInstallProcessDiagnostics(facts, 'after cleanup')
     }
   }
 }
@@ -257,6 +259,36 @@ export async function launchInstalledApp(facts: InstallFacts, env: Record<string
 
 export function installProcesses(facts: InstallFacts): ProcInfo[] {
   return sandboxProcesses({ hermesHome: facts.hermesHome } as CoreSandbox)
+}
+
+/** Diagnose orphaned packaged processes even when their environment is unreadable. */
+export function logInstallProcessDiagnostics(facts: InstallFacts, stage: string): void {
+  const census = new Set(installProcesses(facts).map(proc => proc.pid))
+  const directory = fs.realpathSync(releaseDir(facts)) + path.sep
+  const rows = fs.readdirSync('/proc').flatMap(entry => {
+    const pid = Number(entry)
+
+    if (!Number.isInteger(pid)) return []
+
+    try {
+      const argv = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0')
+      const executable = exeOf(pid)
+
+      if (!executable.startsWith(directory) && argv[0] !== packagedExe(facts)) return []
+
+      let environmentReadable = true
+      try {
+        fs.readFileSync(`/proc/${pid}/environ`)
+      } catch {
+        environmentReadable = false
+      }
+
+      return [{ pid, executable, argv, inCensus: census.has(pid), environmentReadable }]
+    } catch {
+      return [] // Process exited during the census.
+    }
+  })
+  console.log('[update-e2e processes]', JSON.stringify({ stage, rows, resources: process.getActiveResourcesInfo() }))
 }
 
 function exeOf(pid: number): string {
