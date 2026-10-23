@@ -49,6 +49,8 @@ def _maybe_assign_fresh_telegram_cron_thread(
     can_create_named_dm_topic: bool = True,
 ) -> dict:
     """Replace a private Telegram target's thread with a fresh topic name."""
+    if target.get("thread_id") is not None:
+        return target  # Explicit scheduled destinations take precedence over topic preferences.
     if not can_create_named_dm_topic:
         return target
     if not _cron_new_telegram_thread_per_output_enabled(config):
