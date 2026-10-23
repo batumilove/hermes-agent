@@ -1637,12 +1637,13 @@ class GatewayShutdownMixin(GatewayShutdownBudgetMixin, GatewaySessionEndMixin):
         logger.info("Restart deferred wait complete — active work drained; proceeding to stop()")
         return True
 
-    def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool:
+    def request_restart(self, *, detached: bool = False, via_service: bool = False, for_update: bool = False) -> bool:
         if self._restart_task_started:
             return False
         self._restart_requested = True
         self._restart_detached = detached
         self._restart_via_service = via_service
+        self._pause_for_update = for_update
         self._restart_task_started = True
         # Refuse new turns; keep ``_running`` True so the active turn can still deliver its final response.
         self._draining = True

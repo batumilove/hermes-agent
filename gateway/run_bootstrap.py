@@ -325,7 +325,7 @@ async def _start_gateway_start_control_socket(runner):
 
             def _request() -> None:
                 try:
-                    accepted_box.append(runner.request_restart(detached=False, via_service=True))
+                    accepted_box.append(runner.request_restart(detached=False, via_service=True, for_update=True))
                 finally:
                     _done.set()
 
