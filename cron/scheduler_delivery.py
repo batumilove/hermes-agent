@@ -1431,6 +1431,9 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
     # Relay egress discriminators (scope_id / user_id) from the persisted origin: the adapter's caches are cold
     # after a restart. See cron/scheduler_delivery_origin.py.
     _origin.stamp_origin_discriminators(t, route_metadata, media_metadata)
+    if t.platform == Platform.TELEGRAM and thread_id is not None:
+        # Scheduled topic destinations are an address, never a best-effort hint.
+        route_metadata["strict_topic"] = media_metadata["strict_topic"] = True
     return route_thread_id, route_metadata, media_metadata
 
 
@@ -1692,7 +1695,7 @@ def _standalone_send(
         # unstarted, and a wait_for wrapper created out here would be left never awaited.
         return await asyncio.wait_for(_send_to_platform(
             t.platform, t.pconfig, t.chat_id, content, thread_id=t.thread_id,
-            media_files=media_files), timeout=send_timeout)
+            media_files=media_files, strict_topic=t.thread_id is not None), timeout=send_timeout)
 
     def _warned(msg: str) -> tuple[None, str]:
         logger.warning("Job '%s': %s", job["id"], msg)
@@ -1885,6 +1888,8 @@ def _prepare_target_delivery(
     # ``in_channel`` delivers FLAT so a plain channel reply continues via the shared session
     # ``(platform, chat_id, None)``. Unsupported adapters fail SAFE to thread.
     in_channel_surface = _resolve_cron_surface_mode(pconfig, platform_name) == "in_channel"
+    if platform == Platform.TELEGRAM and target.get("thread_id") is not None:
+        in_channel_surface = False  # An explicit scheduled topic must never become a flat send.
     if (
         in_channel_surface
         and runtime_adapter is not None

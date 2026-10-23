@@ -165,7 +165,7 @@ async def _telegram_send_media(bot, chat_id, f, ext, is_voice, force_document, *
     return await getattr(bot, f"send_{kind}")(chat_id=chat_id, **{kind: f}, **kwargs)
 
 
-async def _telegram_send_text_chunk(bot, chat_id, chunk, parse_mode, has_html, text_kwargs):
+async def _telegram_send_text_chunk(bot, chat_id, chunk, parse_mode, has_html, text_kwargs, *, strict_topic=False):
     """One text chunk with adapter-matching fallbacks: thread-not-found -> retry without
     ``message_thread_id`` (dropped from ``text_kwargs`` for later chunks too); parse failure
     -> plain text."""
@@ -174,6 +174,8 @@ async def _telegram_send_text_chunk(bot, chat_id, chunk, parse_mode, has_html, t
     try:
         return await send(chunk, parse_mode)
     except Exception as md_error:
+        if strict_topic and _is_telegram_thread_not_found(md_error):
+            raise
         # Thread not found — retry without message_thread_id so the message still delivers (matching the
         # gateway adapter's fallback behaviour, issue #27012).
         if _is_telegram_thread_not_found(md_error) and text_kwargs.get("message_thread_id") is not None:
@@ -189,7 +191,7 @@ async def _telegram_send_text_chunk(bot, chat_id, chunk, parse_mode, has_html, t
 
 
 async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, caption, parse_mode, has_html,
-                                   thread_kwargs, force_document):
+                                   thread_kwargs, force_document, strict_topic=False):
     """Upload one file with adapter-matching fallbacks (thread-not-found -> no
     ``message_thread_id``; caption parse failure -> plain caption); retries re-seek the file."""
     ext = os.path.splitext(media_path)[1].lower()
@@ -223,6 +225,8 @@ async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, captio
             try:
                 return await _telegram_send_media(bot, chat_id, f, ext, is_voice, force_document, **media_kwargs)
             except Exception as media_err:
+                if strict_topic and _is_telegram_thread_not_found(media_err):
+                    raise
                 err_text = str(media_err).lower()
                 if _is_telegram_thread_not_found(media_err) and media_kwargs.get("message_thread_id"):
                     logger.warning("Thread %s not found for media send, retrying without message_thread_id",
@@ -256,7 +260,7 @@ def _telegram_format(message):
         return message, ParseMode.MARKDOWN_V2, False  # formatting unavailable: send as-is
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False, strict_topic=False):
     """One-shot Telegram Bot API send; parse failures fall back to plain text."""
     try:
         formatted, send_parse_mode, _has_html = _telegram_format(message)
@@ -268,6 +272,10 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         int_chat_id = normalize_telegram_chat_id(chat_id)
         media_files = media_files or []
         thread_kwargs = _telegram_thread_kwargs(thread_id)
+        if strict_topic and thread_id is not None:
+            # Do not normalize explicit General (1), invalid or unresolved topics to root.
+            if not thread_kwargs.get("message_thread_id"):
+                return {"error": "Explicit scheduled Telegram topic cannot be routed without a topic"}
         # disable_web_page_preview is only valid for send_message, not media sends.
         text_kwargs = {**thread_kwargs, **({"disable_web_page_preview": True} if disable_link_previews else {})}
         last_msg, warnings, _tg_caption = None, [], None
@@ -278,7 +286,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             _tg_caption, formatted = formatted, ""  # suppress the separate text send below
         # Chunk *after* formatting, in UTF-16 units: escaping can push a raw-<4096 message over.
         for chunk in BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len) if formatted.strip() else ():
-            last_msg = await _telegram_send_text_chunk(bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs)
+            last_msg = await _telegram_send_text_chunk(bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs, strict_topic=strict_topic)
         for media_path, is_voice in media_files:
             if not os.path.exists(media_path):
                 warnings.append(f"Media file not found, skipping: {media_path}")
@@ -296,7 +304,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             try:
                 last_msg = await _telegram_send_one_media(
                     bot, int_chat_id, media_path, is_voice, caption=_tg_caption, parse_mode=send_parse_mode,
-                    has_html=_has_html, thread_kwargs=thread_kwargs, force_document=force_document)
+                    has_html=_has_html, thread_kwargs=thread_kwargs, force_document=force_document, strict_topic=strict_topic)
             except Exception as e:
                 warnings.append(_sanitize_error_text(f"Failed to send media {media_path}: {e}"))
                 logger.error(warnings[-1])
