@@ -1061,6 +1061,14 @@ class TelegramAdapter(TelegramTextRecoveryMixin, TelegramHeldInboundMixin, BaseP
         DM-topic id does not match the Hermes topic lane and can render the message in a different chat
         lane.
         """
+        if (metadata or {}).get("strict_topic"):
+            direct = cls._direct_topic_kwargs(metadata)
+            if direct is not None:
+                return direct
+            topic = cls._message_thread_id_for_send(thread_id)
+            if topic is None:
+                raise ValueError("Explicit scheduled Telegram topic cannot be routed without a topic")
+            return {"message_thread_id": topic}
         fallback = cls._dm_topic_fallback(metadata)
         if fallback and reply_to_mode != "off":
             if reply_to_message_id is None:
@@ -1165,7 +1173,7 @@ class TelegramAdapter(TelegramTextRecoveryMixin, TelegramHeldInboundMixin, BaseP
         sends without an anchor): if Bot API rejects the topic id itself with any BadRequest that mentions
         topic/thread routing, we retry without routing rather than dropping the message.
         """
-        if not cls._dm_topic_fallback(metadata) or not cls._is_bad_request_error(error):
+        if (metadata or {}).get("strict_topic") or not cls._dm_topic_fallback(metadata) or not cls._is_bad_request_error(error):
             return False
         err_lower = str(error).lower()
         if reply_to_message_id is not None and "message to be replied not found" in err_lower:
