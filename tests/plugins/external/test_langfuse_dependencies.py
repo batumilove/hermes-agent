@@ -19,7 +19,7 @@ class TestManagedDependencySelection:
         for name, expected in source["files"].items():
             assert hashlib.sha256((PLUGIN_DIR / name).read_bytes()).hexdigest() == expected
         declaration = read_python_declaration(PLUGIN_DIR)
-        assert declaration.is_member
+        assert declaration.installs_packages
         assert declaration.install_requirements == ("langfuse==4.15.2",)
 
     def test_enabled_plugin_keeps_sdk_member_after_selection_refresh(self, tmp_path, monkeypatch):

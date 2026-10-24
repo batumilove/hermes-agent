@@ -62,8 +62,6 @@ def _maybe_run_worktree_maintenance() -> None:
     a copy of the caller's context so the profile-home override travels with it. Errors never
     propagate: GC is hygiene, not scheduling."""
     global _last_worktree_maintenance_at
-    import contextvars
-
     from hermes_constants import get_hermes_home
 
     home = str(get_hermes_home())

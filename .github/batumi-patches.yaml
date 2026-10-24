@@ -442,6 +442,29 @@ patches:
     cost on this public repository. Bound per-file concurrency to standard runner capacity while retaining
     all test selectors and deadlines.
   paths:
+  - .github/workflows/windows-desktop-attach-e2e.yml
+  - .github/workflows/uv-lockfile-check.yml
+  - .github/workflows/stable-release.yml
+  - .github/workflows/skills-index.yml
+  - .github/workflows/skills-index-freshness.yml
+  - .github/workflows/remote-backends.yml
+  - .github/workflows/prompt-surface-diff.yml
+  - .github/workflows/profile-artifact-check.yml
+  - .github/workflows/plugin-catalog-ci.yml
+  - .github/workflows/lockfile-diff.yml
+  - .github/workflows/live-providers.yml
+  - .github/workflows/lazy-deps-guard.yml
+  - .github/workflows/install-e2e-red.yml
+  - .github/workflows/infographic-check.yml
+  - .github/workflows/icons-freshness-check.yml
+  - .github/workflows/history-check.yml
+  - .github/workflows/ci-review-comment.yml
+  - .github/workflows/catalog-tests.yml
+  - .github/workflows/case-collision-check.yml
+  - .github/workflows/canary-release.yml
+  - .github/workflows/bootstrap-installer.yml
+  - .github/workflows/bootstrap-installer-build.yml
+  - .github/workflows/archive-inputs.yml
   - tests/ci/test_windows_update_crash_oracles.py
   - .github/workflows/ci.yaml
   - .github/workflows/docker.yml
@@ -691,6 +714,8 @@ patches:
     handling; desktop preview, HUD, and focus-chord compatibility; plus the associated regression coverage
     and stale test/documentation cleanup. Support the Git for Windows UCRT64 recovery layout.'
   paths:
+  - tests/hermes_cli/test_worktree_snapshot_prune.py
+  - gateway/AGENTS.md
   - hermes_cli/update_cmd_git.py
   - tests/hermes_cli/test_cmd_update.py
   - hermes_cli/plugins_loader.py
@@ -1256,16 +1281,16 @@ patches:
   paths:
   - plugin-catalog/langfuse.yaml
   - scripts/install_batumi_components.py
-  - tests/plugins/external/fixtures/langfuse-c2a9596/**
+  - tests/plugins/external/fixtures/langfuse-e1f1614/**
   - tests/plugins/external/langfuse_fixture.py
   - tests/plugins/external/test_langfuse*.py
   - hermes_cli/tools_config.py
-  - tests/plugins/external/fixtures/langfuse-c2a9596/LICENSE
-  - tests/plugins/external/fixtures/langfuse-c2a9596/README.md
-  - tests/plugins/external/fixtures/langfuse-c2a9596/SOURCE.json
-  - tests/plugins/external/fixtures/langfuse-c2a9596/__init__.py
-  - tests/plugins/external/fixtures/langfuse-c2a9596/plugin.yaml
-  - tests/plugins/external/fixtures/langfuse-c2a9596/pyproject.toml
+  - tests/plugins/external/fixtures/langfuse-e1f1614/LICENSE
+  - tests/plugins/external/fixtures/langfuse-e1f1614/README.md
+  - tests/plugins/external/fixtures/langfuse-e1f1614/SOURCE.json
+  - tests/plugins/external/fixtures/langfuse-e1f1614/__init__.py
+  - tests/plugins/external/fixtures/langfuse-e1f1614/plugin.yaml
+  - tests/plugins/external/fixtures/langfuse-e1f1614/pyproject.toml
   - tests/plugins/external/test_langfuse_dependencies.py
   - tests/plugins/external/test_langfuse_plugin.py
   - tests/plugins/external/test_langfuse_tracing.py
@@ -1312,6 +1337,7 @@ patches:
     identity across restart, resume, and historical fork database recovery while leaving descriptive parity
     headings unchanged.
   paths:
+  - agent/tool_executor_display.py
   - agent/side_effect_evidence.py
   - agent/tool_executor.py
   - agent/turn_finalizer.py
@@ -1878,6 +1904,7 @@ patches:
     actions in one SessionDB transaction, then drain them with one runner-owned bounded worker and an
     adapter pre-send handoff that preserves delivery/turn ownership across a crash.
   paths:
+  - plugins/platforms/signal/adapter.py
   - .github/batumi-patches.yaml
   - hermes_state.py
   - hermes_state_common.py

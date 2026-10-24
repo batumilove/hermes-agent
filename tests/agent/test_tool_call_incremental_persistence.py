@@ -666,6 +666,7 @@ def test_blocked_execution_stamps_negative_predecoration_verdict(executor_mode):
         blocked=True,
         dispatched=False,
         guardrail_warning=None,
+        data_use=frozenset(),
     )
 
     with (
@@ -706,6 +707,7 @@ def test_sequential_timeout_stamps_negative_predecoration_verdict():
         blocked=False,
         dispatched=True,
         guardrail_warning=None,
+        data_use=frozenset(),
     )
 
     with (

@@ -4,7 +4,7 @@ import importlib.util
 import sys
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-PLUGIN_DIR = Path(__file__).parent / "fixtures" / "langfuse-c2a9596"
+PLUGIN_DIR = Path(__file__).parent / "fixtures" / "langfuse-e1f1614"
 MODULE_NAME = "frozen_langfuse_plugin"
 
 
