@@ -5,6 +5,19 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: mattermost-bounded-thread-context
+  kind: compatibility
+  rationale: Preserve a validated root reply pointer and bounded thread history on first entry,
+    without rehydrating persisted or reset sessions. Fetch only authorized, same-channel context;
+    keep historical text as quoted data and preserve current mention-routing behavior.
+  paths:
+  - plugins/platforms/mattermost/adapter.py
+  - plugins/platforms/mattermost/reply_context.py
+  - tests/gateway/test_mattermost_reply_context.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_mattermost_reply_context.py tests/gateway/test_mattermost.py tests/gateway/test_mattermost_mention_routing.py tests/gateway/test_mattermost_native_admission.py
+  retirement: Remove when upstream provides equivalent bounded, authorized thread hydration,
+    reset-session isolation, and root-pointer regression coverage in the Mattermost plugin.
 - id: live-restore-durable-state-assertion
   kind: compatibility
   rationale: Verify restore refusal preserves database and WAL bytes plus admission rows without treating SQLite shared-memory reader bookkeeping as durable data.
