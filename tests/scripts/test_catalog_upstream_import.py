@@ -124,7 +124,7 @@ def test_workflow_routes_only_authenticated_imports_away_from_readmission(tmp_pa
     output = tmp_path / "outputs"
     result = subprocess.run(["bash", "-euo", "pipefail", "-c", command], cwd=repo,
                             env={**os.environ, "GITHUB_OUTPUT": str(output)},
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     if kind == "mixed":
         assert result.returncode != 0
         assert not output.exists()
