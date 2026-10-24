@@ -174,6 +174,9 @@ class SessionPostResponseMixin:
         row. Retrying after a crash therefore cannot reset attempts, state,
         or ownership that a worker has already advanced.
         """
+        from agent.redact import redact_sensitive_text
+
+        content = redact_sensitive_text(content)
         lineage = str(session_lineage if session_lineage is not None else session_key)
         session_identifier = str(session_key)
         action_rows = []

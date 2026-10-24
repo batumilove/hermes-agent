@@ -110,6 +110,13 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
     from hermes_cli.auth import _auth_store_lock, _load_auth_store, _load_provider_state, _save_auth_store, _store_provider_state, detect_zai_endpoint
     if env_override:
         return env_override
+    from hermes_cli.runtime_provider import _config_base_url_for_provider, _get_model_config
+    from hermes_cli.models import normalize_provider
+    model_config = dict(_get_model_config())
+    model_config["provider"] = normalize_provider(model_config.get("provider"))
+    configured = _config_base_url_for_provider(model_config, "zai")
+    if configured:
+        return configured
     # No key -> don't probe (N×M 401s); auxiliary-client auto-detection hits this for everyone.
     if not api_key:
         return default_url

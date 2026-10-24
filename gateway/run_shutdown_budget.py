@@ -17,6 +17,7 @@ class GatewayShutdownBudgetMixin:
     """Own bounded interrupt, preservation and shutdown orchestration."""
 
     async def _interrupt_running_agents(self, reason: str, deadline: float) -> None:
+        from gateway.run_runtime import stop_managed_turns, interrupt_side_agents
         from gateway.run_shutdown import _log_suppressed
         from gateway.run import _AGENT_PENDING_SENTINEL, _INTERRUPT_TOOL_REASON_GATEWAY_SHUTDOWN, request_hard_interrupt
         def interrupt(session_key, agent):
@@ -38,6 +39,8 @@ class GatewayShutdownBudgetMixin:
         for count, what in (
             (self._interrupt_api_server_runs(reason), "api_server run(s)"),
             (self._interrupt_deferred_agent_workers(reason), "deferred agent worker(s)"),
+            (stop_managed_turns(self, reason), "managed-worker turn(s)"),
+            (interrupt_side_agents(self, reason), "side agent(s)"),
         ):
             if count:
                 logger.debug("Interrupted %d %s during shutdown", count, what)
@@ -103,7 +106,8 @@ class GatewayShutdownBudgetMixin:
         _cron_live = self._active_cron_job_count()
         _api_live = ctx.api_live
         _api_worker_live = self._active_api_worker_count()
-        _deferred_live = ctx.deferred_count()
+        from gateway.run_runtime import managed_turn_count
+        _deferred_live = ctx.deferred_count() + managed_turn_count(self)
         if _cron_live or _api_live or _api_worker_live or _deferred_live:
             logger.warning(
                 "Shutdown phase: %d cron job(s) / %d API-server run(s) / %d API-server worker(s) / "
@@ -244,6 +248,9 @@ class GatewayShutdownBudgetMixin:
             if ctx.timed_out:
                 await GatewayRunner._stop_interrupt_remaining_work(self, ctx)
             await self._record_drain_attribution("post_interrupt", deadline=ctx.cleanup_deadline)
+            from gateway.run_runtime import settle_gateway_runtime
+            await settle_gateway_runtime(self, budget=self._shutdown_remaining(ctx.cleanup_deadline),
+                                         reason=GatewayRunner._shutdown_interrupt_reason(self))
             await GatewayRunner._stop_finalize_agents_and_adapters(self, ctx)
             await self._await_shutdown_phase(
                 GatewayRunner._stop_release_runtime_state(self, ctx), deadline=ctx.teardown_deadline,

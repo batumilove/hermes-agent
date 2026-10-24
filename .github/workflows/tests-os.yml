@@ -82,7 +82,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Two slices on the free standard runner (3 cores, 3 workers): one lane ran
+          # Two slices: on the old free standard runner (3 cores, 3 workers) one lane ran
           # ~7.5 min and became the slowest required job once the Linux suite split.
           - name: macOS-only tests (1/2)
             runner: macos-latest
@@ -114,9 +114,15 @@ jobs:
             runner: windows-11-arm
             marker: windows
             timeout: 60
+            slice: 1/2
+          - name: Windows-only tests (arm64, 2/2)
+            runner: windows-11-arm
+            marker: windows
+            timeout: 60
+            slice: 2/2
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.commit }}
 
@@ -256,7 +262,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.commit }}
 

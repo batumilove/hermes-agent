@@ -8,6 +8,8 @@ observe → commit → project pipeline so the tool-result wire shape is produce
 
 from __future__ import annotations
 
+from agent.tool_executor_display import _delegate_spinner_label
+
 import concurrent.futures
 import contextlib
 import json
@@ -36,6 +38,7 @@ from agent.interrupt_control import _REASON_USER_INTERRUPT, interrupt_skip_wordi
 from agent.message_sanitization import coalesce_tool_call_id
 from agent.onboarding import observe_tool_result as observe_onboarding_result
 from agent import plugin_live_notes
+from agent.lsp import deferred as lsp_deferred
 from agent.inline_tool_executors import (
     INLINE_TOOL_EXECUTORS,
     InlineToolContext,
@@ -43,6 +46,7 @@ from agent.inline_tool_executors import (
     emit_terminal_post_tool_call,
     tool_hook_ids,
 )
+from agent.message_metadata import stamp_data_use
 from agent.tool_dispatch_helpers import (
     _NEVER_PARALLEL_TOOLS,
     _is_destructive_command,
@@ -423,10 +427,7 @@ def _unwrap_tool_search_call(
         if underlying not in _tool_search_scoped_names(agent):
             # Session-gated GUI tools name their missing surface (#120413);
             # anything else keeps the generic block.
-            return function_name, function_args, (
-                _ts.out_of_scope_reason(underlying)
-                or f"'{underlying}' is not available in this session. Use tool_search to find tools you can call."
-            )
+            return function_name, function_args, _ts.scope_block_reason(underlying)
         # Validate before unwrapping: the generic bridge hides the concrete
         # parameter schema from provider-native tool-call validation.
         scope_block = _ts.validate_deferred_call_args(underlying, underlying_args)
@@ -477,6 +478,7 @@ class _ManagedToolResult:
     dispatched: bool
     evidence_succeeded: bool = False
     guardrail_warning: Any = None
+    data_use: frozenset[str] = frozenset()
 
 
 def _append_pre_call_guardrail_warning(result: Any, warning: Any) -> Any:
@@ -768,7 +770,13 @@ def _dispatch_authorized_once(
     from agent.terminal_approval_batch import prepare_current_terminal
     prepare_current_terminal(ref)
     _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
-    return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
+    from agent.tool_progress_relay import bound_tool_progress
+    from tools.connectors.data_use import collect_data_use
+    with bound_tool_progress(agent.tool_progress_callback, ref.name, ref.call_id), collect_data_use() as data_use:
+        try:
+            return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
+        finally:
+            state.data_use = frozenset(data_use)
 
 
 def _run_agent_tool_execution_middleware(
@@ -933,7 +941,10 @@ def _run_sequential_tool_execution_middleware(
     generic deadline would report ``tool_timeout`` while the prompt is still live. They
     are ``_NEVER_PARALLEL_TOOLS`` and run inline below, before any deadline is armed, so
     they need no ``_SEQUENTIAL_DEADLINE_EXEMPT_TOOLS`` entry."""
+    from agent.tool_dispatch_helpers import _extend_tool_timeout
+
     timeout_s = None if function_name in _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS else _resolve_sequential_tool_timeout()
+    timeout_s = _extend_tool_timeout(function_name, timeout_s)
     ref = _ToolCallRef(function_name, function_args, effective_task_id, tool_call_id, middleware_trace)
     kwargs = dict(ref.middleware_kwargs(), execute=execute, scope_block=scope_block, display_index=display_index)
     from agent.terminal_approval_batch import take_prepared_call
@@ -1096,6 +1107,7 @@ def _commit_tool_result(
     observed: bool = False,
     evidence_succeeded: bool = False,
     guardrail_warning: Any = None,
+    data_use: frozenset[str] = frozenset(),
     error_preview: Callable[[Any], Any] = lambda result: result,
     success_log_chars: Optional[int] = None,
     verbose_text: Callable[[Any], Any] = lambda result: result,
@@ -1169,7 +1181,9 @@ def _commit_tool_result(
     _tool_content = agent._tool_result_content_for_active_model(function_name, persisted_result)
     tool_message = make_tool_result_message(function_name, _tool_content, tool_call_id, effect_disposition=effect_disposition)
     tool_message["_side_effect_evidence_succeeded"] = evidence_succeeded is True and not blocked
-    # A plugin that went live during this turn is told on this new row (outside any untrusted-data wrapper).
+    # A plugin that went live during this turn, and late LSP verdicts on this session's earlier edits,
+    # are told on this new row (outside any untrusted-data wrapper).
+    lsp_deferred.forward_to_agent(agent)
     plugin_live_notes.attach_to_tool_message(agent, tool_message)
     # Prepare presentation data before the append. The emitting completion callback
     # stays below the durability fence; raw tool/model content remains unchanged.
@@ -1182,6 +1196,7 @@ def _commit_tool_result(
                 tool_message["display_metadata"] = metadata
         except Exception as callback_error:
             logging.debug("Tool result metadata callback error: %s", callback_error)
+    stamp_data_use(tool_message, sorted(data_use))
     messages.append(tool_message)
     if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):
         return None
@@ -1273,6 +1288,7 @@ class _ToolOutcome:
     blocked: bool
     evidence_succeeded: bool = False
     guardrail_warning: Any = None
+    data_use: frozenset[str] = frozenset()
 
 
 def _start_order_gate_timeout(batch_timeout: float | None) -> float:
@@ -1367,6 +1383,7 @@ class _ConcurrentBatch:
         blocked = dispatched = False
         evidence_succeeded = False
         guardrail_warning = None
+        data_use: frozenset[str] = frozenset()
         try:
             managed = _run_agent_tool_execution_middleware(
                 agent,
@@ -1388,6 +1405,7 @@ class _ConcurrentBatch:
             blocked, dispatched = managed.blocked, managed.dispatched
             evidence_succeeded = managed.evidence_succeeded
             guardrail_warning = managed.guardrail_warning
+            data_use = managed.data_use
         except _BatchAbandoned:
             logger.info("tool %s abandoned at start-order gate; skipping dispatch", ref.name)
             return None
@@ -1412,7 +1430,7 @@ class _ConcurrentBatch:
             logger.info(
                 "tool %s completed (%.2fs, %d chars)", ref.name, duration, result_chars
             )
-        return _ToolOutcome(ref, result, duration, is_error, blocked, evidence_succeeded, guardrail_warning)
+        return _ToolOutcome(ref, result, duration, is_error, blocked, evidence_succeeded, guardrail_warning, data_use)
 
     def run_worker(self, index: int, start_order: int) -> None:
         """Worker function executed in a thread."""
@@ -1585,6 +1603,7 @@ def _append_batch_results(agent, messages: list, effective_task_id: str, batch: 
             effect_disposition=effect_disposition, observed=r is not None,
             evidence_succeeded=r.evidence_succeeded if r is not None else False,
             guardrail_warning=r.guardrail_warning if r is not None else None,
+            data_use=r.data_use if r else frozenset(),
             error_preview=lambda res: _multimodal_text_summary(res)[:200],
         )
         if committed is None:
@@ -1670,15 +1689,6 @@ def _finish_quiet_tool_spinner(agent, spinner, function_name: str, function_args
         spinner.stop(cute) if spinner else agent._vprint(f"  {cute}")
 
 
-def _delegate_spinner_label(function_args: dict) -> str:
-    action = str(function_args.get("action") or "").strip().lower()
-    tasks = function_args.get("tasks")
-    if action in ("list", "steer", "stop"):
-        return f"🔀 subagent {action}"
-    if tasks and isinstance(tasks, list):
-        return f"🔀 delegating {len(tasks)} tasks · (/agents to monitor)"
-    goal_preview = (function_args.get("goal") or "")[:30]
-    return f"🔀 {goal_preview} · (/agents to monitor)" if goal_preview else "🔀 delegating · (/agents to monitor)"
 
 
 @dataclass
@@ -1723,7 +1733,10 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
     if agent._memory_manager and agent._memory_manager.has_tool(function_name):
         # Memory-provider tools (hindsight_retain, honcho_search, ...) are not in the registry.
         return _SequentialDispatch(
-            execute=lambda next_args: agent._memory_manager.handle_tool_call(function_name, next_args),
+            execute=lambda next_args: agent._memory_manager.handle_tool_call(
+                function_name, next_args,
+                caller_gsk=(getattr(agent, "_gateway_session_key", "") or ""),
+            ),
             spinner=_start_quiet_tool_spinner(agent, function_name, function_args),
             error_result=lambda e: json.dumps({"error": f"Memory tool '{function_name}' failed: {e}"}),
             error_log="memory_manager.handle_tool_call raised for %s: %s",
@@ -1859,6 +1872,7 @@ def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed
         effect_disposition="unknown" if _execution_timed_out else None, observed=True,
         evidence_succeeded=getattr(managed, "evidence_succeeded", False) is True and not _execution_timed_out,
         guardrail_warning=getattr(managed, "guardrail_warning", None),
+        data_use=managed.data_use,
         error_preview=lambda res: res[:200] if isinstance(res, str) and not agent.verbose_logging else res,
         success_log_chars=_result_len,
         verbose_text=_multimodal_text_summary,

@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/NousResearch/hermes-official-plugins",
+  "commit": "e1f16143f164c4db10ea8fc0fc47ff8ac611e9fc",
+  "subdir": "langfuse",
+  "files": {
+    "__init__.py": "32354bf471bf0f569b26e300cc407961679af6f446e8ab17850bdf2e5f8b165e",
+    "plugin.yaml": "f3484e8baad8e637056f11560a5d99332b144e286199d4edc4b65584810a0068",
+    "pyproject.toml": "c610adec5a1f756de48009b7985f61125a39f5787e1019e18b9c05fcff791deb",
+    "LICENSE": "5f79d321c17de8ef6e5f34967dc5b484afebeeefd87180890d9741941f6b815f",
+    "README.md": "cd9803e367ea9ff22a50fcd03cbad578cfcc621c6494211e6c2ee48b3fd80d8d"
+  },
+  "upstream_tests": {
+    "path": "langfuse/tests/test_langfuse_plugin.py",
+    "sha256": "d0c908fccd5d57e5a3dba0919199b5dbaf862540b1a131bfb9031e8c8c0fce97"
+  }
+}

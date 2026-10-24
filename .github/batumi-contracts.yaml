@@ -175,3 +175,15 @@ contracts:
   - tests/plugins/external/test_langfuse_plugin.py
   - tests/plugins/external/test_langfuse_tracing.py
   - tests/plugins/external/test_langfuse_dependencies.py
+
+- id: shared-daemon-fork-boundaries
+  rationale: Preserve fork maintenance admission, cleanup ownership, worker policy and durable evidence across daemon workers.
+  tests:
+  - tests/gateway/test_daemon_external_drain.py
+  - tests/gateway/test_daemon_cache_boundary.py
+  - tests/gateway/test_session_kanban_required_skills.py
+  - tests/gateway/test_session_kanban.py
+  - tests/gateway/test_shutdown_runtime_ownership.py
+  - tests/hermes_state/test_runtime_worker_operations.py
+  - tests/gateway/test_daemon_handoff_completion.py
+  - tests/gateway/test_session_authority.py

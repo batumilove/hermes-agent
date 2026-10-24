@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
-from tools import browser_tool_lifecycle as bt_lifecycle
+from tools import browser_session_lifecycle as bt_lifecycle
 
 def _make_runner():
     """Create a minimal GatewayRunner with just the cache infrastructure."""
@@ -876,7 +876,7 @@ class TestCacheEvictionMemoryProviderRelease:
         browser_calls = []
         monkeypatch.setattr(_ra, "cleanup_vm", lambda task_id: vm_calls.append(task_id))
         monkeypatch.setattr(
-            "tools.browser_tool_lifecycle.cleanup_browser",
+            "tools.browser_session_lifecycle.cleanup_browser",
             lambda task_id: browser_calls.append(task_id),
         )
 

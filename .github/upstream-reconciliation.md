@@ -1,3 +1,54 @@
+# Shared-daemon migration, 2026-10-18
+
+This stage imports upstream through `eb75627faf532fa6ffbdae59a0d14b0b385fc780`
+after the pre-daemon import and catalog update in #396/#397. The boundary brings
+2,031 upstream commits since `d04056d609bb53530843a6c630493243b2ebdc24`.
+Later upstream changes remain a separate batch. The version-2 receipt identifies
+the immutable reconciliation source; retain that source branch after landing.
+
+The gateway now owns local CLI, TUI, Desktop, API, ACP, bot and cron sessions.
+Fork contracts follow those owners:
+
+- `run_turn_hygiene.py` and `run_turn_persistence.py` retain compression route
+  compare-and-set, cancellation ownership and post-delivery transcript actions.
+- Native session delivery uses the same durable preparation/settlement path as
+  platform delivery. Completion events publish plain text, retaining process-local
+  handoff ownership only for the native sender.
+- `session_execution.py` and `run_agent_cache.py` retain evicted-agent cleanup.
+  A session boundary retains its memory/context-engine obligations across retries.
+- `run_shutdown_budget.py` settles managed workers before closing shared stores.
+  Bootstrap releases process identity only after runtime writers settle.
+- `session_authority.py` fences both admission and queued claims during reversible
+  external maintenance drain; release wakes committed queues without reopening shutdown.
+- `session_kanban.py` loads the mandatory `kanban-worker` and
+  `restart-window-bundling` skills in the daemon-owned worker. Missing policy
+  refuses the task before model work. Dispatcher claim/run fencing remains intact.
+- `hermes_state_runtime.py` carries the fork's durable side-effect evidence marker
+  through the closed worker persistence protocol, including compaction handoffs.
+- `hermes_state_retained.py` preserves the daemon retirement fence in optimized
+  routing reconciliation, so stale mirrors cannot restore deleted session routes.
+- `run_runtime.py` gives an in-flight profile database open a bounded startup
+  window before parking it; durable-delivery discovery can open the same cache
+  concurrently. Profile/path validation remains mandatory after the open settles.
+- `run_bootstrap.py` serves live control status alongside the upstream authenticated
+  session/ticket protocol. Writable runner initialization lives in `run_runtime_init.py`.
+  Obsolete `run_control_socket.py` and `run_turn_response.py` copies are removed;
+  tests exercise the actual bootstrap and persistence owners. The obsolete
+  `run_turn_recovery.py` copy and duplicated cache lookup helpers are also removed.
+
+Run the canonical `scripts/run_tests.sh` with an isolated home/runtime. Regression
+coverage includes real Kanban daemon/worker lifecycle cases, managed shutdown,
+maintenance admission, response finalization, cache boundary retries and worker
+receipt persistence. Import CI compares fork changes with the recorded upstream
+boundary, as authenticated by the provenance receipt; do not weaken required gates.
+
+This is source preparation/publication only. It does not deploy or restart Hermes.
+Any later activation uses the installation's included updater and fresh runtime
+identity checks. Other open runtime-preservation/capacity PRs require separate
+integration and are not silently included by this import.
+
+---
+
 # Upstream reconciliation, 2026-10-13
 
 This candidate reconciles `batumi/live` at

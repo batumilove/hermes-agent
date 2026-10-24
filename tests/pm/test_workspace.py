@@ -110,7 +110,7 @@ def test_core_only_generation_carries_no_release_age_cutoff(layout):
     tools uv fetches, and a mirror without upload times rejects every one of them (#135589)."""
     tmp, core, _, _ = layout
     manifest = core / "pyproject.toml"
-    manifest.write_text(manifest.read_text().replace("[tool.uv]\n", '[tool.uv]\nexclude-newer = "3 days"\n', 1))
+    manifest.write_text(manifest.read_text().replace("[tool.uv]\n", '[tool.uv]\nexclude-newer = "3 days"\nexclude-newer-package = { certifi = "2026-10-20T02:24:16Z" }\n', 1))
     root = tmp / "workspace"
     ws._generate_pyproject([], root, source=core)
     generated = (root / "pyproject.toml").read_text(encoding="utf-8")

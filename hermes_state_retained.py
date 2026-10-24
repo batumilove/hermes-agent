@@ -23,6 +23,7 @@ class SessionRetainedMixin:
 
         Keys absent from *entries* are removed, changed/new entries are
         upserted, and identical rows retain their existing ``updated_at``.
+        Retired sessions cannot be resurrected by a stale routing mirror.
         Other scopes are untouched. ``reason`` is a bounded, content-free
         routing call-site label used only for latency attribution.
         """
@@ -45,14 +46,16 @@ class SessionRetainedMixin:
                     [(scope, key) for key in stale_keys],
                 )
             changed = [
-                (scope, key, value, now)
+                (scope, key, value, now, value)
                 for key, value in desired.items()
                 if existing.get(key) != value
             ]
             if changed:
                 conn.executemany(
                     "INSERT INTO gateway_routing "
-                    "(scope, session_key, entry_json, updated_at) VALUES (?, ?, ?, ?) "
+                    "(scope, session_key, entry_json, updated_at) "
+                    "SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM state_meta "
+                    "WHERE key='gateway.retired_session.v1.' || json_extract(?, '$.session_id')) "
                     "ON CONFLICT(scope, session_key) DO UPDATE SET "
                     "entry_json = excluded.entry_json, updated_at = excluded.updated_at",
                     changed,
