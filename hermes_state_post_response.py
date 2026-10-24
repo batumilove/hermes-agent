@@ -114,8 +114,10 @@ class SessionPostResponseMixin:
                 # A failed liveness probe must never steal a live action.
                 return True
         try:
-            return started_at is None or int(current_started_at) == int(started_at)
-        except (TypeError, ValueError):
+            from gateway.status import _pid_exists
+            # A matching incarnation can already be a zombie awaiting its parent's reap.
+            return (started_at is None or int(current_started_at) == int(started_at)) and _pid_exists(pid)
+        except (ImportError, OSError, RuntimeError, ValueError, TypeError, OverflowError):
             # Preserve the ledger's conservative behavior for malformed
             # historical start stamps.
             return True

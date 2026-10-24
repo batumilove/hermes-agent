@@ -25,7 +25,7 @@ from tests.waiting import wait_until
 
 @pytest.fixture
 def local_gateway(tmp_path, monkeypatch):
-    """Only replace process launch: sockets, authority, SQLite restore and model I/O are real."""
+    """Isolate machine services and process launch; authority, restore and model I/O are real."""
     user = tmp_path / "user"
     user.mkdir()
     peer = ThreadingHTTPServer(("127.0.0.1", 0), Model)
@@ -55,6 +55,7 @@ def local_gateway(tmp_path, monkeypatch):
         return process
 
     monkeypatch.setattr("hermes_cli.gateway_runtime_start.spawn_unmanaged_gateway", spawn)
+    monkeypatch.setattr("hermes_cli.gateway_runtime_service.discover_existing_gateway_service", lambda *a, **kw: None)
     monkeypatch.setattr(GatewayConnection, "_shared", None)
 
     def configure(multiplex):
@@ -103,8 +104,14 @@ def _turn(store, session_id, text):
             row = db.execute("SELECT status FROM session_admissions WHERE request_id=?", (request_id,)).fetchone()
         return row is not None and row[0] == "terminal"
     wait_until(settled, timeout=40, interval=.05, what=f"gateway turn {text} to settle")
+    messages = store.get_messages_as_conversation(session_id)
+    with store._db()._read_ctx() as db:
+        admission = dict(db.execute("SELECT * FROM session_admissions WHERE request_id=?", (request_id,)).fetchone())
+        barriers = [dict(row) for row in db.execute("SELECT * FROM gateway_post_response_actions")]
+    from gateway.session_results import admission_result
     assert any(text in str(row.get("content")) and row.get("role") == "assistant"
-               for row in store.get_messages_as_conversation(session_id))
+               for row in messages), json.dumps({"admission": admission, "messages": messages, "barriers": barriers,
+                    "result": admission_result(store._db(), admission["admission_id"])}, default=str)
 
 
 def _epoch(store):

@@ -277,8 +277,9 @@ def _owner_alive(pid: Any, started_at: Any) -> bool:
         except Exception:
             return False
     try:
-        from gateway.status import start_time_fingerprints_match
-        return started_at is None or start_time_fingerprints_match(started_at, current_start)
+        from gateway.status import _pid_exists, start_time_fingerprints_match
+        # An exited, unreaped owner retains its start stamp but cannot finish delivery.
+        return (started_at is None or start_time_fingerprints_match(started_at, current_start)) and _pid_exists(pid)
     except (TypeError, ValueError):
         return True
 

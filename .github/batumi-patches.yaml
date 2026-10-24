@@ -1938,6 +1938,8 @@ patches:
   - tests/gateway/test_signal.py
   - tests/state/test_session_git_metadata_generation.py
   - hermes_state_post_response.py
+  - tests/gateway/test_delivery_dead_owner.py
+  - tests/hermes_cli/test_gateway_snapshot_restore_live.py
   - gateway/post_response_delivery.py
   - hermes_cli/auth_zai_kimi.py
   - tests/hermes_cli/test_zai_configured_endpoint.py
