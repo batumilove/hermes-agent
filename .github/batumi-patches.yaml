@@ -2215,6 +2215,8 @@ patches:
   - tests/hermes_cli/test_update_pause_ownership.py
   - tests/hermes_cli/test_update_pause_systemd_ownership.py
   - tests/hermes_cli/test_update_posix_pause.py
+  - tests/hermes_cli/test_update_target_identity.py
+  - tests/hermes_cli/test_update_existing_branch_baseline.py
   - tests/pm/test_admission_sitout_contract.py
   tests:
   - scripts/run_tests.sh tests/gateway/test_update_pause_ownership.py tests/hermes_cli/test_update_pause_ownership.py tests/hermes_cli/test_update_pause_systemd_ownership.py tests/hermes_cli/test_update_posix_pause.py tests/pm/test_admission_sitout_contract.py
