@@ -22,6 +22,11 @@ from gateway.session_settlement_recovery import (
 from tui_gateway.contracts.registry import EVENTS
 
 
+async def _interrupt_for_shutdown(runner):
+    await runner._interrupt_running_agents(
+        runner._shutdown_interrupt_reason(), asyncio.get_running_loop().time() + 5.0)
+
+
 def test_restart_drain_timeout_default_stays_zero():
     from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     from hermes_cli.config import DEFAULT_CONFIG
@@ -210,7 +215,7 @@ def test_managed_worker_turn_settles_with_the_cause_of_the_stop_that_reached_it(
                                timeout=30, what='the managed worker to receive its bootstrap')
         if user_stopped_first:
             assert managed.interrupt_managed(authority, actor, ref, row['generation'])
-        runner._interrupt_running_agents(runner._shutdown_interrupt_reason())  # stop()'s timed-out path
+        await _interrupt_for_shutdown(runner)  # stop()'s timed-out path
         async with asyncio.timeout(30):
             return row, await task
 
@@ -255,7 +260,7 @@ def test_in_process_turn_keeps_the_user_stop_when_shutdown_interrupts_it_again(u
     try:
         if user_stopped_first:
             request_hard_interrupt(agent)  # SessionAuthority.interrupt: the user's Stop carries no message
-        runner._interrupt_running_agents(runner._shutdown_interrupt_reason())
+        asyncio.run(_interrupt_for_shutdown(runner))
         assert agent._interrupt_requested and agent._hard_interrupt_requested.is_set()
         result = {'interrupted': True, **({'interrupt_message': agent._interrupt_message} if agent._interrupt_message else {})}
         notice = owner_stop_notice({'result': result}, 'interrupted')
@@ -297,7 +302,7 @@ def test_restart_after_a_pending_redirect_still_gets_the_restart_notice():
     runner._running_agents = {'route': agent}
     try:
         assert agent.redirect("actually use python 3.12") is True
-        runner._interrupt_running_agents(runner._shutdown_interrupt_reason())
+        asyncio.run(_interrupt_for_shutdown(runner))
         result = {'interrupted': True, **({'interrupt_message': agent._interrupt_message} if agent._interrupt_message else {})}
         notice = owner_stop_notice({'result': result}, 'interrupted')
         assert agent._pending_redirect is None  # the restart dropped the correction: the turn ends interrupted
