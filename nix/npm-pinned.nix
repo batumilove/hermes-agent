@@ -2,8 +2,9 @@
   stdenv,
   makeWrapper,
   fetchurl,
-  nodejs_26,
   callPackage,
+  # The node the wrapper launches; lib.nix passes the pm-pinned one.
+  nodejs,
 }:
 let
   # pm/lock.json is the one pin table. Every artifact carries its resolved
@@ -54,9 +55,9 @@ if problem:
 PY
     mkdir -p $out/bin
 
-    makeWrapper ${nodejs_26}/bin/node $out/bin/npm \
+    makeWrapper ${nodejs}/bin/node $out/bin/npm \
       --add-flags "$out/lib/node_modules/npm/bin/npm-cli.js"
-    makeWrapper ${nodejs_26}/bin/node $out/bin/npx \
+    makeWrapper ${nodejs}/bin/node $out/bin/npx \
       --add-flags "$out/lib/node_modules/npm/bin/npx-cli.js"
   '';
 }

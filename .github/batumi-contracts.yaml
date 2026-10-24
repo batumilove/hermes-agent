@@ -37,6 +37,10 @@ contracts:
   tests:
   - tests/scripts/test_run_batumi_contracts.py
   - tests/scripts/test_fork_provenance_v2.py
+  - tests/scripts/test_catalog_upstream_import.py
+  - tests/hermes_state/test_reconcile_budget.py
+  - tests/gateway/test_delivery_dead_owner.py
+  - tests/hermes_cli/test_gateway_snapshot_restore_live.py
   - tests/scripts/test_fork_check_base.py
   - tests/scripts/test_supply_chain_import_scan.py
   - tests/scripts/test_osv_scan_inputs.py
@@ -175,3 +179,15 @@ contracts:
   - tests/plugins/external/test_langfuse_plugin.py
   - tests/plugins/external/test_langfuse_tracing.py
   - tests/plugins/external/test_langfuse_dependencies.py
+
+- id: shared-daemon-fork-boundaries
+  rationale: Preserve fork maintenance admission, cleanup ownership, worker policy and durable evidence across daemon workers.
+  tests:
+  - tests/gateway/test_daemon_external_drain.py
+  - tests/gateway/test_daemon_cache_boundary.py
+  - tests/gateway/test_session_kanban_required_skills.py
+  - tests/gateway/test_session_kanban.py
+  - tests/gateway/test_shutdown_runtime_ownership.py
+  - tests/hermes_state/test_runtime_worker_operations.py
+  - tests/gateway/test_daemon_handoff_completion.py
+  - tests/gateway/test_session_authority.py

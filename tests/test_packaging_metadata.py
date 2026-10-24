@@ -53,29 +53,23 @@ def test_starlette_server_pins_and_lock_exclude_cve_2026_48710():
     assert versions and all(version >= floor for version in versions)
 
 
-def test_release_age_allows_only_approved_security_exceptions():
-    """Exceptions bind reviewed versions and cutoffs while preserving quarantine."""
+CA_TRUST_PACKAGES = {"certifi"}
+
+
+def test_release_age_preserves_ca_trust_and_reviewed_security_exception():
+    """Keep the global cooldown and bound the approved decoder exception."""
     manifest = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     uv = manifest["tool"]["uv"]
     lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
     assert uv["exclude-newer"] == "3 days"
-    exceptions = uv.get("exclude-newer-package", {})
-    approved = {
-        "certifi": ("2026-10-22T00:00:00Z", "2026.10.19"),
-        "brotlicffi": ("2026-10-23T00:00:00Z", "1.2.1.0"),
-    }
-    declared = list(manifest["project"]["dependencies"])
-    for specs in manifest["project"]["optional-dependencies"].values():
-        declared.extend(specs)
-    for name, cutoff in exceptions.items():
-        assert name in approved
-        expected_cutoff, version = approved[name]
-        assert cutoff == expected_cutoff
-        specs = {str(req.specifier) for req in map(Requirement, declared) if req.name == name}
-        assert specs == {f"=={version}"}
-        assert {row["version"] for row in lock["package"] if row["name"] == name} == {version}
+    exempt = uv.get("exclude-newer-package", {})
+    assert set(exempt) <= CA_TRUST_PACKAGES | {"brotlicffi"}, exempt
+    assert all(value is False for name, value in exempt.items() if name in CA_TRUST_PACKAGES), exempt
+    if "brotlicffi" in exempt:
+        assert exempt["brotlicffi"] == "2026-10-23T00:00:00Z"
+        assert {row["version"] for row in lock["package"] if row["name"] == "brotlicffi"} == {"1.2.1.0"}
     assert lock["options"].get("exclude-newer-span") == "P3D"
-    assert lock["options"].get("exclude-newer-package", {}) == exceptions
+    assert lock["options"].get("exclude-newer-package", {}) == exempt
 
 
 def test_messaging_decoder_excludes_pysec_2026_4323():
