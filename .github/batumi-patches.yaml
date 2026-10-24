@@ -7,13 +7,13 @@ upstream:
 patches:
 - id: browse-schema-begin-budget-refusal
   kind: core
-  rationale: Treat a SQLite deadline interrupt while beginning additive browse reconciliation as a bounded no-write refusal with the repair remedy.
+  rationale: Budget preparatory durability SQL and transaction admission during additive browse reconciliation, reporting deadline interrupts as bounded no-write refusals with the repair remedy.
   paths:
   - hermes_state_reconcile.py
   - tests/hermes_state/test_reconcile_budget.py
   tests:
   - scripts/run_tests.sh tests/hermes_state/test_reconcile_budget.py tests/hermes_cli/test_browse_schema_drift.py
-  retirement: Remove when upstream includes transaction admission in the browse budget error boundary.
+  retirement: Remove when upstream includes durability preparation and transaction admission in the browse budget error boundary.
 - id: desktop-update-process-diagnostics
   kind: core
   rationale: Identify private-install Electron processes by executable custody when argv/environment are rewritten; retain teardown diagnostics.
