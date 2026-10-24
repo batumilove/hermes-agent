@@ -50,7 +50,7 @@ jobs:
   install-update:
     name: Windows install.ps1 + hermes update E2E (${{ matrix.journey }})
     runs-on: windows-latest
-    # Ten cold-install journeys exceeded one runner's 75-minute queue budget
+    # Cold-install journeys exceeded one runner's 75-minute queue budget
     # (run 38543602400). Each runner keeps a whole journey and its native oracles.
     timeout-minutes: 75
     strategy:
@@ -59,6 +59,8 @@ jobs:
       matrix:
         include:
           - journey: test_crash_cells
+          - journey: test_damaged_checkout
+          - journey: test_elevated_gateway_attach
           - journey: test_fresh_install_update
           - journey: test_gateway_across_update
           - journey: test_git_and_holders
@@ -68,6 +70,7 @@ jobs:
           - journey: test_pause_durable
           - journey: test_update_lock_tree
           - journey: test_update_spares_other_installs
+          - journey: test_upgrade_over_old_gateway
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
