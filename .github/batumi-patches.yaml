@@ -18,6 +18,25 @@ patches:
   - scripts/run_tests.sh tests/gateway/test_mattermost_reply_context.py tests/gateway/test_mattermost.py tests/gateway/test_mattermost_mention_routing.py tests/gateway/test_mattermost_native_admission.py
   retirement: Remove when upstream provides equivalent bounded, authorized thread hydration,
     reset-session isolation, and root-pointer regression coverage in the Mattermost plugin.
+- id: optional-migration-pm-receipts
+  kind: core
+  rationale: Keep unrelated existing version-incompatible plugins out of staged publication,
+    preserve mandatory PM preparation receipts across best-effort catalog migrations, and
+    align completion exit status with a partial terminal receipt.
+  paths:
+  - pm/publication.py
+  - scripts/ci/classify_changes.py
+  - hermes_cli/source_build.py
+  - hermes_cli/update_completion.py
+  - tests/pm/test_admission_sitout_contract.py
+  - tests/pm/test_worker_publication.py
+  - tests/hermes_cli/test_update_optional_migration_receipts.py
+  - website/docs/getting-started/updating.md
+  tests:
+  - scripts/run_tests.sh tests/pm/test_admission_sitout_contract.py tests/pm/test_worker_publication.py tests/hermes_cli/test_update_optional_migration_receipts.py tests/hermes_cli/test_update_receipt_pm_embed.py tests/hermes_cli/test_update_completion_process.py tests/hermes_cli/test_source_build.py
+  - scripts/run_tests.sh tests/ci/test_classify_changes.py tests/ci/test_update_transitive_routing.py
+  - scripts/run_tests.sh tests/ci/test_update_ci_routing.py -k test_every_module_an_update_entry_point_imports_starts_its_suite
+  retirement: Remove when upstream preserves these staged admission and optional migration receipt contracts.
 - id: live-restore-durable-state-assertion
   kind: compatibility
   rationale: Verify restore refusal preserves database and WAL bytes plus admission rows without treating SQLite shared-memory reader bookkeeping as durable data.

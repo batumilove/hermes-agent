@@ -147,6 +147,7 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
     # interpreter, never in the updater's pre-sync import graph.
     from hermes_cli.main_install_repair import _install_configured_features_missing_deps
     from hermes_cli.update_stage import publish_stage
+    from pm.receipt import worker_context
 
     failures: list[tuple[str, BaseException]] = []
 
@@ -220,7 +221,10 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
     try:
         from hermes_cli.memory_provider_migration import migrate_all_homes
 
-        migrate_all_homes()
+        # Optional installs keep standalone PM receipts; they cannot replace the
+        # mandatory preparation result carried into this completion process.
+        with worker_context(None):
+            migrate_all_homes()
     except Exception as exc:  # health: allow BLE001 -- post-commit boundary: printed as ⚠, never fails the committed update; every later update/tail re-runs it
         print(f"  ⚠ Memory provider migration skipped: {exc}")
     # Same for a gateway platform / toolset that left core (Home Assistant): every home that used
@@ -228,7 +232,8 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
     try:
         from hermes_cli.left_core_migration import migrate_all_homes as migrate_left_core
 
-        migrate_left_core()
+        with worker_context(None):
+            migrate_left_core()
     except Exception as exc:  # health: allow BLE001 -- post-commit boundary: printed as ⚠, never fails the committed update; every later update/tail re-runs it
         print(f"  ⚠ Plugin migration skipped: {exc}")
     if failures:

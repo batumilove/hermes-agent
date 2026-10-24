@@ -74,3 +74,24 @@ def test_member_rejoins_when_version_fits(homes, monkeypatch):
     _default, _profile, good, bad = homes
     monkeypatch.setattr(gate, "running_hermes_version", lambda: "99.0.0")
     assert candidate_members() == [good, bad]
+
+
+@pytest.mark.parametrize("requested_manifest", ["", "requires_hermes: '>=99.0'\n"])
+def test_staged_publication_sits_out_only_unrelated_members(homes, tmp_path, monkeypatch, requested_manifest):
+    from pm import publication
+    from pm.store import tree_digest
+
+    _default, profile, good, _bad = homes
+    monkeypatch.setattr(publication, "dependency_home_root", lambda: tmp_path)
+    staged = _plugin(tmp_path / "staging", "good", requested_manifest)
+    before = (profile / "config.yaml").read_bytes()
+    proposal = {"target": str(good), "staged": str(staged), "target_digest": tree_digest(good),
+                "old_metadata": {}, "new_metadata": {"good": {"revision": "new"}}}
+    if requested_manifest:
+        with pytest.raises(ValueError, match="requires hermes"):
+            publication.StagedPlugin(proposal)
+    else:
+        selection = publication.StagedPlugin(proposal)
+        assert selection.active
+        assert selection.members == {good.resolve(): staged.resolve()}
+    assert (profile / "config.yaml").read_bytes() == before

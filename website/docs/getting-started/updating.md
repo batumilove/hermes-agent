@@ -164,6 +164,8 @@ This suppresses both cached update notices and passive update-check network requ
 
 ### What happens during an update
 
+Optional catalog migrations (for memory providers and features that moved out of core) retry on later updates. Their plugin installs retain separate PM receipts and warnings; they do not replace the mandatory dependency-preparation result in the update receipt. Installing or updating one plugin also lets unrelated existing `requires_hermes` mismatches sit out without changing their configuration. The requested plugin must still pass its compatibility gates.
+
 For an admitted source checkout, `hermes update` runs these phases:
 
 1. **Pre-update snapshot** — Hermes saves selected state files for every profile in that profile's `state-snapshots/` directory. These include pairing data, cron jobs, `config.yaml`, `.env`, and `auth.json`. Automatic quick snapshots skip individual files larger than 1 GiB. `updates.pre_update_backup` selects `quick`, `full`, or `off`. Full archives use the [backup exclusions](../reference/faq.md#hermes-backup-vs-hermes-profile-export). Recovery uses [Snapshots and rollback](../user-guide/checkpoints-and-rollback.md). Quick snapshots recover state files, not application code. The snapshot is best-effort: if it fails, the update prints a `⚠ Pre-update snapshot FAILED` warning and continues, and the receipt records `pre_update_backup` as a failed step (a deliberate `off`/`--no-backup` lands in the receipt's skips with its reason instead).

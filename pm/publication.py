@@ -32,31 +32,32 @@ def _metadata_records(data: bytes | None) -> dict:
     return records
 
 
-def candidate_members(extra_dirs=(), **selection):
+def _admitted_member(source: Path, *, sitout: bool) -> bool:
     import sys
 
     from hermes_cli.plugins_manifest import requires_hermes_error
     from pm.plugin_declarations import manifest_version_error, read_python_declaration
 
+    declaration = read_python_declaration(source)
+    reason = manifest_version_error(declaration.manifest, source.name, allow_hermes_sitout=sitout)
+    if reason:
+        raise ValueError(reason)
+    hermes = requires_hermes_error(declaration.manifest)
+    if hermes:
+        print(f"Left existing plugin '{source.name}' out of this selection: "
+              f"{hermes}; it stays enabled and rejoins when compatible",
+              file=sys.stderr, flush=True)
+        return False
+    return declaration.installs_packages
+
+
+def candidate_members(extra_dirs=(), **selection):
     extra_dirs = tuple(Path(path) for path in extra_dirs)
     selected = enabled_plugin_dirs(**selection)
     existing = {path.resolve() for path in enabled_plugin_dirs()}
     requested = {path.resolve() for path in extra_dirs}
-    members = []
-    for source in selected:
-        declaration = read_python_declaration(source)
-        sitout = source.resolve() in existing - requested
-        reason = manifest_version_error(declaration.manifest, source.name, allow_hermes_sitout=sitout)
-        if reason:
-            raise ValueError(reason)
-        hermes = requires_hermes_error(declaration.manifest)
-        if hermes:
-            print(f"Left existing plugin '{source.name}' out of this selection: "
-                  f"{hermes}; it stays enabled and rejoins when compatible",
-                  file=sys.stderr, flush=True)
-            continue
-        if declaration.installs_packages:
-            members.append(source)
+    members = [source for source in selected
+               if _admitted_member(source, sitout=source.resolve() in existing - requested)]
     for directory in extra_dirs:
         directory = Path(directory)
         validate_manifest(directory)
@@ -156,9 +157,8 @@ class StagedPlugin:
         self.members = {}
         if self.active:
             sources[self.target.resolve()] = self.staged
-            for source in sources.values():
-                validate_manifest(source)
-            self.members = {identity: source for identity, source in sources.items() if _is_member_candidate(source)}
+            self.members = {identity: source for identity, source in sources.items()
+                            if _admitted_member(source, sitout=identity != self.target.resolve())}
 
     def publish(self, project: Path) -> None:
         import os
