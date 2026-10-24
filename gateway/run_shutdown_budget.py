@@ -356,6 +356,7 @@ class GatewayShutdownBudgetMixin:
                 _mm = getattr(agent, "_memory_manager", None)
                 if _mm is not None and hasattr(_mm, "flush_pending"):
                     try:
+                        _mm.claim_teardown(session_end=True)
                         _mm.flush_pending(timeout=10)
                     except Exception:
                         logger.debug("Pending memory flush failed during cleanup", exc_info=True)

@@ -835,6 +835,12 @@ class MemoryManager:
             lambda p: p.on_delegation(task, result, child_session_id=child_session_id, **kwargs),
         )
 
+    @property
+    def session_end_teardown_claimed(self) -> bool:
+        """Whether session cleanup owns extraction and provider shutdown."""
+        with self._sync_executor_lock:
+            return self._teardown_claim == "session_end"
+
     def claim_teardown(self, *, session_end: bool) -> bool:
         """Claim extraction + ``shutdown_all()`` for end-of-session shutdown or soft release. The first
         claimer wins and the loser skips, so the two never overlap and providers (no idempotency
