@@ -33,12 +33,33 @@ def _metadata_records(data: bytes | None) -> dict:
 
 
 def candidate_members(extra_dirs=(), **selection):
+    import sys
+
+    from hermes_cli.plugins_manifest import requires_hermes_error
+    from pm.plugin_declarations import manifest_version_error, read_python_declaration
+
+    extra_dirs = tuple(Path(path) for path in extra_dirs)
     selected = enabled_plugin_dirs(**selection)
+    existing = {path.resolve() for path in enabled_plugin_dirs()}
+    requested = {path.resolve() for path in extra_dirs}
+    members = []
     for source in selected:
-        validate_manifest(source)
-    members = [source for source in selected if _is_member_candidate(source)]
+        declaration = read_python_declaration(source)
+        sitout = source.resolve() in existing - requested
+        reason = manifest_version_error(declaration.manifest, source.name, allow_hermes_sitout=sitout)
+        if reason:
+            raise ValueError(reason)
+        hermes = requires_hermes_error(declaration.manifest)
+        if hermes:
+            print(f"Left existing plugin '{source.name}' out of this selection: "
+                  f"{hermes}; it stays enabled and rejoins when compatible",
+                  file=sys.stderr, flush=True)
+            continue
+        if declaration.installs_packages:
+            members.append(source)
     for directory in extra_dirs:
         directory = Path(directory)
+        validate_manifest(directory)
         if directory not in members and _is_member_candidate(directory):
             members.append(directory)
     return members

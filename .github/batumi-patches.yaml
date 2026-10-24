@@ -2199,3 +2199,25 @@ patches:
   - scripts/run_tests.sh tests/test_packaging_metadata.py tests/pm/test_project_relock.py
   - npm --workspace tests-js test -- security-lock-floors.test.ts
   retirement: Remove when the accepted upstream baseline resolves all reviewed advisory boundaries.
+
+- id: vm-update-pause-and-plugin-admission
+  kind: core
+  rationale: Retain live VM pause ownership and fail-closed source exclusion, while letting existing
+    incompatible plugins sit out shared environment admission without disabling their configuration.
+  paths:
+  - gateway/run_bootstrap.py
+  - gateway/run_shutdown.py
+  - gateway/run_fork_contracts.py
+  - hermes_cli/update_cmd_posix_pause.py
+  - pm/plugin_declarations.py
+  - pm/publication.py
+  - tests/gateway/test_update_pause_ownership.py
+  - tests/hermes_cli/test_update_pause_ownership.py
+  - tests/hermes_cli/test_update_pause_systemd_ownership.py
+  - tests/hermes_cli/test_update_posix_pause.py
+  - tests/hermes_cli/test_update_target_identity.py
+  - tests/hermes_cli/test_update_existing_branch_baseline.py
+  - tests/pm/test_admission_sitout_contract.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_update_pause_ownership.py tests/hermes_cli/test_update_pause_ownership.py tests/hermes_cli/test_update_pause_systemd_ownership.py tests/hermes_cli/test_update_posix_pause.py tests/pm/test_admission_sitout_contract.py
+  retirement: Remove when upstream provides equivalent fail-closed pause ownership and existing-member admission contracts.
