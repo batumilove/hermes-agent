@@ -130,6 +130,31 @@ class TestAgentCacheMemoryLifecycle:
         assert not releaser.is_alive() and not closer.is_alive()
         assert events == ["shutdown"]
 
+    def test_soft_eviction_retries_a_failed_session_end_shutdown(self):
+        """A completed extraction claim must not hide a provider drain that still needs a retry."""
+        events = []
+        agent, provider = self._agent_with_writer_provider("mem-hard-failure-evict-test", events)
+        manager = agent._memory_manager
+        manager.claim_teardown(session_end=True)
+        real_shutdown = provider.shutdown
+        attempts = []
+
+        def shutdown():
+            attempts.append("shutdown")
+            if len(attempts) == 1:
+                raise RuntimeError("temporary shutdown failure")
+            real_shutdown()
+
+        provider.shutdown = shutdown
+        try:
+            assert agent.shutdown_memory_provider([{"role": "user", "content": "remember"}]) is False
+            assert agent.release_memory_provider_for_cache_evict() is True
+            assert attempts == ["shutdown", "shutdown"]
+            assert events == ["on_session_end", "shutdown"]
+            assert not provider.writer.is_alive()
+        finally:
+            real_shutdown()
+
     def test_gateway_soft_evict_commits_memory_before_provider_shutdown(self):
         """The sweep eviction path must run end-of-session extraction BEFORE release_clients()
         shuts the providers down (a shut-down provider can no longer commit)."""
