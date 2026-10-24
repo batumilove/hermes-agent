@@ -1088,7 +1088,7 @@ def _patch_signal_retry_sleep(monkeypatch):
         if seconds <= 0:
             await real_sleep(0)
 
-    monkeypatch.setattr("gateway.platforms.signal.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("plugins.platforms.signal.adapter.asyncio.sleep", fake_sleep)
 
 
 class TestSignalSendMultipleImages:
@@ -1141,7 +1141,7 @@ class TestSignalSendMultipleImages:
     @pytest.mark.asyncio
     async def test_all_attachment_chunks_must_succeed(self, monkeypatch, tmp_path):
         """A rejected later chunk cannot be hidden by an earlier success."""
-        from gateway.platforms.signal_rate_limit import SIGNAL_MAX_ATTACHMENTS_PER_MSG
+        from plugins.platforms.signal.signal_rate_limit import SIGNAL_MAX_ATTACHMENTS_PER_MSG
 
         adapter = _make_signal_adapter(monkeypatch)
         mock_rpc, captured = _stub_rpc_responses([
@@ -1192,7 +1192,7 @@ class TestSignalSendMultipleImages:
     @pytest.mark.asyncio
     async def test_all_attachment_chunks_succeed(self, monkeypatch, tmp_path):
         """More than Signal's cap succeeds only when each chunk is accepted."""
-        from gateway.platforms.signal_rate_limit import SIGNAL_MAX_ATTACHMENTS_PER_MSG
+        from plugins.platforms.signal.signal_rate_limit import SIGNAL_MAX_ATTACHMENTS_PER_MSG
 
         adapter = _make_signal_adapter(monkeypatch)
         mock_rpc, captured = _stub_rpc_responses([{"timestamp": 1}, {"timestamp": 2}])
