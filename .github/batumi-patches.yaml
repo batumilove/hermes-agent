@@ -557,6 +557,7 @@ patches:
   - tests/scripts/test_catalog_upstream_import.py
   - tests/ci/test_plugin_catalog_ci_confinement.py
   - contributors/emails/batumilove@users.noreply.github.com
+  - contributors/emails/kaiwolf@mac-horse.home.arpa
   - scripts/ci/classify_changes.py
   - .github/batumi-patches.yaml
   - .github/batumi-contracts.yaml
