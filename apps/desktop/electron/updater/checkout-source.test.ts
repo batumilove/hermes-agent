@@ -394,8 +394,9 @@ if not getattr(urllib.request, '_hermes_loopback', False):
       (command: string, args: string[], options: SpawnOptions): updaterProcess.UpdaterChild => {
         spawned.push({ command, args, options })
         // C2: a hand-off has started only once the script takes the Desktop's
-        // bridge marker in its own (live, foreign) name — do that here.
-        fs.writeFileSync(markerPath(home), `${process.ppid}\n${Math.floor(Date.now() / 1000)}\n`)
+        // bridge marker in its own (live, foreign) name, echoing the handoff
+        // timestamp even if spawning crosses a wall-clock second.
+        fs.writeFileSync(markerPath(home), `${process.ppid}\n${options.env?.HERMES_UPDATE_STARTED_AT}\n`)
 
         return { unref: (): void => {} }
       }
