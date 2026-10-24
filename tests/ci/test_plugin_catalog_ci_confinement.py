@@ -8,14 +8,13 @@ flows that must keep passing.
 """
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import hermes_yaml as yaml
 import pytest
-
-pytestmark = pytest.mark.platforms("linux")
 
 ROOT = Path(__file__).resolve().parents[2]
 # CATALOG_CI_WORKFLOW points the harness at another workflow copy (e.g.
@@ -192,6 +191,7 @@ def _shadowed_parser_import(tp, origin, sha):
     _bundled_native_binary, _committed_bytecode,
     _log_forging_filename, _shadowed_parser_import,
 ], ids=lambda f: f.__name__.lstrip("_"))
+@pytest.mark.platforms("linux")
 def test_bypass_fails_the_gate(tmp_path, origin, case):
     sha = _git(origin, "rev-parse", "HEAD")
     entry, expected = case(tmp_path, origin, sha)
@@ -204,6 +204,7 @@ def test_bypass_fails_the_gate(tmp_path, origin, case):
     assert not any(line.startswith("::error::forged") for line in res.stdout.splitlines())
 
 
+@pytest.mark.platforms("linux")
 def test_one_entry_cannot_skip_or_impersonate_the_others(tmp_path, origin):
     """Plugin code that drains stdin must not consume the remaining entry list,
     and an entry whose parser dies must fail itself rather than inherit the
@@ -233,6 +234,7 @@ def test_one_entry_cannot_skip_or_impersonate_the_others(tmp_path, origin):
     {"subdir": None},
     {"subdir": "plugin", "alias": True},
 ], ids=["subdir-entry", "repo-root", "null-subdir", "in-clone-symlink"])
+@pytest.mark.platforms("linux")
 def test_legit_entry_passes_the_gate(tmp_path, origin, fields):
     if fields.pop("alias", False):
         (origin / "plugin" / "alias.yaml").symlink_to("plugin.yaml")
@@ -247,6 +249,7 @@ def test_legit_entry_passes_the_gate(tmp_path, origin, fields):
     {}, {"subdir": None}, {"subdir": "../x"}, {"subdir": 5},
     {"repo": "https://x/y\n::error::x"}, {"sha": "a" * 40 + "\n"},
 ])
+@pytest.mark.platforms("linux")
 def test_structural_and_pinned_gates_agree(tmp_path, origin, mut):
     """The field rules live in both the parse step and the structural validator
     (different environments); the same entry must get the same verdict."""
@@ -287,7 +290,7 @@ NEW = {"plugin-catalog/new.yaml": "name: new\n"}
 @pytest.mark.parametrize("change, rc, listed, text", [
     (_rename, 0, ["plugin-catalog/renamed.yaml"], None),
     (_typechange, 0, ["plugin-catalog/old.yaml"], None),
-    (lambda r: _write(r, {**NEW, "scripts/tool.py": "x = 2\n"}), 1, [], "scripts/tool.py"),
+    (lambda r: _write(r, {**NEW, "scripts/tool.py": "x = 2\n"}), 1, [], "official catalog import rejected"),
     (lambda r: _write(r, {"plugin-catalog/old.yaml": "name: old\nsha: b\n"}), 0,
      ["plugin-catalog/old.yaml"], None),
     (lambda r: _write(r, {**NEW, "contributors/emails/a@b.c": "someone\n"}), 0,
@@ -297,6 +300,7 @@ NEW = {"plugin-catalog/new.yaml": "name: new\n"}
                           ".github/workflows/x.yml": "on: push\n"}), 0, [], None),
 ], ids=["rename", "typechange", "entry-plus-tooling", "sha-bump",
         "entry-plus-email-map", "readme-docs-ci-only"])
+@pytest.mark.platforms("posix")
 def test_changed_entries_step(tmp_path, change, rc, listed, text):
     """Renames and typechanges must reach the pinned gate; an entry PR that also
     touches tooling fails before any clone, while email maps and entry-free
@@ -314,12 +318,24 @@ def test_changed_entries_step(tmp_path, change, rc, listed, text):
     _git(repo, "merge", "-q", "--no-ff", "-m", "merge", "pr")
     _git(repo, "checkout", "-q", "--detach")
     _git(repo, "update-ref", "refs/remotes/origin/main", base)
+    # The mixed path authenticates official imports. Serve a local official
+    # history and execute the real verifier so an unproven mixed PR fails closed.
+    _git(repo, "config", f"url.{repo.as_uri()}.insteadOf", "https://github.com/NousResearch/hermes-agent.git")
+    for relative in ("scripts/fork_provenance.py", "scripts/ci/catalog_upstream_import.py"):
+        destination = repo / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / relative, destination)
     out = tmp_path / "gh-output.txt"
     out.touch()
     res = _run(_step("Find changed catalog"), tmp_path, repo,
                {**os.environ, "GITHUB_OUTPUT": str(out)})
     assert res.returncode == rc, res.stdout + res.stderr
-    lines = out.read_text(encoding="utf-8").splitlines()
-    assert [f for f in lines if f and "__EOF__" not in f and f != "files<<__EOF__"] == listed
+    output = out.read_text(encoding="utf-8")
+    if rc == 0:
+        flag, files = output.split("files<<__EOF__\n", 1)
+        assert flag == "official_import=false\n"
+        assert [f for f in files.split("__EOF__", 1)[0].splitlines() if f] == listed
+    else:
+        assert not output
     if text:
-        assert text in res.stdout
+        assert text in res.stdout + res.stderr
