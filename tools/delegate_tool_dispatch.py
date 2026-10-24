@@ -383,7 +383,7 @@ _BACKGROUND_NOTES = {
 
 def _dispatched_payload(batch: _Batch, units: list[tuple[_Batch, str]]) -> dict:
     """Model-facing handle for an accepted background call: one entry per async unit."""
-    goals = [t["goal"] for t in batch.task_list]
+    goals = [task["goal"] for _, task, _ in batch.children]
     n = len(batch.children)  # running children; refused tasks are listed under "refused"
     payload = {
         "status": "dispatched", "mode": "background", "count": n,

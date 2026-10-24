@@ -753,12 +753,13 @@ def cron_admission(*, home: Optional[Path] = None):
     """Atomically decide and reserve one cron admission boundary.
 
     The activation lock is held from the drain-state decision until the caller
-    has advanced/claimed the schedule and registered executor work. An
-    activation transaction therefore starts either before admission (and this
-    yields ``False``) or after registration, never in between.
+    has advanced/claimed the schedule and registered executor work. POSIX cron
+    claims share this fence. An activation transaction therefore starts either
+    before admission (and this yields ``False``) or after registration, never in
+    between.
     """
     try:
-        lock = _acquire_activation_lock(home)
+        lock = _acquire_activation_lock(home, shared=fcntl is not None)
     except DrainControlBusyError:
         yield False
         return
