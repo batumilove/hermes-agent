@@ -2082,7 +2082,7 @@ patches:
 
 - id: shared-daemon-fork-contract-port
   kind: compatibility
-  rationale: Preserve fork delivery, cache cleanup, claim fencing and bounded shutdown contracts in the shared daemon owners.
+  rationale: Preserve fork delivery, cache cleanup, claim fencing, bounded shutdown and startup ownership handoff contracts in the shared daemon owners.
   paths:
   - tests/gateway/fixtures/native_reply_crash_daemon.py
   - tests/hermes_cli/test_gateway_chat_native.py
@@ -2092,6 +2092,7 @@ patches:
   - tests/gateway/test_session_kanban_turn_recovery.py
   - tests/agent/test_kanban_turn_recovery.py
   - gateway/run_bootstrap.py
+  - tests/gateway/test_bootstrap_browse_reservation.py
   - tests/gateway/test_daemon_cache_boundary.py
   - gateway/run_turn_hygiene.py
   - gateway/run_turn_persistence.py
@@ -2117,6 +2118,7 @@ patches:
   - tests/gateway/test_daemon_handoff_completion.py
   - tests/gateway/fixtures/shared_authority_peer.py
   tests:
+  - scripts/run_tests.sh tests/gateway/test_bootstrap_browse_reservation.py tests/hermes_cli/test_browse_schema_drift.py
   - scripts/run_tests.sh tests/gateway/test_agent_cache.py tests/gateway/test_shutdown_runtime_ownership.py tests/gateway/test_managed_turn_shutdown_drain.py tests/gateway/test_session_kanban.py
   retirement: Remove after upstream provides equivalent retained cleanup ownership, mandatory worker policy and bounded shutdown contracts.
 - id: browser-vault-authorized-otp-instructions
