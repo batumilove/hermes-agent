@@ -548,8 +548,8 @@ dev = [
   "starlette==1.9.0",
   "ty==0.0.89",
   "ruff==0.15.22",
-  "setuptools==83.0.0",
-] # starlette: CVE-2026-48710; setuptools: 83 (torch >=2.13 requires setuptools 83)
+  "setuptools==84.1.0",
+] # starlette: CVE-2026-48710; setuptools: GHSA-xmj3-9gf7-h52w (torch >=2.13 requires setuptools >=83)
 # Native launcher and provider-catalog E2E dependencies belong in the test
 # environment, not the core runtime. Keep the Anthropic SDK at the same
 # reviewed version as the optional runtime extra above.
@@ -564,7 +564,7 @@ test = [
 # PEP 517 isolated builds. Without wheel in
 # requires, the isolation sandbox only gets setuptools and the build
 # fails with ModuleNotFoundError: wheel.cli (#96488).
-requires = ["setuptools==83.0.0", "wheel"]
+requires = ["setuptools==84.1.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project.scripts]
@@ -611,6 +611,7 @@ google-meet = "sys_platform != 'android'"
 
 [tool.uv]
 constraint-dependencies = [
+  "filelock>=4.2.1,<5",  # reviewed lockfile permission advisories
   # Security floors for optional/transitive consumers, without adding the
   # consumers to every installation. Preserve the next-major upper bounds.
   "multidict>=6.9.1,<7",  # GHSA-54p9-h82j-f925
@@ -666,7 +667,7 @@ override-dependencies = [
 # (#135589). Exact pins follow the same 3-day rule. The one exemption is CA
 # trust stores: a release that revokes or distrusts a compromised CA must reach
 # the lock the day it ships, because holding it back keeps the bad root trusted.
-# Only packages whose job is CA trust belong in exclude-newer-package.
+# The fork additionally admits the explicitly approved decoder fix below.
 exclude-newer = "3 days"
 # User-approved fixed decoder security release; retain the global cooldown.
 exclude-newer-package = { certifi = false, brotlicffi = "2026-10-23T00:00:00Z" }

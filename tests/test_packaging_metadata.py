@@ -56,13 +56,8 @@ def test_starlette_server_pins_and_lock_exclude_cve_2026_48710():
 CA_TRUST_PACKAGES = {"certifi"}
 
 
-def test_every_dependency_is_held_to_one_three_day_release_age():
-    """Hermes's deps must be >= 3 days old when locked, exact pins included (Teknium ruling).
-
-    A per-package exemption or date would quietly let a fresh release into the lock; the
-    check runs at lock time only, so users never need a mirror that serves upload times.
-    CA trust stores ship revocations immediately; the fork also admits its reviewed decoder fix.
-    """
+def test_release_age_preserves_ca_trust_and_reviewed_security_exception():
+    """Keep the global cooldown and bound the approved decoder exception."""
     manifest = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     uv = manifest["tool"]["uv"]
     lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
@@ -115,3 +110,18 @@ def test_httpx2_pins_and_lock_exclude_ghsa_7mj9_2mp8_4m2p_family():
     for name in ("httpx2", "httpcore2"):
         versions = [Version(row["version"]) for row in lock["package"] if row["name"] == name]
         assert versions and all(version >= floor for version in versions), (name, versions)
+
+
+def test_build_and_lock_helpers_exclude_reviewed_advisories():
+    """Fixed boundaries for filelock permissions and setuptools archive handling."""
+    floors = {"filelock": Version("4.2.1"), "setuptools": Version("84.1.0")}
+    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    for name, floor in floors.items():
+        versions = [Version(row["version"]) for row in lock["package"] if row["name"] == name]
+        assert versions and all(version >= floor for version in versions), (name, versions)
+    manifest = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    requirements = [Requirement(spec) for spec in manifest["build-system"]["requires"]]
+    setuptools = next(req for req in requirements if req.name == "setuptools")
+    pins = list(setuptools.specifier)
+    assert len(pins) == 1 and pins[0].operator == "=="
+    assert Version(pins[0].version) >= floors["setuptools"]
