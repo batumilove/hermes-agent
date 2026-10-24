@@ -289,8 +289,9 @@ _manifest_update_lock = threading.Lock()
 
 def update_manifest_statuses(delegation_id: Optional[str],
                              results: list[dict[str, Any]],
-                             home: Optional[Path] = None) -> None:
-    """Best-effort per-task status update once the batch has aggregated."""
+                             home: Optional[Path] = None, *, completed: bool = True) -> None:
+    """Best-effort per-task status update once the batch has aggregated (``completed=False``: tasks settled
+    before the batch ran, e.g. ones their backend refused, while the rest still run)."""
     if not delegation_id:
         return
     with _manifest_update_lock, _best_effort("manifest update"):
@@ -303,6 +304,11 @@ def update_manifest_statuses(delegation_id: Optional[str],
                 task["status"] = r.get("status", task.get("status"))
                 if r.get("exit_reason"):
                     task["exit_reason"] = r["exit_reason"]
+                if r.get("model"):
+                    task["model"] = r["model"]
+        # The dispatch-time model is only the delegation.model override (None when children inherit the parent's).
+        if not manifest.get("model"):
+            manifest["model"] = next((t["model"] for t in manifest.get("tasks", []) if t.get("model")), None)
         if all(task.get("status") != "running" for task in manifest.get("tasks", [])):
             manifest["completed"] = time.strftime(_TIME_FMT)
         _dump_json(mp, manifest)

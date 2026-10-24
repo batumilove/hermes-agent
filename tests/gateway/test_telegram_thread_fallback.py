@@ -800,7 +800,8 @@ async def test_private_topic_rejected_thread_without_valid_anchor_never_retries(
     )
     assert result.success is False
     assert result.retryable is False
-    assert adapter._bot.send_message.call_count == (0 if anchor is None else 1)
+    # Upstream normalizes non-positive message IDs before attempting delivery.
+    adapter._bot.send_message.assert_not_called()
 
 
 @pytest.mark.asyncio

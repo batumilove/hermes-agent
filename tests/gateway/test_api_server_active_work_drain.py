@@ -27,7 +27,7 @@ from gateway.platforms.api_server import (
 from gateway.run import _INTERRUPT_REASON_GATEWAY_SHUTDOWN
 from hermes_state import SessionDB
 from tests.gateway.restart_test_helpers import make_restart_runner
-from tools import browser_tool_lifecycle as bt_lifecycle
+from tools import browser_session_lifecycle as bt_lifecycle
 
 # Safety net so a regression parks the executor thread forever instead of
 # hanging CI.  No assertion below depends on elapsed time.
@@ -202,17 +202,14 @@ class TestDrainWaitsForApiWork:
         api = APIServerAdapter(PlatformConfig(enabled=True))
         runner.adapters = {Platform.API_SERVER: api}
         app = _make_admission_app(api)
-        original_create_task = asyncio.create_task
+        original_execute_run = _api_runs._execute_run
         task_started = asyncio.Event()
         allow_task = asyncio.Event()
 
-        def delayed_create_task(coro):
-            async def delayed():
-                task_started.set()
-                await allow_task.wait()
-                return await coro
-
-            return original_create_task(delayed())
+        async def delayed_execute_run(*args, **kwargs):
+            task_started.set()
+            await allow_task.wait()
+            return await original_execute_run(*args, **kwargs)
 
         mock_agent = MagicMock()
         mock_agent.run_conversation.return_value = {"final_response": "done"}
@@ -220,11 +217,10 @@ class TestDrainWaitsForApiWork:
         mock_agent.session_completion_tokens = 0
         mock_agent.session_total_tokens = 0
 
-        # Delay only API runs; aiohttp must retain its real task scheduling.
-        with patch.object(_api_runs, "asyncio", wraps=asyncio) as run_asyncio, patch.object(
-            api, "_create_agent", return_value=mock_agent
-        ):
-            run_asyncio.create_task.side_effect = delayed_create_task
+        with patch(
+            "gateway.platforms.api_server_runs._execute_run",
+            side_effect=delayed_execute_run,
+        ), patch.object(api, "_create_agent", return_value=mock_agent):
             async with TestClient(TestServer(app)) as client:
                 response = await client.post("/v1/runs", json={"input": "hello"})
                 assert response.status == 202
@@ -232,7 +228,7 @@ class TestDrainWaitsForApiWork:
 
                 assert api._active_run_agents == {}
                 assert runner._active_api_run_count() == 1
-                drain_task = original_create_task(runner._drain_active_agents(2.0))
+                drain_task = asyncio.create_task(runner._drain_active_agents(2.0))
                 await asyncio.sleep(0.1)
                 assert not drain_task.done()
 

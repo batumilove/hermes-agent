@@ -104,8 +104,14 @@ def live_gateway(tmp_path_factory):
                             stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
     from gateway.control_socket import identify_gateway, reload_gateway_plugins
     try:
-        if not _wait(lambda: proc.poll() is not None or identify_gateway(home, timeout=2.0), 180):
-            pytest.fail("gateway never answered identify")
+        # The shared daemon answers identity before plugin initialization finishes.
+        # Exercise uninstall against a ready owner, not its startup discovery sweep.
+        def ready_or_exited():
+            return proc.poll() is not None or (identify_gateway(home, timeout=2.0) or {}).get("state") == "ready"
+
+        if not _wait(ready_or_exited, 180):
+            pytest.fail("gateway never became ready: " +
+                        (root / "gateway.log").read_text(encoding="utf-8", errors="replace")[-3000:])
         assert proc.poll() is None, (root / "gateway.log").read_text(encoding="utf-8", errors="replace")[-3000:]
         answer = reload_gateway_plugins(home) or {}
         missing = set(_HEADS) - set(answer.get("plugins") or ())

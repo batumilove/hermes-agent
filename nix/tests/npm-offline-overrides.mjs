@@ -1,17 +1,16 @@
 // Exercise the imported build manifest with real locked tarballs and an empty
 // offline cache. Dropping overrides must fail; the production projection must
-// install the security-selected KaTeX despite the original consumer constraint.
+// install the security-selected KaTeX despite a conflicting consumer constraint.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const [imports, sourceManifest, consumerManifest] = process.argv.slice(2);
+const [imports, sourceManifest] = process.argv.slice(2);
 const imported = JSON.parse(await readFile(join(imports, 'package.json'), 'utf8'));
 const locked = JSON.parse(await readFile(join(imports, 'package-lock.json'), 'utf8'));
 const original = JSON.parse(await readFile(sourceManifest, 'utf8'));
-const consumer = JSON.parse(await readFile(consumerManifest, 'utf8'));
 assert.ok(imported.overrides, 'Offline projection must retain security overrides');
 const references = new Set();
 function checkOverrides(source, projected) {
@@ -33,7 +32,9 @@ function checkOverrides(source, projected) {
 }
 checkOverrides(original.overrides, imported.overrides);
 assert.ok(references.size > 0, 'Exercise the direct dependency override repair');
-assert.notEqual(consumer.dependencies.katex, locked.packages['node_modules/katex'].version);
+// Keep the conflict independent of workspace upgrades that may align with the pin.
+const consumerVersion = '0.0.0-offline-fixture';
+assert.notEqual(consumerVersion, locked.packages['node_modules/katex'].version);
 
 const selected = {};
 function include(location) {
@@ -61,7 +62,7 @@ try {
     };
     const member = {
       name: 'hermes-katex-consumer', version: '1.0.0',
-      dependencies: { katex: consumer.dependencies.katex },
+      dependencies: { katex: consumerVersion },
     };
     const lock = {
       name: root.name, version: root.version, lockfileVersion: 3, requires: true,

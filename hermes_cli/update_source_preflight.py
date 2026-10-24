@@ -13,6 +13,7 @@ def storage_refusal(paths, *, required_bytes=512 * 1024 * 1024, required_inodes=
             parent = parent.parent
         try:
             free_bytes = shutil.disk_usage(parent).free
+            # Windows exposes free bytes but has no POSIX inode quota API.
             stat = os.statvfs(parent) if hasattr(os, "statvfs") else None
         except OSError as exc:
             return f"cannot inspect update storage {parent}: {exc}"

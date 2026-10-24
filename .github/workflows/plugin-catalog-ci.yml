@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false # this job is read-only
 
@@ -47,7 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           # Full commit graph + tags, blobs on demand: the diff below needs the
           # merge commit's first parent, and Hermes resolves its own version
@@ -78,6 +78,7 @@ jobs:
           # The grep can only shrink the list and runs on its own so a git diff
           # failure still fails the step instead of looking like "no changes".
           CHANGED=$(printf '%s' "$CHANGED" | grep -v '/removed\.yaml$' || true)
+          OFFICIAL_IMPORT=false
 
           if [ -n "$CHANGED" ]; then
             # Admission PRs must be data-only: the gate's own enforcement code
@@ -89,32 +90,37 @@ jobs:
             ALL=$(git diff --name-only 'HEAD^1' HEAD)
             OUTSIDE=$(printf '%s' "$ALL" | grep -vE '^(plugin-catalog|contributors/emails)/' || true)
             if [ -n "$OUTSIDE" ]; then
-              echo "::error::catalog entry PRs may only touch plugin-catalog/** and contributors/emails/**, found:"
-              # Filenames are PR-controlled; a newline in one could smuggle a
-              # workflow command into the log.
-              printf '%s' "$OUTSIDE" | tr '\0\n' ' '
-              echo
-              exit 1
+              # Official upstream already admitted these pins. Authenticate
+              # the complete catalog against a separately fetched trusted
+              # history and the exact immutable import, never a label/branch.
+              git fetch --filter=blob:none --no-tags \
+                https://github.com/NousResearch/hermes-agent.git \
+                refs/heads/main:refs/remotes/official-catalog/main
+              python3 scripts/ci/catalog_upstream_import.py \
+                --comparison 'HEAD^1' \
+                --official-tip refs/remotes/official-catalog/main
+              OFFICIAL_IMPORT=true
             fi
           fi
 
           echo "Changed catalog entries:"
           echo "${CHANGED:-<none>}"
           {
+            echo "official_import=$OFFICIAL_IMPORT"
             echo 'files<<__EOF__'
             echo "$CHANGED"
             echo '__EOF__'
           } >> "$GITHUB_OUTPUT"
 
       - name: Prepare Hermes from the PR's own checkout
-        if: steps.changed.outputs.files != ''
+        if: steps.changed.outputs.files != '' && steps.changed.outputs.official_import != 'true'
         uses: ./.github/actions/setup-pm
         with:
           toolchain: python
           extras: '[]'
 
       - name: Clone each entry at its pinned sha and validate
-        if: steps.changed.outputs.files != ''
+        if: steps.changed.outputs.files != '' && steps.changed.outputs.official_import != 'true'
         env:
           CHANGED_FILES: ${{ steps.changed.outputs.files }}
           # A hostile repo URL must never block the job on a credential prompt.

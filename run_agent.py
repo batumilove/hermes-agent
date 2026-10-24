@@ -103,11 +103,12 @@ if not _loaded_env_paths:
 from model_tools import get_toolset_for_tool
 from tools.terminal_tool_lifecycle import cleanup_vm, get_active_env
 from tools.interrupt import set_interrupt as _set_interrupt
-from tools.browser_tool_lifecycle import cleanup_browser
+from tools.browser_session_lifecycle import cleanup_browser
 from tools.connectors.turn import agent_connection_surface, scoped_connection_surface
 
 from agent.memory_provider import is_trivial_prompt
 from agent.client_lifecycle import ClientLifecycleMixin
+from agent.memory_teardown import MemoryTeardownMixin
 from agent.stream_delivery import StreamDeliveryMixin
 from agent.status_output import StatusOutputMixin
 from agent.api_request_hooks import ApiRequestHooksMixin
@@ -213,7 +214,7 @@ class _StreamErrorEvent(Exception):
 
 
 class AIAgent(
-    ClientLifecycleMixin, StreamDeliveryMixin, StatusOutputMixin, ApiRequestHooksMixin, ApiErrorSummaryMixin,
+    MemoryTeardownMixin, ClientLifecycleMixin, StreamDeliveryMixin, StatusOutputMixin, ApiRequestHooksMixin, ApiErrorSummaryMixin,
     InterruptControlMixin, TurnExplainersMixin, ActivityTrackingMixin, RateLimitCreditsMixin,
     SessionPersistenceMixin, CompressionFacadeMixin, TurnFacadeMixin, VisionMessagePrepMixin, ReasoningParamsMixin,
 ):
@@ -871,101 +872,6 @@ class AIAgent(
             },
         )
 
-    def _memory_manager_release_guard(self):
-            """Return the per-agent lock used to claim memory-manager teardown."""
-            return getattr(
-                self,
-                "_memory_manager_release_lock",
-                self._memory_manager_release_fallback_lock,
-            )
-
-    def _shutdown_memory_manager_serialized(
-            self,
-            *,
-            messages: list | None = None,
-            notify_session_end: bool = False,
-        ) -> bool:
-            """Run one bounded provider teardown while preserving retry ownership.
-
-            The lock protects only the monotonic ownership state. Provider callbacks
-            run on one daemon worker outside the lock; concurrent claimants wait on
-            the same event up to the global bound and never spawn duplicate workers.
-            A failed worker restores the manager, while a timed-out in-flight worker
-            remains owned by the state object for a later retry observation.
-            """
-            guard = self._memory_manager_release_guard()
-            with guard:
-                state = getattr(self, "_memory_manager_shutdown_state", None)
-                owner = state is None
-                if owner:
-                    manager = getattr(self, "_memory_manager", None)
-                    if manager is None:
-                        return True
-                    self._memory_manager = None
-                    state = {
-                        "manager": manager,
-                        "event": threading.Event(),
-                        "result": None,
-                    }
-                    self._memory_manager_shutdown_state = state
-
-            if owner:
-                def _shutdown_worker() -> None:
-                    completed = False
-                    manager = state["manager"]
-                    try:
-                        if notify_session_end:
-                            try:
-                                manager.on_session_end(messages or [])
-                            except Exception as e:
-                                logger.warning(
-                                    "Memory provider on_session_end failed during shutdown: %s",
-                                    e,
-                                    exc_info=True,
-                                )
-                                raise
-                            with guard:
-                                self._memory_provider_cache_evict_committed = True
-                        result = manager.shutdown_all()
-                        completed = result is not False
-                    except Exception:
-                        logger.warning("Memory provider shutdown failed", exc_info=True)
-                        completed = False
-                    finally:
-                        with guard:
-                            state["result"] = completed
-                            if not completed:
-                                self._memory_manager = manager
-                            if getattr(self, "_memory_manager_shutdown_state", None) is state:
-                                self._memory_manager_shutdown_state = None
-                            state["event"].set()
-
-                try:
-                    from agent.memory_provider import spawn_context_thread
-                    spawn_context_thread(
-                        _shutdown_worker,
-                        name=f"memory-provider-shutdown-{id(self):x}",
-                    ).start()
-                except Exception:
-                    logger.warning("Memory provider shutdown worker could not start", exc_info=True)
-                    with guard:
-                        self._memory_manager = state["manager"]
-                        self._memory_manager_shutdown_state = None
-                        state["result"] = False
-                        state["event"].set()
-                    return False
-
-            if not state["event"].wait(timeout=_MEMORY_PROVIDER_SHUTDOWN_TIMEOUT_S):
-                return False
-            if state["result"] is True:
-                return True
-            if not owner:
-                return self._shutdown_memory_manager_serialized(
-                    messages=messages,
-                    notify_session_end=notify_session_end,
-                )
-            return False
-
     def _shutdown_owned_context_engine(self) -> None:
             """Claim and shut down this agent's context engine at most once.
 
@@ -1001,36 +907,6 @@ class AIAgent(
                     type(engine).__name__,
                     exc, exc_info=True,
                 )
-
-    def release_memory_provider_for_cache_evict(
-            self,
-            messages: list | None = None,
-            *,
-            commit: bool = False,
-        ) -> bool:
-            """Stop and detach per-agent memory workers during soft cache eviction.
-
-            Cache eviction preserves resumable terminal/browser/process state, but
-            the MemoryManager belongs to this Python AIAgent instance. Leaving it
-            attached after the cache drops the agent strands its ``mem-sync``
-            executor and external-provider workers (for Honcho, the async writer).
-
-            With commit=True, the claimed worker commits session extraction before
-            draining the provider. Successful commit is remembered across retries;
-            an incomplete drain keeps teardown ownership available to retry.
-            With commit=False, this method only stops provider workers.
-            """
-            if not self._shutdown_memory_manager_serialized(
-                messages=messages,
-                notify_session_end=(
-                    commit
-                    and not bool(
-                        getattr(self, "_memory_provider_cache_evict_committed", False)
-                    )
-                ),
-            ):
-                raise RuntimeError("memory provider shutdown incomplete")
-            return True
 
     def shutdown_memory_provider(self, messages: list | None = None) -> bool:
         """Flush and release the per-agent manager with bounded retry ownership."""
@@ -1082,9 +958,9 @@ class AIAgent(
             pass
 
     def release_clients(self) -> None:
-        """Release LLM clients and child agents WITHOUT tearing down session tool state (gateway cache
-        eviction: the session may resume on the same task_id, so processes, sandbox, browser, computer-use and
-        memory provider are kept). Idempotent; distinct from ``close()``."""
+        """Release LLM clients, child agents and memory providers WITHOUT tearing down session tool state (gateway
+        cache eviction: the session may resume on the same task_id, so processes, sandbox, browser and computer-use
+        are kept). Idempotent; distinct from ``close()``."""
         self._close_active_children(soft=True)
         _quietly(self._shutdown_owned_context_engine)
         # Retire (don't hard-close) the shared client: eviction runs on the gateway memory-manager thread,
@@ -1094,12 +970,12 @@ class AIAgent(
         # The Codex app-server child is an LLM client, not session tool state: the evicted instance is popped
         # from the cache and a rebuilt agent spawns its own child, so an unclosed one leaks for the gateway's life.
         _quietly(self._close_codex_session)
+        if getattr(self, "_memory_manager", None) is not None:
+            _quietly(self.release_memory_provider_for_cache_evict)
 
     def close(self) -> None:
         """Release every resource this agent holds (idempotent); each phase is guarded so one failure never
         blocks the rest."""
-        # close() is the hard owner boundary; shutdown_memory_provider() is idempotent so gateway pre-calls
-        # never double-extract.
         session_messages = getattr(self, "_session_messages", None)
         _quietly(self.shutdown_memory_provider, session_messages if isinstance(session_messages, list) else None)
         self._close_task_resources(getattr(self, "session_id", None) or "")
@@ -1114,6 +990,14 @@ class AIAgent(
         self._session_messages = []
         self._db_flush_scan_prefix = None
         self._streamed_assistant_text_parts = []
+        if isinstance(session_messages, list):
+            # The token-estimate memo pins message strings; a closed conversation's can never hit again. The
+            # system prompt reaches the memo only through api_messages, never through the history, and a
+            # prompt-caching request splits it into the static prefix + a per-request suffix slice: the
+            # prefix's pin evicts that split entry.
+            from agent.model_metadata_token_memo import forget_message_token_memo
+            _quietly(forget_message_token_memo, (session_messages, getattr(self, "_cached_system_prompt", None),
+                                                 getattr(self, "_cached_system_prompt_static", None)))
         _quietly(self._trim_process_memory)
         _quietly(self._finalize_owned_session_row)
 
@@ -1170,7 +1054,7 @@ class AIAgent(
 
     @staticmethod
     def _trim_process_memory() -> None:
-        """Return freed heap pages to the OS on glibc; safe no-op elsewhere."""
+        """Collect cycles, then return freed heap pages to the OS (the page release is glibc-only)."""
         from hermes_cli.mem_trim import trim_memory
         trim_memory(force=True, reason="agent close")
 

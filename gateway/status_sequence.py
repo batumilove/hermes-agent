@@ -19,19 +19,9 @@ _latest_serial_status_sequence = 0
 def _serial_runtime_owner_is_valid() -> bool:
     from gateway import status
 
-    path = status._get_gateway_lock_path()
-    handle = status._gateway_lock_handle
-    try:
-        matches = getattr(handle, "name", None) is not None and Path(handle.name) == path
-    except (TypeError, ValueError):
-        matches = False
-    live = handle is not None and not getattr(handle, "closed", False) and matches
-    if not live:
-        return not path.exists()
-    record = status._read_gateway_lock_record(path)
-    current = status._build_pid_record()
-    return bool(record and status._pid_from_record(record) == current["pid"]
-                and record.get("start_time") == current["start_time"])
+    from gateway.runtime_ownership import process_ownership
+    home = status._get_process_hermes_home()
+    return process_ownership.owns(home) or not status._get_gateway_lock_path().exists()
 
 
 def release_runtime_lock(*, timeout=10.0) -> bool:
@@ -42,20 +32,15 @@ def release_runtime_lock(*, timeout=10.0) -> bool:
     if not _runtime_status_write_lock.acquire(timeout=wait):
         return False
     try:
-        handle = status._gateway_lock_handle
-        if handle is None:
-            return True
         writer = status._runtime_status_writer
         wait = None if deadline is None else max(deadline - time.monotonic(), 0.0)
         if writer is not None and not writer.flush(timeout=wait):
             logger.warning("Runtime lock retained because admitted status writes did not settle")
             return False
-        status._gateway_lock_handle = None
-        status._release_file_lock(handle)
-        try:
-            handle.close()
-        except OSError as error:
-            logger.debug("Runtime lock handle close failed: %s", type(error).__name__)
+        from gateway.runtime_ownership import process_ownership
+        process_ownership.close()
+        if process_ownership.homes:
+            return False
         status._clear_running_pid_cache()
         return True
     finally:
