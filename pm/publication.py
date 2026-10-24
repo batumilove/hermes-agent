@@ -55,7 +55,7 @@ def candidate_members(extra_dirs=(), **selection):
                   f"{hermes}; it stays enabled and rejoins when compatible",
                   file=sys.stderr, flush=True)
             continue
-        if declaration.is_member:
+        if declaration.installs_packages:
             members.append(source)
     for directory in extra_dirs:
         directory = Path(directory)

@@ -1,6 +1,4 @@
 """Existing incompatible members sit out; newly requested members still refuse."""
-from pathlib import Path
-
 import pytest
 
 import hermes_cli.plugins_manifest as gate
@@ -13,7 +11,7 @@ def _plugin(home, name, manifest=""):
     path.mkdir(parents=True)
     (path / "plugin.yaml").write_text(f"name: {name}\n{manifest}")
     (path / "pyproject.toml").write_text(
-        f'[project]\nname = "hermes-plugin-{name}"\nversion = "1.0.0"\n')
+        f'[project]\nname = "hermes-plugin-{name}"\nversion = "1.0.0"\ndependencies = ["httpx>=0.28,<1"]\n')
     return path
 
 

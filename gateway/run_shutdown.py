@@ -1649,8 +1649,7 @@ class GatewayShutdownMixin(GatewayShutdownBudgetMixin, GatewaySessionEndMixin):
         self._draining = True
         from gateway.drain_control import open_restart_wait
         open_restart_wait(self)  # clients may still answer a turn parked on approval/clarify (#139041)
-        # The restart's after-turn wait is a drain window too: pollers of GET /v1/runs/{id} must see
-        # the boundary from the moment new turns are refused, not only once stop() begins (#115133).
+        # API pollers see the drain as soon as new turns are refused (#115133).
         self._mark_api_runs_shutdown_requested()
 
         async def _run_restart() -> None:
