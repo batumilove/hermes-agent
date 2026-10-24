@@ -111,12 +111,23 @@ class TestAgentCacheMemoryLifecycle:
         provider.shutdown = slow_shutdown
         releaser = threading.Thread(target=agent.release_clients)
         releaser.start()
+        closing = threading.Event()
+
+        def close():
+            closing.set()
+            agent.close()
+
+        closer = threading.Thread(target=close)
         try:
             assert in_shutdown.wait(5)
-            agent.close()
+            closer.start()
+            assert closing.wait(5)
         finally:
             let_finish.set()
             releaser.join(timeout=5)
+            if closer.ident is not None:
+                closer.join(timeout=5)
+        assert not releaser.is_alive() and not closer.is_alive()
         assert events == ["shutdown"]
 
     def test_gateway_soft_evict_commits_memory_before_provider_shutdown(self):

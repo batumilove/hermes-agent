@@ -303,7 +303,8 @@ async def test_btw_side_question_does_not_hold_profile_retirement(monkeypatch, p
         release.set()
 
 
-def test_shutdown_interrupt_reaches_counted_side_agents():
+@pytest.mark.asyncio
+async def test_shutdown_interrupt_reaches_counted_side_agents():
     """The stop drain waits for counted side agents (/bg, /btw, preview restart), so the timed-out
     drain's interrupt must reach them too, or a long /bg holds the whole drain and is then
     abandoned mid-tool when the process exits."""
@@ -315,5 +316,6 @@ def test_shutdown_interrupt_reaches_counted_side_agents():
     runner = SimpleNamespace(_running_agents={}, session_authority=authority,
                              _interrupt_api_server_runs=lambda reason: 0,
                              _interrupt_deferred_agent_workers=lambda reason: 0)
-    GatewayShutdownMixin._interrupt_running_agents(runner, 'Gateway shutting down')
+    await GatewayShutdownMixin._interrupt_running_agents(
+        runner, 'Gateway shutting down', asyncio.get_running_loop().time() + 5.0)
     assert interrupts == ['Gateway shutting down']

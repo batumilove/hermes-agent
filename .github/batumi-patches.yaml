@@ -1059,6 +1059,8 @@ patches:
   paths:
   - agent/agent_init.py
   - agent/memory_manager.py
+  - agent/memory_teardown.py
+  - tests/gateway/test_agent_cache_memory_lifecycle.py
   - gateway/run.py
   - plugins/memory/honcho/__init__.py
   - plugins/memory/honcho/session.py

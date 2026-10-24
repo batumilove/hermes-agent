@@ -1944,7 +1944,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
             channel = _update_run_channel(args)
             held = _check.hold_channel_release_behind_runtime(git_cmd, target_ref, channel)
             if held:
-                target_ref = held
+                target_ref = release_sha = held
+                completion_request["expected_sha"] = held
                 held_message = f"✓ Holding at this build until a newer {channel} release ships."
         _refuse_before_commit_point(git_cmd, target_ref, _windows_gateway_resume)
         _plan = _prepare_checkout_for_update(

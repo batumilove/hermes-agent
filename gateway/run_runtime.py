@@ -45,9 +45,12 @@ async def _build_profile_authority(runner, name, home, *, register):
         # The durable-delivery worker can be opening this same profile through
         # the single-flight handle cache. None means unavailable *or opening*;
         # give that bounded startup work time to settle before parking a home.
-        async with asyncio.timeout(5):
-            while (wrapper := runner._session_db) is None:
-                await asyncio.sleep(0.01)
+        try:
+            async with asyncio.timeout(5):
+                while (wrapper := runner._session_db) is None:
+                    await asyncio.sleep(0.01)
+        except TimeoutError as exc:
+            raise RuntimeError(_store_open_failure(runner, home)) from exc
         db = getattr(wrapper, "_db", wrapper)
         if db is None:
             raise RuntimeError(_store_open_failure(runner, home))

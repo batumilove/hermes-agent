@@ -231,6 +231,7 @@ async def test_hook_fires_once_at_messaging_ingress_and_never_when_an_admission_
     runner._enqueue_fifo = MagicMock()
     runner._handle_message_with_agent = AsyncMock(return_value="agent-ok")
     runner._run_post_turn_hooks = AsyncMock()
+    runner._post_response_gate = AsyncMock(return_value=None)
 
     assert await runner._handle_message(_make_event("drop me")) is None
     assert await runner._handle_message(_make_event("keep me")) == "admitted"
