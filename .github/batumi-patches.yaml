@@ -1475,15 +1475,24 @@ patches:
 - id: honcho-operational-monitoring
   kind: operations
   rationale: Preserve the production Honcho health monitor and queue diagnostic used by Hermes cron, together
-    with their fail-closed behavior contracts.
+    with their fail-closed behavior contracts. Route regressions require the checkout test
+    dependencies (pytest and PyYAML) and a disposable HOME/HERMES_HOME; no live
+    Honcho, provider credentials or generation calls are required. The mailmap alias
+    preserves locally generated Hermes automation attribution without rewriting PR history.
   paths:
+  - .mailmap
   - hermes_cli/honcho_monitor.py
   - hermes_cli/honcho_queue_diagnostic.py
   - scripts/honcho_monitor.py
   - tests/hermes_cli/test_honcho_monitor.py
   - tests/hermes_cli/test_honcho_queue_diagnostic.py
+  - tests/hermes_cli/test_honcho_monitor_routes.py
+  - tests/hermes_cli/test_honcho_route_review.py
+  - tests/hermes_cli/test_honcho_routing_unknown.py
+  - tests/hermes_cli/test_literal_model_regression.py
   tests:
   - scripts/run_tests.sh tests/hermes_cli/test_honcho_monitor.py tests/hermes_cli/test_honcho_queue_diagnostic.py
+  - scripts/run_tests.sh tests/hermes_cli/test_honcho_monitor_routes.py tests/hermes_cli/test_honcho_route_review.py tests/hermes_cli/test_honcho_routing_unknown.py tests/hermes_cli/test_literal_model_regression.py
   retirement: Remove when the live watchdog and diagnostics migrate to a durable operations package that
     no longer imports these modules.
 - id: cron-ephemeral-telegram-topics
