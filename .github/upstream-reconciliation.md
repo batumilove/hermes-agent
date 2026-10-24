@@ -1,4 +1,10 @@
-# Shared-daemon migration, 2026-10-18
+# Official upstream reconciliation, 2026-10-24
+
+The current import reaches `5894e750c3dba980d43b25aa29e3958149ba2c61`,
+including the staged daemon migration below and live security fixes from #425.
+The catalog import trust transfer is described at the end of this document.
+
+## Shared-daemon migration, 2026-10-18
 
 This stage imports upstream through `eb75627faf532fa6ffbdae59a0d14b0b385fc780`
 after the pre-daemon import and catalog update in #396/#397. The boundary brings
@@ -583,3 +589,20 @@ The candidate ref retains its historical security-layer refresh commit
 `f5333d3d2eb0ca8fd0198cb097ba03fe99dd848d` through a merge; its Dockerfile
 and regression changes are already present in the reconciled source, so their
 current implementations are retained when resolving the historical conflicts.
+
+## Official catalog imports
+
+A bulk official import changes runtime code and catalog entries together. Catalog
+CI accepts that combination only when `scripts/ci/catalog_upstream_import.py`
+verifies a version-2 immutable source receipt, an exact projected import head,
+an advancing upstream base in separately fetched official history, and complete
+`plugin-catalog` tree identity with that official commit. Git tree identity covers
+all filenames, bytes, symlinks and modes, including the removal list and policy.
+No PR label or branch name grants this path. Missing or invalid proof fails closed.
+
+These pins have already passed official upstream admission, so this path verifies
+that trust transfer instead of executing every third-party plugin again. The
+structural catalog check still runs. Data-only submissions continue to clone,
+scan and validate each changed pin under the ordinary admission gate. A later
+mixed code/catalog PR cannot reuse an old receipt: its head must still be the
+exact initial import and its upstream base must advance.

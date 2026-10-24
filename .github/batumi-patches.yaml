@@ -544,6 +544,8 @@ patches:
     and retirement condition. Verify immutable import provenance before selecting an upstream comparison
     for blob and critical-pattern gates; later PRs retain their target-branch gates.
   paths:
+  - scripts/ci/catalog_upstream_import.py
+  - tests/scripts/test_catalog_upstream_import.py
   - contributors/emails/batumilove@users.noreply.github.com
   - scripts/ci/classify_changes.py
   - .github/batumi-patches.yaml
@@ -607,6 +609,7 @@ patches:
   - scripts/run_tests.sh tests/scripts/test_check_fork_delta.py tests/scripts/test_ci_workflow.py tests/scripts/test_install_batumi_components.py
     tests/scripts/test_upstream_sync_workflow.py
   - scripts/run_tests.sh tests/scripts/test_upgrade_source_checkout.py tests/scripts/test_code_health_cli.py
+  - scripts/run_tests.sh tests/scripts/test_catalog_upstream_import.py
   retirement: Retain while batumi/live carries any fork-only patch.
 - id: import-restore-fidelity
   kind: core
