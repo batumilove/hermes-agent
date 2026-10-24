@@ -39,6 +39,8 @@ contracts:
   - tests/scripts/test_fork_provenance_v2.py
   - tests/scripts/test_catalog_upstream_import.py
   - tests/hermes_state/test_reconcile_budget.py
+  - tests/gateway/test_delivery_dead_owner.py
+  - tests/hermes_cli/test_gateway_snapshot_restore_live.py
   - tests/scripts/test_fork_check_base.py
   - tests/scripts/test_supply_chain_import_scan.py
   - tests/scripts/test_osv_scan_inputs.py
