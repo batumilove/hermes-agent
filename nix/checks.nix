@@ -8,7 +8,7 @@
     let
       hermes-agent = self'.packages.default;
       hermesVenv = hermes-agent.hermesVenv;
-      hermesNpmLib = pkgs.callPackage ./lib.nix { };
+      hermesNpmLib = hermes-agent.hermesNpmLib;
 
       configMergeScript = pkgs.callPackage ./configMergeScript.nix { };
 
