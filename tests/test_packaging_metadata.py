@@ -53,25 +53,45 @@ def test_starlette_server_pins_and_lock_exclude_cve_2026_48710():
     assert versions and all(version >= floor for version in versions)
 
 
-def test_release_age_allows_only_the_approved_certifi_security_exception():
-    """Keep the default quarantine and bound the October 22 user-approved exception.
-
-    The exception may be removed after admission age; it must never admit another
-    package, a later cutoff, or a different certifi version.
-    """
+def test_release_age_allows_only_approved_security_exceptions():
+    """Exceptions bind reviewed versions and cutoffs while preserving quarantine."""
     manifest = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     uv = manifest["tool"]["uv"]
     lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
     assert uv["exclude-newer"] == "3 days"
     exceptions = uv.get("exclude-newer-package", {})
-    assert exceptions in ({}, {"certifi": "2026-10-22T00:00:00Z"})
-    if exceptions:
-        certifi = next(Requirement(dep) for dep in manifest["project"]["dependencies"]
-                       if Requirement(dep).name == "certifi")
-        assert str(certifi.specifier) == "==2026.10.19"
-        assert {row["version"] for row in lock["package"] if row["name"] == "certifi"} == {"2026.10.19"}
+    approved = {
+        "certifi": ("2026-10-22T00:00:00Z", "2026.10.19"),
+        "brotlicffi": ("2026-10-23T00:00:00Z", "1.2.1.0"),
+    }
+    declared = list(manifest["project"]["dependencies"])
+    for specs in manifest["project"]["optional-dependencies"].values():
+        declared.extend(specs)
+    for name, cutoff in exceptions.items():
+        assert name in approved
+        expected_cutoff, version = approved[name]
+        assert cutoff == expected_cutoff
+        specs = {str(req.specifier) for req in map(Requirement, declared) if req.name == name}
+        assert specs == {f"=={version}"}
+        assert {row["version"] for row in lock["package"] if row["name"] == name} == {version}
     assert lock["options"].get("exclude-newer-span") == "P3D"
     assert lock["options"].get("exclude-newer-package", {}) == exceptions
+
+
+def test_messaging_decoder_excludes_pysec_2026_4323():
+    """The advisory's fixed boundary remains valid after future pin updates."""
+    floor = Version("1.2.1.0")
+    manifest = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    specs = [req for req in map(Requirement, manifest["project"]["optional-dependencies"]["messaging"])
+             if req.name == "brotlicffi"]
+    assert specs
+    for req in specs:
+        pins = list(req.specifier)
+        assert len(pins) == 1 and pins[0].operator == "=="
+        assert Version(pins[0].version) >= floor
+    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    versions = [Version(row["version"]) for row in lock["package"] if row["name"] == "brotlicffi"]
+    assert versions and all(version >= floor for version in versions)
 
 
 def test_httpx2_pins_and_lock_exclude_ghsa_7mj9_2mp8_4m2p_family():
