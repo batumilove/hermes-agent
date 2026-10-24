@@ -552,6 +552,7 @@ jobs:
              "js-tests":{"result":"${{ needs.js-tests.result }}"},
              "rust-tests":{"result":"${{ needs.rust-tests.result }}"},
              "remote-backends":{"result":"${{ needs.remote-backends.result }}"},
+             "catalog-tests":{"result":"${{ needs.catalog-tests.result }}"},
              "bootstrap-installer":{"result":"${{ needs.bootstrap-installer.result }}"},
              "e2e-desktop":{"result":"${{ needs.e2e-desktop.result }}"},
              "e2e-desktop-core":{"result":"${{ needs.e2e-desktop-core.result }}"},
