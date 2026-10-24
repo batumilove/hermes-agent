@@ -1,0 +1,177 @@
+version: 1
+contracts:
+- id: telegram-reply-context-and-anchor
+  rationale: Preserve full resolved reply context and native partial quotes, keep private reply
+    anchors through missing-thread retries, and retain the authored request during compaction.
+  tests:
+  - tests/gateway/test_reply_to_injection.py
+  - tests/gateway/test_telegram_reply_quote.py
+  - tests/gateway/test_telegram_thread_fallback.py
+  - tests/gateway/test_queue_command.py
+  - tests/agent/test_split_turn_compaction.py
+- id: producer-generation-pythonpath-isolation
+  rationale: Preserve exact producer-owned child-path filtering across dependency reselection and
+    failed-activation lease cleanup without releasing earlier successful leases.
+  tests:
+  - tests/pm/test_producer_generation.py
+  - tests/pm/test_lease_reselection.py
+  - tests/pm/test_runtime_selection.py
+  - tests/tools/test_build_subprocess_env.py
+  - tests/tools/test_hermes_subprocess_env.py
+- id: recovered-state-and-native-freshness
+  rationale: Preserve routed test isolation, explicit DB pins, historical fork recovery layouts, ordered
+    recovery obligations, native Relay freshness after compaction, and overlapping logical-call isolation.
+  tests:
+  - tests/hermes_state/test_default_db_profile_fixture.py
+  - tests/hermes_cli/test_session_recovery_post_response.py
+  - tests/hermes_cli/test_session_recovery_fork_layouts.py
+  - tests/agent/test_relay_compaction_atof.py
+  - tests/agent/test_relay_scope_isolation.py
+  - tests/gateway/test_shutdown_completion_barrier.py
+  - tests/tools/test_delegate_fallback_matrix.py
+  - tests/tools/test_subagent_steer.py
+  - tests/hermes_state/test_session_id_recognition_recovery.py
+- id: verified-import-and-dependency-scan
+  rationale: Preserve exact import provenance, later PR gates, complete registry dependency scans, and
+    bounded JWT verification without breaking key rotation.
+  tests:
+  - tests/scripts/test_run_batumi_contracts.py
+  - tests/scripts/test_fork_provenance_v2.py
+  - tests/scripts/test_fork_check_base.py
+  - tests/scripts/test_supply_chain_import_scan.py
+  - tests/scripts/test_osv_scan_inputs.py
+  - tests/scripts/test_osv_scanner_workflow.py
+  - tests/plugins/test_chronos_security_compatibility.py
+  - tests/scripts/test_upgrade_source_checkout.py
+  - tests/pm/test_node_npm_layout.py
+  - tests/pm/test_npm_security_overlay.py
+  - tests/pm/test_npm_self_install.py
+  - tests/pm/test_python_bootstrap.py
+  - tests/pm/test_cold_runtime_e2e.py
+  - tests/pm/test_activation_setup.py
+  - tests/pm/test_startup_recovery.py
+  - tests/pm/test_source_update_launch.py
+  - tests/pm/test_takeover_preparation.py
+  - tests/scripts/test_image_identity.py
+  - tests/scripts/test_termux_build_wheels.py
+  - tests/scripts/test_fresh_source_install.py
+  - tests/test_hermes_ops_pull_budget_pin.py
+  - tests/hermes_cli/test_update_lock_protocol.py
+- id: feishu-webhook-authentication
+  rationale: Preserve authenticated callback delivery while keeping invalid requests out of delivery quota
+    and bounding callback parsing and anomaly state.
+  tests:
+  - tests/plugins/platforms/feishu/test_webhook_security.py
+- id: cli-and-config
+  rationale: Preserve public commands, profile loading, and config defaults.
+  tests:
+  - tests/hermes_cli/test_cli_init.py
+  - tests/hermes_cli/test_env_loader.py
+  - tests/hermes_cli/test_lifecycle.py
+  - tests/gateway/test_config.py
+- id: state-and-sqlite
+  rationale: Preserve existing databases, handoff state, and concurrent reads.
+  tests:
+  - tests/hermes_state/test_hermes_state.py
+  - tests/hermes_state/test_session_db_read_path_split.py
+  - tests/test_session_db_recall_reader.py
+  - tests/hermes_cli/test_session_handoff.py
+  - tests/hermes_state/test_async_write_admission.py
+  - tests/agent/test_serial_daemon_reservations.py
+  - tests/hermes_state/test_side_effect_evidence_roundtrip.py
+  - tests/hermes_state/test_post_response_adapter_owner.py
+  - tests/hermes_state/test_performance_pragmas.py
+  - tests/hermes_state/test_fts_sanitizer.py
+  - tests/hermes_state/test_message_lineage_contracts.py
+- id: plugins
+  rationale: Preserve plugin discovery, lifecycle hooks, and skill exposure.
+  tests:
+  - tests/hermes_cli/test_plugins_module_eviction.py
+  - tests/hermes_cli/test_plugins.py
+  - tests/tools/test_plugin_skills.py
+  - tests/tools/test_environment_registry.py
+  - tests/plugins/test_provider_telemetry_config.py
+  - tests/e2e/core/test_policy_skill_fixtures.py
+- id: honcho
+  rationale: Preserve deterministic HTTP connection cleanup for memory operations.
+  tests:
+  - tests/plugins/external/test_honcho_lifecycle.py
+  - tests/scripts/test_install_batumi_components.py
+- id: telegram
+  rationale: Preserve cancellation, topic routing, reconnect, and delivery behavior.
+  tests:
+  - tests/gateway/test_telegram_network.py
+  - tests/gateway/test_telegram_request_phase_real_socket.py
+  - tests/gateway/test_telegram_terminal_close_regression.py
+  - tests/gateway/test_telegram_network_reconnect.py
+  - tests/gateway/test_platform_reconnect_fd_leak.py
+  - tests/gateway/test_dm_topics.py
+  - tests/gateway/test_delivery.py
+  - tests/gateway/test_ephemeral_telegram_topics.py
+  - tests/gateway/test_telegram_send_path_degraded_retry.py
+  - tests/gateway/test_telegram_text_batching.py
+- id: cron
+  rationale: Preserve verbatim scripts, topic ownership, and scheduler shutdown.
+  tests:
+  - tests/cron/test_external_fire_rejection_audit.py
+  - tests/cron/test_scheduler.py
+  - tests/cron/test_cron_no_agent.py
+  - tests/cron/test_shutdown_interrupt.py
+  - tests/cron/test_scheduler_shutdown_guard.py
+  - tests/cron/test_delivery_wrapping.py
+  - tests/cron/test_job_editing.py
+  - tests/cron/test_reconciled_trigger_dispatch.py
+- id: gateway-lifecycle
+  rationale: Preserve restart continuation, delivery ledger, and close cleanup.
+  tests:
+  - tests/gateway/test_restart_resume_pending.py
+  - tests/gateway/test_completion_delivery.py
+  - tests/gateway/test_delivery_ledger.py
+  - tests/gateway/test_delivery_ledger_producer.py
+  - tests/gateway/test_gateway_shutdown.py
+  - tests/gateway/test_session_hygiene.py
+  - tests/gateway/test_shutdown_aggregate_budget_contract.py
+  - tests/gateway/test_shutdown_cache_cleanup.py
+  - tests/gateway/test_webhook_session_close.py
+  - tests/gateway/test_shutdown_forensics.py
+  - tests/gateway/test_session_boundary_hooks.py
+  - tests/gateway/test_shutdown_residual_lifecycle.py
+  - tests/gateway/test_control_socket_status_io.py
+  - tests/gateway/test_drain_attribution_lifecycle.py
+  - tests/gateway/test_durable_delivery_recovery.py
+- id: provider-fallback
+  rationale: Preserve classification and per-episode fallback transitions.
+  tests:
+  - tests/agent/test_error_classifier.py
+  - tests/agent/test_fallback_exhaustion_cooldown.py
+- id: terminal-backends
+  rationale: Preserve terminal selection and plugin-provided environments.
+  tests:
+  - tests/tools/test_terminal_tool_requirements.py
+  - tests/tools/test_environment_registry.py
+  - tests/hermes_cli/test_dump_terminal_backend.py
+- id: update-and-rollback
+  rationale: Preserve safe update checks and running-container restart behavior.
+  serial: true
+  tests:
+  - tests/hermes_cli/test_update_finish.py
+  - tests/hermes_cli/test_update_pause_record.py
+  - tests/hermes_cli/test_update_pause_lifecycle.py
+  - tests/hermes_cli/test_update_takeover_custody.py
+  - tests/hermes_cli/test_update_takeover_pause.py
+  - tests/hermes_cli/test_update_takeover_recovery.py
+  - tests/hermes_cli/test_old_updater_takeover.py
+  - tests/hermes_cli/test_venv_sync_lifecycle.py
+  - tests/hermes_cli/test_cmd_update.py
+  - tests/hermes_cli/test_batumi_source_channel.py
+  - tests/hermes_cli/test_update_eol_churn.py
+  - tests/scripts/install/test_install_diverged_rescue_ref.py
+  - tests/docker/test_container_restart.py
+  - tests/docker/test_gateway_run_supervised.py
+  - tests/e2e/core/upgrade/test_lifecycle_fixture.py
+- id: langfuse
+  rationale: Preserve fail-open tracing and SDK selection after catalog migration.
+  tests:
+  - tests/plugins/external/test_langfuse_plugin.py
+  - tests/plugins/external/test_langfuse_tracing.py
+  - tests/plugins/external/test_langfuse_dependencies.py

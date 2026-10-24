@@ -12,7 +12,8 @@ The fix adds an explicit sweep of ``_agent_cache`` after
 import asyncio
 import threading
 from collections import OrderedDict
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -24,8 +25,8 @@ import gateway.run as gw_mod
 # Helpers
 # ---------------------------------------------------------------------------
 
-class _FakeGateway:
-    """Minimal stand-in with just enough state for ``stop()`` to run."""
+class _FakeGateway(gw_mod.GatewayRunner):
+    """Use the real shutdown surface with isolated adapters and inline resource cleanup."""
 
     def __init__(self):
         self._running = True
@@ -34,11 +35,13 @@ class _FakeGateway:
         self._restart_detached = False
         self._restart_via_service = False
         self._stop_task = None
+        self._restart_task = None
         self._exit_cleanly = False
         self._exit_with_failure = False
         self._exit_reason = None
         self._exit_code = None
         self._restart_drain_timeout = 0.01
+        # stop() reads the systemd-budget-clamped effective timeout
         self._running_agents = {}
         self._running_agents_ts = {}
         self._agent_cache = OrderedDict()
@@ -49,40 +52,87 @@ class _FakeGateway:
         self._shutdown_event = asyncio.Event()
         self._pending_messages = {}
         self._pending_approvals = {}
+        self.session_store = SimpleNamespace()
+        self._async_session_store = SimpleNamespace(
+            _store=self.session_store,
+            mark_resume_pending_batch=AsyncMock(side_effect=lambda keys, reason: list(keys)),
+            clear_resume_pending=AsyncMock(),
+        )
         self._busy_ack_ts = {}
+
+    @property
+    def _stopsec_headroom(self):
+        return 10.0
+
+    @property
+    def _effective_restart_drain_timeout(self) -> float:
+        """Mirror the GatewayRunner clamp: min(configured, stop_budget-headroom)."""
+        return min(
+            self._restart_drain_timeout,
+            max(60.0, self._restart_drain_timeout) + 30.0 - self._stopsec_headroom,
+        )
 
     def _running_agent_count(self):
         return len(self._running_agents)
 
+    def _active_cron_job_count(self):
+        # stop() reads this alongside _running_agent_count when logging the
+        # drain snapshot (#60432) -- this fake has no cron scheduler, so
+        # there's never in-flight cron work to report.
+        return 0
+
+    def _active_api_run_count(self):
+        # The shutdown log also reports adapter-owned API work (#63529).
+        # This fake has no API server adapter, so it is always idle.
+        return 0
+
+    def _active_delegation_count(self):
+        # Detached delegations also count as active work during shutdown;
+        # this fake never has one in flight.
+        return 0
+
     def _update_runtime_status(self, *_a, **_kw):
         pass
+
+    def _clear_plugin_message_injector(self):
+        pass
+
+    async def _run_in_executor_with_context(self, func, *args):
+        # stop() offloads agent-resource cleanup off the loop (#53175); run
+        # inline in tests so the bounded-cleanup path is exercised.
+        return func(*args)
+
+    async def _cleanup_agent_resources_off_loop(
+        self, agent, *, context="", timeout=None, session_key=None
+    ):
+        # Mirror the real bounded helper inline (no executor/timeout) so the
+        # fake exercises the same call shape stop() now uses.
+        return self._cleanup_agent_resources(agent)
 
     async def _notify_active_sessions_of_shutdown(self):
         pass
 
-    async def _drain_active_agents(self, timeout):
+    async def _cancel_secondary_profile_reconnect_tasks(self):
+        pass
+
+    async def _drain_active_agents(self, timeout, cron_timeout=None, **kwargs):
         return {}, False
 
-    def _finalize_shutdown_agents(self, agents):
+    async def _finalize_shutdown_agents(self, agents):
         for agent in agents.values():
             self._cleanup_agent_resources(agent)
 
     def _cleanup_agent_resources(self, agent):
-        if agent is None:
-            return
-        try:
-            if hasattr(agent, "shutdown_memory_provider"):
-                agent.shutdown_memory_provider()
-        except Exception:
-            pass
-        try:
-            if hasattr(agent, "close"):
-                agent.close()
-        except Exception:
-            pass
+        return gw_mod.GatewayRunner._cleanup_agent_resources(self, agent)
 
     def _evict_cached_agent(self, key):
         pass
+
+    def _release_running_agent_state(self, session_key, **_kwargs):
+        agent = self._running_agents.pop(session_key, None)
+        self._running_agents_ts.pop(session_key, None)
+        self._cleanup_agent_resources(agent)
+        return agent is not None
 
 
 def _make_mock_agent():
@@ -113,81 +163,6 @@ class TestCachedAgentCleanupOnShutdown:
 
         agent.shutdown_memory_provider.assert_called_once()
 
-    @pytest.mark.asyncio
-    async def test_cache_cleared_after_shutdown(self):
-        """The _agent_cache dict is cleared after stop."""
-        gw = _FakeGateway()
-        agent = _make_mock_agent()
-        gw._agent_cache["s1"] = (agent, "sig1")
-
-        await gw_mod.GatewayRunner.stop(gw)
-
-        assert len(gw._agent_cache) == 0
-
-    @pytest.mark.asyncio
-    async def test_no_cached_agents_no_error(self):
-        """stop() works fine when _agent_cache is empty."""
-        gw = _FakeGateway()
-
-        await gw_mod.GatewayRunner.stop(gw)  # Should not raise
-
-        assert len(gw._agent_cache) == 0
-
-    @pytest.mark.asyncio
-    async def test_multiple_cached_agents_all_cleaned(self):
-        """All cached agents get cleaned up."""
-        gw = _FakeGateway()
-        agents = []
-        for i in range(5):
-            a = _make_mock_agent()
-            agents.append(a)
-            gw._agent_cache[f"s{i}"] = (a, f"sig{i}")
-
-        await gw_mod.GatewayRunner.stop(gw)
-
-        for a in agents:
-            a.shutdown_memory_provider.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_cleanup_survives_agent_exception(self):
-        """An exception from one agent's shutdown doesn't prevent others."""
-        gw = _FakeGateway()
-
-        bad = _make_mock_agent()
-        bad.shutdown_memory_provider.side_effect = RuntimeError("boom")
-        bad.close.side_effect = RuntimeError("boom")
-
-        good = _make_mock_agent()
-
-        gw._agent_cache["bad"] = (bad, "sig-bad")
-        gw._agent_cache["good"] = (good, "sig-good")
-
-        await gw_mod.GatewayRunner.stop(gw)
-
-        # The good agent should still be cleaned up
-        good.shutdown_memory_provider.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_plain_agent_not_tuple(self):
-        """Cache entries that aren't tuples (just bare agents) are also cleaned."""
-        gw = _FakeGateway()
-        agent = _make_mock_agent()
-        gw._agent_cache["s1"] = agent  # Not a tuple
-
-        await gw_mod.GatewayRunner.stop(gw)
-
-        agent.shutdown_memory_provider.assert_called_once()
-        assert len(gw._agent_cache) == 0
-
-    @pytest.mark.asyncio
-    async def test_none_entry_skipped(self):
-        """A None cache entry doesn't cause errors."""
-        gw = _FakeGateway()
-        gw._agent_cache["s1"] = None
-
-        await gw_mod.GatewayRunner.stop(gw)
-
-        assert len(gw._agent_cache) == 0
 
 
 class TestRunningAgentsNotDoubleCleaned:

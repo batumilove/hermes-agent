@@ -1,0 +1,190 @@
+--- a/lib/depth.js
++++ b/lib/depth.js
+@@ -0,0 +1,26 @@
++/* Hermes security derivative: GHSA-vfj7-8cjw-p6xm. */
++'use strict';
++
++// A fixed ceiling protects every recursive consumer, including expansion's
++// nested append calls. Options cannot turn this safety bound off.
++const MAX_DEPTH = 128;
++
++const depthError = () => {
++  const error = new SyntaxError(`Brace pattern exceeds maximum nesting depth (${MAX_DEPTH})`);
++  error.code = 'ERR_BRACES_MAX_DEPTH';
++  return error;
++};
++
++const assertDepth = ast => {
++  const pending = [{ node: ast, depth: 0 }];
++  while (pending.length > 0) {
++    const { node, depth } = pending.pop();
++    if (!node.nodes) continue;
++    if (depth > MAX_DEPTH) throw depthError();
++    for (const child of node.nodes) {
++      if (child.nodes) pending.push({ node: child, depth: depth + 1 });
++    }
++  }
++};
++
++module.exports = { MAX_DEPTH, depthError, assertDepth };
+--- a/lib/parse.js
++++ b/lib/parse.js
+@@ -1,6 +1,7 @@
+ 'use strict';
+ 
+ const stringify = require('./stringify');
++const { MAX_DEPTH, depthError } = require('./depth');
+ 
+ /**
+  * Constants
+@@ -54,6 +55,10 @@
+    */
+ 
+   const advance = () => input[index++];
++  const enter = node => {
++    if (stack.length > MAX_DEPTH) throw depthError();
++    stack.push(node);
++  };
+   const push = node => {
+     if (node.type === 'text' && prev.type === 'dot') {
+       prev.type = 'text';
+@@ -144,7 +149,7 @@
+ 
+     if (value === CHAR_LEFT_PARENTHESES) {
+       block = push({ type: 'paren', nodes: [] });
+-      stack.push(block);
++      enter(block);
+       push({ type: 'text', value });
+       continue;
+     }
+@@ -210,7 +215,7 @@
+       };
+ 
+       block = push(brace);
+-      stack.push(block);
++      enter(block);
+       push({ type: 'open', value });
+       continue;
+     }
+--- a/lib/compile.js
++++ b/lib/compile.js
+@@ -1,9 +1,12 @@
+ 'use strict';
++
++const { assertDepth } = require('./depth');
+ 
+ const fill = require('fill-range');
+ const utils = require('./utils');
+ 
+ const compile = (ast, options = {}) => {
++  assertDepth(ast);
+   const walk = (node, parent = {}) => {
+     const invalidBlock = utils.isInvalidBrace(parent);
+     const invalidNode = node.invalid === true && options.escapeInvalid === true;
+--- a/lib/expand.js
++++ b/lib/expand.js
+@@ -1,4 +1,6 @@
+ 'use strict';
++
++const { assertDepth } = require('./depth');
+ 
+ const fill = require('fill-range');
+ const stringify = require('./stringify');
+@@ -31,6 +33,7 @@
+ };
+ 
+ const expand = (ast, options = {}) => {
++  assertDepth(ast);
+   const rangeLimit = options.rangeLimit === undefined ? 1000 : options.rangeLimit;
+ 
+   const walk = (node, parent = {}) => {
+--- a/lib/stringify.js
++++ b/lib/stringify.js
+@@ -1,8 +1,11 @@
+ 'use strict';
++
++const { assertDepth } = require('./depth');
+ 
+ const utils = require('./utils');
+ 
+ module.exports = (ast, options = {}) => {
++  assertDepth(ast);
+   const stringify = (node, parent = {}) => {
+     const invalidBlock = options.escapeInvalid && utils.isInvalidBrace(parent);
+     const invalidNode = node.invalid === true && options.escapeInvalid === true;
+--- a/package.json
++++ b/package.json
+@@ -1,7 +1,7 @@
+ {
+-  "name": "braces",
+-  "description": "Bash-like brace expansion, implemented in JavaScript. Safer than other brace expansion libs, with complete support for the Bash 4.3 braces specification, without sacrificing speed.",
+-  "version": "3.0.3",
++  "name": "@hermes-security/braces",
++  "description": "Reviewed Hermes security derivative of braces3.0.3 with bounded nesting (GHSA-vfj7-8cjw-p6xm).",
++  "version": "3.0.3-hermes.1",
+   "homepage": "https://github.com/micromatch/braces",
+   "author": "Jon Schlinkert (https://github.com/jonschlinkert)",
+   "contributors": [
+@@ -11,31 +11,31 @@
+     "hemanth.hm (http://h3manth.com)",
+     "Jon Schlinkert (http://twitter.com/jonschlinkert)"
+   ],
+-  "repository": "micromatch/braces",
++  "repository": {
++    "type": "git",
++    "url": "https://github.com/batumilove/hermes-agent.git",
++    "directory": "vendor/npm/braces"
++  },
+   "bugs": {
+     "url": "https://github.com/micromatch/braces/issues"
+   },
+   "license": "MIT",
+   "files": [
+     "index.js",
+-    "lib"
++    "lib",
++    "LICENSE",
++    "README.md",
++    "SOURCE.json",
++    "PATCH.diff",
++    "PATCHES.md"
+   ],
+   "main": "index.js",
+   "engines": {
+     "node": ">=8"
+   },
+-  "scripts": {
+-    "test": "mocha",
+-    "benchmark": "node benchmark"
+-  },
++  "scripts": {},
+   "dependencies": {
+     "fill-range": "^7.1.1"
+-  },
+-  "devDependencies": {
+-    "ansi-colors": "^3.2.4",
+-    "bash-path": "^2.0.1",
+-    "gulp-format-md": "^2.0.0",
+-    "mocha": "^6.1.1"
+   },
+   "keywords": [
+     "alpha",
+@@ -61,17 +61,5 @@
+     "ranges",
+     "sh"
+   ],
+-  "verb": {
+-    "toc": false,
+-    "layout": "default",
+-    "tasks": [
+-      "readme"
+-    ],
+-    "lint": {
+-      "reflinks": true
+-    },
+-    "plugins": [
+-      "gulp-format-md"
+-    ]
+-  }
++  "private": true
+ }

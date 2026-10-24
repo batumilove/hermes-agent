@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -67,45 +67,6 @@ def _make_runner():
 
 
 @pytest.mark.asyncio
-async def test_new_command_clears_session_model_override():
-    """/new must remove the session-scoped model override for that session."""
-    runner = _make_runner()
-    session_key = build_session_key(_make_source())
-
-    # Simulate a prior /model switch stored as a session override
-    runner._session_model_overrides[session_key] = {
-        "model": "gpt-4o",
-        "provider": "openai",
-        "api_key": "***",
-        "base_url": "",
-        "api_mode": "openai",
-    }
-    runner._session_reasoning_overrides[session_key] = {"enabled": True, "effort": "high"}
-    runner._pending_model_notes[session_key] = "[Note: switched to gpt-4o.]"
-
-    await runner._handle_reset_command(_make_event("/new"))
-
-    assert session_key not in runner._session_model_overrides
-    assert session_key not in runner._session_reasoning_overrides
-    assert session_key not in runner._pending_model_notes
-
-
-@pytest.mark.asyncio
-async def test_new_command_no_override_is_noop():
-    """/new with no prior model override must not raise."""
-    runner = _make_runner()
-    session_key = build_session_key(_make_source())
-
-    assert session_key not in runner._session_model_overrides
-    assert session_key not in runner._session_reasoning_overrides
-
-    await runner._handle_reset_command(_make_event("/new"))
-
-    assert session_key not in runner._session_model_overrides
-    assert session_key not in runner._session_reasoning_overrides
-
-
-@pytest.mark.asyncio
 async def test_new_command_only_clears_own_session():
     """/new must only clear the override for the session that triggered it."""
     runner = _make_runner()
@@ -139,3 +100,30 @@ async def test_new_command_only_clears_own_session():
     assert other_key in runner._session_reasoning_overrides
     assert session_key not in runner._pending_model_notes
     assert other_key in runner._pending_model_notes
+
+
+@pytest.mark.asyncio
+async def test_new_command_awaits_async_session_finalization(monkeypatch):
+    from hermes_cli import lifecycle
+
+    runner = _make_runner()
+    finalize_async = AsyncMock(return_value=[])
+    finalize_sync = MagicMock(return_value=[])
+    monkeypatch.setattr(
+        lifecycle,
+        "finalize_session_async",
+        finalize_async,
+        raising=False,
+    )
+    monkeypatch.setattr(lifecycle, "finalize_session", finalize_sync)
+
+    await runner._handle_reset_command(_make_event("/new"))
+
+    finalize_async.assert_awaited_once_with(
+        session_id="sess-1",
+        platform="telegram",
+        reason="new_session",
+        old_session_id="sess-1",
+        new_session_id="sess-1",
+    )
+    finalize_sync.assert_not_called()

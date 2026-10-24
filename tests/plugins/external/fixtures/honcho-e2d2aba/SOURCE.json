@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/plastic-labs/honcho",
+  "commit": "e2d2aba182862deeb846e5cd4a30a41bce0ed82a",
+  "subdir": "hermes-plugin-honcho",
+  "files": {
+    "client.py": "1ac859689b5c177d1686c817d5c4cb767b1b7905124ab0cb146e05d094ea87ce",
+    "client_cache.py": "c4e6b5b6bd615651211fde01084a880022db248c7e466060a0730399d38f20d0"
+  }
+}

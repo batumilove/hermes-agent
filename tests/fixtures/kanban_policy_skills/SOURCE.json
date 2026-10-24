@@ -1,0 +1,78 @@
+{
+  "archive_sha256": "b2db455885fc264bc9e751099a502680895c66c048de3dcbec36749d882b674f",
+  "commit": "9da856dcda82dc353af53f91e3ed0b49932fc476",
+  "declared_license": "MIT (preserved SKILL.md frontmatter)",
+  "files": {
+    "devops/kanban-worker/SKILL.md": {
+      "bytes": 36736,
+      "git_blob": "f36f7658b11dce6075b8b4edbb5619d54327099e",
+      "sha256": "913bb19a56f1a272a98af554593067e62aa8f428ce9736918fd2291434492ff2"
+    },
+    "devops/kanban-worker/references/controller-bound-exact-sha-pr-publication.md": {
+      "bytes": 2999,
+      "git_blob": "60c0d9b91eeed165927ac737858c02256ef6e412",
+      "sha256": "d269f2178e8d0ad3443c84099efcbc977b64150e9c3f6d2c1c4e8d71b0b2b3f4"
+    },
+    "devops/kanban-worker/references/exact-sha-review-supersession.md": {
+      "bytes": 2607,
+      "git_blob": "d5710c2307efddb7bfe4499e7f122a8df89d0114",
+      "sha256": "723937c383b9b3512eef9c229b7e2804abf4a925cf3534d5c5adb6c358bb2c01"
+    },
+    "devops/kanban-worker/references/fts-remediation-containment.md": {
+      "bytes": 2613,
+      "git_blob": "c28238703c7dc911fa1ec865f0d839d9b9d64c15",
+      "sha256": "5e188586a4b70d02a53a1070a5f80a872f5db1d781dedaeee7692ac2599027cf"
+    },
+    "devops/kanban-worker/references/global-search-pagination-review.md": {
+      "bytes": 2001,
+      "git_blob": "ac0badc63a01eef919a1e6970bea6c659676cebf",
+      "sha256": "0563e9f8e66e3a2564932b3d43a051c3efb3acaa998b43a531754cf2defe4406"
+    },
+    "devops/kanban-worker/references/post-remediation-event-loop-lag-chain.md": {
+      "bytes": 3392,
+      "git_blob": "c0495a15775d3d3d5c04bee5652aba8dcdaed5f1",
+      "sha256": "4857b775562871fb0a36948191845525e703b86059f5a99508d13b361326a325"
+    },
+    "devops/kanban-worker/references/profile-cache-sharing.md": {
+      "bytes": 5379,
+      "git_blob": "737934b0ffbda0d3e4d0ad3f8a8cbf566881e12f",
+      "sha256": "e37e76e7353268c3bfd96bf3f423ccb659371c6a67fd1919579f715e323e2d64"
+    },
+    "devops/kanban-worker/references/routing-persistence-exact-sha-review.md": {
+      "bytes": 3509,
+      "git_blob": "f5f93b5e49805c7b539293a53fbf0b9b89ed4951",
+      "sha256": "d349be7c5da97386d25c9683c4bcd7b0c45d1d4851013a77116a74c5f9163956"
+    },
+    "software-development/restart-window-bundling/SKILL.md": {
+      "bytes": 6269,
+      "git_blob": "b65d69c0abdb886ed2797bffeff5521d46d2de16",
+      "sha256": "3cc94c8c8fcbb1c0b6647cdcc09a1c16ddd0e2339b964b893acbd1b4e2f4ff86"
+    },
+    "software-development/restart-window-bundling/references/astra-remediation-acceptance.md": {
+      "bytes": 7098,
+      "git_blob": "f4a2a880871a585543ed8fdb5a59fa8d6496607a",
+      "sha256": "41a18774f649bc6919f7cba14fc9dbdd71b569836488305d3dc5dd1da9f49632"
+    },
+    "software-development/restart-window-bundling/scripts/test_validate_bundle.py": {
+      "bytes": 20864,
+      "git_blob": "f7c40a4cd27ac71e25f0a341fe203446c6193cd4",
+      "sha256": "99beb613e27f40eaeb8173ed4f74b0c4ac130a039d804d61d2f6ba8417974b2f"
+    },
+    "software-development/restart-window-bundling/scripts/validate_bundle.py": {
+      "bytes": 32158,
+      "git_blob": "1e3ffdb6daf4b1d76b899906b7d253ad8ffc8c3c",
+      "sha256": "e4a9c050a585cf25d9ac52f8395a6658c44d177ee91b63e5cae8642ffd3437d9"
+    },
+    "software-development/restart-window-bundling/templates/restart-window-bundle.json": {
+      "bytes": 3482,
+      "git_blob": "db61bef410aaff0016c1fb3de18e4d18732f3d22",
+      "sha256": "8475e5e1cf0039c3f4de870f27aadd48e5d0649c097c977fe6cca8145884ca2c"
+    }
+  },
+  "repository": "batumilove/hermes-skills",
+  "skills": [
+    "devops/kanban-worker",
+    "software-development/restart-window-bundling"
+  ],
+  "tree": "615a599c29a6b696ca1a31b5d9a9ba1739c62f21"
+}

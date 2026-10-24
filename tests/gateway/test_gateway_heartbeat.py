@@ -3,21 +3,45 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.run import GatewayRunner
-from gateway.status import read_heartbeat, heartbeat_age_seconds
+from gateway.shutdown_watchdog import get_loop_heartbeat_path
+from gateway.status import _read_json_file as _status_read_json
+
+
+def read_heartbeat() -> dict | None:
+    """Read the live heartbeat payload (gateway.heartbeat)."""
+    return _status_read_json(get_loop_heartbeat_path())
+
+
+def heartbeat_age_seconds(now=None) -> float | None:
+    """Age of the last heartbeat write, mirroring live's payload shape."""
+    import datetime as _dt
+    import time as _time
+
+    payload = read_heartbeat()
+    if not payload or "updated_at" not in payload:
+        return None
+    try:
+        ts = _dt.datetime.fromisoformat(payload["updated_at"]).timestamp()
+    except (TypeError, ValueError):
+        return None
+    return (now if now is not None else _time.time()) - ts
 
 
 class _SuccessfulAdapter(BasePlatformAdapter):
-    def __init__(self):
+    def __init__(self, before_connect=None):
+        self.before_connect = before_connect
         super().__init__(PlatformConfig(enabled=True, token="***"), Platform.DISCORD)
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        if self.before_connect is not None:
+            self.before_connect()
         return True
 
     async def disconnect(self) -> None:
@@ -43,26 +67,53 @@ async def test_heartbeat_writer_starts_before_platforms_and_writes_file(
         sessions_dir=tmp_path / "sessions",
     )
     runner = GatewayRunner(config)
-    monkeypatch.setattr(runner, "_create_adapter", lambda platform, platform_config: _SuccessfulAdapter())
+    heartbeat_at_connect = []
+
+    def observe_connect():
+        heartbeat_at_connect.append(runner._loop_heartbeat_task)
+        assert runner._loop_heartbeat_task is not None
+        assert not runner._loop_heartbeat_task.done()
+
+    monkeypatch.setattr(runner, "_create_adapter", lambda platform, platform_config: _SuccessfulAdapter(observe_connect))
+    monkeypatch.setattr(runner, "_start_startup_warmup", lambda: None)
     monkeypatch.setattr(runner.hooks, "discover_and_load", lambda: None)
     monkeypatch.setattr(runner.hooks, "emit", AsyncMock())
 
     ok = await runner.start()
 
     assert ok is True
-    # Heartbeat task should exist and be actively running
-    assert runner._heartbeat_task is not None
+    assert heartbeat_at_connect == [runner._loop_heartbeat_task]
+    # Heartbeat task should exist and be actively running (live's attribute
+    # is _loop_heartbeat_task — the supervised asyncio task)
+    assert runner._loop_heartbeat_task is not None
+    background = runner._background_tasks
+    ordinary = asyncio.create_task(asyncio.Event().wait())
+    try:
+        runner._background_tasks = {runner._loop_heartbeat_task}
+        with (
+            patch("tools.async_delegation.active_count", return_value=0),
+            patch("tools.process_registry.process_registry.has_any_active", return_value=False),
+            patch("tools.process_registry.process_registry.pending_watchers", []),
+        ):
+            assert runner._scale_to_zero_has_live_background_work() is False
+            runner._background_tasks.add(ordinary)
+            assert runner._scale_to_zero_has_live_background_work() is True
+    finally:
+        runner._background_tasks = background
+        ordinary.cancel()
+        await asyncio.gather(ordinary, return_exceptions=True)
 
     # Give the heartbeat writer a moment to write the file
     for _ in range(50):
-        if (tmp_path / "gateway.heartbeat").exists():
+        if get_loop_heartbeat_path().exists():
             break
         await asyncio.sleep(0.05)
 
     heartbeat = read_heartbeat()
     assert heartbeat is not None
     assert heartbeat["pid"] > 0
-    assert "last_heartbeat_at" in heartbeat
+    # live's heartbeat payload uses "updated_at" (richer: monotonic + start_time)
+    assert "updated_at" in heartbeat or "last_heartbeat_at" in heartbeat
     age = heartbeat_age_seconds()
     assert age is not None
     assert age < 5.0
@@ -82,18 +133,18 @@ async def test_heartbeat_writer_cancelled_on_shutdown(monkeypatch, tmp_path):
     )
     runner = GatewayRunner(config)
     monkeypatch.setattr(runner, "_create_adapter", lambda platform, platform_config: _SuccessfulAdapter())
+    monkeypatch.setattr(runner, "_start_startup_warmup", lambda: None)
     monkeypatch.setattr(runner.hooks, "discover_and_load", lambda: None)
     monkeypatch.setattr(runner.hooks, "emit", AsyncMock())
 
     await runner.start()
-    heartbeat_task = runner._heartbeat_task
+    heartbeat_task = runner._loop_heartbeat_task
     assert heartbeat_task is not None
     assert not heartbeat_task.done()
 
     await runner.stop()
 
     assert heartbeat_task.done()
-    assert runner._heartbeat_task is None
 
 
 @pytest.mark.asyncio
@@ -106,6 +157,7 @@ async def test_heartbeat_age_gauge_exposes_staleness(monkeypatch, tmp_path):
     )
     runner = GatewayRunner(config)
     monkeypatch.setattr(runner, "_create_adapter", lambda platform, platform_config: _SuccessfulAdapter())
+    monkeypatch.setattr(runner, "_start_startup_warmup", lambda: None)
     monkeypatch.setattr(runner.hooks, "discover_and_load", lambda: None)
     monkeypatch.setattr(runner.hooks, "emit", AsyncMock())
 

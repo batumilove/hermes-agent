@@ -1,0 +1,2061 @@
+version: 1
+upstream:
+  repository: NousResearch/hermes-agent
+  branch: main
+  base_file: .github/upstream-base
+  provenance_file: .github/upstream-sync-provenance.json
+patches:
+- id: post-turn-owning-context-engine
+  kind: core
+  rationale: Pass the agent-owned context engine to post-turn persistence hooks so
+    consumers do not replay persisted history through another registered engine.
+  paths:
+  - agent/turn_finalizer.py
+  - tests/agent/test_post_turn_engine_handoff.py
+  tests:
+  - scripts/run_tests.sh tests/agent/test_post_turn_engine_handoff.py
+  retirement: Remove when upstream passes the owning context engine to post_llm_call
+    while preserving the detached-agent publication guard.
+- id: ci-compare-response-bound
+  kind: operations
+  rationale: Read only the first GitHub compare page so large consolidations cannot
+    exhaust detection's job budget; run every lane at the API's 300-file cap so
+    truncated diffs never hide required checks.
+  paths:
+  - .github/actions/detect-changes/action.yml
+  - tests/ci/test_detect_changes_compare.py
+  tests:
+  - scripts/run_tests.sh tests/ci/test_detect_changes_compare.py tests/ci/test_classify_changes.py
+  retirement: Remove when upstream bounds compare traversal and conservatively handles capped file lists.
+- id: native-updater-scope-custody-enforcement
+  kind: core
+  rationale: Require verified runtime homes even for PID-file hints and user units; discover
+    profile-before-gateway units and preserve unmerged index custody rather than reset it.
+  paths:
+  - hermes_cli/update_fleet_scope.py
+  - hermes_cli/update_cmd_fleet.py
+  - hermes_cli/update_cmd_stash.py
+  - tests/hermes_cli/test_update_scope_custody_enforcement.py
+  - tests/hermes_cli/test_update_concurrent_quarantine.py
+  - tests/hermes_cli/test_update_pause_service_rollback.py
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_update_scope_custody_enforcement.py tests/hermes_cli/test_update_autostash.py tests/hermes_cli/test_update_fleet_home_scope.py
+  retirement: Remove when upstream enforces verified fleet ownership and preserves unresolved conflict stages.
+- id: native-updater-source-admission
+  kind: core
+  rationale: Check fixed storage headroom before checkout housekeeping; preserve selected
+    no-op SHA and refuse unavailable/mismatched HEAD without changing ordinary fork merge semantics.
+  paths:
+  - hermes_cli/update_cmd.py
+  - hermes_cli/update_source_preflight.py
+  - tests/hermes_cli/test_update_source_preflight.py
+  - tests/hermes_cli/test_update_narrow_candidate.py
+  - tests/hermes_cli/test_update_completion_routing.py
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_update_source_preflight.py tests/hermes_cli/test_update_inventory.py tests/hermes_cli/test_update_target_identity.py
+  retirement: Remove when upstream provides equivalent source admission and explicit inventory ownership evidence.
+- id: native-updater-mandatory-pm-failure
+  kind: core
+  rationale: Propagate mandatory dependency preparation failures through the native updater's
+    correlated receipt and completion status; do not activate or collect generations after PM failure.
+  paths:
+  - hermes_cli/update_completion.py
+  - hermes_cli/update_receipt.py
+  - tests/hermes_cli/test_update_completion_process.py
+  - tests/hermes_cli/test_update_receipt_pm_embed.py
+  - tests/hermes_cli/test_update_zip_completion.py
+  - tests/hermes_cli/test_update_post_commit_safety.py
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_update_completion_process.py tests/hermes_cli/test_update_receipt_pm_embed.py
+  retirement: Remove when upstream propagates mandatory PM failure as nonzero partial completion,
+    preserves correlated failure receipts and blocks prepared activation after failed PM results.
+- id: lcm-native-snapshot-provenance
+  kind: core
+  rationale: Preserve the context engine's native admission provenance while compression
+    runs against a deep-copied snapshot, retaining no-hook compatibility and scope cleanup.
+  paths:
+  - agent/compression_facade.py
+  - tests/agent/test_lcm_snapshot_scope.py
+  tests:
+  - scripts/run_tests.sh tests/agent/test_lcm_snapshot_scope.py tests/agent/test_compression_commit_fence_race.py
+  retirement: Remove when upstream preserves equivalent native snapshot admission provenance,
+    original no-op message identity, no-hook compatibility and exception cleanup.
+- id: cron-live-worker-monitor-recovery
+  kind: core
+  rationale: Preserve an adopted live worker's claim when optional ledger observation fails
+    with OSError or SQLite OperationalError; retry after five monotonic seconds so recovery
+    remains observable. Programming and interface defects propagate, and the mandatory
+    process-exit ledger read remains error-visible. Integration tests require Linux process
+    and SQLite support, pytest-asyncio, psutil, and the checkout's test dependencies;
+    run with a disposable HOME and HERMES_HOME, never the live scheduler store.
+  paths:
+  - cron/scheduler.py
+  - cron/scheduler_detached_worker.py
+  - tests/cron/test_worker_monitor_read_failure.py
+  - tests/cron/test_worker_monitor_recovery.py
+  - tests/cron/test_worker_monitor_integration.py
+  tests:
+  - scripts/run_tests.sh tests/cron/test_worker_monitor_read_failure.py tests/cron/test_worker_monitor_recovery.py tests/cron/test_worker_monitor_integration.py
+  - scripts/run_tests.sh tests/cron/test_scheduler.py tests/cron/test_execution_ledger.py tests/cron/test_restart_safe_worker.py
+  retirement: Remove when upstream preserves live-worker ownership across optional storage
+    read failures with bounded retry, still-live recovery reaping, propagated programming
+    defects and error-visible mandatory exit reads, with equivalent integration coverage.
+- id: stage2-install-state-ownership
+  kind: compatibility
+  rationale: Repair root-owned installation state during container startup so the non-root
+    runtime user can acquire installation locks, without widening modes, following symlinks,
+    or changing unrelated host files. Real cross-UID tests require a non-root Linux runner
+    with passwordless sudo; skipped runs are not ownership acceptance evidence.
+  paths:
+  - docker/stage2-hook.sh
+  - tests/tools/test_stage2_hook_install_ownership.py
+  tests:
+  - bash -n docker/stage2-hook.sh
+  - scripts/run_tests.sh tests/tools/test_stage2_hook_install_ownership.py
+  retirement: Remove when upstream stage2 repairs installation-state ownership with equivalent
+    mode-preserving, symlink-safe behavior and real cross-UID regression coverage.
+- id: telegram-private-reply-anchor-retry
+  kind: extension
+  rationale: Retry rejected private message threads with the existing reply anchor, preserving the
+    binding and refusing delivery when that anchor is also rejected.
+  paths:
+  - plugins/platforms/telegram/adapter.py
+  - plugins/platforms/telegram/adapter_thread_retry.py
+  - tests/gateway/test_telegram_thread_fallback.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_telegram_thread_fallback.py
+  retirement: Remove when upstream preserves private reply anchors across missing-thread retries.
+- id: included-updater-operational-policy
+  kind: operations
+  rationale: Require the installation's included updater for application updates and remove
+    custom activation controllers as an ordinary update prerequisite while preserving runtime
+    identity, authorization and enforced lifecycle controls.
+  paths:
+  - AGENTS.md
+  - website/docs/getting-started/updating.md
+  - skills/autonomous-ai-agents/hermes-agent/SKILL.md
+  - website/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md
+  tests:
+  - python3 scripts/check
+  retirement: Remove when upstream instructions require equivalent supported updater routing
+    and no longer permit operational skills to impose custom deployment controllers by default.
+- id: upstream-catalog-admission-split
+  kind: operations
+  rationale: Retain the previously accepted catalog while upstream code is reviewed separately.
+    The deferred upstream entries land in a data-only follow-up PR under the unchanged
+    catalog admission gate, without mixing entry pins and executable validation code.
+  paths:
+  - plugin-catalog/account-pool.yaml
+  - plugin-catalog/agent-janitor.yaml
+  - plugin-catalog/alans-way-computer.yaml
+  - plugin-catalog/alans-way.yaml
+  - plugin-catalog/anatomy-museum.yaml
+  - plugin-catalog/author-feed.yaml
+  - plugin-catalog/aux-ledger.yaml
+  - plugin-catalog/birkin-mnemosyne.yaml
+  - plugin-catalog/gmail.yaml
+  - plugin-catalog/hermes-aac.yaml
+  - plugin-catalog/hermes-activity.yaml
+  - plugin-catalog/hermes-agent-mixer.yaml
+  - plugin-catalog/hermes-insight.yaml
+  - plugin-catalog/hermes-lang-ko.yaml
+  - plugin-catalog/hermes-lang-pt-br.yaml
+  - plugin-catalog/huddo.yaml
+  - plugin-catalog/jp-egov-law.yaml
+  - plugin-catalog/kiwi.yaml
+  - plugin-catalog/kumiho-memory.yaml
+  - plugin-catalog/lightningai-rate-limit.yaml
+  - plugin-catalog/lightningai.yaml
+  - plugin-catalog/model-router.yaml
+  - plugin-catalog/nexus.yaml
+  - plugin-catalog/nvidia-app.yaml
+  - plugin-catalog/nvidia-broadcast.yaml
+  - plugin-catalog/openinvest.yaml
+  - plugin-catalog/plan-mode.yaml
+  - plugin-catalog/qdrant-memory.yaml
+  - plugin-catalog/secure-env-ingress.yaml
+  - plugin-catalog/showly.yaml
+  - plugin-catalog/speechify.yaml
+  - plugin-catalog/switchbot-control.yaml
+  - plugin-catalog/teamorouter.yaml
+  - plugin-catalog/telegram-client.yaml
+  - plugin-catalog/tinyfish.yaml
+  - plugin-catalog/wait-ledger.yaml
+  tests:
+  - python scripts/check_fork_delta.py
+  retirement: Remove after the data-only catalog follow-up is merged and the catalog matches
+    the accepted upstream baseline; the shared-daemon migration can retire this split record.
+- id: producer-generation-pythonpath-isolation
+  kind: extension
+  rationale: Keep successfully activated producer generations out of unrelated Python children after
+    dependency selection advances, and release newly acquired leases when activation fails without
+    discarding earlier successful producer ownership.
+  paths:
+  - pm/environments.py
+  - tools/environments/local_pythonpath.py
+  - tests/pm/test_producer_generation.py
+  - website/docs/reference/package-management.md
+  tests:
+  - scripts/run_tests.sh tests/pm/test_producer_generation.py tests/pm/test_lease_reselection.py
+    tests/pm/test_runtime_selection.py tests/tools/test_build_subprocess_env.py
+    tests/tools/test_hermes_subprocess_env.py
+  retirement: Remove when upstream preserves successful producer-generation provenance, cleans failed
+    activation leases, and passes the same child-path and lease regressions.
+- id: delegation-capacity-rejection-accounting
+  kind: core
+  rationale: Preserve bounded delegation capacity admission, interruption cleanup, and stable grouped
+    rejection identities with terminal live-log accounting when no child worker is launched.
+  paths:
+  - tests/tools/test_delegate_capacity_busy.py
+  - tests/tools/test_delegate_capacity_interrupt.py
+  - tests/tools/test_delegate_grouped_rejection.py
+  - tools/async_delegation.py
+  - tools/delegate_tool_config.py
+  - tools/delegation_live_log.py
+  tests:
+  - scripts/run_tests.sh tests/tools/test_delegate_capacity_busy.py tests/tools/test_delegate_capacity_interrupt.py
+    tests/tools/test_delegate_grouped_rejection.py
+  retirement: Remove when official upstream provides equivalent bounded capacity admission, interrupt
+    cleanup, stable grouped rejection identities, and terminal accounting without launching child workers.
+- id: feishu-webhook-authentication-quota
+  kind: extension
+  rationale: Authenticate Feishu callbacks before charging delivery quota, require a verified token for
+    plaintext URL challenges, and bound callback parsing and anomaly state for the published GHSA-pmqc-57g8-c22c
+    finding. Preserve valid signed events and authenticated challenge delivery.
+  paths:
+  - plugins/platforms/feishu/adapter.py
+  - plugins/platforms/feishu/webhook_security.py
+  - tests/plugins/platforms/feishu/test_webhook_security.py
+  - website/docs/user-guide/messaging/feishu.md
+  - website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/messaging/feishu.md
+  - tests/gateway/_plugin_adapter_loader.py
+  tests:
+  - scripts/run_tests.sh tests/plugins/platforms/feishu/test_webhook_security.py
+  retirement: Remove when official upstream provides equivalent callback authentication, quota ordering,
+    and bounded parsing/state with the same valid-event and challenge contracts.
+- id: supply-chain-build-input-pinning
+  kind: operations
+  rationale: Pin npm bootstrap and Debian container inputs to reviewed immutable versions, suppress bootstrap
+    lifecycle scripts, enforce the repository release-age policy, upgrade fixable packages already present
+    in the pinned runtime base, replace vulnerable bundled npm and uv components, restrict reusable test
+    workflow permissions, cover every tracked dependency lockfile in OSV, and reject equivalent unapproved
+    global npm install syntax in CI and Docker dependency installs. PM pins and verifies a reviewed brace-expansion
+    and Undici overlays before publishing npm; Nix consumes the same artifacts and verifier. PM
+    removes Node's redundant npm bundle and Python's unused pip/bootstrap payload before recording
+    store digests, while preserving distlib launcher generation. Image metadata derives its version
+    from authenticated release/import provenance rather than the development placeholder.
+  paths:
+  - .github/workflows/deploy-site.yml
+  - .github/workflows/docs-site-checks.yml
+  - .github/workflows/e2e-desktop.yml
+  - .github/workflows/js-autofix.yml
+  - .github/workflows/js-tests.yml
+  - .github/workflows/termux-verify.yml
+  - .github/workflows/osv-scanner.yml
+  - .github/workflows/docker-lint.yml
+  - Dockerfile
+  - .github/workflows/deploy-compose.yml
+  - tests/scripts/test_js_tests_workflow.py
+  - tests/scripts/test_osv_scanner_workflow.py
+  - scripts/ci/osv_scan_inputs.py
+  - tests/scripts/test_osv_scan_inputs.py
+  - tests/tools/test_dockerfile_vulnerability_floors.py
+  - pm/packages.py
+  - pm/npm_security_overlay.py
+  - pm/node_npm_layout.py
+  - pm/python_bootstrap.py
+  - pm/lock.json
+  - docker/build_agent.py
+  - scripts/build/agent.py
+  - scripts/build/inputs.py
+  - scripts/build/image_identity.py
+  - scripts/build/mint_launchers.py
+  - nix/npm-pinned.nix
+  - nix/pm-packages.nix
+  - tests/pm/test_npm_security_overlay.py
+  - tests/pm/test_npm_self_install.py
+  - tests/pm/test_node_npm_layout.py
+  - tests/pm/test_python_bootstrap.py
+  - tests/pm/test_cold_runtime_e2e.py
+  - tests/pm/test_activation_setup.py
+  - tests/pm/test_startup_recovery.py
+  - tests/pm/test_node_libatomic_install_boundary.py
+  - tests/pm/_fixtures.py
+  - tests/pm/test_update_request_reuse.py
+  - tests/scripts/test_image_identity.py
+  - tests/scripts/test_termux_build_wheels.py
+  - tests/scripts/test_fresh_source_install.py
+  - scripts/install.sh
+  - scripts/install.ps1
+  tests:
+  - python3 -c "import pathlib, yaml; [yaml.safe_load(p.read_text()) for p in pathlib.Path('.github/workflows').glob('*.yml')]"
+  - hadolint Dockerfile
+  - npm run check --workspace apps/desktop
+  - scripts/run_tests.sh tests/scripts/test_js_tests_workflow.py tests/scripts/test_osv_scanner_workflow.py
+    tests/tools/test_dockerfile_vulnerability_floors.py
+  - scripts/run_tests.sh tests/pm/test_node_npm_layout.py tests/pm/test_npm_security_overlay.py
+    tests/pm/test_npm_self_install.py tests/pm/test_python_bootstrap.py tests/scripts/test_image_identity.py
+  retirement: Remove when upstream pins equivalent npm and Debian build inputs, restricts reusable workflow
+    permissions, and scans every tracked dependency lockfile with matching lifecycle and release-age protections.
+- id: browserslist-ghsa-73wf-remediation
+  kind: operations
+  rationale: Keep every root and website Browserslist resolution at 4.28.7 or newer so untrusted custom
+    statistics cannot trigger the prototype-write and crash paths tracked by GHSA-73wf-gq98-2v4g, CVE-2026-73088,
+    and CVE-2026-73089.
+  paths:
+  - package.json
+  - package-lock.json
+  - website/package.json
+  - website/package-lock.json
+  tests:
+  - npx --yes npm@12.0.1 audit --audit-level=high
+  - npx --yes npm@12.0.1 --prefix website audit --audit-level=high
+  - npm run check
+  - npm --prefix website run build
+  retirement: Remove when the recorded upstream baseline resolves Browserslist 4.28.7 or newer in both
+    root and website dependency scopes.
+- id: high-severity-dependency-remediation
+  kind: operations
+  rationale: Keep the remaining fork dependency surfaces outside the Critical and High OSV advisories
+    addressed by the September 2026 repository-wide lockfile remediation, while preserving an exact Electron
+    runtime/build pin and a production-only Nix node-gyp dependency closure. October scanning updates
+    exact desktop/docs floors and uses a hash-verified licensed braces derivative for the unpatched nesting
+    advisory. Pin MCP 2.2.0 to close GHSA-84m7-p3x7-pcfv session resource exhaustion.
+  paths:
+  - pm/AGENTS.md
+  - tests/test_packaging_metadata.py
+  - apps/bootstrap-installer/package.json
+  - .npmrc
+  - apps/desktop/package.json
+  - nix/lib.nix
+  - nix/checks.nix
+  - nix/python.nix
+  - nix/node-gyp-11-4-0-package-lock.json
+  - nix/node-gyp-11-4-0.nix
+  - nix/tests/node-gyp-production.mjs
+  - nix/tests/npm-offline-overrides.mjs
+  - package-lock.json
+  - package.json
+  - pyproject.toml
+  - scripts/whatsapp-bridge/package-lock.json
+  - scripts/whatsapp-bridge/package.json
+  - tests-js/package.json
+  - tests/test_npm_security_policy.py
+  - tests/plugins/test_chronos_security_compatibility.py
+  - tests/tools/test_lazy_deps.py
+  - tests/tools/test_mcp_oauth_manager.py
+  - tools/lazy_deps.py
+  - ui-tui/package.json
+  - uv.lock
+  - web/package.json
+  - website/.npmrc
+  - website/package-lock.json
+  - website/package.json
+  - pm/lock.json
+  - vendor/npm/**
+  - scripts/ci/reviewed_npm_archive.py
+  - scripts/ci/check_profile_archive_boundary.py
+  - tests/scripts/test_check_profile_archive_boundary.py
+  - tests-js/braces-depth-guard.test.mjs
+  - plugins/platforms/photon/sidecar/package.json
+  - plugins/platforms/photon/sidecar/package-lock.json
+  - website/tests/braces-security.test.*
+  - apps/desktop/electron/git-review-ops.ts
+  - apps/desktop/electron/git-review-ops.test.ts
+  - tests/e2e/core/upgrade/network/test_mirrors.py
+  - tests/pm/test_update_request_reuse.py
+  tests:
+  - scripts/run_tests.sh tests/test_npm_security_policy.py tests/tools/test_lazy_deps.py
+  - npm ci --ignore-scripts && npm audit --audit-level=high
+  - npm --prefix website ci --ignore-scripts && npm --prefix website audit --audit-level=high
+  - npm --prefix scripts/whatsapp-bridge ci --ignore-scripts && npm --prefix scripts/whatsapp-bridge audit
+    --audit-level=high
+  - nix build .#node-gyp
+  - nix build .#checks.x86_64-linux.npm-offline-overrides
+  - scripts/run_tests.sh tests/e2e/core/upgrade/network/test_mirrors.py tests/pm/test_update_request_reuse.py
+  retirement: Remove when the recorded upstream baseline carries equivalent patched dependency floors,
+    Electron pin parity, and production-only node-gyp Nix dependency closure with matching regression
+    coverage.
+- id: dcf-locked-optional-extra
+  kind: operations
+  rationale: Replace the dormant hashless DCF requirements file with a uv-locked optional extra and document
+    the supported installation path.
+  paths:
+  - optional-skills/finance/dcf-model/SKILL.md
+  - website/docs/user-guide/skills/optional/finance/finance-dcf-model.md
+  - optional-skills/finance/dcf-model/requirements.txt
+  - pyproject.toml
+  - tests/test_dcf_dependency_contract.py
+  - uv.lock
+  tests:
+  - python -m pm.build_env --source . --lock-only
+  - scripts/run_tests.sh tests/test_dcf_dependency_contract.py
+  retirement: Remove when upstream provides an equivalently locked dependency contract for the bundled
+    DCF skill.
+- id: fork-free-runner-labels
+  kind: operations
+  rationale: Run the heavy CI lanes on free standard GitHub-hosted runners instead of paid larger runners
+    (ubuntu-latest-96-core/32-core, windows-latest-32-core) which the fork has no allocation for; jobs
+    queue forever otherwise. The lanes run slower on ubuntu-latest/windows-latest but complete at zero
+    cost on this public repository. Bound per-file concurrency to standard runner capacity while retaining
+    all test selectors and deadlines.
+  paths:
+  - tests/ci/test_windows_update_crash_oracles.py
+  - .github/workflows/ci.yaml
+  - .github/workflows/docker.yml
+  - .github/workflows/nix.yml
+  - .github/workflows/rust-tests.yml
+  - .github/workflows/tests-os.yml
+  - .github/workflows/tests.yml
+  - tests/ci/test_classify_changes.py
+  - .github/workflows/desktop-bundle-smoke.yml
+  - .github/workflows/desktop-bundled-release.yml
+  - .github/workflows/e2e-desktop-core.yml
+  - .github/workflows/e2e-desktop-update.yml
+  - .github/workflows/install-e2e-windows-run.yml
+  - .github/workflows/pm-bundle.yml
+  - .github/workflows/sandbox-image.yml
+  - .github/workflows/windows-install-update-e2e.yml
+  - .github/workflows/windows-venv-e2e.yml
+  - .github/workflows/windows-bundle-sdk.yml
+  - tests/scripts/desktop_update/windows_commit_outcome_support.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_commit_outcome.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_commit_receipt.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_finish_custody.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_watchdog.py
+  - tests/scripts/desktop_update/windows_handoff_lineage_support.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_handoff_lineage.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_handoff_started_at.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_launcher_rule.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_handoff_run.py
+  - tests/scripts/desktop_update/windows_marker_support.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_marker.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_system_marker.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_marker_metadata.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_marker_format.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_marker_bridge.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_desktop_exit.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_ui_profile.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_marker_custody.py
+  - apps/desktop/e2e/core/harness.ts
+  - apps/desktop/e2e/core/transcript-integrity.spec.ts
+  - scripts/run_tests.sh
+  - tests/e2e/core/upgrade/git/_git_world.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_python_handoff.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_python_idle_watchdog.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_python_launcher_probe.py
+  - tests/scripts/desktop_update/test_desktop_update_windows_python_update_failures.py
+  - tests/scripts/desktop_update/windows_handoff_support.py
+  - tests/scripts/desktop_update/windows_process_support.py
+  - tests/scripts/desktop_update/windows_python_handoff_support.py
+  tests:
+  - scripts/run_tests.sh tests/ci/test_update_ci_routing.py tests/ci/test_windows_update_crash_oracles.py
+  - python3 -c "import pathlib, yaml; [yaml.safe_load(p.read_text()) for p in pathlib.Path('.github/workflows').glob('*.yml')]"
+  - python3 scripts/check_fork_delta.py
+  - scripts/run_tests.sh tests/scripts/desktop_update/test_desktop_update_windows_python_handoff.py tests/scripts/desktop_update/test_desktop_update_windows_python_idle_watchdog.py
+    tests/scripts/desktop_update/test_desktop_update_windows_python_launcher_probe.py tests/scripts/desktop_update/test_desktop_update_windows_python_update_failures.py
+  retirement: Remove when the fork account has a larger-runner allocation and the upstream runner labels
+    are restored.
+- id: install-e2e-sandbox-node-ca
+  kind: operations
+  rationale: 'Make Node clients trust the throwaway CA that signs HTTPS certificates in the install E2E
+    sandbox while retaining the host CA exclusively for the proxy''s outbound verification. Force one
+    unambiguous Connection: close request header so npm cannot reuse a tunnel the single-request proxy
+    has already closed.'
+  paths:
+  - scripts/sandbox/stage2-run.sh
+  - scripts/sandbox/proxy.py
+  - tests/test_dev_sandbox_tls.py
+  - tests/install/install-update-e2e.sh
+  tests:
+  - scripts/run_tests.sh tests/test_dev_sandbox_tls.py
+  - tests/install/install-update-e2e.sh
+  retirement: Remove when upstream provides equivalent sandbox Node CA trust, connection-header normalization,
+    managed Node header selection, npm-log collection, and regression coverage for all listed paths.
+- id: fork-patch-governance
+  kind: operations
+  rationale: Require every fork-to-upstream path delta to have an explicit owner, verification command,
+    and retirement condition. Verify immutable import provenance before selecting an upstream comparison
+    for blob and critical-pattern gates; later PRs retain their target-branch gates.
+  paths:
+  - scripts/ci/classify_changes.py
+  - .github/batumi-patches.yaml
+  - .github/batumi-contracts.yaml
+  - .github/batumi-components.lock.yaml
+  - .github/upstream-base
+  - .github/upstream-sync-provenance.json
+  - .github/workflows/ci.yaml
+  - .github/workflows/contributor-check.yml
+  - .github/workflows/label-rerun.yml
+  - .github/workflows/deploy-compose.yml
+  - .github/workflows/promote-compose.yml
+  - .github/workflows/stack-ci-shadow.yml
+  - .github/workflows/staging-telegram-socket-diagnostics.yml
+  - .github/workflows/upstream-sync.yml
+  - contributors/emails/1396641434@qq.com
+  - contributors/emails/brooklyn@nousresearch.com
+  - contributors/emails/dcdexhome@gmail.com
+  - contributors/emails/muhammedeminkamay92@gmail.com
+  - contributors/emails/rroveri@nvidia.com
+  - contributors/emails/tom@spoct.com
+  - contributors/emails/agent@Agents-Mac-mini.local
+  - contributors/emails/agent@agents-Mac-mini.local
+  - contributors/emails/aleman@batumi.works
+  - contributors/emails/audit@batumi.works
+  - contributors/emails/hermes@local
+  - contributors/emails/hermes@localhost
+  - contributors/emails/repo-builder@batumi.works
+  - contributors/emails/repo-ops-glm-5-1@hermes.local
+  - scripts/check_fork_delta.py
+  - scripts/install_batumi_components.py
+  - scripts/run_batumi_contracts.py
+  - tests/scripts/test_check_fork_delta.py
+  - tests/scripts/test_ci_workflow.py
+  - tests/test_job_scoped_workflow_permissions.py
+  - tests/scripts/test_install_batumi_components.py
+  - tests/test_hermes_ops_pull_budget_pin.py
+  - tests/scripts/test_run_batumi_contracts.py
+  - tests/scripts/test_upstream_sync_workflow.py
+  - contributors/emails/agent@agents-mac-mini.local
+  - .github/workflows/lint.yml
+  - .github/workflows/blob-size-check.yml
+  - .github/workflows/supply-chain-audit.yml
+  - scripts/ci/required_results.py
+  - scripts/code_health/gitio.py
+  - scripts/fork_check_base.py
+  - scripts/fork_provenance.py
+  - tests/scripts/test_fork_provenance_v2.py
+  - scripts/fork_contributors.py
+  - tests/scripts/test_fork_check_base.py
+  - tests/scripts/test_fork_contributors.py
+  - tests/scripts/test_supply_chain_import_scan.py
+  - hermes_cli/plugin_cli_registration.py
+  - ruff.toml
+  - .github/upstream-reconciliation.md
+  - tests/ci/test_update_ci_routing.py
+  - scripts/ci/prepare_upgrade_source.py
+  - tests/scripts/test_upgrade_source_checkout.py
+  - tests/scripts/test_code_health_cli.py
+  tests:
+  - scripts/run_tests.sh tests/scripts/test_check_fork_delta.py tests/scripts/test_ci_workflow.py tests/scripts/test_install_batumi_components.py
+    tests/scripts/test_upstream_sync_workflow.py
+  - scripts/run_tests.sh tests/scripts/test_upgrade_source_checkout.py tests/scripts/test_code_health_cli.py
+  retirement: Retain while batumi/live carries any fork-only patch.
+- id: import-restore-fidelity
+  kind: core
+  rationale: Restore archived POSIX rwx permissions during Hermes imports while streaming ZIP members
+    in bounded chunks and retaining secret-mode hardening.
+  paths:
+  - hermes_cli/backup.py
+  - tests/hermes_cli/test_backup.py
+  - hermes_cli/backup_restore.py
+  - tests/hermes_cli/test_backup_restore_permissions.py
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_backup.py
+  - scripts/run_tests.sh tests/hermes_cli/test_backup_restore_permissions.py
+  retirement: Remove when upstream preserves safe archived modes and imports large members with bounded
+    memory using equivalent regression coverage.
+- id: safe-update-eol-normalization
+  kind: core
+  rationale: Force Git to invalidate checkout stat data before classifying CRLF-only churn so managed
+    updates cannot miss part of a large rewritten tree.
+  paths:
+  - hermes_cli/update_cmd.py
+  - tests/hermes_cli/test_update_eol_churn.py
+  - hermes_cli/update_cmd_git.py
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_update_eol_churn.py
+  retirement: Remove when upstream forces an equivalent index refresh before EOL classification.
+- id: lifecycle-controller-serialization
+  kind: core
+  rationale: Serialize deployment, checkout reconciliation, gateway restart, LCM activation, soak, and
+    bounded-restart mutations with one durable, provenance-bound profile lifecycle lease; fail closed
+    on contention, orphaned or tampered metadata, symlinks, and controller crashes while preserving explicit
+    operator reconciliation and non-POSIX behavior.
+  paths:
+  - tests/hermes_cli/test_update_pause_record.py
+  - tests/hermes_cli/test_update_pause_lifecycle.py
+  - tests/hermes_cli/test_update_finish.py
+  - tests/hermes_cli/test_update_takeover_custody.py
+  - tests/hermes_cli/test_update_lock_protocol.py
+  - tests-js/update-ui.test.mjs
+  - hermes_cli/update_pause_record.py
+  - hermes_cli/_old_updater.py
+  - hermes_cli/_update_takeover.py
+  - hermes_cli/update_cmd_posix_pause.py
+  - hermes_cli/update_finish.py
+  - hermes_cli/update_handoff.py
+  - hermes_cli/update_takeover_pause.py
+  - tests/hermes_cli/test_old_updater_takeover.py
+  - tests/hermes_cli/test_update_takeover_pause.py
+  - hermes_cli/venv_sync.py
+  - tests/hermes_cli/test_venv_sync_lifecycle.py
+  - tests/hermes_cli/test_update_launch_completion.py
+  - tests/hermes_cli/test_borrowed_home_launch.py
+  - tests/pm/test_source_update_launch.py
+  - tests/pm/test_takeover_preparation.py
+  - tests/hermes_cli/test_update_takeover_recovery.py
+  - tests/e2e/core/upgrade/handoff/_nshost.py
+  - gateway/lifecycle_lease.py
+  - hermes_cli/lifecycle_coordination.py
+  - hermes_cli/lifecycle_lease_cmd.py
+  - hermes_cli/main.py
+  - hermes_cli/subcommands/lifecycle_lease.py
+  - tests/gateway/test_lifecycle_lease.py
+  - tests/gateway/test_lifecycle_lease_operator.py
+  - tests/hermes_cli/test_gateway_restart_lifecycle_lease.py
+  - tests/hermes_cli/test_lifecycle_controller_crash.py
+  - tests/hermes_cli/test_lifecycle_coordination.py
+  - tests/hermes_cli/test_lifecycle_lease_cli.py
+  - tests/hermes_cli/test_cmd_update.py
+  - tests/hermes_cli/test_update_lifecycle_lease.py
+  - tests/tools/test_terminal_self_repo_guard.py
+  - tools/self_repo_guard.py
+  - hermes_cli/source_releases.py
+  - tests/hermes_cli/test_batumi_source_channel.py
+  - tools/terminal_tool_guards.py
+  - hermes_cli/gateway_commands.py
+  - hermes_cli/update_cmd_validation.py
+  - tests/e2e/core/upgrade/pm/test_interrupted_update.py
+  - tests/e2e/core/upgrade/_lifecycle_fixture.py
+  - tests/e2e/core/upgrade/git/test_hostile_pause.py
+  - tests/e2e/core/upgrade/git/test_hostile_commit.py
+  - tests/e2e/core/upgrade/git/test_hostile_post.py
+  - tests/e2e/core/upgrade/test_lifecycle_fixture.py
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_update_finish.py
+  - scripts/run_tests.sh tests/hermes_cli/test_update_pause_lifecycle.py tests/hermes_cli/test_update_pause_record.py tests/hermes_cli/test_update_pause_recovery_stdout.py
+  - scripts/run_tests.sh tests/hermes_cli/test_update_takeover_custody.py
+  - scripts/run_tests.sh tests/hermes_cli/test_old_updater_takeover.py tests/hermes_cli/test_update_takeover_pause.py
+  - scripts/run_tests.sh tests/hermes_cli/test_update_takeover_recovery.py tests/e2e/core/upgrade/git/test_hostile_commit.py
+  - scripts/run_tests.sh tests/hermes_cli/test_venv_sync_lifecycle.py tests/hermes_cli/test_update_launch_completion.py tests/hermes_cli/test_borrowed_home_launch.py tests/pm/test_source_update_launch.py tests/pm/test_takeover_preparation.py
+  - scripts/run_tests.sh tests/gateway/test_lifecycle_lease.py tests/gateway/test_lifecycle_lease_operator.py
+    tests/hermes_cli/test_bounded_restart_controller.py tests/hermes_cli/test_cmd_update.py tests/hermes_cli/test_gateway_restart_lifecycle_lease.py
+    tests/hermes_cli/test_lifecycle_controller_crash.py tests/hermes_cli/test_lifecycle_coordination.py
+    tests/hermes_cli/test_lifecycle_lease_cli.py tests/hermes_cli/test_update_lifecycle_lease.py tests/tools/test_terminal_self_repo_guard.py
+  - python -m py_compile gateway/lifecycle_lease.py hermes_cli/lifecycle_coordination.py hermes_cli/lifecycle_lease_cmd.py
+    hermes_cli/subcommands/lifecycle_lease.py
+  - scripts/run_tests.sh tests/e2e/core/upgrade/pm/test_interrupted_update.py
+  - scripts/run_tests.sh tests/e2e/core/upgrade/git/test_hostile_pause.py tests/e2e/core/upgrade/git/test_hostile_post.py
+  - scripts/run_tests.sh tests/e2e/core/upgrade/test_lifecycle_fixture.py
+  retirement: Remove when upstream serializes every equivalent lifecycle mutation caller with a durable
+    profile-wide lease, exact provenance binding, crash-orphan exclusion, tamper-resistant release, explicit
+    reconciliation, and matching cross-controller tests.
+- id: upstream-sync-review-remediation
+  kind: core
+  rationale: 'Correct defects found during exact-head review of the imported upstream reconciliation:
+    MCP stdio child liveness, reconnect-cycle state, suspect connection health checks, and watchdog coroutine
+    handling; desktop preview, HUD, and focus-chord compatibility; plus the associated regression coverage
+    and stale test/documentation cleanup. Support the Git for Windows UCRT64 recovery layout.'
+  paths:
+  - hermes_cli/update_cmd_git.py
+  - tests/hermes_cli/test_cmd_update.py
+  - hermes_cli/plugins_loader.py
+  - tests/hermes_cli/test_plugins_module_eviction.py
+  - tests/plugins/model_providers/test_commandcode_profile.py
+  - tests/e2e/core/parity/_helpers.py
+  - tests/e2e/core/parity/_drive_cli.py
+  - tests/e2e/core/parity/test_entrypoint_parity.py
+  - agent/lsp/client.py
+  - apps/desktop/src/app/chat/composer/focus-chord.test.ts
+  - apps/desktop/src/app/chat/right-rail/preview-browser-bar.test.tsx
+  - apps/desktop/src/app/chat/right-rail/preview-browser-bar.tsx
+  - apps/desktop/src/app/hud/hud-shell.tsx
+  - apps/desktop/src/app/hud/resize-handle.test.ts
+  - apps/desktop/src/app/hud/resize-handle.ts
+  - apps/desktop/src/app/session/hooks/use-session-actions.test.tsx
+  - apps/desktop/src/app/shell/model-menu-panel.test.tsx
+  - apps/desktop/src/lib/keybinds/chords.ts
+  - tests/tools/test_local_setsid_descendant_sweep.py
+  - tests/tools/test_mcp_stability.py
+  - tests/tools/test_mcp_tool.py
+  - tools/mcp_tool.py
+  - tools/mcp_tool_handlers.py
+  - tools/mcp_tool_health.py
+  - tools/mcp_tool_lifecycle.py
+  - tools/mcp_tool_server_run.py
+  - tests/test_plugin_stream_reasoning_deltas_hotpath.py
+  - tests/e2e/conftest.py
+  - tests/tools/test_mcp_dispatch_recovery.py
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_plugins_module_eviction.py
+  - scripts/run_tests.sh tests/e2e/core/parity/test_entrypoint_parity.py
+  - scripts/run_tests.sh tests/tools/test_mcp_stability.py tests/tools/test_mcp_tool.py tests/tools/test_local_setsid_descendant_sweep.py
+  - cd apps/desktop && npm run typecheck && npm run lint && npm run test:ui
+  retirement: Remove when upstream includes equivalent fixes and regression coverage for every listed
+    path.
+- id: codex-attribution-opt-in-policy
+  kind: operations
+  rationale: Do not tag official Codex requests with a Hermes-specific originator or User-Agent until
+    a generic user-facing telemetry opt-in exists. Preserve the established compatibility headers and
+    pin the fork policy with a behavioral regression test.
+  paths:
+  - agent/agent_init.py
+  - agent/agent_runtime_helpers.py
+  - agent/auxiliary_client.py
+  - contributors/emails/vignesh@openai.com
+  - run_agent.py
+  - tests/agent/test_codex_attribution_policy.py
+  - tests/agent/test_codex_cloudflare_headers.py
+  - tests/agent/test_codex_usage_attribution.py
+  - website/docs/user-guide/configuration.md
+  - agent/codex_headers.py
+  - tests/plugins/image_gen/test_openai_codex_provider.py
+  tests:
+  - scripts/run_tests.sh tests/agent/test_codex_attribution_policy.py tests/agent/test_codex_cloudflare_headers.py
+  - scripts/run_tests.sh tests/plugins/image_gen/test_openai_codex_provider.py
+  retirement: Remove only after a generic user-facing opt-in gate and setup/tooling controls exist for
+    outbound attribution.
+- id: upstream-sync-whitespace-cleanup
+  kind: cleanup
+  rationale: Keep the accepted upstream tree free of inherited trailing whitespace and missing-final-newline
+    defects so the fork remains clean under diff checks after advancing its recorded upstream baseline.
+    Preserve canonical upstream test placement and assertions while extracting large suites into topical
+    files to meet the size ratchet.
+  paths:
+  - tui_gateway/contracts/sessions.py
+  - agent/agent_init.py
+  - apps/bootstrap-installer/src/routes/progress.tsx
+  - apps/desktop/src/plugins/hermes-bots/tests/session-workspace.test.mjs
+  - apps/desktop/src/styles.css
+  - contributors/emails/uperLu@users.noreply.github.com
+  - evals/compaction/results/SCORECARD-2026-08-15.md
+  - hermes_cli/bang_shell.py
+  - nix/desktop.nix
+  - optional-skills/mlops/pytorch-fsdp/references/common-patterns.md
+  - skills/research/research-paper-writing/references/phase5-paper-drafting.md
+  - tests/hermes_cli/test_bang_shell_mode.py
+  - tests/gateway/test_branch_routing_columns.py
+  - tests/hermes_cli/test_auth_store_windows_encoding.py
+  - tests/hermes_cli/test_model_switch_context_offload.py
+  - tests/test_batch_runner_exit_code.py
+  - tests/test_install_sh_node_npm_check.py
+  - tests/tools/test_toolsets.py
+  - tests/tools/test_file_operations.py
+  - tests/tools/test_session_search.py
+  - tests/tools/test_windows_agent_loop_papercuts.py
+  - website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/image-generation.md
+  - optional-skills/research/research-paper-writing/references/phase5-paper-drafting.md
+  - tests/hermes_state/test_fts_sanitizer.py
+  - tests/hermes_state/test_message_lineage_contracts.py
+  - tests/hermes_state/test_performance_pragmas.py
+  - tests/hermes_state/test_readonly_fts_decode_error.py
+  tests:
+  - git diff --check $(cat .github/upstream-base)..HEAD
+  - python -m py_compile agent/agent_init.py
+  - npm run check --workspace apps/desktop
+  - npm run check --workspace apps/bootstrap-installer
+  - scripts/run_tests.sh tests/test_install_sh_node_npm_check.py
+  - scripts/run_tests.sh tests/hermes_cli/test_bang_shell_mode.py tests/hermes_cli/test_model_switch_context_offload.py
+  - scripts/run_tests.sh tests/gateway/test_branch_routing_columns.py tests/hermes_cli/test_auth_store_windows_encoding.py
+    tests/tools/test_file_operations.py
+  retirement: Remove when the recorded upstream baseline contains byte-identical diff-check-clean versions
+    of these files.
+- id: cron-no-agent-timeout-rendering
+  kind: core
+  rationale: Classify deterministic no-agent script failures before provider failures so collector timeouts
+    cannot be mislabeled as provider fallback exhaustion, while bounding and validating structured delivery
+    details.
+  paths:
+  - cron/scheduler.py
+  - tests/cron/test_cron_failure_delivery_classification.py
+  - cron/scheduler_failure_copy.py
+  tests:
+  - scripts/run_tests.sh tests/cron/test_cron_failure_delivery_classification.py tests/cron/test_cron_no_agent.py
+  - python -m py_compile cron/scheduler.py tests/cron/test_cron_failure_delivery_classification.py
+  retirement: Remove when upstream classifies no-agent script failures before provider failures with equivalent
+    bounded timeout rendering and regression coverage.
+- id: cron-result-context-extraction
+  kind: core
+  rationale: Inject the final saved cron response or error into context_from and continuity prompts before
+    applying the context cap, so large archived prompts cannot displace the result that downstream jobs
+    need.
+  paths:
+  - cron/scheduler.py
+  - tests/cron/test_cron_context_from.py
+  - cron/scheduler_prompt.py
+  - cron/scheduler_worktree.py
+  - tests/cron/test_worktree_maintenance_isolation.py
+  - tests/hermes_cli/test_worktree_pushed_tier.py
+  - website/docs/user-guide/features/cron.md
+  tests:
+  - scripts/run_tests.sh tests/cron/test_cron_context_from.py
+  - python -m py_compile cron/scheduler.py tests/cron/test_cron_context_from.py
+  retirement: Remove when upstream extracts the final saved cron result before bounded context injection
+    with equivalent large-prompt regression coverage.
+- id: api-adapter-turn-admission
+  kind: core
+  rationale: 'Bound agent-run concurrency per API adapter with a queueing admission gate: requests beyond
+    the live-slot capacity wait in a bounded queue and excess waiters get an OpenAI-style 429 + Retry-After
+    before body parsing. Complements the P0 write_admission layer (write-budget) by capping run concurrency
+    (#7483 request-flood exhaustion).'
+  paths:
+  - gateway/platforms/api_server.py
+  - tests/gateway/test_api_server_active_work_drain.py
+  - gateway/platforms/api_server_admission.py
+  - tests/gateway/test_api_server_runs.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_api_server_active_work_drain.py
+  - python -m py_compile gateway/platforms/api_server.py
+  retirement: Remove when upstream ships an equivalent adapter-level turn admission gate with queue-full
+    429 and drain-wait coverage.
+- id: post-tool-none-compressor-guard
+  kind: core
+  rationale: Allow auxiliary agents without a context compressor to complete the post-tool loop without
+    a hidden NoneType failure or outer-loop error.
+  paths:
+  - agent/conversation_loop.py
+  - tests/agent/test_post_tool_compression_attempt_cap.py
+  - agent/turn_preflight.py
+  tests:
+  - scripts/run_tests.sh tests/agent/test_post_tool_compression_attempt_cap.py
+  retirement: Remove when upstream safely handles missing post-tool context compressors with equivalent
+    regression coverage.
+- id: context-engine-midturn-detach-guard
+  kind: core
+  rationale: Tolerate mid-turn context-engine detach from cache eviction in the pre-API compression gate
+    and the long-context / context-length error handlers by skipping compression instead of failing the
+    turn.
+  paths:
+  - agent/conversation_loop.py
+  - tests/agent/test_context_engine_midturn_detach.py
+  - agent/turn_usage.py
+  - agent/turn_context_compaction.py
+  - agent/turn_recovery.py
+  - agent/turn_overflow.py
+  - agent/turn_preflight.py
+  - agent/compression_facade.py
+  - tests/agent/test_compress_context_progress_timeout.py
+  - tests/agent/test_compression_budget_refund.py
+  - tests/agent/test_compression_adopted_history_dedup.py
+  - tests/agent/compression_fixtures.py
+  - agent/agent_init_state.py
+  - tests/agent/test_context_engine_usage_teardown.py
+  tests:
+  - scripts/run_tests.sh tests/agent/test_context_engine_midturn_detach.py
+  retirement: Remove when upstream safely handles a detached context compressor with equivalent regression
+    coverage.
+- id: background-review-teardown-ownership
+  kind: core
+  rationale: Keep background-review pointer/list tracking atomic, leave review-fork resource teardown
+    with its worker thread, and serialize successful-response context-engine accounting against concurrent
+    owner shutdown.
+  paths:
+  - agent/background_review.py
+  - agent/conversation_loop.py
+  - run_agent.py
+  - tests/agent/test_background_review.py
+  - tests/agent/test_compression_budget_refund.py
+  - tests/agent/test_compression_adopted_history_dedup.py
+  - tests/agent/compression_fixtures.py
+  - tests/agent/test_compression_concurrent_fork.py
+  tests:
+  - scripts/run_tests.sh tests/agent/test_background_review.py tests/agent/test_compression_budget_refund.py
+  retirement: Remove when upstream provides equivalent atomic review ownership, worker-owned teardown,
+    and post-response context-engine lifecycle coverage.
+- id: delegation-timeout-sessiondb-close-ownership
+  kind: core
+  rationale: Install child teardown ownership before parent registration, keep child-owned SessionDB resources
+    alive across the full delegation lifecycle (including schema retry and timed-out worker unwind), and
+    coordinate delegation-finally, parent shutdown, and cache-eviction fallback through one close-once
+    lease.
+  paths:
+  - agent/credential_pool.py
+  - agent/subagent_lifecycle.py
+  - run_agent.py
+  - tools/delegate_tool.py
+  - tests/agent/test_credential_pool_lease_refresh_reselect.py
+  - tests/agent/test_subagent_lifecycle.py
+  - tests/tools/test_delegate.py
+  - tests/tools/test_delegate_subagent_timeout_diagnostic.py
+  - tests/tools/test_zombie_process_cleanup.py
+  - tools/delegate_tool_lifecycle.py
+  - tools/delegate_tool_child_run.py
+  - tools/delegate_tool_dispatch.py
+  - tests/tools/test_delegate_ownership_setup.py
+  - tests/tools/delegate_fixtures.py
+  - tests/hermes_cli/test_cli_interrupt_subagent.py
+  - tests/tools/test_subagent_steer.py
+  - tests/tools/test_delegate_cost_footer.py
+  - tests/tools/test_delegate_fallback_matrix.py
+  tests:
+  - scripts/run_tests.sh tests/agent/test_credential_pool_lease_refresh_reselect.py tests/agent/test_subagent_lifecycle.py
+    tests/tools/test_delegate_subagent_timeout_diagnostic.py tests/tools/test_delegate.py tests/tools/test_zombie_process_cleanup.py
+    tests/tui_gateway/test_session_db_ownership_teardown.py tests/tui_gateway/test_session_resume_db_ownership.py
+    tests/agent/test_background_review.py
+  - python -m py_compile agent/subagent_lifecycle.py run_agent.py tools/delegate_tool.py tests/agent/test_subagent_lifecycle.py
+    tests/tools/test_delegate.py tests/tools/test_delegate_subagent_timeout_diagnostic.py tests/tools/test_zombie_process_cleanup.py
+  - scripts/run_tests.sh tests/tools/test_subagent_steer.py tests/tools/test_delegate_cost_footer.py tests/tools/test_delegate_fallback_matrix.py
+  retirement: Remove when upstream provides equivalent pre-registration, full-child-lifecycle, public-launch,
+    batch-failure, parent-shutdown, cache-eviction, and close-exactly-once ownership contracts.
+- id: test-dns-isolation
+  kind: compatibility
+  rationale: Prevent reserved fixture hostnames from escaping tests into libc DNS while preserving ordinary
+    DNS behavior for tests that explicitly require it.
+  paths:
+  - test_support/__init__.py
+  - test_support/dns_guard.py
+  - tests/conftest.py
+  - tests/test_dns_isolation.py
+  - tests/plugins/image_gen/test_xai_provider.py
+  tests:
+  - scripts/run_tests.sh tests/test_dns_isolation.py
+  - scripts/run_tests.sh tests/plugins/image_gen/test_xai_provider.py
+  retirement: Remove when upstream provides an equivalent pre-import DNS guard with explicit per-test
+    opt-out coverage.
+- id: test-hermes-home-import-isolation
+  kind: compatibility
+  rationale: Replace inherited operator HERMES_HOME values before pytest collection so import-time persistence
+    constants cannot bind tests to live state, while preserving the pre-sandbox root used by live-system
+    guards. Keep upstream profile-routing tests hermetic by declaring their served profile set rather
+    than depending on operator profiles inherited from the test host.
+  paths:
+  - tests/conftest.py
+  - tests/hermes_state/test_default_db_profile_fixture.py
+  - tests/hermes_home_isolation_probe.py
+  - tests/test_log_isolation.py
+  - tests/gateway/test_multiplex_busy_input_mode.py
+  - tests/gateway/test_multiplex_primary_token_scope.py
+  - tests/hermes_cli/test_update_pause_unmapped_home_proof.py
+  tests:
+  - scripts/run_tests.sh tests/test_log_isolation.py
+  - scripts/run_tests.sh tests/hermes_state/test_default_db_profile_fixture.py
+  - scripts/run_tests.sh tests/gateway/test_multiplex_busy_input_mode.py
+  - scripts/run_tests.sh tests/cron
+  - scripts/run_tests.sh tests/hermes_cli/test_update_pause_unmapped_home_proof.py
+  retirement: Remove when upstream always isolates inherited HERMES_HOME before test collection with equivalent
+    cron-ledger regression coverage.
+- id: gateway-session-request-resource-lifecycle
+  kind: core
+  rationale: Release per-thread SessionDB read connections when workers terminate and close idle cached
+    request clients at turn boundaries without interrupting concurrent request owners. Keep indexed lineage
+    reads bounded so routing lookups do not convoy DB readers.
+  paths:
+  - hermes_state.py
+  - run_agent.py
+  - tests/agent/test_request_client_reuse.py
+  - tests/agent/test_turn_finalizer_cleanup_guard.py
+  - tests/hermes_state/test_session_db_read_path_split.py
+  - agent/client_lifecycle.py
+  - agent/turn_facade.py
+  - hermes_state_titles.py
+  - gateway/run_turn_response.py
+  tests:
+  - scripts/run_tests.sh tests/hermes_state/test_session_db_read_path_split.py tests/agent/test_request_client_reuse.py
+    tests/agent/test_turn_finalizer_cleanup_guard.py
+  - scripts/run_tests.sh tests/agent/test_run_agent.py
+  retirement: Remove when upstream releases dead-thread SessionDB readers and closes idle request pools
+    at turn boundaries with equivalent ownership and real-socket contracts. Indexed lineage reads must
+    also have equivalent coverage.
+- id: sessiondb-wal-checkpoint-off-writer-lock
+  kind: core
+  rationale: Run the periodic PASSIVE WAL checkpoint after the writer-lock scope is released, time-throttled
+    (60s), on a dedicated daemon worker with its own short-lived connection. Holding the instance writer
+    mutex during the checkpoint fsync (9.3GB state.db) starved every gateway writer (24-81s holds, queue_depth=10,
+    writer waits 29-49s, close() hold 188.7s) and tripped the loop-liveness watchdog exit 75 twice on
+    2026-08-23.
+  paths:
+  - hermes_state.py
+  - tests/test_wal_checkpoint_no_writer_lock.py
+  - tests/hermes_state/test_wal_checkpoint_strategy.py
+  - tests/test_session_db_write_latency_logging.py
+  - hermes_state_checkpoint.py
+  - hermes_state_wal.py
+  - tests/hermes_state/test_deleted_wal_generation_guard.py
+  tests:
+  - scripts/run_tests.sh tests/test_wal_checkpoint_no_writer_lock.py tests/hermes_state/test_wal_checkpoint_strategy.py
+    tests/test_session_db_write_latency_logging.py
+  - scripts/run_tests.sh tests/hermes_state/test_hermes_state.py
+  retirement: Remove when upstream checkpoints outside the writer mutex with an equivalent worker/thread-safety
+    contract.
+- id: gateway-context-engine-cache-lifecycle
+  kind: core
+  rationale: Release per-agent owned context-engine clones and memory providers when cached agents are
+    explicitly, idle-TTL, capacity, or pressure evicted. Keep durable cleanup ownership through commit
+    and bounded worker drain, while deferring active-turn cleanup and preserving SessionDB and unrelated
+    external tool resources.
+  paths:
+  - agent/agent_init.py
+  - agent/memory_manager.py
+  - gateway/run.py
+  - plugins/memory/honcho/__init__.py
+  - plugins/memory/honcho/session.py
+  - run_agent.py
+  - tests/agent/test_context_engine_lifecycle.py
+  - tests/agent/test_memory_async_sync.py
+  - tests/gateway/test_agent_cache.py
+  - tests/gateway/test_shutdown_cache_cleanup.py
+  - tests/honcho_plugin/test_async_memory.py
+  - tests/agent/test_memory_provider_init.py
+  - gateway/run_agent_cache.py
+  - agent/agent_init_state.py
+  - tests/agent/test_context_engine_usage_teardown.py
+  - gateway/run_turn_runner_cache.py
+  - tests/gateway/test_internal_event_pin_wiring.py
+  tests:
+  - scripts/run_tests.sh tests/agent/test_context_engine_lifecycle.py tests/agent/test_memory_async_sync.py
+    tests/gateway/test_agent_cache.py
+  - scripts/run_tests.sh tests/gateway/test_agent_cache_pressure.py tests/gateway/test_gateway_shutdown.py
+    tests/gateway/test_shutdown_aggregate_budget_contract.py tests/gateway/test_shutdown_cache_cleanup.py
+  - scripts/run_tests.sh tests/honcho_plugin/test_async_memory.py tests/honcho_plugin/test_connection_lifecycle.py
+    tests/honcho_plugin/test_session.py tests/agent/test_run_agent.py tests/agent/test_memory_provider_init.py
+  retirement: Remove when upstream releases owned context-engine clones and memory providers on every
+    cache lifecycle path with equivalent exactly-once commit, bounded worker-drain, retry ownership, active-turn,
+    ordering, and resource-preservation coverage.
+- id: gateway-lifecycle-diagnostics
+  kind: core
+  rationale: Expose opt-in, privacy-bounded lifecycle counters that correlate gateway agent-cache ownership
+    and cleanup outcomes with context-engine resource retention without retaining session or message identifiers.
+  paths:
+  - gateway/lifecycle_counters.py
+  - gateway/run.py
+  - gateway/slash_commands.py
+  - tests/gateway/test_agents_command_delegations.py
+  - tests/gateway/test_lifecycle_counters.py
+  - gateway/slash_commands_diagnostics.py
+  - gateway/slash_commands_status.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_lifecycle_counters.py tests/gateway/test_agents_command_delegations.py
+  retirement: Remove when upstream provides equivalent opt-in, fixed-cardinality gateway lifecycle diagnostics
+    with privacy and cleanup-outcome coverage.
+- id: sessiondb-write-latency-diagnostics
+  kind: core
+  rationale: Attribute slow SessionDB writes to Python lock wait, SQLite transaction acquisition, callback,
+    and commit phases without logging session content.
+  paths:
+  - hermes_state.py
+  - tests/test_session_db_write_latency_logging.py
+  - hermes_state_write.py
+  - tests/hermes_state/test_compression_lease_refresh_before_publish.py
+  - tests/hermes_state/test_clean_close_residual_poison.py
+  tests:
+  - scripts/run_tests.sh tests/test_session_db_write_latency_logging.py tests/hermes_state/test_write_lock_patience.py
+  retirement: Remove when upstream provides equivalent privacy-bounded phase timing and lock-owner attribution
+    for SessionDB writes.
+- id: doctor-bounded-state-health
+  kind: core
+  rationale: Keep routine doctor checks bounded on multi-gigabyte live state databases while retaining
+    full SQLite integrity scans for explicit repair runs and preserving schema, read, FTS read, and rolled-back
+    write-health probes.
+  paths:
+  - hermes_cli/doctor.py
+  - tests/hermes_cli/test_doctor.py
+  - hermes_cli/doctor_state.py
+  - hermes_state_repair.py
+  - tests/hermes_cli/test_doctor_bounded_state.py
+  - tests/hermes_cli/test_observational_sessiondb_modes.py
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_doctor.py
+  - scripts/run_tests.sh tests/hermes_state/test_hermes_state.py
+  retirement: Remove when upstream routine doctor has equivalent bounded state-health checks with full-integrity
+    repair coverage.
+- id: sessiondb-routing-delta-reconciliation
+  kind: core
+  rationale: Preserve generation-safe gateway routing snapshots while avoiding whole-scope DELETE and
+    reinsert write amplification for point saves and routine structural synchronization.
+  paths:
+  - gateway/session.py
+  - hermes_state.py
+  - tests/gateway/test_compression_failure_session_sync.py
+  - tests/gateway/test_compression_session_id_persistence.py
+  - tests/gateway/test_routing_save_fast_path.py
+  - tests/gateway/test_session_store_lock_io.py
+  - tests/gateway/test_session_store_prune.py
+  - tests/test_gateway_routing_reconcile.py
+  - gateway/session_persistence.py
+  - gateway/session_lifecycle.py
+  - gateway/session_retained.py
+  - hermes_state_retained.py
+  - tests/gateway/test_switch_session_keeps_model_override.py
+  tests:
+  - scripts/run_tests.sh tests/test_gateway_routing_reconcile.py tests/gateway/test_routing_save_fast_path.py
+  - scripts/run_tests.sh tests/test_session_db_write_latency_logging.py tests/hermes_state/test_hermes_state.py
+    tests/gateway/test_session.py
+  retirement: Remove when upstream persists routing snapshots with equivalent generation ordering, delta-only
+    DML, scope isolation, and restart coverage.
+- id: gateway-expiry-routing-log-precision
+  kind: core
+  rationale: Distinguish expected expiry-finalized routing rotation from genuine stale routing recovery
+    without changing session rotation or recovery behavior.
+  paths:
+  - gateway/session.py
+  - tests/gateway/test_session_store_runtime_stale_guard.py
+  - gateway/session_lifecycle.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_session_store_runtime_stale_guard.py
+  retirement: Remove when upstream reports expected expiry-finalized routing boundaries below warning
+    severity while retaining warning diagnostics for genuine stale routes.
+- id: gateway-channel-directory-routing-projection
+  kind: core
+  rationale: Keep periodic channel-directory discovery off the heavyweight full-session listing path by
+    reading only indexed routing-origin metadata.
+  paths:
+  - gateway/channel_directory.py
+  - hermes_state.py
+  - tests/gateway/test_channel_directory.py
+  - tests/hermes_state/test_hermes_state.py
+  tests:
+  - scripts/run_tests.sh tests/hermes_state/test_hermes_state.py tests/gateway/test_channel_directory.py
+  retirement: Remove when upstream channel discovery uses an equivalent indexed routing-only SessionDB
+    projection with the same fallback and lifecycle contracts.
+- id: relay-scope-concurrency-lifecycle
+  kind: core
+  rationale: Isolate persistent Relay turn, logical-call, and shared-metrics task scope stacks so overlapping
+    same-session work can finish out of order without orphaning child scopes or blocking session finalization,
+    and preserve the owning Relay event loop when synchronous tool callbacks invoke nested one-shot or
+    streaming LLM operations.
+  paths:
+  - agent/relay_llm.py
+  - agent/relay_runtime.py
+  - agent/relay_tools.py
+  - gateway/run.py
+  - gateway/slash_commands.py
+  - hermes_cli/lifecycle.py
+  - hermes_cli/observability/__init__.py
+  - hermes_cli/observability/relay_shared_metrics.py
+  - tests/agent/test_relay_tools.py
+  - tests/gateway/test_finalize_session_off_loop.py
+  - tests/gateway/test_session_boundary_hooks.py
+  - tests/gateway/test_session_model_reset.py
+  - tests/hermes_cli/test_lifecycle.py
+  - tests/hermes_cli/test_relay_shared_metrics_runtime.py
+  - tests/agent/test_relay_scope_isolation.py
+  - tests/agent/test_relay_llm.py
+  - tests/hermes_cli/test_relay_shared_metrics_async.py
+  - tests/tools/test_zombie_process_cleanup.py
+  - agent/relay_compaction.py
+  - tests/agent/test_relay_compaction.py
+  - tests/agent/test_relay_compaction_atof.py
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_relay_shared_metrics_runtime.py tests/hermes_cli/test_relay_shared_metrics.py
+    tests/agent/test_relay_llm.py tests/agent/test_relay_tools.py tests/agent/test_auxiliary_relay.py
+  - scripts/run_tests.sh tests/hermes_cli/test_lifecycle.py tests/gateway/test_finalize_session_off_loop.py
+    tests/gateway/test_session_boundary_hooks.py tests/gateway/test_session_model_reset.py
+  retirement: Remove when upstream isolates overlapping Relay scope lifetimes, preserves owner-loop execution
+    for nested synchronous LLM calls and streams, and passes the same real-binding lifecycle contracts.
+- id: provider-telemetry-runtime-ownership
+  kind: operations
+  rationale: Keep platform health gauges free of mutable ghost-series labels and make provider telemetry
+    writer ownership depend on the runtime role, with a repository-owned plugin candidate and deterministic
+    clean-runner tests. Resolve metrics_file through profile configuration on each invocation; bound pending
+    records and metric-series cardinality.
+  paths:
+  - agent/monitoring/gateway_health.py
+  - evidence/README.md
+  - evidence/provider_telemetry_fixed.py
+  - evidence/provider_telemetry_writer_ownership.patch
+  - evidence/role_registration_ordering.md
+  - tests/hermes_cli/test_plugin_role_registration_ordering.py
+  - tests/hermes_cli/test_plugin_runtime_role.py
+  - tests/monitoring/monitoring_test.evidence.txt
+  - tests/monitoring/test_gateway_health.evidence.txt
+  - tests/monitoring/test_gateway_health.py
+  - tests/plugins/test_provider_telemetry_plugin.py
+  - hermes_cli/plugins.py
+  - hermes_cli/plugins_roles.py
+  - hermes_cli/config_defaults.py
+  - tests/plugins/test_provider_telemetry_config.py
+  tests:
+  - scripts/run_tests.sh tests/monitoring/test_gateway_health.py tests/hermes_cli/test_plugin_runtime_role.py
+    tests/hermes_cli/test_plugin_role_registration_ordering.py tests/plugins/test_provider_telemetry_plugin.py
+  - scripts/run_tests.sh tests/plugins/test_provider_telemetry_config.py
+  retirement: Remove when upstream provides stable platform-health series and equivalent runtime-role-gated
+    provider telemetry ownership with hermetic tests.
+- id: cron-trigger-provenance
+  kind: core
+  rationale: Persist exact cron trigger origin, due slot, and trigger time so natural scheduler runs cannot
+    be confused with manual, external, catch-up, direct, recovered, or unknown executions across restart
+    and reconciliation; transactionally re-arm an exact owner claim if ledger creation fails; and reject
+    misleading repeat budgets on one-shot schedules at create/update boundaries with matching model-tool
+    guidance.
+  paths:
+  - tests/cron/test_external_fire_rejection_audit.py
+  - agent/monitoring/cron_health.py
+  - agent/monitoring/events.py
+  - cron/executions.py
+  - cron/jobs.py
+  - cron/scheduler.py
+  - cron/scheduler_provider.py
+  - hermes_cli/cron.py
+  - plugins/cron_providers/chronos/__init__.py
+  - tests/cron/test_claim_job_for_fire.py
+  - tests/cron/test_execution_ledger.py
+  - tests/cron/test_jobs.py
+  - tests/cron/test_parallel_pool.py
+  - tests/cron/test_scheduler_provider.py
+  - tests/cron/test_terminal_job_rearm.py
+  - tests/monitoring/test_cron_health_export.py
+  - tests/plugins/test_chronos_cron.py
+  - tests/tools/test_cronjob_run_immediate.py
+  - tests/tools/test_cronjob_tools.py
+  - tools/cronjob_tools.py
+  - tests/cron/conftest.py
+  - tests/cron/test_run_one_job.py
+  - cron/scheduler_tick.py
+  - tests/cron/test_reconciled_trigger_dispatch.py
+  - tests/cron/test_job_editing.py
+  - tests/cron/test_restart_safe_worker.py
+  - tests/cron/test_stale_module_leaf_imports.py
+  - tests/cron/test_cron_emfile_stall.py
+  - cron/jobs_fire_claims.py
+  tests:
+  - scripts/run_tests.sh tests/cron/test_external_fire_rejection_audit.py
+  - scripts/run_tests.sh tests/cron/test_claim_job_for_fire.py tests/cron/test_execution_ledger.py tests/cron/test_jobs.py
+    tests/cron/test_parallel_pool.py tests/cron/test_scheduler_provider.py tests/cron/test_terminal_job_rearm.py
+    tests/monitoring/test_cron_health_export.py tests/plugins/test_chronos_cron.py tests/tools/test_cronjob_run_immediate.py
+    tests/tools/test_cronjob_tools.py
+  retirement: Remove when upstream persists equivalent exact trigger provenance through scheduling, manual
+    dispatch, recovery, monitoring, and execution-ledger migration, and rejects repeated one-shot schedules
+    with equivalent create/update coverage and guidance.
+- id: langfuse-lazy-sdk-retention
+  kind: compatibility
+  rationale: Preserve fail-open tracing, payload capture, token and cost accounting after moving Langfuse
+    to the pinned official catalog plugin and PM-owned SDK selection.
+  paths:
+  - plugin-catalog/langfuse.yaml
+  - scripts/install_batumi_components.py
+  - tests/plugins/external/fixtures/langfuse-c2a9596/**
+  - tests/plugins/external/langfuse_fixture.py
+  - tests/plugins/external/test_langfuse*.py
+  - hermes_cli/tools_config.py
+  - tests/plugins/external/fixtures/langfuse-c2a9596/LICENSE
+  - tests/plugins/external/fixtures/langfuse-c2a9596/README.md
+  - tests/plugins/external/fixtures/langfuse-c2a9596/SOURCE.json
+  - tests/plugins/external/fixtures/langfuse-c2a9596/__init__.py
+  - tests/plugins/external/fixtures/langfuse-c2a9596/plugin.yaml
+  - tests/plugins/external/fixtures/langfuse-c2a9596/pyproject.toml
+  - tests/plugins/external/test_langfuse_dependencies.py
+  - tests/plugins/external/test_langfuse_plugin.py
+  - tests/plugins/external/test_langfuse_tracing.py
+  - tests/plugins/test_langfuse_plugin.py
+  tests:
+  - scripts/run_tests.sh tests/plugins/external/test_langfuse_plugin.py tests/plugins/external/test_langfuse_tracing.py
+    tests/plugins/external/test_langfuse_dependencies.py
+  retirement: Remove when upstream preserves the pinned Langfuse SDK through lazy dependency setup and
+    plugin import with equivalent tests.
+- id: plugin-environment-backends
+  kind: core
+  rationale: Let external plugins register terminal execution environments without adding product-specific
+    branches to the core terminal tool.
+  paths:
+  - hermes_cli/plugins.py
+  - tools/environments/__init__.py
+  - tools/environments/registry.py
+  - tools/terminal_tool.py
+  - tests/tools/test_environment_registry.py
+  - website/docs/developer-guide/plugins/index.md
+  - hermes_cli/plugins_roles.py
+  - hermes_cli/tools_config.py
+  - tools/terminal_tool_config.py
+  - tools/terminal_tool_backends.py
+  tests:
+  - scripts/run_tests.sh tests/tools/test_environment_registry.py tests/tools/test_terminal_tool_requirements.py
+  retirement: Remove when upstream exposes an equivalent session-stable environment backend registry.
+- id: final-output-policy-context
+  kind: core
+  rationale: Give output-policy plugins detached conversation context and the active workdir so evidence
+    and workspace footers can remain outside the loop.
+  paths:
+  - agent/turn_finalizer.py
+  - tests/agent/test_transform_llm_output_context.py
+  - website/docs/user-guide/features/hooks.md
+  - agent/turn_final_response.py
+  tests:
+  - scripts/run_tests.sh tests/agent/test_transform_llm_output_context.py
+  retirement: Remove when upstream transform_llm_output supplies equivalent read-only context.
+- id: side-effect-evidence-regulator
+  kind: core
+  rationale: Require current-turn execution evidence before preserving fresh external side-effect claims
+    in final responses, compute trusted verdicts before framework decoration, and preserve their tool
+    identity across restart, resume, and historical fork database recovery while leaving descriptive parity
+    headings unchanged.
+  paths:
+  - agent/side_effect_evidence.py
+  - agent/tool_executor.py
+  - agent/turn_finalizer.py
+  - gateway/session.py
+  - hermes_state.py
+  - hermes_state_common.py
+  - run_agent.py
+  - tests/agent/test_side_effect_evidence_reconciliation.py
+  - tests/agent/test_turn_finalizer_final_response_persistence.py
+  - tests/agent/transports/test_chat_completions.py
+  - tests/agent/test_tool_call_incremental_persistence.py
+  - agent/session_persistence.py
+  - gateway/session_transcript.py
+  - hermes_state_identity.py
+  - hermes_state_messages.py
+  - tests/hermes_state/test_side_effect_evidence_roundtrip.py
+  - hermes_cli/session_schema_history.py
+  - tests/hermes_cli/test_session_schema_history.py
+  - hermes_cli/session_lost_and_found.py
+  - tests/hermes_cli/test_session_recovery_fork_layouts.py
+  - tests/hermes_state/test_session_id_recognition_recovery.py
+  tests:
+  - scripts/run_tests.sh tests/agent/test_side_effect_evidence_reconciliation.py tests/agent/transports/test_chat_completions.py
+    tests/run_agent/test_tool_executor_contextvar_propagation.py tests/agent/test_sequential_tool_timeout.py
+    tests/agent/test_tool_call_incremental_persistence.py tests/agent/test_tool_call_guardrail_runtime.py
+    tests/agent/test_tool_batch_segmentation.py tests/hermes_state/test_hermes_state.py
+  - scripts/run_tests.sh tests/hermes_cli/test_session_schema_history.py tests/hermes_cli/test_session_recovery_fork_layouts.py
+  - scripts/run_tests.sh tests/hermes_state/test_session_id_recognition_recovery.py
+  retirement: Remove when upstream provides equivalent fail-closed current-turn side-effect evidence validation,
+    trusted pre-decoration verdict persistence, and resume-safe tool identity.
+- id: provider-fallback-lifecycle
+  kind: core
+  rationale: Expose provider fallback transitions to edge telemetry and re-arm exhaustion reporting when
+    a later fallback episode begins.
+  paths:
+  - agent/agent_runtime_helpers.py
+  - agent/chat_completion_helpers.py
+  - agent/conversation_loop.py
+  - gateway/run.py
+  - hermes_cli/plugins.py
+  - tests/hermes_cli/test_plugins.py
+  - tests/run_agent/test_24996_fallback_exhaustion_cooldown.py
+  - tests/agent/test_primary_runtime_restore.py
+  - website/docs/developer-guide/plugins/index.md
+  - website/docs/user-guide/features/hooks.md
+  - agent/fallback_observers.py
+  - agent/fallback_notifications.py
+  - agent/primary_runtime_restore.py
+  - agent/turn_api_error.py
+  - tests/agent/test_fallback_exhaustion_cooldown.py
+  - tests/agent/test_tool_call_guardrail_runtime.py
+  - tests/hermes_cli/test_plugin_fallback_lifecycle.py
+  tests:
+  - scripts/run_tests.sh tests/run_agent/test_24996_fallback_exhaustion_cooldown.py tests/agent/test_primary_runtime_restore.py
+    tests/hermes_cli/test_plugins.py
+  retirement: Remove when upstream provides equivalent observer hooks and episode reset.
+- id: kimi-billing-classification
+  kind: core
+  rationale: Treat Kimi's billing-cycle usage-limit 403 as non-retryable billing so credential rotation
+    and provider fallback occur immediately.
+  paths:
+  - agent/error_classifier.py
+  - tests/agent/test_error_classifier.py
+  - tests/agent/test_kimi_billing_limit.py
+  tests:
+  - scripts/run_tests.sh tests/agent/test_error_classifier.py
+  retirement: Remove when upstream classifies the same Kimi response as billing.
+- id: cron-verbatim-delivery
+  kind: core
+  rationale: Preserve the documented byte-for-byte stdout delivery contract for script-only no-agent cron
+    jobs even when global wrapping is enabled.
+  paths:
+  - cron/scheduler.py
+  - tests/cron/test_scheduler.py
+  - cron/scheduler_delivery.py
+  - cron/scheduler_delivery_policy.py
+  - cron/jobs_output.py
+  tests:
+  - scripts/run_tests.sh tests/cron/test_scheduler.py
+  retirement: Remove when upstream no-agent deliveries remain verbatim by default.
+- id: honcho-connection-lifecycle
+  kind: compatibility
+  rationale: Close replaced and reset Honcho clients deterministically, disable idle keepalive so peer-closed
+    HTTP connections are not retained between intermittent memory operations, and redact secrets from
+    base URLs logged during client initialization.
+  paths:
+  - patches/external-plugins/**
+  - scripts/install_batumi_components.py
+  - .github/batumi-components.lock.yaml
+  - tests/plugins/external/fixtures/honcho-e2d2aba/**
+  - tests/plugins/external/test_honcho_lifecycle.py
+  tests:
+  - scripts/run_tests.sh tests/honcho_plugin/test_connection_lifecycle.py tests/honcho_plugin/test_client.py
+    tests/test_honcho_client_config.py
+  retirement: Remove when upstream owns injected Honcho clients and passes the same reset, replacement,
+    no-idle-pool, and URL-redaction contracts.
+- id: honcho-operational-monitoring
+  kind: operations
+  rationale: Preserve the production Honcho health monitor and queue diagnostic used by Hermes cron, together
+    with their fail-closed behavior contracts.
+  paths:
+  - hermes_cli/honcho_monitor.py
+  - hermes_cli/honcho_queue_diagnostic.py
+  - scripts/honcho_monitor.py
+  - tests/hermes_cli/test_honcho_monitor.py
+  - tests/hermes_cli/test_honcho_queue_diagnostic.py
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_honcho_monitor.py tests/hermes_cli/test_honcho_queue_diagnostic.py
+  retirement: Remove when the live watchdog and diagnostics migrate to a durable operations package that
+    no longer imports these modules.
+- id: cron-ephemeral-telegram-topics
+  kind: core
+  rationale: Preserve the existing config key that creates one private Telegram topic per cron output
+    without persisting generated topic mappings.
+  paths:
+  - cron/scheduler.py
+  - gateway/delivery.py
+  - hermes_cli/config_defaults.py
+  - plugins/platforms/telegram/adapter.py
+  - tests/gateway/test_ephemeral_telegram_topics.py
+  - hermes_cli/config_defaults_cron.py
+  - cron/scheduler_topics.py
+  - tests/cron/test_delivery_wrapping.py
+  - gateway/platforms/topic_recovery.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_ephemeral_telegram_topics.py tests/gateway/test_delivery.py
+    tests/gateway/test_dm_topics.py
+  retirement: Remove when upstream offers equivalent config and nonpersistent topic ownership.
+- id: telegram-cancellation-socket-ownership
+  kind: core
+  rationale: Close raw connect, TLS, response-header, and response-body streams under repeated caller
+    cancellation while preserving route-safe diagnostics and upstream's bounded lazy fallback pools. The
+    cancellation-safe connect shield is itself bounded (HERMES_TELEGRAM_TCP_CONNECT_DEADLINE, 15s default)
+    so a blackholed SYN to a sticky Telegram DC IP cannot wedge the getUpdates pool forever while the
+    general-pool health probe clears degraded state (#95159); raw connect TimeoutError is retryable so
+    the fallback transport rotates the sticky IP and resets the wedged pool.
+  paths:
+  - plugins/platforms/telegram/telegram_network.py
+  - tests/gateway/test_telegram_fallback_pool_release_71593.py
+  - tests/gateway/test_telegram_network.py
+  - tests/gateway/test_telegram_request_phase_real_socket.py
+  - tests/gateway/test_telegram_terminal_close_regression.py
+  - tests/gateway/test_telegram_fallback_pool_release.py
+  - tests/gateway/test_telegram_network_fallback_transport.py
+  - tests/gateway/test_telegram_closewait_limits.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_telegram_fallback_pool_release_71593.py tests/gateway/test_telegram_network.py
+    tests/gateway/test_telegram_request_phase_real_socket.py
+  - scripts/run_tests.sh tests/gateway/test_telegram_network_reconnect.py tests/gateway/test_platform_reconnect_fd_leak.py
+  retirement: Remove when upstream passes the repeated-cancel real-socket contract.
+- id: gateway-delivery-shutdown-correctness
+  kind: core
+  rationale: Keep final delivery fail-open under ledger contention, prevent retries while Telegram's polling
+    health gate is degraded, serialize topic recovery without blocking the event loop, and bound shutdown
+    cleanup while retaining ownership of non-cancellable worker operations.
+  paths:
+  - gateway/delivery_ledger.py
+  - gateway/platforms/base.py
+  - gateway/run.py
+  - plugins/platforms/telegram/adapter.py
+  - tests/gateway/test_delivery_ledger.py
+  - tests/gateway/test_delivery_ledger_fd_leak.py
+  - tests/gateway/test_delivery_ledger_producer.py
+  - tests/gateway/test_api_server_active_work_drain.py
+  - tests/gateway/test_gateway_shutdown.py
+  - tests/gateway/test_restart_drain.py
+  - tests/gateway/test_session_hygiene.py
+  - tests/gateway/test_shutdown_aggregate_budget_contract.py
+  - tests/gateway/test_telegram_send_path_degraded_retry.py
+  - tests/gateway/test_telegram_text_batching.py
+  - tests/test_session_db_recall_reader.py
+  - gateway/run_fork_contracts.py
+  - gateway/run_inbound.py
+  - gateway/run_turn.py
+  - gateway/run_turn_runner.py
+  - tests/gateway/test_duplicate_user_message.py
+  - tests/gateway/test_internal_notification_marker.py
+  - gateway/platforms/base_delivery_ledger.py
+  - plugins/platforms/telegram/text_recovery.py
+  - gateway/post_response_transcript.py
+  - gateway/run_adapters.py
+  - gateway/run_turn_recovery.py
+  - tests/gateway/test_base_warning_owner_scope.py
+  - tests/gateway/test_gateway_silence_tokens.py
+  - tests/gateway/test_post_gateway_admission.py
+  - tests/gateway/test_reaped_session_recovery.py
+  - tests/gateway/test_session_race_guard.py
+  - tests/gateway/test_cleanup_off_loop.py
+  - tests/gateway/test_hygiene_deferred_work_drain.py
+  - gateway/delivery_failure.py
+  - gateway/run_delivery_recovery.py
+  - tests/gateway/test_durable_delivery_recovery.py
+  - hermes_cli/sqlite_util.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_delivery_ledger.py tests/gateway/test_delivery_ledger_fd_leak.py
+    tests/gateway/test_delivery_ledger_producer.py tests/gateway/test_gateway_shutdown.py tests/gateway/test_restart_drain.py
+    tests/gateway/test_shutdown_aggregate_budget_contract.py
+  - scripts/run_tests.sh tests/gateway/test_session_hygiene.py tests/gateway/test_telegram_send_path_degraded_retry.py
+    tests/gateway/test_telegram_text_batching.py tests/test_session_db_recall_reader.py
+  - scripts/run_tests.sh tests/gateway/test_durable_delivery_recovery.py
+  retirement: Remove individual paths when upstream passes their contention, cancellation, degraded-delivery,
+    and aggregate-shutdown contracts.
+- id: telegram-general-pool-timeout-recovery
+  kind: core
+  rationale: Recover Telegram's shared general Bot API request pool when pool exhaustion escapes rich
+    send, rich edit, or DM-topic creation, while keeping generic timeout and capability-fallback behavior
+    unchanged and leaving the polling pool under separate ownership.
+  paths:
+  - plugins/platforms/telegram/adapter.py
+  - tests/gateway/test_telegram_pool_drain_all_paths.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_telegram_pool_drain_all_paths.py tests/gateway/test_telegram_send_path_degraded_retry.py
+    tests/gateway/test_dm_topics.py
+  retirement: Remove when upstream drains or safely replaces the shared general request pool on every
+    equivalent pool-timeout path.
+- id: gateway-drain-control-ownership
+  kind: core
+  rationale: Serialize maintenance activation controllers on one canonical per-user process lock, bind
+    drain marker refresh and cleanup to a unique owner, keep intake fail-closed if an owned marker is
+    removed or replaced before replacement proof, accept an already-absent marker only during post-commit
+    recovery, release drain ownership before startup acceptance, suppress scheduled and catch-up dispatch
+    for the full owned transaction, and run a sealed one-restart bounded-handoff transaction whose occupancy
+    and post-replacement acceptance are proven through PID-bound live status.
+  paths:
+  - tests/e2e/core/delivery/_cron_clock.py
+  - tests/e2e/core/delivery/test_cron_virtual_clock_soak.py
+  - cron/scheduler.py
+  - cron/scheduler_provider.py
+  - gateway/drain_control.py
+  - gateway/status.py
+  - hermes_cli/bounded_restart.py
+  - hermes_cli/web_server.py
+  - tests/cron/test_scheduler.py
+  - tests/cron/test_scheduler_provider.py
+  - tests/gateway/test_external_drain_control.py
+  - tests/gateway/test_status.py
+  - tests/hermes_cli/test_bounded_restart_controller.py
+  - tests/hermes_cli/test_web_server.py
+  - hermes_cli/web_routers/actions.py
+  - tests/hermes_cli/test_web_gateway_drain_ownership.py
+  - gateway/run_control_socket.py
+  tests:
+  - scripts/run_tests.sh tests/e2e/core/delivery/test_cron_virtual_clock_soak.py
+  - scripts/run_tests.sh tests/gateway/test_external_drain_control.py tests/gateway/test_restart_drain.py
+    tests/gateway/test_gateway_shutdown.py tests/gateway/test_status.py
+  - scripts/run_tests.sh tests/hermes_cli/test_bounded_restart_controller.py
+  - scripts/run_tests.sh tests/cron/test_scheduler.py tests/cron/test_scheduler_provider.py tests/hermes_cli/test_web_server.py
+  retirement: Remove when upstream provides equivalent canonical cross-process ownership, compare-and-delete
+    marker lifecycle, fail-closed intake, scheduled/catch-up dispatch suppression, and a sealed bounded-handoff
+    restart with PID-bound live occupancy and post-replacement acceptance.
+- id: buzz-allowlisted-dm-metadata-fallback
+  kind: compatibility
+  rationale: Let explicitly allow-listed Buzz senders use relay-materialized DM conversations when kind-9
+    events omit the structural recipient p-tag, without weakening mention gating for allow-all mode or
+    real channels.
+  paths:
+  - plugins/platforms/buzz/adapter.py
+  - tests/gateway/test_buzz_adapter.py
+  - plugins/platforms/buzz/conversations.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_buzz_adapter.py tests/gateway/test_buzz_websocket.py
+  retirement: Remove when upstream safely recognizes p-tag-less relay DMs for explicitly allow-listed
+    senders with equivalent channel and access-control regression coverage.
+- id: web-search-budget-convergence
+  kind: core
+  rationale: Warn truthfully before the aggregate web-search cap, serialize shared cap accounting, and
+    guarantee one tools-disabled synthesis pass that converges on collected evidence without tool re-entry
+    or empty output.
+  paths:
+  - agent/agent_init.py
+  - agent/conversation_loop.py
+  - agent/tool_executor.py
+  - agent/tool_guardrails.py
+  - agent/turn_context.py
+  - run_agent.py
+  - tests/agent/test_tool_guardrails.py
+  - tests/agent/test_tool_call_guardrail_runtime.py
+  - agent/turn_api_request.py
+  - agent/turn_response_intake.py
+  - agent/turn_tool_round.py
+  tests:
+  - scripts/run_tests.sh tests/agent/test_tool_guardrails.py tests/agent/test_tool_call_guardrail_runtime.py
+    tests/tools/test_tool_output_limits.py tests/tools/test_interrupt.py
+  retirement: Remove when upstream provides equivalent aggregate warning, parallel cap accounting, and
+    bounded synthesis-only convergence contracts.
+- id: gateway-full-reply-context
+  kind: core
+  rationale: Preserve complete resolved reply context while respecting adapter-selected partial quotes.
+  paths:
+  - gateway/run.py
+  - tests/gateway/test_reply_to_injection.py
+  - tests/gateway/test_telegram_reply_quote.py
+  - gateway/run_inbound_reply.py
+  - tests/agent/test_split_turn_compaction.py
+  - website/docs/user-guide/messaging/telegram.md
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_reply_to_injection.py tests/gateway/test_telegram_reply_quote.py
+    tests/gateway/test_queue_command.py
+  retirement: Remove when upstream preserves complete resolved reply context and native partial quotes.
+- id: gateway-startup-readiness
+  kind: core
+  rationale: Publish PID-bound starting or draining status immediately after runtime ownership so external
+    activation can distinguish slow startup from stale prior-generation state without reopening intake
+    during inherited drain.
+  paths:
+  - gateway/run.py
+  - tests/gateway/test_external_drain_control.py
+  - gateway/run_startup.py
+  - gateway/run_startup_recovery.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_external_drain_control.py tests/gateway/test_startup_restart_race.py
+    tests/gateway/test_routing_save_fast_path.py
+  retirement: Remove when upstream publishes authoritative PID-bound startup status with equivalent drain-epoch,
+    shutdown-precedence, and intake-suppression coverage.
+- id: gateway-event-loop-status-io
+  kind: core
+  rationale: Keep drain, startup, platform, and active-agent status persistence off the gateway event
+    loop, preserve inherited drain state during startup, and use cancellation-safe daemon workers so a
+    stalled filesystem cannot wedge loop shutdown or platform lifecycle handling.
+  paths:
+  - agent/async_utils.py
+  - gateway/platforms/api_server.py
+  - gateway/platforms/base.py
+  - gateway/run.py
+  - gateway/session_db_recovery.py
+  - gateway/session.py
+  - gateway/slash_commands.py
+  - gateway/status.py
+  - hermes_state.py
+  - tests/agent/test_async_utils.py
+  - tests/gateway/test_active_agent_status_persistence.py
+  - tests/gateway/test_64674_multiplex_primary_token_scope.py
+  - tests/gateway/test_adapter_connect_classification.py
+  - tests/gateway/test_async_session_store.py
+  - tests/gateway/test_async_session_db.py
+  - tests/gateway/test_clarify_thread_followup_not_swallowed.py
+  - tests/gateway/test_external_drain_control.py
+  - tests/gateway/test_gateway_command_dispatch_minimal.py
+  - tests/gateway/test_gateway_process_exit.py
+  - tests/gateway/test_handoff_watcher_async_db.py
+  - tests/gateway/test_multiplex_adapter_registry.py
+  - tests/gateway/test_api_server.py
+  - tests/gateway/test_platform_reconnect.py
+  - tests/gateway/test_restart_resume_pending.py
+  - tests/gateway/test_scale_to_zero_watcher.py
+  - tests/gateway/test_session_db_recovery.py
+  - tests/gateway/test_shutdown_aggregate_budget_contract.py
+  - tests/gateway/test_shutdown_cache_cleanup.py
+  - tests/gateway/test_startup_restart_race.py
+  - tests/gateway/test_status.py
+  - tests/gateway/test_stuck_loop.py
+  - tests/gateway/test_title_command.py
+  - tests/gateway/test_turn_lease.py
+  - tests/hermes_cli/test_pre_command_hook.py
+  - gateway/status_sequence.py
+  - gateway/status_components.py
+  - tests/gateway/test_status_sequence.py
+  - tests/agent/_profile_probe.py
+  - tests/agent/test_serial_daemon_reservations.py
+  - tests/gateway/test_control_socket_status_io.py
+  tests:
+  - scripts/run_tests.sh tests/agent/test_async_utils.py tests/gateway/test_external_drain_control.py
+    tests/gateway/test_restart_resume_pending.py tests/gateway/test_platform_reconnect.py tests/gateway/test_startup_restart_race.py
+    tests/gateway/test_multiplex_adapter_registry.py tests/gateway/test_api_server.py tests/gateway/test_adapter_connect_classification.py
+    tests/gateway/test_64674_multiplex_primary_token_scope.py tests/gateway/test_clarify_thread_followup_not_swallowed.py
+    tests/gateway/test_scale_to_zero_watcher.py tests/gateway/test_async_session_store.py tests/gateway/test_session_db_recovery.py
+    tests/gateway/test_gateway_command_dispatch_minimal.py tests/gateway/test_shutdown_aggregate_budget_contract.py
+    tests/gateway/test_shutdown_cache_cleanup.py tests/gateway/test_status.py tests/gateway/test_stuck_loop.py
+    tests/gateway/test_title_command.py tests/gateway/test_turn_lease.py tests/hermes_cli/test_pre_command_hook.py
+  - python -m py_compile agent/async_utils.py gateway/platforms/api_server.py gateway/platforms/base.py
+    gateway/run.py gateway/session.py gateway/session_db_recovery.py gateway/slash_commands.py gateway/status.py
+    hermes_state.py
+  retirement: Remove when upstream moves equivalent status and active-agent persistence off the event
+    loop with cancellation-safe shutdown and matching regression coverage.
+- id: gateway-shutdown-work-attribution
+  kind: core
+  rationale: Preserve generation-bound, SQLite-independent identities for agent, cron, and API work across
+    gateway drain, interruption, forced-forward, and clean-exit boundaries without extending the aggregate
+    shutdown deadline.
+  paths:
+  - cron/scheduler.py
+  - gateway/drain_attribution.py
+  - gateway/platforms/api_server.py
+  - gateway/run.py
+  - gateway/shutdown_forensics.py
+  - gateway/shutdown_watchdog.py
+  - tests/cron/test_running_job_attribution.py
+  - tests/gateway/test_api_server_active_work_drain.py
+  - tests/gateway/test_drain_attribution.py
+  - tests/gateway/test_drain_attribution_lifecycle.py
+  - tests/gateway/test_shutdown_aggregate_budget_contract.py
+  - tests/gateway/test_restart_resume_pending.py
+  - tests/gateway/test_shutdown_forensics.py
+  - tests/gateway/test_goal_continuation_drain.py
+  - tests/gateway/test_systemd_notify.py
+  - tests/gateway/test_shutdown_watchdog.py
+  - tests/tools/test_cronjob_run_background.py
+  - tools/cronjob_tools.py
+  - gateway/run_shutdown.py
+  - gateway/run_shutdown_budget.py
+  - gateway/shutdown_residual_children.py
+  - tests/gateway/test_shutdown_residual_lifecycle.py
+  - gateway/run_shutdown_session_end.py
+  - tests/agent/test_interrupt_issuer_attribution.py
+  - tests/gateway/test_shutdown_executor_quiesce.py
+  - tests/gateway/test_shutdown_kill_off_loop.py
+  - tests/gateway/test_shutdown_flush_recovery.py
+  - website/docs/developer-guide/gateway-monitoring.md
+  - tests/gateway/test_shutdown_completion_barrier.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_drain_attribution.py tests/gateway/test_drain_attribution_lifecycle.py
+    tests/gateway/test_gateway_shutdown.py tests/gateway/test_shutdown_forensics.py tests/gateway/test_shutdown_watchdog.py
+  - scripts/run_tests.sh tests/gateway/test_api_server_active_work_drain.py tests/gateway/test_shutdown_cache_cleanup.py
+    tests/cron/test_running_job_attribution.py tests/cron/test_shutdown_interrupt.py
+  - scripts/run_tests.sh tests/tools/test_cronjob_run_background.py tests/tools/test_cronjob_run_immediate.py
+    tests/cron/test_cron_run_stale_claim_reap_86721.py
+  - scripts/run_tests.sh tests/gateway/test_shutdown_residual_lifecycle.py
+  - scripts/run_tests.sh tests/gateway/test_shutdown_completion_barrier.py
+  retirement: Remove when upstream preserves equivalent generation-scoped shutdown work identities, bounded
+    evidence writes, watchdog-safe snapshots, and false-clean-exit prevention.
+- id: sessiondb-p0-write-admission-handle-leaks
+  kind: core
+  rationale: 'Bound SessionDB write concurrency with per-path admission so concurrent gateway writers
+    stop contending into SQLite "database is locked" failures; allow the database.synchronous operator
+    override on Linux; close handle leaks on cron gate returns, make the channel directory read-only,
+    and close ACP session teardown handles; await queued turn admission in the API server. Evidence: 2026-08-24/25
+    hermes-vm LCM SQLite lock-contention incident; PR #274.'
+  paths:
+  - acp_adapter/entry.py
+  - acp_adapter/session.py
+  - cron/scheduler.py
+  - gateway/channel_directory.py
+  - gateway/platforms/api_server.py
+  - gateway/write_admission.py
+  - hermes_state.py
+  - tests/acp_adapter/test_session_manager_close.py
+  - tests/cron/test_run_job_gate_sessiondb.py
+  - tests/gateway/test_api_turn_admission.py
+  - tests/gateway/test_channel_directory_readonly.py
+  - tests/hermes_state/test_session_db_write_admission.py
+  - tests/hermes_state/test_hermes_state.py
+  - hermes_state_admission.py
+  - hermes_state_write.py
+  - tests/hermes_state/test_async_write_admission.py
+  - tests/hermes_state/test_no_more_rows_retry.py
+  tests:
+  - scripts/run_tests.sh tests/hermes_state/test_session_db_write_admission.py tests/acp_adapter/test_session_manager_close.py
+    tests/gateway/test_api_turn_admission.py tests/gateway/test_channel_directory_readonly.py tests/cron/test_run_job_gate_sessiondb.py
+    tests/hermes_state/test_hermes_state.py
+  retirement: Remove when upstream bounds SessionDB write concurrency with admission control, closes cron-gate
+    and ACP-teardown handle leaks, exposes a synchronous-mode override, and awaits queued API turn admission.
+- id: gateway-lifecycle-drain-incident-contracts
+  kind: core
+  rationale: Include detached delegation work in aggregate maintenance-drain accounting, refuse completion
+    wakes explicitly marked as new agent turns while an external drain owns intake, and bind the loop-freeze
+    hard-exit fallback to the supervisor stop deadline without leaking its timer or descriptor.
+  paths:
+  - gateway/run.py
+  - gateway/shutdown_watchdog.py
+  - gateway/wake.py
+  - tests/gateway/test_loop_liveness_watchdog.py
+  - tests/gateway/test_shutdown_cache_cleanup.py
+  - tests/gateway/test_shutdown_incident_contract.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_shutdown_incident_contract.py tests/gateway/test_loop_liveness_watchdog.py
+    tests/gateway/test_shutdown_cache_cleanup.py
+  - scripts/run_tests.sh tests/gateway/test_gateway_shutdown.py tests/gateway/test_restart_drain.py tests/gateway/test_external_drain_control.py
+    tests/gateway/test_shutdown_aggregate_budget_contract.py
+  retirement: Remove when upstream accounts for detached delegations during drain, preserves marked completion-wake
+    admission boundaries, and supplies an equivalent supervisor-bounded loop-freeze backstop with cleanup
+    coverage.
+- id: gateway-reliability-revival-heartbeat-stopsec
+  kind: core
+  rationale: 'Exit 75 (whitelisted relaunch code) instead of 1 on signal-initiated shutdown so stop-phase
+    exits are not left permanently failed by systemd; start and supervise the loop-liveness heartbeat
+    from the top of gateway start() so a gateway life cannot run heartbeat-less; size TimeoutStopSec to
+    cover the cron drain floor plus its cleanup reserve so systemd does not SIGKILL an in-budget drain.
+    Evidence: 2026-08-24/25 hermes-vm incident chain (42-min outage, 7h heartbeat-less life, drain SIGKILL
+    churn); PR #273.'
+  paths:
+  - gateway/run.py
+  - hermes_cli/gateway.py
+  - tests/gateway/test_gateway_reliability_20260825.py
+  - tests/gateway/test_drain_timeout_stopsec_margin.py
+  - tests/gateway/test_gateway_heartbeat.py
+  - tests/gateway/test_signal_shutdown_exit_code.py
+  - apps/desktop/src/app/gateway/hooks/use-gateway-boot.ts
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_gateway_reliability_20260825.py tests/gateway/test_gateway_shutdown.py
+    tests/hermes_cli/test_systemd_optional_directives.py
+  retirement: Remove when upstream exits a whitelisted relaunch code on signal-initiated shutdown, starts
+    and supervises the loop-liveness heartbeat before adapter bring-up, and sizes the generated unit's
+    TimeoutStopSec to cover the cron drain floor plus cleanup reserve.
+- id: desktop-messaging-config-load-once
+  kind: core
+  rationale: Keep the authenticated Desktop messaging-platform inventory within its request timeout by
+    loading the large gateway configuration once per unscoped request, while preserving fail-soft cards
+    and profile-local credential isolation when configuration loading fails.
+  paths:
+  - hermes_cli/web_routers/messaging.py
+  - tests/hermes_cli/test_web_server_messaging_profiles.py
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_web_server_messaging_profiles.py
+  retirement: Remove when upstream loads messaging gateway configuration at most once per request with
+    equivalent fail-soft and profile-isolation coverage.
+- id: desktop-profile-session-lightweight-target-contract
+  kind: core
+  rationale: Preserve a regression contract that both cross-profile Desktop session routes enumerate only
+    profile names and homes, without invoking the heavyweight metadata/configuration inventory path.
+  paths:
+  - tests/hermes_cli/test_profiles_sidebar_scope.py
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_profiles_sidebar_scope.py
+  retirement: Remove when upstream carries equivalent endpoint-level coverage that rejects heavyweight
+    profile inventory while preserving default and named-profile results.
+- id: nous-oauth-refresh-stampede-backport
+  kind: compatibility
+  rationale: Prevent concurrent Hermes processes from repeatedly rotating the same single-use Nous OAuth
+    refresh grant after sibling 401 responses. Preserve the exact failed bearer through main, pool, proxy,
+    and auxiliary recovery; adopt a peer-rotated token under the shared lock; and replace the original
+    task/model-specific auxiliary cache entry.
+  paths:
+  - agent/auxiliary_client.py
+  - agent/credential_pool.py
+  - hermes_cli/auth.py
+  - hermes_cli/proxy/adapters/nous_portal.py
+  - run_agent.py
+  - tests/agent/test_auxiliary_client.py
+  - tests/agent/test_credential_pool_nous_refresh_stampede.py
+  - tests/hermes_cli/test_proxy.py
+  - website/docs/user-guide/features/credential-pools.md
+  - agent/credential_pool_leases.py
+  - agent/auxiliary_credentials.py
+  - agent/client_lifecycle.py
+  - tests/agent/test_auxiliary_credentials_refresh.py
+  - tests/agent/test_credential_pool_lease_refresh_reselect.py
+  - tests/tools/test_delegate_ownership_setup.py
+  - tests/tools/delegate_fixtures.py
+  tests:
+  - scripts/run_tests.sh tests/agent/test_auxiliary_client.py tests/agent/test_credential_pool_nous_refresh_stampede.py
+    tests/hermes_cli/test_proxy.py tests/hermes_cli/test_auth_nous_provider.py tests/agent/test_credential_pool.py
+  - scripts/run_tests.sh tests/agent/test_run_agent.py::TestRunConversation::test_nous_401_refreshes_after_remint_and_retries
+    tests/agent/test_run_agent.py::TestNousCredentialRefresh
+  retirement: Remove when upstream-equivalent failed-bearer propagation, peer-token adoption, lock-timeout
+    handling, and exact auxiliary cache-key replacement are present in the recorded upstream baseline.
+- id: live-state-db-access-guard
+  kind: core
+  rationale: Prevent terminal commands from opening the active profile's live state.db while the gateway
+    owns it, and provide a bounded canonical read-only query path for operator inspection without creating
+    another model tool.
+  paths:
+  - hermes_cli/state_db_cmd.py
+  - tests/hermes_cli/test_state_db_cmd.py
+  - tests/tools/test_live_state_db_guard.py
+  - tests/tools/test_terminal_tool.py
+  - tools/live_state_db_guard.py
+  - tools/terminal_tool_guards.py
+  tests:
+  - scripts/run_tests.sh tests/tools/test_live_state_db_guard.py tests/tools/test_terminal_tool.py tests/hermes_cli/test_state_db_cmd.py
+  retirement: Remove when upstream provides equivalent non-approvable live-database ownership enforcement
+    and a bounded canonical read-only inspection path.
+- id: durable-post-response-barrier
+  kind: core
+  rationale: Persist a final delivery obligation and its ordered session-scoped post-response barrier
+    actions in one SessionDB transaction, then drain them with one runner-owned bounded worker and an
+    adapter pre-send handoff that preserves delivery/turn ownership across a crash.
+  paths:
+  - .github/batumi-patches.yaml
+  - hermes_state.py
+  - hermes_state_common.py
+  - hermes_state_schema.py
+  - gateway/delivery_ledger.py
+  - gateway/platforms/base.py
+  - gateway/platforms/signal.py
+  - gateway/post_response.py
+  - gateway/run.py
+  - gateway/session.py
+  - tests/gateway/test_42039_duplicate_user_message.py
+  - tests/gateway/test_first_turn_session_meta_rebaseline.py
+  - tests/gateway/test_internal_notification_marker_82888.py
+  - tests/gateway/test_multiplex_session_db_profile_scope.py
+  - tests/gateway/test_post_response_actions.py
+  - tests/gateway/test_post_response_delivery.py
+  - tests/gateway/test_signal.py
+  - tests/state/test_session_git_metadata_generation.py
+  - hermes_state_post_response.py
+  - gateway/post_response_delivery.py
+  - gateway/session_retained.py
+  - tests/hermes_state/test_post_response_adapter_owner.py
+  - tests/e2e/test_platform_commands.py
+  - gateway/run_inbound_finalization.py
+  - tests/gateway/test_post_response_media_identity.py
+  - hermes_cli/session_recovery.py
+  - tests/hermes_cli/test_session_recovery.py
+  - tests/hermes_cli/test_session_recovery_post_response.py
+  - tests/conformance/persistence/test_cell5_delivery_outbox_exactly_once.py
+  - tests/hermes_state/test_purge_profile_state.py
+  - tests/hermes_state/test_rekey_profile_state.py
+  - tests/gateway/test_shutdown_completion_barrier.py
+  - gateway/delivery_failure.py
+  - gateway/run_delivery_recovery.py
+  - tests/gateway/test_durable_delivery_recovery.py
+  - hermes_cli/sqlite_util.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_post_response_actions.py tests/gateway/test_post_response_delivery.py
+  - scripts/run_tests.sh tests/gateway/test_42039_duplicate_user_message.py tests/gateway/test_first_turn_session_meta_rebaseline.py
+    tests/gateway/test_internal_notification_marker_82888.py tests/gateway/test_multiplex_session_db_profile_scope.py
+  - scripts/run_tests.sh tests/gateway/test_delivery_ledger.py tests/gateway/test_delivery_ledger_fd_leak.py
+    tests/gateway/test_delivery_ledger_producer.py tests/gateway/test_gateway_shutdown.py tests/gateway/test_routing_save_fast_path.py
+    tests/hermes_state/test_session_db_write_admission.py tests/state/test_session_git_metadata_generation.py
+  - scripts/run_tests.sh tests/gateway/test_signal.py tests/gateway/test_send_multiple_images.py tests/gateway/test_media_extraction.py
+    tests/gateway/test_media_tag_cleanup.py tests/gateway/test_multiplex_session_db_profile_scope.py
+  - scripts/run_tests.sh tests/gateway/test_shutdown_completion_barrier.py
+  - scripts/run_tests.sh tests/gateway/test_durable_delivery_recovery.py
+  retirement: Remove when upstream contains the equivalent SessionDB-owned durable post-response schema,
+    transaction boundary, bounded worker handoff, and behavioral regression coverage.
+- id: kanban-worker-pid-race-guard
+  kind: core
+  rationale: 'Guard _set_worker_pid against the fast-worker completion race in the Kanban admission kernel:
+    CAS the PID write on (task id, status=running, current_run_id) so a worker that completes before the
+    dispatcher persists its PID causes a zero-write lost race (no compensating NULL that could erase a
+    replacement dispatcher''s PID), fire the on_kanban_worker_spawned hook only when the CAS persisted
+    and with the persisted run id, and clear worker_pid atomically on every running-to-non-running transition.
+    Atomic round-4 review: PASS WITH NON-BLOCKING NOTES (run 20260914T075625Z-d19ad821e8dd).'
+  paths:
+  - hermes_cli/kanban_db.py
+  - hermes_cli/kanban_db_dispatch.py
+  - tests/hermes_cli/test_kanban_dispatch_races.py
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_kanban_db.py tests/hermes_cli/test_kanban_worker_lifecycle_hooks.py
+    tests/hermes_cli/test_kanban_cli_dispatch_passthrough.py
+  - scripts/run_tests.sh tests/hermes_cli/test_kanban_dispatch_races.py
+  retirement: Fold into the upstream Kanban admission kernel when the dispatch PID race handling lands
+    upstream.
+- id: kanban-dispatch-test-hardening
+  kind: operations
+  rationale: 'Test-only hardening for the Kanban admission kernel: restore sys.modules state in the dispatch-passthrough
+    fixture so later tests in the same pytest session do not import duplicate hermes_cli module instances,
+    and assert dispatch_once leaves no claim residue (claim_lock and worker_pid NULL on every non-running
+    task) after spawn failure and after real complete_task, pinned against memory-pressure vacuity.'
+  paths:
+  - tests/hermes_cli/test_kanban_cli_dispatch_passthrough.py
+  - tests/hermes_cli/test_kanban_db.py
+  - hermes_cli/kanban_db_dispatch.py
+  - tests/hermes_cli/test_kanban_dispatch_races.py
+  - tests/hermes_cli/test_kanban_goal_mode_worker_log.py
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_kanban_db.py tests/hermes_cli/test_kanban_cli_dispatch_passthrough.py
+  - scripts/run_tests.sh tests/hermes_cli/test_kanban_dispatch_races.py
+  retirement: Fold into the upstream Kanban test suite when the admission kernel lands upstream.
+- id: kanban-admission-kernel
+  kind: core
+  rationale: 'Kanban admission kernel: fail-closed admission policy, versioned routing contract, dispatcher
+    launch protocol (8-hex live-board task IDs, dispatch_once launch-protocol wiring), claim rollback
+    and terminal run-outcome primitives, seven-profile registry (orchestrator + six lanes), lease+policy-hardened
+    record_spawned, Stage-3 acceptance harness with harness invariants.'
+  paths:
+  - hermes_cli/kanban_admission.py
+  - hermes_cli/kanban_dispatch_wiring.py
+  - hermes_cli/kanban_launch_protocol.py
+  - hermes_cli/kanban_profiles.py
+  - hermes_cli/kanban_route_contract.py
+  - hermes_cli/kanban_wired_dispatcher.py
+  - tests/hermes_cli/kanban_harness_invariants.py
+  - tests/hermes_cli/test_kanban_admission_policy.py
+  - tests/hermes_cli/test_kanban_dispatch_wiring.py
+  - tests/hermes_cli/test_kanban_launch_protocol.py
+  - tests/hermes_cli/test_kanban_profiles.py
+  - tests/hermes_cli/test_kanban_route_contract.py
+  - tests/hermes_cli/test_kanban_wired_dispatcher.py
+  - tests/hermes_cli/test_kanban_stage3_harness.py
+  - tests/hermes_cli/test_kanban_terminal_handoff.py
+  - hermes_cli/kanban_db_dispatch.py
+  - tests/hermes_cli/test_kanban_dispatch_races.py
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_kanban_admission_policy.py tests/hermes_cli/test_kanban_launch_protocol.py
+    tests/hermes_cli/test_kanban_dispatch_wiring.py tests/hermes_cli/test_kanban_stage3_harness.py
+  retirement: Fold into the upstream Kanban admission kernel when it lands upstream.
+- id: kanban-mandatory-restart-policy-skills
+  kind: operations
+  rationale: Force-load the Kanban worker lifecycle and restart-window policy skills in every dispatcher-owned
+    worker so runtime-impact classification, included-updater routing and source/runtime reporting
+    are available without relying on per-task skill selection.
+  paths:
+  - cli.py
+  - hermes_cli/kanban_db.py
+  - tests/hermes_cli/test_cli_preloaded_skills.py
+  - tests/hermes_cli/test_kanban_core_functionality.py
+  - hermes_cli/kanban_db_dispatch.py
+  - tests/hermes_cli/test_kanban_dispatch_races.py
+  - hermes_cli/kanban_worker_policy.py
+  - .github/batumi-components.lock.yaml
+  - tests/fixtures/kanban_policy_skills/SOURCE.json
+  - tests/fixtures/kanban_policy_skills/skills.zip
+  - tests/e2e/core/_policy_skills.py
+  - tests/fixtures/kanban_policy_skills/README.md
+  - tests/e2e/core/kanban/_helpers.py
+  - tests/e2e/core/upgrade/handoff/_handoff.py
+  - tests/e2e/core/upgrade/pm/_pm.py
+  - tests/e2e/core/test_policy_skill_fixtures.py
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_cli_preloaded_skills.py tests/hermes_cli/test_kanban_core_functionality.py::test_default_spawn_force_loads_worker_policy_skills
+    tests/hermes_cli/test_kanban_worker_spawn_toolsets.py tests/hermes_cli/test_kanban_worker_session_source.py
+  - scripts/run_tests.sh tests/e2e/core/test_policy_skill_fixtures.py
+  retirement: Remove when upstream force-loads equivalent lifecycle and restart-window policy for every
+    dispatcher-owned Kanban worker, preserving and de-duplicating per-task skills.
+- id: ci-load-flake-tolerant-timeouts
+  kind: operations
+  rationale: 'De-flake test-only timing contracts under saturated CI event loops: the telegram updater-stop
+    timeout test must simulate an unbounded CLOSE-WAIT hang (never-set Event) so loop scheduling delay
+    cannot let the fake stop() complete before the wall-clock deadline resolves, and shutdown aggregate-budget
+    tests must give phase-completion assertions watchdog leash room proportional to CI scheduling delay.'
+  paths:
+  - tests/gateway/test_telegram_network_reconnect.py
+  - tests/gateway/test_shutdown_aggregate_budget_contract.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_telegram_network_reconnect.py tests/gateway/test_shutdown_aggregate_budget_contract.py
+  retirement: Remove when upstream tests tolerate parallel-runner scheduling delay equivalently.
+- id: browser-vault-authorized-otp-instructions
+  kind: operations
+  rationale: Allow explicitly user-authorized email and SMS one-time code entry on the verified
+    account/site tab while retaining password and payment protections. Document that ordinary
+    browser input does not provide vault secret isolation; handlers and schemas are unchanged.
+  paths:
+  - tools/browser_vault_tool.py
+  - contributors/emails/codex-agent@example.invalid
+  tests:
+  - scripts/run_tests.sh tests/tools/test_browser_vault.py
+  retirement: Remove when upstream documents equivalent authorized OTP input and secret-isolation boundaries.
+- id: ci-aggregate-bounded-context
+  kind: operations
+  rationale: Pass every dependency result and detector lane selection to the required gate without
+    review report bodies, which can exceed the runner's per-environment-value launch limit.
+  paths:
+  - .github/workflows/ci.yaml
+  - tests/ci/test_gate_workflow_context.py
+  tests:
+  - scripts/run_tests.sh tests/ci/test_gate_workflow_context.py tests/ci/test_required_results.py
+  retirement: Remove when upstream bounds aggregate gate context while retaining every required result.
+- id: nix-managed-guard-pipefail
+  kind: operations
+  rationale: Consume the complete managed-mode command output when matching the guard message so
+    grep does not close the pipe early and make echo fail under the Nix builder's pipefail shell.
+  paths:
+  - nix/checks.nix
+  tests:
+  - nix build .#checks.x86_64-linux.managed-guard
+  retirement: Remove when upstream's managed guard check drains command output under pipefail.
+- id: brotlicffi-decoder-security-fix
+  kind: operations
+  rationale: Pin brotlicffi 1.2.1.0 to fix PYSEC-2026-4323 with the user-approved
+    package-specific release cooldown exception; preserve the global three-day policy.
+  paths:
+  - pyproject.toml
+  - uv.lock
+  - pm/AGENTS.md
+  - tests/test_packaging_metadata.py
+  tests:
+  - python -m pm.build_env --source . --check-lock
+  - scripts/run_tests.sh tests/test_packaging_metadata.py
+  retirement: Remove when the accepted upstream baseline includes the fixed decoder release.
+- id: october-lockfile-advisory-remediation
+  kind: operations
+  rationale: Keep lockfile, build and npm workspace dependencies outside the October 24
+    advisory boundaries while preserving pinned Electron scripts and major-specific HTTP overrides.
+  paths:
+  - pyproject.toml
+  - uv.lock
+  - package.json
+  - package-lock.json
+  - .npmrc
+  - apps/desktop/package.json
+  - ui-tui/package.json
+  - tests-js/package.json
+  - tests-js/security-lock-floors.test.ts
+  - website/package.json
+  - website/package-lock.json
+  - website/.npmrc
+  - scripts/whatsapp-bridge/package.json
+  - scripts/whatsapp-bridge/package-lock.json
+  - plugins/platforms/photon/sidecar/package.json
+  - plugins/platforms/photon/sidecar/package-lock.json
+  - scripts/termux/build_config.sh
+  - scripts/termux/build_wheels.py
+  - tests/test_packaging_metadata.py
+  tests:
+  - scripts/run_tests.sh tests/test_packaging_metadata.py tests/pm/test_project_relock.py
+  - npm --workspace tests-js test -- security-lock-floors.test.ts
+  retirement: Remove when the accepted upstream baseline resolves all reviewed advisory boundaries.
