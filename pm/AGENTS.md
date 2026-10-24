@@ -30,8 +30,10 @@ dependencies themselves have to"; dates are checked by us, not users; pinned dep
 
 Fork exception: the user explicitly approved skipping cooldown on October 22 for the
 certifi 2026.10.19 security fix. Its package-specific cutoff is fixed at
-2026-10-22T00:00:00Z; no other Python dependency is exempt. Remove that exception
-after the release meets the normal three-day floor.
+2026-10-22T00:00:00Z. On October 24 the user also approved brotlicffi 1.2.1.0
+for PYSEC-2026-4323; its fixed cutoff is 2026-10-23T00:00:00Z. No other Python
+dependency is exempt. Remove each exception after its release meets the normal
+three-day floor.
 
 
 ## Temporary browser-harness source pin
