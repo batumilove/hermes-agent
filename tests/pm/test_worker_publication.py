@@ -58,6 +58,11 @@ def test_staged_plugin_publication_uses_installed_identity_and_local_dependencie
     project = tmp_path / "project"
     project.mkdir()
     monkeypatch.setattr(paths, "repo_root", lambda: project)
+    # Gate against this synthetic install's version, not the host checkout's tags.
+    monkeypatch.delenv("HERMES_INSTALL_ROOT", raising=False)
+    (project / "install-stamp.json").write_text(json.dumps({
+        "commit": "1" * 40, "updateMechanism": "self", "baseVersion": "1.0.0", "source": "local",
+    }), encoding="utf-8")
     (project / "pyproject.toml").write_text(
         '[project]\nname="publication-core"\nversion="1"\nrequires-python=">=3.11"\n'
         '[tool.uv]\npackage=false\n')
