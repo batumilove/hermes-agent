@@ -60,12 +60,12 @@
     "nanoid@^3": "3.3.18",
     "nanoid@^6": "6.0.0",
     "js-yaml@^4": "4.3.2",
-    "undici@^6": "6.29.0",
-    "undici@^7": "7.30.0",
+    "undici@^6": "6.29.1",
+    "undici@^7": "7.30.1",
     "postcss": "8.5.27",
     "tar": "7.5.22",
     "axios@^1": "1.20.0",
-    "fast-uri@^3": "3.1.8",
+    "fast-uri@^3": "3.1.9",
     "joi@^18": "18.2.9",
     "minimatch@^10": "10.2.6",
     "shell-quote": "1.12.0",
@@ -80,7 +80,8 @@
     "@vitest/mocker": "4.1.12",
     "follow-redirects": "1.16.1",
     "sanitize-html": "2.18.1",
-    "vite": "8.2.4"
+    "vite": "8.2.4",
+    "zod@^4": "4.6.6"
   },
   "engines": {
     "node": "^22.22.0 || ^24.11.0 || >=26.0.0",
@@ -95,7 +96,7 @@
     "fsevents@2.3.3": true,
     "get-windows@9.3.0": true,
     "lefthook@2.1.14": true,
-    "electron@42.11.9": true
+    "electron@42.11.16": true
   },
   "dependencies": {
     "js-yaml": "4.3.2",

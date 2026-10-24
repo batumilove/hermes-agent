@@ -55,6 +55,17 @@ patches:
   - scripts/run_tests.sh tests/agent/test_post_turn_engine_handoff.py
   retirement: Remove when upstream passes the owning context engine to post_llm_call
     while preserving the detached-agent publication guard.
+- id: ci-compare-response-bound
+  kind: operations
+  rationale: Read only the first GitHub compare page so large consolidations cannot
+    exhaust detection's job budget; run every lane at the API's 300-file cap so
+    truncated diffs never hide required checks.
+  paths:
+  - .github/actions/detect-changes/action.yml
+  - tests/ci/test_detect_changes_compare.py
+  tests:
+  - scripts/run_tests.sh tests/ci/test_detect_changes_compare.py tests/ci/test_classify_changes.py
+  retirement: Remove when upstream bounds compare traversal and conservatively handles capped file lists.
 - id: native-updater-scope-custody-enforcement
   kind: core
   rationale: Require verified runtime homes even for PID-file hints and user units; discover
@@ -2075,3 +2086,44 @@ patches:
   tests:
   - scripts/run_tests.sh tests/tools/test_browser_vault.py
   retirement: Remove when upstream documents equivalent authorized OTP input and secret-isolation boundaries.
+- id: brotlicffi-decoder-security-fix
+  kind: operations
+  rationale: Pin brotlicffi 1.2.1.0 to fix PYSEC-2026-4323 with the user-approved
+    package-specific release cooldown exception; preserve the global three-day policy.
+  paths:
+  - pyproject.toml
+  - uv.lock
+  - pm/AGENTS.md
+  - tests/test_packaging_metadata.py
+  tests:
+  - python -m pm.build_env --source . --check-lock
+  - scripts/run_tests.sh tests/test_packaging_metadata.py
+  retirement: Remove when the accepted upstream baseline includes the fixed decoder release.
+- id: october-lockfile-advisory-remediation
+  kind: operations
+  rationale: Keep lockfile, build and npm workspace dependencies outside the October 24
+    advisory boundaries while preserving pinned Electron scripts and major-specific HTTP overrides.
+  paths:
+  - pyproject.toml
+  - uv.lock
+  - package.json
+  - package-lock.json
+  - .npmrc
+  - apps/desktop/package.json
+  - ui-tui/package.json
+  - tests-js/package.json
+  - tests-js/security-lock-floors.test.ts
+  - website/package.json
+  - website/package-lock.json
+  - website/.npmrc
+  - scripts/whatsapp-bridge/package.json
+  - scripts/whatsapp-bridge/package-lock.json
+  - plugins/platforms/photon/sidecar/package.json
+  - plugins/platforms/photon/sidecar/package-lock.json
+  - scripts/termux/build_config.sh
+  - scripts/termux/build_wheels.py
+  - tests/test_packaging_metadata.py
+  tests:
+  - scripts/run_tests.sh tests/test_packaging_metadata.py tests/pm/test_project_relock.py
+  - npm --workspace tests-js test -- security-lock-floors.test.ts
+  retirement: Remove when the accepted upstream baseline resolves all reviewed advisory boundaries.
