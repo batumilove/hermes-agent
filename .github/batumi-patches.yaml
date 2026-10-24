@@ -5,6 +5,23 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: mattermost-exact-fleet-mention-routing
+  kind: compatibility
+  rationale: Match complete case-insensitive Mattermost username tokens, strip only the
+    receiving bot's own mentions, and suppress non-target fleet bots even in free-response
+    channels. Preserve the explicit six-bot fleet roster, channel allowlists and DM bypass.
+    Offline adapter tests require the repository test environment with Mattermost plugin
+    dependencies; no server credentials or live messaging are required. The operator-approved
+    contributor alias attributes Hermes-prepared PR409 commits to batumilove without rewriting history.
+  paths:
+  - contributors/emails/hermes-candidate@localhost.invalid
+  - plugins/platforms/mattermost/adapter.py
+  - tests/gateway/test_mattermost_mention_routing.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_mattermost_mention_routing.py tests/gateway/test_mattermost.py
+  retirement: Remove when upstream provides equivalent exact-token own-mention routing
+    and explicit fleet-target suppression with regression coverage for blank identities,
+    username suffixes and simultaneous own/other fleet mentions.
 - id: browse-schema-begin-budget-refusal
   kind: core
   rationale: Budget preparatory durability SQL and transaction admission during additive browse reconciliation, reporting deadline interrupts as bounded no-write refusals with the repair remedy.
