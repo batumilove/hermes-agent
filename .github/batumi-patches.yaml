@@ -5,6 +5,14 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: live-restore-durable-state-assertion
+  kind: compatibility
+  rationale: Verify restore refusal preserves database and WAL bytes plus admission rows without treating SQLite shared-memory reader bookkeeping as durable data.
+  paths:
+  - tests/hermes_cli/test_update_restore_authority.py
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_update_restore_authority.py
+  retirement: Remove when upstream live-restore tests distinguish durable state from volatile SQLite read marks.
 - id: startup-scheduler-live-status
   kind: core
   rationale: Bind the startup ticker to the runner so control status reports its actual liveness.
