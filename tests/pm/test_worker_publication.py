@@ -65,7 +65,13 @@ def test_staged_plugin_publication_uses_installed_identity_and_local_dependencie
     home = tmp_path / "home"
     target = home / "plugins" / "example"
     target.mkdir(parents=True)
-    (home / "config.yaml").write_text('plugins:\n  enabled: ' + ('[example]' if active else '[]') + '\n')
+    (home / "config.yaml").write_text('plugins:\n  enabled: ' + ('[example, unrelated]' if active else '[unrelated]') + '\n')
+    unrelated = home / "plugins" / "unrelated"
+    unrelated.mkdir()
+    (unrelated / "plugin.yaml").write_text(
+        'name: unrelated\nrequires_hermes: ">=999.0"\npython_dependencies: ["unavailable-plugin-dep==1"]\n')
+    config_before = (home / "config.yaml").read_bytes()
+    unrelated_before = (unrelated / "plugin.yaml").read_bytes()
     (target / "plugin.yaml").write_text("name: example\n")
     (target / "code.py").write_text('old code')
     metadata = target.parent / ".install-metadata.json"
@@ -88,6 +94,8 @@ def test_staged_plugin_publication_uses_installed_identity_and_local_dependencie
         "new_metadata": {"example": {"revision": "new"}},
     }))
     assert (target / "code.py").read_text() == "new code"
+    assert (home / "config.yaml").read_bytes() == config_before
+    assert (unrelated / "plugin.yaml").read_bytes() == unrelated_before
     assert not staged.exists()
     assert json.loads(metadata.read_text())["example"]["revision"] == "new"
     selected = selected_venv(project)

@@ -548,6 +548,8 @@ def _finish(request: dict, result_path: Path) -> int:
         terminal_receipt = _read_terminal_receipt(request)
         if terminal_receipt and terminal_receipt.get("outcome") == "success":
             code = 0  # an interrupt that landed after verification closed the run (review regression 3)
+        elif terminal_receipt:
+            code = code or terminal_receipt.get("exit_code") or 1
         if code and request["gateway_mode"]:
             from hermes_cli.update_cmd import _write_gateway_update_exit_code
             _write_gateway_update_exit_code(False)
