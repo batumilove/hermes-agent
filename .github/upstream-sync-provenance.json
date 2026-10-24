@@ -1,0 +1,7 @@
+{
+  "version": 2,
+  "upstream_base": "5894e750c3dba980d43b25aa29e3958149ba2c61",
+  "fetch_depth": 8,
+  "source_head": "6ed42625957beca5e9a8eb54330573b556acfbee",
+  "import_tree": "ecf55a21691ba9e7e132999a47744d54bd12bdd2"
+}
