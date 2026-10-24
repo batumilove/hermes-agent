@@ -2009,6 +2009,15 @@ patches:
   tests:
   - scripts/run_tests.sh tests/ci/test_gate_workflow_context.py tests/ci/test_required_results.py
   retirement: Remove when upstream bounds aggregate gate context while retaining every required result.
+- id: nix-managed-guard-pipefail
+  kind: operations
+  rationale: Consume the complete managed-mode command output when matching the guard message so
+    grep does not close the pipe early and make echo fail under the Nix builder's pipefail shell.
+  paths:
+  - nix/checks.nix
+  tests:
+  - nix build .#checks.x86_64-linux.managed-guard
+  retirement: Remove when upstream's managed guard check drains command output under pipefail.
 - id: brotlicffi-decoder-security-fix
   kind: operations
   rationale: Pin brotlicffi 1.2.1.0 to fix PYSEC-2026-4323 with the user-approved
