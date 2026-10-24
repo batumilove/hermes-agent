@@ -1477,8 +1477,10 @@ patches:
   rationale: Preserve the production Honcho health monitor and queue diagnostic used by Hermes cron, together
     with their fail-closed behavior contracts. Route regressions require the checkout test
     dependencies (pytest and PyYAML) and a disposable HOME/HERMES_HOME; no live
-    Honcho, provider credentials or generation calls are required.
+    Honcho, provider credentials or generation calls are required. The mailmap alias
+    preserves locally generated Hermes automation attribution without rewriting PR history.
   paths:
+  - .mailmap
   - hermes_cli/honcho_monitor.py
   - hermes_cli/honcho_queue_diagnostic.py
   - scripts/honcho_monitor.py
