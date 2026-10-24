@@ -1084,7 +1084,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           nativeBuildInputs = [ hermesNpmLib.nodejs ];
         } ''
           node ${./tests/npm-offline-overrides.mjs} ${hermesNpmLib.npmDeps} \
-            ${../package.json} ${../apps/bootstrap-installer/package.json}
+            ${../package.json}
           touch $out
         '';
 
