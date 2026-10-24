@@ -53,7 +53,7 @@ _HERMES_BOT_USERNAMES = frozenset({
 # Consume whole tokens and exclude email/local-part adjacency on both sides.
 # ':' is included to avoid treating a remote username as a local prefix.
 _USERNAME_MENTION = re.compile(
-    r"(?<![\w.@+%\-])@([a-z0-9_.\-]+(?::[a-z0-9_.\-]+)*)(?![\w@])", re.IGNORECASE
+    r"(?<![\w.@+%\-])@([a-z0-9_.\-]+(?::[a-z0-9_.\-]+)*)(?![\w.@+%\-]|:[a-z0-9_.\-])", re.IGNORECASE
 )
 
 

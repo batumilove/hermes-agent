@@ -47,6 +47,19 @@ def test_nonfleet_names_do_not_silence_free_channel(adapter, text):
     assert adapter._apply_channel_gating("channel", text) == text
 
 
+@pytest.mark.parametrize("text,free_channel", [
+    ("@hermes+tag", False),
+    ("@hermes%tag", False),
+    ("@hermes-researché", False),
+    ("@hermes:remoteé", False),
+    ("@hermes-research+tag", True),
+])
+def test_nonmention_suffix_cannot_dispatch_strip_or_suppress(adapter, text, free_channel):
+    if free_channel:
+        adapter.config.extra["free_response_channels"] = ["channel"]
+    assert adapter._apply_channel_gating("channel", text) == (text if free_channel else None)
+
+
 def test_blank_identity_is_not_bare_at_mention(adapter):
     adapter._bot_username = adapter._bot_user_id = ""
     assert adapter._apply_channel_gating("channel", "hello @alice") is None
