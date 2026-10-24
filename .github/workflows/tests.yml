@@ -50,7 +50,7 @@ jobs:
         slice: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.commit }}
 
@@ -145,7 +145,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.commit }}
 
@@ -186,6 +186,15 @@ jobs:
           sudo mv "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl/rg" /usr/local/bin/rg
           rm -rf "$RG_TARBALL" "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl"
           rg --version
+
+      - name: Install tmux
+        # tests/e2e/core/cli_tmux and the Vertex /bg CLI suite drive real CLIs in tmux. The runner
+        # image ships it today; install it if it ever stops, and require_tmux() fails (not skips)
+        # without it under HERMES_E2E_REQUIRE_TUI=1, so the lane can't go green over zero coverage.
+        run: |
+          set -euo pipefail
+          command -v tmux >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq tmux; }
+          tmux -V
 
       - name: Require a WAL-capable SQLite
         # The state.db suites skip on a WAL-reset-vulnerable SQLite; fail
@@ -266,7 +275,7 @@ jobs:
       shards: ${{ steps.plan.outputs.shards }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.commit }}
           # The clean-worktree step below loads its action from the checkout.
@@ -312,7 +321,7 @@ jobs:
         shard: ${{ fromJSON(needs.e2e-upgrade-plan.outputs.shards) }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.commit }}
           # N-1 = `git describe --tags --abbrev=0 HEAD~1`.

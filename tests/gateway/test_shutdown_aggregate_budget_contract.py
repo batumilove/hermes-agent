@@ -73,7 +73,7 @@ def _configure_fast_forced_shutdown(runner, monkeypatch, active_agents):
     from agent import auxiliary_client
     import cron.scheduler as cron_scheduler
     from tools import async_delegation
-    import tools.browser_tool_lifecycle as browser_tool
+    import tools.browser_session_lifecycle as browser_tool
     import tools.process_registry as process_registry_module
     import tools.terminal_tool_lifecycle as terminal_tool
 

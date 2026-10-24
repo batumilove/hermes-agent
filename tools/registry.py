@@ -229,6 +229,7 @@ class ToolEntry:
     # Zero-arg callable whose dict is shallow-merged onto the schema at every get_definitions()
     # — for fields tracking runtime config (delegate_task's description reflects limits).
     dynamic_schema_overrides: Optional[Callable] = None
+    execution_timeout: float | None = None
 
 
 class _PluginOverridePolicy:
@@ -266,10 +267,6 @@ _check_fn_core_drop_warned: set[tuple[Callable, Optional[str]]] = set()  # once-
 _check_fn_cache_lock = threading.Lock()
 CHECK_FN_CACHE_BYPASS = ""
 _NO_CACHE_CHECK_FNS: set[Callable] = set()
-_BROWSER_IDENTITY_KEYS = (
-    "HERMES_SESSION_ID",
-    "HERMES_BROWSER_CONTROL_PRINCIPAL",
-    "HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY")
 
 
 def no_cache_check_fn(fn: Callable) -> Callable:
@@ -295,23 +292,9 @@ def _prune_check_fn_caches(now: float) -> None:
 
 
 def check_fn_cache_scope() -> Optional[str]:
-    """Return the active profile key when availability is profile-scoped. Browser-controller
-    availability is request-bound (changes on every attach/detach), so a fully bound
-    browser-control request bypasses this cache AND model_tools' outer definition cache (same
-    sentinel) — one Browser session's live tools must not leak into another. Single-profile
+    """Return the active profile key when availability is profile-scoped. Single-profile
     processes keep the process-wide cache; a multiplex gateway installs a Hermes-home override
     per profile turn, so the canonical profile key is the boundary."""
-    try:
-        from gateway.session_context import get_session_env
-        if all(str(get_session_env(k, "") or "").strip() for k in _BROWSER_IDENTITY_KEYS):
-            # api_server binds a server-derived principal + transport family on EVERY request, so
-            # identity-present != controller-attached; only bypass when the extension-control
-            # feature is actually on (#79047).
-            from gateway.browser_control_broker import browser_control_enabled
-            if browser_control_enabled():
-                return CHECK_FN_CACHE_BYPASS
-    except Exception:
-        pass
     try:
         from agent.secret_scope import serves_routed_profile
         from hermes_constants import get_hermes_home_override
@@ -710,7 +693,7 @@ class ToolRegistry:
         check_fn: Callable | None = None, requires_env: list | None = None, is_async: bool = False,
         description: str = "", emoji: str = "", max_result_size_chars: float | None = None,
         dynamic_schema_overrides: Callable | None = None, override: bool = False,
-        scope: Optional[str] = None):
+        scope: Optional[str] = None, execution_timeout: float | None = None):
         """Register a tool (called at import time by each tool file). ``override=True`` is an
         explicit opt-in for plugins replacing a built-in implementation (e.g. a headed-Chrome
         browser backend); without it, cross-toolset shadowing is rejected."""
@@ -774,7 +757,7 @@ class ToolRegistry:
                 name=name, toolset=toolset, schema=schema, handler=handler, check_fn=check_fn,
                 requires_env=requires_env or [], is_async=is_async,
                 description=description or schema.get("description", ""), emoji=emoji,
-                max_result_size_chars=max_result_size_chars,
+                max_result_size_chars=max_result_size_chars, execution_timeout=execution_timeout,
                 dynamic_schema_overrides=dynamic_schema_overrides)
             # Availability is derived per-tool (_toolset_has_exposable_tools), so this map no
             # longer gates a toolset; it still feeds get_toolset_requirements ->
@@ -841,6 +824,16 @@ class ToolRegistry:
                 self._drop_toolset_aliases(entry.toolset)
             self._generation += 1
         logger.debug("Deregistered tool: %s", name)
+
+    def move_to_scope(self, names, scope: str) -> None:
+        """Move process-global registrations into *scope*'s overlay (a single-profile process that
+        starts multiplexing hands its launch profile's MCP tools to that profile's own scope)."""
+        scope = normalize_scope(scope)
+        with self._lock:
+            moved = {name: self._tools.pop(name) for name in names if name in self._tools}
+            if moved:
+                self._slot(scope, create=True).update(moved)
+                self._generation += 1
 
     def restore_registration(
         self, name: str, current: ToolEntry, previous: Optional[ToolEntry], *,

@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.commit }}
       - name: Set up the locked JS build toolchain
@@ -48,8 +48,8 @@ jobs:
 
       # setup-pm caches npm downloads, not the installed workspace tree.
       # The job then extracts the full workspace node_modules
-      # again and runs the postinstalls again, which includes the Electron
-      # binary fetch. This caches the installed tree itself, keyed on the
+      # again and runs the native postinstalls again. Electron's binary is
+      # prepared explicitly below. This caches the installed tree itself, keyed on the
       # lockfile, and skips ``npm ci`` on an exact hit. There are no
       # restore-keys: a partial hit leaves a stale tree, so anything other
       # than an exact lockfile match reinstalls from the start.
@@ -88,6 +88,9 @@ jobs:
         with:
           command: npm ci --ignore-scripts --no-fund --no-audit
           working-directory: website
+
+      - name: Prepare locked Electron runtime before parallel checks
+        run: node scripts/build/electron-runtime.mjs --source .
 
       # Two checks run at a time on the standard four-core runner; each check
       # owns its own worker pool. The step fails only after all of

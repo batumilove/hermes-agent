@@ -1,7 +1,7 @@
 # gateway/ — messaging gateway, adapters, delivery
 
-Applies on top of the root `AGENTS.md`. Long-form: `website/docs/developer-guide/gateway-internals.md`.
-New platform adapter: follow `gateway/platforms/ADDING_A_PLATFORM.md` step by step.
+Read with root `AGENTS.md` and `website/docs/developer-guide/gateway-internals.md`.
+New adapters: `gateway/platforms/ADDING_A_PLATFORM.md`.
 
 ## Shape
 
@@ -9,9 +9,7 @@ New platform adapter: follow `gateway/platforms/ADDING_A_PLATFORM.md` step by st
 goals, notifications, shutdown, ...), sessions in `session*.py`, slash handlers in
 `slash_commands_*.py` mixins, authorization in `authz_mixin.py`, adapters in `platforms/<name>.py`
 over `platforms/base.py`. `builtin_hooks/` is the extension point for always-registered gateway
-hooks (none shipped). The gateway reads user YAML **raw** (`run.py` + `config.py`), not through
-`DEFAULT_CONFIG` — a key the CLI sees but the gateway doesn't means you're on the wrong loader
-(`hermes_cli/AGENTS.md`). Each adapter picks a base toolset (Telegram → `"messaging"`).
+hooks (none shipped). Gateway config loaders: `hermes_cli/AGENTS.md`. Each adapter picks a base toolset (Telegram → `"messaging"`).
 
 Slash commands: handlers are looked up by name through `_command_handler_table`; a command is
 listed in `_IDLE_COMMANDS` or `_PLAIN_COMMANDS` (works mid-run) in `run_busy.py`. No
@@ -62,8 +60,7 @@ MagicMock adapters in older tests auto-create truthy attributes.
 (`run_notifications.py::arm_process_watcher`) that starts a new turn on completion; verbosity is
 `display.background_process_notifications`. Injection requires the `admit_internal_event` receipt
 (a handler returning None is not acceptance); refused admission refunds every claimed batch sibling
-without spending an attempt. Long form: `website/docs/developer-guide/gateway-internals.md`
-§ Background process notifications.
+without spending an attempt. See the gateway guide, § Background process notifications.
 
 Canonical local CLI/TUI/Desktop sessions admit completion and watch events into the same durable
 FIFO as human input (private launch policy, `internal_notification` display kind); observers never
@@ -99,8 +96,14 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   (`run_adapters.py::_canonicalize` — the per-profile / default message, busy and platform-event
   handlers, the adapter auth-check callback, `run_inbound.py::_hm_admit_event`). No key derivation
   before it; an unresolved identity under multiplexing (route to an unserved profile) is dropped
-  with one WARNING at the first seam it reaches, never keyed into `agent:main`. `_transport_owner`,
-  `_authorization_home_for_source`, `_resolve_profile_home_for_source`, `_session_key_profile` and
+  with one WARNING at the first seam it reaches, never keyed into `agent:main`
+  (`parked_route_refusal.drop_rejected_route`; a route to a *parked* profile also tells the sender
+  in-channel to resend, since a direct bot's update is already confirmed and never redelivered; a
+  relay frame is ACKed and refused alike (`ParkedProfileRefusal`: a withheld one stalls the
+  ack-gated drain); a
+  dispatch its transport has not acknowledged yet, e.g. Google Chat HTTP events, runs in
+  `retryable_ingress()` and answers `ParkedRouteRefused` (503) instead, releasing its dedup claim).
+  `_transport_owner`, `_authorization_home_for_source`, `_resolve_profile_home_for_source`, `_session_key_profile` and
   `_resolve_profile_for_key` read the identity when present and fall back to their old chain only
   for sources nothing resolved (restored rows, hand-built sources). Never derive a second answer
   next to the identity; extend the object. `transport_profile` ≠ `runtime_profile` is normal
@@ -185,7 +188,9 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
 - **Hooks and observers register per served profile.** `builtin_hooks/`, `agent/shell_hooks.py::
   register_from_config` and lifecycle observers are prepared under each profile's scope at startup
   and on profile add/remove; idempotence keys include the profile, and `hooks/` paths resolve at call
-  time (a module constant freezes to the first importer).
+  time (a module constant freezes to the first importer). Shell hooks are also re-synced (added AND
+  unregistered) on every local session create/resume via `session_policy.refresh_profile_hooks` ->
+  `shell_hooks.sync_from_config`, the only caller that removes.
 - **Adapter YAML never reaches `os.environ` under multiplex.** `platforms/_shared.py::
   apply_yaml_bridge` seeds `PlatformConfig.extra` and skips the environ write under a secondary
   profile's scope; gate/allowlist reads go through `platform_gate_env`. A `if not os.getenv(X):

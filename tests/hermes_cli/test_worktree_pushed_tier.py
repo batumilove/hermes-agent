@@ -259,7 +259,7 @@ class TestCronWorktreeMaintenance:
         assert len(calls) == 1
 
     def test_repo_discovery_requires_worktrees_dir(self, monkeypatch, tmp_path):
-        import cron.scheduler as sched
+        import cron.scheduler_worktree as sched
 
         # A job workdir inside a git repo WITHOUT .worktrees/ is filtered out.
         repo = tmp_path / "jobrepo"
