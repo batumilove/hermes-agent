@@ -436,6 +436,7 @@ def _start_gateway_start_cron_and_housekeeping(runner):
     from cron.scheduler_thread import SupervisedTickerThread
     cron_thread = SupervisedTickerThread(
         cron_provider.start, args=(cron_stop,), kwargs=cron_start_kwargs, stop_event=cron_stop)
+    runner._cron_thread = cron_thread
     from gateway.runtime_ownership import process_ownership
     process_ownership.start_writer(cron_thread)
 
