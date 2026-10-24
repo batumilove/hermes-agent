@@ -1060,6 +1060,7 @@ patches:
   - agent/agent_init.py
   - agent/memory_manager.py
   - agent/memory_teardown.py
+  - website/docs/developer-guide/agent-loop.md
   - tests/gateway/test_agent_cache_memory_lifecycle.py
   - gateway/run.py
   - plugins/memory/honcho/__init__.py
@@ -2114,6 +2115,7 @@ patches:
   - hermes_state_runtime.py
   - tests/gateway/test_daemon_external_drain.py
   - tests/gateway/test_runtime_worker_shutdown.py
+  - tests/gateway/test_pre_gateway_dispatch.py
   - tests/gateway/test_shutdown_settle_leash.py
   - tests/hermes_state/test_runtime_worker_operations.py
   - gateway/session_ingress.py
