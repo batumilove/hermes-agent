@@ -2031,3 +2031,31 @@ patches:
   - python -m pm.build_env --source . --check-lock
   - scripts/run_tests.sh tests/test_packaging_metadata.py
   retirement: Remove when the accepted upstream baseline includes the fixed decoder release.
+- id: october-lockfile-advisory-remediation
+  kind: operations
+  rationale: Keep lockfile, build and npm workspace dependencies outside the October 24
+    advisory boundaries while preserving pinned Electron scripts and major-specific HTTP overrides.
+  paths:
+  - pyproject.toml
+  - uv.lock
+  - package.json
+  - package-lock.json
+  - .npmrc
+  - apps/desktop/package.json
+  - ui-tui/package.json
+  - tests-js/package.json
+  - tests-js/security-lock-floors.test.ts
+  - website/package.json
+  - website/package-lock.json
+  - website/.npmrc
+  - scripts/whatsapp-bridge/package.json
+  - scripts/whatsapp-bridge/package-lock.json
+  - plugins/platforms/photon/sidecar/package.json
+  - plugins/platforms/photon/sidecar/package-lock.json
+  - scripts/termux/build_config.sh
+  - scripts/termux/build_wheels.py
+  - tests/test_packaging_metadata.py
+  tests:
+  - scripts/run_tests.sh tests/test_packaging_metadata.py tests/pm/test_project_relock.py
+  - npm --workspace tests-js test -- security-lock-floors.test.ts
+  retirement: Remove when the accepted upstream baseline resolves all reviewed advisory boundaries.
