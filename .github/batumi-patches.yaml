@@ -9,6 +9,7 @@ patches:
   kind: core
   rationale: Identify private-install Electron processes by executable custody when argv/environment are rewritten; retain teardown diagnostics.
   paths:
+  - tests-js/scripts/desktop-smoke-launch-failure.test.ts
   - apps/desktop/e2e/update/harness.ts
   - apps/desktop/e2e/update/app-update.spec.ts
   - apps/desktop/e2e/update/install-processes.ts
