@@ -181,7 +181,7 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
         entry = SimpleNamespace(session_id="s1", session_key="k1", last_resume_marked_at=None, updated_at=None)
         host._resume_pending_candidates = lambda platform=None: [entry]
         try:
-            assert host._schedule_resume_pending_sessions() == 0
+            assert asyncio.run(host._schedule_resume_pending_sessions()) == 0
         except sqlite3.OperationalError as exc:
             pytest.fail(f"the retained store's read error stopped startup auto-resume: {exc}")
         assert fresh_checks == [], "an entry the retained store may own went on toward resume"
