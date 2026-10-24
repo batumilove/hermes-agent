@@ -473,6 +473,15 @@ class TestOwnedDrainControl:
         owner = dc.acquire_drain_ownership(principal="activation", home=home)
         owner.release()
 
+    @pytest.mark.platforms("posix")
+    def test_parallel_cron_admissions_share_the_activation_fence(self, home):
+        with dc.cron_admission(home=home) as first:
+            assert first is True
+            with dc.cron_admission(home=home) as second:
+                assert second is True
+                with pytest.raises(dc.DrainControlBusyError):
+                    dc.acquire_drain_ownership(principal="activation", home=home)
+
     def test_cron_admission_lock_is_not_a_drain_signal(self, home):
         with dc.cron_admission(home=home) as admitted:
             assert admitted is True

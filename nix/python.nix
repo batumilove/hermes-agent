@@ -74,13 +74,6 @@ let
           cffi = [ ];
         };
       });
-      # The temporary browser-harness Git pin declares setuptools in its
-      # pyproject, but uv.lock does not carry Git-source build backends.
-      browser-harness = prev.browser-harness.overrideAttrs (old: {
-        nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ final.resolveBuildSystem {
-          setuptools = [ ];
-        };
-      });
       # [kittentts] locks misaki as a git source. uv.lock records no build
       # backend for it, so supply the hatchling its pyproject declares.
       misaki = prev.misaki.overrideAttrs (old: {

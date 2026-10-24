@@ -94,6 +94,11 @@ class FinalDeliveryState:
                     delivered=delivered, error=None if delivered else error)
                 if settled is False:
                     return  # A stale producer cannot schedule or finalize a newer claim.
+                # A queued authority turn may proceed only after the delivery transition
+                # is durable; preparing a receipt alone still leaves its barrier unready.
+                # Terminal abandonment also hands ownership to the durable finalizer.
+                # The authority waiter must not remain parked on its marker event.
+                handoff.delivery_settled = delivered or error in {"chat not found", "bot blocked"}
                 controller = getattr(handoff.runner, "_post_response_controller", None)
                 if controller is not None:
                     controller.wake()

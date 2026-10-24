@@ -115,9 +115,10 @@ def test_pause_stops_launcher_after_worker_drain(
     profile_home.mkdir(parents=True)
     # The PID file records the WORKER (even-numbered parent 400 is its launcher).
     worker_pid, launcher_pid = 500, 400
-    # A PID file is only a hint; the fixture must also prove the live home.
     from hermes_cli import update_fleet_scope
 
+    # The synthetic worker belongs to this update; PID-file discovery alone
+    # no longer proves custody. Keep the real ownership filter in the path.
     monkeypatch.setattr(update_fleet_scope, "update_scope_homes", lambda: {profile_home.resolve()})
     monkeypatch.setattr(
         update_fleet_scope, "gateway_pid_home",

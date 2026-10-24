@@ -43,7 +43,7 @@ def _isolate_restart(monkeypatch, events):
     monkeypatch.setattr(
         gateway_cli,
         "get_systemd_unit_path",
-        lambda system=False: SimpleNamespace(exists=lambda: True),
+        lambda system=False: SimpleNamespace(exists=lambda: True, read_text=lambda **_: ""),
     )
     monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
     monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)

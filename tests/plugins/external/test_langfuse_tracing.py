@@ -351,7 +351,8 @@ class TestMoAReferenceGenerations:
         assert gens[0].updates["cost_details"]["total"] == pytest.approx(0.001)
         assert gens[1].updates["cost_details"]["total"] == pytest.approx(0.002)
         assert gens[0].updates["usage_details"] == {"input": 100, "output": 50}
-        assert gens[1].updates["usage_details"]["reasoning_tokens"] == 10
+        assert gens[1].updates["usage_details"]["output_reasoning_tokens"] == 10
+        assert gens[1].updates["usage_details"]["output"] == 30
         assert all(g.ended for g in gens)
 
     def test_repeat_emit_is_deduped_within_a_turn(self, monkeypatch):
@@ -930,6 +931,7 @@ class TestCanonicalCostExport:
             metadata=None,
             usage_details=None,
             cost_details=None,
+            model=None,
         ):
             captured["usage_details"] = usage_details
             captured["cost_details"] = cost_details

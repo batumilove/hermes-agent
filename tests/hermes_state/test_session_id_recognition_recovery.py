@@ -94,8 +94,9 @@ def store(tmp_path):
         yield add, bulk, lambda: sqlite3.connect(str(tmp_path / "state.db")), db.set_session_read
 
 
+@pytest.mark.parametrize("legacy_layout", [False, True], ids=["daemon-schema", "pre-daemon-schema"])
 @pytest.mark.parametrize("read_watermark", [False, True], ids=["ambiguous-defaults", "read-discriminant"])
-def test_layout_inference_survives_every_derived_id_shape(store, tmp_path, read_watermark: bool) -> None:
+def test_layout_inference_survives_every_derived_id_shape(store, tmp_path, read_watermark: bool, legacy_layout: bool) -> None:
     """Each derived shape, present as a parent id, must leave inference intact."""
     add, bulk, connect, set_read = store
     bulk(20)
@@ -112,11 +113,19 @@ def test_layout_inference_survives_every_derived_id_shape(store, tmp_path, read_
         columns, rows = _sessions_rows(conn)
     finally:
         conn.close()
+    if legacy_layout:
+        # Snapshot 30 shipped before daemon revision/generation columns. Keep
+        # its ambiguous suffix covered even as the current declaration evolves.
+        from hermes_cli.session_schema_history import declared_snapshots
+        legacy_columns = list(declared_snapshots("sessions")[30])
+        indices = [columns.index(name) for name in legacy_columns]
+        rows = [tuple(row[index] for index in indices) for row in rows]
+        columns = legacy_columns
     report = _map_as_salvage(tmp_path, columns, rows)
     assert report["mapped"]["sessions"] == len(rows)
     assert report["unrecognized_layout_rows"] == 0
     expected_layout = columns.copy()
-    if not read_watermark:
+    if legacy_layout and not read_watermark:
         # All-zero/NULL suffix cells fit both fresh CREATE and an older
         # store's appended auto_archived column. IDs cannot prove that order.
         for name in ("auto_archived", "pinned", "hidden", "last_read_at", "tool_names"):

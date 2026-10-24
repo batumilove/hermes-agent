@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.control_socket import query_gateway_control
-from gateway.run_control_socket import _start_gateway_start_control_socket
+from gateway.run_bootstrap import _start_gateway_start_control_socket
 
 
 @pytest.mark.platforms("posix")
@@ -23,6 +23,8 @@ async def test_live_status_query_keeps_loop_alive_while_status_read_is_blocked(t
         return {"gateway_state": "running"}
     runner = SimpleNamespace(
         config=SimpleNamespace(multiplex_profiles=False),
+        session_runtime_descriptor={},
+        session_ticket_store=None,
         _running_agent_count=lambda: 1,
         _active_cron_job_count=lambda: 2,
         _active_api_run_count=lambda: 3,
