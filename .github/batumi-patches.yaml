@@ -2130,6 +2130,16 @@ patches:
   tests:
   - scripts/run_tests.sh tests/tools/test_browser_vault.py
   retirement: Remove when upstream documents equivalent authorized OTP input and secret-isolation boundaries.
+- id: ci-aggregate-bounded-context
+  kind: operations
+  rationale: Pass every dependency result and detector lane selection to the required gate without
+    review report bodies, which can exceed the runner's per-environment-value launch limit.
+  paths:
+  - .github/workflows/ci.yaml
+  - tests/ci/test_gate_workflow_context.py
+  tests:
+  - scripts/run_tests.sh tests/ci/test_gate_workflow_context.py tests/ci/test_required_results.py
+  retirement: Remove when upstream bounds aggregate gate context while retaining every required result.
 - id: nix-managed-guard-pipefail
   kind: operations
   rationale: Consume the complete managed-mode command output when matching the guard message so

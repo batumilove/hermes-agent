@@ -537,10 +537,39 @@ jobs:
       - name: Evaluate job results
         id: evaluate
         # Shared with the stable orchestrator (scripts/ci/required_results.py
-        # is imported there). NEEDS is the toJSON(needs) context; RELEASE
-        # switches the gate into strict mode for release runs.
+        # is imported there). Only detector outputs affect lane selection.
+        # Exclude review bodies: a single env value above Linux MAX_ARG_STRLEN
+        # prevents the runner from starting this step at all.
         env:
-          NEEDS: ${{ toJSON(needs) }}
+          NEEDS: >-
+            {"detect":{"result":"${{ needs.detect.result }}","outputs":${{ toJSON(needs.detect.outputs) }}},
+             "fork-delta":{"result":"${{ needs.fork-delta.result }}"},
+             "fork-contracts":{"result":"${{ needs.fork-contracts.result }}"},
+             "osv-scanner":{"result":"${{ needs.osv-scanner.result }}"},
+             "tests":{"result":"${{ needs.tests.result }}"},
+             "tests-os":{"result":"${{ needs.tests-os.result }}"},
+             "lint":{"result":"${{ needs.lint.result }}"},
+             "js-tests":{"result":"${{ needs.js-tests.result }}"},
+             "rust-tests":{"result":"${{ needs.rust-tests.result }}"},
+             "remote-backends":{"result":"${{ needs.remote-backends.result }}"},
+             "bootstrap-installer":{"result":"${{ needs.bootstrap-installer.result }}"},
+             "e2e-desktop":{"result":"${{ needs.e2e-desktop.result }}"},
+             "e2e-desktop-core":{"result":"${{ needs.e2e-desktop-core.result }}"},
+             "e2e-desktop-update":{"result":"${{ needs.e2e-desktop-update.result }}"},
+             "docs-site":{"result":"${{ needs.docs-site.result }}"},
+             "history-check":{"result":"${{ needs.history-check.result }}"},
+             "contributor-check":{"result":"${{ needs.contributor-check.result }}"},
+             "uv-lockfile":{"result":"${{ needs.uv-lockfile.result }}"},
+             "infographic-check":{"result":"${{ needs.infographic-check.result }}"},
+             "case-collision-check":{"result":"${{ needs.case-collision-check.result }}"},
+             "blob-size-check":{"result":"${{ needs.blob-size-check.result }}"},
+             "lazy-deps-guard":{"result":"${{ needs.lazy-deps-guard.result }}"},
+             "lockfile-diff":{"result":"${{ needs.lockfile-diff.result }}"},
+             "prompt-surface-diff":{"result":"${{ needs.prompt-surface-diff.result }}"},
+             "docker-lint":{"result":"${{ needs.docker-lint.result }}"},
+             "profile-artifact-check":{"result":"${{ needs.profile-artifact-check.result }}"},
+             "icons-freshness-check":{"result":"${{ needs.icons-freshness-check.result }}"},
+             "supply-chain":{"result":"${{ needs.supply-chain.result }}"}}
           RELEASE: ${{ inputs.release }}
         run: |
           args=()
