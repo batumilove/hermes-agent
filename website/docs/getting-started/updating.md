@@ -39,6 +39,16 @@ the incompatibility. After an update, verify its receipt and warnings, the loade
 runtime identity, service health and the changed behavior. The updater's recovery
 coverage is version-specific; do not promise complete automatic rollback.
 
+### Migrating an exported release
+
+An exported directory without supported update metadata needs a one-time migration before ordinary source updates. Prepare the intended revision with the included installer in a separate source, home and runtime. Verify imports and changed behavior there, then use the included package manager to prepare dependencies for the production home. Do not copy or hand-edit dependency facts between homes.
+
+Review the service binding as a whole: launcher, secret wrapper, profile home, runtime, dependency selection and bundled plugins. The included gateway restart may regenerate the base systemd unit, so preserve both that unit and its drop-ins. Save configuration and consistent data backups; restoring source alone does not reverse data migrations.
+
+Within the authorized migration scope, account for autoheal and queued recovery jobs, apply the reviewed service changes, and use the included restart path. Verify the new process identity, heartbeat, current-process adapter readiness and unchanged neighboring services before restoring recovery timers. Report shutdown timeouts separately from startup health. Preserve enforced guards, locks and leases.
+
+After migration, verify the configured fork feed/channel and use the installation's included `hermes update`. Do not assume a pinned or detached checkout follows the desired branch automatically. This migration is not a replacement update controller.
+
 Choose the update method for the installation that is running:
 
 | Installation | Update method |
@@ -80,10 +90,20 @@ than the latest release (for example one that tracked `main` before this default
 stays where it is until a newer release ships. Running `--set-channel stable`
 pins the checkout to the exact release commit, even when that is older; the
 Desktop names that move as a rollback to the release, and `hermes update --check`
-says the checkout is newer, instead of announcing a new update. Re-running the
-installer (`install.sh`, `install.ps1` or Hermes-Setup) over an install that chose
-a channel other than `main` keeps its checkout where it is: only `hermes update`
-moves it. An explicit `--commit` pin still applies.
+says the checkout is newer, instead of announcing a new update.
+
+The installers (`install.sh`, `install.ps1` and Hermes-Setup) put a new install
+on the latest stable release too. Re-running one over an install that never
+chose a channel moves it onto that release only when the release descends from
+its checkout. Any other checkout (one that followed `main`, or one already past
+the release) stays where it is, and `hermes update` decides that move: it refuses
+a release that predates the session stores the checkout already uses. Over an
+install that chose a channel other than `main`, a rerun keeps its checkout where
+it is: only `hermes update` moves it.
+To install the tip of `main` instead, pass `--channel main` (`-Channel main`
+for `install.ps1`, or set `HERMES_INSTALL_CHANNEL=main` before an
+`irm | iex` one-liner); the installer saves that choice the way
+`hermes update --set-channel main` does. An explicit `--commit` pin still applies.
 Windows Store, MSIX and bundled desktop installs are unaffected; their channel
 is baked into the package (see below).
 
@@ -155,6 +175,16 @@ For an admitted source checkout, `hermes update` runs these phases:
 7. **Gateway auto-restart**: on Linux and macOS, gateways paused for the update are started again as soon as the dependencies are prepared and the launchers refreshed, before the product builds; on Windows they restart after the builds. Any other running gateway is refreshed after the update completes. Service-managed gateways (systemd on Linux, launchd on macOS) restart through the service manager. Manual gateways are relaunched when Hermes can map their PID to a profile. Manually launched `hermes serve` / `hermes dashboard` backends are different: the updater leaves them running and asks their owner to restart them. See [Manual backend restart reminders](#manual-backend-restart-reminders). Backends owned by a running Desktop app remain the app's responsibility.
 8. **Multiplex migration (multi-profile installs)** — once the fleet is verified on the new code, an install with two or more profiles that still run **one gateway per profile** is folded into a single multiplexed default gateway when nothing blocks it (same as `hermes gateway migrate --multiplex --yes`); if a blocker exists (a bot token shared by two profiles, a secondary profile binding a port with no `/p/<profile>/` ingress) the update prints the blockers with their fixes and changes nothing. Single-profile installs are never touched. See [Migrating from per-profile gateways](../user-guide/multi-profile-gateways.md#migrating-from-per-profile-gateways).
 
+### Verify update scope and completion
+
+For a source installation, compare its installed commit with the configured feed's current target before updating. Review the complete target-only commit range and changed components, not only the PR that prompted the update. If the histories diverge, inspect both sides and the selected update strategy. A branch can advance between review and execution; refresh its identity before dispatch and reconcile any change with the intended scope. The checkout commit and the code loaded by a running gateway are separate observations.
+
+The source updater checks minimum storage headroom at the checkout and active Hermes home: 512 MiB and, when the filesystem reports inode capacity, 4,096 free inodes. This is a capacity admission check, not an estimate of dependency build, backup or restore requirements. Allow space for those operations separately. An unmerged index stops autostash; preserve and resolve the conflict rather than resetting it merely to continue the update.
+
+Check the command exit status and update receipt, including the PM outcome and exit code. If mandatory dependency preparation fails after the checkout moves, the updater records a **partial** update and returns a nonzero status. The new source revision alone does not establish a usable installation. Recovery remains required; follow the printed instructions and the included updater's recovery path to complete dependency preparation and owed restarts. Do not install dependencies directly with pip or uv. Restart-only deferrals have different settlement rules; see [Interrupted gateway restarts](#interrupted-gateway-restarts).
+
+If completion times out or its result is missing, reconcile the existing updater, its child processes and durable recovery records before starting another update. A timeout does not prove those processes exited. Preserve pending records until their ownership and outcome are known. After recovery, verify the loaded source/runtime, affected service readiness and changed behavior separately. Confirm these semantics against the installed updater; fixes in a target revision may not govern the updater that starts the operation.
+
 ### Gateway downtime during an update
 
 On Linux and macOS, `hermes update` stops every gateway running from this install right before it first changes the checkout, and starts exactly that set again on the new code once the dependencies are prepared (before the web UI, TUI and Desktop builds, which can take minutes). Your bots are offline for that window: typically the git update plus the dependency sync. Before this, a gateway kept running old code while git rewrote the files under it, and any module it imported lazily in that window came from the new code.
@@ -165,9 +195,62 @@ On Linux and macOS, `hermes update` stops every gateway running from this instal
 - The paused set is recorded in the Hermes home before the first stop. If the update is killed, the next `hermes` command (or `hermes update`) starts exactly those gateways again. A failed update that never changed the checkout restarts them on the old code. If the dependency sync fails after the checkout moved, they restart once a launch has synced the dependencies.
 - A gateway the updater cannot stop through its supervisor (an s6 or custom systemd unit, `--external-supervisor`, a launchd job that started this update) is left running and refreshed after the update, as before.
 - `--no-gateway-restart` stops nothing; you manage the gateways.
-- The pause never blocks an update. If it cannot list, record or stop the gateways, it restarts anything it stopped, says so, and the update continues the way it did before the pause existed: gateways run through the swap and are restarted afterwards.
+- The pause never blocks an update. If it cannot list, record or stop the gateways, it restarts anything it stopped, says so, and the update continues the way it did before the pause existed: gateways run through the swap and are restarted afterwards. Treat that warning as an unpaused update, not proof of a protected cutover. Verify any recovery failures and preserve independently enforced lifecycle controls.
+
+Service discovery is not ownership proof. The updater revalidates manual gateway PIDs against their current Hermes home; a PID-file entry grants no exemption. A systemd unit needs readable live-home or declared `HERMES_HOME` evidence: belonging to the user manager alone is insufficient. Missing evidence remains unknown, including when a wrapper or EnvironmentFile selects the home. Inspect that binding before deciding which services the update owns.
 
 Windows already paused its gateways before the update (they lock files the dependency sync replaces) and restarts them once the update completes, after the builds.
+
+### Upgrading to the gateway-owned session runtime
+
+From this release one gateway per host owns every local session (CLI, TUI, Desktop,
+API, ACP, cron, Bot Chat). What an existing install sees on its first update:
+
+- **`cron.bot_chat_delivery_timeout_seconds` is retired.** Bot Chat deliveries are
+  admitted to the target profile's running gateway and tracked by receipt; there is no
+  cron-side turn left to time out. Config migration v51 removes the key with a one-time
+  note (also from an unversioned `config.yaml`). Without a running gateway the run is
+  recorded `delivery_failed`; it is not redelivered automatically.
+- **Legacy Bot Chat pending records** (`cron/bot_chat_pending/*.json`, left by the
+  retired `hermes chat` delivery lane) are handed to the target's live owner on later
+  scheduler ticks under their own IDs. A `claimed` record was an uncertain CLI turn and
+  is never resent. Records are kept with their final status as evidence.
+- **Work interrupted by the cutover restart is never replayed.** On the first gateway
+  start, an input that was mid-turn (`started`) and any managed worker that was running
+  become `unknown`; queued inputs behind it wait. Inspect the session, then acknowledge
+  with `/discard <admission_id>` in `hermes chat` (or the Desktop/TUI equivalent), or from a
+  script with `hermes sessions discard <session> --yes`, before later inputs run. A cron delivery a gateway had claimed but not finished is likewise
+  fenced `unknown` and recorded `delivery_failed`.
+- **Rolling back is unsupported once the new gateway has written `state.db`.** See
+  [Rolling back to an older release](#rolling-back-to-an-older-release).
+
+### Rolling back to an older release
+
+An older release cannot run on a `state.db` the gateway runtime has written. Each place
+that could do it refuses instead of corrupting history:
+
+- **`hermes update`** refuses a target (`--branch`, a channel switch, a pinned release)
+  that predates the gateway runtime while any profile's `state.db` holds gateway runtime
+  history. It stops before touching the checkout, lists the affected stores and the way
+  back.
+- **An older release run on the upgraded store** (a hand `git checkout` of an old tag)
+  cannot delete or prune sessions with gateway runtime history. `hermes sessions delete`
+  and `prune` stop with `Refused to delete a session that has gateway runtime history`.
+  Older releases still print this inside a traceback, and `prune` rolls back its whole
+  batch.
+- **A running gateway** whose checkout is moved back to such a release stops itself
+  within about 30 seconds, so the older release can start its own.
+
+To go back anyway, restore the state from before the update instead of running the
+older release on the upgraded database:
+
+1. `hermes gateway stop`
+2. Check out the older release.
+3. Restore the newest pre-update snapshot (`/snapshot restore <id>`), or a full backup
+   taken with `hermes update --backup` (`hermes import <backup.zip>`). Quick snapshots
+   skip a `state.db` larger than 1 GiB; large stores need the full backup.
+
+Sessions and messages created after the update are not in that snapshot.
 
 ### Why the gateway restart can take a while
 
@@ -192,6 +275,19 @@ Work that outlives the gateway does not hold the restart either: a cron run alre
 If the maintained updater script is missing (for example after antivirus quarantine), the legacy update forwarder fails instead of reporting a successful hand-off. Repair the installation and review the security software's quarantine report before retrying; do not disable antivirus protection. Before reporting success, the maintained updater checks the CLI import, Windows executable header, ASAR header and packaged main entry, readable renderer HTML with a local module entry, initial module files, and current build stamp. These are minimum artifact checks, not a full dependency audit or an application/backend launch test. Missing Python is reported before waiting for Desktop shutdown; dependency repair is still allowed to run as part of the update. Electron checks maintained handoff prerequisites before stopping backends when that layout is present; genuine legacy-flat updater layouts remain supported, so not every missing updater file is detected before backend shutdown.
 
 On Windows, a Desktop reopened during packaging is stopped again immediately before the staged build is promoted. This cleanup is restricted to executables inside that checkout's Desktop release tree; unrelated installations are not stopped. A remaining lock still makes staged promotion fail rather than bypassing the rename error.
+
+### Fetch fails with `not a git repository`
+
+`hermes update` stops with "This Hermes checkout's git data is damaged" when the install's `.git` folder is still there but git no longer accepts it: a lost or empty `HEAD`, or a `.git` file pointing at a folder that is gone. A killed update, a crash mid-write, or a sync or antivirus tool touching `.git` can leave it that way. No update can fetch on such a checkout. Gateways the update paused are started again on the unchanged code, since nothing was written.
+
+Run the installer again to repair it. It moves the damaged checkout aside as `hermes-agent.broken-<timestamp>` (nothing is deleted) and clones fresh; your config, sessions and other data live outside the checkout and are kept. The error prints the exact command for your checkout. For the default location it is:
+
+- Linux / macOS / WSL2: `curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash`
+- Windows (PowerShell): `iex (irm https://hermes-agent.nousresearch.com/install.ps1)`
+
+A checkout installed somewhere else needs its directory passed again (`bash -s -- --dir <path>` on Linux/macOS, `-InstallDir <path>` on Windows), as in the printed command; without it the installer repairs the default location instead.
+
+Once Hermes works again you can delete the `.broken-*` folder.
 
 ### Fetch fails with `should_include_obj should only be called on existing objects`
 

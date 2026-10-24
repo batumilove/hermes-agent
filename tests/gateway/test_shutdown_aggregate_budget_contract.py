@@ -24,10 +24,8 @@ def release_blocked_cleanup():
 async def _run_stop(runner):
     """Run stop() with identity-release mocks; return (remove_pid, release_lock).
 
-    Both identity-release calls are legitimately skipped when the aggregate
-    shutdown deadline is exhausted, so only the tail-release tests assert
-    them (against their generous leashes); budget-accounting tests with
-    deliberately tiny leashes do not.
+    The daemon bootstrap owns final identity release after all writer lifetimes.
+    stop() must finish within its budget without releasing that reservation.
     """
     with (
         patch("gateway.status.remove_pid_file") as remove_pid,
@@ -35,6 +33,7 @@ async def _run_stop(runner):
         patch("gateway.status.write_runtime_status"),
     ):
         await runner.stop()
+        assert runner._shutdown_event.is_set()
     return remove_pid, release_lock
 
 
@@ -74,7 +73,7 @@ def _configure_fast_forced_shutdown(runner, monkeypatch, active_agents):
     from agent import auxiliary_client
     import cron.scheduler as cron_scheduler
     from tools import async_delegation
-    import tools.browser_tool_lifecycle as browser_tool
+    import tools.browser_session_lifecycle as browser_tool
     import tools.process_registry as process_registry_module
     import tools.terminal_tool_lifecycle as terminal_tool
 
@@ -409,8 +408,8 @@ async def test_wedged_agent_finalize_cannot_starve_tail_release(monkeypatch):
     before = time.monotonic()
     remove_pid, _release_lock = await asyncio.wait_for(_run_stop(runner), timeout=4.5)
     elapsed = time.monotonic() - before
-    remove_pid.assert_called_once()
-    _release_lock.assert_called_once()
+    remove_pid.assert_not_called()
+    _release_lock.assert_not_called()
 
     assert started.is_set(), "agent finalization was never attempted"
     assert elapsed < 3.30, (
@@ -449,8 +448,8 @@ async def test_post_agent_teardown_receives_reserved_tail_budget(monkeypatch):
     runner._bounded_adapter_teardown = AsyncMock(return_value=None)
 
     remove_pid, _release_lock = await asyncio.wait_for(_run_stop(runner), timeout=2.50)
-    remove_pid.assert_called_once()
-    _release_lock.assert_called_once()
+    remove_pid.assert_not_called()
+    _release_lock.assert_not_called()
 
     runner._bounded_adapter_teardown.assert_awaited_once_with(
         adapter, Platform.TELEGRAM
@@ -479,8 +478,8 @@ async def test_wedged_cached_client_shutdown_cannot_starve_tail_release(monkeypa
     before = time.monotonic()
     remove_pid, _release_lock = await asyncio.wait_for(_run_stop(runner), timeout=4.0)
     elapsed = time.monotonic() - before
-    remove_pid.assert_called_once()
-    _release_lock.assert_called_once()
+    remove_pid.assert_not_called()
+    _release_lock.assert_not_called()
 
     assert started.is_set(), "cached-client cleanup was never attempted"
     assert elapsed < 2.20, (
@@ -511,8 +510,8 @@ async def test_final_running_agent_status_write_is_bounded(monkeypatch):
     before = time.monotonic()
     remove_pid, _release_lock = await asyncio.wait_for(_run_stop(runner), timeout=4.0)
     elapsed = time.monotonic() - before
-    remove_pid.assert_called_once()
-    _release_lock.assert_called_once()
+    remove_pid.assert_not_called()
+    _release_lock.assert_not_called()
 
     assert elapsed < 3.30
     assert not runner._is_session_running(session_key)
@@ -543,8 +542,8 @@ async def test_wedged_database_close_cannot_starve_tail_release(monkeypatch):
     before = time.monotonic()
     remove_pid, _release_lock = await asyncio.wait_for(_run_stop(runner), timeout=4.0)
     elapsed = time.monotonic() - before
-    remove_pid.assert_called_once()
-    _release_lock.assert_called_once()
+    remove_pid.assert_not_called()
+    _release_lock.assert_not_called()
 
     assert started.is_set(), "database close was never attempted"
     assert elapsed < 3.30, f"database close consumed aggregate budget: {elapsed:.3f}s"

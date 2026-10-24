@@ -474,6 +474,8 @@ class GatewayForkContractsMixin:
         gateway as soon as this PID exits, while the unit keeps its normal
         backoff for real crash loops.
         """
+        if getattr(self, "_pause_for_update", False):
+            return
         from gateway.run import logger, os, shlex, sys
         if sys.platform != "linux" or not os.environ.get("INVOCATION_ID"):
             return
@@ -980,12 +982,14 @@ class GatewayForkContractsMixin:
         return registry, lock
 
     def _retain_failed_evicted_agent_cleanup(
-        self, agent: Any, session_key: str = ""
+        self, agent: Any, session_key: str = "", *, boundary: bool = False
     ) -> None:
         """Retain complete cleanup ownership before cache removal or launch."""
         registry, lock = self._failed_evicted_agent_cleanup_state()
         with lock:
-            registry[id(agent)] = (agent, session_key)
+            old = registry.get(id(agent))
+            boundary = boundary or bool(old and len(old) > 2 and old[2])
+            registry[id(agent)] = (agent, session_key, True) if boundary else (agent, session_key)
 
     def _complete_evicted_agent_cleanup(self, agent: Any) -> None:
         registry, lock = self._failed_evicted_agent_cleanup_state()
@@ -1000,7 +1004,8 @@ class GatewayForkContractsMixin:
         with lock:
             pending = list(registry.values())
         completed = 0
-        for agent, session_key in pending:
+        for entry in pending:
+            agent, session_key = entry[:2]
             self._run_release_in_profile_scope(self._commit_then_release_soft, (agent, session_key), session_key)
             with lock:
                 completed += int(id(agent) not in registry)
@@ -1045,13 +1050,14 @@ class GatewayForkContractsMixin:
         for agent, session_key in ready:
             self._schedule_evicted_agent_soft_release(agent, session_key)
 
-    def _soft_evict_memory_commit_plan(self, agent: Any, key: str) -> tuple[bool, list | None]:
+    def _soft_evict_memory_commit_plan(self, agent: Any, key: str, *, boundary: bool = False) -> tuple[bool, list | None]:
         """Finalize provider work at resource eviction without resetting the session.
 
         Upstream sessions no longer expire on idle/daily policies. The provider's
         atomic release and dirty marker guard extraction from repeated evictions.
         """
-        if agent is None or getattr(agent, "_memory_manager", None) is None:
+        if agent is None or (getattr(agent, "_memory_manager", None) is None
+                             and not (boundary and getattr(agent, "context_compressor", None) is not None)):
             return False, None
         messages = getattr(agent, "_session_messages", None)
         return True, messages if isinstance(messages, list) else None

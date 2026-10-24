@@ -94,11 +94,12 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path, *, checkout_mo
     status = _git_run(git_cmd, ["status", "--porcelain", "-z"], cwd, check=True)
     if not status.stdout.strip():
         return None
-    # Unmerged index entries (interrupted merge/rebase) make `git stash` fail with
-    # "needs merge"; `git reset` drops only the index conflict state, not the tree.
+    # Conflict stages are legitimate recovery evidence that a stash cannot represent.
+    # Never reset them merely to make the ordinary autostash workflow proceed.
     if _git_run(git_cmd, ["ls-files", "--unmerged"], cwd).stdout.strip():
-        print("→ Clearing unmerged index entries from a previous conflict...")
-        _git_quiet(git_cmd, ["reset"], cwd)
+        print("✗ Unmerged index: resolve or preserve the conflict before updating; no reset/stash performed.")
+        raise subprocess.CalledProcessError(1, [*git_cmd, "ls-files", "--unmerged"],
+                                            stderr="unmerged index requires owner recovery")
 
     # Intent-to-add entries are the other index state `git stash push` refuses (see
     # _intent_to_add_paths). Promoting them to real staged adds keeps their content and is lossless

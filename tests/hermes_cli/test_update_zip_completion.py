@@ -283,10 +283,12 @@ def test_zip_build_failure_after_swap_is_a_followup(zip_update, monkeypatch, rou
 @pytest.mark.parametrize("route", ["direct", "git-failure"])
 def test_zip_dependency_sync_failure_after_swap_is_a_followup(zip_update, monkeypatch, tmp_path, route):
     # The dropped "preparation" case, restored at the real seam: PM's dependency sync in the
-    # completion bootstrap fails AFTER the swap. Was pm.InstallError / exit 1 / no receipt, which
-    # the Desktop reads as "still on the previous version" while the tree is new. Contract C3/A6:
-    # exit 0, a ``dependencies`` follow-up, the tail obligation armed, nothing of the tail run.
+    # completion bootstrap fails AFTER the swap. Contract (bounded PM failure truth): the code
+    # moved, so this is never reported as a failed pre-update install — the terminal receipt is
+    # ``partial`` with exit code 1, the ``dependencies`` follow-up stays armed for the next
+    # launch, and the parent surfaces the bounded failure instead of a silent success.
     import pm
+    import pytest
     import pm.client
     from hermes_cli import update_completion
     from hermes_cli.venv_sync import completion_pending_path
@@ -314,15 +316,18 @@ def test_zip_dependency_sync_failure_after_swap_is_a_followup(zip_update, monkey
         return json.loads(result_path.read_text())
     monkeypatch.setattr(update_cmd, "run_completion", bootstrap)
 
-    update_cmd._cmd_update_impl(SimpleNamespace(branch="main", yes=True), gateway_mode=True)
+    with pytest.raises(SystemExit) as error:
+        update_cmd._cmd_update_impl(SimpleNamespace(branch="main", yes=True), gateway_mode=True)
+    assert error.value.code == 1
 
     assert (state.root / "payload.txt").read_text() == "new"
     receipt = json.loads((state.active / "logs/update_receipts/latest.json").read_text())
-    assert receipt["outcome"] == "success"
+    assert receipt["outcome"] == "partial"
+    assert receipt["exit_code"] == 1
+    assert "mandatory dependency preparation" in receipt["stop_reason"]
     assert [f["step"] for f in receipt["followups"]] == ["dependencies"]
     assert completion_pending_path(state.root).is_file()  # the next launch syncs and finishes the tail
     assert "prepare" not in state.events  # no build/maintenance ran against stale dependencies
-    assert (state.active / ".update_exit_code").read_text() == "0"
     assert "resume" in state.events and state.token["resume_needed"] is False
 
 

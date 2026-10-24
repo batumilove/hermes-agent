@@ -375,6 +375,8 @@ def test_owner_liveness_unknown_fails_closed_and_pid_reuse_is_dead(monkeypatch):
     assert not SessionDB._post_response_owner_alive(123, 100)
 
     monkeypatch.setattr(status, "get_process_start_time", lambda _pid: 100)
+    assert not SessionDB._post_response_owner_alive(123, 100)
+    monkeypatch.setattr(status, "_pid_exists", lambda _pid: True)
     assert SessionDB._post_response_owner_alive(123, 100)
 
     monkeypatch.setattr(status, "get_process_start_time", lambda _pid: 101)

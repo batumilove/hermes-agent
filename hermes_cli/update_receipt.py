@@ -380,8 +380,9 @@ def begin_update_receipt(*, previous: dict | None = None, correlation_id: str | 
                 rows = list((prior.get("plan") or {}).get("runtimes") or [])
                 rows += list(prior.get("pending_manual_serves") or [])
                 rows += list(prior.get("carried_manual_serves") or [])  # a run killed before finalize
-                receipt.data["carried_manual_serves"] = [
-                    row for row in rows if isinstance(row, dict) and row.get("supervisor") == "manual-serve"]
+                from hermes_cli.update_serve_obligations import is_reminder_row
+
+                receipt.data["carried_manual_serves"] = [row for row in rows if is_reminder_row(row)]
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("Could not start update receipt: %s", exc)
         return
@@ -689,6 +690,16 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
                     receipt.data["pm_refusal"] = sync["refusal"]
         except Exception as exc:  # pragma: no cover — embedding is additive
             logger.debug("pm sync-section embed skipped: %s", exc)
+        # Mandatory PM failure cannot coexist with terminal success. Evaluate after
+        # embedding so both the archive and command-boundary status carry the verdict.
+        if receipt.data.get("outcome") == "success" and (
+            receipt.data.get("pm_sync_outcome") not in (None, "ok", "success")
+            or receipt.data.get("pm_exit_code") not in (0, None)
+        ):
+            receipt.data["outcome"] = "partial"
+            receipt.data["exit_code"] = 1
+            receipt.data["stop_reason"] = "mandatory PM preparation failed; dependency recovery remains required"
+        adopt_terminal_receipt(receipt.data)
         directory = _receipt_dir()
         directory.mkdir(parents=True, exist_ok=True)
         # Unique name: stamp+pid collides for nested/concurrent receipts in

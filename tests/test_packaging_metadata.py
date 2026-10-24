@@ -53,19 +53,39 @@ def test_starlette_server_pins_and_lock_exclude_cve_2026_48710():
     assert versions and all(version >= floor for version in versions)
 
 
-def test_every_dependency_is_held_to_one_three_day_release_age():
-    """Hermes's deps must be >= 3 days old when locked, exact pins included (Teknium ruling).
+CA_TRUST_PACKAGES = {"certifi"}
 
-    A per-package exemption or date would quietly let a fresh release into the lock; the
-    check runs at lock time only, so users never need a mirror that serves upload times.
-    """
+
+def test_release_age_preserves_ca_trust_and_reviewed_security_exception():
+    """Keep the global cooldown and bound the approved decoder exception."""
     manifest = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     uv = manifest["tool"]["uv"]
     lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
     assert uv["exclude-newer"] == "3 days"
-    assert "exclude-newer-package" not in uv
+    exempt = uv.get("exclude-newer-package", {})
+    assert set(exempt) <= CA_TRUST_PACKAGES | {"brotlicffi"}, exempt
+    assert all(value is False for name, value in exempt.items() if name in CA_TRUST_PACKAGES), exempt
+    if "brotlicffi" in exempt:
+        assert exempt["brotlicffi"] == "2026-10-23T00:00:00Z"
+        assert {row["version"] for row in lock["package"] if row["name"] == "brotlicffi"} == {"1.2.1.0"}
     assert lock["options"].get("exclude-newer-span") == "P3D"
-    assert "exclude-newer-package" not in lock["options"]
+    assert lock["options"].get("exclude-newer-package", {}) == exempt
+
+
+def test_messaging_decoder_excludes_pysec_2026_4323():
+    """The advisory's fixed boundary remains valid after future pin updates."""
+    floor = Version("1.2.1.0")
+    manifest = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    specs = [req for req in map(Requirement, manifest["project"]["optional-dependencies"]["messaging"])
+             if req.name == "brotlicffi"]
+    assert specs
+    for req in specs:
+        pins = list(req.specifier)
+        assert len(pins) == 1 and pins[0].operator == "=="
+        assert Version(pins[0].version) >= floor
+    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    versions = [Version(row["version"]) for row in lock["package"] if row["name"] == "brotlicffi"]
+    assert versions and all(version >= floor for version in versions)
 
 
 def test_httpx2_pins_and_lock_exclude_ghsa_7mj9_2mp8_4m2p_family():
@@ -90,3 +110,18 @@ def test_httpx2_pins_and_lock_exclude_ghsa_7mj9_2mp8_4m2p_family():
     for name in ("httpx2", "httpcore2"):
         versions = [Version(row["version"]) for row in lock["package"] if row["name"] == name]
         assert versions and all(version >= floor for version in versions), (name, versions)
+
+
+def test_build_and_lock_helpers_exclude_reviewed_advisories():
+    """Fixed boundaries for filelock permissions and setuptools archive handling."""
+    floors = {"filelock": Version("4.2.1"), "setuptools": Version("84.1.0")}
+    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    for name, floor in floors.items():
+        versions = [Version(row["version"]) for row in lock["package"] if row["name"] == name]
+        assert versions and all(version >= floor for version in versions), (name, versions)
+    manifest = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    requirements = [Requirement(spec) for spec in manifest["build-system"]["requires"]]
+    setuptools = next(req for req in requirements if req.name == "setuptools")
+    pins = list(setuptools.specifier)
+    assert len(pins) == 1 and pins[0].operator == "=="
+    assert Version(pins[0].version) >= floors["setuptools"]

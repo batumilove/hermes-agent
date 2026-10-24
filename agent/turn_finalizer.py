@@ -478,6 +478,7 @@ def _apply_output_hooks(
     if not getattr(agent, "_persist_disabled", False):
         _invoke_hook_safely(
             "post_llm_call", logger,
+            context_compressor=getattr(agent, "context_compressor", None),
             session_id=agent.session_id,
             task_id=effective_task_id,
             turn_id=turn_id,
@@ -755,8 +756,9 @@ def finalize_turn(
     if _cleanup_errors:
         result["cleanup_errors"] = _cleanup_errors
     # A /steer landing after the final assistant turn has no tool batch to drain into;
-    # hand it back so it becomes the next user turn instead of being lost.
-    _leftover_steer = agent._drain_pending_steer()
+    # hand it back so it becomes the next user turn instead of being lost. A gateway transfer
+    # (ticketed) stays buffered: the claim's settlement returns it to its own queue place.
+    _leftover_steer = (getattr(agent, "_drain_leftover_steer", None) or agent._drain_pending_steer)()
     if _leftover_steer:
         result["pending_steer"] = _leftover_steer
     agent._response_was_previewed = False

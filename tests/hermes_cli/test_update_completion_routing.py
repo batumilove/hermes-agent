@@ -61,8 +61,12 @@ def test_every_route_hands_off_once(route, tmp_path, monkeypatch):
     handed_off = []
     monkeypatch.setattr(update_cmd, "_complete_source_update", handed_off.append, raising=False)
     monkeypatch.setattr(update_cmd, "_m", lambda: SimpleNamespace(
-        PROJECT_ROOT=tmp_path, _resolve_update_branch=lambda args: "main"))
+        PROJECT_ROOT=tmp_path, _resolve_update_branch=lambda args: "main",
+        _resume_windows_gateways_after_update=lambda token: None))
     monkeypatch.setattr(update_cmd, "_verify_head_after_pull", lambda *a, **kw: "new-sha")
+    # The no-op route re-captures HEAD to pin the completion request; the fake project root has
+    # no git repo, so supply the deterministic head the real checkout would report.
+    monkeypatch.setattr(update_cmd, "_capture_head_sha", lambda *a, **k: "old-sha", raising=False)
     monkeypatch.setattr(update_cmd, "_prepare_updated_checkout", lambda *a, **kw: pytest.fail("old-process preparation"))
     monkeypatch.setattr(update_cmd, "_write_fleet_restart_pending_marker", lambda **kw: None)
     monkeypatch.setattr(update_cmd, "_sweep_bytecode_after_update", lambda *a: None)

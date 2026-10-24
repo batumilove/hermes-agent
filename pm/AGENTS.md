@@ -19,7 +19,9 @@ isolated tool environments. Callers receive an interpreter or tool path, not uv.
 Nix's declarative uv2nix builds and unrelated user projects remain independently owned.
 
 The `[tool.uv] exclude-newer = "3 days"` release-age check covers **Hermes's own dependencies
-only**, exact pins included, with no per-package exemptions, and it runs when Hermes LOCKS
+only**, exact pins included, with one per-package exemption class: CA trust stores (`certifi`),
+whose revocation releases must reach the lock the day they ship (`exclude-newer-package`; nothing
+else goes there). It runs when Hermes LOCKS
 (`hermes pm lock`, CI's lock check), never on users' machines: every generated workspace drops the
 cutoff (`pm/workspace.py::_without_release_age`), so a mirror without upload times cannot break an
 install (#135589). Plugin resolution is unchanged by this: core's exact pins stay put, and a plugin
@@ -27,3 +29,24 @@ may move a transitive core package within core's declared ranges
 (`tests/pm/test_workspace_build_inputs.py::test_plugin_can_move_compatible_transitive_but_not_exact_requirement`).
 Plugin `python_dependencies` follow the plugin's own policy. Teknium's rulings: "plugins dont have to abide by our 14 day rule … Only hermes'
 dependencies themselves have to"; dates are checked by us, not users; pinned deps need >3 days.
+
+Fork exception: the user approved brotlicffi 1.2.1.0 for PYSEC-2026-4323 on October 24.
+Its fixed cutoff is 2026-10-23T00:00:00Z; remove it after the normal three-day floor.
+
+## Temporary browser-harness compatibility package
+
+This migration branch uses `browser-harness==0.1.13+hermes.1` from the wheel in
+`pm/vendor`, with a `tool.uv.sources` path mapping. Its Python code is unchanged;
+the metadata permits Pillow 13.0.0. See `pm/vendor/README.md` for the reproducible
+build and artifact hashes. Keep the manifest, lock and packaged wheel consistent.
+Replace it when a compatible published release contains the fix, then run
+`hermes pm lock`, sync an isolated environment with PM, and validate browser/image
+integration plus the dependency gate. Retire the wheel and source mapping together.
+
+For any separately approved temporary Git source, preserve its full commit SHA
+and reassess required build backends in `nix/python.nix`. This wheel does not use
+the browser-harness Git-source setuptools override. PM installation alone does
+not prove the Nix build passes; validate the actual flake check after source changes.
+
+The certifi cooldown exception has expired and is removed from the manifest and
+lock. Source publication and passing CI are not runtime activation.

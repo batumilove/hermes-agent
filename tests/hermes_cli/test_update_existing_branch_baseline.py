@@ -8,6 +8,15 @@ from hermes_cli import update_cmd
 from tests.hermes_cli.test_update_target_identity import git, update_tree
 
 
+@pytest.fixture(autouse=True)
+def no_gateway_runtimes(monkeypatch):
+    # The synthetic Git installs in this module have no live gateway processes.
+    from hermes_cli import update_cmd_posix_pause as pause
+    monkeypatch.setattr(pause, '_discover_systemd', list)
+    monkeypatch.setattr(pause, '_discover_launchd', list)
+    monkeypatch.setattr(pause, '_discover_bare', lambda _: ([], []))
+
+
 def init_repo(root, monkeypatch):
     root.mkdir()
     git(root, "init", "-q", "-b", "main")

@@ -164,6 +164,11 @@ def transition(tmp_path):
         "    print(f'  ⚠ Update follow-up {step!r} did not finish: {reason}')\n"
         "    r = _current.get()\n"
         "    if r is not None: r.data.setdefault('followups', []).append({'step': step, 'reason': reason})\n"
+        "def finalize_update_receipt(outcome, stop_reason=''):\n"
+        "    r = _current.get()\n"
+        "    path = finalize_pending_update_receipt(1, stop_reason)\n"
+        "    data = json.loads(path.read_text()); data['outcome'] = outcome\n"
+        "    path.write_text(json.dumps(data)); return path\n"
         "def amend_terminal_followup(*args): pass\n"
         "def record_user_action(*args): pass\n"
         "def _receipt_dir():\n"
@@ -368,7 +373,7 @@ def test_desktop_build_that_never_ran_is_named_for_the_handoff(transition, capsy
             encoding="utf-8")
     result = update_completion.run_completion(request)
     out = capsys.readouterr().out
-    assert result["exit_code"] == 0, out
+    assert result["exit_code"] == (1 if never_built == "dependencies" else 0), out
     owed = [line.strip() for line in out.splitlines() if line.strip().startswith("Desktop app build owed: ")]
     assert len(owed) == (1 if desktop else 0), out
 
@@ -551,13 +556,33 @@ def test_prepare_failure_preserves_correlated_pm_receipt(transition):
     # Was exit 1 / no receipt: the dependency sync runs after the tree moved, so its failure is a
     # ``dependencies`` follow-up (A6) with the tail obligation armed — and the correlated pm
     # refusal still travels back for the receipt.
-    assert result["exit_code"] == 0
-    assert result["receipt"]["outcome"] == "success"
+    assert result["exit_code"] == 1
+    assert result["receipt"]["outcome"] == "partial"
     assert [f["step"] for f in result["receipt"]["followups"]] == ["dependencies"]
     assert "dependency refused" in result["receipt"]["followups"][0]["reason"]
     assert (Path(request["home"]) / "completion-pending").read_text() == "owed"
     assert result["pm_receipt"] == {"update_id": request["receipt"]["update_id"], "outcome": "refused",
                                     "refusal": {"reason": "dependency refused"}}
+
+
+@pytest.mark.parametrize("pm_result", [
+    {"outcome": "failed", "exit_code": 1},
+    {"outcome": "ok", "exit_code": 1},
+    {"outcome": "refused", "exit_code": 2},
+])
+def test_failed_pm_receipt_blocks_prepared_activation(transition, pm_result):
+    root, _git, _old, _new, request = transition
+    shutil.copy2(update_completion.__file__, root / "hermes_cli/update_completion.py")
+    with (root / "pm/receipt.py").open("a") as stream:
+        stream.write(f"last_for_update = lambda update_id: {{'update_id': update_id, **{pm_result!r}}}\n")
+    result = update_completion.run_completion(request)
+    assert result["exit_code"] == 1
+    assert result["receipt"]["outcome"] == "partial"
+    events = [json.loads(line)["name"] for line in (root / "events.jsonl").read_text().splitlines()]
+    assert "collect" not in events
+    assert "activate" not in events
+    assert "restart" not in events
+    assert result["pm_receipt"]["exit_code"] == pm_result["exit_code"]
 
 
 def test_bootstrap_does_not_initialize_old_site_packages(transition, tmp_path, monkeypatch):

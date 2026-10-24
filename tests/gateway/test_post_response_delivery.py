@@ -1949,3 +1949,29 @@ def test_noop_topic_sync_keeps_barrier(phase2_env, monkeypatch):
         )[0]["state"] in {"failed", "blocked"})
     finally:
         _close_runner(runner)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error, released", [
+    ("chat not found", True), ("bot blocked", True), ("send_path_degraded", False),
+])
+async def test_terminal_receipt_releases_authority_waiter(error, released):
+    from gateway.post_response_delivery import FinalDeliveryState
+
+    runner = SimpleNamespace(
+        _settle_final_response_handoff=Mock(return_value=True),
+        _schedule_final_response_redelivery=AsyncMock(),
+    )
+    handoff = SimpleNamespace(obligation_id="receipt", runner=runner)
+    state = FinalDeliveryState()
+    state.handoff = handoff
+    state.outcomes = [False]
+    state.failures = [error]
+    await state.finish()
+
+    adapter = CaptureSlackAdapter()
+    event = _event(_source())
+    event._gateway_post_response_handoff = handoff
+    event._gateway_marker_released = asyncio.Event()
+    await adapter._release_turn_marker(event)
+    assert event._gateway_marker_released.is_set() is released

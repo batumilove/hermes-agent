@@ -143,9 +143,11 @@ def _run_under_progress_timeout(
         # on timeout/cancel); durable SessionDB mutation is already gated behind the commit fence inside
         # compress_context.
         snapshot = copy.deepcopy(messages)
-        result_msgs, result_prompt = run(
-            fence, target_messages=snapshot, same_turn_fallback_recovery=same_turn_fallback_recovery
-        )
+        snapshot_scope = getattr(getattr(agent, "context_compressor", None), "native_snapshot_scope", None)
+        with snapshot_scope(messages, snapshot) if callable(snapshot_scope) else contextlib.nullcontext():
+            result_msgs, result_prompt = run(
+                fence, target_messages=snapshot, same_turn_fallback_recovery=same_turn_fallback_recovery
+            )
         return (messages if result_msgs is snapshot else result_msgs), result_prompt
 
     # The stall-fallback retry is the same recovery attempt as the stalled primary, but the cancelled primary
@@ -199,6 +201,12 @@ def _mirror_result_onto_live_lists(agent, result, messages, *, direct_path: bool
     if isinstance(session_messages, list) and session_messages is not messages:
         # Durable-parent adoption can leave `_session_messages` on the pre-adoption list.
         _sync_persisted_markers(session_messages, result_messages)
+    if result_messages is not messages:
+        # The token-estimate memo pins message strings; bodies the summary replaced can never hit again,
+        # and close() only sees the compressed history.
+        from agent.model_metadata_token_memo import forget_message_token_memo
+        with contextlib.suppress(Exception):
+            forget_message_token_memo(messages, keep=result_messages)
 
 
 def _rebind_caller_session_context(agent) -> None:

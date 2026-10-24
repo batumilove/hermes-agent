@@ -42,6 +42,40 @@ _CHANNEL_TYPE_MAP = {"D": "dm", "G": "group", "P": "group", "O": "channel"}
 
 _MATTERMOST_DISABLE_MENTIONS_PROPS = {"disable_mentions": True}
 
+# Explicit fleet membership, not a "hermes-*" prefix heuristic: unrelated users
+# must not silence a channel's primary bot. Keep this roster identical in each
+# fleet adapter. Local Mattermost usernames allow a-z, 0-9, dot, dash and
+# underscore (server/public/model/user.go); remote names can also contain ':'.
+_HERMES_BOT_USERNAMES = frozenset({
+    "hermes", "hermes-shopping", "hermes-research", "hermes-pa",
+    "hermes-ops-watchdogs", "hermes-weingut-wolf",
+})
+# Consume whole tokens and exclude email/local-part adjacency on both sides.
+# ':' is included to avoid treating a remote username as a local prefix.
+_USERNAME_MENTION = re.compile(
+    r"(?<![\w.@+%\-])@([a-z0-9_.\-]+(?::[a-z0-9_.\-]+)*)(?![\w@])", re.IGNORECASE
+)
+
+
+def _route_mentions(text: str, username: str, user_id: str) -> tuple[bool, bool, str]:
+    """Return (mentions self, mentions fleet, text with only self removed).
+
+    Match exact, nonempty identity tokens; never strip another bot's suffix or
+    an email substring. DMs bypass this helper in the inbound adapter path.
+    """
+    identities = {value.lower() for value in (username, user_id) if value}
+    matches = list(_USERNAME_MENTION.finditer(text))
+    names = {match.group(1).lower() for match in matches}
+    own = bool(identities & names)
+    fleet = bool(_HERMES_BOT_USERNAMES & names)
+    if own:
+        text = _USERNAME_MENTION.sub(
+            lambda match: "" if match.group(1).lower() in identities else match.group(0), text
+        ).strip()
+    return own, fleet, text
+
+
+
 _RECONNECT_BASE_DELAY, _RECONNECT_MAX_DELAY, _RECONNECT_JITTER = 2.0, 60.0, 0.2  # exponential backoff
 
 _POST_WITH_FILE_ERROR = "Failed to post with file"
@@ -105,6 +139,7 @@ class MattermostAdapter(BasePlatformAdapter):
     """Gateway adapter for Mattermost (self-hosted or cloud)."""
 
     splits_long_messages = True  # send() chunks via truncate_message(MAX_POST_LENGTH)
+    serial_receive_loop = True  # the WebSocket loop awaits each event before reading the next
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MATTERMOST)
@@ -504,15 +539,16 @@ class MattermostAdapter(BasePlatformAdapter):
                               ).lower() not in {"false", "0", "no"}
         free_channels = _channel_id_set(
             _extra_or_secret(self.config.extra, "free_response_channels", "MATTERMOST_FREE_RESPONSE_CHANNELS", blank_is_unset=False))
-        mention_patterns = [f"@{self._bot_username}", f"@{self._bot_user_id}"]
-        has_mention = any(pattern.lower() in message_text.lower() for pattern in mention_patterns)
+        has_mention, has_fleet_mention, cleaned_text = _route_mentions(
+            message_text, self._bot_username, self._bot_user_id
+        )
+        # Explicit fleet addressing outranks free-response/default mode.
+        if has_fleet_mention and not has_mention:
+            return None
         if require_mention and channel_id not in free_channels and not has_mention:
             logger.debug("Mattermost: skipping non-DM message without @mention (channel=%s)", channel_id)
             return None
-        if has_mention:  # strip the @mention so the agent sees clean input
-            for pattern in mention_patterns:
-                message_text = re.sub(re.escape(pattern), "", message_text, flags=re.IGNORECASE).strip()
-        return message_text
+        return cleaned_text
 
     async def _download_attachments(self, file_ids: list[str]) -> tuple[list[str], list[str]]:
         """Download attachments now (URLs need auth headers downstream tools lack) → (paths, mime types)."""
@@ -586,7 +622,7 @@ class MattermostAdapter(BasePlatformAdapter):
         from gateway.platforms.base import resolve_channel_prompt
         await self.handle_message(MessageEvent(
             text=message_text, message_type=msg_type, source=source, raw_message=post, message_id=post_id,
-            media_urls=media_urls or None, media_types=media_types or None,
+            media_urls=media_urls, media_types=media_types,
             channel_prompt=resolve_channel_prompt(self.config.extra, channel_id, None)))
 
 
@@ -714,16 +750,33 @@ def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
 _is_connected = _env_is_connected("MATTERMOST_TOKEN", "MATTERMOST_URL")
 
 
+# System-prompt platform hint (PlatformEntry.platform_hint); cached-prompt bytes, keep stable.
+_PLATFORM_HINT = (
+    "You are in a Mattermost workspace communicating with your user. Mattermost renders standard "
+    "Markdown — headings, bold, italic, code blocks, and tables all work. You can send media files "
+    "natively: include MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, .webp) are "
+    "uploaded as photo attachments, audio and video as file attachments. Image URLs in markdown format "
+    "![alt](url) are rendered as inline previews automatically."
+)
+
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
+    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
     ctx.register_platform(
         name="mattermost", label="Mattermost", adapter_factory=MattermostAdapter,
+        dashboard_description="Connect Hermes to Mattermost channels and direct messages.",
+        docs_url="https://mattermost.com/deploy/",
+        dashboard_env_vars=("MATTERMOST_URL", "MATTERMOST_TOKEN", "MATTERMOST_ALLOWED_USERS"),
         check_fn=check_mattermost_requirements, validate_config=validate_mattermost_config,
         is_connected=_is_connected, required_env=["MATTERMOST_URL", "MATTERMOST_TOKEN"],
         install_hint="pip install aiohttp", setup_fn=interactive_setup,
         apply_yaml_config_fn=_apply_yaml_config,  # YAML→env bridge (see _YAML_BRIDGE)
-        allowed_users_env="MATTERMOST_ALLOWED_USERS", allow_all_env="MATTERMOST_ALLOW_ALL_USERS",
         cron_deliver_env_var="MATTERMOST_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send,  # out-of-process cron; without it `deliver=mattermost` fails
-        max_message_length=MAX_POST_LENGTH, emoji="💬", allow_update_command=True)
+        max_message_length=MAX_POST_LENGTH, emoji="💬", allow_update_command=True,
+        platform_hint=_PLATFORM_HINT,
+        display_tier="medium",
+        env_overrides=gateway_env.ENV_OVERRIDES,
+        env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS, **gateway_env.AUTHZ,
+    )

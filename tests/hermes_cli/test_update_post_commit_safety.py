@@ -224,19 +224,23 @@ def test_profile_sync_followup_keeps_the_tail_owed(tmp_path):
 
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("path", ["finish", "settle"])
-def test_receipt_store_failure_after_commit_keeps_exit_zero_and_a_correlated_receipt(tmp_path, path):
-    """The receipt store is written after the commit point: losing it is loud, never exit 1."""
+def test_receipt_store_failure_after_commit_keeps_a_correlated_receipt(tmp_path, path):
+    """The receipt store is written after the commit point: losing it is loud, never silent.
+
+    Bounded PM failure truth: an owed ``dependencies`` step makes the terminal receipt ``partial``
+    with exit code 1, while the store failure itself stays a loud warning — never a silent success."""
     summary = _run_completion(tmp_path, f"receipts-blocked-{path}")
     assert "Update receipt not written" in summary["output"]
-    assert summary["code"] == 0, summary["output"]
+    expected_code = 1 if path == "settle" else 0
+    assert summary["code"] == expected_code, summary["output"]
     result = summary["result"]
-    assert result["exit_code"] == 0
-    # run_completion's correlation gate: this run's id, terminal, and its outcome agrees with exit 0.
+    assert result["exit_code"] == expected_code
+    # run_completion's correlation gate: this run's id, terminal, and its outcome agrees with the code.
     receipt = result["receipt"]
     assert receipt is not None, summary["output"]
     assert receipt["update_id"] == summary["update_id"]
     assert receipt["finished_at"]
-    assert receipt["outcome"] == "success"
+    assert receipt["outcome"] == ("partial" if path == "settle" else "success")
     # Retry obligations are unchanged: owed dependencies stay armed, a finished tail is cleared.
     if path == "settle":
         assert [row["step"] for row in receipt["followups"]] == ["dependencies"]

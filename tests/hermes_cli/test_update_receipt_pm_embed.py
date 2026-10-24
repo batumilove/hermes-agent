@@ -79,6 +79,20 @@ def test_update_receipt_embeds_pm_sections(homed):
     assert data["update_id"]
 
 
+@pytest.mark.parametrize("outcome,code", [("failed", 1), ("refused", 2), ("ok", 1)])
+def test_pm_failure_cannot_be_embedded_in_success(homed, outcome, code):
+    from pm.receipt import accept_worker_receipt
+    ur.begin_update_receipt()
+    update_id = ur.current_correlation_id()
+    accept_worker_receipt({"update_id": update_id, "outcome": outcome, "exit_code": code}, update_id)
+    path = ur.finalize_update_receipt("success")
+    data = json.loads(path.read_text())
+    assert data["outcome"] == "partial"
+    assert data["exit_code"] == 1
+    assert ur.finalized_receipt(update_id)["outcome"] == "partial"
+    assert not ur.committed_success()
+
+
 def test_legacy_worker_receipt_fields_still_embed(homed):
     from pm.receipt import accept_worker_receipt
 

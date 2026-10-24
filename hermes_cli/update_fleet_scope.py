@@ -106,8 +106,8 @@ def partition_gateway_pids_by_scope(pids, scope: set[Path] | None = None) -> tup
 
 def systemd_unit_hermes_home(scope_cmd: list, svc_name: str) -> str | None:
     """Home the systemd unit *svc_name* runs on: its live MainPID's environment first, then the
-    unit's declared ``Environment=HERMES_HOME``; for a user-scope unit that declares none, the
-    user's own default home. ``None`` when nothing readable names a home."""
+    unit's declared ``Environment=HERMES_HOME``. ``None`` when neither names a home;
+    a user-manager scope by itself is not installation ownership evidence."""
     from hermes_cli.update_cmd_fleet import _systemctl, _unit_main_pid
 
     pid = _unit_main_pid(scope_cmd, svc_name)
@@ -131,8 +131,8 @@ def systemd_unit_hermes_home(scope_cmd: list, svc_name: str) -> str | None:
         key, sep, value = token.partition("=")
         if sep and key == "HERMES_HOME" and value.strip():
             return value.strip()
-    if "--user" in scope_cmd:
-        return str(Path.home() / ".hermes")
+    # A user manager is account-wide, not proof of this installation's home.
+    # Missing Environment may mean an EnvironmentFile or wrapper owns selection.
     return None
 
 

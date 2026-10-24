@@ -18,55 +18,44 @@ class SessionRetainedMixin:
         *,
         scope: str = "",
         reason: str = "unspecified",
-    ) -> None:
-        """Atomically reconcile the routing index for *scope* with *entries*.
+    ) -> set[str]:
+        """Reconcile changed routing rows, returning retired keys for mirror filtering.
 
-        Keys absent from *entries* are removed, changed/new entries are
-        upserted, and identical rows retain their existing ``updated_at``.
-        Other scopes are untouched. ``reason`` is a bounded, content-free
-        routing call-site label used only for latency attribution.
+        Retirement uses the owner's profile fence. Identical accepted rows keep
+        their timestamps, and unrelated scopes remain untouched. ``reason`` is
+        a bounded label used only for latency attribution.
         """
+        from hermes_state_mutation_retirement import ROUTE_RETIRED_SQL, route_retired_params
         now = time.time()
         desired = {key: value for key, value in entries.items() if key and value}
 
         def _do(conn):
+            retired = {key for key, value in desired.items() if conn.execute(
+                "SELECT " + ROUTE_RETIRED_SQL,
+                route_retired_params(key, value, now)).fetchone()[0]}
+            accepted = desired.keys() - retired
             existing = {
                 row["session_key"]: row["entry_json"]
                 for row in conn.execute(
-                    "SELECT session_key, entry_json FROM gateway_routing "
-                    "WHERE scope = ?",
-                    (scope,),
-                )
+                    "SELECT session_key, entry_json FROM gateway_routing WHERE scope = ?", (scope,))
             }
-            stale_keys = existing.keys() - desired.keys()
+            stale_keys = existing.keys() - accepted
             if stale_keys:
                 conn.executemany(
                     "DELETE FROM gateway_routing WHERE scope = ? AND session_key = ?",
-                    [(scope, key) for key in stale_keys],
-                )
-            changed = [
-                (scope, key, value, now)
-                for key, value in desired.items()
-                if existing.get(key) != value
-            ]
+                    [(scope, key) for key in stale_keys])
+            changed = [(scope, key, desired[key], now) for key in accepted
+                       if existing.get(key) != desired[key]]
             if changed:
                 conn.executemany(
-                    "INSERT INTO gateway_routing "
-                    "(scope, session_key, entry_json, updated_at) VALUES (?, ?, ?, ?) "
-                    "ON CONFLICT(scope, session_key) DO UPDATE SET "
-                    "entry_json = excluded.entry_json, updated_at = excluded.updated_at",
-                    changed,
-                )
+                    "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
+                    "VALUES (?, ?, ?, ?) ON CONFLICT(scope, session_key) DO UPDATE SET "
+                    "entry_json = excluded.entry_json, updated_at = excluded.updated_at", changed)
+            return retired
 
-        reason_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(reason or "unspecified"))[
-            :64
-        ]
-        self._execute_write(
-            _do,
-            operation="replace_gateway_routing_entries",
-            items=len(entries),
-            reason=reason_label,
-        )
+        reason_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(reason or "unspecified"))[:64]
+        return self._execute_write(
+            _do, operation="replace_gateway_routing_entries", items=len(entries), reason=reason_label)
 
     def delete_gateway_routing_entries(
         self,

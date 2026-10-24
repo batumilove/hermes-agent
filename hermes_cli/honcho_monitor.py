@@ -193,6 +193,11 @@ def parse_pipeline_env(raw: str) -> dict[str, dict[str, str]]:
         },
     }
 
+    # Env is only one settings source: defaults, TOML and worker-container
+    # divergence are not verified here. Absence is never proof of non-use.
+    routing = {"status": "unknown", "reason": "effective config sources unverified"}
+    if len(raw) > 1024 * 1024:
+        return {"_routing": routing}
     env: dict[str, str] = {}
     for line in raw.splitlines():
         if "=" not in line:
@@ -210,6 +215,54 @@ def parse_pipeline_env(raw: str) -> dict[str, dict[str, str]]:
             )
             for out_key, in_key in mapping.items()
         }
+    # Retain every explicitly configured model route, including dream induction,
+    # all dialectic levels and nested fallbacks. Parent JSON is accepted by
+    # Honcho's settings loader as well as the usual double-underscore leaves.
+    leaves = {}
+
+    def flatten(prefix, value, depth=0):
+        if depth > 24 or len(leaves) >= 2048:
+            return
+        if isinstance(value, dict):
+            for key, child in value.items():
+                flatten(prefix + "__" + str(key).upper(), child, depth + 1)
+        elif isinstance(value, list):
+            for index, child in enumerate(value[:128]):
+                flatten(prefix + "__" + str(index), child, depth + 1)
+        elif isinstance(value, (str, int, float, bool)):
+            leaves[prefix.upper()] = value
+
+    # Parent objects first, then increasingly specific leaves, matching nested
+    # environment precedence regardless of the order returned by docker env.
+    for key, value in sorted(env.items(), key=lambda item: (item[0].count('__'), item[0])):
+        upper = key.upper()
+        if not upper.startswith(("EMBEDDING_MODEL_CONFIG", "DERIVER_MODEL_CONFIG",
+                                 "SUMMARY_MODEL_CONFIG", "DREAM_", "DIALECTIC_LEVELS")):
+            continue
+        parent = value
+        # Decode structured parents only; scalar env leaves are literal strings,
+        # even when a model ID resembles JSON (true, false, null, 1e3).
+        if not upper.endswith(("__MODEL", "__BASE_URL")) and value.startswith(("{", "[")):
+            try:
+                decoded = json.loads(value)
+                if isinstance(decoded, (dict, list)):
+                    parent = decoded
+            except (TypeError, ValueError, RecursionError):
+                pass
+        flatten(upper, parent)
+    for stage, mapping in fields.items():
+        for out_key, in_key in mapping.items():
+            value = leaves.get(in_key.upper(), env.get(in_key, ""))
+            parsed[stage][out_key] = sanitize_base_url(value) if out_key == "base_url" else str(value)
+    parsed["_routing"] = routing
+    for key, value in leaves.items():
+        if not key.endswith("__OVERRIDES__BASE_URL"):
+            continue
+        prefix = key.removesuffix("__OVERRIDES__BASE_URL")
+        route = {"base_url": sanitize_base_url(value),
+                 "model": str(leaves.get(prefix + "__MODEL") or "")}
+        if route not in parsed.values():
+            parsed["route:" + prefix.lower()] = route
     return parsed
 
 
@@ -507,6 +560,8 @@ def _embedding_alerts(snapshot: HonchoSnapshot, alerts: list[str]) -> None:
 
 def _spark_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None, alerts: list[str]) -> None:
     spark = snapshot.spark_goat
+    if spark.get("routing_unknown"):
+        alerts.append("Honcho routing unknown: effective config sources unverified")
     if spark.get("skipped"):
         return
     if not spark.get("ok"):
@@ -787,7 +842,9 @@ def format_report(snapshot: dict[str, Any] | HonchoSnapshot, previous_state: dic
         spark_icon = "🟠"
     else:
         spark_icon = "🟢"
-    if spark.get("skipped"):
+    if spark.get("skipped") and spark.get("routing_unknown"):
+        lines.append("⚪ spark-goat chat: routing unknown (probe not run)")
+    elif spark.get("skipped"):
         lines.append("⚪ spark-goat chat: not routed (skipped)")
     else:
         lines.append(f"{spark_icon} spark-goat chat: {_fmt_s(spark_latency)}{spark_tag}{spark_detail}")
@@ -1057,24 +1114,31 @@ def is_spark_goat_chat_url(url: str | None) -> bool:
     """Return True when ``url`` points at the spark-goat chat service."""
     if not url:
         return False
-    return short_host(url) == "spark-goat" and ":8001" in url
+    try:
+        parts = urlsplit(url)
+        return parts.scheme in {"http", "https"} and parts.hostname in {
+            "192.168.10.211", "100.69.54.37"
+        } and parts.port == 8001
+    except (TypeError, ValueError):
+        return False
 
 
 def select_spark_model(pipeline: dict[str, dict[str, str]]) -> str:
-    """Return the model name that should be used for the spark-goat chat smoke.
+    """Select an explicitly routed chat model, preferring the deriver.
 
-    If the pipeline's deriver base_url is on the spark-goat chat host, use its
-    model; otherwise fall back to aeon-ultimate, which is known to be hosted on
-    spark-goat. This prevents using a model routed elsewhere (e.g. mac-studio)
-    against the spark-goat endpoint. Accept both current LAN and historical
-    Tailscale addresses as spark-goat identity, even when the actual smoke
-    probe uses the configured current endpoint.
+    The historical default is retained for legacy callers with no target route;
+    collect_snapshot never probes that unrouted default. A routed target without
+    a model returns empty rather than inventing a served model.
     """
     deriver = pipeline.get("deriver", {})
-    deriver_base = deriver.get("base_url", "")
-    if is_spark_goat_chat_url(deriver_base):
-        return deriver.get("model") or "aeon-ultimate"
-    return "aeon-ultimate"
+    if is_spark_goat_chat_url(deriver.get("base_url")) and deriver.get("model"):
+        return deriver["model"]
+    routed = [stage for stage in pipeline.values()
+              if is_spark_goat_chat_url(stage.get("base_url"))]
+    for stage in routed:
+        if stage.get("model"):
+            return stage["model"]
+    return "" if routed else "aeon-ultimate"
 
 
 def build_db_stats_query() -> str:
@@ -1191,7 +1255,7 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
     spark_skipped = not any(
         is_spark_goat_chat_url(stage.get("base_url")) for stage in pipeline.values()
     )
-    if spark_skipped:
+    if spark_skipped or not spark_model:
         spark_ok, spark_data, spark_dt = False, {}, 0.0
     else:
         spark_ok, spark_data, spark_dt = curl_post_json(
@@ -1270,6 +1334,7 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
             "http_ok": spark_http_ok,
             "model_ok": spark_model_ok,
             "skipped": spark_skipped,
+            "routing_unknown": pipeline.get("_routing", {}).get("status") == "unknown",
         },
         deriver={
             "runs_15m": runs_15m,
