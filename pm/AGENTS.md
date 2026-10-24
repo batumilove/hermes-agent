@@ -30,6 +30,9 @@ may move a transitive core package within core's declared ranges
 Plugin `python_dependencies` follow the plugin's own policy. Teknium's rulings: "plugins dont have to abide by our 14 day rule … Only hermes'
 dependencies themselves have to"; dates are checked by us, not users; pinned deps need >3 days.
 
+Fork exception: the user approved brotlicffi 1.2.1.0 for PYSEC-2026-4323 on October 24.
+Its fixed cutoff is 2026-10-23T00:00:00Z; remove it after the normal three-day floor.
+
 ## Temporary browser-harness compatibility package
 
 This migration branch uses `browser-harness==0.1.13+hermes.1` from the wheel in

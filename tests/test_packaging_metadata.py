@@ -61,17 +61,36 @@ def test_every_dependency_is_held_to_one_three_day_release_age():
 
     A per-package exemption or date would quietly let a fresh release into the lock; the
     check runs at lock time only, so users never need a mirror that serves upload times.
-    The sole exception is CA trust stores: a CA revocation must ship the day it is released.
+    CA trust stores ship revocations immediately; the fork also admits its reviewed decoder fix.
     """
     manifest = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     uv = manifest["tool"]["uv"]
     lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
     assert uv["exclude-newer"] == "3 days"
     exempt = uv.get("exclude-newer-package", {})
-    assert set(exempt) <= CA_TRUST_PACKAGES, exempt
-    assert all(value is False for value in exempt.values()), exempt
+    assert set(exempt) <= CA_TRUST_PACKAGES | {"brotlicffi"}, exempt
+    assert all(value is False for name, value in exempt.items() if name in CA_TRUST_PACKAGES), exempt
+    if "brotlicffi" in exempt:
+        assert exempt["brotlicffi"] == "2026-10-23T00:00:00Z"
+        assert {row["version"] for row in lock["package"] if row["name"] == "brotlicffi"} == {"1.2.1.0"}
     assert lock["options"].get("exclude-newer-span") == "P3D"
     assert lock["options"].get("exclude-newer-package", {}) == exempt
+
+
+def test_messaging_decoder_excludes_pysec_2026_4323():
+    """The advisory's fixed boundary remains valid after future pin updates."""
+    floor = Version("1.2.1.0")
+    manifest = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    specs = [req for req in map(Requirement, manifest["project"]["optional-dependencies"]["messaging"])
+             if req.name == "brotlicffi"]
+    assert specs
+    for req in specs:
+        pins = list(req.specifier)
+        assert len(pins) == 1 and pins[0].operator == "=="
+        assert Version(pins[0].version) >= floor
+    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    versions = [Version(row["version"]) for row in lock["package"] if row["name"] == "brotlicffi"]
+    assert versions and all(version >= floor for version in versions)
 
 
 def test_httpx2_pins_and_lock_exclude_ghsa_7mj9_2mp8_4m2p_family():

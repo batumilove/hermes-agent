@@ -2113,3 +2113,16 @@ patches:
   tests:
   - scripts/run_tests.sh tests/tools/test_browser_vault.py
   retirement: Remove when upstream documents equivalent authorized OTP input and secret-isolation boundaries.
+- id: brotlicffi-decoder-security-fix
+  kind: operations
+  rationale: Pin brotlicffi 1.2.1.0 to fix PYSEC-2026-4323 with the user-approved
+    package-specific release cooldown exception; preserve the global three-day policy.
+  paths:
+  - pyproject.toml
+  - uv.lock
+  - pm/AGENTS.md
+  - tests/test_packaging_metadata.py
+  tests:
+  - python -m pm.build_env --source . --check-lock
+  - scripts/run_tests.sh tests/test_packaging_metadata.py
+  retirement: Remove when the accepted upstream baseline includes the fixed decoder release.
