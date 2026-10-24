@@ -34,6 +34,8 @@ class MemoryTeardownMixin:
         guard = self._memory_manager_release_guard()
         with guard:
             state = getattr(self, "_memory_manager_shutdown_state", None)
+            if state is not None and state["result"] is False:
+                state = None
             owner = state is None
             if owner:
                 manager = getattr(self, "_memory_manager", None)
@@ -77,7 +79,8 @@ class MemoryTeardownMixin:
                         if not completed:
                             self._memory_manager = manager
                         if (
-                            getattr(self, "_memory_manager_shutdown_state", None)
+                            completed
+                            and getattr(self, "_memory_manager_shutdown_state", None)
                             is state
                         ):
                             self._memory_manager_shutdown_state = None
@@ -96,7 +99,6 @@ class MemoryTeardownMixin:
                 )
                 with guard:
                     self._memory_manager = state["manager"]
-                    self._memory_manager_shutdown_state = None
                     state["result"] = False
                     state["event"].set()
                 return False
@@ -137,7 +139,9 @@ class MemoryTeardownMixin:
         # A reset claims extraction before its pre-shutdown flush. Its worker
         # owns the remaining teardown even after the caller stops waiting.
         if getattr(manager, "session_end_teardown_claimed", False) is True:
-            return True
+            if state is None or state["result"] is not False:
+                return True
+            commit = True
         if not self._shutdown_memory_manager_serialized(
             messages=messages,
             notify_session_end=(
