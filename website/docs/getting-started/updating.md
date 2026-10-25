@@ -581,6 +581,15 @@ hermes --version
 
 Compare against the latest release at the [GitHub releases page](https://github.com/NousResearch/hermes-agent/releases).
 
+On the Batumi source fork, a squashed upstream import can retain a verified
+upstream release baseline even though its release commit is outside the fork's
+direct ancestry. Hermes verifies the pinned release tag object, the recorded
+upstream base and the exact imported tree against local Git history. The version
+suffix counts source and subsequent fork commits; the SHA always identifies the
+running fork checkout. These checks never fetch. Missing evidence leaves the
+normal directly reachable release or unknown-version fallback in place; it does
+not bypass plugin compatibility requirements.
+
 ### Updating from Messaging Platforms
 
 You can also update directly from Telegram, Discord, Slack, WhatsApp, or Teams by sending:
