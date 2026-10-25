@@ -59,6 +59,11 @@ def update_tree(tmp_path, monkeypatch):
     monkeypatch.setattr(update_receipt, '_code_identity', lambda **_: {'commit': base})
     monkeypatch.setattr(cli_main, '_run_pre_update_backup', lambda *_: 'release-snapshot')
     monkeypatch.setattr(cli_main, '_pause_windows_gateways_for_update', lambda: None)
+    # These synthetic installs have no live runtimes; discovery must not query host services.
+    from hermes_cli import update_cmd_posix_pause as posix_pause
+    monkeypatch.setattr(posix_pause, '_discover_systemd', list)
+    monkeypatch.setattr(posix_pause, '_discover_launchd', list)
+    monkeypatch.setattr(posix_pause, '_discover_bare', lambda _: ([], []))
     resumed = []
     monkeypatch.setattr(cli_main, '_resume_windows_gateways_after_update', lambda state: resumed.append(state))
     monkeypatch.setattr(cli_main, '_install_hangup_protection', lambda **_: {'installed': False})
@@ -237,11 +242,21 @@ def test_stable_git_uses_remote_identity_without_moving_local_tags(update_tree, 
         assert cwd in {t.clone, t.origin}, (command, cwd)
         assert 'push' not in command and 'pull' not in command and 'ls-remote' not in command, command
         calls.append(command)
-        if 'fetch' in command and t.wanted in command and server == 'fetch-refused':
-            return subprocess.CompletedProcess(command, 128, stdout='', stderr='fixture: raw SHA wants disabled')
         return run(command, *args, **kwargs)
 
     monkeypatch.setattr(subprocess, 'run', guarded_run)
+    # Fetch uses a watched Popen on macOS and a job-bound child on Windows.
+    # Inject the transport failure before those host-specific custody paths.
+    from hermes_cli import update_custody
+    run_git = update_custody.run_git
+
+    def guarded_git(git_cmd, args, **kwargs):
+        if 'fetch' in args and t.wanted in args and server == 'fetch-refused':
+            return subprocess.CompletedProcess([*git_cmd, *args], 128, stdout='',
+                                               stderr='fixture: raw SHA wants disabled')
+        return run_git(git_cmd, args, **kwargs)
+
+    monkeypatch.setattr(update_custody, 'run_git', guarded_git)
     if server == 'fetch-refused':
         with pytest.raises(SystemExit) as error:
             cli_main.cmd_update(t.args)

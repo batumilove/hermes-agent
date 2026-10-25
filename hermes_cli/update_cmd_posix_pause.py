@@ -27,8 +27,8 @@ when this process dies.
 * the updater never kills itself: a unit whose cgroup holds this process (``/update`` from
   chat: the update runs in the gateway unit's cgroup, which ``systemctl stop`` kills) is
   stopped only after this process moved into a transient scope of its own. A launchd job
-  whose coalition holds it, or any gateway whose stop would take the updater down, is left
-  running for the post-commit restart.
+  whose coalition holds it, or any gateway whose stop would take the updater down, refuses
+  the source update rather than permitting mixed-tree readers.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ _READY_TIMEOUT_S = 30.0
 
 
 class PauseRefused(RuntimeError):
-    """The pause could not be completed; everything it stopped was started again."""
+    """The pause could not be completed; existing recovery owns any resume debt."""
 
 
 def _empty_token() -> dict:
@@ -122,8 +122,10 @@ def _discover_systemd() -> list[dict]:
     """Active ``hermes-gateway*`` units of this install, one per live MainPID."""
     from hermes_cli.gateway import _ensure_user_systemd_env, supports_systemd_services
     from hermes_cli.update_cmd_fleet import (
-        _for_each_systemd_gateway_unit, _systemd_gateway_unit_listings, _systemd_unit_owned_by_update,
-        _unit_main_pid,
+        _for_each_systemd_gateway_unit, _systemd_gateway_unit_listings, _unit_main_pid,
+    )
+    from hermes_cli.update_fleet_scope import (
+        describe_skipped_runtime, home_in_update_scope, systemd_unit_hermes_home,
     )
     if not supports_systemd_services():
         return []
@@ -131,7 +133,12 @@ def _discover_systemd() -> list[dict]:
         _ensure_user_systemd_env()
     units: list[dict] = []
     seen_pids: set[int] = set()
-    for scope, scope_cmd, listing in _systemd_gateway_unit_listings():
+    def listing_timeout(scope, exc):
+        raise PauseRefused(f"could not list {scope} gateway units: {exc}")
+
+    for scope, scope_cmd, listing in _systemd_gateway_unit_listings(on_list_timeout=listing_timeout):
+        if listing.returncode != 0:
+            raise PauseRefused(f"could not list {scope} gateway units")
         names: list[str] = []
         _for_each_systemd_gateway_unit(listing.stdout, process_unit=names.append,
                                        on_unit_timeout=lambda name, exc: None)
@@ -139,7 +146,16 @@ def _discover_systemd() -> list[dict]:
             if not name.startswith("hermes-gateway"):
                 continue  # serve/dashboard units are not gateways: the post-commit restart owns them
             pid = _unit_main_pid(scope_cmd, name)
-            if pid <= 0 or pid in seen_pids or not _systemd_unit_owned_by_update(scope_cmd, name):
+            if pid <= 0:
+                raise PauseRefused(f"could not identify active gateway unit {name}")
+            # Post-update restart may leave unknown units alone; pre-mutation pause cannot.
+            home = systemd_unit_hermes_home(scope_cmd, name)
+            if home is None:
+                raise PauseRefused(f"could not establish ownership of active gateway unit {name}")
+            if not home_in_update_scope(home):
+                print(describe_skipped_runtime("systemd unit", name, home))
+                continue
+            if pid in seen_pids:
                 continue
             seen_pids.add(pid)  # a legacy per-profile unit sharing the multiplexer's PID is one process
             units.append({"kind": "systemd", "scope": scope, "unit": name, "pid": pid,
@@ -331,6 +347,11 @@ def _stop_unit(unit: dict) -> None:
     result = _systemctl(cmd + ["stop", unit["unit"]], timeout=_STOP_TIMEOUT_S)
     if result.returncode != 0:
         raise PauseRefused(f"systemctl stop {unit['unit']} failed: {(result.stderr or '').strip()}")
+    state = _systemctl(cmd + ["show", unit["unit"], "--property=ActiveState,SubState,MainPID"], timeout=10)
+    properties = dict(line.split("=", 1) for line in (state.stdout or "").splitlines() if "=" in line)
+    if (state.returncode != 0 or properties.get("ActiveState") not in ("inactive", "failed")
+            or properties.get("SubState") not in ("dead", "failed") or properties.get("MainPID") != "0"):
+        raise PauseRefused(f"systemctl stop {unit['unit']} did not prove a stopped unit")
 
 
 def _start_unit(unit: dict) -> int:
@@ -559,10 +580,8 @@ def _describe(token: dict) -> str:
 def pause_at_commit_point() -> str | None:
     """Stop this install's gateways before the first checkout move; once per run.
 
-    Never refuses the update: the pause is protection, not a gate. When it cannot complete
-    (discovery or the durable record fails, a stop fails), the gateways run through the swap and
-    the post-commit restart refreshes them, which is how POSIX updated before the pause existed.
-    Always ``None``; the caller's refusal branch stays for the contract it shares with Windows."""
+    Discovery, recording or stop failure refuses the checkout move. Existing exit/future-launch
+    recovery retains ownership of every recorded resume obligation."""
     token = _RUN
     if token is None:
         return None
@@ -578,10 +597,11 @@ def _pause(token: dict) -> str | None:
         units, jobs, notices = _left_running(units, jobs)
         bare, more = _discover_bare({u["pid"] for u in units} | {j["pid"] for j in jobs})
     except Exception as exc:  # health: allow BLE001 -- a discovery that cannot finish stops nothing
-        print(f"  ⚠ Could not list the running gateways ({exc}); they keep running and are restarted after the update")
-        return None
+        return f"Could not list the running gateways: {exc}; source update refused"
     for line in notices + more:
         print(line)
+    if notices or more:
+        return "Could not exclude every running gateway; source update refused"
     supervised = units + jobs
     if not supervised and not bare:
         return None
@@ -610,23 +630,15 @@ def _pause(token: dict) -> str | None:
                 pause_record.discharge(token)
         token.clear()
         token.update(before)
-        print(f"  ⚠ Could not record the gateways to pause ({exc}); they keep running and are restarted after the update")
-        return None
+        return f"Could not record the gateways to pause: {exc}; source update refused"
     # From here a refusal or a crash leaves the set owed: the command's own exit resume (registered
     # in ``_cmd_update_impl`` for this token), else the next launch's recovery, restarts it.
     token["posix_stopped"] = True
     try:
         _stop_gateways(token, supervised + bare)
-    except Exception as exc:  # health: allow BLE001 -- roll back: restart the stopped set, update unpaused
-        print(f"  ⚠ Could not pause every gateway ({exc}); restarting them, the update continues without the pause")
-        try:
-            resume_paused_set(token)
-        except Exception as again:  # health: allow BLE001 -- still owed: completion restarts them after the deps
-            print(f"  ⚠ {again}; they restart once the dependencies are synced")
-        for restarted in _RESTARTED.values():
-            restarted.clear()  # back on the OLD code: the post-commit fleet restart must refresh them
+    except Exception as exc:  # health: allow BLE001 -- refuse source mutation; existing recovery retains the stopped set
         pause_record.sync(token)
-        return None
+        return f"Could not pause every gateway: {exc}; source update refused (resume remains owed)"
     pause_record.sync(token)
     print(f"  ⏸ Paused for the update: {_describe(token)} (restarted once the dependencies are synced)")
     return None

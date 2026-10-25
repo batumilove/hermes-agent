@@ -325,7 +325,7 @@ async def _start_gateway_start_control_socket(runner):
 
             def _request() -> None:
                 try:
-                    accepted_box.append(runner.request_restart(detached=False, via_service=True))
+                    accepted_box.append(runner.request_restart(detached=False, via_service=True, for_update=True))
                 finally:
                     _done.set()
 
@@ -436,6 +436,7 @@ def _start_gateway_start_cron_and_housekeeping(runner):
     from cron.scheduler_thread import SupervisedTickerThread
     cron_thread = SupervisedTickerThread(
         cron_provider.start, args=(cron_stop,), kwargs=cron_start_kwargs, stop_event=cron_stop)
+    runner._cron_thread = cron_thread
     from gateway.runtime_ownership import process_ownership
     process_ownership.start_writer(cron_thread)
 
