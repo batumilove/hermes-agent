@@ -2297,3 +2297,19 @@ patches:
   tests:
   - scripts/run_tests.sh tests/gateway/test_update_pause_ownership.py tests/hermes_cli/test_update_pause_ownership.py tests/hermes_cli/test_update_pause_systemd_ownership.py tests/hermes_cli/test_update_posix_pause.py tests/pm/test_admission_sitout_contract.py
   retirement: Remove when upstream provides equivalent fail-closed pause ownership and existing-member admission contracts.
+
+- id: imported-source-release-identity
+  kind: core
+  rationale: Verify the pinned upstream release and exact tree-import proof when deriving
+    source runtime identity, preserving plugin version gates across squashed fork imports.
+  paths:
+  - hermes_cli/version_info.py
+  - hermes_cli/version_provenance.py
+  - tests/hermes_cli/test_version_import_provenance.py
+  - scripts/fork_provenance.py
+  - scripts/build/image_identity.py
+  - website/docs/getting-started/updating.md
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_version_import_provenance.py tests/hermes_cli/test_version_info.py
+    tests/scripts/test_image_identity.py tests/scripts/test_fork_provenance_v2.py
+  retirement: Remove when upstream runtime identity admits verified tree-import ancestry.

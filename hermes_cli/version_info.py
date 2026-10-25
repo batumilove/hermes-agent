@@ -252,6 +252,14 @@ def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> Ver
     ) if releases else None
     if not releases:
         base_version, distance = _calver_release_version(repo_dir) or ("unknown", None)
+    from hermes_cli.version_provenance import imported_release_version
+
+    imported = imported_release_version(repo_dir)
+    if imported is not None and (
+        base_version == "unknown"
+        or tuple(map(int, imported[0].split("."))) > tuple(map(int, base_version.split(".")))
+    ):
+        base_version, distance = imported
     short_commit = _run_git(repo_dir, "rev-parse", "--short=7", "HEAD")
     if base_version == "unknown" and short_commit:
         display_version = f"git.{short_commit}{'.dirty' if dirty else ''}"

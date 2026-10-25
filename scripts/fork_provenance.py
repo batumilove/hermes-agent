@@ -7,6 +7,8 @@ This module uses the standard library so contributor CI needs no bootstrap.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 import json
 import os
 import re
@@ -17,6 +19,7 @@ from pathlib import Path
 PROVENANCE_PATH = ".github/upstream-sync-provenance.json"
 BASE_PATH = ".github/upstream-base"
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
+_OFFLINE = ContextVar("fork_provenance_offline", default=False)
 _FIELDS = {"version", "upstream_base", "source_head", "import_tree", "fetch_depth"}
 
 
@@ -24,10 +27,33 @@ class ProvenanceError(ValueError):
     """The recorded import does not establish the claimed upstream relationship."""
 
 
+@contextmanager
+def offline_git():
+    """Verify local evidence without explicit or partial-clone network fetches."""
+    token = _OFFLINE.set(True)
+    try:
+        yield
+    finally:
+        _OFFLINE.reset(token)
+
+
+def _read_environment(env=None):
+    if not _OFFLINE.get():
+        return env
+    # protocol.allow also covers Git versions predating GIT_NO_LAZY_FETCH.
+    result = dict(os.environ if env is None else env)
+    count = int(result.get("GIT_CONFIG_COUNT", "0"))
+    result.update({"GIT_NO_LAZY_FETCH": "1", "GIT_TERMINAL_PROMPT": "0",
+                   "GIT_CONFIG_COUNT": str(count + 1),
+                   f"GIT_CONFIG_KEY_{count}": "protocol.allow",
+                   f"GIT_CONFIG_VALUE_{count}": "never"})
+    return result
+
+
 def git(repo: Path, *args: str, env=None, binary=False, input_data=None):
     result = subprocess.run(
-        ["git", *args], cwd=repo, env=env, capture_output=True,
-        text=not binary, input=input_data, timeout=120, check=False,
+        ["git", *args], cwd=repo, env=_read_environment(env), capture_output=True,
+        text=not binary, input=input_data, timeout=3 if _OFFLINE.get() else 120, check=False,
     )
     if result.returncode:
         detail = result.stderr.decode(errors="replace") if binary else result.stderr
@@ -38,7 +64,7 @@ def git(repo: Path, *args: str, env=None, binary=False, input_data=None):
 def is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
     result = subprocess.run(
         ["git", "merge-base", "--is-ancestor", ancestor, descendant],
-        cwd=repo, capture_output=True, text=True, timeout=120, check=False,
+        cwd=repo, env=_read_environment(), capture_output=True, text=True, timeout=3 if _OFFLINE.get() else 120, check=False,
     )
     if result.returncode not in (0, 1):
         raise ProvenanceError(result.stderr.strip() or "could not inspect Git ancestry")
@@ -80,6 +106,8 @@ def fetch_source(repo: Path, source: str, depth: int, *, required_ancestor: str 
         if required_ancestor is not None:
             git(repo, "cat-file", "-e", f"{required_ancestor}^{{commit}}")
     except ProvenanceError:
+        if _OFFLINE.get():
+            raise
         options = ["--filter=blob:none", "--no-tags"]
         if git(repo, "rev-parse", "--is-shallow-repository") == "true":
             options.insert(0, f"--depth={depth}")
@@ -213,3 +241,19 @@ def comparison_anchor(repo: Path, base: str, comparison: str, head_anchor: str) 
     # HEAD may revisit the import tree. The trusted target independently
     # determines whether this upstream baseline has already been incorporated.
     return find_import_ancestor(repo, comparison, proof["import_tree"])
+
+
+def source_distance(repo: Path, release: str, head: str) -> int:
+    """Count source and fork commits only after verifying the accepted import."""
+    if is_ancestor(repo, release, head):
+        return int(git(repo, "rev-list", "--count", f"{release}..{head}"))
+    proof = validate_v2(json.loads(git(repo, "show", f"{head}:{PROVENANCE_PATH}")))
+    base = git(repo, "show", f"{head}:{BASE_PATH}")
+    # Acquisition belongs to the caller, including for shallow source installs.
+    git(repo, "cat-file", "-e", f"{proof['source_head']}^{{commit}}")
+    git(repo, "cat-file", "-e", f"{base}^{{commit}}")
+    anchor = resolve_v2(repo, base, head, proof=proof)
+    if not is_ancestor(repo, release, base):
+        raise ProvenanceError("release is not an ancestor of the accepted upstream base")
+    return (int(git(repo, "rev-list", "--count", f"{release}..{proof['source_head']}"))
+            + int(git(repo, "rev-list", "--count", f"{anchor}..{head}")))

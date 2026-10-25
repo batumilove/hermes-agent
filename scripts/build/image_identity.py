@@ -48,20 +48,9 @@ def package_version(repo: Path, stamp: dict, release: Release = BASELINE) -> str
 
 
 def _source_distance(repo: Path, release: str, head: str) -> int:
-    from scripts import fork_provenance as provenance
+    from scripts.fork_provenance import source_distance
 
-    if provenance.is_ancestor(repo, release, head):
-        return int(_git(repo, "rev-list", "--count", f"{release}..{head}"))
-    proof = provenance.validate_v2(json.loads(_git(repo, "show", f"{head}:{provenance.PROVENANCE_PATH}")))
-    base = _git(repo, "show", f"{head}:{provenance.BASE_PATH}")
-    # Acquisition belongs to the caller; never silently fetch mutable origin here.
-    _git(repo, "cat-file", "-e", f"{proof['source_head']}^{{commit}}")
-    _git(repo, "cat-file", "-e", f"{base}^{{commit}}")
-    anchor = provenance.resolve_v2(repo, base, head, proof=proof)
-    if not provenance.is_ancestor(repo, release, base):
-        raise ValueError("image release is not an ancestor of the accepted upstream base")
-    return (int(_git(repo, "rev-list", "--count", f"{release}..{proof['source_head']}"))
-            + int(_git(repo, "rev-list", "--count", f"{anchor}..{head}")))
+    return source_distance(repo, release, head)
 
 
 def main() -> None:
