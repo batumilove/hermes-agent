@@ -5,6 +5,72 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: mattermost-bounded-thread-context
+  kind: compatibility
+  rationale: Preserve a validated root reply pointer and bounded thread history on first entry,
+    without rehydrating persisted or reset sessions. Fetch only authorized, same-channel context;
+    keep historical text as quoted data and preserve current mention-routing behavior.
+  paths:
+  - plugins/platforms/mattermost/adapter.py
+  - plugins/platforms/mattermost/reply_context.py
+  - tests/gateway/test_mattermost_reply_context.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_mattermost_reply_context.py tests/gateway/test_mattermost.py tests/gateway/test_mattermost_mention_routing.py tests/gateway/test_mattermost_native_admission.py
+  retirement: Remove when upstream provides equivalent bounded, authorized thread hydration,
+    reset-session isolation, and root-pointer regression coverage in the Mattermost plugin.
+- id: optional-migration-pm-receipts
+  kind: core
+  rationale: Keep unrelated existing version-incompatible plugins out of staged publication,
+    preserve mandatory PM preparation receipts across best-effort catalog migrations, and
+    align completion exit status with a partial terminal receipt.
+  paths:
+  - pm/publication.py
+  - scripts/ci/classify_changes.py
+  - hermes_cli/source_build.py
+  - hermes_cli/update_completion.py
+  - tests/pm/test_admission_sitout_contract.py
+  - tests/pm/test_worker_publication.py
+  - tests/hermes_cli/test_update_optional_migration_receipts.py
+  - website/docs/getting-started/updating.md
+  tests:
+  - scripts/run_tests.sh tests/pm/test_admission_sitout_contract.py tests/pm/test_worker_publication.py tests/hermes_cli/test_update_optional_migration_receipts.py tests/hermes_cli/test_update_receipt_pm_embed.py tests/hermes_cli/test_update_completion_process.py tests/hermes_cli/test_source_build.py
+  - scripts/run_tests.sh tests/ci/test_classify_changes.py tests/ci/test_update_transitive_routing.py
+  - scripts/run_tests.sh tests/ci/test_update_ci_routing.py -k test_every_module_an_update_entry_point_imports_starts_its_suite
+  retirement: Remove when upstream preserves these staged admission and optional migration receipt contracts.
+- id: live-restore-durable-state-assertion
+  kind: compatibility
+  rationale: Verify restore refusal preserves database and WAL bytes plus admission rows without treating SQLite shared-memory reader bookkeeping as durable data.
+  paths:
+  - tests/hermes_cli/test_update_restore_authority.py
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_update_restore_authority.py
+  retirement: Remove when upstream live-restore tests distinguish durable state from volatile SQLite read marks.
+- id: startup-scheduler-live-status
+  kind: core
+  rationale: Bind the startup ticker to the runner so control status reports its actual liveness.
+  paths:
+  - gateway/run_bootstrap.py
+  - tests/gateway/test_bootstrap_scheduler_status.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_bootstrap_scheduler_status.py tests/gateway/test_external_drain_control.py
+  retirement: Remove when upstream startup and live control status share the same ticker handle.
+- id: mattermost-exact-fleet-mention-routing
+  kind: compatibility
+  rationale: Match complete case-insensitive Mattermost username tokens, strip only the
+    receiving bot's own mentions, and suppress non-target fleet bots even in free-response
+    channels. Preserve the explicit six-bot fleet roster, channel allowlists and DM bypass.
+    Offline adapter tests require the repository test environment with Mattermost plugin
+    dependencies; no server credentials or live messaging are required. The operator-approved
+    contributor alias attributes Hermes-prepared PR409 commits to batumilove without rewriting history.
+  paths:
+  - contributors/emails/hermes-candidate@localhost.invalid
+  - plugins/platforms/mattermost/adapter.py
+  - tests/gateway/test_mattermost_mention_routing.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_mattermost_mention_routing.py tests/gateway/test_mattermost.py
+  retirement: Remove when upstream provides equivalent exact-token own-mention routing
+    and explicit fleet-target suppression with regression coverage for blank identities,
+    username suffixes and simultaneous own/other fleet mentions.
 - id: browse-schema-begin-budget-refusal
   kind: core
   rationale: Budget preparatory durability SQL and transaction admission during additive browse reconciliation, reporting deadline interrupts as bounded no-write refusals with the repair remedy.
@@ -594,6 +660,7 @@ patches:
   - tests/test_job_scoped_workflow_permissions.py
   - tests/scripts/test_install_batumi_components.py
   - tests/test_hermes_ops_pull_budget_pin.py
+  - tests/scripts/test_ops_pull_budget_manifest.py
   - tests/scripts/test_run_batumi_contracts.py
   - tests/scripts/test_upstream_sync_workflow.py
   - contributors/emails/agent@agents-mac-mini.local
@@ -618,7 +685,7 @@ patches:
   - tests/scripts/test_code_health_cli.py
   tests:
   - scripts/run_tests.sh tests/scripts/test_check_fork_delta.py tests/scripts/test_ci_workflow.py tests/scripts/test_install_batumi_components.py
-    tests/scripts/test_upstream_sync_workflow.py
+    tests/scripts/test_upstream_sync_workflow.py tests/test_hermes_ops_pull_budget_pin.py tests/scripts/test_ops_pull_budget_manifest.py
   - scripts/run_tests.sh tests/scripts/test_upgrade_source_checkout.py tests/scripts/test_code_health_cli.py
   - scripts/run_tests.sh tests/scripts/test_catalog_upstream_import.py
   retirement: Retain while batumi/live carries any fork-only patch.
@@ -1457,15 +1524,24 @@ patches:
 - id: honcho-operational-monitoring
   kind: operations
   rationale: Preserve the production Honcho health monitor and queue diagnostic used by Hermes cron, together
-    with their fail-closed behavior contracts.
+    with their fail-closed behavior contracts. Route regressions require the checkout test
+    dependencies (pytest and PyYAML) and a disposable HOME/HERMES_HOME; no live
+    Honcho, provider credentials or generation calls are required. The mailmap alias
+    preserves locally generated Hermes automation attribution without rewriting PR history.
   paths:
+  - .mailmap
   - hermes_cli/honcho_monitor.py
   - hermes_cli/honcho_queue_diagnostic.py
   - scripts/honcho_monitor.py
   - tests/hermes_cli/test_honcho_monitor.py
   - tests/hermes_cli/test_honcho_queue_diagnostic.py
+  - tests/hermes_cli/test_honcho_monitor_routes.py
+  - tests/hermes_cli/test_honcho_route_review.py
+  - tests/hermes_cli/test_honcho_routing_unknown.py
+  - tests/hermes_cli/test_literal_model_regression.py
   tests:
   - scripts/run_tests.sh tests/hermes_cli/test_honcho_monitor.py tests/hermes_cli/test_honcho_queue_diagnostic.py
+  - scripts/run_tests.sh tests/hermes_cli/test_honcho_monitor_routes.py tests/hermes_cli/test_honcho_route_review.py tests/hermes_cli/test_honcho_routing_unknown.py tests/hermes_cli/test_literal_model_regression.py
   retirement: Remove when the live watchdog and diagnostics migrate to a durable operations package that
     no longer imports these modules.
 - id: cron-ephemeral-telegram-topics
@@ -2199,3 +2275,25 @@ patches:
   - scripts/run_tests.sh tests/test_packaging_metadata.py tests/pm/test_project_relock.py
   - npm --workspace tests-js test -- security-lock-floors.test.ts
   retirement: Remove when the accepted upstream baseline resolves all reviewed advisory boundaries.
+
+- id: vm-update-pause-and-plugin-admission
+  kind: core
+  rationale: Retain live VM pause ownership and fail-closed source exclusion, while letting existing
+    incompatible plugins sit out shared environment admission without disabling their configuration.
+  paths:
+  - gateway/run_bootstrap.py
+  - gateway/run_shutdown.py
+  - gateway/run_fork_contracts.py
+  - hermes_cli/update_cmd_posix_pause.py
+  - pm/plugin_declarations.py
+  - pm/publication.py
+  - tests/gateway/test_update_pause_ownership.py
+  - tests/hermes_cli/test_update_pause_ownership.py
+  - tests/hermes_cli/test_update_pause_systemd_ownership.py
+  - tests/hermes_cli/test_update_posix_pause.py
+  - tests/hermes_cli/test_update_target_identity.py
+  - tests/hermes_cli/test_update_existing_branch_baseline.py
+  - tests/pm/test_admission_sitout_contract.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_update_pause_ownership.py tests/hermes_cli/test_update_pause_ownership.py tests/hermes_cli/test_update_pause_systemd_ownership.py tests/hermes_cli/test_update_posix_pause.py tests/pm/test_admission_sitout_contract.py
+  retirement: Remove when upstream provides equivalent fail-closed pause ownership and existing-member admission contracts.

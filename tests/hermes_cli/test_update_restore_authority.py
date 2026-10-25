@@ -55,7 +55,9 @@ def test_restore_refuses_live_authority_without_changing_data(tmp_path):
             before = rows()
             assert dict(before) == {'warm': 'terminal', 'started': 'started', 'queued': 'queued'}
             import hashlib
-            bundle = [Path(str(home / 'state.db') + suffix) for suffix in ('', '-wal', '-shm')]
+            # Live SQLite readers may change the SHM read marks without changing data.
+            # Preserve the durable database/WAL bytes as well as admission rows.
+            bundle = [Path(str(home / 'state.db') + suffix) for suffix in ('', '-wal')]
             hashes = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in bundle if p.exists()}
             restored = _restore_state_db_from_snapshot(home / 'state.db', home / 'state-snapshots' / snapshot / 'state.db')
             assert hashes == {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in bundle if p.exists()}

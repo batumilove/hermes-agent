@@ -30,6 +30,8 @@ from gateway.platforms._shared import (
     send_error
 )
 
+from .reply_context import MattermostReplyContextMixin
+
 logger = logging.getLogger(__name__)
 
 _Metadata = Optional[dict[str, Any]]
@@ -41,6 +43,40 @@ MAX_POST_LENGTH = 4000
 _CHANNEL_TYPE_MAP = {"D": "dm", "G": "group", "P": "group", "O": "channel"}
 
 _MATTERMOST_DISABLE_MENTIONS_PROPS = {"disable_mentions": True}
+
+# Explicit fleet membership, not a "hermes-*" prefix heuristic: unrelated users
+# must not silence a channel's primary bot. Keep this roster identical in each
+# fleet adapter. Local Mattermost usernames allow a-z, 0-9, dot, dash and
+# underscore (server/public/model/user.go); remote names can also contain ':'.
+_HERMES_BOT_USERNAMES = frozenset({
+    "hermes", "hermes-shopping", "hermes-research", "hermes-pa",
+    "hermes-ops-watchdogs", "hermes-weingut-wolf",
+})
+# Consume whole tokens and exclude email/local-part adjacency on both sides.
+# ':' is included to avoid treating a remote username as a local prefix.
+_USERNAME_MENTION = re.compile(
+    r"(?<![\w.@+%\-])@([a-z0-9_.\-]+(?::[a-z0-9_.\-]+)*)(?![\w.@+%\-]|:[a-z0-9_.\-])", re.IGNORECASE
+)
+
+
+def _route_mentions(text: str, username: str, user_id: str) -> tuple[bool, bool, str]:
+    """Return (mentions self, mentions fleet, text with only self removed).
+
+    Match exact, nonempty identity tokens; never strip another bot's suffix or
+    an email substring. DMs bypass this helper in the inbound adapter path.
+    """
+    identities = {value.lower() for value in (username, user_id) if value}
+    matches = list(_USERNAME_MENTION.finditer(text))
+    names = {match.group(1).lower() for match in matches}
+    own = bool(identities & names)
+    fleet = bool(_HERMES_BOT_USERNAMES & names)
+    if own:
+        text = _USERNAME_MENTION.sub(
+            lambda match: "" if match.group(1).lower() in identities else match.group(0), text
+        ).strip()
+    return own, fleet, text
+
+
 
 _RECONNECT_BASE_DELAY, _RECONNECT_MAX_DELAY, _RECONNECT_JITTER = 2.0, 60.0, 0.2  # exponential backoff
 
@@ -101,7 +137,7 @@ def validate_mattermost_config(config: PlatformConfig) -> bool:
     return True
 
 
-class MattermostAdapter(BasePlatformAdapter):
+class MattermostAdapter(MattermostReplyContextMixin, BasePlatformAdapter):
     """Gateway adapter for Mattermost (self-hosted or cloud)."""
 
     splits_long_messages = True  # send() chunks via truncate_message(MAX_POST_LENGTH)
@@ -132,7 +168,8 @@ class MattermostAdapter(BasePlatformAdapter):
     def _auth_header(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._token}"}
 
-    async def _api(self, method: str, path: str, payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    async def _api(self, method: str, path: str, payload: Optional[dict[str, Any]] = None,
+                   *, max_bytes: Optional[int] = None) -> dict[str, Any]:
         """{method} /api/v4/{path}; POST also records _last_post_status/_last_post_error."""
         import aiohttp
         if ".." in path:
@@ -151,6 +188,16 @@ class MattermostAdapter(BasePlatformAdapter):
             async with getattr(self._session, method.lower())(url, **kwargs) as resp:
                 if is_post:
                     self._last_post_status = resp.status
+                if max_bytes is not None:
+                    if resp.status >= 400:
+                        return {}
+                    body = bytearray()
+                    async for chunk in resp.content.iter_chunked(16384):
+                        body.extend(chunk)
+                        if len(body) > max_bytes:
+                            return {}
+                    result = json.loads(body)
+                    return result if isinstance(result, dict) else {}
                 if resp.status >= 400:
                     body = await resp.text()
                     if is_post:
@@ -164,7 +211,9 @@ class MattermostAdapter(BasePlatformAdapter):
             logger.error("MM API %s %s network error: %s", method, path, exc)
             return {}
 
-    async def _api_get(self, path: str) -> dict[str, Any]:
+    async def _api_get(self, path: str, *, max_bytes: Optional[int] = None) -> dict[str, Any]:
+        if max_bytes is not None:
+            return await self._api("GET", path, max_bytes=max_bytes)
         return await self._api("GET", path)
 
     async def _api_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -505,15 +554,16 @@ class MattermostAdapter(BasePlatformAdapter):
                               ).lower() not in {"false", "0", "no"}
         free_channels = _channel_id_set(
             _extra_or_secret(self.config.extra, "free_response_channels", "MATTERMOST_FREE_RESPONSE_CHANNELS", blank_is_unset=False))
-        mention_patterns = [f"@{self._bot_username}", f"@{self._bot_user_id}"]
-        has_mention = any(pattern.lower() in message_text.lower() for pattern in mention_patterns)
+        has_mention, has_fleet_mention, cleaned_text = _route_mentions(
+            message_text, self._bot_username, self._bot_user_id
+        )
+        # Explicit fleet addressing outranks free-response/default mode.
+        if has_fleet_mention and not has_mention:
+            return None
         if require_mention and channel_id not in free_channels and not has_mention:
             logger.debug("Mattermost: skipping non-DM message without @mention (channel=%s)", channel_id)
             return None
-        if has_mention:  # strip the @mention so the agent sees clean input
-            for pattern in mention_patterns:
-                message_text = re.sub(re.escape(pattern), "", message_text, flags=re.IGNORECASE).strip()
-        return message_text
+        return cleaned_text
 
     async def _download_attachments(self, file_ids: list[str]) -> tuple[list[str], list[str]]:
         """Download attachments now (URLs need auth headers downstream tools lack) → (paths, mime types)."""
@@ -585,10 +635,12 @@ class MattermostAdapter(BasePlatformAdapter):
             user_id=sender_id, user_name=data.get("sender_name", "").lstrip("@") or sender_id,
             thread_id=thread_id, message_id=post_id)
         from gateway.platforms.base import resolve_channel_prompt
-        await self.handle_message(MessageEvent(
+        message_event = MessageEvent(
             text=message_text, message_type=msg_type, source=source, raw_message=post, message_id=post_id,
             media_urls=media_urls, media_types=media_types,
-            channel_prompt=resolve_channel_prompt(self.config.extra, channel_id, None)))
+            channel_prompt=resolve_channel_prompt(self.config.extra, channel_id, None))
+        await self._add_reply_context(message_event, post)
+        await self.handle_message(message_event)
 
 
 # --- Plugin standalone-send (out-of-process cron delivery via Mattermost REST) ---
