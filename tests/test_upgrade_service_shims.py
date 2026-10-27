@@ -36,7 +36,7 @@ class ServiceShimContract(unittest.TestCase):
     def invoke(self, name, args):
         # Absolute fixture path: never fall back to a real manager on PATH.
         result = subprocess.run([str(self.bin / name), *args], capture_output=True,
-                                text=True, timeout=5, env={"PATH": "/nonexistent"})
+                                text=True, timeout=5, check=False, env={"PATH": "/nonexistent"})
         self.assertEqual(self.log.read_text().splitlines()[-1], f"{name} {' '.join(args)}")
         return result
 
