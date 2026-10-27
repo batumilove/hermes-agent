@@ -162,3 +162,16 @@ def test_unverified_import_cannot_claim_release(imported, monkeypatch, damage):
         with provenance.offline_git(), pytest.raises(provenance.ProvenanceError, match="not allowed"):
             provenance.git(root, "fetch", "origin")
     assert not (root / "network-attempt").exists()
+
+
+def test_git_utf8_text_and_binary_roundtrip_under_ascii_locale(tmp_path, monkeypatch):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    monkeypatch.setattr(subprocess, "_text_encoding", lambda: "ascii")
+    with provenance.offline_git():
+        oid = provenance.git(tmp_path, "hash-object", "-w", "--stdin", input_data="ქართული\n")
+        assert len(oid) == 40 and oid.isascii()
+        assert provenance.git(tmp_path, "cat-file", "blob", oid) == "ქართული"
+        raw = b"\xff\x00\x80\n"
+        binary_oid = provenance.git(tmp_path, "hash-object", "-w", "--stdin", binary=True, input_data=raw)
+        assert isinstance(binary_oid, bytes)
+        assert provenance.git(tmp_path, "cat-file", "blob", binary_oid.strip().decode("ascii"), binary=True) == raw
