@@ -140,7 +140,9 @@ def _attachment_origin(value: str) -> Optional[tuple[str, int]]:
     try:
         parsed = urlsplit(raw if "://" in raw else f"//{raw}")
         host = (parsed.hostname or "").lower().rstrip(".")
-        port = parsed.port or 443
+        port = 443 if parsed.port is None else parsed.port
+        if port == 0:
+            return None
     except ValueError:
         return None
     if (parsed.scheme and parsed.scheme not in {"https", "wss"}) or not host:
@@ -1426,22 +1428,44 @@ class BuzzAdapter(BuzzConversationMixin, BuzzCursorMixin, BasePlatformAdapter):
         url = metadata["url"]
         try:
             parsed_url = urlsplit(url)
-            origin = ((parsed_url.hostname or "").lower().rstrip("."), parsed_url.port or 443)
+            origin = ((parsed_url.hostname or "").lower().rstrip("."), 443 if parsed_url.port is None else parsed_url.port)
         except ValueError:
             parsed_url, origin = None, ("", 0)
-        if parsed_url is None or parsed_url.scheme != "https" or origin not in self._attachment_origins:
+        if (parsed_url is None or parsed_url.scheme != "https" or origin not in self._attachment_origins
+                or parsed_url.username or parsed_url.password or parsed_url.query or parsed_url.fragment):
             logger.warning("Buzz: refusing attachment from untrusted origin %s:%s", origin[0] or "<missing>", origin[1])
+            return None
+        path_match = _MEDIA_PATH_RE.fullmatch(parsed_url.path)
+        if path_match and path_match.group("sha").lower() != metadata["sha256"]:
+            logger.warning("Buzz: attachment URL digest does not match imeta")
+            return None
+        if not 0 < metadata["size"] <= _MAX_INBOUND_ATTACHMENT_BYTES:
             return None
         import httpx
         try:
+            headers = {"Accept-Encoding": "identity"}
+            relay = urlsplit(self.relay_url)
+            relay_origin = ((relay.hostname or "").lower().rstrip("."), 443 if relay.port is None else relay.port)
+            # Only canonical same-relay objects receive credentials. Optional CDN hosts stay anonymous.
+            if relay.scheme == "https" and origin == relay_origin and path_match:
+                if not self._private_key:
+                    self._private_key = _resolve_private_key(self._extra)
+                    self._auth_tag = _resolve_auth_tag(self._extra)
+                headers["Authorization"] = _nostr_auth.build_media_get_authorization(
+                    private_key=self._private_key, server=relay.netloc,
+                )
+                if self._auth_tag:
+                    headers["x-auth-tag"] = self._auth_tag
             timeout = httpx.Timeout(_ATTACHMENT_DOWNLOAD_TIMEOUT)
             async with (
                 asyncio.timeout(_ATTACHMENT_DOWNLOAD_TIMEOUT),
-                httpx.AsyncClient(follow_redirects=False, timeout=timeout, headers={"Accept-Encoding": "identity"}) as client,
+                httpx.AsyncClient(follow_redirects=False, timeout=timeout, headers=headers) as client,
                 client.stream("GET", url) as response,
             ):
                 if response.status_code != 200:
                     logger.warning("Buzz: attachment download returned HTTP %s", response.status_code)
+                    return None
+                if response.headers.get("content-encoding", "identity").lower() != "identity":
                     return None
                 if content_length := response.headers.get("content-length"):
                     try:
@@ -1452,11 +1476,11 @@ class BuzzAdapter(BuzzConversationMixin, BuzzCursorMixin, BasePlatformAdapter):
                         logger.warning("Buzz: attachment Content-Length does not match imeta size")
                         return None
                 data = bytearray()
-                async for chunk in response.aiter_bytes():
-                    data.extend(chunk)
-                    if len(data) > metadata["size"]:
+                async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
+                    if len(data) + len(chunk) > metadata["size"]:
                         logger.warning("Buzz: attachment exceeded its declared size")
                         return None
+                    data.extend(chunk)
         except (TimeoutError, httpx.HTTPError, OSError, ValueError) as exc:
             logger.warning("Buzz: attachment download failed: %s", exc)
             return None
@@ -1489,7 +1513,7 @@ class BuzzAdapter(BuzzConversationMixin, BuzzCursorMixin, BasePlatformAdapter):
         if not pubkey or not isinstance(content, str) or not (content.strip() or attachment_metadata or rejected_attachments):
             return
         # Cache before any early return so self-echo and concurrent-author traffic can still be reply parents.
-        self._remember_event(state, event)
+        self._remember_event(state, event, attachment_authorized=False)
         # See #75826.
         if pubkey == self._self_pubkey:
             return
@@ -1518,11 +1542,36 @@ class BuzzAdapter(BuzzConversationMixin, BuzzCursorMixin, BasePlatformAdapter):
         # The message still dispatches so GatewayRunner can apply denial/pairing.
         chat_type = "dm" if is_dm else "group"
         fetch_allowed = bool(attachment_metadata) and self._is_sender_authorized(pubkey, chat_type, channel_id) is True
+        if fetch_allowed:
+            self._remember_event(state, event, attachment_authorized=True)
         attachments = await self._cache_inbound_attachments(attachment_metadata) if fetch_allowed else []
+        current_failed = len(attachment_metadata) - len(attachments) if fetch_allowed else 0
+        # Quotes are not grants: require both identities and the exact channel-bound,
+        # unexpired metadata captured from the original event. Never fetch reply text.
+        parent_items = self._quoted_attachment_metadata(state, reply_parent_id, channel_id, chat_type, pubkey)
+        used = {(m["sha256"], m["url"]) for m in attachment_metadata}
+        declared_bytes = sum(m["size"] for m in attachment_metadata)
+        count = len(attachment_metadata)
+        selected = []
+        for item in parent_items:
+            identity = (item["sha256"], item["url"])
+            if identity in used:
+                continue
+            if count >= _MAX_INBOUND_ATTACHMENTS or declared_bytes + item["size"] > _MAX_INBOUND_ATTACHMENT_BYTES:
+                continue
+            selected.append(item)
+            used.add(identity)
+            count += 1
+            declared_bytes += item["size"]
+        if selected:
+            parent_attachments = await self._cache_inbound_attachments(selected)
+            attachments.extend(parent_attachments)
+            if len(parent_attachments) != len(selected):
+                dispatch_text = f"{dispatch_text}\n[Quoted Buzz attachment unavailable or failed integrity checks.]".strip()
         if rejected_attachments:
             dispatch_text = f"{dispatch_text}\n{self._attachment_rejection_note(rejected_attachments)}".strip()
-        if fetch_allowed and (failed := len(attachment_metadata) - len(attachments)):
-            dispatch_text = f"{dispatch_text}\n[{failed} Buzz attachment(s) could not be downloaded or failed integrity checks.]".strip()
+        if current_failed:
+            dispatch_text = f"{dispatch_text}\n[{current_failed} Buzz attachment(s) could not be downloaded or failed integrity checks.]".strip()
         message_type = MessageType.TEXT
         if attachments:
             # Mixed kinds use document semantics so an audio member is not mistaken for a voice note (STT).
@@ -1602,13 +1651,56 @@ class BuzzAdapter(BuzzConversationMixin, BuzzCursorMixin, BasePlatformAdapter):
         """Thread root when the trigger was inside a thread (reply joins it), else the anchor unchanged."""
         return (self._thread_roots.get(str(anchor)) or anchor) if anchor else anchor
 
-    def _remember_event(self, state: dict, event: dict) -> None:
+    def _remember_event(self, state: dict, event: dict, *, attachment_authorized: Optional[bool] = None) -> None:
         """Record author + content snippet for later NIP-10 parent lookup."""
         event_id = str(event.get("id") or "")
         content = event.get("content")
         if event_id:
             snippet = content[:_EVENT_META_CONTENT_CAP] if isinstance(content, str) else ""
-            self._store_event_meta(state, event_id, str(event.get("pubkey") or "").lower(), snippet)
+            author = str(event.get("pubkey") or "").lower()
+            self._store_event_meta(state, event_id, author, snippet)
+            cache = state.setdefault("quoted_attachments", OrderedDict())
+            # Invalidate a previous observation before considering this exact event.
+            cache.pop(event_id, None)
+            if attachment_authorized is False or int(event.get("kind") or 0) not in _DISPATCH_KINDS:
+                return
+            tags = event.get("tags")
+            channels = [tag[1] for tag in (tags if isinstance(tags, list) else [])
+                        if isinstance(tag, (list, tuple)) and len(tag) >= 2 and tag[0] == "h"]
+            if len(channels) != 1 or not isinstance(channels[0], str):
+                return
+            channel = channels[0]
+            chat_type = state.get("chat_type")
+            if ((self._allowed_pubkeys and author not in self._allowed_pubkeys)
+                    or (attachment_authorized is not True
+                        and self._is_sender_authorized(author, chat_type, channel) is not True)):
+                return
+            items = self._imeta_attachments(event)
+            # Bound retained strings as well as object/byte counts; never retain raw tags.
+            items = [dict(item) for item in items if len(item["url"]) <= 4096]
+            if items:
+                cache[event_id] = (channel, author, time.monotonic(), items)
+                while len(cache) > self._THREAD_ROOT_CACHE:
+                    cache.popitem(last=False)
+
+    def _quoted_attachment_metadata(self, state: dict, parent_id: Optional[str], channel: str,
+                                    chat_type: str, child_author: str) -> list[dict]:
+        """Return bounded imeta only under original and current parent authorization."""
+        cache = state.get("quoted_attachments", {})
+        entry = cache.get(parent_id)
+        if not entry:
+            return []
+        parent_channel, author, observed_at, items = entry
+        if time.monotonic() - observed_at > 900:
+            cache.pop(parent_id, None)
+            return []
+        meta = self._lookup_event_meta(state, parent_id)
+        if (parent_channel != channel or not meta or meta[0] != author
+                or (self._allowed_pubkeys and author not in self._allowed_pubkeys)
+                or self._is_sender_authorized(child_author, chat_type, channel) is not True
+                or self._is_sender_authorized(author, chat_type, channel) is not True):
+            return []
+        return [dict(item) for item in items]
 
     def _remember_event_meta(self, channel_id: str, event_id: str, pubkey: str, content: str) -> None:
         state = self._channel_state.get(channel_id)
