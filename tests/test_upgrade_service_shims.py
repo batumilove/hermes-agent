@@ -50,8 +50,11 @@ class ServiceShimContract(unittest.TestCase):
 
     def test_unknown_mutating_and_near_match_commands_remain_denied(self):
         query = discovery_args()
-        denied = [[], ["--version"], ["restart", "hermes-gateway.service"],
-                  ["stop", "hermes-gateway.service"], ["kill", "hermes-gateway.service"],
+        # Generic mutation denial belongs to the fixture, not the live-unit guard.
+        # A harmless fixture-only unit lets pytest execute and verify the shim;
+        # real Hermes unit protection remains enforced by the autouse guard.
+        denied = [[], ["--version"], ["restart", "fixture-only.service"],
+                  ["stop", "fixture-only.service"], ["kill", "fixture-only.service"],
                   ["reset-failed"], query[:-1], query + ["--all"],
                   ["--system"] + query, ["--user", "--user"] + query,
                   [" ".join(query)], ["list-units", "*", *query[5:]],
@@ -63,6 +66,20 @@ class ServiceShimContract(unittest.TestCase):
                     self.assertEqual(result.returncode, 1)
                     self.assertEqual(result.stdout, "")
                     self.assertIn("sandboxed test shim", result.stderr)
+
+
+def test_pytest_guard_refuses_gateway_mutations_before_shim(tmp_path):
+    import pytest
+
+    bin_dir = tmp_path / "shims"
+    log = helpers.write_shims(bin_dir)
+    before = log.read_bytes() if log.exists() else None
+    for verb in ("restart", "stop", "kill"):
+        with pytest.raises(RuntimeError, match="live-system guard: blocked.*would mutate a live"):
+            subprocess.run([str(bin_dir / "systemctl"), verb, "hermes-gateway.service"],
+                           capture_output=True, text=True, timeout=5, check=False,
+                           env={"PATH": "/nonexistent"})
+        assert (log.read_bytes() if log.exists() else None) == before
 
 
 if __name__ == "__main__":
