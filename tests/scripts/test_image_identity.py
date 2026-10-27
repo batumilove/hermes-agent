@@ -119,7 +119,7 @@ def test_cli_creates_stamp_without_changing_source(history, monkeypatch):
 
     root, release, _stamp = history
     original = image_identity.package_version
-    monkeypatch.setattr(image_identity, "package_version", lambda repo, stamp: original(repo, stamp, release))
+    monkeypatch.setattr(image_identity, "package_version", lambda repo, stamp, _release=None: original(repo, stamp, release))
     stamp_file = root / "install-stamp.json"
     monkeypatch.setattr("sys.argv", ["image_identity", "--repo", str(root), "--stamp", str(stamp_file)])
     image_identity.main()

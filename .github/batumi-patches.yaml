@@ -5,6 +5,28 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: hosted-image-history-and-undici-floor
+  kind: operations
+  rationale: Acquire disconnected source history before invoking the existing release/import
+    identity policy, populate source-bound packageVersion in both application image paths,
+    and retain the reviewed Undici 6.29.1 security floor with WebSocket boundary regressions.
+    Offline tests require pytest, PyYAML, FastAPI and repository test dependencies in an
+    isolated disposable home; hosted preparation additionally requires Git HTTPS access.
+  paths:
+  - .github/workflows/docker.yml
+  - scripts/build/image_identity.py
+  - tests/scripts/test_hosted_image_identity.py
+  - tests/scripts/test_image_identity.py
+  - pm/lock.json
+  - pm/npm_security_overlay.py
+  - tests/pm/test_npm_security_overlay.py
+  - tests/tools/test_dockerfile_vulnerability_floors.py
+  - tests/hermes_cli/test_cve_2026_53869.py
+  tests:
+  - scripts/run_tests.sh tests/scripts/test_hosted_image_identity.py tests/scripts/test_image_identity.py tests/scripts/test_fork_provenance_v2.py tests/hermes_cli/test_version_import_provenance.py
+  - scripts/run_tests.sh tests/pm/test_npm_security_overlay.py tests/tools/test_dockerfile_vulnerability_floors.py tests/hermes_cli/test_cve_2026_53869.py
+  retirement: Remove when upstream provides equivalent verified history acquisition and
+    image package identity preparation, patched Undici floor, and boundary regressions.
 - id: mattermost-bounded-thread-context
   kind: compatibility
   rationale: Preserve a validated root reply pointer and bounded thread history on first entry,
