@@ -67,7 +67,7 @@ async function openSession(page: Page, sessionId: string, mustShow: string) {
   await expect(viewport(page)).toContainText(mustShow, { timeout: 60_000 })
 }
 
-test('transcript oracle holds across every transition', async () => {
+test('transcript oracle holds across every transition', async ({}, testInfo) => {
   const provider = await startScriptedProvider()
   const sandbox = createCoreSandbox('transcript')
   writeProviderHome(sandbox.hermesHome, provider.url)
@@ -324,6 +324,13 @@ test('transcript oracle holds across every transition', async () => {
       await openSession(page, sessionB.sessionId, A(7))
       await assertTranscriptOracle(page, ws, provider, sessionB, 'final reload B')
     })
+  } catch (error) {
+    // The runner has not necessarily assigned testInfo.status inside finally.
+    // Attach on the actual thrown failure, then preserve that same error/oracle.
+    await testInfo.attach('reconnect-rpc-metadata', {
+      body: Buffer.from(JSON.stringify(ws.diagnostics)), contentType: 'application/json'
+    }).catch(() => undefined)
+    throw error
   } finally {
     await app.close().catch(() => undefined)
 

@@ -342,10 +342,48 @@ export interface WsRecorder {
   sockets: { id: number; url: string; closed: boolean }[]
   events: GatewayEventFrame[]
   sent: { socket: number; method: string; params: any }[]
+  /** Metadata only: no URLs, tokens, prompts, reply text or raw errors. */
+  diagnostics: Record<string, unknown>[]
 }
 
 export function recordWebSockets(page: Page): WsRecorder {
-  const rec: WsRecorder = { sockets: [], events: [], sent: [] }
+  const rec: WsRecorder = { sockets: [], events: [], sent: [], diagnostics: [] }
+  const pending = new Map<string, { method: string; session: string | undefined; id: string | undefined }>()
+  const labels = new Map<string, string>()
+  // Never serialize externally supplied identifiers, even when they look like UUIDs.
+  const label = (value: unknown): string | undefined => {
+    if (typeof value !== 'string' && typeof value !== 'number') return undefined
+    if (typeof value === 'string' && value.length > 1024) return undefined
+    if (typeof value === 'number' && !Number.isSafeInteger(value)) return undefined
+    const key = `${typeof value}:${value}`
+    if (!labels.has(key) && labels.size < 5000) labels.set(key, `c${labels.size}`)
+    return labels.get(key)
+  }
+  const numbers = new Set(['socket', 'lastSeen', 'latestSeq', 'seq', 'code', 'eventCount'])
+  const booleans = new Set(['failed', 'running', 'messagesOmitted', 'snapshotRequired', 'truncated'])
+  const kinds = new Set(['socket-created', 'socket-closed', 'rpc-request', 'rpc-answer', 'event', 'console-error', 'page-error'])
+  const methods = new Set(['session.events.since', 'session.activate', 'session.resume'])
+  const eventTypes = new Set(['stream_start', 'stream_chunk', 'stream_end', 'complete', 'error', 'session_updated'])
+  const observe = (data: Record<string, unknown>) => {
+    if (rec.diagnostics.length >= 5000 || !kinds.has(String(data.kind))) return
+    const row: Record<string, unknown> = { at: performance.now(), kind: data.kind }
+    for (const [key, value] of Object.entries(data)) {
+      if (numbers.has(key) && typeof value === 'number' && Number.isSafeInteger(value)) row[key] = value
+      if (booleans.has(key) && typeof value === 'boolean') row[key] = value
+      if (key === 'method' && typeof value === 'string' && methods.has(value)) row[key] = value
+      if (key === 'type' && typeof value === 'string' && eventTypes.has(value)) row[key] = value
+      if (['id', 'session'].includes(key) && typeof value === 'string' && /^c\d{1,4}$/.test(value)) row[key] = value
+      if (key === 'replayEpoch') {
+        const correlation = label(value)
+        if (correlation !== undefined) row[key] = correlation
+      }
+    }
+    rec.diagnostics.push(row)
+  }
+  page.on('console', message => {
+    if (message.type() === 'error') observe({ kind: 'console-error' })
+  })
+  page.on('pageerror', () => observe({ kind: 'page-error' }))
 
   // A new main-frame document (reload, goto) tears down every socket the old
   // one held, but Playwright forgets its sockets at that commit without
@@ -384,14 +422,29 @@ export function recordWebSockets(page: Page): WsRecorder {
     const id = rec.sockets.length
     const entry = { id, url: ws.url(), closed: false }
     rec.sockets.push(entry)
+    const key = (requestId: unknown) => `${id}:${String(requestId)}`
+    observe({ kind: 'socket-created', socket: id })
     ws.on('close', () => {
       entry.closed = true
+      observe({ kind: 'socket-closed', socket: id })
     })
     ws.on('framereceived', frame => {
       try {
         const msg = JSON.parse(String(frame.payload))
+        const request = pending.get(key(msg.id))
+        if (request && ('result' in msg || 'error' in msg)) {
+          pending.delete(key(msg.id))
+          observe({ kind: 'rpc-answer', socket: id, ...request,
+            failed: Boolean(msg.error), code: msg.error?.code,
+            running: msg.result?.running, messagesOmitted: msg.result?.messages_omitted,
+            replayEpoch: msg.result?.replay_epoch, latestSeq: msg.result?.latest_seq,
+            snapshotRequired: msg.result?.snapshot_required, truncated: msg.result?.truncated,
+            eventCount: Array.isArray(msg.result?.events) ? msg.result.events.length : undefined })
+        }
 
         if (msg?.method === 'event' && msg.params) {
+          observe({ kind: 'event', socket: id, type: msg.params.type, session: label(msg.params.session_id),
+            seq: msg.params.seq, replayEpoch: msg.params.replay_epoch })
           rec.events.push({
             socket: id,
             type: String(msg.params.type ?? ''),
@@ -409,6 +462,12 @@ export function recordWebSockets(page: Page): WsRecorder {
         const msg = JSON.parse(String(frame.payload))
 
         if (typeof msg?.method === 'string') {
+          if (['session.events.since', 'session.activate', 'session.resume'].includes(msg.method)) {
+            const request = { method: msg.method, session: label(msg.params?.session_id), id: label(`${id}:${String(msg.id)}`) }
+            if (pending.size < 5000) pending.set(key(msg.id), request)
+            observe({ kind: 'rpc-request', socket: id, ...request,
+              lastSeen: msg.params?.last_seen, replayEpoch: msg.params?.replay_epoch })
+          }
           rec.sent.push({ socket: id, method: msg.method, params: msg.params })
         }
       } catch {
