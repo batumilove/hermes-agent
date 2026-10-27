@@ -22,9 +22,11 @@ patches:
   - tests/hermes_cli/test_upstream_langfuse_admission.py
   - tests/hermes_cli/test_upstream_producer_lifecycle.py
   - tests/hermes_cli/test_upstream_release_custody.py
+  - tests/hermes_cli/test_plugins_catalog_requires_hermes.py
   tests:
   - scripts/run_tests.sh tests/hermes_cli/test_committed_raw_tag.py tests/hermes_cli/test_upstream_release_custody.py tests/hermes_cli/test_upstream_compatibility.py tests/hermes_cli/test_upstream_producer_lifecycle.py tests/hermes_cli/test_upstream_langfuse_admission.py
   - scripts/run_tests.sh tests/hermes_cli/test_plugin_install_manifest_version.py
+  - scripts/run_tests.sh tests/hermes_cli/test_plugins_catalog_requires_hermes.py
   - python3 scripts/check --base f7a6af731a5d63a7c45557e902dd63b6fcb279da
   retirement: Remove when upstream provides equivalent offline reviewed-release plugin
     proof admission and exact raw-tag custody, including fail-closed missing/mismatched

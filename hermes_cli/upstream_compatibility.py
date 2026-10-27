@@ -179,15 +179,27 @@ def _executing_repo() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def _matching_source_stamp(repo: Path, stamp_path: Path) -> bool:
+    from hermes_cli.steward import read_install_stamp
+
+    if stamp_path != repo / "install-stamp.json":
+        return False
+    stamp = read_install_stamp(repo)
+    expected = {"updateMechanism": "self", "source": "git", "payload": "bootstrap"}
+    return (all(stamp.get(key) == value for key, value in expected.items())
+            and stamp.get("commit") == _git(repo, "rev-parse", "HEAD"))
+
+
 def verified_upstream_version() -> str | None:
     """Read an explicit receipt from the executing source tree, never a profile."""
     from hermes_cli.version_info import _resolve_stamp_file
-    # Packaged builds retain their stamp contract; source receipts do not relabel
-    # or increase their eligibility, even when a nearby Git checkout exists.
-    if _resolve_stamp_file() is not None:
-        return None
     repo = _executing_repo()
     try:
+        # Source completion stamps mutable checkouts too. Only its matching
+        # identity may use source proof; packaged builds keep their own contract.
+        stamp = _resolve_stamp_file()
+        if stamp is not None and not _matching_source_stamp(repo, stamp):
+            return None
         return validate_receipt(repo, json.loads((repo / RECEIPT_PATH).read_text(encoding="utf-8-sig")))
-    except (OSError, ValueError):
+    except (OSError, ValueError, subprocess.SubprocessError):
         return None

@@ -126,6 +126,34 @@ def test_real_stamp_prevents_valid_receipt_elevation(release_repo, monkeypatch):
     assert manifests.requires_hermes_error({"requires_hermes": ">=0.19"})
 
 
+@pytest.mark.parametrize("fault", [None, "stale", "timeout"])
+def test_source_updater_stamp_keeps_receipt_admission_only_for_its_commit(release_repo, monkeypatch, fault):
+    from hermes_cli import plugins_manifest as manifests, source_stamp, version_info
+    from pm import paths
+
+    repo, receipt = release_repo
+    monkeypatch.setattr(compat, "__file__", str(repo / "hermes_cli/upstream_compatibility.py"))
+    monkeypatch.setattr(version_info, "__file__", str(repo / "hermes_cli/version_info.py"))
+    monkeypatch.setattr(paths, "__file__", str(repo / "pm/paths.py"))
+    monkeypatch.setattr(version_info, "_cached_version_info", None)
+    git(repo, "tag", "-a", "v0.14.0", "-m", "fork")
+    git(repo, "tag", "-d", receipt["release_tag"])
+    stamp = source_stamp.write_source_stamp(repo)
+    assert stamp["updateMechanism"] == "self" and stamp["payload"] == "bootstrap"
+    if fault == "stale":
+        git(repo, "commit", "--allow-empty", "-qm", "next source revision")
+    elif fault == "timeout":
+        def unavailable_git(*args, **kwargs):
+            raise subprocess.TimeoutExpired("git", 10)
+        monkeypatch.setattr(compat, "_git", unavailable_git)
+
+    identity = version_info.get_version_info()
+    assert identity.base_version == "0.14.0" and identity.source == "git"
+    assert compat.verified_upstream_version() == (None if fault else receipt["release_tag"][1:])
+    assert (manifests.requires_hermes_error({"requires_hermes": ">=0.19"}) is None) == (fault is None)
+    assert version_info.get_version_info() == identity
+
+
 def test_receipt_byte_equality(release_repo):
     repo, receipt = release_repo
     path = repo / compat.RECEIPT_PATH
