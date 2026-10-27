@@ -5,6 +5,29 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: upgrade-service-manager-shim-contract
+  kind: compatibility
+  rationale: Permit only the exact production read-only gateway unit listing in the
+    upgrade sandbox while retaining argv logging, mutation denial, near-match refusal,
+    and the live-system guard before shim execution.
+  paths:
+  - tests/e2e/core/upgrade/_helpers.py
+  - tests/scripts/test_upgrade_service_manager_shims.py
+  tests:
+  - scripts/run_tests.sh tests/scripts/test_upgrade_service_manager_shims.py
+  retirement: Remove when upstream upgrade shims admit the same exact read-only discovery
+    command and preserve equivalent mutation-denial and live-system-guard regressions.
+- id: high-fd-pty-stream-framing-regression
+  kind: compatibility
+  rationale: Preserve the existing high-fd output and idle-wait assertions while accepting
+    legal PTY read boundaries that split the marker from CRLF; exercise both native and
+    forced split framing without replacing real PTY I/O or readiness waits.
+  paths:
+  - tests/tools/test_drain_high_fd.py
+  tests:
+  - scripts/run_tests.sh tests/tools/test_drain_high_fd.py
+  retirement: Remove when upstream high-fd PTY regression coverage accepts split CRLF
+    framing while retaining real output, idle-wait, and EMFILE fallback assertions.
 - id: hosted-image-history-and-undici-floor
   kind: operations
   rationale: Acquire disconnected source history before invoking the existing release/import
