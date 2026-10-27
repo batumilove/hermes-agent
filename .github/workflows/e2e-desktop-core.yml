@@ -90,8 +90,8 @@ jobs:
           NOUS_API_KEY: ''
           ANTHROPIC_API_KEY: ''
 
-      - name: Upload failure artifacts
-        if: failure() || cancelled()
+      - name: Upload diagnostic artifacts (success and failure)
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: desktop-core-e2e-${{ github.sha }}

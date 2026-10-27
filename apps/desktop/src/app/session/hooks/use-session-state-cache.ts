@@ -1,9 +1,10 @@
+import { recoveryTimeline } from '@/lib/recovery-timeline'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
+import { chatMessageText, preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { migrateInFlightTurnJournal, persistInFlightTurnState } from '@/lib/inflight-turn-journal'
 import { setMutableRef } from '@/lib/mutable-ref'
@@ -321,6 +322,14 @@ export function useSessionStateCache({
         : pending.state.messages
 
     if (!chatMessageArraysEquivalent(nextMessages, currentMessages)) {
+      recoveryTimeline(
+        'view',
+        {},
+        nextMessages
+          .filter(m => m.role === 'assistant')
+          .map(chatMessageText)
+          .join('\n')
+      )
       setMessages(nextMessages)
     }
 
@@ -442,6 +451,14 @@ export function useSessionStateCache({
       // Publishing to $sessionStates automatically fires transition side-effects
       // (watchdog, settle grace, unread marker, compression id rotation) inside
       // publishSessionState — no manual transition call needed.
+      recoveryTimeline(
+        'cache',
+        {},
+        next.messages
+          .filter(m => m.role === 'assistant')
+          .map(chatMessageText)
+          .join('\n')
+      )
       publishSessionState(sessionId, next)
       sessionStateCache.prune()
       syncSessionStateToView(sessionId, next)

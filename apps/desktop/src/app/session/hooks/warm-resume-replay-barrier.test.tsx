@@ -5,7 +5,8 @@ import { useRef } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import type { HermesGateway } from '@/api/client'
-import { reconcileActiveTranscript } from '@/app/contrib/hooks/use-background-sync'
+import { hydrateStoredSessionTranscript, reconcileActiveTranscript } from '@/app/contrib/hooks/use-background-sync'
+import { useSessionTileDelegate } from '@/app/contrib/hooks/use-session-tile-delegate'
 import { getLatestSessionMessages } from '@/hermes'
 import { chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { resetInFlightTurnJournalStateForTests } from '@/lib/inflight-turn-journal'
@@ -22,7 +23,13 @@ import {
   setSelectedStoredSessionId,
   setSessions
 } from '@/store/session'
-import { clearAllSessionStates } from '@/store/session-states'
+import {
+  $sessionStates,
+  clearAllSessionStates,
+  LIVE_TURN_EVENT_SILENCE_MS,
+  noteSessionEvent,
+  setLiveTurnBackend
+} from '@/store/session-states'
 import type { SessionMessage, SessionResumeResult } from '@/types/hermes'
 
 import { useMessageStream } from './use-message-stream'
@@ -122,6 +129,16 @@ async function mountWithPendingReplay() {
       refreshSessions: noop
     })
 
+    useSessionTileDelegate({
+      ...cache,
+      requestGateway,
+      archiveSession: noop,
+      branchLoadedSession: actions.branchLoadedSession,
+      branchStoredSession: noop,
+      executeSlashCommand: vi.fn(),
+      removeSession: noop
+    })
+
     return { cache, actions, stream }
   })
 
@@ -219,6 +236,207 @@ afterEach(() => {
   setAwaitingResponse(false)
   vi.restoreAllMocks()
 })
+
+it.each([false, true])(
+  'repairs a completion transport gap via durable history (first REST rejects: %s)',
+  async rejectFirst => {
+    const { result, client, requestGateway, second, request } = await mountWithPendingReplay()
+    const cache = result.current.cache
+    cache.selectedStoredSessionIdRef.current = storedId
+    cache.activeSessionIdRef.current = runtimeId
+    act(() => {
+      setSelectedStoredSessionId(storedId)
+      setActiveSessionId(runtimeId)
+      cache.updateSessionState(
+        runtimeId,
+        state => ({
+          ...state,
+          messages: toChatMessages([user, { id: 2, role: 'assistant', content: 'Finished', timestamp: 2 }]),
+          busy: true,
+          awaitingResponse: true
+        }),
+        storedId
+      )
+    })
+    requestGateway.mockResolvedValue({ ...snapshot, messages_omitted: true })
+    if (rejectFirst) vi.mocked(getLatestSessionMessages).mockRejectedValueOnce(new Error('fixture REST unavailable'))
+    try {
+      let pending!: Promise<void>
+      await act(async () => {
+        pending = result.current.actions.resumeSession(storedId, true)
+      })
+      await act(async () => {
+        // Completion happened before attachment; the reconnect has nothing to replay.
+        second.frame({ id: request.id, jsonrpc: '2.0', result: { events: [] } })
+        await pending
+      })
+      expect(activateCalls(requestGateway)).toHaveLength(1)
+      expect(getLatestSessionMessages).toHaveBeenCalledTimes(1)
+      // Snapshot running:false intentionally cannot override pre-existing live
+      // busy (#70449). The terminal stream/reaper owns that transition.
+      expect(cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!.busy).toBe(true)
+      if (rejectFirst) {
+        // Failed REST is not evidence of durable completion. Preserve partial content,
+        // then exercise the existing ownership-preserving background recovery seam.
+        await act(async () => {
+          await new Promise(resolve => setTimeout(resolve, 30))
+        })
+        expect($messages.get().map(chatMessageText).join('\n')).toContain('Finished')
+        expect($messages.get().map(chatMessageText).join('\n')).not.toContain('Finished result.')
+        await act(async () => {
+          // Existing refresh must not overwrite a still-live turn even when its
+          // caller supplies idle; the canonical runtime store is a second guard.
+          await reconcileActiveTranscript({
+            activeSessionIdRef: cache.activeSessionIdRef,
+            busyRef: { current: false },
+            requestSequenceRef: { current: 0 },
+            resolveSession: () => ({ profile: 'default' }),
+            selectedStoredSessionIdRef: cache.selectedStoredSessionIdRef,
+            signatureRef: { current: new Map() },
+            updateSessionState: cache.updateSessionState
+          })
+        })
+        expect(getLatestSessionMessages).toHaveBeenCalledTimes(1)
+        await act(async () => {
+          second.event(event(6, 'session.info', { running: false }))
+        })
+        await act(async () => {
+          await reconcileActiveTranscript({
+            activeSessionIdRef: cache.activeSessionIdRef,
+            busyRef: { current: false },
+            requestSequenceRef: { current: 0 },
+            resolveSession: () => ({ profile: 'default' }),
+            selectedStoredSessionIdRef: cache.selectedStoredSessionIdRef,
+            signatureRef: { current: new Map() },
+            updateSessionState: cache.updateSessionState
+          })
+        })
+        expect(getLatestSessionMessages).toHaveBeenCalledTimes(2)
+      }
+      const state = cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!
+      expect(
+        state.messages
+          .map(chatMessageText)
+          .join('\n')
+          .match(/Finished result\./g)
+      ).toHaveLength(1)
+      expect(state.busy).toBe(!rejectFirst)
+      expect(state.awaitingResponse).toBe(!rejectFirst)
+      // View synchronization is intentionally RAF-coalesced.
+      await act(async () => {
+        await new Promise(resolve => setTimeout(resolve, 30))
+      })
+      expect(
+        $messages
+          .get()
+          .map(chatMessageText)
+          .join('\n')
+          .match(/Finished result\./g)
+      ).toHaveLength(1)
+    } finally {
+      client.close()
+    }
+  }
+)
+
+it.each(['rejected', 'partial'] as const)(
+  'characterizes permanently lost terminal through actual silence timer after %s REST',
+  async firstRead => {
+    const { result, client, second, request } = await mountWithPendingReplay()
+    const cache = result.current.cache
+    const latest = vi.mocked(getLatestSessionMessages).getMockImplementation()!
+    const status = vi.fn().mockResolvedValue({ sessions: [] })
+    const refresh = vi.fn((runtimeSessionId: string, storedSessionId: string) =>
+      hydrateStoredSessionTranscript({
+        attempts: 3,
+        runtimeSessionId,
+        storedSessionId,
+        storedProfile: 'default',
+        updateSessionState: cache.updateSessionState
+      })
+    )
+    const unregister = setLiveTurnBackend({ request: status, refreshTranscript: refresh })
+    try {
+      await act(async () => {
+        second.frame({ id: request.id, jsonrpc: '2.0', result: { events: [] } })
+        setSelectedStoredSessionId(storedId)
+        setActiveSessionId(runtimeId)
+        cache.selectedStoredSessionIdRef.current = storedId
+        cache.activeSessionIdRef.current = runtimeId
+      })
+      ;(window as any).__recoveryTimeline = { expected: 'Finished result.', rows: [] }
+      vi.useFakeTimers()
+      act(() => {
+        second.event(event(2, 'message.start'))
+        second.event(event(3, 'message.delta', { text: 'Finished' }))
+        noteSessionEvent(runtimeId)
+      })
+      expect($sessionStates.get()[runtimeId].busy).toBe(true)
+      if (firstRead === 'rejected')
+        vi.mocked(getLatestSessionMessages).mockRejectedValueOnce(new Error('REST temporarily unavailable'))
+      else
+        vi.mocked(getLatestSessionMessages).mockResolvedValueOnce({
+          session_id: storedId,
+          messages: [user, { id: 2, role: 'assistant', content: 'Finished', timestamp: 2 }]
+        })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(LIVE_TURN_EVENT_SILENCE_MS + 1000)
+      })
+      const timeline = (window as any).__recoveryTimeline.rows
+      expect(timeline.some((r: any) => r.phase === 'silence-verdict' && r.verdict === 'ended')).toBe(true)
+      expect(timeline.some((r: any) => r.phase === 'delegate' && r.owned === true)).toBe(true)
+      expect(timeline.some((r: any) => r.phase === 'cache')).toBe(true)
+      expect(timeline.some((r: any) => r.phase === 'view')).toBe(true)
+      expect(
+        timeline.some((r: any) => r.phase === (firstRead === 'partial' ? 'history-return' : 'history-error'))
+      ).toBe(true)
+      if (firstRead === 'partial')
+        expect(timeline.some((r: any) => r.phase === 'history-return' && r.content === 'partial')).toBe(true)
+      else expect(timeline.some((r: any) => r.phase === 'history-return' && r.content === 'full')).toBe(true)
+      expect(JSON.stringify(timeline)).not.toMatch(/warm-replay|Finished|unavailable/)
+      expect(status).toHaveBeenCalledWith('session.active_list', {}, 15000)
+      expect(refresh).toHaveBeenCalledTimes(1)
+      expect(second.readyState).toBe(1)
+      expect($sessionStates.get()[runtimeId].busy).toBe(false)
+      // No terminal event, reconnection, reselect, or manual busy clearing supplied.
+      const text = cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!.messages.map(chatMessageText).join('\n')
+      if (firstRead === 'partial') {
+        // Best-effort hydration accepts a nonempty page; it cannot know that this
+        // otherwise valid persisted answer is an earlier prefix. No retry promised.
+        expect(text).toContain('Finished')
+        expect(text).not.toContain('Finished result.')
+        expect(getLatestSessionMessages).toHaveBeenCalledTimes(1)
+        await act(async () => {
+          await reconcileActiveTranscript({
+            activeSessionIdRef: cache.activeSessionIdRef,
+            busyRef: { current: false },
+            requestSequenceRef: { current: 0 },
+            resolveSession: () => ({ profile: 'default' }),
+            selectedStoredSessionIdRef: cache.selectedStoredSessionIdRef,
+            signatureRef: { current: new Map() },
+            updateSessionState: cache.updateSessionState
+          })
+          await vi.advanceTimersByTimeAsync(30)
+        })
+      } else {
+        expect(text.match(/Finished result\./g)).toHaveLength(1)
+        expect(getLatestSessionMessages).toHaveBeenCalledTimes(2)
+      }
+      expect(
+        $messages
+          .get()
+          .map(chatMessageText)
+          .join('\n')
+          .match(/Finished result\./g)
+      ).toHaveLength(1)
+      expect(latest).toBeDefined()
+    } finally {
+      unregister()
+      client.close()
+      vi.useRealTimers()
+    }
+  }
+)
 
 const activateCalls = (requestGateway: ReturnType<typeof vi.fn>) =>
   requestGateway.mock.calls.filter(([method]) => method === 'session.activate')

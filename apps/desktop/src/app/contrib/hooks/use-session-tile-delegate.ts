@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { recoveryTimeline } from '@/lib/recovery-timeline'
 
 import {
   extendRefreshPageToOverlap,
@@ -341,6 +342,7 @@ export function useSessionTileDelegate({
         return true
       },
       updateHeldSession: (runtimeId, updater) => {
+        recoveryTimeline('delegate', { owned: sessionStateByRuntimeIdRef.current.has(runtimeId) })
         if (!sessionStateByRuntimeIdRef.current.has(runtimeId)) {
           return false
         }

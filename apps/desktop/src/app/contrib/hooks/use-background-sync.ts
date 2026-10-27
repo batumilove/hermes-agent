@@ -1,3 +1,5 @@
+import { recoveryTimeline } from '@/lib/recovery-timeline'
+import { chatMessageText } from '@/lib/chat-messages'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
@@ -445,7 +447,16 @@ export async function hydrateStoredSessionTranscript({
     }
 
     try {
+      recoveryTimeline('history-start')
       const latest = await getLatestSessionMessages(storedSessionId, storedProfile)
+      recoveryTimeline(
+        'history-return',
+        {},
+        toChatMessages(latest.messages)
+          .filter(m => m.role === 'assistant')
+          .map(chatMessageText)
+          .join('\n')
+      )
       const replayAtReturn = pendingSessionReplay(runtimeSessionId)
 
       if (replayAtReturn && !(await replayAtReturn)) {
@@ -474,6 +485,7 @@ export async function hydrateStoredSessionTranscript({
         return
       }
 
+      recoveryTimeline('hydrate-publish')
       updateSessionState(
         runtimeSessionId,
         state => ({
@@ -518,6 +530,7 @@ export async function hydrateStoredSessionTranscript({
 
       return
     } catch {
+      recoveryTimeline('history-error')
       // Best-effort fallback when live stream payloads are empty.
     }
   }

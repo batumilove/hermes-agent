@@ -1,3 +1,4 @@
+import { recoveryTimeline } from '@/lib/recovery-timeline'
 import { isMissingRestEndpoint, isUnroutedRestPath } from '@/lib/gateway-rpc'
 import { maybeBackfillLegacySessionOwners } from '@/lib/legacy-session-owner-backfill'
 import { stampRowsWithOwningConnection } from '@/lib/session-owner-stamp'
@@ -521,6 +522,7 @@ export function getLatestSessionMessages(
   profile?: ProfileScope,
   options: { passive?: boolean } = {}
 ): Promise<SessionMessagesResponse> {
+  recoveryTimeline('history-start')
   // Key pagination by the effective request owner, not the caller's spelling
   // (ambient, profile string, or explicit pin). Otherwise refreshes create
   // duplicate tail entries and "Show earlier" cannot resolve the loaded tail.
@@ -542,39 +544,52 @@ export function getLatestSessionMessages(
       includeCompacted: true
     },
     options
-  ).then(async page => {
-    // Order-echo guard. A backend built before the `order` param silently drops
-    // it (FastAPI ignores unknown query params) and serves the OLDEST page
-    // while still answering with a `pagination` object — so a full page looked
-    // like a truncated tail and the transcript silently became its first N
-    // rows, with "Show earlier" then prepending rows N..2N counted from the
-    // oldest end. Only a page that echoes `order: 'latest'` may be adopted as
-    // the tail; anything else is read as the complete transcript instead, which
-    // is the one paging contract both backend generations honour.
-    const authoritativePage = pageHonorsLatestOrder(page)
-      ? page
-      : await completeTranscriptForOrderlessBackend(id, profile, page, options)
+  )
+    .then(async page => {
+      // Order-echo guard. A backend built before the `order` param silently drops
+      // it (FastAPI ignores unknown query params) and serves the OLDEST page
+      // while still answering with a `pagination` object — so a full page looked
+      // like a truncated tail and the transcript silently became its first N
+      // rows, with "Show earlier" then prepending rows N..2N counted from the
+      // oldest end. Only a page that echoes `order: 'latest'` may be adopted as
+      // the tail; anything else is read as the complete transcript instead, which
+      // is the one paging contract both backend generations honour.
+      const authoritativePage = pageHonorsLatestOrder(page)
+        ? page
+        : await completeTranscriptForOrderlessBackend(id, profile, page, options)
 
-    // Record whether the tail was truncated (page came back full) and where
-    // the next older page starts, so "Show earlier" can backfill over REST
-    // (app/chat/transcript-backfill). Keyed under both the requested id and
-    // the resolved id — callers hold either.
-    // A backend that predates the `profile` field cannot name itself; its
-    // untagged read landed on the ambient profile.
-    const owner = {
-      ...route,
-      connectionId: ambientConnectionId,
-      profile: route.profile || page.profile || ambientProfile
-    }
+      // Record whether the tail was truncated (page came back full) and where
+      // the next older page starts, so "Show earlier" can backfill over REST
+      // (app/chat/transcript-backfill). Keyed under both the requested id and
+      // the resolved id — callers hold either.
+      // A backend that predates the `profile` field cannot name itself; its
+      // untagged read landed on the ambient profile.
+      const owner = {
+        ...route,
+        connectionId: ambientConnectionId,
+        profile: route.profile || page.profile || ambientProfile
+      }
 
-    recordTranscriptTail(id, authoritativePage, route, owner)
+      recordTranscriptTail(id, authoritativePage, route, owner)
 
-    if (authoritativePage.session_id && authoritativePage.session_id !== id) {
-      recordTranscriptTail(authoritativePage.session_id, authoritativePage, route, owner)
-    }
+      if (authoritativePage.session_id && authoritativePage.session_id !== id) {
+        recordTranscriptTail(authoritativePage.session_id, authoritativePage, route, owner)
+      }
 
-    return authoritativePage
-  })
+      recoveryTimeline(
+        'history-return',
+        {},
+        authoritativePage.messages
+          .filter(m => m.role === 'assistant')
+          .map(m => (typeof m.content === 'string' ? m.content : ''))
+          .join('\n')
+      )
+      return authoritativePage
+    })
+    .catch(error => {
+      recoveryTimeline('history-error')
+      throw error
+    })
 }
 
 /**

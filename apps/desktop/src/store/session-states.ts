@@ -18,6 +18,7 @@
 
 import { backendScopeKey, type GatewayEvent, LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
+import { recoveryTimeline } from '@/lib/recovery-timeline'
 
 import { setSessionOwnerResolver } from '@/api/client'
 import { routeSessionId } from '@/app/routes'
@@ -525,9 +526,12 @@ async function onEventSilence(runtimeId: string) {
 
   const check = {}
   silentTurnChecks.set(runtimeId, check)
+  recoveryTimeline('silence-start')
   const verdict = await checkLiveTurn(runtimeId)
+  recoveryTimeline('silence-verdict', { verdict })
 
   if (silentTurnChecks.get(runtimeId) !== check) {
+    recoveryTimeline('silence-stale')
     return
   }
 

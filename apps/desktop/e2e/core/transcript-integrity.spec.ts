@@ -216,6 +216,12 @@ test('transcript oracle holds across every transition', async ({}, testInfo) => 
       await send(page, `${U(8)} across a drop`, 'Enter', ws)
       await provider.streamStarted(U(8))
       await expect(viewport(page)).toContainText(A(8))
+      await page.evaluate(
+        expected => {
+          window.__recoveryTimeline = { expected, rows: [] }
+        },
+        [A(8), 'survives', 'the', 'drop'].join(' ')
+      )
       const socketsBefore = ws.sockets.length
       expect(proxy.dropAll()).toBeGreaterThan(0)
       // The renderer must dial a fresh socket (through the proxy) on its own.
@@ -226,6 +232,10 @@ test('transcript oracle holds across every transition', async ({}, testInfo) => 
       sessionA.expectUserMarkers.push(U(8))
       sessionA.lossyWire = [U(8)]
       await assertTranscriptOracle(page, ws, provider, sessionA, 'ws drop + reconnect')
+      await testInfo.attach('recovery-timeline-drop-success', {
+        body: Buffer.from(JSON.stringify(await page.evaluate(() => window.__recoveryTimeline?.rows ?? []))),
+        contentType: 'application/json'
+      })
     })
 
     // Sockets that delivered the message.complete of the turn whose reply opens with `marker`.
@@ -327,11 +337,19 @@ test('transcript oracle holds across every transition', async ({}, testInfo) => 
   } catch (error) {
     // The runner has not necessarily assigned testInfo.status inside finally.
     // Attach on the actual thrown failure, then preserve that same error/oracle.
-    await testInfo.attach('reconnect-rpc-metadata', {
-      body: Buffer.from(JSON.stringify(ws.diagnostics)), contentType: 'application/json'
-    }).catch(() => undefined)
+    await testInfo
+      .attach('reconnect-rpc-metadata', {
+        body: Buffer.from(JSON.stringify(ws.diagnostics)),
+        contentType: 'application/json'
+      })
+      .catch(() => undefined)
     throw error
   } finally {
+    // Capture success and ordinary thrown failure before renderer teardown.
+    const recovery = await page.evaluate(() => window.__recoveryTimeline?.rows ?? []).catch(() => [])
+    await testInfo
+      .attach('recovery-timeline', { body: Buffer.from(JSON.stringify(recovery)), contentType: 'application/json' })
+      .catch(() => undefined)
     await app.close().catch(() => undefined)
 
     for (const proxy of proxies) {
