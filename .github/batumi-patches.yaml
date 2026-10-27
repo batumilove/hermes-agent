@@ -2312,9 +2312,12 @@ patches:
   kind: core
   rationale: Verify the pinned upstream release and exact tree-import proof when deriving
     source runtime identity, preserving plugin version gates across squashed fork imports.
+    Ship the shared verifier in the runtime package and probe its installed-wheel import closure.
   paths:
   - hermes_cli/version_info.py
   - hermes_cli/version_provenance.py
+  - hermes_cli/fork_provenance.py
+  - tests/packaged_provenance_probe.py
   - tests/hermes_cli/test_version_import_provenance.py
   - scripts/fork_provenance.py
   - scripts/build/image_identity.py
