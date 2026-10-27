@@ -1,0 +1,137 @@
+name: PR439 nonpublishing hosted image acceptance
+
+on:
+  push:
+    branches: [acceptance/pr439-hosted-image]
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Reviewed original application SHA (allowlisted, not control SHA)
+        required: true
+        default: 1c26b6d9d74901a9ffdcc8c197946ed388b32836
+        type: string
+
+permissions: {}
+
+jobs:
+  acceptance:
+    name: Build test scan exact original source
+    concurrency:
+      group: pr439-hosted-acceptance-${{ github.repository }}
+      cancel-in-progress: false
+    if: github.repository == 'batumilove/hermes-agent'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha || '1c26b6d9d74901a9ffdcc8c197946ed388b32836' }}
+      SOURCE_TREE: 2c787f4eea7914550bdab7cdf68fa4d0307540ab
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out control tooling (not application source)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          path: control
+      - name: Admit immutable application identity before checkout
+        run: |
+          set -euo pipefail
+          mkdir evidence
+          python3 control/scripts/ci/pr439_hosted_acceptance.py admit --source "$SOURCE_SHA" --tree "$SOURCE_TREE"
+          git -C control rev-parse HEAD > evidence/control-sha.txt
+          git -C control rev-parse HEAD^{tree} > evidence/control-tree.txt
+      - name: Check out exact original application
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          path: source
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - name: Verify checkout and prepare existing authenticated stamp
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git -C source rev-parse HEAD^{tree})" = "$SOURCE_TREE"
+          test -z "$(git -C source status --porcelain)"
+          (cd source && python3 -m scripts.build.image_identity --repo . --stamp install-stamp.json)
+          cp source/install-stamp.json evidence/install-stamp.json
+          printf '%s\n' "$SOURCE_SHA" > evidence/source-sha.txt
+          printf '%s\n' "$SOURCE_TREE" > evidence/source-tree.txt
+      - name: Build and retain local image without registry publication
+        run: |
+          set -euo pipefail
+          docker buildx version > evidence/buildx-version.txt
+          docker buildx build --load --platform linux/amd64 --provenance=false \
+            --build-arg "HERMES_GIT_SHA=$SOURCE_SHA" \
+            --label "org.opencontainers.image.revision=$SOURCE_SHA" \
+            --metadata-file evidence/build-metadata.json \
+            --tag "pr439-acceptance:$SOURCE_SHA" source
+          docker image inspect "pr439-acceptance:$SOURCE_SHA" > evidence/image-inspect.json
+          image_id=$(docker image inspect "pr439-acceptance:$SOURCE_SHA" --format '{{.Id}}')
+          [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf '%s\n' "$image_id" > evidence/image-config-digest.txt
+          docker image save "$image_id" --output evidence/image.tar
+          sha256sum evidence/image.tar > evidence/image-archive.sha256
+      - name: Assert installed imports version and source without credentials or network
+        run: |
+          set -euo pipefail
+          image_id=$(cat evidence/image-config-digest.txt)
+          docker run --rm -i --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --user 10000:10000 \
+            --tmpfs /opt/data:rw,uid=10000,gid=10000,mode=700 \
+            --tmpfs /tmp:rw,uid=10000,gid=10000,mode=1777 \
+            --entrypoint /opt/hermes/.venv/bin/python "$image_id" - runtime \
+            < control/scripts/ci/pr439_hosted_acceptance.py > evidence/runtime.json
+      - name: Install checksum-pinned Trivy (no composite action dependencies)
+        run: |
+          set -euo pipefail
+          mkdir scanner
+          curl -fLsS --retry 3 --max-time 120 \
+            https://github.com/aquasecurity/trivy/releases/download/v0.70.0/trivy_0.70.0_Linux-64bit.tar.gz \
+            -o scanner/trivy.tar.gz
+          printf '%s  %s\n' 8b4376d5d6befe5c24d503f10ff136d9e0c49f9127a4279fd110b727929a5aa9 scanner/trivy.tar.gz | sha256sum -c -
+          tar -xzf scanner/trivy.tar.gz -C scanner trivy
+          scanner/trivy --version > evidence/trivy-version.txt
+          printf '{}\n' > scanner/empty.yaml
+          touch scanner/empty.ignore
+      - name: Retain SBOM of exact saved image
+        run: |
+          set -euo pipefail
+          scanner/trivy image --config scanner/empty.yaml --ignorefile scanner/empty.ignore \
+            --input evidence/image.tar --format cyclonedx --output evidence/sbom.cdx.json --timeout 10m
+      - name: Block fixable high and critical OS and library CVEs (unchanged policy)
+        run: |
+          set -euo pipefail
+          scanner/trivy image --config scanner/empty.yaml --ignorefile scanner/empty.ignore \
+            --input evidence/image.tar --scanners vuln --pkg-types os,library \
+            --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --timeout 10m \
+            --format json --output evidence/image-scan.json
+      - name: Retain run-bound evidence even on failure
+        if: always()
+        env:
+          CONTROL_WORKFLOW_REF: ${{ github.workflow_ref }}
+          CONTROL_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          python3 - <<'PY'
+          import json, os, pathlib
+          keys = ['GITHUB_REPOSITORY', 'GITHUB_SHA', 'GITHUB_REF', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_EVENT_NAME', 'SOURCE_SHA', 'SOURCE_TREE', 'CONTROL_WORKFLOW_REF', 'CONTROL_WORKFLOW_SHA', 'JOB_STATUS']
+          pathlib.Path('evidence/run-provenance.json').write_text(json.dumps({k: os.environ.get(k) for k in keys}, indent=2) + '\n')
+          PY
+          if test -f "$HOME/.cache/trivy/db/metadata.json"; then cp "$HOME/.cache/trivy/db/metadata.json" evidence/trivy-db-metadata.json; fi
+          (cd evidence && sha256sum ./* > SHA256SUMS)
+      - name: Upload non-release acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pr439-image-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

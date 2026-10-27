@@ -2375,3 +2375,16 @@ patches:
     tests/scripts/test_catalog_upstream_import.py tests/scripts/test_supply_chain_import_scan.py
     tests/ci/test_plugin_catalog_ci_confinement.py
   retirement: Remove when upstream runtime identity admits verified tree-import ancestry.
+
+- id: pr439-nonpublishing-hosted-acceptance
+  kind: operations
+  rationale: Keep hosted acceptance control separate from the immutable reviewed PR439 application
+    SHA; build and scan a retained local image without release, registry or deployment authority.
+  paths:
+  - .github/workflows/pr439-hosted-acceptance.yml
+  - scripts/ci/pr439_hosted_acceptance.py
+  - tests/scripts/test_pr439_hosted_acceptance.py
+  tests:
+  - python3 tests/scripts/test_pr439_hosted_acceptance.py
+  - actionlint .github/workflows/pr439-hosted-acceptance.yml
+  retirement: Remove after exact-source hosted acceptance is retained or upstream provides an equivalent nonpublishing caller.
