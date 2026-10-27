@@ -10,9 +10,9 @@ Every Hermes process these suites spawn runs:
   host), a tmpfs over ``/run/user/<uid>`` (no user systemd bus), the real
   ``~/.hermes`` bind-mounted read-only, and ``--die-with-parent`` so killing the
   sandbox kills every descendant (no orphans);
-* with ``systemctl``/``launchctl``/``sudo``/``loginctl`` shims first on PATH that log
-  their argv and fail, so a service-restart attempt is observable and never reaches a
-  real supervisor.
+* with service-manager shims first on PATH that log every call and fail except for
+  the exact read-only systemctl gateway listing (an empty fixture service world), so
+  a service-restart attempt never reaches a real supervisor.
 """
 
 from __future__ import annotations
@@ -87,14 +87,26 @@ def sandbox_required_reason() -> str | None:
 
 
 def write_shims(bin_dir: Path) -> Path:
-    """Create failing, argv-logging shims for service managers; returns the call log path."""
+    """Log all calls; model only exact gateway discovery as empty, deny everything else."""
     bin_dir.mkdir(parents=True, exist_ok=True)
     log = bin_dir / "shim-calls.log"
     for name in _SHIMMED:
         p = bin_dir / name
+        discovery = ""
+        if name == "systemctl":
+            # Match argv boundaries, not $*: joined arguments can disguise a near-match.
+            discovery = (
+                'if [ "$#" -eq 9 ] && [ "$1" = "--user" ]; then shift; fi\n'
+                'if [ "$#" -eq 8 ] && [ "$1" = "list-units" ] &&\n'
+                '   [ "$2" = "hermes-gateway*" ] && [ "$3" = "hermes-*-gateway.service" ] &&\n'
+                '   [ "$4" = "hermes-serve*" ] && [ "$5" = "hermes-dashboard*" ] &&\n'
+                '   [ "$6" = "--plain" ] && [ "$7" = "--no-legend" ] &&\n'
+                '   [ "$8" = "--no-pager" ]; then exit 0; fi\n'
+            )
         p.write_text(
             "#!/bin/sh\n"
             f'printf "%s\\n" "{name} $*" >> "{log}"\n'
+            + discovery +
             'echo "Failed to connect to bus: sandboxed test shim" >&2\n'
             "exit 1\n",
             encoding="utf-8",
