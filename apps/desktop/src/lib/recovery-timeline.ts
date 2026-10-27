@@ -36,21 +36,32 @@ const phases = new Set<Phase>([
   'history-error',
   'hydrate-publish'
 ])
-export function recoveryTimeline(phase: Phase, fields: { verdict?: Verdict; owned?: boolean } = {}, text?: string) {
-  if (typeof window === 'undefined') return
-  const capture = window.__recoveryTimeline
-  if (!capture || !Array.isArray(capture.rows) || capture.rows.length >= 1000 || !phases.has(phase)) return
-  const row: Row = { phase, ms: Math.max(0, Math.min(86400000, Math.floor(performance.now()))) }
-  if (fields.verdict === 'ended' || fields.verdict === 'running' || fields.verdict === 'unknown')
-    row.verdict = fields.verdict
-  if (typeof fields.owned === 'boolean') row.owned = fields.owned
-  if (typeof text === 'string')
-    row.content = !text
-      ? 'empty'
-      : typeof capture.expected !== 'string' || !capture.expected
-        ? 'unknown'
-        : text.includes(capture.expected)
-          ? 'full'
-          : 'partial'
-  capture.rows.push(row)
+export function recoveryTimeline(
+  phase: Phase,
+  fields: { verdict?: Verdict; owned?: boolean } | (() => { verdict?: Verdict; owned?: boolean }) = {},
+  text?: string | (() => string)
+) {
+  // All diagnostic evaluation is lazy and isolated from product recovery.
+  try {
+    if (typeof window === 'undefined') return
+    const capture = window.__recoveryTimeline
+    if (!capture || !Array.isArray(capture.rows) || capture.rows.length >= 1000 || !phases.has(phase)) return
+    if (typeof fields === 'function') fields = fields()
+    if (typeof text === 'function') text = text()
+    const row: Row = { phase, ms: Math.max(0, Math.min(86400000, Math.floor(performance.now()))) }
+    if (fields.verdict === 'ended' || fields.verdict === 'running' || fields.verdict === 'unknown')
+      row.verdict = fields.verdict
+    if (typeof fields.owned === 'boolean') row.owned = fields.owned
+    if (typeof text === 'string')
+      row.content = !text
+        ? 'empty'
+        : typeof capture.expected !== 'string' || !capture.expected
+          ? 'unknown'
+          : text.includes(capture.expected)
+            ? 'full'
+            : 'partial'
+    capture.rows.push(row)
+  } catch {
+    // Optional telemetry must never alter product publication or error handling.
+  }
 }

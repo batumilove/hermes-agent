@@ -579,7 +579,7 @@ export function getLatestSessionMessages(
       recoveryTimeline(
         'history-return',
         {},
-        authoritativePage.messages
+        () => authoritativePage.messages
           .filter(m => m.role === 'assistant')
           .map(m => (typeof m.content === 'string' ? m.content : ''))
           .join('\n')

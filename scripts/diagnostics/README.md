@@ -36,8 +36,11 @@ setup failure before recorder creation. REST hydration response and renderer
 ownership are not instrumented; these remain unobserved and no renderer-cause
 claim is justified. Do not expand into product hooks in this bounded slice.
 Independent exact-final-tree review is required before publication/execution.
-Wrapper is one manual invocation of unchanged reusable core workflow; no retry
-or loop at wrapper level; existing dependency-download retries are unchanged.
+The unused reconnect-diagnostic.yml wrapper was removed: its stale pins would
+not execute the reviewed tree. After independent review and separate publication
+authority, use ONE supported existing ci.yaml workflow_dispatch bound to the exact
+reviewed HEAD (release=false, strict_acceptance=1). No default-branch registration,
+bootstrap workaround, iterative CI, retry-to-green or dispatch is authorized here.
 
 Protocol correction: event discriminators cover every name in the unchanged
 `apps/shared/src/gateway-contract.generated.ts` GATEWAY_EVENT_TYPES registry

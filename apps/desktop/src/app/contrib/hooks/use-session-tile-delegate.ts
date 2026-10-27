@@ -342,7 +342,7 @@ export function useSessionTileDelegate({
         return true
       },
       updateHeldSession: (runtimeId, updater) => {
-        recoveryTimeline('delegate', { owned: sessionStateByRuntimeIdRef.current.has(runtimeId) })
+        recoveryTimeline('delegate', () => ({ owned: sessionStateByRuntimeIdRef.current.has(runtimeId) }))
         if (!sessionStateByRuntimeIdRef.current.has(runtimeId)) {
           return false
         }

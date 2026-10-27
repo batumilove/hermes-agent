@@ -452,7 +452,7 @@ export async function hydrateStoredSessionTranscript({
       recoveryTimeline(
         'history-return',
         {},
-        toChatMessages(latest.messages)
+        () => toChatMessages(latest.messages)
           .filter(m => m.role === 'assistant')
           .map(chatMessageText)
           .join('\n')

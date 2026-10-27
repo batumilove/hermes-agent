@@ -325,7 +325,7 @@ export function useSessionStateCache({
       recoveryTimeline(
         'view',
         {},
-        nextMessages
+        () => nextMessages
           .filter(m => m.role === 'assistant')
           .map(chatMessageText)
           .join('\n')
@@ -454,7 +454,7 @@ export function useSessionStateCache({
       recoveryTimeline(
         'cache',
         {},
-        next.messages
+        () => next.messages
           .filter(m => m.role === 'assistant')
           .map(chatMessageText)
           .join('\n')
