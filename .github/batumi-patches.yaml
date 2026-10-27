@@ -5,6 +5,16 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: isolated-upgrade-empty-service-discovery
+  kind: compatibility
+  rationale: Model the isolated upgrade fixture's empty service-manager world only for the exact read-only gateway listing; retain denial and logging for mutation and unknown calls without changing production refusal or E2E assertions.
+  paths:
+  - tests/e2e/core/upgrade/_helpers.py
+  - tests/test_upgrade_service_shims.py
+  tests:
+  - python3 tests/test_upgrade_service_shims.py
+  - scripts/run_tests.sh tests/hermes_cli/test_update_pause_ownership.py
+  retirement: Remove when upstream fixtures model exact empty discovery while denying mutations. Run real updater E2E only in its documented private PID namespace with supervisor sockets hidden; focused shim tests do not prove E2E acceptance.
 - id: mattermost-bounded-thread-context
   kind: compatibility
   rationale: Preserve a validated root reply pointer and bounded thread history on first entry,
