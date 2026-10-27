@@ -45,3 +45,25 @@ test('diagnostics and correlation state remain bounded', () => {
  assert.equal(rec.diagnostics.length,5000)
  assert.equal(JSON.stringify(rec.diagnostics).includes('PRIVATE'),false)
 })
+
+// Generated registry plus authority overflow emitter are the wire-name authorities.
+const contract = readFileSync(process.env.CONTRACT_PATH || new URL('./gateway-contract.generated.ts', import.meta.url), 'utf8')
+const names = [...contract.split('export const GATEWAY_EVENT_TYPES = [')[1].split('] as const')[0].matchAll(/'([^']+)'/g)].map(x => x[1])
+const authority = readFileSync(process.env.SESSION_EVENTS_PATH || new URL('../../../gateway/session_events.py', import.meta.url), 'utf8')
+assert.ok(authority.includes("'type': 'session.replay_gap'"))
+for (const type of [...names, 'session.replay_gap']) test(`current protocol discriminator: ${type}`, () => {
+ const {rec,emit} = setup()
+ emit('framereceived',{method:'event',params:{type,session_id:'PRIVATE',seq:7,replay_epoch:'PRIVATE-epoch',payload:{text:'PRIVATE'}}})
+ const row = rec.diagnostics.find(x => x.kind === 'event')
+ assert.equal(row.type,type)
+ assert.equal(row.seq,7)
+ assert.match(row.session,/^c\d+$/)
+ assert.equal(JSON.stringify(rec.diagnostics).includes('PRIVATE'),false)
+})
+test('obsolete and unknown names never become metadata discriminators', () => {
+ for (const type of ['stream_start','stream_chunk','stream_end','complete','session_updated','PRIVATE']) {
+  const {rec,emit}=setup()
+  emit('framereceived',{method:'event',params:{type,session_id:'PRIVATE'}})
+  assert.equal(rec.diagnostics.find(x=>x.kind==='event').type,undefined)
+ }
+})

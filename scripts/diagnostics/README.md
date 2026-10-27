@@ -38,3 +38,13 @@ claim is justified. Do not expand into product hooks in this bounded slice.
 Independent exact-final-tree review is required before publication/execution.
 Wrapper is one manual invocation of unchanged reusable core workflow; no retry
 or loop at wrapper level; existing dependency-download retries are unchanged.
+
+Protocol correction: event discriminators cover every name in the unchanged
+`apps/shared/src/gateway-contract.generated.ts` GATEWAY_EVENT_TYPES registry
+(whose emitter bindings are documented in `tui_gateway/contracts/events.py`),
+plus `session.replay_gap`, directly emitted by `gateway/session_events.py`
+when an authority subscriber overflows. No raw payload is copied. Positive
+recorder tests read the actual generated registry and overflow source; obsolete
+and unknown names are rejected. The original three adversarial/privacy tests
+remain unchanged. Attachment qualification now requires exactly Playwright
+1.62.1 rather than accepting an arbitrary installed version.

@@ -5,6 +5,10 @@ PLAYWRIGHT_MODULES must point to an already installed, trusted node_modules.
 import io,json,os,pathlib,subprocess,tarfile
 root=pathlib.Path(__file__).resolve().parents[2]
 modules=pathlib.Path(os.environ['PLAYWRIGHT_MODULES'])
+version=json.loads((modules/'@playwright/test/package.json').read_text())['version']
+if version != '1.62.1':
+ raise SystemExit(f'Expected locked Playwright 1.62.1, got {version}')
+print(f'Playwright version: {version}', flush=True)
 source=(root/'apps/desktop/e2e/core/transcript-integrity.spec.ts').read_text()
 catch=source[source.index('  } catch (error) {'):source.index('    for (const proxy of proxies)')]
 spec="""const { test, expect } = require('@playwright/test');
