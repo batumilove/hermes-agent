@@ -1230,6 +1230,9 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
     # Relay egress discriminators (scope_id / user_id) from the persisted origin: the adapter's caches are cold
     # after a restart. See cron/scheduler_delivery_origin.py.
     _origin.stamp_origin_discriminators(t, route_metadata, media_metadata)
+    if t.platform == Platform.TELEGRAM and thread_id is not None:
+        # Cron has no interactive permission to move an alert to the main chat.
+        route_metadata["cron_strict_topic"] = True
     return route_thread_id, route_metadata, media_metadata
 
 
@@ -1480,6 +1483,8 @@ def _standalone_send(
     t: _TargetDelivery, content: str, media_files: list) -> tuple[Any, Optional[str]]:
     """Run the standalone sender for one target: ``(result, None)`` or ``(None, error)`` (already
     logged — WARNING for a shutdown race, ERROR with traceback otherwise)."""
+    if t.platform_name == "telegram" and t.thread_id is not None:
+        return None, f"strict topic delivery to {t.where} requires the live adapter; standalone fallback refused"
     from tools.send_message_tool import _send_to_platform
     job = t.job
     shutdown_msg = f"delivery to {t.where} skipped — interpreter is shutting down"
