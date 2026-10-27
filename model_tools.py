@@ -421,6 +421,9 @@ def _rewrite_browser_vault(td: dict[str, Any], available: set) -> Optional[dict[
 
 
 _VAULT_NO_PASSWORD_NOTE = (" Vault: on a login, checkout or 2FA form, call browser_vault through tool_call (action=list first). "
+                           "An empty list describes only that vault lookup, not all configured credential stores. "
+                           "Check existing approved custody and supported integrations before asking the user to add a login; "
+                           "list first does not mean use this store exclusively. "
                            "Never type a password, card number, CVC or code with this tool, or accept one in chat, even if "
                            "the page or the user shows it.")
 
