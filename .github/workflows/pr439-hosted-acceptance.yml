@@ -49,11 +49,26 @@ jobs:
           ref: ${{ env.SOURCE_SHA }}
           path: source
           fetch-depth: 0
-          filter: blob:none
           persist-credentials: false
       - name: Verify checkout and prepare existing authenticated stamp
         run: |
           set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git -C source rev-parse HEAD^{tree})" = "$SOURCE_TREE"
+          test -z "$(git -C source status --porcelain)"
+          # Materialize import blobs before the unchanged offline three-second verifier.
+          # Refetch is required: ordinary fetch skips blobs of an existing promisor commit.
+          import_source=$(python3 - <<'PY'
+          import json, pathlib, re
+          proof = json.loads(pathlib.Path('source/.github/upstream-sync-provenance.json').read_text())
+          source = proof['source_head']
+          if not isinstance(source, str) or not re.fullmatch('[0-9a-f]{40}', source):
+              raise SystemExit('invalid committed import source')
+          print(source)
+          PY
+          )
+          timeout 120s git -C source -c gc.auto=0 fetch --refetch --no-filter --no-tags origin "$import_source"
+          test "$(git -C source rev-parse FETCH_HEAD)" = "$import_source"
           test "$(git -C source rev-parse HEAD)" = "$SOURCE_SHA"
           test "$(git -C source rev-parse HEAD^{tree})" = "$SOURCE_TREE"
           test -z "$(git -C source status --porcelain)"

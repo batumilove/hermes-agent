@@ -34,6 +34,17 @@ class Acceptance(unittest.TestCase):
         with self.assertRaises(ValueError):
             m.verify_identity(stamp, dict(marker, revision='a'*40), stamp['packageVersion'])
 
+    def test_import_objects_prepared_before_offline_stamp(self):
+        import yaml
+        w = yaml.safe_load((ROOT / '.github/workflows/pr439-hosted-acceptance.yml').read_text())
+        steps = w['jobs']['acceptance']['steps']
+        prepare = next(s['run'] for s in steps if s['name'] == 'Verify checkout and prepare existing authenticated stamp')
+        self.assertIn('fetch --refetch --no-filter --no-tags origin "$import_source"', prepare)
+        self.assertIn('timeout 120s git -C source', prepare)
+        self.assertLess(prepare.index('fetch --refetch'), prepare.index('python3 -m scripts.build.image_identity'))
+        self.assertLess(prepare.index('status --porcelain'), prepare.index('fetch --refetch'))
+        self.assertNotIn('filter: blob:none', (ROOT / '.github/workflows/pr439-hosted-acceptance.yml').read_text())
+
     def test_workflow_boundary(self):
         import yaml
         w = yaml.safe_load((ROOT / '.github/workflows/pr439-hosted-acceptance.yml').read_text())
