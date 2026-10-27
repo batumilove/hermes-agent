@@ -2324,14 +2324,31 @@ patches:
   kind: core
   rationale: Verify the pinned upstream release and exact tree-import proof when deriving
     source runtime identity, preserving plugin version gates across squashed fork imports.
+    Runtime snapshots and build/contributor tools share the shipped stdlib-only proof implementation.
   paths:
   - hermes_cli/version_info.py
   - hermes_cli/version_provenance.py
   - tests/hermes_cli/test_version_import_provenance.py
+  - hermes_cli/fork_provenance.py
   - scripts/fork_provenance.py
+  - scripts/fork_contributors.py
+  - scripts/fork_check_base.py
+  - scripts/check_fork_delta.py
+  - scripts/ci/prepare_upgrade_source.py
+  - scripts/ci/catalog_upstream_import.py
+  - tests/scripts/test_hosted_image_identity.py
+  - tests/scripts/test_upgrade_source_checkout.py
+  - tests/scripts/test_catalog_upstream_import.py
+  - tests/scripts/test_fork_provenance_v2.py
+  - tests/scripts/test_image_identity.py
+  - tests/scripts/test_supply_chain_import_scan.py
+  - tests/ci/test_plugin_catalog_ci_confinement.py
   - scripts/build/image_identity.py
   - website/docs/getting-started/updating.md
   tests:
   - scripts/run_tests.sh tests/hermes_cli/test_version_import_provenance.py tests/hermes_cli/test_version_info.py
     tests/scripts/test_image_identity.py tests/scripts/test_fork_provenance_v2.py
+  - scripts/run_tests.sh tests/scripts/test_hosted_image_identity.py tests/scripts/test_upgrade_source_checkout.py
+    tests/scripts/test_catalog_upstream_import.py tests/scripts/test_supply_chain_import_scan.py
+    tests/ci/test_plugin_catalog_ci_confinement.py
   retirement: Remove when upstream runtime identity admits verified tree-import ancestry.

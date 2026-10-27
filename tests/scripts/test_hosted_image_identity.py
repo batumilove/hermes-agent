@@ -7,7 +7,7 @@ import subprocess
 
 import pytest
 
-from scripts import fork_provenance as provenance
+from hermes_cli import fork_provenance as provenance
 from scripts.build import image_identity
 from scripts.ci.prepare_upgrade_source import Release
 

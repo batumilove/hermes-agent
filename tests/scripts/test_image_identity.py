@@ -83,7 +83,7 @@ def test_metadata_version_rejects_invalid_values(value):
 
 
 def test_import_proof_authenticates_linear_source_and_later_changes(history):
-    from scripts import fork_provenance as provenance
+    from hermes_cli import fork_provenance as provenance
 
     root, release, _stamp = history
     (root / ".github").mkdir()

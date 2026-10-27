@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 
 from hermes_cli.version_info import _git_version_info
-from scripts import fork_provenance as provenance
+from hermes_cli import fork_provenance as provenance
 
 
 def git(root, *args):
@@ -46,6 +49,68 @@ def imported(tmp_path, monkeypatch):
     git(tmp_path, "tag", "-d", "v0.22.5")
     monkeypatch.setattr("hermes_cli.version_provenance.IMPORTED_RELEASE", ("0.22.5", tag_object, release))
     return tmp_path, proof
+
+
+def test_projected_runtime_verifies_separate_source_in_fresh_interpreter(imported, tmp_path):
+    from pm.workspace import _copy_core_inputs
+    from hermes_cli.version_provenance import IMPORTED_RELEASE
+
+    source, _ = imported
+    checkout = Path(__file__).resolve().parents[2]
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    _copy_core_inputs(checkout, runtime)
+    assert not (runtime / "scripts").exists()
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    # -I drops inherited Python paths; only the actual PM snapshot is admitted.
+    code = """
+import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import hermes_cli.version_info as version_info
+import hermes_cli.version_provenance as version_provenance
+assert Path(version_info.__file__).is_relative_to(Path(sys.argv[1]))
+assert not any(Path(p).resolve() == Path(sys.argv[2]).resolve() for p in sys.path if p)
+version_provenance.IMPORTED_RELEASE = tuple(json.loads(sys.argv[3]))
+info = version_info._git_version_info(Path(sys.argv[2]))
+print(json.dumps({'base': info.base_version, 'distance': info.distance,
+                  'commit': info.commit, 'derived': info.derived_version}))
+"""
+    result = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", code, str(runtime), str(source),
+         json.dumps(IMPORTED_RELEASE)], cwd=unrelated,
+        env={key: value for key, value in os.environ.items() if key != "PYTHONPATH"},
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    commit = git(source, "rev-parse", "HEAD")
+    assert json.loads(result.stdout) == {
+        "base": "0.22.5", "distance": 2, "commit": commit,
+        "derived": f"0.22.5+2.g{commit[:7]}",
+    }
+
+
+def test_build_and_contributor_tools_share_runtime_provenance(monkeypatch):
+    from scripts import check_fork_delta, fork_check_base, fork_contributors
+    from scripts.build import image_identity
+    from scripts.ci import catalog_upstream_import, prepare_upgrade_source
+
+    for shared in (check_fork_delta.fork_provenance, fork_check_base.fork_provenance,
+                   fork_contributors.fork_provenance, catalog_upstream_import.provenance,
+                   prepare_upgrade_source.provenance):
+        assert shared is provenance
+        assert shared.ProvenanceError is provenance.ProvenanceError
+    assert not provenance._OFFLINE.get()
+    with provenance.offline_git():
+        assert prepare_upgrade_source.provenance._OFFLINE.get()
+        with provenance.offline_git():
+            assert catalog_upstream_import.provenance._OFFLINE.get()
+        assert provenance._OFFLINE.get()
+    assert not provenance._OFFLINE.get()
+    sentinel = object()
+    monkeypatch.setattr(provenance, "source_distance", lambda *args: sentinel)
+    assert image_identity._source_distance(Path("unused"), "release", "head") is sentinel
 
 
 def test_imported_release_identifies_actual_fork_commit(imported, monkeypatch):

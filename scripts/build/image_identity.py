@@ -48,7 +48,7 @@ def package_version(repo: Path, stamp: dict, release: Release = BASELINE) -> str
 
 
 def _source_distance(repo: Path, release: str, head: str) -> int:
-    from scripts.fork_provenance import source_distance
+    from hermes_cli.fork_provenance import source_distance
 
     return source_distance(repo, release, head)
 
@@ -61,7 +61,7 @@ def prepare_history(repo: Path, stamp: dict, *, upstream: str | None = None,
     release and upstream base; origin supplies only the immutable import source,
     whose projected tree and ancestry are checked by source_distance.
     """
-    from scripts import fork_provenance as provenance
+    from hermes_cli import fork_provenance as provenance
     from scripts.ci.prepare_upgrade_source import OFFICIAL
 
     head = _git(repo, "rev-parse", "HEAD")
