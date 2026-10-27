@@ -69,8 +69,17 @@ docker run -d \
   --restart unless-stopped \
   -v ~/.hermes:/opt/data \
   -p 8642:8642 \
+  --stop-timeout 90 \
   nousresearch/hermes-agent gateway run
 ```
+
+The supported Compose gateway definitions set `stop_grace_period: 90s`.
+For plain Docker, configure `--stop-timeout 90` at creation as above, then use
+`docker stop hermes`. On the s6 PID-1 path, a gateway-only hook waits up to 80s
+for identity-verified owners and returns early when they exit; the final global
+process sweep keeps its short default grace. A shorter outer deadline may
+interrupt cleanup. Arbitrary drains or stuck cleanup are not guaranteed to
+finish cleanly, and incomplete shutdowns must not publish a clean marker.
 
 Port 8642 exposes the gateway's [OpenAI-compatible API server](./features/api-server.md) and health endpoint. It's optional if you only use chat platforms (Telegram, Discord, etc.), but required if you want the dashboard or external tools to reach the gateway.
 

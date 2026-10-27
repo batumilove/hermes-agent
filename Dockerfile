@@ -52,6 +52,9 @@ FROM debian:trixie-20261020@sha256:4c25275446ca371766b8b093c696782eabce06263fcca
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
+# Keep s6's default short final sweep. Gateway owners receive a bounded,
+# early-returning wait in cont-finish.d before that sweep, not a global delay.
+
 # The pm-pinned full Chromium lives in the managed tool store at
 # /opt/hermes/tools — outside the /opt/data volume mount, so the
 # build-time install survives the volume overlay at runtime. pm's
@@ -430,6 +433,7 @@ RUN set -eu; \
 # /run/service/ (tmpfs) and are reconciled on container restart by
 # /etc/cont-init.d/02-reconcile-profiles (Phase 4 Task 4.0).
 COPY docker/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
+COPY --chmod=0755 docker/cont-finish.d/ /etc/cont-finish.d/
 
 # stage2-hook handles UID/GID remap, volume chown, config seeding,
 # skills sync — all the work the old entrypoint.sh did before
