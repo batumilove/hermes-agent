@@ -6,6 +6,6 @@ permissions:
   contents: read
 jobs:
   diagnostic:
-    uses: batumilove/hermes-agent/.github/workflows/e2e-desktop-core.yml@5b903a97319437eb204eb6c4adec8c6e0a7f9d0a
+    uses: batumilove/hermes-agent/.github/workflows/e2e-desktop-core.yml@e21e6d50b46f9e24b07fc1843a823c432f8dbe7f
     with:
-      commit: 5b903a97319437eb204eb6c4adec8c6e0a7f9d0a
+      commit: e21e6d50b46f9e24b07fc1843a823c432f8dbe7f
