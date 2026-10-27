@@ -1,0 +1,11 @@
+name: One-run reconnect diagnostic
+# Local preparation only. Publish/dispatch requires independent exact-tree review.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnostic:
+    uses: batumilove/hermes-agent/.github/workflows/e2e-desktop-core.yml@5b903a97319437eb204eb6c4adec8c6e0a7f9d0a
+    with:
+      commit: 5b903a97319437eb204eb6c4adec8c6e0a7f9d0a
