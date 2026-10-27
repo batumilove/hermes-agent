@@ -13,14 +13,14 @@ async def delayed(self, active_agents):
         # Deliberately block the event loop and ignore further TERM: neither
         # aggregate timeout nor the async watchdog can end this process.
         import signal
-        import time
+
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         # Freeze every thread too: the independent thread watchdog otherwise
         # exits at ~60s and never exercises the s6 fallback ceiling.
         os.kill(os.getpid(), signal.SIGSTOP)
         while True:
-            time.sleep(1)
-    await asyncio.sleep(float(os.environ.get('PROBE_CLEANUP_DELAY', '5')))
+            signal.pause()
+    await asyncio.sleep(float(os.environ.get('PROBE_CLEANUP_DELAY', '5')))  # health: allow HX013 -- cleanup delay is the container shutdown behavior under test
     return await original(self, active_agents)
 
 GatewayRunner._finalize_shutdown_agents = delayed

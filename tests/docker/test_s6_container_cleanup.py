@@ -28,7 +28,7 @@ def test_whole_container_cleanup(tmp_path, monkeypatch):
 def main():
     output = Path(os.environ['S6_TEST_OUTPUT'])
     output.mkdir(parents=True, exist_ok=False)
-    grace = re.search(r'^ENV S6_KILL_GRACETIME=(\d+)$', (ROOT / 'Dockerfile').read_text(), re.M)
+    grace = re.search(r'^ENV S6_KILL_GRACETIME=(\d+)$', (ROOT / 'Dockerfile').read_text(), re.MULTILINE)
     tag = 'hermes-s6-cleanup-contract:' + str(os.getpid())
     # .dockerignore excludes tests; supply the probe as a separate build context.
     dockerfile = f'''FROM hermes-agent-harness:latest
