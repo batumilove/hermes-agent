@@ -447,7 +447,7 @@ export async function hydrateStoredSessionTranscript({
     }
 
     try {
-      recoveryTimeline('history-start')
+      recoveryTimeline('history-start', {}, undefined, runtimeSessionId)
       const latest = await getLatestSessionMessages(storedSessionId, storedProfile)
       recoveryTimeline(
         'history-return',
@@ -455,7 +455,8 @@ export async function hydrateStoredSessionTranscript({
         () => toChatMessages(latest.messages)
           .filter(m => m.role === 'assistant')
           .map(chatMessageText)
-          .join('\n')
+          .join('\n'),
+        runtimeSessionId
       )
       const replayAtReturn = pendingSessionReplay(runtimeSessionId)
 
@@ -485,7 +486,7 @@ export async function hydrateStoredSessionTranscript({
         return
       }
 
-      recoveryTimeline('hydrate-publish')
+      recoveryTimeline('hydrate-publish', {}, undefined, runtimeSessionId)
       updateSessionState(
         runtimeSessionId,
         state => ({
@@ -530,7 +531,7 @@ export async function hydrateStoredSessionTranscript({
 
       return
     } catch {
-      recoveryTimeline('history-error')
+      recoveryTimeline('history-error', {}, undefined, runtimeSessionId)
       // Best-effort fallback when live stream payloads are empty.
     }
   }

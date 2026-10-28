@@ -328,7 +328,8 @@ export function useSessionStateCache({
         () => nextMessages
           .filter(m => m.role === 'assistant')
           .map(chatMessageText)
-          .join('\n')
+          .join('\n'),
+        pending.sessionId
       )
       setMessages(nextMessages)
     }
@@ -457,7 +458,8 @@ export function useSessionStateCache({
         () => next.messages
           .filter(m => m.role === 'assistant')
           .map(chatMessageText)
-          .join('\n')
+          .join('\n'),
+        sessionId
       )
       publishSessionState(sessionId, next)
       sessionStateCache.prune()

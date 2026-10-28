@@ -18,7 +18,7 @@
 
 import { backendScopeKey, type GatewayEvent, LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
-import { recoveryTimeline } from '@/lib/recovery-timeline'
+import { bindRecoveryTimeline, recoveryTimeline } from '@/lib/recovery-timeline'
 
 import { setSessionOwnerResolver } from '@/api/client'
 import { routeSessionId } from '@/app/routes'
@@ -137,7 +137,7 @@ export function recordSessionEventScope(event: { connectionId?: string; profile?
       profile: String(event.profile ?? '').trim() || 'default'
     })
 
-    recoveryTimeline('owner-register', () => ({ owned: true }))
+    recoveryTimeline('owner-register', () => ({ eventOwner: true }), undefined, event.session_id)
     // An owner resolved after the focus moved must still re-home the rail.
     syncPreviewScope()
 
@@ -153,7 +153,7 @@ export function recordSessionEventScope(event: { connectionId?: string; profile?
     const profileKey = normalizeProfileKey(profile)
     sessionOwnerByRuntimeId.set(event.session_id, profileKey)
     sessionScopeByRuntimeId.set(event.session_id, profileKey)
-    recoveryTimeline('owner-register', () => ({ owned: true }))
+    recoveryTimeline('owner-register', () => ({ eventOwner: true }), undefined, event.session_id)
   }
 
   syncPreviewScope()
@@ -368,6 +368,22 @@ interface LiveTurnBackend {
 
 let liveTurnBackend: LiveTurnBackend | null = null
 
+/** Arm once at the original disconnect seam; read-only synchronous snapshot. */
+export function startRecoveryTimeline(expected: string) {
+  try {
+    const runtimeId = $activeSessionId.get()
+    const state = runtimeId ? $sessionStates.get()[runtimeId] : undefined
+    const storedId = state?.storedSessionId ?? $selectedStoredSessionId.get()
+    bindRecoveryTimeline(expected, runtimeId ? [runtimeId, ...(storedId ? [storedId] : [])] : [])
+    recoveryTimeline('snapshot', () => ({
+      statePresent: Boolean(state), busy: state?.busy, awaitingResponse: state?.awaitingResponse,
+      turnLive: state?.turnLive, needsInput: state?.needsInput,
+      timer: Boolean(runtimeId && sessionEventSilenceTimers.has(runtimeId)), backend: Boolean(liveTurnBackend),
+      delegate: Boolean(delegate), eventOwner: Boolean(runtimeId && sessionOwnerByRuntimeId.has(runtimeId))
+    }), undefined, runtimeId)
+  } catch { /* Capture must not interfere with the disconnect oracle. */ }
+}
+
 /** Register the backend a silent live turn is checked against. Returns the
  *  unregister function; with nothing registered, a silent turn is left alone. */
 export function setLiveTurnBackend(backend: LiveTurnBackend): () => void {
@@ -385,7 +401,7 @@ export function setLiveTurnBackend(backend: LiveTurnBackend): () => void {
 function clearEventSilence(runtimeId: string, reason: 'event' | 'ineligible' | 'drop' = 'event') {
   const timer = sessionEventSilenceTimers.get(runtimeId)
 
-  recoveryTimeline('timer-clear', () => ({ reason, timer: Boolean(timer), backend: Boolean(liveTurnBackend) }))
+  recoveryTimeline('timer-clear', () => ({ reason, timer: Boolean(timer), backend: Boolean(liveTurnBackend) }), undefined, runtimeId)
   silentTurnChecks.delete(runtimeId)
 
   if (timer) {
@@ -428,6 +444,7 @@ async function checkLiveTurn(runtimeId: string): Promise<LiveTurnVerdict> {
   const backend = liveTurnBackend
 
   if (!backend) {
+    recoveryTimeline('rpc-route', { outcome: 'missing-backend' }, undefined, runtimeId)
     return 'unknown'
   }
 
@@ -440,11 +457,15 @@ async function checkLiveTurn(runtimeId: string): Promise<LiveTurnVerdict> {
       backend.request,
       'session.active_list',
       {},
-      LIVE_TURN_PROBE_TIMEOUT_MS
+      LIVE_TURN_PROBE_TIMEOUT_MS,
+      undefined,
+      true
     )
 
+    recoveryTimeline('rpc-route', { outcome: 'request-success' }, undefined, runtimeId)
     return liveTurnVerdict(response, runtimeId)
   } catch {
+    recoveryTimeline('rpc-route', { outcome: 'request-failure' }, undefined, runtimeId)
     return 'unknown'
   }
 }
@@ -524,7 +545,7 @@ async function recoverEndedLiveTurn(runtimeId: string) {
  *  Only a backend that reports the turn over settles it. */
 async function onEventSilence(runtimeId: string) {
   sessionEventSilenceTimers.delete(runtimeId)
-  recoveryTimeline('timer-fire', () => ({ reason: 'timeout', backend: Boolean(liveTurnBackend), busy: $sessionStates.get()[runtimeId]?.busy, awaitingResponse: $sessionStates.get()[runtimeId]?.awaitingResponse, turnLive: $sessionStates.get()[runtimeId]?.turnLive, needsInput: $sessionStates.get()[runtimeId]?.needsInput }))
+  recoveryTimeline('timer-fire', () => ({ reason: 'timeout', backend: Boolean(liveTurnBackend), busy: $sessionStates.get()[runtimeId]?.busy, awaitingResponse: $sessionStates.get()[runtimeId]?.awaitingResponse, turnLive: $sessionStates.get()[runtimeId]?.turnLive, needsInput: $sessionStates.get()[runtimeId]?.needsInput }), undefined, runtimeId)
 
   if (!isLiveTurnAwaitingEvents($sessionStates.get()[runtimeId])) {
     return
@@ -532,12 +553,12 @@ async function onEventSilence(runtimeId: string) {
 
   const check = {}
   silentTurnChecks.set(runtimeId, check)
-  recoveryTimeline('silence-start')
+  recoveryTimeline('silence-start', {}, undefined, runtimeId)
   const verdict = await checkLiveTurn(runtimeId)
-  recoveryTimeline('silence-verdict', { verdict })
+  recoveryTimeline('silence-verdict', { verdict }, undefined, runtimeId)
 
   if (silentTurnChecks.get(runtimeId) !== check) {
-    recoveryTimeline('silence-stale')
+    recoveryTimeline('silence-stale', {}, undefined, runtimeId)
     return
   }
 
@@ -566,11 +587,11 @@ export function noteSessionEvent(runtimeId: string) {
   clearEventSilence(runtimeId)
 
   if (!isLiveTurnAwaitingEvents(current)) {
-    recoveryTimeline('timer-skip', () => ({ reason: 'ineligible', busy: current?.busy, awaitingResponse: current?.awaitingResponse, turnLive: current?.turnLive, needsInput: current?.needsInput }))
+    recoveryTimeline('timer-skip', () => ({ reason: 'ineligible', busy: current?.busy, awaitingResponse: current?.awaitingResponse, turnLive: current?.turnLive, needsInput: current?.needsInput }), undefined, runtimeId)
     return
   }
 
-  recoveryTimeline('timer-arm', () => ({ reason: 'event', backend: Boolean(liveTurnBackend), busy: current?.busy, awaitingResponse: current?.awaitingResponse, turnLive: current?.turnLive, needsInput: current?.needsInput }))
+  recoveryTimeline('timer-arm', () => ({ reason: 'event', backend: Boolean(liveTurnBackend), busy: current?.busy, awaitingResponse: current?.awaitingResponse, turnLive: current?.turnLive, needsInput: current?.needsInput }), undefined, runtimeId)
   sessionEventSilenceTimers.set(
     runtimeId,
     setTimeout(() => void onEventSilence(runtimeId), LIVE_TURN_EVENT_SILENCE_MS)
@@ -878,7 +899,7 @@ function evictable(runtimeId: string, state: ClientSessionState): boolean {
 export function publishSessionState(runtimeId: string, state: ClientSessionState) {
   const current = $sessionStates.get()
   const prev = current[runtimeId] ?? null
-  recoveryTimeline('eligibility', () => ({ reason: 'publish', busy: state.busy, awaitingResponse: state.awaitingResponse, turnLive: state.turnLive, needsInput: state.needsInput, backend: Boolean(liveTurnBackend), timer: sessionEventSilenceTimers.has(runtimeId), owned: sessionOwnerByRuntimeId.has(runtimeId), active: runtimeId === $activeSessionId.get() }))
+  recoveryTimeline('eligibility', () => ({ reason: 'publish', busy: state.busy, awaitingResponse: state.awaitingResponse, turnLive: state.turnLive, needsInput: state.needsInput, backend: Boolean(liveTurnBackend), timer: sessionEventSilenceTimers.has(runtimeId), eventOwner: sessionOwnerByRuntimeId.has(runtimeId), active: runtimeId === $activeSessionId.get() }), undefined, runtimeId)
 
   if (prev === state) {
     return
@@ -926,7 +947,7 @@ export function dropSessionState(runtimeId: string) {
   // cached runtime is dropped in the meantime.
   clearWatchdog(runtimeId)
   clearEventSilence(runtimeId, 'drop')
-  recoveryTimeline('owner-drop', () => ({ reason: 'drop', owned: sessionOwnerByRuntimeId.has(runtimeId) }))
+  recoveryTimeline('owner-drop', () => ({ reason: 'drop', eventOwner: sessionOwnerByRuntimeId.has(runtimeId) }), undefined, runtimeId)
   clearSessionProviderWait(runtimeId)
   sessionScopeByRuntimeId.delete(runtimeId)
   sessionOwnerByRuntimeId.delete(runtimeId)
@@ -1890,16 +1911,20 @@ export function requestForOwnedSession<T>(
   method: string,
   params: Record<string, unknown> = {},
   timeoutMs?: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  captureSilenceRoute = false
 ): Promise<T> {
   const owner = knownOwnerForSession(sessionId)
+  if (captureSilenceRoute && !owner) recoveryTimeline('rpc-route', { outcome: 'unresolved' }, undefined, sessionId)
 
   try {
     assertSessionOwnerResolved(owner, { method, sessionId })
   } catch (error) {
+    if (captureSilenceRoute) recoveryTimeline('rpc-route', { outcome: 'refused' }, undefined, sessionId)
     return Promise.reject(error)
   }
 
+  if (captureSilenceRoute) recoveryTimeline('rpc-route', { outcome: 'resolved-dispatch' }, undefined, sessionId)
   return requestForSessionProfile<T>(owner, ambientRequest, method, params, timeoutMs, signal)
 }
 

@@ -217,8 +217,10 @@ test('transcript oracle holds across every transition', async ({}, testInfo) => 
       await provider.streamStarted(U(8))
       await expect(viewport(page)).toContainText(A(8))
       await page.evaluate(
-        expected => {
-          window.__recoveryTimeline = { expected, rows: [] }
+        async expected => {
+          const modulePath = '/src/store/session-states.ts'
+          const { startRecoveryTimeline } = await import(modulePath)
+          startRecoveryTimeline(expected)
         },
         [A(8), 'survives', 'the', 'drop'].join(' ')
       )
@@ -233,7 +235,7 @@ test('transcript oracle holds across every transition', async ({}, testInfo) => 
       sessionA.lossyWire = [U(8)]
       await assertTranscriptOracle(page, ws, provider, sessionA, 'ws drop + reconnect')
       await testInfo.attach('recovery-timeline-drop-success', {
-        body: Buffer.from(JSON.stringify(await page.evaluate(() => window.__recoveryTimeline?.rows ?? []))),
+        body: Buffer.from(JSON.stringify(await page.evaluate(() => window.__recoveryTimeline ? { rows: window.__recoveryTimeline.rows, overflow: Boolean(window.__recoveryTimeline.overflow), incomplete: Boolean(window.__recoveryTimeline.incomplete) } : { rows: [], incomplete: true }))),
         contentType: 'application/json'
       })
     })
@@ -346,7 +348,7 @@ test('transcript oracle holds across every transition', async ({}, testInfo) => 
     throw error
   } finally {
     // Capture success and ordinary thrown failure before renderer teardown.
-    const recovery = await page.evaluate(() => window.__recoveryTimeline?.rows ?? []).catch(() => [])
+    const recovery = await page.evaluate(() => window.__recoveryTimeline ? { rows: window.__recoveryTimeline.rows, overflow: Boolean(window.__recoveryTimeline.overflow), incomplete: Boolean(window.__recoveryTimeline.incomplete) } : { rows: [], incomplete: true }).catch(() => ({ rows: [], incomplete: true }))
     await testInfo
       .attach('recovery-timeline', { body: Buffer.from(JSON.stringify(recovery)), contentType: 'application/json' })
       .catch(() => undefined)

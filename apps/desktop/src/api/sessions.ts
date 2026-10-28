@@ -522,7 +522,7 @@ export function getLatestSessionMessages(
   profile?: ProfileScope,
   options: { passive?: boolean } = {}
 ): Promise<SessionMessagesResponse> {
-  recoveryTimeline('history-start')
+  recoveryTimeline('history-start', {}, undefined, id)
   // Key pagination by the effective request owner, not the caller's spelling
   // (ambient, profile string, or explicit pin). Otherwise refreshes create
   // duplicate tail entries and "Show earlier" cannot resolve the loaded tail.
@@ -582,12 +582,13 @@ export function getLatestSessionMessages(
         () => authoritativePage.messages
           .filter(m => m.role === 'assistant')
           .map(m => (typeof m.content === 'string' ? m.content : ''))
-          .join('\n')
+          .join('\n'),
+        id
       )
       return authoritativePage
     })
     .catch(error => {
-      recoveryTimeline('history-error')
+      recoveryTimeline('history-error', {}, undefined, id)
       throw error
     })
 }

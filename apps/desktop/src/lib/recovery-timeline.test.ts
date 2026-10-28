@@ -12,15 +12,15 @@ it('keeps actual transcript callsites inert when disabled and nonthrowing when e
   )
   expect(calls).toHaveLength(4)
   for (const call of calls) {
-    const invoke = new Function('recoveryTimeline', 'authoritativePage', 'latest', 'nextMessages', 'next', 'toChatMessages', 'chatMessageText', call)
+    const invoke = new Function('recoveryTimeline', 'authoritativePage', 'latest', 'nextMessages', 'next', 'toChatMessages', 'chatMessageText', 'id', 'runtimeSessionId', 'pending', 'sessionId', call)
     delete window.__recoveryTimeline
-    expect(() => invoke(recoveryTimeline, poison, { messages: [] }, poison, poison, convert, convert)).not.toThrow()
+    expect(() => invoke(recoveryTimeline, poison, { messages: [] }, poison, poison, convert, convert, 'target', 'target', { sessionId: 'target' }, 'target')).not.toThrow()
     expect(evaluated).toBe(0)
   }
   for (const call of calls) {
     window.__recoveryTimeline = { expected: 'answer', rows: [] }
-    const invoke = new Function('recoveryTimeline', 'authoritativePage', 'latest', 'nextMessages', 'next', 'toChatMessages', 'chatMessageText', call)
-    expect(() => invoke(recoveryTimeline, poison, { messages: [] }, poison, poison, convert, convert)).not.toThrow()
+    const invoke = new Function('recoveryTimeline', 'authoritativePage', 'latest', 'nextMessages', 'next', 'toChatMessages', 'chatMessageText', 'id', 'runtimeSessionId', 'pending', 'sessionId', call)
+    expect(() => invoke(recoveryTimeline, poison, { messages: [] }, poison, poison, convert, convert, 'target', 'target', { sessionId: 'target' }, 'target')).not.toThrow()
   }
   expect(evaluated).toBe(4)
   delete window.__recoveryTimeline
