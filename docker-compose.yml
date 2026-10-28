@@ -28,6 +28,7 @@
 #
 services:
   gateway:
+    stop_grace_period: 90s
     build: .
     image: hermes-agent
     container_name: hermes
