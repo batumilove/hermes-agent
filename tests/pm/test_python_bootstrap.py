@@ -13,7 +13,22 @@ import pytest
 
 from pm.packages import Python
 from pm.store import current_target
-from tests.pm._fixtures import host_distlib
+from pm.python_bootstrap import DISTLIB_VERSION, _distlib_version
+
+
+def host_distlib() -> Path:
+    """Use the existing test toolchain supplier matching PM's archive contract.
+
+    A venv's base Python can carry older pip than the test venv. Do not copy
+    that 0.3.8 supplier into a fixture asserting the pinned 0.4.2 contract.
+    No package is installed and the production version gate stays unchanged.
+    """
+    for base in dict.fromkeys((Path(sys.prefix), Path(sys.base_prefix))):
+        for site in (base / "Lib" / "site-packages", *base.glob("lib/python*/site-packages")):
+            for candidate in (site / "distlib", site / "pip" / "_vendor" / "distlib"):
+                if (candidate / "scripts.py").is_file() and _distlib_version(candidate) == DISTLIB_VERSION:
+                    return candidate
+    raise AssertionError(f"test toolchain requires existing distlib {DISTLIB_VERSION}")
 
 
 @pytest.fixture

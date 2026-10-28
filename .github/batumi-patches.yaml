@@ -5,6 +5,7 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+
 - id: s6-waited-cleanup-immutable-publication
   kind: operations
   rationale: Preserve bounded gateway-only shutdown before the short s6 sweep and
@@ -35,6 +36,19 @@ patches:
   retirement: Remove shutdown delta after equivalent upstream gateway-only waited
     cleanup and owner binding land. Replace the manual publication-only bridge
     only through a reviewed change explicitly authorizing promotion/deployment.
+
+- id: windows-promoted-store-launcher-supplier
+  kind: compatibility
+  rationale: Load PM's existing promoted standalone distlib privately when the active dependency environment has no launcher maker, validate resolved containment and private module origins, and preserve native executables across Python repins without adding dependencies. The bootstrap test alone selects the existing toolchain supplier matching the unchanged pinned archive contract instead of an obsolete base-interpreter copy.
+  paths:
+  - hermes_cli/_launchers.py
+  - tests/hermes_cli/test_store_launcher_supplier.py
+  - tests/pm/test_python_bootstrap.py
+  tests:
+  - python -m unittest discover -s tests/hermes_cli -p test_store_launcher_supplier.py -v
+  - scripts/run_tests.sh tests/hermes_cli/test_store_launcher_supplier.py tests/hermes_cli/test_source_launcher_publication.py tests/hermes_cli/test_hermes_home_shared_launchers.py tests/hermes_cli/test_launcher_runtime_selection.py
+  retirement: Remove when upstream privately loads the promoted store supplier and preserves native executable publication across Python repins.
+
 - id: mattermost-bounded-thread-context
   kind: compatibility
   rationale: Preserve a validated root reply pointer and bounded thread history on first entry,
