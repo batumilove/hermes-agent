@@ -5,6 +5,25 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: ci-pty-line-and-upgrade-discovery-fixtures
+  kind: compatibility
+  rationale: Attribute the fork-local PR443 fixture repair from reviewed commit
+    ba2a4db5f2b941368542070af2a65d89378d1f74 to the batumilove-maintained CI
+    test contracts. Wait for the complete real PTY line before asserting idle,
+    and permit only exact read-only systemctl gateway-unit discovery in sandbox
+    service shims while retaining refusal of mutations and malformed arguments.
+    Offline regressions require the repository test environment and isolated
+    process/filesystem namespaces; they do not replace full upgrade/Desktop CI.
+  paths:
+  - tests/tools/test_drain_high_fd.py
+  - tests/e2e/core/upgrade/_helpers.py
+  - tests/scripts/test_upgrade_service_shims.py
+  tests:
+  - scripts/run_tests.sh tests/tools/test_drain_high_fd.py tests/scripts/test_upgrade_service_shims.py --file-retries 0
+  - scripts/run_tests.sh tests/hermes_cli/test_update_pause_ownership.py tests/hermes_cli/test_update_pause_systemd_ownership.py --file-retries 0
+  retirement: Remove when upstream includes complete-line PTY synchronization and
+    exact read-only sandbox gateway discovery with equivalent refusal regressions,
+    and these three fixture paths no longer differ from the accepted upstream base.
 - id: s6-waited-cleanup-immutable-publication
   kind: operations
   rationale: Preserve bounded gateway-only shutdown before the short s6 sweep and
