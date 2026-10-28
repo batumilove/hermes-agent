@@ -53,7 +53,7 @@ def _read_environment(env=None):
 def git(repo: Path, *args: str, env=None, binary=False, input_data=None):
     result = subprocess.run(
         ["git", *args], cwd=repo, env=_read_environment(env), capture_output=True,
-        text=not binary, input=input_data, timeout=3 if _OFFLINE.get() else 120, check=False,
+        text=not binary, encoding=None if binary else "utf-8", input=input_data, timeout=3 if _OFFLINE.get() else 120, check=False,
     )
     if result.returncode:
         detail = result.stderr.decode(errors="replace") if binary else result.stderr
@@ -64,7 +64,7 @@ def git(repo: Path, *args: str, env=None, binary=False, input_data=None):
 def is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
     result = subprocess.run(
         ["git", "merge-base", "--is-ancestor", ancestor, descendant],
-        cwd=repo, env=_read_environment(), capture_output=True, text=True, timeout=3 if _OFFLINE.get() else 120, check=False,
+        cwd=repo, env=_read_environment(), capture_output=True, text=True, encoding="utf-8", timeout=3 if _OFFLINE.get() else 120, check=False,
     )
     if result.returncode not in (0, 1):
         raise ProvenanceError(result.stderr.strip() or "could not inspect Git ancestry")
