@@ -211,8 +211,21 @@ def _store_script_maker(python_exe: Path):
             return None
         # Validate files as well as the directory: scripts, relative imports and PE
         # resources must not follow an outside-store symlink before code executes.
-        if any(not path.resolve(strict=True).is_relative_to(store) for path in package.rglob("*")):
-            return None
+        pending = [package]
+        visited = set()
+        while pending:
+            directory = pending.pop().resolve(strict=True)
+            if not directory.is_relative_to(store):
+                return None
+            if directory in visited:
+                continue
+            visited.add(directory)
+            for path in directory.iterdir():
+                resolved = path.resolve(strict=True)
+                if not resolved.is_relative_to(store):
+                    return None
+                if resolved.is_dir():
+                    pending.append(resolved)
         checked_modules()
         if name not in sys.modules:
             spec = importlib.util.spec_from_file_location(
@@ -224,7 +237,7 @@ def _store_script_maker(python_exe: Path):
         scripts = importlib.import_module(f"{name}.scripts")
         checked_modules()
         return scripts.ScriptMaker
-    except (ImportError, OSError, SyntaxError, AttributeError, ValueError, RuntimeError):
+    except (ImportError, OSError, SyntaxError, AttributeError, TypeError, ValueError, RuntimeError):
         # Defined malformed-supplier failures use command fallback. Do not catch
         # BaseException: cancellation and process termination must still propagate.
         for key in list(sys.modules):

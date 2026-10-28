@@ -122,6 +122,26 @@ class StoreLauncherSupplierTests(unittest.TestCase):
         (package / "scripts.py").symlink_to(outside)
         self.assertIsNone(_launchers._store_script_maker(self.python))
 
+    def test_rejects_nested_directory_symlink_before_outside_code_executes(self):
+        package = self.install_supplier()
+        nested = self.python.parent / "linked_dependency"
+        nested.mkdir()
+        sentinel = self.root / "executed"
+        outside = self.root / "outside.py"
+        outside.write_text(f"from pathlib import Path\nPath({str(sentinel)!r}).touch()\n")
+        (nested / "__init__.py").symlink_to(outside)
+        (package / "dependency").symlink_to(nested, target_is_directory=True)
+        (package / "__init__.py").write_text("from . import dependency\n")
+        self.assertIsNone(_launchers._store_script_maker(self.python))
+        self.assertFalse(sentinel.exists(), "outside-store code executed before rejection")
+
+    def test_malformed_cached_file_metadata_returns_fallback(self):
+        self.install_supplier()
+        maker = _launchers._store_script_maker(self.python)
+        module = sys.modules[maker.__module__]
+        with patch.object(module, "__file__", None):
+            self.assertIsNone(_launchers._store_script_maker(self.python))
+
     def test_rejects_foreign_private_cached_package(self):
         import hashlib
         import types
