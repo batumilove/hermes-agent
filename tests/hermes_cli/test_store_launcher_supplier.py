@@ -172,5 +172,19 @@ class StoreLauncherSupplierTests(unittest.TestCase):
         self.assertEqual(subprocess.run([str(result)], timeout=30, check=False).returncode, 7)
 
 
+# Keep the stdlib entrypoint usable without pytest while exposing the native
+# process case to the marked-OS lane's file discovery and -m selector.
+try:
+    import pytest
+except ImportError:
+    pass
+else:
+    StoreLauncherSupplierTests.test_promoted_supplier_exe_executes_on_windows = (
+        pytest.mark.platforms("windows")(
+            StoreLauncherSupplierTests.test_promoted_supplier_exe_executes_on_windows
+        )
+    )
+
+
 if __name__ == "__main__":
     unittest.main()
