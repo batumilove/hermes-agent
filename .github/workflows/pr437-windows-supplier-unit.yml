@@ -1,0 +1,100 @@
+name: Diagnostic Windows supplier unit (exact marker target)
+
+# Diagnostic ref only; never a replacement for the 13 install/update journeys.
+# The push trigger works without registering a new workflow on the default branch.
+on:
+  push:
+    branches: [diagnostic/pr437-windows-supplier-unit-224ce2bb]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  supplier-unit:
+    name: Native Windows supplier unit at 224ce2bb
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact reviewed marker target
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: 224ce2bb5c72d4a49dbc42c1ee8701067f01dc71
+          persist-credentials: false
+
+      - name: Verify target identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 224ce2bb5c72d4a49dbc42c1ee8701067f01dc71
+          test "$(git rev-parse HEAD^{tree})" = f4f51e4f2fdd959fb2613580380d65b1d83b3f7e
+
+      - name: Set up existing locked native test environment
+        uses: ./.github/actions/setup-pm
+        with:
+          packages: git,ripgrep
+          extras: '["all", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "parallel-web"]'
+          test-environment: 'true'
+          save-tools-cache: 'false'
+          save-python-cache: 'false'
+
+      - name: Require native host and existing distlib supplier
+        shell: bash
+        run: |
+          python -c 'import os, distlib; assert os.name == "nt"; print("native supplier:", distlib.__file__)'
+
+      - name: Run canonical supplier unit file including native PE process case
+        shell: bash
+        run: |
+          report="$(python -c 'import os; from pathlib import Path; print(Path(os.environ["RUNNER_TEMP"]).resolve() / "supplier-unit.xml")')"
+          scripts/run_tests.sh --fail-on-skip --files tests/hermes_cli/test_store_launcher_supplier.py -- -v --tb=short -rA --junitxml="$report"
+        env:
+          HERMES_TEST_WORKERS: '1'
+          HERMES_TEST_FILE_RETRIES: '0'
+          OPENROUTER_API_KEY: ''
+          OPENAI_API_KEY: ''
+          NOUS_API_KEY: ''
+
+      - name: Verify complete native per-case JUnit receipt
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import ast
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          source = Path('tests/hermes_cli/test_store_launcher_supplier.py')
+          cls = next(n for n in ast.parse(source.read_text(encoding='utf-8')).body
+                     if isinstance(n, ast.ClassDef) and n.name == 'StoreLauncherSupplierTests')
+          expected = {n.name for n in cls.body
+                      if isinstance(n, ast.FunctionDef) and n.name.startswith('test_')}
+          native = 'test_promoted_supplier_exe_executes_on_windows'
+          assert len(expected) == 10 and native in expected, expected
+          root = ET.parse(Path(os.environ['RUNNER_TEMP']) / 'supplier-unit.xml').getroot()
+          suites = list(root.iter('testsuite'))
+          assert len(suites) == 1, 'expected exactly one supplier test suite'
+          suite = suites[0]
+          for key, value in [('tests', 10), ('skipped', 0), ('failures', 0), ('errors', 0)]:
+              assert int(suite.attrib[key]) == value, (key, suite.attrib)
+          cases = list(suite.iter('testcase'))
+          assert len(cases) == 10, 'missing or duplicate testcase'
+          assert {c.attrib['name'] for c in cases} == expected, 'testcase names differ'
+          for case in cases:
+              assert case.attrib['classname'] == 'tests.hermes_cli.test_store_launcher_supplier.StoreLauncherSupplierTests', case.attrib
+              assert not any(case.find(tag) is not None for tag in ('skipped', 'failure', 'error')), case.attrib
+          print(f'{native} PASSED; tests=10 success=10 skipped=0 failures=0 errors=0')
+          PY
+
+      - name: Retain per-case supplier report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-supplier-unit-junit
+          path: ${{ runner.temp }}/supplier-unit.xml
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Check target checkout is clean
+        uses: ./.github/actions/check-clean-worktree
