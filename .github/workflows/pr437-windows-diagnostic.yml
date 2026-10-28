@@ -1,0 +1,39 @@
+name: PR437 Windows executable diagnostic
+on:
+  push:
+    branches: ['diagnostic/pr437-windows-20261028T0637']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnostic:
+    runs-on: windows-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        revision: [f7a6af731a5d63a7c45557e902dd63b6fcb279da, baac9756bc367ea534997edc53a63de5249c080a, 73ce0b2499c6b51e4314e04709a983fadd648b5a]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ matrix.revision }}
+          persist-credentials: false
+      - name: Exact identity
+        shell: bash
+        run: git rev-parse HEAD HEAD^{tree}
+      - name: Locked test environment
+        uses: ./.github/actions/setup-pm
+        with:
+          test-environment: 'true'
+          cache: 'false'
+          cache-python: 'false'
+          cache-node: 'false'
+      - name: Native launcher lifecycle controls
+        shell: bash
+        run: scripts/run_tests.sh tests/hermes_cli/test_source_launcher_publication.py -- -m platforms -k 'repin_without_distlib or running_source_launcher_can_republish' -v --tb=long -rA
+        env:
+          HERMES_TEST_WORKERS: '1'
+          HERMES_TEST_FILE_RETRIES: '0'
+          OPENAI_API_KEY: ''
+          OPENROUTER_API_KEY: ''
+          NOUS_API_KEY: ''
