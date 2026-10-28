@@ -219,6 +219,8 @@ class Machine:
             temp = self.local / "Temp"
             temp.mkdir(parents=True, exist_ok=True)
             env.update({"TEMP": str(temp), "TMP": str(temp)})
+        if os.environ.get("HERMES_LAUNCHER_DIAGNOSTIC") == "1":
+            env["HERMES_LAUNCHER_DIAGNOSTIC"] = "1"
         env.update(extra or {})
         return env
 
@@ -422,8 +424,18 @@ class Machine:
                                 as_user=as_user)
 
     def update(self, *extra: str, label: str = "update", as_user: bool = False) -> Run:
-        with self.gateway_phase():
-            return self.hermes("update", "--yes", *extra, label=label, timeout=UPDATE_TIMEOUT, as_user=as_user)
+        if os.environ.get("HERMES_LAUNCHER_DIAGNOSTIC") != "1":
+            with self.gateway_phase():
+                return self.hermes("update", "--yes", *extra, label=label, timeout=UPDATE_TIMEOUT, as_user=as_user)
+        from hermes_cli._launcher_diagnostic import snapshot
+
+        capture = os.environ.get("HERMES_LAUNCHER_DIAGNOSTIC") == "1"
+        snapshot(self.hermes_home, self.install_dir, "before", enabled=capture)
+        try:
+            with self.gateway_phase():
+                return self.hermes("update", "--yes", *extra, label=label, timeout=UPDATE_TIMEOUT, as_user=as_user)
+        finally:
+            snapshot(self.hermes_home, self.install_dir, "after", enabled=capture)
 
     @contextlib.contextmanager
     def gateway_phase(self):
@@ -587,6 +599,9 @@ class Machine:
                                         ignore=shutil.ignore_patterns("*.db", "*.db-*"))
                 (dest / "evidence.txt").write_text(self.evidence(), encoding="utf-8", errors="replace")
                 (dest / "timings.json").write_text(json.dumps(self.timings, indent=1), encoding="utf-8")
+                diagnostic = self.hermes_home / "launcher-diagnostic"
+                if os.environ.get("HERMES_LAUNCHER_DIAGNOSTIC") == "1" and diagnostic.is_dir():
+                    shutil.copytree(diagnostic, dest / "launcher-diagnostic", dirs_exist_ok=True)
         finally:
             # Every machine is a full install (checkout, venv with every extra, PM tools, caches) on
             # the runner's only drive; kept, they add up past its free space before the last file

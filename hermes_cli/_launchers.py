@@ -156,12 +156,14 @@ def _load_script_maker():
     try:
         from distlib.scripts import ScriptMaker
 
+        _diagnostic("ambient-maker", available=True, source=ScriptMaker.__module__)
         return ScriptMaker
     except ImportError:
         pass
     try:
         from pip._vendor.distlib.scripts import ScriptMaker
 
+        _diagnostic("ambient-maker", available=True, source=ScriptMaker.__module__)
         return ScriptMaker
     except ImportError:
         return None
@@ -194,8 +196,11 @@ def _store_script_maker(python_exe: Path):
                 return None
             sys.modules[name] = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(sys.modules[name])
-        return importlib.import_module(f"{name}.scripts").ScriptMaker
-    except (ImportError, OSError, SyntaxError, AttributeError):  # a torn or foreign pip: mint a .cmd
+        maker = importlib.import_module(f"{name}.scripts").ScriptMaker
+        _diagnostic("store-maker-import", available=True, source=package / "scripts.py")
+        return maker
+    except (ImportError, OSError, SyntaxError, AttributeError) as exc:  # a torn or foreign pip: mint a .cmd
+        _diagnostic("store-maker-import", available=False, exception_class=type(exc).__name__)
         sys.modules.pop(name, None)
         return None
 
@@ -245,6 +250,17 @@ def _write_atomic(target: Path, write) -> Path | None:
         return None
 
 
+def _diagnostic(kind, **fields):
+    # Disabled path neither imports observer nor touches the filesystem.
+    if os.environ.get("HERMES_LAUNCHER_DIAGNOSTIC") != "1":
+        return
+    try:
+        from hermes_cli._launcher_diagnostic import event
+        event(kind, **fields)
+    except Exception:
+        pass
+
+
 def mint_launcher(
     name: str,
     repo_root: Path,
@@ -274,7 +290,10 @@ def mint_launcher(
             maker.executable = str(python_exe)
             maker.variants = {""}
             maker.clobber = True
-            return maker.make(f"{name} = {module}:{func}", {"interpreter_args": ["-I"]})
+            result = maker.make(f"{name} = {module}:{func}", {"interpreter_args": ["-I"]})
+            for filename in result:
+                _diagnostic("maker-return", filename=filename)
+            return result
 
         # distlib's exe ZIP records the current time, so byte equality cannot
         # detect an unchanged launcher. Compare its loader + shebang and script;
@@ -283,7 +302,8 @@ def mint_launcher(
             try:
                 candidate = next((Path(p) for p in make(Path(staging))
                                   if Path(p).suffix.lower() == ".exe"), None)
-            except Exception:
+            except Exception as exc:
+                _diagnostic("maker-staging-exception", exception_class=type(exc).__name__)
                 candidate = None
             if candidate is not None:
                 target = out_dir / candidate.name
@@ -300,7 +320,8 @@ def mint_launcher(
                 # move an executable Windows still has mapped in memory.
                 try:
                     written = make(out_dir)
-                except Exception:
+                except Exception as exc:
+                    _diagnostic("maker-publication-exception", exception_class=type(exc).__name__)
                     written = []
                 for path in written:
                     if Path(path).suffix.lower() == ".exe":
@@ -589,7 +610,15 @@ def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
     # runtime override must not displace the tree's own interpreter.
     store_python = resolve_store_python(repo_root, publication=True)
     if store_python is not None:
+        if os.environ.get("HERMES_LAUNCHER_DIAGNOSTIC") == "1":
+            try:
+                from hermes_cli._launcher_diagnostic import store_inventory
+                store_inventory(repo_root, store_python)
+            except Exception:
+                pass
+        _diagnostic("mint-enter", python=store_python, filename=out_dir)
         path = mint_launcher(name, repo_root, out_dir, store_python, None)
+        _diagnostic("mint-return", filename=path)
         if path is None:
             return None
         # Any publication collects copies retired by an earlier one, whatever
@@ -621,6 +650,7 @@ def _retire_exe(exe: Path) -> bool:
     plain unlink left every repinned update owing launchers -- and the install
     stamp -- forever. The aside copy goes on the next publication once its
     process has exited."""
+    _diagnostic("retire-enter", filename=exe)
     try:
         exe.unlink(missing_ok=True)
         return True
@@ -628,6 +658,7 @@ def _retire_exe(exe: Path) -> bool:
         pass
     aside = exe.with_name(f"{exe.name}.{os.getpid()}.deleteme")
     try:
+        _diagnostic("retire-rename", filename=aside)
         os.replace(exe, aside)
     except OSError:
         return False
