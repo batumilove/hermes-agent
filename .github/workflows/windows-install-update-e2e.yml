@@ -167,10 +167,21 @@ jobs:
           ENCRYPTED_ROOT: ${{ runner.temp }}/launcher-encrypted
         run: |
           set -euo pipefail
+          # Git Bash receives native Windows paths; normalize before cd or tar -C.
+          if command -v cygpath >/dev/null 2>&1; then
+            RUNNER_TEMP=$(cygpath -u "$RUNNER_TEMP")
+            EVIDENCE_ROOT=$(cygpath -u "$EVIDENCE_ROOT")
+            ENCRYPTED_ROOT=$(cygpath -u "$ENCRYPTED_ROOT")
+          fi
+          custody_cert="$PWD/tests/launcher-diagnostic-custody.pem"
+          EVIDENCE_ROOT=$(cd "$EVIDENCE_ROOT" && pwd -P)
           mkdir -p "$ENCRYPTED_ROOT"
-          trap 'rm -f "$RUNNER_TEMP/launcher-evidence.tar" "$ENCRYPTED_ROOT/evidence.cms.tmp"' EXIT
-          tar -C "$EVIDENCE_ROOT" -cf "$RUNNER_TEMP/launcher-evidence.tar" .
-          openssl cms -encrypt -binary -aes256 -outform DER -in "$RUNNER_TEMP/launcher-evidence.tar" -out "$ENCRYPTED_ROOT/evidence.cms.tmp" tests/launcher-diagnostic-custody.pem
+          ENCRYPTED_ROOT=$(cd "$ENCRYPTED_ROOT" && pwd -P)
+          cd "$RUNNER_TEMP"
+          trap 'rm -f ./launcher-evidence.tar "$ENCRYPTED_ROOT/evidence.cms.tmp"' EXIT
+          # A relative archive name cannot be parsed as a remote D: host by GNU tar.
+          tar -C "$EVIDENCE_ROOT" -cf ./launcher-evidence.tar .
+          openssl cms -encrypt -binary -aes256 -outform DER -in ./launcher-evidence.tar -out "$ENCRYPTED_ROOT/evidence.cms.tmp" "$custody_cert"
           mv "$ENCRYPTED_ROOT/evidence.cms.tmp" "$ENCRYPTED_ROOT/evidence.cms"
 
       - name: Upload transcripts, logs and receipts
