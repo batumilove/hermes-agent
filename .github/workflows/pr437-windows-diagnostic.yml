@@ -1,39 +1,66 @@
-name: PR437 Windows executable diagnostic
+name: PR437 Windows original journey diagnostic
 on:
-  push:
-    branches: ['diagnostic/pr437-windows-20261028T0637']
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   diagnostic:
     runs-on: windows-latest
-    timeout-minutes: 12
+    timeout-minutes: 70
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
-        revision: [f7a6af731a5d63a7c45557e902dd63b6fcb279da, baac9756bc367ea534997edc53a63de5249c080a, 73ce0b2499c6b51e4314e04709a983fadd648b5a]
+        revision: [73ce0b2499c6b51e4314e04709a983fadd648b5a, baac9756bc367ea534997edc53a63de5249c080a]
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Exact target checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           ref: ${{ matrix.revision }}
+          fetch-depth: 0
           persist-credentials: false
-      - name: Exact identity
+      - name: Diagnostic overlay checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.sha }}
+          path: pr437-diagnostic-overlay
+          persist-credentials: false
+      - name: Overlay only diagnostics and prove original assertions
         shell: bash
-        run: git rev-parse HEAD HEAD^{tree}
+        run: |
+          git rev-parse HEAD HEAD^{tree}
+          git diff --exit-code HEAD -- tests/e2e/core/windows_update/test_upgrade_over_old_gateway.py tests/e2e/core/windows_update/_machine.py tests/e2e/core/windows_update/_tokens.py hermes_cli/_launchers.py
+          cp pr437-diagnostic-overlay/tests/e2e/core/windows_update/conftest.py tests/e2e/core/windows_update/conftest.py
+          cp pr437-diagnostic-overlay/tests/e2e/core/windows_update/pr437_trace_hook.py tests/e2e/core/windows_update/pr437_trace_hook.py
       - name: Locked test environment
         uses: ./.github/actions/setup-pm
         with:
+          packages: git,ripgrep
+          extras: '["all", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "parallel-web"]'
           test-environment: 'true'
           cache: 'false'
           cache-python: 'false'
           cache-node: 'false'
-      - name: Native launcher lifecycle controls
+      - name: Original elevated and standard-user journeys
         shell: bash
-        run: scripts/run_tests.sh tests/hermes_cli/test_source_launcher_publication.py -- -m platforms -k 'repin_without_distlib or running_source_launcher_can_republish' -v --tb=long -rA
+        run: scripts/run_tests.sh tests/e2e/core/windows_update/test_upgrade_over_old_gateway.py -- -m 'platforms and integration' -v --tb=long -rA
         env:
+          HERMES_E2E_WINDOWS_INSTALL: '1'
+          HERMES_E2E_STRICT_ACCEPTANCE: upd-txn
+          HERMES_E2E_MACHINE_ROOT: ${{ runner.temp }}\wm
+          HERMES_E2E_PROFILES_ROOT: C:\Users
+          HERMES_E2E_ARTIFACTS: ${{ runner.temp }}\win-update-e2e
           HERMES_TEST_WORKERS: '1'
+          HERMES_TEST_FILE_TIMEOUT: '3600'
           HERMES_TEST_FILE_RETRIES: '0'
           OPENAI_API_KEY: ''
           OPENROUTER_API_KEY: ''
           NOUS_API_KEY: ''
+      - name: Retain diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pr437-windows-journey-${{ matrix.revision }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/win-update-e2e
+          if-no-files-found: warn
+          retention-days: 14
