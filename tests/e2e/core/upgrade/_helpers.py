@@ -11,8 +11,8 @@ Every Hermes process these suites spawn runs:
   ``~/.hermes`` bind-mounted read-only, and ``--die-with-parent`` so killing the
   sandbox kills every descendant (no orphans);
 * with ``systemctl``/``launchctl``/``sudo``/``loginctl`` shims first on PATH that log
-  their argv and fail, so a service-restart attempt is observable and never reaches a
-  real supervisor.
+  their argv and fail (except exact read-only gateway listings), so a service-restart
+  attempt is observable and never reaches a real supervisor.
 """
 
 from __future__ import annotations
@@ -87,16 +87,30 @@ def sandbox_required_reason() -> str | None:
 
 
 def write_shims(bin_dir: Path) -> Path:
-    """Create failing, argv-logging shims for service managers; returns the call log path."""
+    """Log service-manager calls; only exact, read-only gateway listings succeed."""
+    import shlex
+
     bin_dir.mkdir(parents=True, exist_ok=True)
     log = bin_dir / "shim-calls.log"
+    listing = (
+        "list-units", "hermes-gateway*", "hermes-*-gateway.service", "hermes-serve*",
+        "hermes-dashboard*", "--plain", "--no-legend", "--no-pager",
+    )
+    checks = " && ".join(
+        f'[ "${{{index}}}" = {shlex.quote(arg)} ]' for index, arg in enumerate(listing, 1)
+    )
     for name in _SHIMMED:
         p = bin_dir / name
+        discovery = (
+            'if [ "$1" = "--user" ]; then shift; fi\n'
+            f'if [ "$#" -eq {len(listing)} ] && {checks}; then exit 0; fi\n'
+        ) if name == "systemctl" else ""
         p.write_text(
             "#!/bin/sh\n"
             f'printf "%s\\n" "{name} $*" >> "{log}"\n'
-            'echo "Failed to connect to bus: sandboxed test shim" >&2\n'
-            "exit 1\n",
+            + discovery
+            + 'echo "Failed to connect to bus: sandboxed test shim" >&2\n'
+            + "exit 1\n",
             encoding="utf-8",
         )
         p.chmod(0o755)

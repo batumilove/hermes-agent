@@ -88,7 +88,8 @@ def _assert_idle_read_waits(bridge):
 
 
 @pytest.mark.platforms("posix")
-def test_pty_bridge_reads_and_waits_above_fd_setsize(high_fds, monkeypatch):
+@pytest.mark.parametrize("fragment_line", [False, True], ids=["natural", "fragmented-crlf"])
+def test_pty_bridge_reads_and_waits_above_fd_setsize(high_fds, monkeypatch, fragment_line):
     """The PTY bridge delivers output at a high fd and an idle read blocks for its timeout;
     when the selector cannot be created (EMFILE), the bridge either still waits (poll
     fallback) or refuses to spawn, never a busy-looping bridge (macOS poll on a PTY)."""
@@ -99,15 +100,33 @@ def test_pty_bridge_reads_and_waits_above_fd_setsize(high_fds, monkeypatch):
     from tools.environments import fd_wait
 
     bridge = PtyBridge.spawn(["/bin/sh", "-c", "echo pty-high-fd; exec sleep 30"])
+    if fragment_line:
+        real_read = bridge.read
+        pending = bytearray()
+
+        def fragmented_read(timeout):
+            # Force the legal boundary immediately before CRLF, independent of os.read timing.
+            if pending:
+                chunk = bytes(pending)
+                pending.clear()
+                return chunk
+            chunk = real_read(timeout=timeout)
+            if chunk and b"\r\n" in chunk:
+                prefix, ending = chunk.split(b"\r\n", 1)
+                pending.extend(b"\r\n" + ending)
+                return prefix
+            return chunk
+
+        monkeypatch.setattr(bridge, "read", fragmented_read)
     try:
         assert bridge._fd >= 1024
         buf = bytearray()
         deadline = time.monotonic() + 5
-        while b"pty-high-fd" not in buf and time.monotonic() < deadline:
+        while b"pty-high-fd\r\n" not in buf and time.monotonic() < deadline:
             chunk = bridge.read(timeout=0.2)
             assert chunk is not None, f"PTY reported EOF before output (got {bytes(buf)!r})"
             buf.extend(chunk)
-        assert b"pty-high-fd" in buf
+        assert b"pty-high-fd\r\n" in buf
         _assert_idle_read_waits(bridge)
     finally:
         bridge.close()
