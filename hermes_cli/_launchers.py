@@ -168,25 +168,52 @@ def _load_script_maker():
 
 
 def _store_script_maker(python_exe: Path):
-    """ScriptMaker from the pip that ships with the interpreter being bound.
+    """ScriptMaker from the interpreter being bound, not active dependencies.
 
-    A launch activates only the dependency environment, which carries no
-    distlib and drops the store's site-packages, so the update that repins
-    Python could only publish a .cmd and retire hermes.exe -- which Desktop's
-    backend sweep, shortcuts and terminal profiles name. python-build-standalone
-    ships pip (the installer mints the first hermes.exe through it), and its
-    vendored distlib is self-contained. It loads under a private name so the
-    store's pip never answers an ``import pip`` in this process."""
-    package = Path(python_exe).parent / "Lib" / "site-packages" / "pip" / "_vendor" / "distlib"
-    if not (package / "scripts.py").is_file():
+    PM promotes the pinned archive's distlib to a standalone package before
+    removing pip. Older stores retain pip's vendored copy. Load either under
+    a private name: neither store package may answer ambient imports.
+    """
+    site = Path(python_exe).parent / "Lib" / "site-packages"
+    package = next((candidate for candidate in (
+        site / "distlib", site / "pip" / "_vendor" / "distlib"
+    ) if (candidate / "scripts.py").is_file()), None)
+    if package is None:
         return None
     import hashlib
     import importlib
     import importlib.util
 
-    # One private package per store copy: a later repin's pip never reuses the first one's.
+    # One private package per store copy: a later repin never reuses the first one's.
     name = f"_hermes_store_distlib_{hashlib.sha256(str(package).encode()).hexdigest()[:12]}"
+
+    def checked_modules():
+        for key, module in list(sys.modules.items()):
+            if key != name and not key.startswith(name + "."):
+                continue
+            relative = key[len(name):].lstrip(".").split(".") if key != name else []
+            expected = package.joinpath(*relative)
+            is_package = hasattr(module, "__path__")
+            origin = expected / "__init__.py" if is_package else expected.with_suffix(".py")
+            spec = getattr(module, "__spec__", None)
+            if (spec is None or spec.name != key
+                    or Path(spec.origin or "").resolve() != origin.resolve()
+                    or Path(getattr(module, "__file__", "")).resolve() != origin.resolve()
+                    or getattr(module, "__package__", None) != (key if is_package else key.rpartition(".")[0])
+                    or not origin.resolve().is_relative_to(package)
+                    or (is_package and list(module.__path__) != [str(expected)])):
+                raise ImportError("foreign private distlib module")
+
     try:
+        store = Path(python_exe).parent.resolve(strict=True)
+        package = package.resolve(strict=True)
+        if not package.is_relative_to(store):
+            return None
+        # Validate files as well as the directory: scripts, relative imports and PE
+        # resources must not follow an outside-store symlink before code executes.
+        if any(not path.resolve(strict=True).is_relative_to(store) for path in package.rglob("*")):
+            return None
+        checked_modules()
         if name not in sys.modules:
             spec = importlib.util.spec_from_file_location(
                 name, package / "__init__.py", submodule_search_locations=[str(package)])
@@ -194,9 +221,15 @@ def _store_script_maker(python_exe: Path):
                 return None
             sys.modules[name] = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(sys.modules[name])
-        return importlib.import_module(f"{name}.scripts").ScriptMaker
-    except (ImportError, OSError, SyntaxError, AttributeError):  # a torn or foreign pip: mint a .cmd
-        sys.modules.pop(name, None)
+        scripts = importlib.import_module(f"{name}.scripts")
+        checked_modules()
+        return scripts.ScriptMaker
+    except (ImportError, OSError, SyntaxError, AttributeError, ValueError, RuntimeError):
+        # Defined malformed-supplier failures use command fallback. Do not catch
+        # BaseException: cancellation and process termination must still propagate.
+        for key in list(sys.modules):
+            if key == name or key.startswith(name + "."):
+                sys.modules.pop(key, None)
         return None
 
 
