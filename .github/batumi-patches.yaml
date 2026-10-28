@@ -2364,9 +2364,14 @@ patches:
   kind: core
   rationale: Verify the pinned upstream release and exact tree-import proof when deriving
     source runtime identity, preserving plugin version gates across squashed fork imports.
+    Package the verifier for PM-installed runtime imports while preserving byte parity
+    with the standalone CI verifier. Installed regression requires uv and the repository
+    Python test environment; it creates an isolated venv without live credentials.
   paths:
   - hermes_cli/version_info.py
   - hermes_cli/version_provenance.py
+  - hermes_cli/fork_provenance.py
+  - tests/pm/test_installed_version_provenance.py
   - tests/hermes_cli/test_version_import_provenance.py
   - scripts/fork_provenance.py
   - scripts/build/image_identity.py
@@ -2374,4 +2379,5 @@ patches:
   tests:
   - scripts/run_tests.sh tests/hermes_cli/test_version_import_provenance.py tests/hermes_cli/test_version_info.py
     tests/scripts/test_image_identity.py tests/scripts/test_fork_provenance_v2.py
+  - scripts/run_tests.sh tests/pm/test_installed_version_provenance.py tests/pm/test_workspace_build_inputs.py --file-retries 0
   retirement: Remove when upstream runtime identity admits verified tree-import ancestry.
