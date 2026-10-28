@@ -11,7 +11,7 @@ jobs:
       fail-fast: false
       max-parallel: 2
       matrix:
-        revision: [73ce0b2499c6b51e4314e04709a983fadd648b5a, baac9756bc367ea534997edc53a63de5249c080a]
+        revision: [baac9756bc367ea534997edc53a63de5249c080a]
     steps:
       - name: Exact target checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -41,9 +41,9 @@ jobs:
           cache: 'false'
           cache-python: 'false'
           cache-node: 'false'
-      - name: Original elevated and standard-user journeys
+      - name: Provenance only single standard-user journey (not CI acceptance)
         shell: bash
-        run: scripts/run_tests.sh tests/e2e/core/windows_update/test_upgrade_over_old_gateway.py -- -m 'platforms and integration' -v --tb=long -rA
+        run: scripts/run_tests.sh tests/e2e/core/windows_update/test_upgrade_over_old_gateway.py -- -m 'platforms and integration' -k standard_user -v --tb=long -rA
         env:
           HERMES_E2E_WINDOWS_INSTALL: '1'
           HERMES_E2E_STRICT_ACCEPTANCE: upd-txn

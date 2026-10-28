@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 
 import pytest
 
@@ -58,6 +59,37 @@ def retain(machine):
 def diagnostic_overlay():
     from tests.e2e.core.windows_update._machine import Machine
     original_install, original_update, original_teardown = Machine.install, Machine.update, Machine.teardown
+    original_advance = Machine.advance
+
+    def advance(self):
+        # Private origin only: instrument the target blob before ANY target interpreter starts.
+        # This synthetic successor is provenance-only, never acceptance of the product SHA.
+        from tests.e2e.core.windows_update._machine import REAL_GIT
+        import runpy
+        assert REAL_GIT is not None
+        instrument = runpy.run_path(str(Path(__file__).with_name('pr437_trace_hook.py')))['instrument_source']
+        def git(*args, input=None, env=None):
+            return subprocess.run([REAL_GIT, '-C', str(self.serve), *args], input=input,
+                                  capture_output=True, check=True, timeout=120, env=env).stdout
+        exact = self.next
+        rel = 'hermes_cli/_launchers.py'
+        source = git('show', f'{exact}:{rel}').decode('utf-8')
+        edited = instrument(source, self.logs / 'pr437-target-trace.jsonl').encode('utf-8')
+        blob = git('hash-object', '-w', '--stdin', input=edited).decode().strip()
+        env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
+        env.update(GIT_INDEX_FILE=str(self.root / 'diagnostic.index'),
+                   GIT_AUTHOR_NAME='Hermes diagnostic', GIT_AUTHOR_EMAIL='diagnostic@hermes.invalid',
+                   GIT_COMMITTER_NAME='Hermes diagnostic', GIT_COMMITTER_EMAIL='diagnostic@hermes.invalid')
+        git('read-tree', exact, env=env)
+        git('update-index', '--cacheinfo', f'100644,{blob},{rel}', env=env)
+        tree = git('write-tree', env=env).decode().strip()
+        self.next = git('commit-tree', tree, '-p', exact, '-m', 'diagnostic-only target publication trace', env=env).decode().strip()
+        (self.logs / 'pr437-target-binding.json').write_text(json.dumps({
+            'product_parent': exact, 'diagnostic_target': self.next, 'tree': tree,
+            'original_launcher_sha256': hashlib.sha256(source.encode()).hexdigest(),
+            'instrumented_launcher_sha256': hashlib.sha256(edited).hexdigest(),
+            'acceptance': False}, indent=2), encoding='utf-8')
+        return original_advance(self)
 
     def install(self, *args, **kwargs):
         result = original_install(self, *args, **kwargs)
@@ -78,6 +110,8 @@ def diagnostic_overlay():
         retain(self)
         return original_teardown(self, *args, **kwargs)
 
+    Machine.advance = advance
     Machine.install, Machine.update, Machine.teardown = install, update, teardown
     yield
+    Machine.advance = original_advance
     Machine.install, Machine.update, Machine.teardown = original_install, original_update, original_teardown
