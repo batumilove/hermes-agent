@@ -5,6 +5,19 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: ci-non-nous-profile-catalog-fixture
+  kind: compatibility
+  rationale: Attribute the batumilove-maintained PR443 test-only deterministic
+    provider catalog fixture. Mock provider_model_ids at the actual profile
+    catalog lookup; retain non-Nous Portal exclusion and rejection when absent,
+    with a positive membership control. Requires the repository Python test
+    environment and offline isolated execution; no product validation changes.
+  paths:
+  - tests/hermes_cli/test_model_validation.py
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_model_validation.py --file-retries 0
+  retirement: Remove when upstream supplies an equivalent deterministic profile
+    catalog fixture with both membership controls and this test no longer differs.
 - id: ci-pty-line-and-upgrade-discovery-fixtures
   kind: compatibility
   rationale: Attribute the fork-local PR443 fixture repair from reviewed commit

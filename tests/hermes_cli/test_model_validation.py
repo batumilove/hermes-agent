@@ -754,10 +754,10 @@ class TestValidateRequestedModelNousPortalRecommendations:
         )
         assert result["accepted"] is True
 
-    def test_non_nous_provider_does_not_consult_portal_feed(self):
-        """This fallback tier is Nous-specific; a non-Nous provider must
-        not have its rejection changed by (or trigger a call to) the Nous
-        Portal feed."""
+    @pytest.mark.parametrize("in_profile_catalog", [False, True], ids=["absent", "present"])
+    def test_non_nous_provider_does_not_consult_portal_feed(self, in_profile_catalog):
+        """Only provider-catalog membership may accept this non-Nous model;
+        neither acceptance nor rejection should consult the Nous Portal."""
         probe_payload = {
             "models": ["some/other-model"],
             "probed_url": "https://api.example.com/v1/models",
@@ -765,13 +765,22 @@ class TestValidateRequestedModelNousPortalRecommendations:
             "suggested_base_url": None,
             "used_fallback": False,
         }
+        profile_catalog = ["some/other-model"]
+        if in_profile_catalog:
+            profile_catalog.append("inclusionai/ling-3.0-flash:free")
         with patch("hermes_cli.models.fetch_api_models", return_value=["some/other-model"]), \
+             patch("hermes_cli.models.provider_model_ids", return_value=profile_catalog) as mock_catalog, \
              patch("hermes_cli.models.probe_api_models", return_value=probe_payload), \
              patch("hermes_cli.models.fetch_nous_recommended_models") as mock_portal, \
              patch("hermes_cli.models._model_in_provider_catalog", return_value=False):
             result = validate_requested_model("inclusionai/ling-3.0-flash:free", "openrouter")
+        mock_catalog.assert_called_once_with("openrouter")
         mock_portal.assert_not_called()
-        assert result["accepted"] is False
+        if in_profile_catalog:
+            assert result["accepted"] is True
+            assert result["recognized"] is True
+        else:
+            assert result["accepted"] is False
 
 
 # -- validate — custom endpoint fallback when /models is unreachable (#12220) --
