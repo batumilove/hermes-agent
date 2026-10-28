@@ -236,7 +236,15 @@ def _store_script_maker(python_exe: Path):
             spec.loader.exec_module(sys.modules[name])
         scripts = importlib.import_module(f"{name}.scripts")
         checked_modules()
-        return scripts.ScriptMaker
+        maker = scripts.ScriptMaker
+        if not isinstance(maker, type):
+            raise ImportError("malformed private distlib ScriptMaker")
+        return maker
+    except (KeyboardInterrupt, SystemExit):
+        for key in list(sys.modules):
+            if key == name or key.startswith(name + "."):
+                sys.modules.pop(key, None)
+        raise
     except (ImportError, OSError, SyntaxError, AttributeError, TypeError, ValueError, RuntimeError):
         # Defined malformed-supplier failures use command fallback. Do not catch
         # BaseException: cancellation and process termination must still propagate.

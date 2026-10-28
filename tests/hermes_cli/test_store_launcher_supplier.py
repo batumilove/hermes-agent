@@ -173,11 +173,19 @@ class StoreLauncherSupplierTests(unittest.TestCase):
         self.assertIsNone(_launchers._store_script_maker(self.python))
         self.assertFalse(any(key == name or key.startswith(name + ".") for key in sys.modules))
 
+    def test_malformed_supplier_export_returns_fallback(self):
+        package = self.install_supplier()
+        (package / "scripts.py").write_text("ScriptMaker = 1\n")
+        self.assertIsNone(_launchers._store_script_maker(self.python))
+
     def test_supplier_keyboard_interrupt_is_not_swallowed(self):
         package = self.install_supplier()
         (package / "__init__.py").write_text("raise KeyboardInterrupt()\n")
         with self.assertRaises(KeyboardInterrupt):
             _launchers._store_script_maker(self.python)
+        import hashlib
+        name = "_hermes_store_distlib_" + hashlib.sha256(str(package).encode()).hexdigest()[:12]
+        self.assertFalse(any(key == name or key.startswith(name + ".") for key in sys.modules))
 
     @unittest.skipUnless(os.name == "nt", "native Windows process execution")
     def test_promoted_supplier_exe_executes_on_windows(self):
