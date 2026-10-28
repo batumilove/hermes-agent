@@ -166,10 +166,12 @@ jobs:
           EVIDENCE_ROOT: ${{ runner.temp }}/win-update-e2e
           ENCRYPTED_ROOT: ${{ runner.temp }}/launcher-encrypted
         run: |
+          set -euo pipefail
           mkdir -p "$ENCRYPTED_ROOT"
+          trap 'rm -f "$RUNNER_TEMP/launcher-evidence.tar" "$ENCRYPTED_ROOT/evidence.cms.tmp"' EXIT
           tar -C "$EVIDENCE_ROOT" -cf "$RUNNER_TEMP/launcher-evidence.tar" .
-          openssl cms -encrypt -binary -aes256 -outform DER -in "$RUNNER_TEMP/launcher-evidence.tar" -out "$ENCRYPTED_ROOT/evidence.cms" tests/launcher-diagnostic-custody.pem
-          rm -f "$RUNNER_TEMP/launcher-evidence.tar"
+          openssl cms -encrypt -binary -aes256 -outform DER -in "$RUNNER_TEMP/launcher-evidence.tar" -out "$ENCRYPTED_ROOT/evidence.cms.tmp" tests/launcher-diagnostic-custody.pem
+          mv "$ENCRYPTED_ROOT/evidence.cms.tmp" "$ENCRYPTED_ROOT/evidence.cms"
 
       - name: Upload transcripts, logs and receipts
         if: always()

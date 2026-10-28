@@ -158,14 +158,16 @@ def _load_script_maker():
 
         _diagnostic("ambient-maker", available=True, source=ScriptMaker.__module__)
         return ScriptMaker
-    except ImportError:
+    except ImportError as exc:
+        _diagnostic("ambient-maker-import", available=False, source="distlib", exception_class=type(exc).__name__)
         pass
     try:
         from pip._vendor.distlib.scripts import ScriptMaker
 
         _diagnostic("ambient-maker", available=True, source=ScriptMaker.__module__)
         return ScriptMaker
-    except ImportError:
+    except ImportError as exc:
+        _diagnostic("ambient-maker-import", available=False, source="pip-vendored", exception_class=type(exc).__name__)
         return None
 
 
@@ -181,6 +183,7 @@ def _store_script_maker(python_exe: Path):
     store's pip never answers an ``import pip`` in this process."""
     package = Path(python_exe).parent / "Lib" / "site-packages" / "pip" / "_vendor" / "distlib"
     if not (package / "scripts.py").is_file():
+        _diagnostic("store-maker-refusal", available=False, reason="missing-scripts")
         return None
     import hashlib
     import importlib
@@ -193,6 +196,7 @@ def _store_script_maker(python_exe: Path):
             spec = importlib.util.spec_from_file_location(
                 name, package / "__init__.py", submodule_search_locations=[str(package)])
             if spec is None or spec.loader is None:
+                _diagnostic("store-maker-refusal", available=False, reason="missing-loader")
                 return None
             sys.modules[name] = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(sys.modules[name])
@@ -291,8 +295,14 @@ def mint_launcher(
             maker.variants = {""}
             maker.clobber = True
             result = maker.make(f"{name} = {module}:{func}", {"interpreter_args": ["-I"]})
-            for filename in result:
-                _diagnostic("maker-return", filename=filename)
+            if os.environ.get("HERMES_LAUNCHER_DIAGNOSTIC") == "1":
+                try:
+                    # Never consume one-shot results or invoke custom iterators.
+                    if type(result) in (list, tuple):
+                        for filename in result:
+                            _diagnostic("maker-return", filename=filename)
+                except Exception:
+                    pass
             return result
 
         # distlib's exe ZIP records the current time, so byte equality cannot
@@ -630,6 +640,7 @@ def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
             if not _retire_exe(Path(out_dir) / f"{name}.exe"):
                 return None
         return path
+    _diagnostic("mint-refusal", reason="missing-store-python", filename=out_dir)
     return None
 
 
@@ -653,17 +664,24 @@ def _retire_exe(exe: Path) -> bool:
     _diagnostic("retire-enter", filename=exe)
     try:
         exe.unlink(missing_ok=True)
+        _diagnostic("retire-unlink-success", filename=exe)
         return True
-    except OSError:
+    except OSError as exc:
+        _diagnostic("retire-unlink-failure", filename=exe, exception_class=type(exc).__name__)
         pass
     aside = exe.with_name(f"{exe.name}.{os.getpid()}.deleteme")
     try:
         _diagnostic("retire-rename", filename=aside)
         os.replace(exe, aside)
-    except OSError:
+        _diagnostic("retire-rename-success", filename=aside)
+    except OSError as exc:
+        _diagnostic("retire-rename-failure", filename=aside, exception_class=type(exc).__name__)
         return False
-    with suppress(OSError):
+    try:
         aside.unlink()
+        _diagnostic("retire-aside-unlink-success", filename=aside)
+    except OSError as exc:
+        _diagnostic("retire-aside-unlink-failure", filename=aside, exception_class=type(exc).__name__)
     return True
 
 
