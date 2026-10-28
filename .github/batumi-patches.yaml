@@ -855,7 +855,8 @@ patches:
   kind: core
   rationale: 'Correct defects found during exact-head review of the imported upstream reconciliation:
     MCP stdio child liveness, reconnect-cycle state, suspect connection health checks, and watchdog coroutine
-    handling; desktop preview, HUD, and focus-chord compatibility; plus the associated regression coverage
+    handling; desktop preview, HUD, and focus-chord compatibility; delegate-owned reconnect
+    history recovery with one-shot consumption and newer-submit/start fencing; plus the associated regression coverage
     and stale test/documentation cleanup. Support the Git for Windows UCRT64 recovery layout.'
   paths:
   - apps/desktop/electron/updater/checkout-source.test.ts
@@ -878,6 +879,15 @@ patches:
   - apps/desktop/src/app/hud/resize-handle.test.ts
   - apps/desktop/src/app/hud/resize-handle.ts
   - apps/desktop/src/app/session/hooks/use-session-actions.test.tsx
+  - apps/desktop/src/app/contrib/hooks/use-session-tile-delegate.ts
+  - apps/desktop/src/app/contrib/hooks/use-session-tile-delegate.test.ts
+  - apps/desktop/src/app/session/hooks/use-message-stream/gateway-event/message-stream.ts
+  - apps/desktop/src/app/session/hooks/use-message-stream/gateway-event/session-info.ts
+  - apps/desktop/src/app/session/hooks/use-message-stream/heartbeat-complete-reorder.test.tsx
+  - apps/desktop/src/app/session/hooks/use-message-stream/reconnect-durable-history.test.tsx
+  - apps/desktop/src/app/session/hooks/use-message-stream/reconnect-durable-history.fixture.json
+  - apps/desktop/src/app/session/hooks/use-prompt-actions/submit.ts
+  - apps/desktop/src/app/types.ts
   - apps/desktop/src/app/shell/model-menu-panel.test.tsx
   - apps/desktop/src/lib/keybinds/chords.ts
   - tests/tools/test_local_setsid_descendant_sweep.py
@@ -896,6 +906,7 @@ patches:
   - scripts/run_tests.sh tests/e2e/core/parity/test_entrypoint_parity.py
   - scripts/run_tests.sh tests/tools/test_mcp_stability.py tests/tools/test_mcp_tool.py tests/tools/test_local_setsid_descendant_sweep.py
   - cd apps/desktop && npm run typecheck && npm run lint && npm run test:ui
+  - cd apps/desktop && node ../../node_modules/vitest/vitest.mjs run --project ui --configLoader runner --maxWorkers 1 src/app/session/hooks/use-message-stream/reconnect-durable-history.test.tsx src/app/session/hooks/use-message-stream/heartbeat-complete-reorder.test.tsx src/app/session/hooks/use-message-stream/gateway-event/session-info.test.ts src/app/session/hooks/use-message-stream/session-info-side-effects.test.tsx src/store/session-states.test.ts
   retirement: Remove when upstream includes equivalent fixes and regression coverage for every listed
     path.
 - id: codex-attribution-opt-in-policy

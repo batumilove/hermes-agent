@@ -362,7 +362,9 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
         state => {
           const busy = Boolean(payload!.running)
 
-          if (state.busy === busy && (busy || !state.awaitingResponse)) {
+          const reconnectRecovery = !busy && Boolean(state.reconnectHistoryPending)
+
+          if (!reconnectRecovery && state.busy === busy && (busy || !state.awaitingResponse)) {
             return state
           }
 
@@ -457,11 +459,12 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
           const heartbeatSettledStreamId =
             state.streamId && messages.some(message => message.id === state.streamId) ? state.streamId : null
 
-          endedLiveTurn = state.turnLive
-          recoveredIncompleteTurn = state.turnLive && !heartbeatSettledStreamId
+          endedLiveTurn = state.turnLive || reconnectRecovery
+          recoveredIncompleteTurn = reconnectRecovery || (state.turnLive && !heartbeatSettledStreamId)
 
           return {
             ...state,
+            reconnectHistoryPending: false,
             awaitingResponse: false,
             busy,
             // The turn is over but its streaming bubble may still say

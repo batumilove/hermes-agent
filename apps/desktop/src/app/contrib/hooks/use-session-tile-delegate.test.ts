@@ -737,6 +737,7 @@ describe('useSessionTileDelegate retireBusyClaim', () => {
 
     expect(updater(busyState)).toEqual({
       ...busyState,
+      reconnectHistoryPending: false,
       awaitingResponse: false,
       busy: false,
       turnLive: false,

@@ -183,6 +183,9 @@ export interface ClientSessionState {
   interrupted: boolean
   /** True after message.interim finalized a bubble in the still-running turn. */
   interimBoundaryPending: boolean
+  /** A reconnect retired this live stream; consume once on idle recovery.
+   * Cleared when a newer submit/start takes ownership. */
+  reconnectHistoryPending?: boolean
   /** Stream bubble a running=false heartbeat settled before its turn's
    *  message.complete arrived. The frame can be reordered behind the
    *  heartbeat (#119569); when it lands it settles onto this bubble instead of
