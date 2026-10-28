@@ -25,13 +25,19 @@ class Acceptance(unittest.TestCase):
 
     def test_reconciled_binding_is_literal_and_old_identity_rejected(self):
         import yaml
-        source = 'f47b8970ae32abc11c1f16f4464de40d3c41e09f'
-        tree = '2dacb83a3c8c5d1959f69d64df1d500592076f9d'
+        source = '381d8e15a0f568c3a2e21be3dff99d221595a3c0'
+        tree = 'b7a5493e92968857f2143cbec0e7221e6f83558f'
         m = self.module
         self.assertEqual((m.SOURCE, m.TREE), (source, tree))
         self.assertEqual(m.admit(source, tree), (source, tree))
-        with self.assertRaises(ValueError):
-            m.admit('1c26b6d9d74901a9ffdcc8c197946ed388b32836', '2c787f4eea7914550bdab7cdf68fa4d0307540ab')
+        stale = [
+            ('1c26b6d9d74901a9ffdcc8c197946ed388b32836', '2c787f4eea7914550bdab7cdf68fa4d0307540ab'),
+            ('f47b8970ae32abc11c1f16f4464de40d3c41e09f', '2dacb83a3c8c5d1959f69d64df1d500592076f9d'),
+        ]
+        for old_source, old_tree in stale:
+            for rejected in [(old_source, old_tree), (old_source, tree), (source, old_tree)]:
+                with self.subTest(rejected=rejected), self.assertRaises(ValueError):
+                    m.admit(*rejected)
         w = yaml.safe_load((ROOT / '.github/workflows/pr439-hosted-acceptance.yml').read_text())
         events = w.get('on', w.get(True))
         self.assertEqual(events['workflow_dispatch']['inputs']['source_sha']['default'], source)
