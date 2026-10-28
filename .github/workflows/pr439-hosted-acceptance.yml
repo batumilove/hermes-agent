@@ -6,16 +6,16 @@ on:
   workflow_dispatch:
     inputs:
       source_sha:
-        description: Reviewed original application SHA (allowlisted, not control SHA)
+        description: Reviewed reconciled application SHA (allowlisted, not control SHA)
         required: true
-        default: 1c26b6d9d74901a9ffdcc8c197946ed388b32836
+        default: f47b8970ae32abc11c1f16f4464de40d3c41e09f
         type: string
 
 permissions: {}
 
 jobs:
   acceptance:
-    name: Build test scan exact original source
+    name: Build test scan exact reconciled source
     concurrency:
       group: pr439-hosted-acceptance-${{ github.repository }}
       cancel-in-progress: false
@@ -25,8 +25,8 @@ jobs:
     permissions:
       contents: read
     env:
-      SOURCE_SHA: ${{ inputs.source_sha || '1c26b6d9d74901a9ffdcc8c197946ed388b32836' }}
-      SOURCE_TREE: 2c787f4eea7914550bdab7cdf68fa4d0307540ab
+      SOURCE_SHA: ${{ inputs.source_sha || 'f47b8970ae32abc11c1f16f4464de40d3c41e09f' }}
+      SOURCE_TREE: 2dacb83a3c8c5d1959f69d64df1d500592076f9d
     defaults:
       run:
         shell: bash
@@ -43,7 +43,7 @@ jobs:
           python3 control/scripts/ci/pr439_hosted_acceptance.py admit --source "$SOURCE_SHA" --tree "$SOURCE_TREE"
           git -C control rev-parse HEAD > evidence/control-sha.txt
           git -C control rev-parse HEAD^{tree} > evidence/control-tree.txt
-      - name: Check out exact original application
+      - name: Check out exact reconciled application
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           ref: ${{ env.SOURCE_SHA }}
@@ -101,6 +101,12 @@ jobs:
             --tmpfs /tmp:rw,uid=10000,gid=10000,mode=1777 \
             --entrypoint /opt/hermes/.venv/bin/python "$image_id" - runtime \
             < control/scripts/ci/pr439_hosted_acceptance.py > evidence/runtime.json
+      - name: Exercise incoming s6 cleanup on exact built image
+        run: |
+          set -euo pipefail
+          image_id=$(cat evidence/image-config-digest.txt)
+          python3 control/scripts/ci/pr439_s6_acceptance.py --image-id "$image_id" \
+            --source source --output evidence/s6-cleanup
       - name: Install checksum-pinned Trivy (no composite action dependencies)
         run: |
           set -euo pipefail
@@ -140,7 +146,12 @@ jobs:
           pathlib.Path('evidence/run-provenance.json').write_text(json.dumps({k: os.environ.get(k) for k in keys}, indent=2) + '\n')
           PY
           if test -f "$HOME/.cache/trivy/db/metadata.json"; then cp "$HOME/.cache/trivy/db/metadata.json" evidence/trivy-db-metadata.json; fi
-          (cd evidence && sha256sum ./* > SHA256SUMS)
+          python3 - <<'PY'
+          import hashlib, pathlib
+          root = pathlib.Path('evidence')
+          files = sorted(p for p in root.rglob('*') if p.is_file() and p != root / 'SHA256SUMS')
+          (root / 'SHA256SUMS').write_text(''.join(hashlib.file_digest(p.open('rb'), 'sha256').hexdigest() + '  ' + p.relative_to(root).as_posix() + '\n' for p in files))
+          PY
       - name: Upload non-release acceptance evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

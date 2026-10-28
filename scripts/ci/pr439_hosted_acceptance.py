@@ -8,8 +8,8 @@ from pathlib import Path
 import re
 import subprocess
 
-SOURCE = '1c26b6d9d74901a9ffdcc8c197946ed388b32836'
-TREE = '2c787f4eea7914550bdab7cdf68fa4d0307540ab'
+SOURCE = 'f47b8970ae32abc11c1f16f4464de40d3c41e09f'
+TREE = '2dacb83a3c8c5d1959f69d64df1d500592076f9d'
 
 
 def admit(source: str, tree: str) -> tuple[str, str]:
@@ -23,7 +23,7 @@ def verify_identity(stamp: dict, marker: dict, installed: str) -> None:
         raise ValueError('unbound or dirty install stamp')
     version = stamp.get('packageVersion', '')
     if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+\+[0-9]+\.g' + SOURCE, version):
-        raise ValueError('package version does not bind exact original source')
+        raise ValueError('package version does not bind exact reconciled source')
     if installed != version or marker.get('revision') != SOURCE or marker.get('version') != version:
         raise ValueError('installed package or immutable marker differs')
 
