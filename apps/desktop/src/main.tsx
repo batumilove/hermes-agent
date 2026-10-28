@@ -36,6 +36,9 @@ import { installRendererAnimationPauseState } from './lib/renderer-loop-pause'
 import { installSelectionCopyColorGuard } from './lib/selection-copy-colors'
 import { ThemeProvider } from './themes/context'
 
+import { installRecoveryTimelineBootstrap } from './store/session-states'
+
+installRecoveryTimelineBootstrap()
 installClipboardShim()
 // Chromium serializes selection copies (Cmd+C, right-click Copy) with the
 // theme's computed colors inlined; without this guard a dark-theme selection

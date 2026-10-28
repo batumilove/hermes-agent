@@ -368,6 +368,22 @@ interface LiveTurnBackend {
 
 let liveTurnBackend: LiveTurnBackend | null = null
 
+declare global {
+  interface Window {
+    __enableRecoveryTimeline?: boolean
+    __startRecoveryTimeline?: (expected: string) => void
+  }
+}
+
+/** Already-loaded renderer entrypoint; disabled installs and calls are inert. */
+export function installRecoveryTimelineBootstrap() {
+  if (window.__enableRecoveryTimeline !== true) return
+  window.__startRecoveryTimeline = expected => {
+    if (window.__enableRecoveryTimeline !== true || typeof expected !== 'string' || expected.length > 4096) return
+    startRecoveryTimeline(expected)
+  }
+}
+
 /** Arm once at the original disconnect seam; read-only synchronous snapshot. */
 export function startRecoveryTimeline(expected: string) {
   try {

@@ -73,6 +73,8 @@ test('transcript oracle holds across every transition', async ({}, testInfo) => 
   writeProviderHome(sandbox.hermesHome, provider.url)
   writeProviderHome(path.join(sandbox.hermesHome, 'profiles', 'p2'), provider.url)
   const { app, page } = await launchCoreApp(coreAppEnv(sandbox))
+  // Explicit opt-in applies at the existing reload before the disconnect seam.
+  await app.context().addInitScript(() => { (window as Window & { __enableRecoveryTimeline?: boolean }).__enableRecoveryTimeline = true })
   const ws = recordWebSockets(page)
   const proxies: { close: () => Promise<void> }[] = []
 
@@ -216,12 +218,9 @@ test('transcript oracle holds across every transition', async ({}, testInfo) => 
       await send(page, `${U(8)} across a drop`, 'Enter', ws)
       await provider.streamStarted(U(8))
       await expect(viewport(page)).toContainText(A(8))
+      // No renderer module is loaded here: the production entrypoint was armed on reload.
       await page.evaluate(
-        async expected => {
-          const modulePath = '/src/store/session-states.ts'
-          const { startRecoveryTimeline } = await import(modulePath)
-          startRecoveryTimeline(expected)
-        },
+        (expected: string) => { (window as Window & { __startRecoveryTimeline?: (expected: string) => void }).__startRecoveryTimeline?.(expected) },
         [A(8), 'survives', 'the', 'drop'].join(' ')
       )
       const socketsBefore = ws.sockets.length
