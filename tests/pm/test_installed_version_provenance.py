@@ -28,7 +28,7 @@ def test_installed_snapshot_can_verify_source_provenance(tmp_path):
     python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     built = subprocess.run(
         [uv, "pip", "install", "--python", str(python), "--no-deps", "-e", str(snapshot)],
-        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120,
+        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120, check=False,
     )
     assert built.returncode == 0, built.stdout + built.stderr
     repo = tmp_path / "unverified-source"
@@ -41,5 +41,5 @@ def test_installed_snapshot_can_verify_source_provenance(tmp_path):
         "print(p.__file__)"
     )
     result = subprocess.run([str(python), "-I", "-c", code], cwd=tmp_path, env=env,
-                            capture_output=True, text=True, timeout=20)
+                            capture_output=True, text=True, timeout=20, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
