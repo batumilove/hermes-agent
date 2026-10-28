@@ -348,6 +348,8 @@ class Machine:
                 code = proc.wait(timeout=timeout)
                 self.timings.append((label, round(time.monotonic() - started, 1)))
             except subprocess.TimeoutExpired:
+                if label == "install":
+                    self._install_timed_out = True
                 subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=60,
                                check=False)
                 raise AssertionError(
@@ -374,6 +376,8 @@ class Machine:
             code = proc.wait(timeout=timeout)
             self.timings.append((label, round(time.monotonic() - started, 1)))
         except subprocess.TimeoutExpired:
+            if label == "install":
+                self._install_timed_out = True
             subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=60, check=False)
             proc.wait(timeout=60)
             reader.join(timeout=10)
@@ -664,6 +668,29 @@ class Journey:
             self.results[name] = fn()
         except Exception as exc:  # recorded, re-raised by the cells that read it
             self.results[name] = exc
+        if name in ("install", "install_ok") and os.environ.get("HERMES_LAUNCHER_DIAGNOSTIC") == "1":
+            # Private transcript custody only: never stringify an exception, argv or Run output.
+            # Capture here even when no downstream cell reads the failed prerequisite.
+            with contextlib.suppress(Exception):
+                value = self.results[name]
+                run = self.results.get("install")
+                logs = sorted(self.machine.logs.glob("*-install*.log"))
+                tail = ""
+                if logs:
+                    with logs[-1].open("rb") as fh:
+                        fh.seek(0, 2)
+                        fh.seek(max(0, fh.tell() - 6000))
+                        tail = _decode(fh.read(6000))[-6000:]
+                row = {
+                    "phase": name,
+                    "failure_class": type(value).__name__ if isinstance(value, BaseException) else None,
+                    "exit_code": run.returncode if isinstance(run, Run) else None,
+                    "timed_out": bool(getattr(self.machine, "_install_timed_out", False)
+                                      or isinstance(value, subprocess.TimeoutExpired)),
+                    "installer_log_tail": tail,
+                }
+                (self.machine.logs / "install-prerequisite.json").write_text(
+                    json.dumps(row, ensure_ascii=True), encoding="utf-8")
         return self.results[name]
 
     def ok(self, name: str) -> bool:
