@@ -137,6 +137,7 @@ export function recordSessionEventScope(event: { connectionId?: string; profile?
       profile: String(event.profile ?? '').trim() || 'default'
     })
 
+    recoveryTimeline('owner-register', () => ({ owned: true }))
     // An owner resolved after the focus moved must still re-home the rail.
     syncPreviewScope()
 
@@ -152,6 +153,7 @@ export function recordSessionEventScope(event: { connectionId?: string; profile?
     const profileKey = normalizeProfileKey(profile)
     sessionOwnerByRuntimeId.set(event.session_id, profileKey)
     sessionScopeByRuntimeId.set(event.session_id, profileKey)
+    recoveryTimeline('owner-register', () => ({ owned: true }))
   }
 
   syncPreviewScope()
@@ -370,17 +372,20 @@ let liveTurnBackend: LiveTurnBackend | null = null
  *  unregister function; with nothing registered, a silent turn is left alone. */
 export function setLiveTurnBackend(backend: LiveTurnBackend): () => void {
   liveTurnBackend = backend
+  recoveryTimeline('backend-register', () => ({ backend: true }))
 
   return () => {
     if (liveTurnBackend === backend) {
       liveTurnBackend = null
+      recoveryTimeline('backend-unregister', () => ({ backend: false }))
     }
   }
 }
 
-function clearEventSilence(runtimeId: string) {
+function clearEventSilence(runtimeId: string, reason: 'event' | 'ineligible' | 'drop' = 'event') {
   const timer = sessionEventSilenceTimers.get(runtimeId)
 
+  recoveryTimeline('timer-clear', () => ({ reason, timer: Boolean(timer), backend: Boolean(liveTurnBackend) }))
   silentTurnChecks.delete(runtimeId)
 
   if (timer) {
@@ -519,6 +524,7 @@ async function recoverEndedLiveTurn(runtimeId: string) {
  *  Only a backend that reports the turn over settles it. */
 async function onEventSilence(runtimeId: string) {
   sessionEventSilenceTimers.delete(runtimeId)
+  recoveryTimeline('timer-fire', () => ({ reason: 'timeout', backend: Boolean(liveTurnBackend), busy: $sessionStates.get()[runtimeId]?.busy, awaitingResponse: $sessionStates.get()[runtimeId]?.awaitingResponse, turnLive: $sessionStates.get()[runtimeId]?.turnLive, needsInput: $sessionStates.get()[runtimeId]?.needsInput }))
 
   if (!isLiveTurnAwaitingEvents($sessionStates.get()[runtimeId])) {
     return
@@ -560,9 +566,11 @@ export function noteSessionEvent(runtimeId: string) {
   clearEventSilence(runtimeId)
 
   if (!isLiveTurnAwaitingEvents(current)) {
+    recoveryTimeline('timer-skip', () => ({ reason: 'ineligible', busy: current?.busy, awaitingResponse: current?.awaitingResponse, turnLive: current?.turnLive, needsInput: current?.needsInput }))
     return
   }
 
+  recoveryTimeline('timer-arm', () => ({ reason: 'event', backend: Boolean(liveTurnBackend), busy: current?.busy, awaitingResponse: current?.awaitingResponse, turnLive: current?.turnLive, needsInput: current?.needsInput }))
   sessionEventSilenceTimers.set(
     runtimeId,
     setTimeout(() => void onEventSilence(runtimeId), LIVE_TURN_EVENT_SILENCE_MS)
@@ -718,7 +726,7 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
     clearWatchdog(runtimeId)
 
     if (!isLiveTurnAwaitingEvents(next)) {
-      clearEventSilence(runtimeId)
+      clearEventSilence(runtimeId, 'ineligible')
     }
 
     setSessionStalled(next.storedSessionId, false)
@@ -870,6 +878,7 @@ function evictable(runtimeId: string, state: ClientSessionState): boolean {
 export function publishSessionState(runtimeId: string, state: ClientSessionState) {
   const current = $sessionStates.get()
   const prev = current[runtimeId] ?? null
+  recoveryTimeline('eligibility', () => ({ reason: 'publish', busy: state.busy, awaitingResponse: state.awaitingResponse, turnLive: state.turnLive, needsInput: state.needsInput, backend: Boolean(liveTurnBackend), timer: sessionEventSilenceTimers.has(runtimeId), owned: sessionOwnerByRuntimeId.has(runtimeId), active: runtimeId === $activeSessionId.get() }))
 
   if (prev === state) {
     return
@@ -916,7 +925,8 @@ export function dropSessionState(runtimeId: string) {
   // a just-finished session's row survives merge eviction even if its tile or
   // cached runtime is dropped in the meantime.
   clearWatchdog(runtimeId)
-  clearEventSilence(runtimeId)
+  clearEventSilence(runtimeId, 'drop')
+  recoveryTimeline('owner-drop', () => ({ reason: 'drop', owned: sessionOwnerByRuntimeId.has(runtimeId) }))
   clearSessionProviderWait(runtimeId)
   sessionScopeByRuntimeId.delete(runtimeId)
   sessionOwnerByRuntimeId.delete(runtimeId)
@@ -940,6 +950,7 @@ export function dropSessionState(runtimeId: string) {
  *  wiped gateway's sessions must not fire stale clears or linger in the
  *  sidebar merge keep-set after the switch. */
 export function clearAllSessionStates() {
+  recoveryTimeline('state-reset', () => ({ reason: 'reset' }))
   for (const timer of sessionWatchdogTimers.values()) {
     clearTimeout(timer)
   }
@@ -2244,6 +2255,7 @@ export const $sessionTileDelegateRevision = atom(0)
 
 export function setSessionTileDelegate(next: SessionTileDelegate) {
   delegate = next
+  recoveryTimeline('delegate-register')
   $sessionTileDelegateRevision.set($sessionTileDelegateRevision.get() + 1)
 }
 

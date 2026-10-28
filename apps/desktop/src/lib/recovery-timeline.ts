@@ -1,5 +1,16 @@
 // Diagnostic-only opt-in. Never retain identifiers, content, errors, or caller objects.
 type Phase =
+  | 'eligibility'
+  | 'timer-arm'
+  | 'timer-clear'
+  | 'timer-fire'
+  | 'timer-skip'
+  | 'backend-register'
+  | 'backend-unregister'
+  | 'owner-register'
+  | 'owner-drop'
+  | 'delegate-register'
+  | 'state-reset'
   | 'silence-start'
   | 'silence-verdict'
   | 'silence-stale'
@@ -11,7 +22,19 @@ type Phase =
   | 'history-error'
   | 'hydrate-publish'
 type Verdict = 'ended' | 'running' | 'unknown'
-type Row = {
+type Fields = {
+  verdict?: Verdict
+  owned?: boolean
+  busy?: boolean
+  awaitingResponse?: boolean
+  turnLive?: boolean
+  needsInput?: boolean
+  active?: boolean
+  backend?: boolean
+  timer?: boolean
+  reason?: 'event' | 'ineligible' | 'drop' | 'reset' | 'timeout' | 'publish'
+}
+type Row = Fields & {
   phase: Phase
   ms: number
   verdict?: Verdict
@@ -25,6 +48,8 @@ declare global {
   }
 }
 const phases = new Set<Phase>([
+  'eligibility', 'timer-arm', 'timer-clear', 'timer-fire', 'timer-skip',
+  'backend-register', 'backend-unregister', 'owner-register', 'owner-drop', 'delegate-register', 'state-reset',
   'silence-start',
   'silence-verdict',
   'silence-stale',
@@ -38,7 +63,7 @@ const phases = new Set<Phase>([
 ])
 export function recoveryTimeline(
   phase: Phase,
-  fields: { verdict?: Verdict; owned?: boolean } | (() => { verdict?: Verdict; owned?: boolean }) = {},
+  fields: Fields | (() => Fields) = {},
   text?: string | (() => string)
 ) {
   // All diagnostic evaluation is lazy and isolated from product recovery.
@@ -52,6 +77,10 @@ export function recoveryTimeline(
     if (fields.verdict === 'ended' || fields.verdict === 'running' || fields.verdict === 'unknown')
       row.verdict = fields.verdict
     if (typeof fields.owned === 'boolean') row.owned = fields.owned
+    for (const key of ['busy', 'awaitingResponse', 'turnLive', 'needsInput', 'backend', 'timer', 'active'] as const)
+      if (typeof fields[key] === 'boolean') row[key] = fields[key]
+    if (['event', 'ineligible', 'drop', 'reset', 'timeout', 'publish'].includes(fields.reason ?? ''))
+      row.reason = fields.reason
     if (typeof text === 'string')
       row.content = !text
         ? 'empty'
