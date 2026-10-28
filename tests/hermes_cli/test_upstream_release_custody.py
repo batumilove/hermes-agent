@@ -154,6 +154,62 @@ def test_source_updater_stamp_keeps_receipt_admission_only_for_its_commit(releas
     assert version_info.get_version_info() == identity
 
 
+@pytest.mark.parametrize("field,value", [
+    ("distribution", "docker"), ("distribution", "nix"),
+    ("distribution", "desktop-app"), ("distribution", "unknown"),
+    ("distribution", []), ("distribution", False),
+    ("schemaVersion", None), ("schemaVersion", 1),
+    ("schemaVersion", 3), ("schemaVersion", "2"),
+    ("schemaVersion", 2.0), ("schemaVersion", True),
+    ("schemaVersion", False), ("schemaVersion", []),
+])
+def test_source_stamp_rejects_conflicting_or_invalid_schema(release_repo, monkeypatch, field, value):
+    from hermes_cli import source_stamp, version_info
+
+    repo, receipt = release_repo
+    assert compat.validate_receipt(repo, receipt)
+    stamp = source_stamp.write_source_stamp(repo)
+    stamp[field] = value
+    if field == "schemaVersion" and value is None:
+        del stamp[field]
+    path = repo / "install-stamp.json"
+    path.write_text(json.dumps(stamp), encoding="utf-8")
+    monkeypatch.setattr(compat, "_executing_repo", lambda: repo)
+    monkeypatch.setattr(version_info, "_resolve_stamp_file", lambda: path)
+    assert compat.verified_upstream_version() is None
+
+
+@pytest.mark.parametrize("fault", ["malformed", "list", "location", "receipt"])
+def test_source_stamp_does_not_replace_custody(release_repo, monkeypatch, fault):
+    from hermes_cli import source_stamp, version_info
+
+    repo, receipt = release_repo
+    source_stamp.write_source_stamp(repo)
+    path = repo / "install-stamp.json"
+    if fault in {"malformed", "list"}:
+        path.write_text("{" if fault == "malformed" else "[]", encoding="utf-8")
+    elif fault == "location":
+        path = repo / "other-install-stamp.json"
+    else:
+        (repo / compat.RECEIPT_PATH).write_text(json.dumps(dict(receipt, release_id=99)), encoding="utf-8")
+    monkeypatch.setattr(compat, "_executing_repo", lambda: repo)
+    monkeypatch.setattr(version_info, "_resolve_stamp_file", lambda: path)
+    assert compat.verified_upstream_version() is None
+
+
+def test_source_stamp_preserves_upper_bound(release_repo, monkeypatch):
+    from hermes_cli import plugins_manifest as manifests, source_stamp, version_info
+
+    repo, receipt = release_repo
+    stamp = source_stamp.write_source_stamp(repo)
+    assert stamp["schemaVersion"] == 2 and stamp["distribution"] is None
+    monkeypatch.setattr(compat, "_executing_repo", lambda: repo)
+    monkeypatch.setattr(version_info, "_resolve_stamp_file", lambda: repo / "install-stamp.json")
+    monkeypatch.setattr(manifests, "running_hermes_version", lambda: "0.14.0")
+    assert compat.verified_upstream_version() == receipt["release_tag"][1:]
+    assert manifests.requires_hermes_error({"requires_hermes": ">=0.19,<0.22"})
+
+
 def test_receipt_byte_equality(release_repo):
     repo, receipt = release_repo
     path = repo / compat.RECEIPT_PATH

@@ -186,7 +186,10 @@ def _matching_source_stamp(repo: Path, stamp_path: Path) -> bool:
         return False
     stamp = read_install_stamp(repo)
     expected = {"updateMechanism": "self", "source": "git", "payload": "bootstrap"}
-    return (all(stamp.get(key) == value for key, value in expected.items())
+    return (type(stamp.get("schemaVersion")) is int
+            and stamp["schemaVersion"] == 2
+            and "distribution" in stamp and stamp["distribution"] is None
+            and all(stamp.get(key) == value for key, value in expected.items())
             and stamp.get("commit") == _git(repo, "rev-parse", "HEAD"))
 
 
