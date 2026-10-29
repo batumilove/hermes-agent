@@ -51,32 +51,38 @@ def _rpc(params: dict) -> dict:
     return server.handle_request({"id": "1", "method": "plugins.manage", "params": params})
 
 
-def test_install_by_catalog_name_refused_on_every_surface_when_hermes_is_too_old(gated):
-    gated["state"]["requires"] = ">=0.31"
+@pytest.mark.parametrize(("running", "spec", "refusal"), [
+    ("0.30.0", ">=0.31", REFUSAL),
+    ("unknown", ">=99.0", "cat-plugin needs Hermes >=99.0; this is unknown."),
+])
+def test_install_by_catalog_name_refused_on_every_surface_when_version_is_not_admitted(
+    gated, running, spec, refusal,
+):
+    gated["state"].update(running=running, requires=spec)
+    assert plugins_manifest.requires_hermes_error({"requires_hermes": spec})
 
     with pytest.raises(SystemExit):  # `hermes plugins install <name>` (and `hermes setup`'s importer step)
         pc.cmd_install("cat-plugin", enable=False)
-    assert any(REFUSAL in line and "and install again" in line for line in gated["printed"])
+    assert any(refusal in line and "and install again" in line for line in gated["printed"])
 
     dashboard = pc.dashboard_install_plugin("", force=False, enable=True, catalog_name="cat-plugin")
-    assert dashboard["ok"] is False and REFUSAL in dashboard["error"]
+    assert dashboard["ok"] is False and refusal in dashboard["error"]
 
     rpc = _rpc({"action": "install", "catalog_name": "cat-plugin"})  # Desktop / TUI
-    assert REFUSAL in rpc["error"]["message"]
+    assert refusal in rpc["error"]["message"]
 
     said: list[str] = []
     feature = lcm.LeftCoreFeature(plugin="cat-plugin", label="Cat", in_use=lambda *_a, **_k: True, unchanged="x")
     assert lcm._install_one(gated["plugins_dir"].parent, feature,
                             install=lcm._install_into(gated["plugins_dir"].parent), say=said.append) is False
-    assert REFUSAL.rstrip(".") in said[0]
+    assert refusal.rstrip(".") in said[0]
 
     assert not (gated["plugins_dir"] / "cat-plugin").exists()
 
 
-@pytest.mark.parametrize(("running", "spec"), [("0.30.0", ">=0.30"), ("unknown", ">=99.0")])
-def test_install_proceeds_when_hermes_satisfies_the_spec_or_its_version_is_unknown(gated, running, spec):
-    # "unknown" is a tagless checkout: the plugin.yaml gate lets it through, so the catalog gate must too.
-    gated["state"].update(running=running, requires=spec)
+def test_install_proceeds_when_hermes_satisfies_the_spec(gated):
+    spec = ">=0.30"
+    gated["state"]["requires"] = spec
     assert plugins_manifest.requires_hermes_error({"requires_hermes": spec}) is None
 
     result = pc.dashboard_install_plugin("", force=False, enable=False, catalog_name="cat-plugin")

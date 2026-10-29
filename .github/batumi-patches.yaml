@@ -5,6 +5,34 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+
+- id: upstream-release-plugin-admission
+  kind: compatibility
+  rationale: Preserve offline plugin admission for reviewed upstream releases using local
+    proof and exact committed raw-tag custody; reject missing or mismatched evidence
+    without runtime acquisition, trust-anchor changes, or Git-object/ref writes.
+  paths:
+  - .github/upstream-compatibility.json
+  - .github/upstream-proof/v0.22.0.tag
+  - hermes_cli/plugins_manifest.py
+  - hermes_cli/upstream_compatibility.py
+  - hermes_cli/upstream_release_anchors.py
+  - tests/hermes_cli/conftest.py
+  - tests/hermes_cli/test_committed_raw_tag.py
+  - tests/hermes_cli/test_upstream_compatibility.py
+  - tests/hermes_cli/test_upstream_langfuse_admission.py
+  - tests/hermes_cli/test_upstream_producer_lifecycle.py
+  - tests/hermes_cli/test_upstream_release_custody.py
+  - tests/hermes_cli/test_plugins_catalog_requires_hermes.py
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_committed_raw_tag.py tests/hermes_cli/test_upstream_release_custody.py tests/hermes_cli/test_upstream_compatibility.py tests/hermes_cli/test_upstream_producer_lifecycle.py tests/hermes_cli/test_upstream_langfuse_admission.py
+  - scripts/run_tests.sh tests/hermes_cli/test_plugin_install_manifest_version.py
+  - scripts/run_tests.sh tests/hermes_cli/test_plugins_catalog_requires_hermes.py
+  - python3 scripts/check --base f7a6af731a5d63a7c45557e902dd63b6fcb279da
+  retirement: Remove when upstream provides equivalent offline reviewed-release plugin
+    proof admission and exact raw-tag custody, including fail-closed missing/mismatched
+    evidence handling and regression coverage without runtime acquisition or Git writes.
+
 - id: s6-waited-cleanup-immutable-publication
   kind: operations
   rationale: Preserve bounded gateway-only shutdown before the short s6 sweep and
@@ -35,6 +63,7 @@ patches:
   retirement: Remove shutdown delta after equivalent upstream gateway-only waited
     cleanup and owner binding land. Replace the manual publication-only bridge
     only through a reviewed change explicitly authorizing promotion/deployment.
+
 - id: mattermost-bounded-thread-context
   kind: compatibility
   rationale: Preserve a validated root reply pointer and bounded thread history on first entry,

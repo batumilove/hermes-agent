@@ -486,7 +486,15 @@ def requires_hermes_error(manifest: PluginManifest | Mapping[str, Any]) -> Optio
     if not spec:
         return None
     current = running_hermes_version()
-    if version_satisfies(spec, current):
+    from hermes_cli.upstream_compatibility import verified_upstream_version
+
+    if _version_tuple(current) is None:
+        return f"requires hermes {spec}, running {current}"
+    boundary = verified_upstream_version()
+    # Compare the maximum known version once, never OR upper-bound predicates.
+    versions = [v for v in (current, boundary) if v and _version_tuple(v) is not None]
+    admission = max(versions, key=_version_tuple) if versions else None
+    if admission is not None and version_satisfies(spec, admission):
         return None
     return f"requires hermes {spec}, running {current}"
 
