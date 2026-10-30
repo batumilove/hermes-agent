@@ -451,7 +451,7 @@ def _hermes_closure_repair():
         with contextlib.redirect_stderr(said):
             from hermes_cli import _early_recovery
             restored = _early_recovery.restore_interrupted_pull(root)
-    except Exception:
+    except Exception as exc:
         said.write('hermes: the checkout cannot start after an interrupted `hermes update`, and it was not '
                    'repaired: %s\\n' % (exc,))
     if restored:
@@ -505,7 +505,7 @@ def _launcher_script(name: str, repo_root: Path, dependencies: Path | None) -> s
         "    from pathlib import Path\n"
         "    try:\n"
         "        from hermes_cli import _early_recovery\n"
-        "    except Exception:\n"
+        "    except Exception as exc:\n"
         "        if _hermes_closure_repair() or not isinstance(exc, ImportError):\n"
         "            raise\n"
         "        _early_recovery = None  # a tree without the repair: the imports below report real damage\n"
