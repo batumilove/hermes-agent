@@ -2263,6 +2263,19 @@ patches:
   tests:
   - scripts/run_tests.sh tests/tools/test_browser_vault.py
   retirement: Remove when upstream documents equivalent authorized OTP input and secret-isolation boundaries.
+- id: browser-credential-store-discovery
+  kind: operations
+  rationale: Distinguish configured credential custody from browser-vault lookup coverage and
+    supported secret-safe integration availability; preserve password and payment input restrictions.
+  paths:
+  - model_tools.py
+  - tools/browser_use_cli.py
+  - tests/fixtures/prompt_surface/tools/browser_exec.json
+  - tests/fixtures/prompt_surface/surfaces.json
+  tests:
+  - scripts/run_tests.sh tests/tools/test_browser_use_cli.py tests/tools/test_browser_vault.py tests/tools/test_model_tools.py tests/ci/test_prompt_surface.py
+  - python scripts/check
+  retirement: Remove when upstream provides equivalent credential discovery and integration-limit guidance.
 - id: ci-aggregate-bounded-context
   kind: operations
   rationale: Pass every dependency result and detector lane selection to the required gate without
