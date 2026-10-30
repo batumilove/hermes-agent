@@ -25,6 +25,7 @@ patches:
   - tests/ci/test_svgr_installed_gate.py
   - tests/ci/test_svgr_supported_topology.py
   - tests/ci/test_svgr_adversarial.py
+  - tests/ci/fixtures/svgr-historical/**
   - tests/ci/test_pr450_ci_repairs.py
   - tests/scripts/test_osv_scanner_workflow.py
   - contributors/emails/local-qualification@invalid

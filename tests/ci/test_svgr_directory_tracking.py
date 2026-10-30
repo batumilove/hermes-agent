@@ -3,7 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import shutil
-import subprocess
+import hashlib
 import tempfile
 import unittest
 ROOT = Path(__file__).resolve().parents[2]
@@ -16,9 +16,14 @@ class DirectoryTrackingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
             shutil.copytree(ROOT/'website',root/'website',ignore=shutil.ignore_patterns('node_modules','build','.docusaurus'))
-            # Historical derivative controls retain their original reviewed graph.
-            for name in ('package.json', 'package-lock.json'):
-                (root/'website'/name).write_bytes(subprocess.check_output(['git', 'show', '862586795a9a49c798698687bdfe1f96d4dd92d9:website/'+name], cwd=ROOT))
+            # Exact historical bytes, available even in a depth-one CI checkout.
+            for name, digest in (
+                ('package.json', '4bb5ff228c9a398eed2ace2c842263894259f9c0888b8f4d462d48066667436b'),
+                ('package-lock.json', '8e7782528c603442f0f54722efd3671cfb98de2e890d43f317bcbf44e5088ec6'),
+            ):
+                fixture = (ROOT/'tests/ci/fixtures/svgr-historical'/name).read_bytes()
+                self.assertEqual(hashlib.sha256(fixture).hexdigest(), digest)
+                (root/'website'/name).write_bytes(fixture)
             module.stage(root)
             slot=root/'website/node_modules/@svgr/plugin-svgo'
             slot.parent.mkdir(parents=True)
