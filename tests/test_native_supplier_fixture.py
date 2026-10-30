@@ -17,11 +17,16 @@ def test_declared_supplier_pin_and_resources(native_supplier):
 
 def test_declared_supplier_rejects_tampering(tmp_path):
     from tests.native_supplier import unpack_supplier
-    payload = Path(__file__).with_name('fixtures') / 'distlib-0.4.2.tar.gz'
-    bad = tmp_path / 'bad.tar.gz'
-    bad.write_bytes(payload.read_bytes() + b'tampered')
-    with pytest.raises(ValueError, match='fixture archive digest'):
-        unpack_supplier(tmp_path / 'out', archive=bad)
+    import json
+    import shutil
+    source = Path(__file__).with_name('fixtures') / 'distlib-0.4.2.members'
+    bad = tmp_path / 'bad-members'
+    shutil.copytree(source, bad)
+    record = json.loads((bad / 'scripts.py.json').read_text())
+    record['base64'] = json.loads((bad / 'LICENSE.txt.json').read_text())['base64']
+    (bad / 'scripts.py.json').write_text(json.dumps(record))
+    with pytest.raises(ValueError, match='fixture member digest'):
+        unpack_supplier(tmp_path / 'out', members=bad)
 
 
 def test_declared_supplier_ignores_external_override(native_supplier, monkeypatch, tmp_path):

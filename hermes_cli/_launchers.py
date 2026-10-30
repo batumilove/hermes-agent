@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from contextlib import suppress
 import json
+import logging
 import os
 import shlex
 import sys
@@ -284,7 +285,7 @@ def mint_launcher(
         if _valid_native(target, python_exe, script):
             return target
     except Exception:
-        pass
+        logging.getLogger(__name__).exception("native launcher generation failed for %s", name)
     return None
 
 
@@ -345,6 +346,7 @@ def _publish_native_set(root: Path, directory: Path, names) -> list[str]:
                 os.replace(candidate, target)
                 published.append(target)
         except Exception:
+            logging.getLogger(__name__).exception("native launcher publication failed in %s", directory)
             for target in reversed(published):
                 if target not in backups:
                     with suppress(OSError):

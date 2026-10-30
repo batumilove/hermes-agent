@@ -52,7 +52,7 @@ def assert_old(out):
 
 
 def test_explicit_pip_free_selected_supplier(runtime):
-    root, python, supplier, out = runtime
+    _root, python, _supplier, _out = runtime
     assert not (python.parent / 'Lib/site-packages/pip').exists()
     with patch.object(subject, '_load_script_maker', side_effect=AssertionError('ambient forbidden')):
         maker = subject._store_script_maker(python)
@@ -62,7 +62,7 @@ def test_explicit_pip_free_selected_supplier(runtime):
 
 @pytest.mark.parametrize('resource', ['scripts.py', 'resources.py', 't64.exe', '__init__.py'])
 def test_missing_supplier_resource_fails_closed(runtime, resource):
-    root, python, supplier, out = runtime
+    root, _python, supplier, out = runtime
     (supplier / resource).unlink()
     old_pair(out)
     assert subject.ensure_install_launchers(root, out) == []
@@ -70,7 +70,7 @@ def test_missing_supplier_resource_fails_closed(runtime, resource):
 
 
 def test_both_names_native_from_selected_supplier(runtime):
-    root, python, supplier, out = runtime
+    root, python, _supplier, out = runtime
     paths = subject.ensure_install_launchers(root, out)
     assert {Path(p).name for p in paths} == {'hermes.exe', 'hermes-acp.exe'}
     for p in paths:
@@ -82,7 +82,7 @@ def test_both_names_native_from_selected_supplier(runtime):
 
 @pytest.mark.parametrize('bad_name', ['hermes', 'hermes-acp'])
 def test_invalid_maker_output_preserves_both(runtime, monkeypatch, bad_name):
-    root, python, supplier, out = runtime
+    root, _python, _supplier, out = runtime
     old_pair(out)
     real = subject.mint_launcher
     def invalid(name, root, directory, python, site):
@@ -98,7 +98,7 @@ def test_invalid_maker_output_preserves_both(runtime, monkeypatch, bad_name):
 
 @pytest.mark.parametrize('fault', ['publish', 'rename', 'rollback'])
 def test_transaction_failure_preserves_recovery(runtime, monkeypatch, fault):
-    root, python, supplier, out = runtime
+    root, _python, _supplier, out = runtime
     old_pair(out)
     replace = os.replace
     def injected(src, dst):
@@ -122,7 +122,7 @@ def test_transaction_failure_preserves_recovery(runtime, monkeypatch, fault):
 def test_exposure_failure_reaches_sync_receipt(runtime, monkeypatch):
     from hermes_cli import venv_sync
     import pm
-    root, python, supplier, out = runtime
+    root, _python, _supplier, _out = runtime
     (root / 'pyproject.toml').touch()
     monkeypatch.setattr(venv_sync, '_is_sealed', lambda root: False)
     monkeypatch.setattr(subject, 'ensure_install_launchers', lambda *a: ['hermes.exe', 'hermes-acp.exe'])
@@ -135,7 +135,7 @@ def test_exposure_failure_reaches_sync_receipt(runtime, monkeypatch):
 
 
 def test_locked_old_image_renamed_without_unlink(runtime, monkeypatch):
-    root, python, supplier, out = runtime
+    root, _python, _supplier, out = runtime
     old_pair(out)
     unlink = Path.unlink
     rename = os.replace
@@ -157,7 +157,7 @@ def test_locked_old_image_renamed_without_unlink(runtime, monkeypatch):
 
 
 def test_invalid_selected_version_rejected(runtime):
-    root, python, supplier, out = runtime
+    root, _python, supplier, out = runtime
     (supplier / '__init__.py').write_text("__version__ = '0.0.0'\n", encoding='utf-8')
     old_pair(out)
     assert subject.ensure_install_launchers(root, out) == []
@@ -167,7 +167,7 @@ def test_invalid_selected_version_rejected(runtime):
 def test_no_store_interpreter_sync_is_failure(runtime, monkeypatch):
     from hermes_cli import venv_sync
     import pm
-    root, python, supplier, out = runtime
+    root, _python, _supplier, _out = runtime
     (root / 'pyproject.toml').touch()
     monkeypatch.setattr(venv_sync, '_is_sealed', lambda root: False)
     monkeypatch.setattr(subject, 'resolve_store_python', lambda *a, **k: None)

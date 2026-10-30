@@ -1,40 +1,71 @@
-"""Hash-checked, pinned, repo-owned package fixture; no ambient imports/network."""
+"""Hash-checked, pinned, repo-owned package fixture; no ambient imports/network.
+
+Members are explicit JSON/base64 data, not an opaque renamed profile archive.
+Every decoded member is authenticated before any file is written. Original
+supplier hashes, provenance and license bytes remain in the sibling manifest.
+"""
+import base64
 import hashlib
 import json
 from pathlib import Path
-import tarfile
+import shutil
+import sys
 
 
-def unpack_supplier(destination, *, archive=None):
+def unpack_supplier(destination, *, members=None):
     fixtures = Path(__file__).with_name('fixtures')
     manifest = json.loads((fixtures / 'distlib-0.4.2.json').read_text())
-    archive = archive or fixtures / 'distlib-0.4.2.tar.gz'
-    if hashlib.sha256(Path(archive).read_bytes()).hexdigest() != manifest['archive_sha256']:
-        raise ValueError('fixture archive digest mismatch')
-    destination = Path(destination)
-    with tarfile.open(archive) as source:
-        members = source.getmembers()
-        if {m.name for m in members} != {'distlib/' + n for n in manifest['files']} or len(members) != len(manifest['files']):
-            raise ValueError('fixture member inventory mismatch')
-        for member in members:
-            name = member.name.removeprefix('distlib/')
-            if not member.isfile() or '/' in name or name in ('.', '..'):
-                raise ValueError('invalid fixture member')
-            member_file = source.extractfile(member)
-            if member_file is None:
-                raise ValueError('unreadable fixture member')
-            data = member_file.read()
-            if hashlib.sha256(data).hexdigest() != manifest['files'][name]:
-                raise ValueError('fixture member digest mismatch')
-            path = destination / 'distlib' / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(data)
-    supplier = destination / 'distlib'
+    member_root = Path(members or fixtures / 'distlib-0.4.2.members')
+    records = [json.loads(path.read_text()) for path in sorted(member_root.glob('*.json'))]
+    if any(set(record) != {'name', 'base64'} for record in records):
+        raise ValueError('fixture member schema mismatch')
+    payload = {record['name']: record['base64'] for record in records}
+    if len(records) != len(payload) or set(payload) != set(manifest['files']):
+        raise ValueError('fixture member inventory mismatch')
     from pm.python_bootstrap import DISTLIB_VERSION, _checked_distlib
     if manifest['version'] != DISTLIB_VERSION or DISTLIB_VERSION != '0.4.2':
         raise ValueError('fixture pin mismatch')
-    _checked_distlib(supplier, destination)
+    decoded = {}
+    for name, encoded in payload.items():
+        if '/' in name or '\\' in name or name in ('.', '..'):
+            raise ValueError('invalid fixture member')
+        data = base64.b64decode(encoded, validate=True)
+        if hashlib.sha256(data).hexdigest() != manifest['files'][name]:
+            raise ValueError('fixture member digest mismatch')
+        decoded[name] = data
+    supplier = Path(destination) / 'distlib'
+    supplier.mkdir(parents=True)
+    for name, data in decoded.items():
+        (supplier / name).write_bytes(data)
+    _checked_distlib(supplier, Path(destination))
     return supplier
+
+
+def provision_windows_python(entry):
+    """Private interpreter copy plus the exact selected standalone supplier.
+
+    On Windows a base interpreter also needs its DLLs and standard library.
+    Keep those bytes beside the copied executable; never mutate host Python.
+    Linux callers use this only for inert fixture/PE-generation contracts.
+    """
+    entry = Path(entry)
+    entry.mkdir(parents=True)
+    base = Path(sys._base_executable).resolve()
+    python = entry / 'python.exe'
+    shutil.copy2(base, python)
+    if sys.platform == 'win32':
+        for dll in base.parent.glob('*.dll'):
+            shutil.copy2(dll, entry / dll.name)
+        for library in base.parent.glob('python*.zip'):
+            shutil.copy2(library, entry / library.name)
+        lib = base.parent / 'Lib'
+        if lib.is_dir():
+            shutil.copytree(lib, entry / 'Lib', ignore=shutil.ignore_patterns('site-packages', '__pycache__'))
+        dlls = base.parent / 'DLLs'
+        if dlls.is_dir():
+            shutil.copytree(dlls, entry / 'DLLs')
+    unpack_supplier(entry / 'Lib/site-packages')
+    return python
 
 
 def windows_unit_maker(python):

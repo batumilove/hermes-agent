@@ -17,7 +17,7 @@ from pm.environments import install_state_dir, site_packages
 ROOT = Path(__file__).resolve().parents[2]
 BOOT_FILES = (
     "hermes_bootstrap.py", "hermes_constants.py", "hermes_cli/__init__.py", "hermes_cli/_launchers.py",
-    "pm/environments.py", "pm/filesystem.py", "pm/paths.py", "hermes_cli/runtime_state.py",
+    "pm/environments.py", "pm/filesystem.py", "pm/paths.py", "pm/python_bootstrap.py", "hermes_cli/runtime_state.py",
     "hermes_cli/_early_recovery.py", "hermes_cli/_parser.py",
     "hermes_cli/venv_sync.py", "hermes_cli/steward.py",
     "hermes_cli/stderr_timestamp.py",
@@ -54,6 +54,9 @@ def fixture_tree(tmp_path, monkeypatch):
     store = home / "tools"
     store.mkdir(parents=True)
     interpreter = Path(sys._base_executable).resolve()
+    if os.name == "nt":
+        from tests.native_supplier import provision_windows_python
+        interpreter = provision_windows_python(store / 'python-fixture')
     (store / "facts.json").write_text(json.dumps({"schema": 1, "packages": {"python": {
         "version": "fixture", "entry": str(interpreter.parent if os.name == "nt" else interpreter.parents[1])
     }}}), encoding="utf-8")
@@ -140,7 +143,7 @@ def test_launcher_resolves_default_home_at_use_not_publication(tmp_path, monkeyp
     pytest.param("boot", marks=pytest.mark.platforms("posix")),
     pytest.param("repair", marks=pytest.mark.platforms("posix")),
     pytest.param("native", marks=pytest.mark.platforms("windows")),
-    pytest.param("cmd", marks=pytest.mark.platforms("windows")),
+    pytest.param("native-without-ambient", marks=pytest.mark.platforms("windows")),
 ])
 def test_profile_publication_preserves_shared_launcher_default_home(tmp_path, monkeypatch, publisher):
     from hermes_cli import boot_bootstrap, post_update
@@ -156,12 +159,12 @@ def test_profile_publication_preserves_shared_launcher_default_home(tmp_path, mo
     }), encoding="utf-8")
     select_generation(repo, "shared", "ready")
     out = tmp_path / ".local" / "bin"
-    if publisher == "cmd":
-        without_distlib(monkeypatch)
+    if publisher == "native-without-ambient":
+        monkeypatch.setattr(_launchers, "_load_script_maker", lambda: None)
     launchers = [Path(p) for p in _launchers.ensure_install_launchers(repo, out)]
     assert len(launchers) == len(_launchers.ENTRY_POINTS)
-    if publisher == "cmd":
-        assert all(launcher.suffix == ".cmd" for launcher in launchers)
+    if publisher == "native-without-ambient":
+        assert all(launcher.suffix == ".exe" for launcher in launchers)
 
     def assert_home(override, expected):
         env = dict(os.environ)
@@ -353,14 +356,13 @@ def test_windows_commands_survive_generation_collection(tmp_path, monkeypatch, s
 
 
 @pytest.mark.platforms("windows")
-@pytest.mark.parametrize("launcher_form", ["native", "cmd", "native-with-maker"])
+@pytest.mark.parametrize("launcher_form", ["native", "native-without-ambient", "native-with-maker"])
 def test_running_source_launcher_can_republish_itself(tmp_path, monkeypatch, launcher_form):
     repo, _home, interpreter = fixture_tree(tmp_path, monkeypatch)
     selected = select_generation(repo, "selected", "ready")
     if launcher_form == "native-with-maker":
-        import distlib
-
-        shutil.copytree(Path(distlib.__file__).parent, site_packages(selected) / "distlib")
+        from tests.native_supplier import unpack_supplier
+        unpack_supplier(site_packages(selected))
     entry = repo / "hermes_cli/main.py"
     entry.write_text(
         "from pathlib import Path\n"
@@ -373,12 +375,12 @@ def test_running_source_launcher_can_republish_itself(tmp_path, monkeypatch, lau
         encoding="utf-8",
     )
     out = repo / ".hermes/bin"
-    if launcher_form == "cmd":
-        without_distlib(monkeypatch)
+    if launcher_form == "native-without-ambient":
+        monkeypatch.setattr(_launchers, "_load_script_maker", lambda: None)
     launchers = _launchers.ensure_install_launchers(repo, out)
     assert len(launchers) == len(_launchers.ENTRY_POINTS)
     command = next(Path(p) for p in launchers if Path(p).stem == "hermes")
-    assert command.suffix == (".cmd" if launcher_form == "cmd" else ".exe")
+    assert command.suffix == ".exe"
     result = subprocess.run([str(command)], cwd=tmp_path, capture_output=True,
                             text=True, encoding="utf-8", timeout=30, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -403,11 +405,9 @@ def test_repin_without_distlib_retires_stale_native_launcher(tmp_path, monkeypat
     new_python.parent.mkdir()
     new_python.touch()
     if store_pip:
-        # python-build-standalone ships pip; the activated update process cannot import it.
-        import distlib
-
-        shutil.copytree(Path(distlib.__file__).parent,
-                        new_python.parent / "Lib" / "site-packages" / "pip" / "_vendor" / "distlib")
+        # PM promotes the pinned supplier before removing pip/bootstrap.
+        from tests.native_supplier import unpack_supplier
+        unpack_supplier(new_python.parent / 'Lib/site-packages')
     (home / "tools/facts.json").write_text(
         json.dumps({"packages": {"python": {"entry": "repinned"}}}), encoding="utf-8")
     real_maker = _launchers._load_script_maker
@@ -435,12 +435,16 @@ def test_repin_without_distlib_retires_stale_native_launcher(tmp_path, monkeypat
         assert _launchers._launcher_python(result) == new_python
         assert not (local / "hermes.cmd").exists()
     else:
-        assert result == local / "hermes.cmd"
-        assert not original.exists()  # cmd.exe must not run the old exe first
-        assert result is not None and str(new_python) in result.read_text(encoding="utf-8-sig")
+        assert result is None  # Missing selected supplier must not downgrade to cmd.
+        assert original.exists()
+        assert _launchers._launcher_python(original) == _interpreter
+        assert not (local / 'hermes.cmd').exists()
     if process is not None:
-        assert process.returncode == 0  # the retired launcher finished its own run
-        # distlib is back for the next publication: the aside copy still goes.
+        assert process.returncode == 0  # the running launcher finished its own run
+        # Provision the selected supplier before retrying native publication.
+        if not store_pip:
+            from tests.native_supplier import unpack_supplier
+            unpack_supplier(new_python.parent / 'Lib/site-packages')
         monkeypatch.setattr(_launchers, "_load_script_maker", real_maker)
         assert _launchers.stage_launcher("hermes", repo, local) == local / "hermes.exe"
         assert not list(local.glob("hermes.exe*.deleteme"))

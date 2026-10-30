@@ -5,6 +5,21 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: tornado-66-security-floor
+  kind: operations
+  rationale: Raise the optional Telegram webhook Tornado floor to 6.6 for
+    GHSA-pcg2-g6cj-q92c, GHSA-pw9p-v7r6-gx4p and GHSA-r4j5-9xpp-3985;
+    retain the next-major bound and global release-age policy. Offline tests
+    require the repository Python test environment; no live bot token is needed.
+  paths:
+  - pyproject.toml
+  - uv.lock
+  - tests/test_packaging_metadata.py
+  tests:
+  - python -m pm.build_env --source . --check-lock
+  - scripts/run_tests.sh tests/test_packaging_metadata.py tests/pm/test_project_relock.py
+  retirement: Remove when the accepted upstream baseline carries the fixed
+    Tornado floor, resolved release and equivalent regression coverage.
 - id: native-windows-pinned-launcher-publication
   kind: core
   rationale: Preserve both native CLI names on Windows using PM's pinned standalone supplier and staged per-destination publication; fail dependency sync when mandatory launcher publication fails. Required by the original old-gateway update journey; no diagnostic capture ships.
@@ -14,7 +29,16 @@ patches:
   - tests/conftest.py
   - tests/fixtures/README-native-supplier.md
   - tests/fixtures/distlib-0.4.2.json
-  - tests/fixtures/distlib-0.4.2.tar.gz
+  - tests/fixtures/distlib-0.4.2.members/**
+  - tests/hermes_cli/test_native_launcher_diagnostics.py
+  - tests/hermes_cli/test_launcher_fixture_child.py
+  - tests/hermes_cli/test_source_launcher_publication.py
+  - tests/hermes_cli/test_ensure_windows_bin_launchers.py
+  - tests/hermes_cli/test_hermes_home_shared_launchers.py
+  - tests/hermes_cli/test_launcher_runtime_selection.py
+  - tests/installation_launcher_fixture.py
+  - tests/tools/test_bot_delivery_install_launcher.py
+  - tests/test_native_supplier_remediation.py
   - tests/hermes_cli/test_native_launcher_transaction.py
   - tests/native_supplier.py
   - tests/test_native_supplier_fixture.py
