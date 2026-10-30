@@ -8,7 +8,7 @@ on:
       source_sha:
         description: Reviewed reconciled application SHA (allowlisted, not control SHA)
         required: true
-        default: 1e1b607ffb806e0e98fd79fb0d4206d0f80fbdc7
+        default: 6663c159f7e677d6c3e0887e34de93bd31c0b237
         type: string
 
 permissions: {}
@@ -25,8 +25,8 @@ jobs:
     permissions:
       contents: read
     env:
-      SOURCE_SHA: ${{ inputs.source_sha || '1e1b607ffb806e0e98fd79fb0d4206d0f80fbdc7' }}
-      SOURCE_TREE: dfb3fc438299c2cce00a4f59320fd710bf38277d
+      SOURCE_SHA: ${{ inputs.source_sha || '6663c159f7e677d6c3e0887e34de93bd31c0b237' }}
+      SOURCE_TREE: 6dfb6a61ae7a7de48571bb1c954211e59654b5b1
     defaults:
       run:
         shell: bash

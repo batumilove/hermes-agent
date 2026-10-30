@@ -8,8 +8,8 @@ from pathlib import Path
 import re
 import subprocess
 
-SOURCE = '1e1b607ffb806e0e98fd79fb0d4206d0f80fbdc7'
-TREE = 'dfb3fc438299c2cce00a4f59320fd710bf38277d'
+SOURCE = '6663c159f7e677d6c3e0887e34de93bd31c0b237'
+TREE = '6dfb6a61ae7a7de48571bb1c954211e59654b5b1'
 
 
 def admit(source: str, tree: str) -> tuple[str, str]:
