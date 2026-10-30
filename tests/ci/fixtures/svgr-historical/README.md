@@ -1,7 +1,15 @@
 # Historical SVGR graph fixtures
 
-The `.fixture` suffix marks inert data, not a repository installation lockfile.
+The `.fixture` / `.fixture.gz` suffixes mark inert data, not repository installation lockfiles.
 The tests restore the original filenames only inside disposable roots.
+`package-lock.json.fixture.gz` stores the exact historical bytes using deterministic
+stdlib gzip (`gzip.compress(raw, compresslevel=9, mtime=0)`, Python 3.14).
+Compressed length: 148025 bytes; compressed SHA256:
+`84890865c3c1724c773c239d9a171d0b0dd50e0ebe22ef2b066d1e5f5917a444`.
+Both loaders bound the compressed read and decompressed output to the recorded
+length plus one, verify both lengths and hashes, then write all original bytes.
+Compression satisfies the unchanged 500 KiB tracked-file gate without exceptions;
+the original uncompressed length, hash and Git provenance below are unchanged.
 These are byte-for-byte copies of `website/package.json` and
 `website/package-lock.json` from commit
 `862586795a9a49c798698687bdfe1f96d4dd92d9` (not the supported installed graph).

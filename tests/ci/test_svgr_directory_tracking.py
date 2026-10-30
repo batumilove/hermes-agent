@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 import shutil
 import hashlib
+import gzip
+import io
 import tempfile
 import unittest
 ROOT = Path(__file__).resolve().parents[2]
@@ -21,7 +23,18 @@ class DirectoryTrackingTests(unittest.TestCase):
                 ('package.json', '4bb5ff228c9a398eed2ace2c842263894259f9c0888b8f4d462d48066667436b'),
                 ('package-lock.json', '8e7782528c603442f0f54722efd3671cfb98de2e890d43f317bcbf44e5088ec6'),
             ):
-                fixture = (ROOT/'tests/ci/fixtures/svgr-historical'/(name + '.fixture')).read_bytes()
+                path = ROOT/'tests/ci/fixtures/svgr-historical'/(name + '.fixture')
+                if name == 'package-lock.json':
+                    with path.with_suffix('.fixture.gz').open('rb') as stream:
+                        compressed = stream.read(148026)
+                    self.assertEqual(len(compressed), 148025)
+                    self.assertEqual(hashlib.sha256(compressed).hexdigest(),
+                                     '84890865c3c1724c773c239d9a171d0b0dd50e0ebe22ef2b066d1e5f5917a444')
+                    with gzip.GzipFile(fileobj=io.BytesIO(compressed)) as stream:
+                        fixture = stream.read(724160)
+                    self.assertEqual(len(fixture), 724159)
+                else:
+                    fixture = path.read_bytes()
                 self.assertEqual(hashlib.sha256(fixture).hexdigest(), digest)
                 (root/'website'/name).write_bytes(fixture)
             module.stage(root)
