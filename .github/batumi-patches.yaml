@@ -5,6 +5,18 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: tornado-66-security-floor
+  kind: compatibility
+  rationale: Require Tornado 6.6 to clear GHSA-pcg2-g6cj-q92c, GHSA-pw9p-v7r6-gx4p,
+    and GHSA-r4j5-9xpp-3985 in the optional Telegram webhook dependency graph.
+    Retain the existing next-major upper bound and all unrelated locked packages.
+  paths:
+  - pyproject.toml
+  - uv.lock
+  tests:
+  - python -m pm.build_env --source . --check-lock
+  - python -m tornado.test.runtests tornado.test.httpserver_test tornado.test.httputil_test tornado.test.web_test
+  retirement: Remove when upstream carries an equivalent fixed Tornado floor and lock.
 - id: qs-svgr-unused-deepmerge-remediation
   kind: compatibility
   rationale: Resolve qs security fixes and remove the unused vulnerable deepmerge
