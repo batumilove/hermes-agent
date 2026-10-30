@@ -19,6 +19,8 @@ patches:
   - website/vendor/svgr-plugin-svgo/**
   - scripts/ci/svgr_upstream_tracking.py
   - tests/ci/test_svgr_directory_tracking.py
+  - tests/ci/test_svgr_installed_gate.py
+  - tests/ci/test_svgr_adversarial.py
   - .github/workflows/osv-scanner.yml
   tests:
   - node website/scripts/test-security-dependencies.cjs
