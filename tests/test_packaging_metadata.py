@@ -125,3 +125,17 @@ def test_build_and_lock_helpers_exclude_reviewed_advisories():
     pins = list(setuptools.specifier)
     assert len(pins) == 1 and pins[0].operator == "=="
     assert Version(pins[0].version) >= floors["setuptools"]
+
+
+def test_tornado_constraint_and_lock_exclude_october_2026_advisories():
+    """GHSA-pcg2-g6cj-q92c / pw9p-v7r6-gx4p / r4j5-9xpp-3985."""
+    floor = Version("6.6")
+    manifest = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    requirements = [Requirement(spec) for spec in manifest["tool"]["uv"]["constraint-dependencies"]]
+    requirement = next(req for req in requirements if req.name == "tornado")
+    assert floor in requirement.specifier
+    assert Version("6.5.10") not in requirement.specifier
+    assert Version("7") not in requirement.specifier
+    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    versions = [Version(row["version"]) for row in lock["package"] if row["name"] == "tornado"]
+    assert versions and all(version >= floor and version in requirement.specifier for version in versions)
