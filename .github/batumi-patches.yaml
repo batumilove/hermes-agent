@@ -5,6 +5,24 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: qs-svgr-unused-deepmerge-remediation
+  kind: compatibility
+  rationale: Resolve qs security fixes and remove the unused vulnerable deepmerge
+    declaration from an integrity-verified SVGR plugin derivative without changing
+    upstream executable bytes or suppressing advisories.
+  paths:
+  - scripts/whatsapp-bridge/package-lock.json
+  - website/.npmrc
+  - website/package.json
+  - website/package-lock.json
+  - website/scripts/test-security-dependencies.cjs
+  - website/vendor/svgr-plugin-svgo/**
+  tests:
+  - node website/scripts/test-security-dependencies.cjs
+  - npm --prefix website audit --registry=https://registry.npmjs.org
+  - npm --prefix scripts/whatsapp-bridge audit --registry=https://registry.npmjs.org
+  retirement: Remove the derivative when a maintained upstream plugin removes or
+    fixes deepmerge and the resolved graph, consumer probes and website build pass.
 - id: s6-waited-cleanup-immutable-publication
   kind: operations
   rationale: Preserve bounded gateway-only shutdown before the short s6 sweep and
