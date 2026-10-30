@@ -5,6 +5,23 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: qs-supported-site-dependency-removal
+  kind: compatibility
+  rationale: Preserve qs 6.16.2 security fixes while replacing the disabled classic preset
+    with supported constituents, removing unused SVGR and deepmerge entirely.
+  paths:
+  - scripts/whatsapp-bridge/package-lock.json
+  - website/.npmrc
+  - website/package.json
+  - website/package-lock.json
+  - website/scripts/test-security-dependencies.cjs
+  - website/docusaurus.config.ts
+  tests:
+  - node website/scripts/test-security-dependencies.cjs
+  - npm --prefix website audit --registry=https://registry.npmjs.org
+  - npm --prefix scripts/whatsapp-bridge audit --registry=https://registry.npmjs.org
+  retirement: Retire when upstream supplies equivalent supported site configuration and
+    fixed qs resolution without reintroducing unused vulnerable dependencies.
 - id: upgrade-service-manager-shim-contract
   kind: compatibility
   rationale: Permit only the exact production read-only gateway unit listing in the
